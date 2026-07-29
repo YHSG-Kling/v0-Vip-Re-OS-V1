@@ -4,16 +4,24 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { syncBrokeragePlanTier } from "@/lib/billing/sync-plan-tier"
 import { setStripeOnboardingByAccount } from "@/lib/connections/vendor-stripe"
 import { buildSubscriptionPatch, upsertBrokerageSubscription, type NormalizedStripeSub } from "@/lib/billing/subscription-activation"
+import { toStoredSubscriptionStatus } from "@/lib/billing/stripe-status"
 import Stripe from "stripe"
 
-/** Normalize a Stripe subscription into the shape buildSubscriptionPatch wants. */
+/** Normalize a Stripe subscription into the shape buildSubscriptionPatch wants.
+ *
+ *  status goes through the ONE shared vocabulary (lib/billing/stripe-status.ts)
+ *  that the vendor billing path already uses. It used to be passed through RAW —
+ *  `status: s.status` — and Stripe's spellings ('canceled' with one L, 'unpaid',
+ *  'incomplete', 'incomplete_expired') are not values subscriptions.status can
+ *  hold. The CHECK rejected each one, the discarded update left the row on its
+ *  previous 'active', and the paywall never fired for a cancelled tenant. */
 function normalizeSub(s: Stripe.Subscription): NormalizedStripeSub {
   const a = s as any
   return {
     stripeSubscriptionId: s.id,
     stripeCustomerId: (s.customer as string) ?? null,
     tierId: s.metadata?.tier_id ?? null,
-    status: s.status,
+    status: toStoredSubscriptionStatus(s.status),
     currentPeriodStart: a.current_period_start ?? null,
     currentPeriodEnd: a.current_period_end ?? null,
     trialEnd: s.trial_end ?? null,

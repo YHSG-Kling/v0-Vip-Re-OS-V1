@@ -23,26 +23,39 @@ export interface BillingSubRow {
   trial_end: string | null
 }
 
-// subscriptions.status admits exactly: active | past_due | cancelled | trialing |
-// paused. 'unpaid', 'incomplete_expired' and the American 'canceled' are values
-// this column cannot hold — they rode along inertly with the three real ones.
-// Kept OUT rather than kept "just in case": a set that lists impossible states
-// reads as though they are reachable.
-const BLOCKING_STATUSES = new Set(["past_due", "cancelled", "paused"])
-const ACTIVE_STATUSES = new Set(["active", "trialing"])
+// CLASSIFY THROUGH THE ONE SHARED VOCABULARY, not a second local set.
+//
+// This used to hold its own literal set — `["past_due", "cancelled", "paused"]` —
+// justified by the fact that subscriptions.status is CHECK-constrained to those
+// spellings and so 'canceled' (Stripe's one-L spelling) "cannot happen". The
+// premise was right about the column and wrong about the risk: the billing
+// webhook was writing Stripe's RAW status into that column, the CHECK rejected
+// every foreign spelling, the discarded update left the row on its previous
+// 'active', and this function then read 'active' and let a cancelled tenant
+// through. Reasoning from what a column ADMITS, when the writer was never
+// checked, is how a paywall ends up never firing.
+//
+// The writer is fixed (lib/billing/stripe-status.ts toStoredSubscriptionStatus,
+// wired into the webhook), but this stays defensive on purpose: it is the last
+// gate before someone gets the product for free, legacy rows predate the fix,
+// and normalizeStripeStatus is the same vocabulary the vendor billing path
+// already classifies with. One vocabulary, both paths, every spelling.
+import { normalizeStripeStatus } from "./stripe-status"
 
 /** PURE: classify a brokerage's access from its subscription row + now. */
 export function resolveBillingAccess(sub: BillingSubRow | null, now: Date = new Date()): BillingAccess {
   if (!sub) return { state: "none", blocked: false, trialDaysLeft: null, reason: "no_subscription" }
 
   const status = (sub.status ?? "").toLowerCase()
+  const canonical = normalizeStripeStatus(status)
 
-  if (BLOCKING_STATUSES.has(status)) {
-    return { state: status === "past_due" || status === "unpaid" ? "past_due" : "expired", blocked: true, trialDaysLeft: null, reason: `status_${status}` }
+  // canceled (either spelling) / past_due / unpaid / incomplete / paused all stop access.
+  if (canonical === "past_due" || canonical === "canceled" || canonical === "incomplete" || canonical === "paused") {
+    return { state: canonical === "past_due" ? "past_due" : "expired", blocked: true, trialDaysLeft: null, reason: `status_${status}` }
   }
 
   // A trial that has run out is a hard paywall — this is the core enforcement.
-  if (status === "trialing" && sub.trial_end) {
+  if (canonical === "trialing" && sub.trial_end) {
     const end = Date.parse(sub.trial_end)
     if (Number.isFinite(end)) {
       const msLeft = end - now.getTime()
@@ -51,11 +64,14 @@ export function resolveBillingAccess(sub: BillingSubRow | null, now: Date = new 
     }
   }
 
-  if (ACTIVE_STATUSES.has(status)) {
-    return { state: status === "trialing" ? "trialing" : "active", blocked: false, trialDaysLeft: null, reason: `status_${status}` }
+  if (canonical === "active" || canonical === "trialing") {
+    return { state: canonical === "trialing" ? "trialing" : "active", blocked: false, trialDaysLeft: null, reason: `status_${status}` }
   }
 
-  // Unknown status → don't lock out (fail-open), but surface it.
+  // Unknown status → don't lock out (fail-open), but surface it. Deliberate:
+  // a status nobody recognises must never lock out a paying customer. Every
+  // status Stripe actually emits is classified above, so reaching here means a
+  // genuinely new value, and the reason string carries it for the operator.
   return { state: "none", blocked: false, trialDaysLeft: null, reason: `status_unknown_${status || "empty"}` }
 }
 

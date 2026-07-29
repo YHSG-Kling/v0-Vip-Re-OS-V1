@@ -65,12 +65,21 @@ async function main() {
     /loadBillingAccess/.test(onboardingSrc) && /billing_required/.test(onboardingSrc) && /\/dashboard\/admin\/billing/.test(onboardingSrc))
   check("gate exempts platform staff + fails open on error",
     /\["superadmin", "support"\]\.includes\(userType\)/.test(onboardingSrc) && /fail-open/.test(onboardingSrc))
+  // These two used to grep for an inline from("subscription_tiers") in page.tsx
+  // and a priceByTier[t.id] lookup in the form. Both were refactored into
+  // lib/platform/public-tiers.ts (loadPublicTiers + formatTierPrice, shared with
+  // /pricing) and the assertions kept failing on code that was CORRECT — they
+  // pinned the shape of the implementation, not the promise. The promise is:
+  // prices come from the DB and no dollar figure is written into the page.
   const pageSrc = readFileSync(join(process.cwd(), "app/signup/page.tsx"), "utf8")
+  const tiersSrc = readFileSync(join(process.cwd(), "lib/platform/public-tiers.ts"), "utf8")
   check("signup page loads prices from subscription_tiers (source of truth)",
-    /from\("subscription_tiers"\)/.test(pageSrc) && /priceByTier/.test(pageSrc))
+    /loadPublicTiers/.test(pageSrc) && /from\("subscription_tiers"\)/.test(tiersSrc)
+    && /monthly_price_cents/.test(tiersSrc))
   const formSrc = readFileSync(join(process.cwd(), "app/signup/signup-form.tsx"), "utf8")
-  check("signup form renders DB prices (priceByTier), NO hardcoded price strings",
-    /priceByTier\[t\.id\]/.test(formSrc) && !/price:\s*"\$/.test(formSrc))
+  check("signup form renders DB prices, NO hardcoded price strings",
+    /monthlyCents/.test(formSrc) && !/price:\s*"\$/.test(formSrc)
+    && !/\$\d{2,}/.test(formSrc))
 
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&
     !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
