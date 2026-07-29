@@ -34,6 +34,23 @@
  * hard way. A fixed-size window spills into the following query and mis-attributes its payload,
  * which matters doubly here because names like `status` and `type` exist on hundreds of tables.
  *
+ * …AND AT THE END OF THE ENCLOSING STATEMENT. Cutting only at the next `.from(` is not enough
+ * when the following code never calls `.from(` literally. lib/managers/cross-referral.ts is the
+ * case that proved it: a `.from("manager_signals")` chain is followed by a probe TABLE whose
+ * table name lives in a `table:` property and whose filters are `q.eq(...)` lambdas, so the
+ * window ran on and attributed `status: "pending"` (a real value for `offers`) to
+ * manager_signals, which admits only open|consumed|expired. That produced a BASELINED entry for
+ * code that was never wrong — and a false entry in a shrink-only ratchet is worse than no
+ * entry, because it can never be burned down and it teaches the reader to distrust the list.
+ *
+ * The statement boundary is indentation-based: the chain ends at the first line indented no
+ * deeper than the line holding the `.from(`, which does not itself continue the expression
+ * (a continuation starts with `.`, `)`, `}`, `]`, `,`, `?` or `:`). TRADE-OFF, stated plainly:
+ * a filter appended to a query variable in a LATER statement (`let q = svc.from(...)` then
+ * `q = q.eq("status", "x")`) now falls outside the window. That is a real blind spot, accepted
+ * because precision is what makes this ratchet worth reading; the alternative is a baseline
+ * padded with entries nobody can act on.
+ *
  * Pre-existing violations are baselined and may only SHRINK. A new one fails CI.
  * Run UPDATE_CHECK_VOCAB_BASELINE=1 after deliberately retiring a baselined entry.
  */
@@ -121,6 +138,84 @@ export function mutationArgs(win: string): string[] {
   return out
 }
 
+/** PURE — leading-whitespace width of the line containing `index`. */
+export function indentOfLineAt(src: string, index: number): number {
+  const start = src.lastIndexOf("\n", index) + 1
+  let n = 0
+  while (start + n < src.length && (src[start + n] === " " || src[start + n] === "\t")) n++
+  return n
+}
+
+/**
+ * PURE — how far into `win` the `.from()` chain's own statement extends.
+ *
+ * `win` begins immediately after `.from("t")`. The statement continues while
+ * lines are continuations of it; it ENDS at the first line indented no deeper
+ * than `baseIndent` that STARTS a new statement. Blank lines are skipped rather
+ * than treated as terminators, so a chain broken up for readability still scans
+ * whole.
+ *
+ * "Starts a new statement" is deliberately narrow: an identifier/keyword or an
+ * opening brace. Everything else — `.`, `)`, `}`, `]`, `,`, a quote or backtick,
+ * an operator — continues the expression. The narrow rule matters: a chain that
+ * closes a multi-line `.select(\`…\`)` puts a lone backtick at the SAME
+ * indentation as the `.from(`, and treating that as a statement start cut the
+ * window in half, hiding a real `.eq("period_type", "monthly")` further down the
+ * same chain.
+ */
+export function statementEnd(win: string, baseIndent: number): number {
+  let offset = 0
+  const lines = win.split("\n")
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li]
+    // Line 0 is the tail of the .from() line itself — never a terminator.
+    if (li > 0 && line.trim() !== "") {
+      let indent = 0
+      while (indent < line.length && (line[indent] === " " || line[indent] === "\t")) indent++
+      const first = line[indent]
+      const startsStatement = first !== undefined && (/[A-Za-z_$]/.test(first) || first === "{")
+      if (indent <= baseIndent && startsStatement) return offset
+    }
+    offset += line.length + 1
+  }
+  return win.length
+}
+
+/**
+ * PURE — the variable a `.from()` chain was assigned to, if any.
+ * `let query = supabase\n  .from("contacts")` → "query".
+ */
+export function assignedVarBefore(src: string, fromIndex: number): string | null {
+  const back = src.slice(Math.max(0, fromIndex - 200), fromIndex)
+  const m = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*[^=;]*$/.exec(back)
+  return m?.[1] ?? null
+}
+
+/**
+ * PURE — lines AFTER the statement that keep building the same query variable.
+ *
+ * This is the other half of the window. Query builders are routinely assigned
+ * and then extended conditionally:
+ *
+ *   let query = supabase.from("contacts").select(...)
+ *   if (kind === "showing_feedback") query = query.eq("buyer_stage", "toured")
+ *
+ * The `.eq` lives in a LATER statement, so a purely statement-scoped window
+ * would miss it — and that exact call is a real defect (the column's ladder says
+ * BUYER_TOURING, so the filter matches nothing and the AI-ISA showing-feedback
+ * campaign finds no one). Following the variable keeps that finding while still
+ * excluding unrelated code that merely sits nearby.
+ */
+export function variableContinuations(tail: string, varName: string): string {
+  const re = new RegExp(`(?:\\b${varName}\\s*=\\s*${varName}\\s*\\.)|(?:\\b${varName}\\s*\\.(?:eq|neq|in|or|insert|upsert|update)\\s*\\()`)
+  const out: string[] = []
+  for (const line of tail.split("\n")) {
+    if (/\.from\(/.test(line)) break
+    if (re.test(line)) out.push(line)
+  }
+  return out.join("\n")
+}
+
 /** PURE — exported so the checks below can exercise it directly. */
 export function scanCheckVocabulary(rawSrc: string, file: string): VocabViolation[] {
   const src = stripComments(rawSrc)
@@ -133,7 +228,12 @@ export function scanCheckVocabulary(rawSrc: string, file: string): VocabViolatio
       while (i !== -1) {
         const rest = src.slice(i + needle.length)
         const nextFrom = rest.search(/\.from\(/)
-        const win = nextFrom >= 0 ? rest.slice(0, nextFrom) : rest.slice(0, 1500)
+        const byFrom = nextFrom >= 0 ? rest.slice(0, nextFrom) : rest.slice(0, 1500)
+        const end = statementEnd(byFrom, indentOfLineAt(src, i))
+        const varName = assignedVarBefore(src, i)
+        const win = varName
+          ? byFrom.slice(0, end) + "\n" + variableContinuations(byFrom.slice(end), varName)
+          : byFrom.slice(0, end)
 
         for (const [column, allowed] of Object.entries(columns)) {
           const ok = new Set(allowed)

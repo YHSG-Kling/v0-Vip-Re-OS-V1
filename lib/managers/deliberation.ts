@@ -54,6 +54,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { AD_CAMPAIGN_RUNNING_STATUSES } from "@/lib/integrations/credential-platforms"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 import {
   MANAGERS, MANAGER_COLLABORATIONS, type ManagerKey, type CollaborationDomain,
@@ -446,7 +447,7 @@ const loadAdsManagerFacts: FactLoader = async (svc, ctx) => {
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
   const { data: campaigns } = await svc.from("ad_campaigns")
     .select("id, campaign_name, status, daily_budget")
-    .eq("brokerage_id", ctx.brokerageId).in("status", ["live", "active"]).limit(10)
+    .eq("brokerage_id", ctx.brokerageId).in("status", [...AD_CAMPAIGN_RUNNING_STATUSES]).limit(10)
   const facts: string[] = [], citations: string[] = []
   for (const c of (campaigns ?? []) as any[]) {
     const { data: perf } = await svc.from("ad_performance")

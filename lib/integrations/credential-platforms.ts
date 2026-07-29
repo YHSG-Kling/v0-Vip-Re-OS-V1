@@ -101,3 +101,18 @@ export const AD_PLATFORMS_WITHOUT_CREDENTIALS = ["tiktok", "vibe_ctv"] as const
 export function isConnectableAdPlatform(v: string | null | undefined): boolean {
   return !!v && (CONNECTABLE_AD_PLATFORMS as readonly string[]).includes(v)
 }
+
+/** ad_campaigns.status — the full ladder. */
+export const AD_CAMPAIGN_STATUSES = [
+  "draft", "pending_review", "approved", "launching", "live", "paused", "ended", "failed",
+] as const
+export type AdCampaignStatus = (typeof AD_CAMPAIGN_STATUSES)[number]
+
+/**
+ * Campaigns that are spending, or about to. Two manager modules asked for
+ * `["live", "active"]` — 'active' is not a value this column admits, so it was
+ * dead weight riding along with a real one. Harmless in an .in(), and exactly
+ * the sort of literal the next reader copies. 'launching' is included because a
+ * campaign mid-launch is committed spend the managers must see.
+ */
+export const AD_CAMPAIGN_RUNNING_STATUSES = ["launching", "live"] as const satisfies readonly AdCampaignStatus[]

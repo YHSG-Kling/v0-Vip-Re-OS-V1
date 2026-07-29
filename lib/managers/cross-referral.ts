@@ -56,6 +56,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { AD_CAMPAIGN_RUNNING_STATUSES } from "@/lib/integrations/credential-platforms"
 import {
   BLOG_PENDING_PUBLISH_STATUS,
   NEWSLETTER_PENDING_APPROVAL_STATUSES,
@@ -283,7 +284,7 @@ export async function publishLeadQualityReferrals(client?: Svc): Promise<SlaRefe
   try {
     const { data: camps } = await svc.from("ad_campaigns")
       .select("id, brokerage_id, campaign_name, status")
-      .in("status", ["live", "active"]).limit(500)
+      .in("status", [...AD_CAMPAIGN_RUNNING_STATUSES]).limit(500)
     const byBrokerage = new Map<string, Array<{ id: string; campaign_name: string | null }>>()
     for (const c of (camps ?? []) as Array<{ id: string; brokerage_id: string | null; campaign_name: string | null }>) {
       if (!c.brokerage_id) continue

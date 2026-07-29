@@ -17,10 +17,16 @@
  *           lifetime_customer_touchpoints
  *   sms   — isa_outreach_log, marketing_campaign_touchpoints,
  *           lifetime_customer_touchpoints
- *   phone — isa_outreach_log
- *   mail  — direct_mail_recipients, marketing_campaign_touchpoints,
+ *   phone — isa_outreach_log ('voice'), marketing_campaign_touchpoints ('phone'),
+ *           lifetime_customer_touchpoints ('call')
+ *   mail  — direct_mail_recipients, marketing_campaign_touchpoints ('direct_mail'),
+ *           lifetime_customer_touchpoints ('direct_mail')
+ *   video — isa_outreach_log, marketing_campaign_touchpoints,
  *           lifetime_customer_touchpoints
- *   video — marketing_campaign_touchpoints, lifetime_customer_touchpoints
+ *
+ * Each ledger spells its channels differently under its own CHECK; ./lead-channel
+ * owns the per-table translation. Filtering with the ENGINE's word returned zero
+ * rows on phone and mail, which an over-touch cap reads as a permission.
  *
  * Default policy (per channel, per contact, rolling window):
  *   email — 3 sends / 14 days
@@ -34,7 +40,13 @@
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { leadLogChannel, type DeconflictChannel } from "./lead-channel"
+import {
+  leadLogChannel,
+  sourceChannel,
+  TOUCH_SOURCE_TABLES,
+  type DeconflictChannel,
+  type TouchSourceTable,
+} from "./lead-channel"
 import { computeLearnedCadence, getEngagementSignals } from "./cadence-policy"
 
 // Re-exported so existing importers of "@/lib/kernel/deconflict" keep working.
@@ -100,53 +112,73 @@ async function safeCount(p: PromiseLike<{ count: number | null }>): Promise<numb
  * Per-channel touch counts. Each helper queries one source table; the engine
  * sums them. Best-effort — a missing/empty source returns 0 rather than throwing.
  */
-async function countEmailTouches(svc: Svc, brokerageId: string, contactId: string, since: string): Promise<number> {
+/**
+ * Count one ledger's touches on one engine channel, translating the engine's
+ * channel name into THAT TABLE's vocabulary (see ./lead-channel). Returns 0
+ * without querying when the table has no lane for the channel — an honest zero
+ * rather than a filter that cannot match.
+ *
+ * Every per-channel counter below routes through this. Previously each wrote its
+ * own `.eq("channel", <engine word>)`, and for `phone` and `mail` that word is
+ * not one the column admits: the count came back 0 and the cap read it as
+ * "nothing sent yet", which on an over-touch gate is a permission, not an error.
+ */
+async function countLedger(
+  svc: Svc,
+  table: TouchSourceTable,
+  channel: DeconflictChannel,
+  brokerageId: string,
+  contactId: string,
+  since: string,
+): Promise<number> {
+  const value = sourceChannel(table, channel)
+  if (value === null) return 0
+  const tsCol = table === "lifetime_customer_touchpoints" ? "created_at" : "sent_at"
+  return safeCount(svc.from(table).select("id", { count: "exact", head: true })
+    .eq("brokerage_id", brokerageId).eq("contact_id", contactId)
+    .eq("channel", value).gte(tsCol, since))
+}
+
+async function countLedgerTouches(
+  svc: Svc, channel: DeconflictChannel, brokerageId: string, contactId: string, since: string,
+): Promise<number> {
   let n = 0
-  n += await safeCount(svc.from("email_sends").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).gte("sent_at", since))
-  n += await safeCount(svc.from("isa_outreach_log").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "email").gte("sent_at", since))
-  n += await safeCount(svc.from("marketing_campaign_touchpoints").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "email").gte("sent_at", since))
-  n += await safeCount(svc.from("lifetime_customer_touchpoints").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "email").gte("created_at", since))
+  for (const table of TOUCH_SOURCE_TABLES) {
+    n += await countLedger(svc, table, channel, brokerageId, contactId, since)
+  }
   return n
+}
+
+async function countEmailTouches(svc: Svc, brokerageId: string, contactId: string, since: string): Promise<number> {
+  // email_sends is channel-implicit (the whole table is email), so it is counted
+  // directly rather than through the channel mapper.
+  const direct = await safeCount(svc.from("email_sends").select("id", { count: "exact", head: true })
+    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).gte("sent_at", since))
+  return direct + await countLedgerTouches(svc, "email", brokerageId, contactId, since)
 }
 
 async function countSmsTouches(svc: Svc, brokerageId: string, contactId: string, since: string): Promise<number> {
-  let n = 0
-  n += await safeCount(svc.from("isa_outreach_log").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "sms").gte("sent_at", since))
-  n += await safeCount(svc.from("marketing_campaign_touchpoints").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "sms").gte("sent_at", since))
-  n += await safeCount(svc.from("lifetime_customer_touchpoints").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "sms").gte("created_at", since))
-  return n
+  return countLedgerTouches(svc, "sms", brokerageId, contactId, since)
 }
 
 async function countPhoneTouches(svc: Svc, brokerageId: string, contactId: string, since: string): Promise<number> {
-  return safeCount(svc.from("isa_outreach_log").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "phone").gte("sent_at", since))
+  // Was isa_outreach_log ONLY, filtered on 'phone' — a value that column does not
+  // admit (it says 'voice'). So this returned 0 for every contact, forever, and
+  // the "1 call / 7 days" policy could never fire. It also never looked at
+  // lifetime_customer_touchpoints, whose word is 'call'. Both fixed by routing
+  // through the per-table mapper.
+  return countLedgerTouches(svc, "phone", brokerageId, contactId, since)
 }
 
 async function countMailTouches(svc: Svc, brokerageId: string, contactId: string, since: string): Promise<number> {
-  let n = 0
-  n += await safeCount(svc.from("direct_mail_recipients").select("id", { count: "exact", head: true })
+  // direct_mail_recipients is channel-implicit (the whole table is mail).
+  const direct = await safeCount(svc.from("direct_mail_recipients").select("id", { count: "exact", head: true })
     .eq("brokerage_id", brokerageId).eq("contact_id", contactId).gte("mailed_at", since))
-  n += await safeCount(svc.from("marketing_campaign_touchpoints").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "mail").gte("sent_at", since))
-  n += await safeCount(svc.from("lifetime_customer_touchpoints").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "mail").gte("created_at", since))
-  return n
+  return direct + await countLedgerTouches(svc, "mail", brokerageId, contactId, since)
 }
 
 async function countVideoTouches(svc: Svc, brokerageId: string, contactId: string, since: string): Promise<number> {
-  let n = 0
-  n += await safeCount(svc.from("marketing_campaign_touchpoints").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "video").gte("sent_at", since))
-  n += await safeCount(svc.from("lifetime_customer_touchpoints").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "video").gte("created_at", since))
-  return n
+  return countLedgerTouches(svc, "video", brokerageId, contactId, since)
 }
 
 // ─── Broadcast (1:many) frequency cap ───────────────────────────────────────

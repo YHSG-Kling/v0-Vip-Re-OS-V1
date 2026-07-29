@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { buildCallContext } from "@/lib/ai-isa/build-call-context"
+import { BUYER_SHOWING_FEEDBACK_STAGE } from "@/lib/contacts/buyer-stage"
 
 /**
  * AI Inside Sales Agent (ISA) Application Service
@@ -31,7 +32,9 @@ export async function launchAIISACampaignService(params: {
       .eq("status", "nurture")
       .lte("last_contacted_at", new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString())
   } else if (campaignType === "showing_feedback") {
-    query = query.eq("buyer_stage", "toured")
+    // Was 'toured' — a value contacts.buyer_stage has never admitted (the ladder
+    // says BUYER_TOURING), so this campaign never matched a single contact.
+    query = query.eq("buyer_stage", BUYER_SHOWING_FEEDBACK_STAGE)
   }
 
   const { data: contacts } = await query

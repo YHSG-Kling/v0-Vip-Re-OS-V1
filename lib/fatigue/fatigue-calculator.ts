@@ -1,6 +1,7 @@
 "use server"
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { BUYER_ACTIVE_STAGES } from "@/lib/contacts/buyer-stage"
 import { generateText }        from "ai"
 import { KernelEvent }         from "@/lib/kernel/events"
 
@@ -287,11 +288,12 @@ export async function calculateFatigue(
 
 // ─── BATCH CALCULATOR ────────────────────────────────────────────────────────
 
-const ACTIVE_BUYER_STAGES = [
-  "prospect", "pre_approval_pending", "financially_verified",
-  "search_configured", "searching", "touring", "tour_completed",
-  "offer_strategy", "offer_submitted", "buyer_under_contract",
-]
+// Was ten lowercase stage names — prospect, pre_approval_pending, touring, … —
+// and contacts.buyer_stage admits NONE of them (the ladder is BUYER_*). The
+// batch sweep below selected on them, so it has never processed a contact. The
+// list also lived in this local const, which is why the CHECK-vocabulary guard
+// (inline literals only) could not see it; it now comes from the shared ladder.
+const ACTIVE_BUYER_STAGES = BUYER_ACTIVE_STAGES
 
 export async function calculateAllBuyerFatigue(
   brokerageId?: string
