@@ -51,8 +51,21 @@
  * because precision is what makes this ratchet worth reading; the alternative is a baseline
  * padded with entries nobody can act on.
  *
- * Pre-existing violations are baselined and may only SHRINK. A new one fails CI.
- * Run UPDATE_CHECK_VOCAB_BASELINE=1 after deliberately retiring a baselined entry.
+ * THE BASELINE IS NOW EMPTY — this is a ZERO-BASELINE INVARIANT, not a debt ratchet.
+ *
+ * It began at 100 entries. Burning it down turned up, among others: an AI review
+ * automation that persisted nothing, a de-confliction cap that could not count phone or
+ * mail touches, a client portal that dropped envelopes off a contact's to-sign list the
+ * moment they opened one, a voice call that never closed, five finished integrations that
+ * could not store a credential, a CHECK constraint that (via a NULL array element)
+ * enforced nothing at all, and nineteen INSERT/UPDATE payloads whose rows were silently
+ * discarded. None of them threw. Every one looked like "no data yet".
+ *
+ * Because the list is empty, ANY new finding fails CI — which is the point. Do not
+ * re-baseline to make a failure go away: the value the code names is one the database
+ * will not accept, and the row or the query is already lost. Fix the literal, or widen
+ * the column with a migration when the state is genuinely new and something can write it.
+ * UPDATE_CHECK_VOCAB_BASELINE=1 still exists for a deliberate, reviewed schema change.
  */
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from "node:fs"
 import { dirname, join, relative } from "node:path"
@@ -238,6 +251,12 @@ export function scanCheckVocabulary(rawSrc: string, file: string): VocabViolatio
         for (const [column, allowed] of Object.entries(columns)) {
           const ok = new Set(allowed)
           const flag = (value: string, kind: "write" | "filter") => {
+            // A `${...}` interpolation is a VARIABLE, not a literal — the guard's
+            // own contract is that only literals are checkable. It was reporting
+            // `deal_type.eq.${ctx.dealType}` as an unadmitted value, on a field
+            // TypeScript already narrows to exactly buyer|seller|dual. A false
+            // entry in a shrink-only ratchet can never be burned down.
+            if (value.includes("${")) return
             if (!ok.has(value)) out.push({ file, table, column, value, kind })
           }
 

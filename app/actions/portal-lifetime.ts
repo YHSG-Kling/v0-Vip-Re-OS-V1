@@ -774,7 +774,8 @@ export async function getMarketUpdates(contactId: string) {
     .select("*")
     .eq("contact_id", contactId)
     .eq("brokerage_id", access.brokerageId)
-    .in("touchpoint_type", ["market_update", "anniversary"])
+    // lifetime_customer_touchpoints has no 'anniversary' — it says home_anniversary.
+    .in("touchpoint_type", ["market_update"])
     .order("sent_date", { ascending: false })
 
   return {

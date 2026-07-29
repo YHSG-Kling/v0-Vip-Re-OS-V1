@@ -163,6 +163,63 @@ console.log("\n── the three 'unknown' writes became NULL, not a second spell
     !/source:\s*"voice_assistant"/.test(src("app/api/internal/voice-command/route.ts")))
 }
 
+console.log("\n── the last eleven: seven DEAD QUERIES, three riders, one false positive ──")
+{
+  // An .eq() on an impossible value returns ZERO rows — a dead query, not a
+  // harmless rider. Seven of the final eleven were exactly that.
+  const dead: Array<[string, string, string, string, string]> = [
+    ["app/actions/assistant.ts", "video_scripts_library", "approval_status", "pending", "pending_review"],
+    ["app/actions/financials.ts", "agent_earnings", "period_type", "annual", "ytd"],
+    ["app/api/internal/remotion/render-just-listed/route.ts", "listing_media", "media_type", "image", "photo"],
+    ["app/dashboard/financials/brokerage/page.tsx", "team_earnings", "period_type", "monthly", "mtd"],
+    ["lib/intelligence/manager-standup.ts", "remotion_composition_renders", "render_status", "completed", "succeeded"],
+    ["lib/onboarding/certification-engine.ts", "onboarding_steps", "category", "platform_tour", "system_setup"],
+  ]
+  for (const [file, table, col, oldV, newV] of dead) {
+    const live = vocab(table, col)
+    check(`${table}.${col}: '${oldV}' matched nothing, '${newV}' is admitted`,
+      live.length > 0 && !live.includes(oldV) && live.includes(newV))
+    check(`${file}: filters ${col} on '${newV}'`,
+      new RegExp(`["']${col}["'],\\s*["']${newV}["']`).test(src(file)))
+  }
+
+  // vendor_invoices.billed_to — the code was AHEAD of the schema, not drifted:
+  // its own comment cited a migration that never landed. m300 finished it.
+  check("vendor_invoices.billed_to admits 'vendor' (m300)",
+    vocab("vendor_invoices", "billed_to").includes("vendor"))
+  check("…alongside the two it always had",
+    ["brokerage", "contact"].every((v) => vocab("vendor_invoices", "billed_to").includes(v)))
+
+  // The three riders: an impossible value sitting next to a real one in an .in().
+  check("lifetime_customer_touchpoints has no 'anniversary' (it says home_anniversary)",
+    !vocab("lifetime_customer_touchpoints", "touchpoint_type").includes("anniversary") &&
+    vocab("lifetime_customer_touchpoints", "touchpoint_type").includes("home_anniversary"))
+  check("open_house_events has no 'confirmed'",
+    !vocab("open_house_events", "status").includes("confirmed"))
+  check("users has no 'team_manager'",
+    !vocab("users", "user_type").includes("team_manager") &&
+    vocab("users", "user_type").includes("team_lead"))
+  for (const [f, gone] of [
+    ["app/actions/portal-lifetime.ts", "anniversary"],
+    ["app/api/cron/open-house-reminder/route.ts", "confirmed"],
+    ["app/dashboard/team/page.tsx", "team_manager"],
+  ] as Array<[string, string]>) {
+    check(`${f}: the rider '${gone}' is gone`, !new RegExp(`["']${gone}["']`).test(src(f)))
+  }
+
+  // brokerage_earnings and training_videos were CORRECT all along — a blanket
+  // replace-all briefly broke them and the guard caught it. Pinned so a future
+  // sweep does not "fix" them onto a sibling table's vocabulary.
+  check("brokerage_earnings.period_type keeps its OWN vocabulary",
+    ["monthly", "quarterly", "annual"].every((v) => vocab("brokerage_earnings", "period_type").includes(v)))
+  check("…which is NOT agent_earnings' vocabulary",
+    !vocab("brokerage_earnings", "period_type").includes("mtd") &&
+    vocab("agent_earnings", "period_type").includes("mtd"))
+  check("training_videos.category really does admit 'platform_tour'",
+    vocab("training_videos", "category").includes("platform_tour") &&
+    !vocab("onboarding_steps", "category").includes("platform_tour"))
+}
+
 console.log("\n──────────────────────────────────────────────────")
 if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
 console.log(` RESULT: ${pass} passed, ${fail} failed`)

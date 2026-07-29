@@ -60,7 +60,7 @@ export default async function TeamDashboard() {
   if (!userData?.brokerage_id) redirect("/dashboard/onboarding")
 
   const brokerageId = userData.brokerage_id
-  const isTeamLead = ["team_lead", "team_manager", "broker", "admin", "superadmin"].includes(
+  const isTeamLead = ["team_lead", "broker", "admin", "superadmin"].includes(
     userData.user_type ?? ""
   )
 
@@ -90,7 +90,7 @@ export default async function TeamDashboard() {
       .from("users")
       .select("id, first_name, last_name, email, user_type, created_at")
       .eq("brokerage_id", brokerageId)
-      .in("user_type", ["agent", "broker", "admin", "team_lead", "team_manager", "tc", "isa"])
+      .in("user_type", ["agent", "broker", "admin", "team_lead", "tc", "isa"])
       .order("first_name"),
 
     // 2. Teams in this brokerage

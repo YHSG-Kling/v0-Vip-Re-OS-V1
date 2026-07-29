@@ -1517,7 +1517,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["accepted", "declined", "expired", "pending", "revoked"],
   },
   vendor_invoices: {
-    billed_to: ["brokerage", "contact"],
+    billed_to: ["brokerage", "contact", "vendor"],
     status: ["cancelled", "disputed", "draft", "overdue", "paid", "submitted", "viewed"],
   },
   vendor_jobs: {

@@ -432,7 +432,7 @@ async function getDashboardSuggestions(agentId: string) {
     .from("video_scripts_library")
     .select("*", { count: "exact" })
     .eq("agent_id", agentId)
-    .eq("approval_status", "pending")
+    .eq("approval_status", "pending_review")  // the column has no bare 'pending'
 
   if (videoCount && videoCount > 0) {
     suggestions.push({

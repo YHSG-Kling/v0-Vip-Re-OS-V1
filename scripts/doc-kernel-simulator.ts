@@ -37,6 +37,22 @@ function check(name: string, cond: boolean, detail?: string) {
   else { failed++; failures.push(name); console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`) }
 }
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
+/** Text of each `.from("<table>")` chain, cut at the next `.from(` — so an
+ *  assertion about one table cannot be tripped by a sibling table's query in the
+ *  same file. */
+function fromWindows(text: string, table: string): string[] {
+  const out: string[] = []
+  const needle = `.from("${table}")`
+  let i = text.indexOf(needle)
+  while (i !== -1) {
+    const rest = text.slice(i + needle.length)
+    const next = rest.search(/\.from\(/)
+    out.push(next >= 0 ? rest.slice(0, next) : rest.slice(0, 1500))
+    i = text.indexOf(needle, i + 1)
+  }
+  return out
+}
+
 const src = (p: string) => (existsSync(join(ROOT, p)) ? readFileSync(join(ROOT, p), "utf-8") : "")
 
 async function main() {
@@ -1896,7 +1912,13 @@ async function main() {
       check("WRITER-LESS BURN-DOWN ROUND 2 (approved campaigns 1+2). FINANCIALS: the BROKER'S MONEY PAGE read brokerage_earnings (mtd/ytd KPIs, 12-month trend, forecast proxy) and brokerage_p_l — writer-less, so every broker's P&L dashboard rendered zeros forever. runBrokerageEarningsRollup now rides the nightly brokerage-pl-rollup cron, folding the SAME canonical agent_commissions source as the per-agent and team snapshots so all three altitudes reconcile exactly; operating-expense lines stay honest-NULL (no ledger source — never fabricated) and net_profit is the provable brokerage-side number. LIVE-FIRE CAUGHT A DOUBLE-SIDED VOCABULARY BUG: brokerage_earnings.period_type CHECK admits monthly/quarterly/annual, but the PAGE read 'mtd'/'ytd' — values that can never exist (the reader itself was phantom-vocabulary). Writer writes monthly/annual; all three reader files fixed to match. Delete-then-insert per tenant (pass-10 rule: no onConflict without a real unique). PRESETS: seven campaign-bundle preset shelves (email/sms/voicedrop/social/portal-push/podcast/ad-retarget) were READ by the bundle dispatcher with NO writer — upsertCampaignPreset is the ONE canonical writer for all seven channels, mirroring the direct-mail preset discipline exactly (tenant-guarded, scope-anchored — scope_id NOT-NULL live-caught, compliance-GATED at save time on every content-carrying channel via evaluateOutbound, field whitelist so caller input never spreads into rows). Sweep learns VARIABLE_TABLE_WRITERS (auditable exemptions naming the writer module). Baseline 54 → 45; remaining campaigns: legacy twins + ingress-expected",
         src("lib/finance/brokerage-earnings-writer.ts").includes("runBrokerageEarningsRollup")
         && src("lib/finance/brokerage-earnings-writer.ts").includes('period_type: "monthly"')
-        && !src("app/dashboard/financials/brokerage/page.tsx").includes('"mtd"')
+        // Scoped to the brokerage_earnings CHAINS, not the whole file: the same
+        // page also reads team_earnings, whose vocabulary really is
+        // (mtd|ytd|all_time). A blanket !includes('"mtd"') here forbade a value
+        // that is correct for the sibling table — and it fired the moment
+        // team_earnings was fixed off its own phantom 'monthly'.
+        && !fromWindows(src("app/dashboard/financials/brokerage/page.tsx"), "brokerage_earnings")
+             .some((w) => w.includes('"mtd"') || w.includes('"ytd"'))
         && src("app/dashboard/financials/brokerage/page.tsx").includes('.eq("period_type", "monthly")')
         && src("app/api/cron/brokerage-pl-rollup/route.ts").includes("runBrokerageEarningsRollup")
         && src("app/actions/campaign-presets.ts").includes("CHANNEL_TABLE")

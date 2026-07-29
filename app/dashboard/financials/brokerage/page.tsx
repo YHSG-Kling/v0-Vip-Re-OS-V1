@@ -124,7 +124,7 @@ export default async function BrokeragePLPage() {
         teams:team_id(id, name)
       `)
       .eq("brokerage_id", profile.brokerage_id)
-      .eq("period_type", "monthly")
+      .eq("period_type", "mtd")
       .order("gross_commission", { ascending: false })
       .then(r => r.data || []),
 

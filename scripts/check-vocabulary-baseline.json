@@ -1,13 +1,1 @@
-[
-  "app/actions/assistant.ts::video_scripts_library.approval_status=pending",
-  "app/actions/financials.ts::agent_earnings.period_type=annual",
-  "app/actions/portal-lifetime.ts::lifetime_customer_touchpoints.touchpoint_type=anniversary",
-  "app/api/cron/open-house-reminder/route.ts::open_house_events.status=confirmed",
-  "app/api/internal/remotion/render-just-listed/route.ts::listing_media.media_type=image",
-  "app/dashboard/financials/brokerage/page.tsx::team_earnings.period_type=monthly",
-  "app/dashboard/team/page.tsx::users.user_type=team_manager",
-  "app/dashboard/vendors/page.tsx::vendor_invoices.billed_to=vendor",
-  "lib/compliance/required-documents.ts::brokerage_required_documents.deal_type=${ctx.dealType}",
-  "lib/intelligence/manager-standup.ts::remotion_composition_renders.render_status=completed",
-  "lib/onboarding/certification-engine.ts::onboarding_steps.category=platform_tour"
-]
+[]

@@ -45,7 +45,7 @@ export async function generateManagerStandup(brokerageId: string, client?: Retur
       supabase.from('listings').select('id', { count: 'exact', head: true })
         .eq('brokerage_id', brokerageId).in('lifecycle_stage', ['MLS_ACTIVE', 'COMING_SOON_ACTIVE', 'SHOWINGS_ACTIVE']),
       supabase.from('remotion_composition_renders').select('id', { count: 'exact', head: true })
-        .eq('brokerage_id', brokerageId).eq('render_status', 'completed').gte('completed_at', since),
+        .eq('brokerage_id', brokerageId).eq('render_status', 'succeeded').gte('completed_at', since),
       supabase.from('property_matches').select('id', { count: 'exact', head: true })
         .eq('brokerage_id', brokerageId).gte('created_at', since),
       // Deal Coordinator — transaction tasks advanced in 24h (workload actually moving).

@@ -314,7 +314,7 @@ async function loadListingFacts(svc: ReturnType<typeof createServiceClient>, lis
   const { data: media } = await svc.from("listing_media")
     .select("file_url, sort_order, is_primary, media_type")
     .eq("listing_id", listingId)
-    .eq("media_type", "image")
+    .eq("media_type", "photo")  // listing_media says 'photo'; 'image' matched nothing, so the just-listed video had no stills
     .order("sort_order", { ascending: true })
     .limit(8)
   const usd = (n: number | null) =>

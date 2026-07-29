@@ -184,7 +184,7 @@ export async function generatePLReport(params: {
         .from("agent_earnings")
         .select("gross_commission, agent_net, total_fees, transaction_count")
         .eq("agent_id", params.agentId)
-        .eq("period_type", "annual")
+        .eq("period_type", "ytd")
         .order("computed_at", { ascending: false })
         .limit(1)
         .maybeSingle()

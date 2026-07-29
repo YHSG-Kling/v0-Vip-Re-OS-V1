@@ -75,12 +75,17 @@ async function checkPlatformFundamentalsEligibility(
   supabase: ReturnType<typeof createServiceClient>,
   missingRequirements: string[]
 ): Promise<CertificationEligibilityResult> {
-  // Requirement 1: All onboarding steps in 'platform_tour' category completed
+  // Requirement 1: all REQUIRED system-setup onboarding steps completed.
+  // This asked for category 'platform_tour', which onboarding_steps.category
+  // does not admit (system_setup|training|practice|compliance|certification).
+  // It matched zero steps, and "all zero of them are done" is vacuously true —
+  // so this requirement never gated anything. 'system_setup' is the bucket the
+  // real setup steps live in.
   const { data: platformTourSteps } = await supabase
     .from('onboarding_steps')
     .select('id, step_key, step_name')
     .or(`brokerage_id.is.null,brokerage_id.eq.${brokerageId}`)
-    .eq('category', 'platform_tour')
+    .eq('category', 'system_setup')
     .eq('required', true)
 
   if (platformTourSteps && platformTourSteps.length > 0) {
