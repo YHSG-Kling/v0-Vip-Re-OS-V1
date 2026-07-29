@@ -3790,3 +3790,44 @@ through a recording fake so the selection *filters* are asserted, not just the o
 
 Vocabulary baseline: **77 → 74**. Chain: **123 simulators**. `tsc --noEmit`: 0.
 `npm run guard`: exit 0.
+
+---
+
+## "No HeyGen" — verified, and what is actually left
+
+Owner directive: the avatar/explainer stack is Remotion + D-ID + ElevenLabs clones, **no
+HeyGen**. 41 files and 150 references mention it, so this looked like a large retirement. It is
+not. Measured:
+
+**There is no live HeyGen egress.** No `api.heygen.com` call, no `HEYGEN_API_KEY`, anywhere in
+`app/` or `lib/`. The four remaining `heygen.com` hits are: two comments in
+`video-generation.ts` recording that the direct calls were removed, one in `provider-posture.ts`
+saying the same, and one legitimate backward-compat check in the training video player
+(`url.includes("heygen.com")`) so legacy training videos already hosted there still *play*.
+That last one is playback of existing assets, not a render path.
+
+Three layers had already been closed by earlier passes:
+
+| layer | state |
+| --- | --- |
+| `resolveVideoProvider` | platform-locked — forces `'did'` even if a stale superadmin override still says `'heygen'` |
+| `provider-posture.ts` | `DECOMMISSIONED_PROVIDERS = { vapi, heygen }` |
+| settings → providers UI | renders "HeyGen is not used; there is no provider to choose" |
+
+**I was wrong twice while checking this, and caught it both times.** First I read
+`EducationEditor.tsx` importing `getHeyGenAvatars` / `createTalkingPhotoVideo` from
+`app/actions/heygen-avatars.ts` and concluded a shipped UI surface bypassed the lock. It does
+not: that file is HeyGen in *name only* — its header states every path resolves D-ID avatars and
+ElevenLabs voices. Then I assumed `generateHeyGenVideo` in `external-services.ts` was the real
+thing; it posts to `DID_API_BASE = "https://api.d-id.com"`.
+
+**Which is precisely the debt that remains.** 24 references are misleading identifiers —
+`generateHeyGenVideo`, `getHeyGenVideoStatus`, `getHeyGenAvatars`, `HeyGenAvatar` — functions
+whose names say HeyGen and whose bodies call D-ID. That is the same failure mode that cost this
+session three separate wrong turns: *a confident name or comment asserting the opposite of what
+the code does*. It misled me twice in five minutes with the source open in front of me.
+
+Filed as its own task rather than bundled here: a pure rename (plus retiring the dead `heygen`
+value from `platform_credentials.platform` and the vendor-governance price tables) touching ~41
+files with zero behaviour change. Worth doing as one reviewable commit, not smuggled into a
+feature change.
