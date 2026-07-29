@@ -3654,3 +3654,73 @@ referenced across 8 modules (`provider-posture`, `kernel/video`, `kernel/marketi
 `video-provider-resolver`, `vendor-policy`, …). Retiring it is a real reader sweep, not a
 one-line vocabulary edit, so it is filed rather than half-done. ElevenLabs needs no credential
 row — it runs off `ELEVENLABS_API_KEY` with voice ids on `agent_voice_profiles.elevenlabs_voice_id`.
+
+---
+
+## The deal ladder belongs to the transaction; the listing is inventory
+
+I got this wrong first and the owner corrected it. My initial read put `under_contract` on
+`listings.status`. It does not go there. Two objects, two ladders:
+
+```
+LISTING   listing signed → coming soon → active → withdrawn / cancelled / off market / sold
+DEAL      under contract → pending → clear to close → closed / sold → funded
+```
+
+The m291 that added `under_contract` to listings was reverted in full — code, migration file,
+and the live CHECK restored to its exact prior definition — before anything was committed.
+
+### transactions (m291)
+
+The column admitted `closing` and none of `pending`, `clear_to_close`, `funded`. So three of the
+five states an agent actually chases could not be stored:
+
+| state | meaning |
+| --- | --- |
+| `pending` | contingencies cleared — off inspection/financing risk |
+| `clear_to_close` | the lender issued CTC — docs to title, figures final |
+| `funded` | the loan disbursed and the money moved |
+
+`closed` and `funded` are not the same day and not the same risk — **the agent is paid at
+funded**, which is exactly why the commission ledger cares about the gap. `closing` is retired:
+it is a scheduling word, not a milestone, and cannot say whether the lender has signed off. The
+one live row on it migrated to `clear_to_close` before the new constraint landed.
+
+**Blast radius — 25 surfaces, not the 5 I first found.** Retiring `closing` made the vocabulary
+guard jump 77 → 97, which is how the other 20 surfaced: the transactions pipeline page, the
+lender portal, capacity guardian, client pulse, partners meeting, fire drills, team query,
+deal-room reel, intelligence report, education delivery, the vendors page, video
+recommendations, the stale-contact detector, lead-assignment capacity, deliberation, and more.
+Every one hand-rolled `["under_contract", "closing"]` or `["active", "under_contract",
+"closing"]`, so every one would have silently matched nothing for a deal in `pending` or
+`clear_to_close`. **I rebaselined once and it swallowed all 20 — that was wrong, and the
+baseline was restored and every site fixed instead.** They now share
+`TRANSACTION_STATUSES_IN_ESCROW` / `_OPEN` from `lib/transactions/transaction-status.ts`.
+
+The hand-rolled pipeline weight `t.status === "closing" ? 0.9 : 0.6` became `closeConfidence()`
+— monotonic along the ladder, so `clear_to_close` (lender signed off) is no longer scored the
+same as `under_contract` (an inspection can still kill it).
+
+The coordinator's own status colour map already had `case "pending"` and `case "clear_to_close"`
+branches. The UI was written against this process before the column could store it.
+
+### listings (m292)
+
+Missing `listing_signed`, `cancelled`, `off_market` outright. **Additive by owner direction** —
+`draft`, `pending` and `expired` stay valid and no row moves, so no reader can break on it.
+
+### Two guards earned their keep on this change
+
+`test:check-vocabulary` found the 20 hidden `closing` readers. `test:demo-seed-vocabulary` —
+written earlier this session — then caught that the demo tenant still seeds a transaction at
+`status: "closing"`, which would have broken demo provisioning at the transactions insert.
+A stale fixture inside the vocabulary guard itself also surfaced: it asserted
+`transactions.status = "pending"` was *invalid*, an assertion m291 silently inverted. Repointed
+at `closing`, the value that is actually retired now.
+
+Verified live, both ladders walked end to end then deleted:
+`under_contract → pending → clear_to_close → closed → funded`, and
+`listing_signed → coming_soon → active → off_market → cancelled → sold`. `closing` is refused.
+
+`npm run test:deal-ladder` — 52 checks, pure, on the chain. Chain: **122 simulators**.
+`tsc --noEmit`: 0. `npm run guard`: exit 0.

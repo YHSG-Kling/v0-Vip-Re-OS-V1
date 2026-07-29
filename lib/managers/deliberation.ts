@@ -54,6 +54,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 import {
   MANAGERS, MANAGER_COLLABORATIONS, type ManagerKey, type CollaborationDomain,
 } from "@/lib/kernel/manager-registry"
@@ -354,7 +355,7 @@ const loadFinanceManagerFacts: FactLoader = async (svc, ctx) => {
   // until that ledger earns a real writer.)
   const { data: open } = await svc.from("transactions")
     .select("id, deal_name, property_address, estimated_commission, commission_amount, commission_percentage, purchase_price, win_probability, stage, estimated_close_date, close_date")
-    .eq("brokerage_id", ctx.brokerageId).in("status", ["active", "under_contract", "closing"]).is("deleted_at", null).limit(200)
+    .eq("brokerage_id", ctx.brokerageId).in("status", [...TRANSACTION_STATUSES_OPEN]).is("deleted_at", null).limit(200)
   const facts: string[] = [], citations: string[] = []
   const openRows = (open ?? []) as any[]
   if (openRows.length > 0) {

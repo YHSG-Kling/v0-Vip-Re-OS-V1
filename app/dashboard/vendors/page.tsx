@@ -27,6 +27,7 @@ import {
 } from "@/app/actions/vendor-marketplace"
 import { Store, FileText, Star, CheckCircle2 } from "lucide-react"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 import {
   PartnerCommandStrip,
   VendorPerformanceRadar,
@@ -79,7 +80,7 @@ export default async function VendorsPage() {
       .from("transactions")
       .select("id, property_address, stage")
       .eq("brokerage_id", profile.brokerage_id)
-      .in("status", ["active", "under_contract", "closing"])
+      .in("status", [...TRANSACTION_STATUSES_OPEN])
       .order("created_at", { ascending: false })
       .limit(50)
       .then(r => r.data || []),

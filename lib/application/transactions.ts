@@ -5,6 +5,7 @@ import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { runPipelineSimple } from "@/lib/ai"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { syncStampToAgentLedger } from "@/lib/commission/ledger-sync"
+import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
 
 // ============================================
 // HELPERS
@@ -1280,7 +1281,7 @@ export async function getTransactionStats(agentId?: string) {
   let closingQuery = supabase
     .from("transactions")
     .select("id", { count: "exact", head: true })
-    .eq("status", "closing")
+    .in("status", [...TRANSACTION_STATUSES_IN_ESCROW])
     .gte("close_date", startOfMonth.toISOString())
     .lt("close_date", endOfMonth.toISOString())
   if (brokerageId) closingQuery = closingQuery.eq("brokerage_id", brokerageId)

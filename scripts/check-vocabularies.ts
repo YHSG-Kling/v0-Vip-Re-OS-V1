@@ -841,7 +841,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   listings: {
     lifecycle_stage: ["AGENT_CONSULTATION", "APPOINTMENT_SET", "APPRAISAL", "CLOSED", "CLOSING_PREP", "CMA_GENERATION", "COMING_SOON_ACTIVE", "COMING_SOON_PREP", "FINANCING", "INSPECTION", "LEAD", "LEAD_ASSIGNED", "LIFETIME_CUSTOMER", "LISTING_AGREEMENT_INITIATED", "LISTING_AGREEMENT_SIGNED", "LISTING_CANCELLED", "LISTING_EXPIRED", "LISTING_PRESENTATION_CREATED", "MEDIA_APPROVED", "MEDIA_CAPTURE", "MLS_ACTIVE", "MLS_DATE_CONFIRMED", "MLS_READY", "NEGOTIATION", "OFFERS_RECEIVED", "OPEN_HOUSE_EVENT", "OPEN_HOUSE_MARKETING", "PRESENTATION_DRIP_PREP", "PRESENTATION_VIDEO_GENERATED", "REPAIRS_IN_PROGRESS", "SELLER_DECISION", "SELLER_DECLINED", "SHOWINGS_ACTIVE", "UNDER_CONTRACT"],
     property_type: ["commercial", "condo", "land", "multi_family", "other", "single_family", "townhouse"],
-    status: ["active", "coming_soon", "draft", "expired", "pending", "sold", "withdrawn"],
+    status: ["active", "cancelled", "coming_soon", "draft", "expired", "listing_signed", "off_market", "pending", "sold", "withdrawn"],
   },
   long_form_videos: {
     status: ["editing", "planning", "published", "recording"],
@@ -1464,7 +1464,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     deal_type: ["buyer", "dual", "seller"],
     source_family: ["contact_direct", "lead", "raw"],
     stage: ["APPRAISAL", "CLOSED", "CLOSING_PREP", "FINANCING_PENDING", "INSPECTION", "LOST", "UNDER_CONTRACT"],
-    status: ["active", "archived", "closed", "closing", "lead", "lost", "qualifying", "under_contract"],
+    status: ["active", "archived", "clear_to_close", "closed", "funded", "lead", "lost", "pending", "qualifying", "under_contract"],
   },
   trend_alerts: {
     alert_type: ["budget_spike", "competitor_launch", "content_trend", "copy_trend", "creative_trend", "market_shift_prediction", "platform_shift"],

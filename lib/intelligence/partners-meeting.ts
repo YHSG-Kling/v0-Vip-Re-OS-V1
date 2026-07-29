@@ -15,6 +15,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { dealCommission, toPipeline, forecastGci } from "@/lib/kernel/commission-forecaster"
 import { summarizeComplianceLedger, PREFLIGHT_GATE } from "@/lib/kernel/compliance-ledger"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -180,7 +181,7 @@ export async function producePartnersMeeting(
       .eq("brokerage_id", brokerageId).eq("status", "closed").gte("updated_at", weekAgo).limit(500),
     supabase.from("transactions")
       .select("id, deal_name, property_address, estimated_commission, commission_amount, commission_percentage, purchase_price, win_probability, stage, estimated_close_date, close_date")
-      .eq("brokerage_id", brokerageId).in("status", ["active", "under_contract", "closing"]).is("deleted_at", null).limit(500),
+      .eq("brokerage_id", brokerageId).in("status", [...TRANSACTION_STATUSES_OPEN]).is("deleted_at", null).limit(500),
   ])
   const gciClosedThisWeek = ((closedRows ?? []) as any[]).reduce((s, t) => s + dealCommission(t), 0)
   const gciWeightedPipeline = forecastGci(0, toPipeline((pipelineRows ?? []) as any[]), now).weightedPipeline

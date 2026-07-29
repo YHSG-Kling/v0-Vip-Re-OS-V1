@@ -26,6 +26,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 const MANAGER_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
 
@@ -165,7 +166,7 @@ export async function getAgent360Action(
     svc.from("transactions")
       .select("id", { count: "exact", head: true })
       .eq("agent_id", agent.id)
-      .in("status", ["active", "under_contract", "closing"]),
+      .in("status", [...TRANSACTION_STATUSES_OPEN]),
     svc.from("agent_onboarding")
       .select("status, completion_percentage, current_day, certification_achieved")
       .eq("agent_id", agent.id)

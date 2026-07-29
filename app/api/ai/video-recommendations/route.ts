@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 export async function GET(request: NextRequest) {
   try {
@@ -149,7 +150,7 @@ export async function GET(request: NextRequest) {
       .select("*, leads(*)")
       .eq("agent_id", agentId)
       .eq("deal_type", "seller")
-      .in("status", ["active", "under_contract", "closing"])
+      .in("status", [...TRANSACTION_STATUSES_OPEN])
       .limit(5)
 
     for (const txn of seniorSellers || []) {

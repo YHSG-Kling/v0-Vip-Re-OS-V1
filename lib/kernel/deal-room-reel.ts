@@ -17,6 +17,7 @@
 // resolver, and voiceover pipeline.
 
 import type { PartnersMeetingReelProps, ReelCard } from "@/lib/intelligence/partners-meeting-reel-props"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 export const DEAL_ROOM_REEL_ENTITY = "deal_room_reel"
 
@@ -90,7 +91,7 @@ export async function queueDealRoomReels(svc: any, now: Date = new Date()): Prom
     try {
       const { data: deals } = await svc.from("transactions")
         .select("id, property_address, deal_name, stage, status, estimated_close_date, contact_id, buyer_contact_id, agent_id, financing_contingency_removed_at, appraisal_contingency_removed_at")
-        .eq("brokerage_id", b.id).in("status", ["active", "under_contract", "closing"]).is("deleted_at", null).limit(200)
+        .eq("brokerage_id", b.id).in("status", [...TRANSACTION_STATUSES_OPEN]).is("deleted_at", null).limit(200)
       for (const t of ((deals ?? []) as any[])) {
         r.transactions += 1
         const contactId = t.contact_id ?? t.buyer_contact_id

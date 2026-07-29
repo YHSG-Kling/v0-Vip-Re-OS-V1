@@ -20,6 +20,7 @@
 // NOT server-only (simulator-driven, like the rest of the kernel loaders).
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 import {
   whisperTierCapability,
   resolveAssistantVoiceId,
@@ -179,7 +180,7 @@ export async function runFireDrills(
     .from("transactions")
     .select("id, deal_name, client_name, status, agent_id, buyer_agent_id, seller_agent_id, contact_id, buyer_contact_id, seller_contact_id, deal_type, inspection_deadline, appraisal_deadline, financing_deadline, inspection_contingency_removed_at, appraisal_contingency_removed_at, financing_contingency_removed_at, appraisal_value, appraisal_completed_date")
     .eq("brokerage_id", brokerageId)
-    .in("status", ["active", "under_contract", "closing"])
+    .in("status", [...TRANSACTION_STATUSES_OPEN])
     .is("deleted_at", null)
     .or("inspection_deadline.not.is.null,appraisal_deadline.not.is.null,financing_deadline.not.is.null")
     .limit(200)

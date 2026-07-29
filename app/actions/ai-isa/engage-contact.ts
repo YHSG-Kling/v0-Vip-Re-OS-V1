@@ -39,6 +39,7 @@ import { buildPersonalizationFacts, buildDeterministicCopy } from '@/lib/ai-isa/
 import { isLifetimeCustomerType } from '@/lib/contact-types'
 import { resolveContactChannel } from '@/lib/ai-isa/contact-channel-policy'
 import type { MessageType, Persona } from '@/lib/kernel/types'
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 // ── Lifecycle states where AI ISA MUST NOT engage ──────────────────────────
 const BLOCKED_LIFECYCLE_STATES = new Set([
@@ -125,7 +126,7 @@ export async function engageContact(
       .from('transactions')
       .select('id, status')
       .eq('contact_id', contactId)
-      .in('status', ['active', 'under_contract', 'closing'])
+      .in('status', [...TRANSACTION_STATUSES_OPEN])
       .limit(1)
       .maybeSingle()
 

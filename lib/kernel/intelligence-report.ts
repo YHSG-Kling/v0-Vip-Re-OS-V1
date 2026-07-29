@@ -32,6 +32,7 @@
 
 import { rollupDraftQuality, type DraftQuality, type DraftRow } from "./draft-quality"
 import { loadDocKernelGrants, loadMarketingGrants } from "@/lib/documents/autonomy-ratchet"
+import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
 
 // ─── Month windows (pure) ────────────────────────────────────────────────────
 
@@ -416,7 +417,7 @@ export async function loadIntelligenceFacts(svc: any, brokerageId: string, month
     .gte("created_at", w.startIso).lt("created_at", w.endIso))
   const dealsIn = (w: MonthWindow) => cnt(svc.from("transactions").select("id", { count: "exact", head: true })
     .eq("brokerage_id", brokerageId)
-    .in("status", ["under_contract", "closing", "closed"])
+    .in("status", [...TRANSACTION_STATUSES_IN_ESCROW, "closed"])
     .gte("contract_date", w.startIso.slice(0, 10)).lt("contract_date", w.endIso.slice(0, 10)))
   const signalsIn = (w: MonthWindow) => cnt(svc.from("manager_signals").select("id", { count: "exact", head: true })
     .eq("brokerage_id", brokerageId)

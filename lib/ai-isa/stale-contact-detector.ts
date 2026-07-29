@@ -20,6 +20,7 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { isLifetimeCustomerType } from '@/lib/contact-types'
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 import {
   staleContactEligibility,
   DEFAULT_STALE_DAYS,
@@ -101,7 +102,7 @@ export async function detectStaleContacts(
         .from('transactions')
         .select('contact_id')
         .in('contact_id', ids)
-        .in('status', ['active', 'under_contract', 'closing'])
+        .in('status', [...TRANSACTION_STATUSES_OPEN])
     : { data: [] }
 
   const blockedIds = new Set((activeTxContacts ?? []).map((t: any) => t.contact_id))
@@ -216,7 +217,7 @@ export async function detectGhostedContacts(
         .from('transactions')
         .select('contact_id')
         .in('contact_id', ids)
-        .in('status', ['active', 'under_contract', 'closing'])
+        .in('status', [...TRANSACTION_STATUSES_OPEN])
     : { data: [] }
 
   const blockedIds = new Set((activeTxContacts ?? []).map((t: any) => t.contact_id))

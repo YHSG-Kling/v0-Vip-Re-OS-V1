@@ -3,6 +3,7 @@ import { TransactionPipelineView } from "@/components/transactions/pipeline-view
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { toCanonicalRoleOrDefault } from "@/lib/security"
 import { createClient } from "@/lib/supabase/server"
+import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
 
 export const dynamic = "force-dynamic"
 
@@ -43,7 +44,7 @@ export default async function TransactionPipelinePage() {
       )
     `)
     .eq("brokerage_id", ctx.brokerageId)
-    .in("status", ["under_contract", "closing"])
+    .in("status", [...TRANSACTION_STATUSES_IN_ESCROW])
     .order("created_at", { ascending: false })
 
   // ── Resolve agent display names via agents → users join ──────────────────

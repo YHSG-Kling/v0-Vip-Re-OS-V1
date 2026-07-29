@@ -7,6 +7,7 @@ import { resolveModel } from "@/lib/ai/resolve-model"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
+import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
 
 /**
  * AI CALENDAR & SCHEDULING MANAGEMENT
@@ -809,7 +810,7 @@ export async function generateWeeklyPlan(params: {
       .from("transactions")
       .select("*")
       .eq("agent_id", params.agentId)
-      .in("status", ["under_contract", "closing"])
+      .in("status", [...TRANSACTION_STATUSES_IN_ESCROW])
 
     const { data: goals } = await supabase
       .from("agent_goals")

@@ -223,8 +223,11 @@ check("a payload for ANOTHER table nearby is not attributed to this one",
   scanCheckVocabulary(
     `const rows = milestones.map((m) => ({ milestone_name: m.name, status: "pending" }))\n` +
     `await svc.from("transactions").select("id").eq("id", txId)`, "t").length === 0)
+// 'closing' was retired from transactions.status by m291 (it is a scheduling word,
+// not a milestone — clear_to_close replaced it). This fixture used to use
+// "pending", which m291 made VALID, so the assertion silently inverted.
 check("but the chain's OWN payload is still scanned",
-  scanCheckVocabulary(`svc.from("transactions").insert({ status: "pending" })`, "t").length === 1)
+  scanCheckVocabulary(`svc.from("transactions").insert({ status: "closing" })`, "t").length === 1)
 check("a key inside a metadata bag is NOT treated as a column",
   scanCheckVocabulary(
     `svc.from("lifecycle_events").insert({ event_type: "x", metadata: { source: "qr_scan" } })`, "t").length === 0)

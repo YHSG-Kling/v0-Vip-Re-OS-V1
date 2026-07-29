@@ -3,6 +3,7 @@ import { LenderTransactionList } from "@/components/external-portal/lender-trans
 import { getAgentContext } from "@/lib/identity"
 import { toCanonicalRole } from "@/lib/security"
 import { createClient } from "@/lib/supabase/server"
+import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
 
 export const dynamic = "force-dynamic"
 
@@ -63,7 +64,7 @@ export default async function LenderTransactionsPage() {
       )
     `)
     .in("id", transactionIds)
-    .in("status", ["under_contract", "closing"])
+    .in("status", [...TRANSACTION_STATUSES_IN_ESCROW])
 
   // Map to LenderTransactionList shape — purchase_price → contract_price
   const transactions = (transactionsData ?? []).map((txn: any) => ({

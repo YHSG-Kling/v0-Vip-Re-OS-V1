@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
+import { TRANSACTION_STATUSES_IN_ESCROW, closeConfidence } from "@/lib/transactions/transaction-status"
 
 // Multi-persona file covers brokerage admin, TC, lender, vendor, compliance,
 // team, agent, and client surfaces. Every dashboard read in this file used
@@ -1104,7 +1105,7 @@ export async function forecastBrokerageRevenue(
     .select("purchase_price, close_date, status, commission_percentage")
     .eq("brokerage_id", brokerageId)
     .gte("close_date", new Date().toISOString().split("T")[0])
-    .in("status", ["under_contract", "closing"])
+    .in("status", [...TRANSACTION_STATUSES_IN_ESCROW])
 
   const avgHistoricalGCI =
     (historical?.reduce(
@@ -1117,7 +1118,7 @@ export async function forecastBrokerageRevenue(
       const commission =
         (t.purchase_price || 0) * ((t.commission_percentage || 3) / 100)
       const probability =
-        t.status === "closing" ? 0.9 : 0.6
+        closeConfidence(t.status)
       return sum + commission * probability
     }, 0) || 0
 

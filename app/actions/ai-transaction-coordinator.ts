@@ -8,6 +8,7 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
+import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
 
 // ============================================
 // HELPERS
@@ -474,7 +475,7 @@ export async function monitorTransactionRisks(agentId: string) {
         transaction_deadlines(*)
       `)
       .eq("agent_id", agentId)
-      .in("status", ["under_contract", "closing"])
+      .in("status", [...TRANSACTION_STATUSES_IN_ESCROW])
 
     if (!transactions || transactions.length === 0) {
       return { success: true, risks: [], summary: "No active transactions" }

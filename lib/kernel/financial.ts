@@ -30,6 +30,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
 import { syncAgentLedgerToStamp } from "@/lib/commission/ledger-sync"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 
 // ─── CONSTANTS & ENUMS ────────────────────────────────────────────────────────
@@ -1445,7 +1446,7 @@ export async function loadAgentFinancialDashboardSummary(
         .from("transactions")
         .select("*")
         .eq("agent_id", input.agentId)
-        .in("status", ["active", "under_contract", "closing"]),
+        .in("status", [...TRANSACTION_STATUSES_OPEN]),
 
       service
         .from("agent_commissions")

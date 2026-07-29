@@ -29,6 +29,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { isoWeekOf } from "@/lib/kernel/week-in-review"
+import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -390,7 +391,7 @@ export async function runWeeklyDealNotes(svc: Svc, brokerageId: string, now: Dat
 
   const { data: txs } = await svc.from("transactions")
     .select("id, property_address, buyer_contact_id, contact_id, seller_contact_id, listing_id, status")
-    .eq("brokerage_id", brokerageId).in("status", ["under_contract", "closing"]).limit(200)
+    .eq("brokerage_id", brokerageId).in("status", [...TRANSACTION_STATUSES_IN_ESCROW]).limit(200)
   for (const tx of ((txs ?? []) as any[])) {
     const clientId = tx.buyer_contact_id ?? tx.contact_id
     // Distinct seller contact on a dual-represented deal — the side that used to
