@@ -433,6 +433,7 @@
     "test:coordination-status": "tsx scripts/coordination-status-simulator.ts",
     "test:sweep": "tsx scripts/simulator-sweep.ts",
     "test:sequence-step-palette": "tsx scripts/sequence-step-palette-guard.ts",
+    "test:step-palette-consolidation": "tsx scripts/step-palette-consolidation-simulator.ts",
     "test:silent-write": "tsx scripts/silent-write-guard.ts",
     "test:vendor-placement-delivery": "tsx scripts/vendor-placement-delivery-simulator.ts",
     "test:sequence-step-ledger": "tsx scripts/sequence-step-ledger-simulator.ts",

@@ -110,7 +110,18 @@ export const NURTURE_SEQUENCE_TYPES = [
 
 export type SequenceCategory = "marketing" | "nurture"
 
+/**
+ * A step as the builders hold it in state.
+ *
+ * The per-channel fields below are the ones named explicitly for convenience;
+ * the index signature carries the rest of lib/workflow/step-palette.ts's field
+ * specs (gift, e-sign, showing, tour, newsletter, listing-page, condition …).
+ * saveSequenceSteps uses the PALETTE as its allow-list rather than a hand-kept
+ * list of columns — which is what it used to do, and why a broker could fill in
+ * an ad budget or a gift occasion and have it silently dropped on save.
+ */
 export interface SequenceBuilderStep {
+  [field: string]: unknown
   id?: string
   step_number: number
   step_name: string

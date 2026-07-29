@@ -15,26 +15,21 @@
  * WRITE PAYLOADS; this value sat in a const array feeding a <Select>, and only
  * became a payload at run time, in the browser, from the user's choice.
  *
- * ── THE WIDER GAP THIS PINS ─────────────────────────────────────────────────
- * Two builders edit the same campaign_sequences/campaign_sequence_steps rows and
- * neither offers what the other does:
+ * ── THE WIDER GAP, NOW CLOSED ───────────────────────────────────────────────
+ * Two builders edited the same campaign_sequences/campaign_sequence_steps rows
+ * and neither offered what the other did — 8 types in the workflow builder, 7
+ * channels in the sequence builder, 12 distinct out of 23 dispatchable. A
+ * sequence built in one contained steps the other could not render, and eleven
+ * registered adapters had no UI anywhere.
  *
- *   /dashboard/campaigns/workflows        8 types: email, sms, direct_mail,
- *                                         wait, condition, assign_task,
- *                                         add_to_segment, remove_from_campaign
- *   /dashboard/campaigns/sequences/[id]   video, in_app, voice_drop, ai_call
- *                                         (+ email, sms, direct_mail)
+ * Both now render lib/workflow/step-palette.ts, and
+ * scripts/step-palette-consolidation-simulator.ts owns that thesis: palette ==
+ * CHECK == adapter registry, plus every field mapped to a real column.
  *
- * So a sequence built in one contains steps the other cannot render, and editing
- * it in the wrong builder hides them. Between them they now reach 12 of the 23
- * channels the executor can dispatch (10 before this fix) — lib/workflow/adapters registers 24
- * adapters, and ad_campaign, ai_image, avm_cma, draft_document,
- * listing_landing_page, newsletter, schedule_showing, schedule_tour,
- * send_for_esign, send_gift and social_post still have no UI anywhere.
- *
- * Consolidating the two builders onto a registry-derived palette is the real
- * fix and a real build. Until then this guard holds the line that matters most:
- * everything a picker OFFERS must be something the database ACCEPTS.
+ * What remains here is this guard's own, more general thesis, which the same
+ * defect keeps reappearing under: EVERYTHING A PICKER OFFERS MUST BE SOMETHING
+ * THE DATABASE ACCEPTS. Three instances so far — the step palette, the listing
+ * phase picker, and the vendor category box.
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -45,6 +40,7 @@ import {
   VENDOR_CATEGORY_GROUPS,
   VENDOR_CATEGORY_LABELS,
 } from "../lib/kernel/vendor-categories"
+import { paletteChannels } from "../lib/workflow/step-palette"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -54,31 +50,16 @@ const check = (n: string, c: boolean, detail?: string) => {
 }
 const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 
-/** PURE — the `value: "…"` entries of a named const array in a client file. */
-export function paletteValues(source: string, constName: string): string[] {
-  const start = source.indexOf(`const ${constName} = [`)
-  if (start === -1) return []
-  const open = source.indexOf("[", start)
-  let depth = 0, end = open
-  for (let i = open; i < source.length; i++) {
-    if (source[i] === "[") depth++
-    else if (source[i] === "]") { depth--; if (depth === 0) { end = i; break } }
-  }
-  return [...source.slice(open, end).matchAll(/value:\s*"([\w]+)"/g)].map((m) => m[1])
-}
+// paletteValues() used to live here — it scraped `value: "…"` entries out of the
+// two builders' hand-kept const arrays. Those arrays are gone (both builders
+// render the shared palette), so the scraper had no caller but its own unit
+// test. Removed rather than left behind to be re-adopted by something.
 
 const LIVE: readonly string[] = CHECK_VOCABULARIES.campaign_sequence_steps?.channel ?? []
 
 console.log("══════════════════════════════════════════════════")
 console.log(" Sequence step palette (a picker may only offer a savable step)")
 console.log("══════════════════════════════════════════════════")
-
-console.log("\n[pure — the extractor]")
-{
-  const sample = `const X = [\n  { value: "email", label: "E" },\n  { value: "sms", label: "S" },\n]\n`
-  check("reads value: entries from a const array", JSON.stringify(paletteValues(sample, "X")) === '["email","sms"]')
-  check("returns nothing for an absent const", paletteValues(sample, "NOPE").length === 0)
-}
 
 console.log("\n[the live vocabulary]")
 {
@@ -88,33 +69,25 @@ console.log("\n[the live vocabulary]")
     LIVE.includes("voice_drop") && LIVE.includes("ai_call"))
 }
 
-const PALETTES: Array<{ file: string; constName: string }> = [
-  { file: "app/dashboard/campaigns/sequences/[id]/SequenceBuilderClient.tsx", constName: "CHANNELS" },
-  { file: "app/dashboard/campaigns/workflows/workflow-builder-client.tsx",    constName: "STEP_TYPES" },
-]
-
 console.log("\n[every offered step is one the database accepts]")
-const offered = new Set<string>()
-for (const { file, constName } of PALETTES) {
-  const values = paletteValues(src(file), constName)
-  check(`${constName} was found and is non-empty (${values.length})`, values.length > 0)
-  const invalid = values.filter((v) => !LIVE.includes(v))
-  check(`${constName}: every value is an admitted channel`, invalid.length === 0, invalid.join(", "))
-  values.forEach((v) => offered.add(v))
-}
-
-console.log("\n[the coverage gap, held visible rather than rediscovered]")
 {
-  const missing = LIVE.filter((c) => !offered.has(c))
-  console.log(`  · ${offered.size} of ${LIVE.length} dispatchable channels are offered by some builder`)
-  console.log(`  · no UI anywhere for: ${missing.join(", ")}`)
-  check("the two builders together cover at least the 12 reached today",
-    offered.size >= 12, `only ${offered.size}`)
-  check("the voicemail + AI-call channels are reachable by a user now",
-    offered.has("voice_drop") && offered.has("ai_call"))
-  // Not a failure — a standing, honest count. It fails only if coverage REGRESSES.
-  check("coverage never silently shrinks below what is wired today",
-    offered.size >= 12 && missing.length <= LIVE.length - 12)
+  // The two hand-kept arrays this section used to read (CHANNELS and STEP_TYPES)
+  // are gone: both builders now render lib/workflow/step-palette.ts. The depth —
+  // palette == CHECK == adapter registry, plus per-field column checks — lives in
+  // scripts/step-palette-consolidation-simulator.ts, which owns that thesis.
+  // Kept here is only this guard's own thesis, applied to the shared palette: a
+  // picker may not offer a value its column rejects.
+  const offered = paletteChannels()
+  const invalid = offered.filter((c) => !LIVE.includes(c))
+  check(`the shared palette offers ${offered.length} steps`, offered.length > 0)
+  check("every one is an admitted channel", invalid.length === 0, invalid.join(", "))
+
+  const missing = LIVE.filter((c) => !offered.includes(c))
+  console.log(`  · ${offered.length} of ${LIVE.length} dispatchable channels are reachable from a builder`)
+  check("coverage is complete — no dispatchable channel is left without a UI",
+    missing.length === 0, missing.join(", "))
+  check("the voicemail + AI-call channels are reachable by a user",
+    offered.includes("voice_drop") && offered.includes("ai_call"))
 }
 
 console.log("\n[the same class, elsewhere: the listing phase picker]")

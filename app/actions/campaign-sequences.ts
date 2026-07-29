@@ -15,6 +15,23 @@ import {
   MARKETING_SEQUENCE_TYPES,
   NURTURE_SEQUENCE_TYPES,
 } from "@/lib/campaigns/sequence-constants"
+import { STEP_PALETTE, storableValue, type StepFieldSpec } from "@/lib/workflow/step-palette"
+
+/** Every per-channel column the step palette declares — the save allow-list.
+ *  scripts/step-palette-consolidation-simulator.ts proves each is a real column
+ *  on campaign_sequence_steps, so this can never name one that does not exist. */
+const PALETTE_FIELD_SPECS: ReadonlyMap<string, StepFieldSpec> = new Map(
+  STEP_PALETTE.flatMap((s) => s.fields).map((f) => [f.name, f]),
+)
+const PALETTE_STEP_FIELDS: readonly string[] = Array.from(PALETTE_FIELD_SPECS.keys())
+
+/** The value to write for a palette field: "" becomes null, EXCEPT where the
+ *  column is NOT NULL (showing_duration_minutes, task_due_offset_days,
+ *  tour_date_offset_days), which take the spec's fallback instead. */
+function fieldValueForWrite(name: string, raw: unknown): unknown {
+  const spec = PALETTE_FIELD_SPECS.get(name)
+  return spec ? storableValue(spec, raw) : (raw === undefined || raw === "" ? null : raw)
+}
 
 // ─── List sequences ───────────────────────────────────────────────────────────
 
@@ -191,6 +208,15 @@ export async function deleteCampaignSequence(sequenceId: string): Promise<{ succ
 
 // ─── Create step ──────────────────────────────────────────────────────────────
 
+/**
+ * Three surfaces write steps through here (both campaign builders and the
+ * marketing studio). It used to take the service client straight to an INSERT
+ * with NO ownership check — a signed-in user of any brokerage could add a step
+ * to any sequence they knew the id of — and it accepted only subject/body, so
+ * every per-channel field its callers collected was dropped. Both are fixed
+ * below: the sequence must belong to the caller's brokerage, the channel must be
+ * one the column admits, and the palette's fields ride through.
+ */
 export async function createSequenceStep(params: {
   sequence_id: string
   step_number: number
@@ -201,26 +227,56 @@ export async function createSequenceStep(params: {
   subject?: string
   body?: string
   send_time?: string
+  [field: string]: unknown
 }): Promise<{ step: SequenceStep | null; error?: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { step: null, error: "Not authenticated" }
+
   const service = createServiceClient()
+
+  const { data: owner } = await service
+    .from("campaign_sequences")
+    .select("brokerage_id")
+    .eq("id", params.sequence_id)
+    .maybeSingle()
+  if (!owner || owner.brokerage_id !== ctx.brokerageId) {
+    return { step: null, error: "Unauthorized" }
+  }
+
+  if (!params.channel || !VALID_STEP_TYPES.has(params.channel as any)) {
+    return { step: null, error: `Invalid step channel: ${params.channel || "(empty)"}` }
+  }
+
+  const row: Record<string, unknown> = {
+    sequence_id: params.sequence_id,
+    step_number: params.step_number,
+    step_name: params.step_name,
+    channel: params.channel,
+    delay_days: params.delay_days,
+    delay_hours: params.delay_hours,
+    subject: params.subject ?? null,
+    // body is NOT NULL. This wrote `?? null`, and the sequence builder's "Add
+    // step" passes no body — so the INSERT was rejected every time, the action
+    // returned { step: null }, and the caller's `if (result.step)` swallowed it.
+    // The button appeared to do nothing at all. saveSequenceSteps had it right
+    // with `|| ""`; this now matches.
+    body: params.body ?? "",
+    send_time: params.send_time ?? null,
+    is_active: true,
+    sent_count: 0,
+    open_count: 0,
+    click_count: 0,
+    reply_count: 0,
+  }
+  for (const name of PALETTE_STEP_FIELDS) {
+    if (name in row) continue
+    if (!(name in params)) continue
+    row[name] = fieldValueForWrite(name, params[name])
+  }
+
   const { data, error } = await service
     .from("campaign_sequence_steps")
-    .insert({
-      sequence_id: params.sequence_id,
-      step_number: params.step_number,
-      step_name: params.step_name,
-      channel: params.channel,
-      delay_days: params.delay_days,
-      delay_hours: params.delay_hours,
-      subject: params.subject ?? null,
-      body: params.body ?? null,
-      send_time: params.send_time ?? null,
-      is_active: true,
-      sent_count: 0,
-      open_count: 0,
-      click_count: 0,
-      reply_count: 0,
-    })
+    .insert(row)
     .select()
     .maybeSingle()
 
@@ -234,12 +290,51 @@ export async function createSequenceStep(params: {
 export async function updateSequenceStep(
   stepId: string,
   sequenceId: string,
-  updates: Partial<Pick<SequenceStep, "step_name" | "channel" | "delay_days" | "delay_hours" | "subject" | "body" | "send_time" | "is_active" | "condition_field" | "condition_operator" | "condition_value">>
+  updates: Partial<Pick<SequenceStep, "step_name" | "channel" | "delay_days" | "delay_hours" | "subject" | "body" | "send_time" | "is_active">> & Record<string, unknown>
 ): Promise<{ success: boolean; error?: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
   const service = createServiceClient()
+
+  // The step must live in a sequence this brokerage owns. Checking the SEQUENCE
+  // is not enough on its own — a caller could pass a step id from elsewhere with
+  // a sequence id of their own — so the step's own sequence_id is what is read.
+  const { data: step } = await service
+    .from("campaign_sequence_steps")
+    .select("sequence_id, campaign_sequences!inner(brokerage_id)")
+    .eq("id", stepId)
+    .maybeSingle()
+  const ownerBrokerage = (step as any)?.campaign_sequences?.brokerage_id
+  if (!step || ownerBrokerage !== ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
+  if (updates.channel !== undefined && !VALID_STEP_TYPES.has(updates.channel as any)) {
+    return { success: false, error: `Invalid step channel: ${updates.channel || "(empty)"}` }
+  }
+
+  // The common columns, plus whatever palette fields the caller sent. A key the
+  // palette does not declare is never written, so the Record<string, unknown>
+  // above cannot be used to reach an arbitrary column.
+  const ALLOWED_COMMON = [
+    "step_name", "channel", "delay_days", "delay_hours",
+    "subject", "body", "send_time", "is_active",
+  ]
+  const patch: Record<string, unknown> = {}
+  for (const k of ALLOWED_COMMON) {
+    if (k in updates) patch[k] = (updates as Record<string, unknown>)[k]
+  }
+  for (const name of PALETTE_STEP_FIELDS) {
+    if (name in patch) continue
+    if (!(name in updates)) continue
+    patch[name] = fieldValueForWrite(name, (updates as Record<string, unknown>)[name])
+  }
+  if (Object.keys(patch).length === 0) return { success: true }
+
   const { error } = await service
     .from("campaign_sequence_steps")
-    .update(updates)
+    .update(patch)
     .eq("id", stepId)
 
   if (error) return { success: false, error: error.message }
@@ -649,52 +744,33 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
       const toUpdate = steps.filter((s): s is SequenceBuilderStep & { id: string } => !!s.id && existingIds.has(s.id))
       const toInsert = steps.filter((s) => !s.id || !existingIds.has(s.id))
 
-      const buildRow = (s: SequenceBuilderStep, overrideIdx?: number) => ({
-        sequence_id: sequenceId,
-        step_number: overrideIdx ?? steps.indexOf(s) + 1,
-        step_name: s.step_name || s.step_type,
-        channel: s.step_type,
-        delay_days: s.delay_days ?? 0,
-        delay_hours: s.delay_hours ?? 0,
-        subject: s.subject ?? null,
-        body: s.body || "",
-        is_active: s.is_active ?? true,
-        // Variable graph
-        output_variable_name: s.output_variable_name ?? null,
-        // QR modifier
-        qr_attached: s.qr_attached ?? false,
-        qr_target_url_pattern: s.qr_target_url_pattern ?? null,
-        // AI Image
-        image_prompt: s.image_prompt ?? null,
-        image_style: s.image_style ?? null,
-        image_aspect_ratio: s.image_aspect_ratio ?? null,
-        // Video
-        video_script: s.video_script ?? null,
-        video_voice_only: s.video_voice_only ?? false,
-        video_background_url: s.video_background_url ?? null,
-        // Voice Drop
-        voice_drop_script: s.voice_drop_script ?? null,
-        voice_drop_voice_id: s.voice_drop_voice_id ?? null,
-        // Social
-        social_platform: s.social_platform ?? null,
-        social_caption_prompt: s.social_caption_prompt ?? null,
-        // Task
-        task_assignee_type: s.task_assignee_type ?? null,
-        task_title: s.task_title ?? null,
-        task_due_offset_days: s.task_due_offset_days ?? 0,
-        // Document
-        document_type: s.document_type ?? null,
-        document_state: s.document_state ?? null,
-        // AVM/CMA
-        avm_data_source: s.avm_data_source ?? null,
-        avm_report_type: s.avm_report_type ?? null,
-        avm_include_investor_adj: s.avm_include_investor_adj ?? false,
-        // Ad
-        ad_platform: s.ad_platform ?? null,
-        ad_objective: s.ad_objective ?? null,
-        // Direct mail
-        direct_mail_piece_type: s.direct_mail_piece_type ?? null,
-      })
+      // The per-channel columns are taken from the STEP PALETTE, not from a
+      // hand-kept list. The old list covered about half of what the palette
+      // declares — a broker could set an ad budget, a gift occasion, an e-sign
+      // recipient or a tour's properties and the save would drop them without
+      // a word, then the adapter would fail at dispatch days later with "No ad
+      // platform configured". The palette is also the ALLOW-LIST: a key the
+      // palette does not declare is never written, so the index signature on
+      // SequenceBuilderStep cannot be used to reach an arbitrary column.
+      const buildRow = (s: SequenceBuilderStep, overrideIdx?: number) => {
+        const row: Record<string, unknown> = {
+          sequence_id: sequenceId,
+          step_number: overrideIdx ?? steps.indexOf(s) + 1,
+          step_name: s.step_name || s.step_type,
+          channel: s.step_type,
+          delay_days: s.delay_days ?? 0,
+          delay_hours: s.delay_hours ?? 0,
+          subject: s.subject ?? null,
+          body: s.body || "",
+          is_active: s.is_active ?? true,
+        }
+        for (const name of PALETTE_STEP_FIELDS) {
+          if (name in row) continue          // the common fields above win
+          if (!(name in s)) continue         // absent = leave the column alone
+          row[name] = fieldValueForWrite(name, (s as Record<string, unknown>)[name])
+        }
+        return row
+      }
 
       if (toUpdate.length > 0) {
         const updateRows = toUpdate.map((s) => ({ id: s.id, ...buildRow(s) }))

@@ -82,6 +82,9 @@ import type {
 } from "@/lib/campaigns/sequence-constants"
 import { ContextualAiAssistBar } from "@/app/components/ai-copilot/contextual-ai-assist-bar"
 import { WORKFLOW_TRIGGERS } from "@/lib/workflow/triggers"
+import { StepTypeSelect, StepTypeDescription } from "@/app/components/campaigns/step-type-select"
+import { StepFieldsEditor } from "@/app/components/campaigns/step-fields-editor"
+import { toast } from "sonner"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -115,27 +118,22 @@ interface Props {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-// EVERY VALUE HERE MUST BE ONE campaign_sequence_steps.channel ADMITS.
-// "voice" was not. It is not in that column's CHECK — the real channels are
-// 'voice_drop' (a ringless voicemail) and 'ai_call' (a live AI call), which are
-// separate adapters with separate consent implications. Picking Voice built a
-// step whose INSERT was rejected by campaign_sequence_steps_channel_check
-// (verified live), so the option could never produce a saved step.
+// The step list lives in lib/workflow/step-palette.ts, rendered here through
+// <StepTypeSelect>. It used to be a local CHANNELS array of seven — and the
+// workflow builder kept its own array of eight — while both edit the SAME
+// campaign_sequence_steps rows. Between them they reached 12 of the 23 the
+// executor dispatches, so a step built in one builder was invisible in the
+// other, and eleven registered adapters had no UI at all.
 //
-// Both real channels are now offered. They are TCPA-gated in the executor
-// (TCPA_CHANNELS = sms | voice_drop | ai_call), so a contact without consent or
-// on the DNC list is skipped at run time — the picker does not need its own gate.
-// scripts/sequence-step-palette-guard.ts pins every value in this list against
-// the live CHECK so an unsavable option cannot be added again.
-const CHANNELS = [
-  { value: "email",       label: "Email",           icon: Mail,           flagKey: null },
-  { value: "sms",         label: "SMS",             icon: MessageSquare,  flagKey: null },
-  { value: "voice_drop",  label: "Voicemail Drop",  icon: Phone,          flagKey: null },
-  { value: "ai_call",     label: "AI Call",         icon: Phone,          flagKey: null },
-  { value: "in_app",      label: "In-App",          icon: Layers,         flagKey: null },
-  { value: "video",       label: "Video",           icon: Video,          flagKey: "video_campaigns" },
-  { value: "direct_mail", label: "Direct Mail",     icon: Send,           flagKey: "direct_mail_campaigns" },
-]
+// The array also once contained "voice", which that column's CHECK rejects
+// outright: the real channels are 'voice_drop' (a ringless voicemail) and
+// 'ai_call' (a live AI call), separate adapters with separate consent
+// implications. Both are TCPA-gated in the executor (TCPA_CHANNELS = sms |
+// voice_drop | ai_call), so an unconsented or DNC contact is skipped at run
+// time and the picker needs no gate of its own.
+//
+// scripts/step-palette-consolidation-simulator.ts holds palette == CHECK ==
+// adapter registry, so none of the three can drift from the others again.
 
 const PERSONALIZATION_TOKENS = [
   "{{first_name}}",
@@ -221,31 +219,40 @@ export default function SequenceBuilderClient({
       channel:      "email",
       delay_days:   nextNumber === 1 ? 0 : 3,
       delay_hours:  0,
+      body:         "",
     })
     setBusy(false)
-    if (result.step) {
-      setSteps(prev => [...prev, result.step!])
-      handleSelectStep(result.step!)
+    // Never swallow the failure. This used to be `if (result.step)` with no
+    // else, so a rejected INSERT looked exactly like a working button.
+    if (result.error || !result.step) {
+      toast.error(result.error ?? "Could not add the step.")
+      return
     }
+    setSteps(prev => [...prev, result.step!])
+    handleSelectStep(result.step!)
   }, [steps, sequence.id, canEdit, handleSelectStep])
 
   // ── Save step ──────────────────────────────────────────────────────────────
   const handleSaveStep = useCallback(async () => {
     if (!selectedStep || !canEdit) return
     setBusy(true)
-    await updateSequenceStep(selectedStep.id, sequence.id, {
-      step_name:         draft.step_name ?? selectedStep.step_name,
-      channel:           draft.channel   ?? selectedStep.channel,
-      delay_days:        draft.delay_days  ?? 0,
-      delay_hours:       draft.delay_hours ?? 0,
-      subject:           draft.subject   ?? null,
-      body:              draft.body      ?? null,
-      send_time:         draft.send_time ?? null,
-      condition_field:   draft.condition_field   ?? null,
-      condition_operator:draft.condition_operator ?? null,
-      condition_value:   draft.condition_value   ?? null,
+    // The whole draft goes through. updateSequenceStep takes the step palette as
+    // its allow-list, so every per-channel field the editor collected is saved
+    // and nothing outside the palette can reach a column. Naming the fields here
+    // by hand is how a gift occasion or an e-sign recipient got dropped.
+    const { id: _id, ...draftFields } = draft as Record<string, unknown>
+    const res = await updateSequenceStep(selectedStep.id, sequence.id, {
+      ...draftFields,
+      step_name:   draft.step_name ?? selectedStep.step_name,
+      channel:     draft.channel   ?? selectedStep.channel,
+      delay_days:  draft.delay_days  ?? 0,
+      delay_hours: draft.delay_hours ?? 0,
+      subject:     draft.subject   ?? null,
+      body:        draft.body      ?? null,
+      send_time:   draft.send_time ?? null,
     })
     setBusy(false)
+    if (res.error) toast.error(res.error)
     setSteps(prev => prev.map(s =>
       s.id === selectedStep.id ? { ...s, ...draft } as SequenceStep : s
     ))
@@ -325,10 +332,11 @@ export default function SequenceBuilderClient({
         delay_days:  s.delay_days ?? 0,
         delay_hours: s.delay_hours ?? 0,
         subject:     s.subject ?? undefined,
-        body:        s.body ?? undefined,
+        body:        s.body ?? "",
         send_time:   s.send_time ?? undefined,
       })
       if (result.step) created.push(result.step)
+      else if (result.error) toast.error(`Step ${i + 1}: ${result.error}`)
     }
     setSteps(prev => [...prev, ...created])
     setAiLoading(false)
@@ -956,36 +964,16 @@ function StepEditor({
         />
       </div>
 
-      {/* Channel */}
+      {/* Step type — the shared palette, grouped by what the step DOES */}
       <div className="flex flex-col gap-1.5">
-        <Label>Channel</Label>
-        <Select
+        <Label>Step type</Label>
+        <StepTypeSelect
           value={draft.channel ?? step.channel}
-          onValueChange={v => setDraft(p => ({ ...p, channel: v }))}
+          onChange={v => setDraft(p => ({ ...p, channel: v }))}
+          featureFlags={featureFlags}
           disabled={!canEdit}
-        >
-          <SelectTrigger>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {CHANNELS.map(ch => {
-              const locked = ch.flagKey && !featureFlags[ch.flagKey]
-              return (
-                <SelectItem
-                  key={ch.value}
-                  value={ch.value}
-                  disabled={!!locked}
-                >
-                  <span className="flex items-center gap-2">
-                    <ch.icon className="h-3.5 w-3.5" />
-                    {ch.label}
-                    {locked && <span className="text-[10px] text-muted-foreground ml-1">(Superadmin activation required)</span>}
-                  </span>
-                </SelectItem>
-              )
-            })}
-          </SelectContent>
-        </Select>
+        />
+        <StepTypeDescription channel={draft.channel ?? step.channel} />
       </div>
 
       {/* Delay */}
@@ -1055,6 +1043,21 @@ function StepEditor({
           </div>
         </div>
       )}
+
+      {/* Everything this step type needs, rendered from the shared palette.
+          subject and body are omitted because this builder renders richer
+          controls for them below (personalization tokens + the AI assist bar);
+          the required-field warning still counts them. Before this, the panel
+          showed subject and body and nothing else — so a Send Gift step had
+          nowhere to set the occasion and an Ad Campaign step no budget, and
+          both failed later in a cron rather than here. */}
+      <StepFieldsEditor
+        channel={draft.channel ?? step.channel}
+        values={{ ...step, ...draft } as unknown as Record<string, unknown>}
+        onChange={(name, value) => setDraft(p => ({ ...p, [name]: value }))}
+        disabled={!canEdit}
+        omit={["subject", "body"]}
+      />
 
       {/* Subject (email) */}
       {(draft.channel ?? step.channel) === "email" && (
