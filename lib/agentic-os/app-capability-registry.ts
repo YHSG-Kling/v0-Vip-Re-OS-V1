@@ -9,6 +9,7 @@
 
 import { buildActionManifest, type AgisVerb } from "./vendor-capability-registry"
 import { type VendorOwnership } from "./vendor-ownership"
+import { CONNECTOR_PROVIDERS } from "@/lib/connections/scope"
 import {
   CONNECTED_CAPABILITY_REGISTRY,
   connectedIntentWeight,
@@ -51,6 +52,37 @@ export type AppDomain =
   | "marketing" | "social" | "reporting" | "education" | "portal" | "reputation" | "communications" | "gifting"
   | "connectivity" | "finance"
 
+/**
+ * WHAT A CAPABILITY NEEDS IN ORDER TO ACTUALLY RUN — its contract.
+ *
+ * The manifest already says who is AUTHORIZED (scope). It said nothing about
+ * whether the capability is OPERABLE, and those are different questions: a
+ * caller can hold `finance:write` while the tenant has no QuickBooks connected
+ * at all. Since buildFullActionManifest powers /api/agentic-os/actions AND the
+ * MCP `tools/list`, every connected agent was advertised all 27 capabilities as
+ * available and could only discover otherwise BY CALLING ONE AND FAILING.
+ *
+ * Two kinds of dependency, because the codebase already distinguishes them
+ * (lib/providers/tenancy-matrix.ts, platform_credentials):
+ *
+ *   connections  a TENANT connection from the Connection OS
+ *                (lib/connections/scope.ts CONNECTOR_PROVIDERS). ANY-of: one
+ *                live connection satisfies it.
+ *   platform     a PLATFORM-owned credential the tenant does not connect —
+ *                system-managed lanes. CONNECTOR_PROVIDERS deliberately leaves
+ *                `marketing: []` for exactly this reason.
+ *
+ * Undeclared means "no external dependency known" — see UNDECLARED_REQUIREMENTS
+ * below, which keeps the not-yet-modelled ones VISIBLE rather than letting an
+ * absent contract read as a satisfied one.
+ */
+export interface CapabilityRequirement {
+  /** Tenant connections, any-of. Names must be Connection OS providers. */
+  connections?: readonly string[]
+  /** Platform-owned credentials, any-of. Not tenant-connectable. */
+  platform?: readonly string[]
+}
+
 export interface AppCapabilityDef {
   capability: AppCapability
   verb: AgisVerb
@@ -60,6 +92,8 @@ export interface AppCapabilityDef {
   inputs: string[]
   /** True for write/side-effecting operations — require confirmation before invoke. */
   mutates: boolean
+  /** What must be in place for this to run. Absent = no known external dependency. */
+  requires?: CapabilityRequirement
 }
 
 export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = {
@@ -76,7 +110,7 @@ export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = 
   blog_publish:             { capability: "blog_publish",             verb: "PUBLISH", scope: "marketing:write",  domain: "marketing",      mutates: true,  purpose: "Publish a drafted blog post to the brokerage's site/SEO engine.", inputs: ["brokerageId", "postId"] },
   marketing_campaign_create:{ capability: "marketing_campaign_create",verb: "CREATE",  scope: "marketing:write",  domain: "marketing",      mutates: true,  purpose: "Create a multi-channel marketing campaign.", inputs: ["brokerageId", "name", "channels"] },
   content_repurpose:        { capability: "content_repurpose",        verb: "CREATE",  scope: "content:write",    domain: "marketing",      mutates: true,  purpose: "Repurpose an existing content asset into another channel format.", inputs: ["brokerageId", "assetId", "targetChannel"] },
-  social_post_publish:      { capability: "social_post_publish",      verb: "PUBLISH", scope: "social:write",     domain: "social",         mutates: true,  purpose: "Publish/distribute a post to connected social channels.", inputs: ["brokerageId", "assetId", "channels"] },
+  social_post_publish:      { capability: "social_post_publish",      verb: "PUBLISH", scope: "social:write",     domain: "social",         mutates: true,  purpose: "Publish/distribute a post to connected social channels.", inputs: ["brokerageId", "assetId", "channels"], requires: { connections: CONNECTOR_PROVIDERS.social } },
   report_generate:          { capability: "report_generate",          verb: "ANALYZE", scope: "reporting:read",   domain: "reporting",      mutates: false, purpose: "Generate a reporting-workspace report (source/ROI/pipeline/team/financial).", inputs: ["brokerageId", "reportType", "range?"] },
   report_export:            { capability: "report_export",            verb: "GET",     scope: "reporting:read",   domain: "reporting",      mutates: false, purpose: "Export a generated report as CSV or PDF.", inputs: ["brokerageId", "reportId", "format"] },
   education_path_get:       { capability: "education_path_get",        verb: "GET",     scope: "education:read",   domain: "education",      mutates: false, purpose: "Fetch a contact's personalized learning path.", inputs: ["contactId"] },
@@ -84,7 +118,7 @@ export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = 
   portal_milestones_get:    { capability: "portal_milestones_get",     verb: "GET",     scope: "portal:read",      domain: "portal",         mutates: false, purpose: "Fetch the client-portal milestone timeline for a contact/transaction.", inputs: ["contactId"] },
   review_request_send:      { capability: "review_request_send",       verb: "NOTIFY",  scope: "reputation:write", domain: "reputation",     mutates: true,  purpose: "Send a review request to a past client (reputation engine).", inputs: ["brokerageId", "contactId"] },
   inbox_reply_send:         { capability: "inbox_reply_send",          verb: "NOTIFY",  scope: "comms:write",      domain: "communications", mutates: true,  purpose: "Send a reply in the universal inbox (compliance-gated).", inputs: ["brokerageId", "threadId", "body"] },
-  podcast_publish:          { capability: "podcast_publish",           verb: "PUBLISH", scope: "marketing:write",  domain: "marketing",      mutates: true,  purpose: "Publish a podcast episode to the brokerage's distribution channels.", inputs: ["brokerageId", "episodeId"] },
+  podcast_publish:          { capability: "podcast_publish",           verb: "PUBLISH", scope: "marketing:write",  domain: "marketing",      mutates: true,  purpose: "Publish a podcast episode to the brokerage's distribution channels.", inputs: ["brokerageId", "episodeId"], requires: { connections: CONNECTOR_PROVIDERS.podcast } },
   direct_mail_send:         { capability: "direct_mail_send",          verb: "NOTIFY",  scope: "marketing:send",   domain: "marketing",      mutates: true,  purpose: "Submit a direct-mail campaign for print + delivery (Lob).", inputs: ["brokerageId", "campaignId"] },
   video_distribute:         { capability: "video_distribute",          verb: "PUBLISH", scope: "marketing:write",  domain: "marketing",      mutates: true,  purpose: "Distribute a marketing video asset across configured channels.", inputs: ["brokerageId", "videoProjectId", "channels"] },
   gift_send:                { capability: "gift_send",                 verb: "NOTIFY",  scope: "gifting:write",    domain: "gifting",        mutates: true,  purpose: "Trigger a closing/nurture gift order for a contact.", inputs: ["brokerageId", "contactId", "giftType?"] },
@@ -92,9 +126,36 @@ export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = 
 
   connectivity_scan:        { capability: "connectivity_scan",         verb: "GET",     scope: "connectivity:read", domain: "connectivity",  mutates: false, purpose: "Report live connection health of every api/oauth/mcp connector for the brokerage (expiry-aware).", inputs: ["brokerageId?"] },
 
-  payment_transfer:         { capability: "payment_transfer",          verb: "CREATE",  scope: "finance:write",    domain: "finance",        mutates: true,  purpose: "Move funds / commission payout via the PLATFORM Stripe account (offered to all subscribers).", inputs: ["amount", "destinationAccountId", "description?"] },
-  accounting_sync:          { capability: "accounting_sync",           verb: "UPDATE",  scope: "finance:write",    domain: "finance",        mutates: true,  purpose: "Sync an invoice or journal entry to the PLATFORM QuickBooks account (offered to all subscribers).", inputs: ["kind", "amount?", "customerRef?"] },
+  // "PLATFORM Stripe" per its own purpose — a tenant does not connect this.
+  payment_transfer:         { capability: "payment_transfer",          verb: "CREATE",  scope: "finance:write",    domain: "finance",        mutates: true,  purpose: "Move funds / commission payout via the PLATFORM Stripe account (offered to all subscribers).", inputs: ["amount", "destinationAccountId", "description?"], requires: { platform: ["stripe"] } },
+  accounting_sync:          { capability: "accounting_sync",           verb: "UPDATE",  scope: "finance:write",    domain: "finance",        mutates: true,  purpose: "Sync an invoice or journal entry to the PLATFORM QuickBooks account (offered to all subscribers).", inputs: ["kind", "amount?", "customerRef?"], requires: { platform: ["quickbooks"] } },
 }
+
+/**
+ * CAPABILITIES WHOSE DEPENDENCY IS REAL BUT NOT YET MODELLED.
+ *
+ * Each of these plainly needs something external — direct mail needs a print
+ * vendor, video needs the avatar + voice providers, a gift needs a gifting
+ * vendor — but the exact provider key is NOT asserted here, because guessing one
+ * would be worse than admitting the gap: a wrong contract reports a capability
+ * dark when it works, or ready when it cannot run, and both are the defect this
+ * whole mechanism exists to remove.
+ *
+ * Declared as data so the guard can hold the list at a known size and force this
+ * comment to be revisited rather than letting an absent contract pass as a
+ * satisfied one. Resolution reports these as "requirement not modelled" — never
+ * as ready.
+ */
+export const UNDECLARED_REQUIREMENTS: readonly AppCapability[] = [
+  "direct_mail_send",       // a print/mail vendor (system-managed lane)
+  "video_distribute",       // avatar + cloned-voice render providers
+  "gift_send",              // a gifting vendor
+  "handwritten_note_send",  // a handwriting vendor
+  "inbox_reply_send",       // an email or phone connection, depending on thread channel
+  "newsletter_send",        // an email sending lane
+  "review_request_send",    // an email or phone lane
+  "cma_generate",           // a valuation data source
+] as const
 
 export function getAppCapability(capability: AppCapability): AppCapabilityDef {
   return APP_CAPABILITY_REGISTRY[capability]
