@@ -299,7 +299,7 @@ export default function VideoCreatePage() {
             .from("agent_voice_profiles")
             .select("*")
             .eq("agent_id", agentData.id)
-            .eq("training_status", "completed")
+            .eq("training_status", "ready")
             .order("is_default", { ascending: false })
 
           clonedVoiceProfiles = voiceData || []

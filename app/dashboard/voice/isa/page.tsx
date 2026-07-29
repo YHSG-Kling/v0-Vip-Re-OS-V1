@@ -149,7 +149,12 @@ export default async function VoiceISAPage() {
       )
     `)
     .eq("brokerage_id", brokerageId)
-    .in("status", ["no_answer", "failed", "busy"])
+    // The Twilio status callback always writes status = "completed" on a
+    // terminated leg and puts the real disposition in OUTCOME
+    // (busy / no_answer / failed / canceled). Filtering status for those three
+    // matched nothing on every run — this retry list was permanently empty, and
+    // "busy" is not even a value voice_calls.status admits.
+    .in("outcome", ["no_answer", "failed", "busy", "canceled"])
     .order("started_at", { ascending: false })
     .limit(50)
 

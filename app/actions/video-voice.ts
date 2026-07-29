@@ -153,7 +153,11 @@ export async function updateVoiceProfileSamples(
     .from("agent_voice_profiles")
     .update({
       sample_count: recordedCount,
-      training_status: recordedCount >= VOICE_CLONE_SAMPLE_PHRASES.length ? "collecting_samples" : "pending",
+      // agent_voice_profiles.training_status ∈ (not_started, collecting_samples,
+      // training, ready, failed). This wrote "pending", which the CHECK rejects —
+      // so every mid-recording save was refused and sample_count never advanced
+      // past its first value. Any recording in progress IS collecting_samples.
+      training_status: recordedCount > 0 ? "collecting_samples" : "not_started",
       updated_at: new Date().toISOString(),
     })
     .eq("id", profileId)
@@ -256,7 +260,7 @@ export async function getDefaultVoiceProfile(agentId: string) {
     .select("*")
     .eq("agent_id", agentId)
     .eq("is_default", true)
-    .eq("training_status", "completed")
+    .eq("training_status", "ready")
     .maybeSingle()
 
   if (error) {
@@ -399,9 +403,22 @@ export async function updateTrainingJobStatus(
     throw updateError
   }
 
-  // Update profile status
+  // Update profile status.
+  //
+  // TWO VOCABULARIES, ONE VARIABLE. `status` here is the TRAINING JOB's status
+  // (processing | completed | failed). agent_voice_profiles.training_status is a
+  // different set (not_started | collecting_samples | training | ready | failed).
+  // Copying the job status straight across wrote "completed", which that column
+  // rejects — and elevenlabs_voice_id is set in this SAME update, so the clone id
+  // returned by ElevenLabs was never saved. The voice was cloned and the pointer
+  // to it thrown away.
+  const PROFILE_STATUS_FOR_JOB: Record<string, string> = {
+    processing: "training",
+    completed:  "ready",
+    failed:     "failed",
+  }
   const profileUpdate: Record<string, any> = {
-    training_status: status,
+    training_status: PROFILE_STATUS_FOR_JOB[status] ?? "training",
     updated_at: new Date().toISOString(),
   }
 
@@ -575,7 +592,7 @@ export async function getVoiceOptionsForGeneration(agentId: string) {
     .from("agent_voice_profiles")
     .select("id, profile_name, elevenlabs_voice_id, is_default, quality_score")
     .eq("agent_id", agentId)
-    .eq("training_status", "completed")
+    .eq("training_status", "ready")
     .not("elevenlabs_voice_id", "is", null)
     .order("is_default", { ascending: false })
 

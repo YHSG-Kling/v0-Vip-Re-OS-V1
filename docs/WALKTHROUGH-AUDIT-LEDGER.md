@@ -3944,3 +3944,55 @@ failed, twice, until the path pointed at the declaration. A guard that cannot pr
 its own inputs is not a guard.
 
 Chain: **124 simulators**. `tsc --noEmit`: 0. `npm run guard`: exit 0.
+
+---
+
+## The voice was cloned and the pointer to it was thrown away
+
+The avatar stack is D-ID + **ElevenLabs clones**. Every stage of the clone lifecycle was broken
+by one vocabulary mismatch.
+
+```
+agent_voice_profiles.training_status
+  CHECK (not_started | collecting_samples | training | ready | failed)
+```
+
+**1. Progress could not be saved.** The mid-recording save wrote `training_status: "pending"` —
+not a value the column admits. Verified live: `check_violation`. And because status and
+`sample_count` move in the **same** update, the counter never advanced past its first value. The
+agent records phrase after phrase and the progress bar does not move.
+
+**2. The clone id was never stored.** The training-completion callback copied the *training
+job's* status (`processing | completed | failed`) straight onto the *profile* column, which has
+a different vocabulary. It wrote `"completed"` — rejected. `elevenlabs_voice_id` is set in that
+same update, so **the id ElevenLabs returned was discarded.** Verified live: after the rejected
+update the column still read NULL. The clone exists at ElevenLabs; nothing here points to it.
+
+**3. No surface could ever find a finished clone.** Three readers filtered
+`.eq("training_status", "completed")`. The finished state is `ready`. Verified live on a probe
+profile: old filter **0**, corrected filter **1**.
+
+Two vocabularies, one variable, copied across — the same shape as the `closing` → deal-ladder
+error earlier tonight. The fix is an explicit `PROFILE_STATUS_FOR_JOB` map with a real fallback,
+so an unmapped job status can never produce `undefined`.
+
+### And the AI ISA never retried an unanswered call
+
+`app/api/voice/twilio/status/route.ts` closes every terminated leg with `status = "completed"`
+and puts the real disposition in **`outcome`** (`busy` / `no_answer` / `failed` / `canceled`).
+Two surfaces filtered `status IN (no_answer, busy, failed)`:
+
+* the ISA dashboard's retry list
+* the 4-hour callback sweep in `lib/application/ai-isa.ts`
+
+Both were reading the wrong column, so neither ever matched — the AI ISA has never retried an
+unanswered call. `busy` is not even a value `voice_calls.status` admits, which is how the
+vocabulary guard surfaced it; the wrong-column bug underneath was the larger half. Verified live
+with a busy call: filtering `status` returned **0**, filtering `outcome` returned **1**.
+
+`npm run test:voice-clone-lifecycle` — 27 checks, pure, on the chain. It asserts every literal
+written to `training_status` is admitted and every literal read is admitted, so a fourth
+spelling cannot appear on either side. Probe profile and probe call deleted.
+
+Vocabulary baseline: **74 → 70**. Chain: **125 simulators**. `tsc --noEmit`: 0.
+`npm run guard`: exit 0.

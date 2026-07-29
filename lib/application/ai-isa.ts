@@ -242,7 +242,10 @@ export async function retryFailedCallsService(loginId: string) {
     .from("voice_calls")
     .select("id, contact_id")
     .eq("agent_id", loginId)
-    .in("status", ["no_answer", "busy", "failed"])
+    // Disposition lives in OUTCOME, not status — the Twilio callback closes every
+    // terminated leg as status="completed". This sweep never found a call to
+    // retry because it was reading the wrong column.
+    .in("outcome", ["no_answer", "busy", "failed", "canceled"])
     .lte("started_at", new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString())
     .limit(50)
 
