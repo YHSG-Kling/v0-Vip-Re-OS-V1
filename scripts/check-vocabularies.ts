@@ -149,7 +149,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     widget_position: ["left", "right"],
   },
   ai_assistant_notes: {
-    note_type: ["action_item", "call_outcome", "decision", "follow_up", "general", "loan_update", "meeting_outcome", "observation", "vendor_update"],
+    note_type: ["action_item", "call_outcome", "decision", "follow_up", "general", "loan_update", "meeting_outcome", "observation", "review_monitoring_config", "review_recovery_plan", "review_request_draft", "vendor_update"],
     source: ["ai_assistant", "ai_draft_human_approved", "human"],
   },
   ai_autopilot_actions: {
@@ -524,7 +524,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     source_type: ["apify_actor", "google_trends", "manual", "reddit", "rss", "youtube_search"],
   },
   content_topic_uses: {
-    asset_type: ["blog_post", "marketing_plan_item", "newsletter_campaign", "newsletter_video", "podcast_episode", "social_post"],
+    asset_type: ["blog_post", "direct_mail_postcard", "marketing_plan_item", "newsletter_campaign", "newsletter_video", "podcast_episode", "situational_reel", "social_post"],
   },
   contract_reviews: {
     review_type: ["ai_automated", "manual"],
@@ -1303,7 +1303,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     access_method: ["agent_present", "key_at_office", "lockbox", "other", "smart_lock", "tenant_access"],
     buyer_interest_level: ["like_it", "love_it", "maybe", "no"],
     scheduling_method: ["email", "manual_call", "other", "self_book", "showingtime", "text"],
-    sync_source: ["manual", "other", "showingtime"],
+    sync_source: ["ai_scheduler", "manual", "other", "showingtime", "workflow_sequence"],
   },
   signature_requests: {
     request_status: ["cancelled", "completed", "expired", "partially_signed", "pending", "sent"],

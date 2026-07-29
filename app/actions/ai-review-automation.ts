@@ -13,6 +13,38 @@ import { revalidatePath } from "next/cache"
  * Handles review requests, sentiment analysis, response generation, and reputation management
  */
 
+/**
+ * ai_assistant_notes.brokerage_id is NOT NULL *and* the tenant INSERT policy
+ * requires it to equal current_user_brokerage_id() — an insert that omits it is
+ * rejected twice over. Two of the three note writes below omitted it entirely,
+ * so they could never have landed even once note_type/source were admitted.
+ *
+ * `agentId` reaches these actions as either agents.id or users.id depending on
+ * the caller, so both columns are tried. Returning null means "do not attempt
+ * the write" — a doomed insert is worse than an honest skip.
+ */
+async function resolveNoteBrokerageId(
+  supabase: { from: (t: string) => any },
+  agentId: string,
+): Promise<string | null> {
+  const { data } = await supabase
+    .from("agents")
+    .select("brokerage_id")
+    .or(`id.eq.${agentId},user_id.eq.${agentId}`)
+    .limit(1)
+    .maybeSingle()
+  return (data?.brokerage_id as string | undefined) ?? null
+}
+
+/**
+ * ai_assistant_notes.source names the PRODUCER CLASS
+ * (ai_assistant | ai_draft_human_approved | human) — not the subsystem. These
+ * writes previously passed 'ai_review_automation', which the CHECK does not
+ * admit and never could: it is a subsystem name in a producer-class column. The
+ * subsystem now lives in note_type, which m295 widened to carry it.
+ */
+const AI_NOTE_SOURCE = "ai_assistant"
+
 // ============================================================================
 // AI REVIEW REQUEST TIMING
 // ============================================================================
@@ -174,14 +206,8 @@ Generate:
 4. 3-touch follow-up sequence if no response`,
     })
 
-    // Resolve brokerage_id for the agent
-    const { data: agentRow } = await supabase
-      .from("agents")
-      .select("brokerage_id")
-      .eq("id", params.agentId)
-      .maybeSingle()
-
-    const brokerageId = agentRow?.brokerage_id ?? null
+    // Resolve brokerage_id for the agent (either id class — see resolveNoteBrokerageId).
+    const brokerageId = await resolveNoteBrokerageId(supabase, params.agentId)
 
     // Save to review_requests using verified live schema columns only.
     const { data: rrInsert } = await supabase
@@ -200,14 +226,14 @@ Generate:
       .single()
 
     // Persist AI-generated draft to ai_assistant_notes (note_text is the correct column).
-    if (rrInsert?.id) {
+    if (rrInsert?.id && brokerageId) {
       await supabase.from("ai_assistant_notes").insert({
         brokerage_id: brokerageId,
         created_by:   params.agentId,
         role:         "agent",
         note_text:    JSON.stringify(request),
         note_type:    "review_request_draft",
-        source:       "ai_review_automation",
+        source:       AI_NOTE_SOURCE,
         created_at:   new Date().toISOString(),
       })
     }
@@ -398,31 +424,30 @@ Create a comprehensive recovery plan including:
 7. Success metrics`,
     })
 
+    // brokerage_id is NOT NULL on BOTH writes below (the note and the event), so
+    // it is resolved once, before either, from the agent row (either id class).
+    const brokerageId = await resolveNoteBrokerageId(supabase, params.agentId)
+
     // review_recovery_plans table does not exist in live schema.
     // Persist recovery plan to ai_assistant_notes.
     // entity_type + entity_id columns were added to ai_assistant_notes via migration.
-    await supabase.from("ai_assistant_notes").insert({
-      created_by:  params.agentId,
-      role:        "agent",
-      note_text:   JSON.stringify({ type: "recovery_plan", plan: recoveryPlan }),
-      note_type:   "review_recovery_plan",
-      source:      "ai_review_automation",
-      entity_type: "agent_review",
-      entity_id:   params.reviewId,
-    })
+    if (brokerageId) {
+      await supabase.from("ai_assistant_notes").insert({
+        brokerage_id: brokerageId,
+        created_by:  params.agentId,
+        role:        "agent",
+        note_text:   JSON.stringify({ type: "recovery_plan", plan: recoveryPlan }),
+        note_type:   "review_recovery_plan",
+        source:      AI_NOTE_SOURCE,
+        entity_type: "agent_review",
+        entity_id:   params.reviewId,
+      })
+    }
 
     // lifecycle_events: actor_user_id (not agent_id), entity_type + entity_id columns.
-    // brokerage_id is NOT NULL (pass 5) — resolve it from the agent row
-    // (either id class) so the event actually lands.
-    const { data: agentRow } = await supabase
-      .from("agents")
-      .select("brokerage_id")
-      .or(`id.eq.${params.agentId},user_id.eq.${params.agentId}`)
-      .limit(1)
-      .maybeSingle()
-    if (agentRow?.brokerage_id) {
+    if (brokerageId) {
       await supabase.from("lifecycle_events").insert({
-        brokerage_id:  agentRow.brokerage_id,
+        brokerage_id:  brokerageId,
         actor_user_id: params.agentId,
         entity_type:   "agent_review",
         entity_id:     params.reviewId,
@@ -547,12 +572,20 @@ export async function aiSetupReviewMonitoring(params: {
       updated_at:          new Date().toISOString(),
     }
 
+    // brokerage_id is NOT NULL — without it the config was never stored, so the
+    // "configured" message below was the only trace the setting ever existed.
+    const brokerageId = await resolveNoteBrokerageId(supabase, params.agentId)
+    if (!brokerageId) {
+      return { success: false, error: "Could not resolve the agent's brokerage; monitoring was not saved." }
+    }
+
     await supabase.from("ai_assistant_notes").insert({
+      brokerage_id: brokerageId,
       created_by: params.agentId,
       role:       "agent",
       note_text:  JSON.stringify(config),
       note_type:  "review_monitoring_config",
-      source:     "ai_review_automation",
+      source:     AI_NOTE_SOURCE,
     })
 
     return {

@@ -5,6 +5,14 @@ import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { NextRequest, NextResponse } from "next/server"
 
+/**
+ * The note types this route can produce — and, not by coincidence, exactly the
+ * general-purpose half of the ai_assistant_notes.note_type CHECK. `noteType`
+ * arrives from the prepare_note model, which is *asked* for one of these but is
+ * not bound to comply; anything else is a rejected insert and a 500 the caller
+ * reads as "saving notes is broken". clampNoteType() keeps a creative answer
+ * from costing the user their note.
+ */
 const NOTE_TYPE_TITLE: Record<string, string> = {
   general: "Note",
   call_outcome: "Call Outcome",
@@ -16,6 +24,9 @@ const NOTE_TYPE_TITLE: Record<string, string> = {
   vendor_update: "Vendor Update",
   observation: "Observation",
 }
+
+const clampNoteType = (v: unknown): string =>
+  typeof v === "string" && v in NOTE_TYPE_TITLE ? v : "general"
 
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
@@ -149,6 +160,8 @@ Rules:
       }
     }
 
+    const safeNoteType = clampNoteType(noteType)
+
     // Resolve entity FK columns
     const contactId = entityType === "contact" ? entityId : null
     const transactionId = entityType === "transaction" ? entityId : null
@@ -159,13 +172,15 @@ Rules:
       .from("ai_assistant_notes")
       .insert({
         note_text: noteText,
-        note_type: noteType,
+        note_type: safeNoteType,
         brokerage_id: brokerageId,
         created_by: user.id,
         contact_id: contactId,
         transaction_id: transactionId,
         lead_id: leadId,
-        source: "internal_ai_assistant",
+        // PRODUCER CLASS, not subsystem. 'internal_ai_assistant' is not a value
+        // the CHECK admits, so every save_note here returned a 500.
+        source: "ai_assistant",
         content_hash: contentHash || null,
         ai_draft_prompt: sessionId || null,
       })
@@ -192,7 +207,7 @@ Rules:
         transaction_id: transactionId,
         activity_type: "ai_assistant_note",
         entity_type: entityType !== "general" ? entityType : null,
-        title: NOTE_TYPE_TITLE[noteType] ?? "Note",
+        title: NOTE_TYPE_TITLE[safeNoteType] ?? "Note",
         notes: noteText,
         status: "completed",
         completed_at: new Date().toISOString(),
