@@ -2,7 +2,7 @@
  * /dashboard/campaigns/workflow-reports
  *
  * Workflow OS reporting dashboard. Surfaces aggregate metrics from
- * workflow_step_runs + sequence_enrollments scoped to:
+ * sequence_step_executions + sequence_enrollments scoped to:
  *   - agent      (single-agent view, default for agent role)
  *   - team       (team-lead role)
  *   - brokerage  (broker / admin role)

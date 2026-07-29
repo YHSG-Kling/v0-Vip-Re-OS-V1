@@ -11,7 +11,7 @@
  *   5. Resolve variables ({{contact.x}}, {{step_1.image_url}}, etc.)
  *   6. Dispatch via channel registry (ChannelAdapter.execute)
  *   7. Write step_output to enrollment.step_outputs[output_variable_name]
- *   8. Audit log (workflow_step_runs + sequence_step_executions + isa_outreach_log)
+ *   8. Audit log (sequence_step_executions + isa_outreach_log)
  *   9. Emit kernel events
  *  10. Advance enrollment to next step
  *
@@ -319,7 +319,7 @@ export async function executeSequenceStep(
   }
 
   // ── Step 8: Build StepContext and dispatch via registry ────────────────────
-  const stepRunId = crypto.randomUUID()
+  const stepStartedAt = new Date().toISOString()
   const stepCtx: StepContext = {
     enrollmentId,
     step,
@@ -333,17 +333,12 @@ export async function executeSequenceStep(
     supabase,
   }
 
-  // Write running row to workflow_step_runs
-  void Promise.resolve(supabase.from("workflow_step_runs").insert({
-    id: stepRunId,
-    enrollment_id: enrollmentId,
-    step_id: step.id,
-    channel: step.channel,
-    status: "running",
-    output_variable_name: step.output_variable_name ?? null,
-    started_at: new Date().toISOString(),
-  })).catch(() => {})
-
+  // ONE LEDGER (m302). This used to open a second, parallel "running" row in
+  // workflow_step_runs — a duplicate of sequence_step_executions written from
+  // the adjacent line, best-effort so its failures were discarded, and inserted
+  // HERE, after the compliance gate, so every authority-blocked or channel-
+  // restricted step was invisible to it. It is dropped; the timing and output
+  // it carried now ride the one ledger that is written on every path.
   const dispatchResult: StepResult = await registry.dispatch(step.channel, stepCtx)
 
   const now = new Date().toISOString()
@@ -360,16 +355,13 @@ export async function executeSequenceStep(
     const defers  = (previousOutputs.__defers as Record<string, number> | undefined) ?? {}
     const decision = decideDeferral(defers[stepKey] ?? 0)
 
-    void Promise.resolve(supabase.from("workflow_step_runs").update({
-      status: "skipped", blocked_reason: dispatchResult.error ?? "over-touch deferral",
-      finished_at: now, duration_ms: durationMs,
-    }).eq("id", stepRunId)).catch(() => {})
-
     await supabase.from("sequence_step_executions").insert({
       enrollment_id: enrollmentId, sequence_id: enrollment.sequence_id, step_id: step.id,
       contact_id: contactId, channel: step.channel, status: "skipped",
       blocked_reason: `over-touch deferral (attempt ${decision.attempt}/${MAX_DEFERS}): ${dispatchResult.error ?? ""}`.trim(),
       sent_at: null,
+      provider_key: dispatchResult.providerKey ?? null,
+      started_at: stepStartedAt, finished_at: now, duration_ms: durationMs,
     })
 
     if (decision.action === "reschedule") {
@@ -427,20 +419,11 @@ export async function executeSequenceStep(
     ).catch(() => {})
   }
 
-  // ── Step 10: Update workflow_step_runs ─────────────────────────────────────
-  void Promise.resolve(
-    supabase.from("workflow_step_runs").update({
-      status: dispatchResult.status === "sent" ? "sent" : "failed",
-      step_output: dispatchResult.output ?? null,
-      provider_key: dispatchResult.providerKey,
-      provider_message_id: dispatchResult.messageId ?? null,
-      blocked_reason: dispatchResult.error ?? null,
-      finished_at: now,
-      duration_ms: durationMs,
-    }).eq("id", stepRunId)
-  ).catch(() => {})
-
-  // ── Step 11: sequence_step_executions audit row ────────────────────────────
+  // ── Step 10: the per-step ledger (ONE row, every path — m302) ──────────────
+  // Carries what the dropped workflow_step_runs duplicate used to hold: the
+  // step's output under its variable name, the provider that actually carried
+  // it, and the dispatch timing. Awaited, so a write failure surfaces instead
+  // of being swallowed the way the duplicate's .catch(() => {}) swallowed it.
   await supabase.from("sequence_step_executions").insert({
     enrollment_id: enrollmentId,
     sequence_id: enrollment.sequence_id,
@@ -451,6 +434,12 @@ export async function executeSequenceStep(
     provider_message_id: dispatchResult.messageId ?? null,
     sent_at: dispatchResult.status === "sent" ? now : null,
     blocked_reason: dispatchResult.error ?? null,
+    step_output: dispatchResult.output ?? null,
+    output_variable_name: step.output_variable_name ?? null,
+    provider_key: dispatchResult.providerKey ?? null,
+    started_at: stepStartedAt,
+    finished_at: now,
+    duration_ms: durationMs,
   })
 
   // ── Step 12: isa_outreach_log + message_provider_logs ─────────────────────

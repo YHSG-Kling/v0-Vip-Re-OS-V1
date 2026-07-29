@@ -1277,7 +1277,6 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   workflow_intake_sessions: "campaign_orchestrator",
   workflow_run_steps: "campaign_orchestrator",
   workflow_runs: "campaign_orchestrator",
-  workflow_step_runs: "campaign_orchestrator",
   workflow_webhook_events: "campaign_orchestrator",
 
   // recruiting_manager (56) — agent-level MONEY tables (cap, commissions, commission

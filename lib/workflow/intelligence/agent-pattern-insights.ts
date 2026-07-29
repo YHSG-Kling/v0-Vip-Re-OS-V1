@@ -1,7 +1,7 @@
 /**
  * lib/workflow/intelligence/agent-pattern-insights.ts
  *
- * Reads an agent's deal history (offers + transactions + workflow_step_runs)
+ * Reads an agent's deal history (offers + transactions)
  * and surfaces patterns as gentle nudges:
  *   - "On condos, your offers are accepted 75% of the time when EMD ≥ 3%"
  *   - "Top performer in your brokerage averages 0.9 days from offer to

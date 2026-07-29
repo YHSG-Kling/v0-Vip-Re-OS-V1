@@ -1603,7 +1603,4 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   workflow_runs: {
     status: ["cancelled", "completed", "failed", "paused", "running"],
   },
-  workflow_step_runs: {
-    status: ["blocked", "completed", "failed", "running", "sent", "skipped"],
-  },
 }

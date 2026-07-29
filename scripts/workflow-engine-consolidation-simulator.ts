@@ -48,8 +48,14 @@ console.log("\n── the retired tables are gone from the contract ──")
   const reg = src("lib/kernel/manager-registry.ts")
   check("no TABLE_MANAGER ownership rows remain for the dropped tables",
     !/\n\s*workflow_executions:\s*"/.test(reg) && !/\n\s*workflow_step_executions:\s*"/.test(reg) && !/\n\s*workflow_retries:\s*"/.test(reg))
-  check("the drip engine's workflow_step_runs is untouched (still owned + in snapshot)",
-    /\n\s*workflow_step_runs:\s*\[/.test(snap))
+  // SUPERSEDED. This pass left workflow_step_runs alone and was right to: it
+  // compared the table against the ORCHESTRATOR tables and correctly found a
+  // different concern. What it could not see from that angle is that
+  // workflow_step_runs is keyed on enrollment_id + step_id — it is a SEQUENCE
+  // table, and the sequence engine already had sequence_step_executions. m302
+  // merged them. See scripts/sequence-step-ledger-simulator.ts.
+  check("workflow_step_runs is retired — merged into sequence_step_executions (m302)",
+    !/\n\s*workflow_step_runs:\s*\[/.test(snap))
 }
 
 async function liveLayer() {

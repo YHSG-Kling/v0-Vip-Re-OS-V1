@@ -136,20 +136,30 @@ export default function WorkflowReportsClient({
             <StatCard label="Success rate"     value={`${(report.successRate * 100).toFixed(1)}%`} icon={TrendingUp} color="text-emerald-600" />
           </div>
 
+          {/* Both of these used to read workflow_step_runs.converted_at /
+              conversion_value_cents — columns with no writer anywhere in the
+              codebase, so the pair rendered "0" and "$0" for every brokerage,
+              permanently. The count now comes from the enrollment (stamped when
+              an enrolled contact's transaction closes); the dollar tile is gone
+              because splitting deal revenue across what touched a contact is
+              the attribution engine's job, and a second answer here is what put
+              the dead columns on this page to begin with. */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <StatCard
-              label="Conversions tracked"
+              label="Converted"
               value={report.totalConversions}
               icon={CheckCircle2}
               color="text-emerald-700"
-              hint="Step runs marked converted_at"
+              hint="Enrolled contacts who went on to a transaction"
             />
             <StatCard
-              label="Conversion value"
-              value={`$${(report.totalConversionValueCents / 100).toLocaleString()}`}
-              icon={DollarSign}
+              label="Conversion rate"
+              value={report.totalEnrollments > 0
+                ? `${((report.totalConversions / report.totalEnrollments) * 100).toFixed(1)}%`
+                : "—"}
+              icon={TrendingUp}
               color="text-emerald-700"
-              hint="Sum of conversion_value_cents across attributed step runs"
+              hint="Converted ÷ enrollments in range"
             />
           </div>
 
