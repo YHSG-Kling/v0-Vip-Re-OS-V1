@@ -17,10 +17,9 @@
 // writers use the constant, and the loose spellings already in the database are
 // mapped forward by normalizeContactSource() rather than orphaned.
 //
-// PERSONA is the buyer/seller axis the product already uses to pick content —
-// engage-contact.ts resolves exactly this from contact_type when it chooses a
-// situational portal message. Same four values, one resolver, so a sequence and
-// an ISA touch cannot disagree about who they are talking to.
+// TWO AXES, NOT ONE. See below — contact_type (buyer/seller/both/lifetime) and
+// persona (first_time/divorce/probate/fsbo/downsize/…) are independent, and m294
+// corrects an earlier migration of mine that conflated them.
 
 /** Canonical capture sources that a campaign sequence can be keyed on. */
 export const CONTACT_SOURCE_HOME_VALUE = "home_value"
@@ -61,13 +60,34 @@ export function normalizeContactSource(raw: string | null | undefined): Campaign
   return SOURCE_ALIASES[prefix] ?? null
 }
 
-// ── Persona ──────────────────────────────────────────────────────────────────
+// ── The TWO audience axes ────────────────────────────────────────────────────
+//
+// OWNER: "persona is like a first time home buyer, divorce, probate, expired,
+// fsbo, downsizer, senior, etc and contact type is seller, buyer, both,
+// lifetime."
+//
+// They are INDEPENDENT and a campaign needs both. A downsizing seller and a
+// first-time buyer are different campaigns — and so are a downsizing seller and
+// a divorcing seller. lib/agents/campaign-orchestrator.ts already composes each
+// campaign by "trigger + persona + consent state"; this is that persona.
+
+/** WHO they are to us. campaign_sequences.contact_type (m294). */
+export const CAMPAIGN_CONTACT_TYPES = ["buyer", "seller", "both", "lifetime"] as const
+export type CampaignContactType = (typeof CAMPAIGN_CONTACT_TYPES)[number]
+
+export function isCampaignContactType(v: string | null | undefined): v is CampaignContactType {
+  return !!v && (CAMPAIGN_CONTACT_TYPES as readonly string[]).includes(v)
+}
 
 /**
- * The audience axis a sequence targets. Matches the persona engage-contact.ts
- * already derives from contact_type for situational portal messages.
+ * WHAT SITUATION brought them to the market. Mirrors the `Persona` union in
+ * lib/kernel/types.ts exactly — one vocabulary, two places that must agree, and
+ * scripts/campaign-auto-enroll-simulator.ts pins them together.
  */
-export const CAMPAIGN_PERSONAS = ["buyer", "seller", "both", "lifetime"] as const
+export const CAMPAIGN_PERSONAS = [
+  "first_time", "relocated", "luxury", "fsbo", "probate", "upsize",
+  "downsize", "military", "divorce", "senior", "expired", "foreclosure", "other",
+] as const
 export type CampaignPersona = (typeof CAMPAIGN_PERSONAS)[number]
 
 export function isCampaignPersona(v: string | null | undefined): v is CampaignPersona {
@@ -78,11 +98,12 @@ export function isCampaignPersona(v: string | null | undefined): v is CampaignPe
 const LIFETIME_TYPES = new Set(["lifetime", "lifetime_customer", "past_client", "client", "sphere"])
 
 /**
- * PURE — the persona for a contact, from its contact_type. Defaults to `buyer`,
- * which is what the ISA's own resolver does: an unknown type is treated as a
- * buyer rather than dropped, so a capture never falls out of the funnel.
+ * PURE — the campaign contact_type for a contact. Defaults to `buyer`, matching
+ * the resolver engage-contact.ts already uses for situational portal messages:
+ * an unknown type is treated as a buyer rather than dropped, so a capture never
+ * falls out of the funnel.
  */
-export function personaForContactType(contactType: string | null | undefined): CampaignPersona {
+export function contactTypeForContact(contactType: string | null | undefined): CampaignContactType {
   const t = (contactType ?? "").trim().toLowerCase()
   if (t === "seller") return "seller"
   if (t === "both") return "both"
@@ -91,16 +112,52 @@ export function personaForContactType(contactType: string | null | undefined): C
 }
 
 /**
- * PURE — the persona a home-value capture implies. Someone asking what their
- * home is worth is a seller, whatever their contact_type says on the way in.
+ * PURE — the contact_type a home-value capture implies. Someone asking what
+ * their home is worth is a seller, whatever their type said on the way in — but
+ * a known lifetime customer stays lifetime.
  */
-export function personaForSource(
+export function contactTypeForSource(
   source: CampaignKeyedSource,
   contactType: string | null | undefined,
-): CampaignPersona {
-  if (source === CONTACT_SOURCE_HOME_VALUE) {
-    // A home-value lead who is ALSO a known buyer is 'both', not a plain seller.
-    return personaForContactType(contactType) === "buyer" ? "seller" : personaForContactType(contactType)
-  }
-  return personaForContactType(contactType)
+): CampaignContactType {
+  const resolved = contactTypeForContact(contactType)
+  if (source === CONTACT_SOURCE_HOME_VALUE && resolved === "buyer") return "seller"
+  return resolved
+}
+
+/**
+ * contacts.contact_persona is free text and has ALREADY drifted from the Persona
+ * union — live rows carry `first_time_buyer`, `luxury_buyer`, `listing_seller`,
+ * `past_client`, none of which are Persona values. These map the drifted
+ * spellings forward; a spelling that encodes a CONTACT TYPE rather than a
+ * situation (listing_seller, past_client) has no persona and returns null, so it
+ * is never mistaken for one.
+ */
+const PERSONA_ALIASES: Record<string, CampaignPersona> = {
+  first_time_buyer: "first_time",
+  firsttime: "first_time",
+  first_time_seller: "first_time",
+  luxury_buyer: "luxury",
+  luxury_seller: "luxury",
+  downsizer: "downsize",
+  downsizing: "downsize",
+  upsizer: "upsize",
+  upsizing: "upsize",
+  relocation: "relocated",
+  veteran: "military",
+  pre_foreclosure: "foreclosure",
+  expired_listing: "expired",
+  for_sale_by_owner: "fsbo",
+}
+
+/**
+ * PURE — the canonical persona for a raw contacts.contact_persona, or null when
+ * the value names no situation. Null means "no persona-specific campaign", which
+ * a persona-agnostic sequence still serves.
+ */
+export function normalizeContactPersona(raw: string | null | undefined): CampaignPersona | null {
+  const t = (raw ?? "").trim().toLowerCase()
+  if (!t) return null
+  if (isCampaignPersona(t)) return t
+  return PERSONA_ALIASES[t] ?? null
 }

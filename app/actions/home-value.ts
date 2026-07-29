@@ -456,6 +456,11 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
       contactId,
       source: CONTACT_SOURCE_HOME_VALUE,
       contactType: "seller",
+      // Persona (first_time / downsize / divorce / probate / …) is the SITUATION,
+      // and a home-value form does not reveal it. Left null so a persona-agnostic
+      // seller sequence is chosen; the ISA/campaign managers set it later from
+      // the qualification answers, and the next situational touch keys on it.
+      contactPersona: null,
       enrolledBy: resolvedAgentId ?? null,
     })
 

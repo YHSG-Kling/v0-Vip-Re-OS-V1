@@ -3831,3 +3831,69 @@ Filed as its own task rather than bundled here: a pure rename (plus retiring the
 value from `platform_credentials.platform` and the vendor-governance price tables) touching ~41
 files with zero behaviour change. Worth doing as one reviewable commit, not smuggled into a
 feature change.
+
+---
+
+## m294 — I conflated persona with contact_type. Correcting it.
+
+> "persona is like a first time home buyer, divorce, probate, expired, fsbo, downsizer,
+> senior, etc and contact type is seller, buyer, both, lifetime."
+
+m293 added `campaign_sequences.persona` with a CHECK of `buyer | seller | both | lifetime`.
+**That is contact_type.** I took the four-value axis `engage-contact.ts` uses to pick a portal
+message and called it persona, without checking that `Persona` was already declared — thirteen
+values, in `lib/kernel/types.ts`, and already consumed by
+`lib/agents/campaign-orchestrator.ts`, which composes every campaign by *"trigger + persona +
+consent state"*. The vocabulary existed; I invented a second one on top of it. That is exactly
+the drift this whole sweep exists to remove, introduced by me.
+
+**They are two independent axes and a campaign needs both.** A downsizing seller and a
+first-time buyer are different campaigns — and so are a downsizing seller and a *divorcing*
+seller.
+
+| axis | values |
+| --- | --- |
+| `contact_type` | who they are to us — buyer, seller, both, lifetime |
+| `persona` | the situation that brought them — first_time, relocated, luxury, fsbo, probate, upsize, downsize, military, divorce, senior, expired, foreclosure, other |
+
+m294 renames m293's column to `contact_type` (nothing is lost — a row keyed on it keeps
+working) and adds the real `persona`, CHECKed against the kernel union. Verified live: `persona
+= 'seller'` is now refused, and `contact_type = 'divorce'` is refused. Each axis rejects the
+other's values, which is the property that makes the mistake I made unrepeatable.
+
+**Selection became a 4-rung ladder**, ranked most-specific-first:
+
+```
+1. contact_type AND persona match    divorcing seller
+2. contact_type matches, persona any any seller
+3. persona matches, contact_type any anyone divorcing
+4. both any                          anyone from this source
+```
+
+A sequence naming a *different* contact_type or persona is never selected — enrolling a
+first-time buyer into a probate campaign is worse than not firing. Verified live across all
+three shapes.
+
+**A third drift surfaced on the way.** `contacts.contact_persona` is free text and has already
+drifted from the `Persona` union: live rows carry `first_time_buyer`, `luxury_buyer`,
+`listing_seller`, `past_client` — none of which are Persona values. `normalizeContactPersona()`
+maps the real spellings forward (`first_time_buyer` → `first_time`, `downsizer` → `downsize`)
+and returns **null** for the two that name a *contact type* rather than a situation, so
+`listing_seller` can never be mistaken for a persona.
+
+### And the follow-up you believed fires — the intent is wired, the handler is not
+
+> "when we built the home value which is a lead magnet, the follow up generates automatically
+> as soon as someone fills out the form."
+
+That is the design, and both halves of it are in the code. Neither runs. The capture emits
+`KernelEvent.HOME_VALUE_CONTACT_CREATED` into `lifecycle_events` — and that string appears in
+exactly two places in the entire repo: the enum that declares it, and the one line that emits
+it. **There is no handler.** The second half was the `campaign_sequences` lookup, dead on an
+impossible literal (fixed in the previous commit). So the automatic follow-up you designed has
+never fired by either route; the enroller wired here is the first thing that makes it happen.
+
+`npm run test:campaign-auto-enroll` — 62 checks, pure, on the chain, now pinning the persona set
+against the kernel union so the two cannot drift apart again.
+
+Chain: **123 simulators**. `tsc --noEmit`: 0. `npm run guard`: exit 0.

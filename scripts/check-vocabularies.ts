@@ -375,7 +375,8 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     channel: ["ad_campaign", "add_to_segment", "ai_call", "ai_image", "assign_task", "avm_cma", "condition", "direct_mail", "draft_document", "email", "in_app", "listing_landing_page", "newsletter", "remove_from_campaign", "schedule_showing", "schedule_tour", "send_for_esign", "send_gift", "sms", "social_post", "video", "voice_drop", "wait"],
   },
   campaign_sequences: {
-    persona: ["both", "buyer", "lifetime", "seller"],
+    contact_type: ["both", "buyer", "lifetime", "seller"],
+    persona: ["divorce", "downsize", "expired", "first_time", "foreclosure", "fsbo", "luxury", "military", "other", "probate", "relocated", "senior", "upsize"],
     sequence_type: ["drip", "nurture", "post_close", "re_engagement", "transaction"],
     trigger_event: ["buyer_verified", "contact_created", "deal_closed", "ghost_lead_detected", "isa_qualified_lead", "lead_assigned", "lead_scored", "listing_published", "manual", "new_lead", "offer_submitted", "reengagement_started", "showing_completed", "tour_scheduled"],
   },

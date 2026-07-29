@@ -15,10 +15,12 @@
 // "Review and start a drip campaign", which is the manual fallback for an
 // automation that was never firing.
 //
-// Selection is by (brokerage, source_key, persona) — the discriminator m293 added.
-// Exact-persona wins over a persona-agnostic sequence, so a brokerage can run one
-// generic home-value drip and override it for sellers without ambiguity. A
-// sequence with no source_key is never auto-selected: unkeyed means hand-run.
+// Selection is by (brokerage, source_key, contact_type, persona) — the two
+// audience axes m293/m294 added. contact_type is who they are to us (buyer,
+// seller, both, lifetime); persona is the SITUATION that brought them (first
+// time, divorce, probate, fsbo, downsize, senior, …). They are independent, and
+// pickSequence ranks most-specific-first across both. A sequence with no
+// source_key is never auto-selected: unkeyed means hand-run.
 //
 // IDEMPOTENT. Re-running the capture (a double form post, a retried webhook)
 // must not enrol twice, so an existing non-terminal enrolment short-circuits.
@@ -29,8 +31,10 @@
 
 import {
   normalizeContactSource,
-  personaForSource,
+  normalizeContactPersona,
+  contactTypeForSource,
   type CampaignKeyedSource,
+  type CampaignContactType,
   type CampaignPersona,
 } from "@/lib/campaigns/contact-sources"
 
@@ -50,8 +54,10 @@ export interface AutoEnrollInput {
   contactId: string
   /** Raw contacts.source as written by the capture; normalized here. */
   source: string | null | undefined
-  /** contacts.contact_type — resolves the persona. */
+  /** contacts.contact_type — buyer | seller | both | lifetime. */
   contactType?: string | null
+  /** contacts.contact_persona — the SITUATION (first_time, divorce, probate, …). */
+  contactPersona?: string | null
   /** agents.id of the enrolling agent, when the capture knows it. */
   enrolledBy?: string | null
   /** Delay before the first step. Defaults to 24h, matching the prior behaviour. */
@@ -68,15 +74,36 @@ export interface AutoEnrollResult {
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
-/** PURE — pick the best sequence: an exact persona match beats a persona-agnostic one. */
-export function pickSequence<T extends { id: string; persona?: string | null }>(
+/**
+ * PURE — pick the best sequence for a contact, MOST SPECIFIC FIRST.
+ *
+ * The two axes are independent, so specificity is a 4-rung ladder. A campaign
+ * written for a divorcing seller must beat one written for sellers generally,
+ * which must beat one written for "anyone from this source":
+ *
+ *   1. contact_type AND persona both match   (divorcing seller)
+ *   2. contact_type matches, persona is any  (any seller)
+ *   3. persona matches, contact_type is any  (anyone divorcing)
+ *   4. both any                              (anyone from this source)
+ *
+ * A sequence that names a DIFFERENT contact_type or persona is never selected —
+ * enrolling a first-time buyer into a probate campaign is worse than not firing.
+ */
+export function pickSequence<T extends { id: string; contact_type?: string | null; persona?: string | null }>(
   candidates: T[],
-  persona: CampaignPersona,
+  contactType: CampaignContactType,
+  persona: CampaignPersona | null,
 ): T | null {
   if (!candidates.length) return null
+  const typeOk = (c: T) => c.contact_type == null || c.contact_type === contactType
+  const personaOk = (c: T) => c.persona == null || c.persona === persona
+  const eligible = candidates.filter((c) => typeOk(c) && personaOk(c))
+  if (!eligible.length) return null
   return (
-    candidates.find((c) => c.persona === persona) ??
-    candidates.find((c) => c.persona == null) ??
+    eligible.find((c) => c.contact_type === contactType && c.persona != null && c.persona === persona) ??
+    eligible.find((c) => c.contact_type === contactType && c.persona == null) ??
+    eligible.find((c) => c.contact_type == null && c.persona != null && c.persona === persona) ??
+    eligible.find((c) => c.contact_type == null && c.persona == null) ??
     null
   )
 }
@@ -94,33 +121,29 @@ export async function autoEnrollContact(
     const sourceKey: CampaignKeyedSource | null = normalizeContactSource(input.source)
     if (!sourceKey) return { enrolled: false, reason: `source '${input.source ?? ""}' is not campaign-keyed` }
 
-    const persona = personaForSource(sourceKey, input.contactType)
+    const contactType = contactTypeForSource(sourceKey, input.contactType)
+    const persona = normalizeContactPersona(input.contactPersona)
 
+    // Fetch every keyed sequence for this source and let pickSequence rank them.
+    // Filtering both nullable axes in PostgREST needs an .or() per axis, and a
+    // brokerage has a handful of keyed sequences at most — ranking in memory is
+    // simpler to read and cannot get the precedence subtly wrong.
     const { data: candidates, error: seqErr } = await db
       .from("campaign_sequences")
-      .select("id, persona")
+      .select("id, contact_type, persona")
       .eq("brokerage_id", input.brokerageId)
       .eq("source_key", sourceKey)
       .eq("is_active", true)
-      .in("persona", [persona])
-      .limit(10)
-
-    // A persona-agnostic sequence (persona IS NULL) cannot be reached by .in(),
-    // so it is fetched alongside rather than instead.
-    const { data: agnostic } = await db
-      .from("campaign_sequences")
-      .select("id, persona")
-      .eq("brokerage_id", input.brokerageId)
-      .eq("source_key", sourceKey)
-      .eq("is_active", true)
-      .is("persona", null)
-      .limit(10)
+      .limit(50)
 
     if (seqErr) return { enrolled: false, reason: seqErr.message }
 
-    const sequence = pickSequence([...(candidates ?? []), ...(agnostic ?? [])], persona)
+    const sequence = pickSequence(candidates ?? [], contactType, persona)
     if (!sequence) {
-      return { enrolled: false, reason: `no active sequence for source '${sourceKey}' persona '${persona}'` }
+      return {
+        enrolled: false,
+        reason: `no active sequence for source '${sourceKey}' contact_type '${contactType}' persona '${persona ?? "any"}'`,
+      }
     }
 
     // Idempotence: already in this sequence and not finished with it.

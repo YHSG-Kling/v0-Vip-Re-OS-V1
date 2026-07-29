@@ -392,11 +392,12 @@ export async function captureFormSubmission(
   // Hoisted so the autonomous enroller below can resolve the persona whether the
   // contact already existed or was created by this capture.
   let capturedContactType: string | null = null
+  let capturedContactPersona: string | null = null
 
   if (data.email) {
     const { data: existingContact } = await supabase
       .from("contacts")
-      .select("id, agent_id, contact_type")
+      .select("id, agent_id, contact_type, contact_persona")
       .eq("email", data.email)
       .eq("brokerage_id", input.brokerageId)
       .maybeSingle()
@@ -404,6 +405,7 @@ export async function captureFormSubmission(
     if (existingContact) {
       contactId = existingContact.id
       capturedContactType = (existingContact as { contact_type?: string | null }).contact_type ?? null
+      capturedContactPersona = (existingContact as { contact_persona?: string | null }).contact_persona ?? null
       // Claim an UNOWNED contact for the magnet's agent — a returning-but-unassigned person who fills
       // out this agent's lead magnet becomes that agent's lead. Never reassign a contact another agent
       // already owns (no lead-stealing). The contacts.agent_id trigger emits contact_agent_assigned.
@@ -621,6 +623,7 @@ export async function captureFormSubmission(
       contactId,
       source: input.source ?? CONTACT_SOURCE_LEAD_MAGNET,
       contactType: capturedContactType,
+      contactPersona: capturedContactPersona,
       enrolledBy: form.agent_id ?? null,
       firstStepDelayMs: 0,   // a magnet download is a warm moment — follow up now
       now: new Date(submittedAt),

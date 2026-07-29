@@ -46,11 +46,15 @@ import {
   CONTACT_SOURCE_HOME_VALUE,
   CONTACT_SOURCE_LEAD_MAGNET,
   CAMPAIGN_PERSONAS,
+  CAMPAIGN_CONTACT_TYPES,
   normalizeContactSource,
-  personaForContactType,
-  personaForSource,
+  normalizeContactPersona,
+  contactTypeForContact,
+  contactTypeForSource,
   isCampaignPersona,
+  isCampaignContactType,
 } from "../lib/campaigns/contact-sources"
+import type { Persona } from "../lib/kernel/types"
 import {
   autoEnrollContact,
   pickSequence,
@@ -108,45 +112,90 @@ console.log("\n── the source vocabulary is canonical, and repairs what was w
   check("empty/null are null", normalizeContactSource("") === null && normalizeContactSource(null) === null)
 }
 
-console.log("\n── persona matches the live CHECK (m293) ──")
+console.log("\n── TWO axes, not one (m294 corrects m293) ──")
 {
-  const live = CHECK_VOCABULARIES.campaign_sequences?.persona ?? []
-  check(`campaign_sequences.persona has 4 values (${live.length})`, live.length === 4)
+  // m293 shipped `persona` with a CHECK of buyer|seller|both|lifetime. That is
+  // CONTACT_TYPE. Persona is the SITUATION that brought them to the market.
+  const liveType = CHECK_VOCABULARIES.campaign_sequences?.contact_type ?? []
+  const livePersona = CHECK_VOCABULARIES.campaign_sequences?.persona ?? []
+
+  check(`contact_type has 4 values (${liveType.join(", ")})`, liveType.length === 4)
   check("the module declares exactly them",
-    CAMPAIGN_PERSONAS.length === 4 && CAMPAIGN_PERSONAS.every((p) => live.includes(p)))
-  check("'investor' is not a campaign persona", !isCampaignPersona("investor"))
-  check("seller resolves from contact_type", personaForContactType("seller") === "seller")
-  check("both resolves", personaForContactType("both") === "both")
-  check("a past client is lifetime", personaForContactType("past_client") === "lifetime")
-  check("sphere is lifetime too", personaForContactType("sphere") === "lifetime")
+    CAMPAIGN_CONTACT_TYPES.length === 4 && CAMPAIGN_CONTACT_TYPES.every((t) => liveType.includes(t)))
+  check("'first_time' is NOT a contact_type", !isCampaignContactType("first_time"))
+
+  check(`persona has 13 values (${livePersona.length})`, livePersona.length === 13)
+  check("the module declares exactly them",
+    CAMPAIGN_PERSONAS.length === livePersona.length && CAMPAIGN_PERSONAS.every((p) => livePersona.includes(p)))
+  check("'seller' is NOT a persona — that was the m293 error",
+    !isCampaignPersona("seller") && !isCampaignPersona("buyer"))
+  for (const p of ["first_time", "divorce", "probate", "expired", "fsbo", "downsize", "senior"]) {
+    check(`persona '${p}' is storable`, livePersona.includes(p))
+  }
+
+  // The persona vocabulary must stay identical to lib/kernel/types.ts `Persona`,
+  // which lib/agents/campaign-orchestrator.ts already composes campaigns by.
+  const kernelPersonas: Persona[] = ["first_time", "relocated", "luxury", "fsbo", "probate", "upsize",
+    "downsize", "military", "divorce", "senior", "expired", "foreclosure", "other"]
+  check("the persona set is IDENTICAL to the kernel Persona union",
+    kernelPersonas.length === CAMPAIGN_PERSONAS.length &&
+    kernelPersonas.every((p) => (CAMPAIGN_PERSONAS as readonly string[]).includes(p)))
+
+  check("seller resolves from contact_type", contactTypeForContact("seller") === "seller")
+  check("a past client is lifetime", contactTypeForContact("past_client") === "lifetime")
   check("an unknown type defaults to buyer, never dropped",
-    personaForContactType("wat") === "buyer" && personaForContactType(null) === "buyer")
-  check("a home-value capture is a SELLER whatever the type says",
-    personaForSource(CONTACT_SOURCE_HOME_VALUE, "buyer") === "seller")
+    contactTypeForContact("wat") === "buyer" && contactTypeForContact(null) === "buyer")
+  check("a home-value capture is a SELLER whatever the type said",
+    contactTypeForSource(CONTACT_SOURCE_HOME_VALUE, "buyer") === "seller")
   check("…but a known lifetime customer stays lifetime",
-    personaForSource(CONTACT_SOURCE_HOME_VALUE, "past_client") === "lifetime")
-  check("a lead magnet keeps the contact's own persona",
-    personaForSource(CONTACT_SOURCE_LEAD_MAGNET, "buyer") === "buyer")
+    contactTypeForSource(CONTACT_SOURCE_HOME_VALUE, "past_client") === "lifetime")
+
+  // contacts.contact_persona is free text and has ALREADY drifted from Persona.
+  check("'first_time_buyer' (a live value) maps to first_time",
+    normalizeContactPersona("first_time_buyer") === "first_time")
+  check("'luxury_buyer' (a live value) maps to luxury",
+    normalizeContactPersona("luxury_buyer") === "luxury")
+  check("'downsizer' maps to downsize", normalizeContactPersona("downsizer") === "downsize")
+  check("'listing_seller' names a CONTACT TYPE, not a situation → null",
+    normalizeContactPersona("listing_seller") === null)
+  check("'past_client' likewise → null", normalizeContactPersona("past_client") === null)
+  check("an unknown persona is null, never guessed", normalizeContactPersona("wat") === null)
 }
 
-console.log("\n── selection: exact persona beats persona-agnostic ──")
+console.log("\n── selection ranks MOST SPECIFIC across both axes ──")
 {
-  const both = [{ id: "seller-drip", persona: "seller" }, { id: "any-drip", persona: null }]
-  check("a seller gets the seller drip", pickSequence(both, "seller")?.id === "seller-drip")
-  check("a lifetime contact falls back to the agnostic drip", pickSequence(both, "lifetime")?.id === "any-drip")
-  check("agnostic-only still enrols", pickSequence([{ id: "any-drip", persona: null }], "buyer")?.id === "any-drip")
-  check("no candidates → null, not a guess", pickSequence([], "seller") === null)
-  check("a mismatched-persona-only set does NOT enrol the wrong audience",
-    pickSequence([{ id: "buyer-drip", persona: "buyer" }], "seller") === null)
+  const all = [
+    { id: "divorcing-seller", contact_type: "seller", persona: "divorce" },
+    { id: "any-seller",       contact_type: "seller", persona: null },
+    { id: "anyone-divorcing", contact_type: null,     persona: "divorce" },
+    { id: "anyone",           contact_type: null,     persona: null },
+  ]
+  check("a divorcing seller gets the divorcing-seller campaign",
+    pickSequence(all, "seller", "divorce")?.id === "divorcing-seller")
+  check("a downsizing seller falls back to the general seller campaign",
+    pickSequence(all, "seller", "downsize")?.id === "any-seller")
+  check("a divorcing BUYER gets the persona campaign, not the seller one",
+    pickSequence(all, "buyer", "divorce")?.id === "anyone-divorcing")
+  check("a first-time buyer with no matching rung falls all the way back",
+    pickSequence(all, "buyer", "first_time")?.id === "anyone")
+  check("a contact with NO persona still gets the contact_type campaign",
+    pickSequence(all, "seller", null)?.id === "any-seller")
+
+  // The important negative: never enrol into a campaign written for someone else.
+  check("a probate campaign never takes a first-time buyer",
+    pickSequence([{ id: "probate", contact_type: null, persona: "probate" }], "buyer", "first_time") === null)
+  check("a seller campaign never takes a buyer",
+    pickSequence([{ id: "sellers", contact_type: "seller", persona: null }], "buyer", "first_time") === null)
+  check("no candidates → null, not a guess", pickSequence([], "seller", "divorce") === null)
 }
 
 console.log("\n── the enroller ──")
 {
-  const seq = [{ id: "seq-1", persona: "seller" }]
-  const a = fakeDb({ campaign_sequences: [seq, []], sequence_enrollments: [[]] })
+  const seq = [{ id: "seq-1", contact_type: "seller", persona: null }]
+  const a = fakeDb({ campaign_sequences: [seq], sequence_enrollments: [[]] })
   const r = await autoEnrollContact(a.db, {
     brokerageId: "b1", contactId: "c1", source: "home_value_tool", contactType: "seller",
-    enrolledBy: "agent-1", now: new Date("2026-07-29T00:00:00.000Z"),
+    contactPersona: "downsizer", enrolledBy: "agent-1", now: new Date("2026-07-29T00:00:00.000Z"),
   })
   check("enrols on the canonicalised source", r.enrolled && r.sequenceId === "seq-1")
   const sel = a.calls.find((c) => c.table === "campaign_sequences")
@@ -159,17 +208,17 @@ console.log("\n── the enroller ──")
   check("carries the tenant and the enrolling agent",
     ins?.payload.brokerage_id === "b1" && ins?.payload.enrolled_by === "agent-1")
 
-  const b = fakeDb({ campaign_sequences: [seq, []], sequence_enrollments: [[{ id: "e1", status: "active" }]] })
+  const b = fakeDb({ campaign_sequences: [seq], sequence_enrollments: [[{ id: "e1", status: "active" }]] })
   const r2 = await autoEnrollContact(b.db, { brokerageId: "b1", contactId: "c1", source: "home_value", contactType: "seller" })
   check("a double form post does not enrol twice", !r2.enrolled && r2.reason === "already enrolled")
   check("…and it does not insert", !b.calls.some((c) => c.table === "sequence_enrollments" && c.payload))
 
-  const c = fakeDb({ campaign_sequences: [[], []], sequence_enrollments: [[]] })
+  const c = fakeDb({ campaign_sequences: [[]], sequence_enrollments: [[]] })
   const r3 = await autoEnrollContact(c.db, { brokerageId: "b1", contactId: "c1", source: "home_value", contactType: "seller" })
   check("no keyed sequence → no enrolment, and it says so",
     !r3.enrolled && (r3.reason ?? "").includes("no active sequence"))
 
-  const d = fakeDb({ campaign_sequences: [[], []], sequence_enrollments: [[]] })
+  const d = fakeDb({ campaign_sequences: [[]], sequence_enrollments: [[]] })
   const r4 = await autoEnrollContact(d.db, { brokerageId: "b1", contactId: "c1", source: "website" })
   check("a non-keyed source never touches the database",
     !r4.enrolled && d.calls.length === 0 && (r4.reason ?? "").includes("not campaign-keyed"))
