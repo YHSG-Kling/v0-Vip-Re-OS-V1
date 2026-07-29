@@ -219,156 +219,51 @@ export async function trackBehavioralEvent(params: {
     return { success: false, error: error.message }
   }
 
-  // Recalculate lead score
-  await calculateLeadScore(params.contactId)
+  // Recalculate lead score through the CANONICAL scorer (multi-factor baseline +
+  // the behavioural layer that reads this very event log). Behaviour tracking is
+  // best-effort telemetry: a scoring failure must not fail the tracking call.
+  try {
+    const { calculateLeadScore } = await import("@/lib/services/lead-management.service")
+    await calculateLeadScore({ id: params.contactId, table: "contacts" })
+  } catch (scoreErr) {
+    console.error("[ai-auto-response] scoring after behavioural event failed:", scoreErr)
+  }
 
   return { success: true }
 }
 
-/**
- * LEGACY local scorer (auto-response context).
- *
- * @deprecated New callers should use `calculateLeadScore` from
- * `lib/services/lead-management.service.ts` (the orchestrator wrapping the
- * canonical Layer 1 multi-factor scorer). This local function predates the
- * canonical layering and remains only for the auto-response flow until that
- * caller is migrated. Do NOT add new callers.
- *
- * See `lib/lead-scoring/LAYERING.md` for full layering rules.
- */
-export async function calculateLeadScore(contactId: string) {
-  const supabase = await createClient()
-
-  // Get all behavioral events for this contact (lead_behavioral_data event log)
-  const { data: events } = await supabase
-    .from("lead_behavioral_data")
-    .select("*")
-    .eq("lead_id", contactId)
-    .order("occurred_at", { ascending: false })
-
-  // Get contact info
-  const { data: contact } = await supabase
-    .from("contacts")
-    .select("*")
-    .eq("id", contactId)
-    .single()
-
-  if (!contact || !events) {
-    return { success: false, error: "Contact or events not found" }
-  }
-
-  // Calculate score based on events
-  let score = 0
-  let engagement = 0
-  let recency = 0
-  let intent = 0
-
-  // Points for different behaviors
-  const eventPoints: Record<string, number> = {
-    website_visit: 5,
-    email_open: 3,
-    email_click: 10,
-    form_submit: 15,
-    property_view: 8,
-    property_save: 12,
-    showing_request: 25,
-    call_answered: 20,
-    sms_reply: 10,
-    cma_request: 30,
-    document_download: 15,
-  }
-
-  // Calculate engagement score (last 30 days)
-  const thirtyDaysAgo = new Date()
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
-
-  events.forEach((event) => {
-    const eventDate = new Date(event.occurred_at)
-    const points = eventPoints[event.event_type] || event.event_data?.points_awarded || 0
-
-    score += points
-
-    if (eventDate > thirtyDaysAgo) {
-      engagement += points
-    }
-
-    // Recency score (more recent = higher score)
-    const daysSinceEvent = Math.floor(
-      (Date.now() - eventDate.getTime()) / (1000 * 60 * 60 * 24)
-    )
-    if (daysSinceEvent < 7) {
-      recency += points * 2 // Double points for activity in last 7 days
-    } else if (daysSinceEvent < 30) {
-      recency += points
-    }
-  })
-
-  // Intent score based on high-value actions
-  const highIntentEvents = events.filter(
-    (e) =>
-      e.event_type === "showing_request" ||
-      e.event_type === "cma_request" ||
-      e.event_type === "document_download"
-  )
-  intent = highIntentEvents.length * 20
-
-  // Normalize scores
-  const totalScore = Math.min(100, Math.floor(score / 10))
-  const engagementScore = Math.min(100, engagement)
-  const recencyScore = Math.min(100, recency)
-  const intentScore = Math.min(100, intent)
-
-  // Determine priority tier
-  let priority: "hot" | "warm" | "cold" = "cold"
-  if (totalScore >= 70 || intentScore >= 60) {
-    priority = "hot"
-  } else if (totalScore >= 40 || engagementScore >= 50) {
-    priority = "warm"
-  }
-
-  // Update or insert lead score - using actual schema columns
-  // Schema: id, contact_id, agent_id, score, score_factors, ai_confidence, computed_at
-  const { agentId } = await getAgentContext()
-  const { error } = await supabase.from("lead_scores").upsert({
-    contact_id: contactId,
-    agent_id: agentId,
-    score: totalScore,
-    score_factors: {
-      engagement: engagementScore,
-      recency: recencyScore,
-      intent: intentScore,
-      priority,
-    },
-    ai_confidence: 0.8,
-    computed_at: new Date().toISOString(),
-  })
-
-  if (error) {
-    console.error("Error updating lead score:", error)
-    return { success: false, error: error.message }
-  }
-
-  return {
-    success: true,
-    score: {
-      total: totalScore,
-      engagement: engagementScore,
-      recency: recencyScore,
-      intent: intentScore,
-      priority,
-    },
-  }
-}
+// ─── THE LEGACY LOCAL SCORER IS GONE ─────────────────────────────────────────
+//
+// It was the THIRD calculateLeadScore in the repo and had been marked @deprecated
+// while still being called on this file's live auto-response path. Two things made
+// it worse than a duplicate:
+//
+//   · It normalised with `min(100, floor(totalPoints / 10))`, so a "hot" score of 70
+//     required 700 raw event points — roughly 24 CMA requests or 28 showing requests
+//     from one person. Unreachable in practice, which made getHotLeads below (the
+//     agent dashboard and /leads) empty by arithmetic.
+//   · It wrote lead_scores, which NO authoritative path wrote, while the real score
+//     went to contacts.lead_score. Two tables, two formulas, one lead.
+//
+// What it uniquely got RIGHT was reading lead_behavioral_data as the event log it
+// actually is — per-event-type weights, real occurred_at recency,
+// event_data.points_awarded as a fallback. Those weights are ported verbatim into
+// lib/lead-scoring/behavioral-events.ts and now feed the canonical scorer, which
+// also writes the lead_scores snapshot. So this function's asset survives and its
+// two defects do not.
 
 // Get lead score for a contact
 export async function getLeadScore(contactId: string) {
   const supabase = await createClient()
 
+  // maybeSingle, not single: "no snapshot yet" is an ordinary state for a contact
+  // that has never been scored, and .single() turned it into an error the caller had
+  // to recognise by PostgREST code.
   const { data, error } = await supabase
     .from("lead_scores")
     .select("*")
     .eq("contact_id", contactId)
-    .single()
+    .maybeSingle()
 
   if (error && error.code !== "PGRST116") {
     console.error("Error fetching lead score:", error)
@@ -376,15 +271,27 @@ export async function getLeadScore(contactId: string) {
   }
 
   if (!data) {
-    // Calculate score if it doesn't exist
-    const result = await calculateLeadScore(contactId)
-    if (result.success) {
-      return { success: true, score: result.score }
-    }
+    // No snapshot yet — compute one through the canonical scorer, which writes the
+    // lead_scores row, then read it back rather than returning a differently-shaped
+    // ad-hoc object (the old local scorer returned its own shape here, so callers
+    // saw two different score payloads depending on whether a row existed).
+    const { calculateLeadScore } = await import("@/lib/services/lead-management.service")
+    await calculateLeadScore({ id: contactId, table: "contacts" })
+    const { data: fresh } = await supabase
+      .from("lead_scores")
+      .select("*")
+      .eq("contact_id", contactId)
+      .maybeSingle()
+    return { success: true, score: fresh ?? null }
   }
 
   return { success: true, score: data }
 }
+
+/** The score at or above which a lead is HOT. Same number priorityTier() uses in
+ *  lib/lead-scoring/behavioral-events, stated once so the list and the tier label
+ *  cannot disagree about what "hot" means. */
+const HOT_LEAD_SCORE = 70
 
 // Get hot leads (priority scoring) - using actual schema columns
 // Schema: id, contact_id, agent_id, score, score_factors, ai_confidence, computed_at
@@ -397,12 +304,14 @@ export async function getHotLeads(limit = 50) {
   const { agentId, brokerageId } = context
   const supabase = await createClient()
 
-  // Try lead_scores first, fallback to contacts with high intent_score
+  // lead_scores is UNIQUE (contact_id) — one current row per contact, verified
+  // against the live schema — so ranking by score and taking `limit` needs no
+  // dedupe. The canonical scorer upserts on contact_id to keep it that way.
   const { data, error } = await supabase
     .from("lead_scores")
     .select("id, contact_id, agent_id, score, score_factors, ai_confidence, computed_at")
     .eq("agent_id", agentId)
-    .gte("score", 70)
+    .gte("score", HOT_LEAD_SCORE)
     .order("score", { ascending: false })
     .limit(limit)
 
@@ -411,11 +320,11 @@ export async function getHotLeads(limit = 50) {
     // Fallback: query contacts directly with high intent_score
     const { data: contactsData, error: contactsError } = await supabase
       .from("contacts")
-      .select("id, first_name, last_name, email, phone, contact_type, source, intent_score, engagement_score, created_at")
+      .select("id, first_name, last_name, email, phone, contact_type, source, lead_score, lead_temperature, created_at")
       .eq("agent_id", agentId)
       .eq("brokerage_id", brokerageId)
-      .or("intent_score.gte.70,engagement_score.gte.70,status.eq.hot")
-      .order("intent_score", { ascending: false, nullsFirst: false })
+      .or(`lead_score.gte.${HOT_LEAD_SCORE},status.eq.hot`)
+      .order("lead_score", { ascending: false, nullsFirst: false })
       .limit(limit)
 
     if (contactsError) {
@@ -430,8 +339,11 @@ export async function getHotLeads(limit = 50) {
         id: c.id,
         contact_id: c.id,
         agent_id: agentId,
-        score: c.intent_score || c.engagement_score || 70,
-        score_factors: { engagement: c.engagement_score, intent: c.intent_score },
+        // contacts.lead_score IS the canonical current score — the fallback reads the
+        // same number the snapshot would carry, not intent_score/engagement_score,
+        // which are enrichment signals and never were this score.
+        score: c.lead_score ?? HOT_LEAD_SCORE,
+        score_factors: { temperature: c.lead_temperature },
         ai_confidence: 0.8,
         computed_at: new Date().toISOString(),
         contacts: c,

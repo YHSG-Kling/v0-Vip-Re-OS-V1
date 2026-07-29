@@ -5,6 +5,11 @@ import { isValidUUID, validateEmail, validatePhone } from "@/lib/validations"
 import { LEAD_SOURCES } from "@/lib/constants"
 import { scoreToLeadTemperature } from "@/lib/data-steward/value-normalizer"
 import { handleError, ValidationError, NotFoundError } from "@/lib/errors"
+import {
+  summarizeBehavioralEvents,
+  priorityTier,
+  type BehavioralSummary,
+} from "@/lib/lead-scoring/behavioral-events"
 
 // ============================================
 // UNIFIED LEAD MANAGEMENT SERVICE
@@ -14,7 +19,17 @@ import { handleError, ValidationError, NotFoundError } from "@/lib/errors"
 
 export interface LeadScoringParams {
   id: string // Can be contactId or leadId
-  agentId: string
+  /**
+   * OPTIONAL, and deliberately unused by the scoring itself.
+   *
+   * It was required, and the implementation never read it — so every caller passed
+   * an agent id that changed nothing. It stays only as caller context, because the
+   * one place ownership matters (the lead_scores snapshot's NOT NULL agent_id) must
+   * use the OWNER ON THE RECORD, not whoever asked for the score. A caller-supplied
+   * id that disagreed with contacts.agent_id would file the snapshot under the wrong
+   * agent and put the lead in the wrong person's hot-lead list.
+   */
+  agentId?: string
   recalculate?: boolean
   table?: "contacts" | "leads" // Which table to score
 }
@@ -83,6 +98,17 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
         .single()
       record = result.data
       error = result.error
+      // lead_behavioral_data has no PostgREST FK to contacts, so it cannot be
+      // embedded above — and it was never fetched here either, despite the comment
+      // saying so. Every behavioural factor was therefore computed from `undefined`
+      // for CONTACTS while the leads branch below did fetch it.
+      if (record) {
+        const { data: behavioral } = await supabase
+          .from("lead_behavioral_data")
+          .select("event_type, event_data, occurred_at")
+          .eq("lead_id", params.id)
+        record.lead_behavioral_data = behavioral || []
+      }
     } else {
       const result = await supabase
         .from("leads")
@@ -100,7 +126,7 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
       if (record) {
         const { data: behavioral } = await supabase
           .from("lead_behavioral_data")
-          .select("*")
+          .select("event_type, event_data, occurred_at")
           .eq("lead_id", params.id)
         record.lead_behavioral_data = behavioral || []
       }
@@ -120,11 +146,18 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
 
     // ── Behavioral refinement (additive layer on the baseline) ─────────
     // These factors capture in-app behavior that multi-factor doesn't see.
-    const engagementScore = calculateEngagementScore(record, table)
-    const recencyScore = calculateRecencyScore(record)
-    const intentScore = calculateIntentScore(record, table)
+    //
+    // The event log is folded ONCE, by the one module that understands its shape
+    // (lib/lead-scoring/behavioral-events). It replaces reads of four columns that
+    // do not exist on lead_behavioral_data — email_open_count, site_visit_count,
+    // response_rate, avg_response_time_hours — which made 45 of engagement's 100
+    // points unreachable and pinned responsiveness at a constant 50.
+    const behavior = summarizeBehavioralEvents(record.lead_behavioral_data ?? [])
+    const engagementScore = calculateEngagementScore(record, table, behavior)
+    const recencyScore = Math.max(calculateRecencyScore(record), behavior.recency)
+    const intentScore = Math.max(calculateIntentScore(record, table), behavior.intent)
     const fitScore = calculateFitScore(record, table)
-    const responsivenessScore = calculateResponsivenessScore(record)
+    const responsivenessScore = behavior.responsiveness
     const behavioralScore = Math.round(
       engagementScore * 0.25 + recencyScore * 0.2 + intentScore * 0.3 + fitScore * 0.15 + responsivenessScore * 0.1
     )
@@ -152,8 +185,55 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
         })
         .eq("id", params.id)
 
-      // Score is persisted on contacts.lead_score above. lead_behavioral_data is an
-      // event-capture table keyed on lead_id with no contact-score columns — no write here.
+      // ── CONTACT-SIDE SNAPSHOT: lead_scores ────────────────────────────
+      // contacts.lead_score is the score ON the contact; lead_scores carries the
+      // EXPLANATION beside it — score_factors, ai_confidence, computed_at. Live
+      // schema: UNIQUE (contact_id), so it is one current row per contact, not a
+      // history (a nearby-looking table, lead_engagement_scores on the leads branch
+      // below, IS append-only — do not assume the two behave alike). Both are kept
+      // and synced, per the owner's ruling on the commission ledgers.
+      //
+      // Why this write has to exist: getHotLeads — the hot-lead list on the agent
+      // dashboard AND /leads — queries lead_scores where score >= 70. Nothing on the
+      // authoritative path ever wrote that table; only the deprecated
+      // ai-auto-response scorer did, and its floor(points/10) put 70 at 700 raw
+      // event points. So the surface was empty by arithmetic while the real scores
+      // sat in a column it does not read. contact-intelligence's "latest_lead_score"
+      // read the same stale table beside contacts.last_scored_at from this path —
+      // two numbers from two formulas in one panel.
+      //
+      // agent_id is NOT NULL on lead_scores, so an unowned contact is skipped rather
+      // than failing the whole scoring call: a snapshot is a bonus, never the point.
+      if (record.agent_id) {
+        // UPSERT ON contact_id, explicitly. A plain insert violates
+        // lead_scores_contact_id_key on the SECOND scoring run, so the snapshot
+        // would freeze at whatever the first run said — and PostgREST's default
+        // conflict target is the primary key (id), which never collides on an
+        // insert, so an unqualified .upsert() fails exactly the same way. The
+        // deprecated scorer this replaces did precisely that.
+        await supabase.from("lead_scores").upsert({
+          contact_id: params.id,
+          agent_id: record.agent_id,
+          brokerage_id: record.brokerage_id ?? null,
+          score: totalScore,
+          score_factors: {
+            engagement: engagementScore,
+            recency: recencyScore,
+            intent: intentScore,
+            fit: fitScore,
+            responsiveness: responsivenessScore,
+            temperature,
+            priority: priorityTier(totalScore, intentScore, engagementScore),
+            multi_factor_baseline: baselineScore,
+            behavioral_events: behavior.eventCount,
+          },
+          // The multi-factor baseline is deterministic and explainable; the
+          // behavioural layer is inference over an event log. Confidence reflects
+          // whether there was any behaviour to infer from, instead of a flat 0.8.
+          ai_confidence: behavior.eventCount > 0 ? 0.9 : 0.7,
+          computed_at: new Date().toISOString(),
+        }, { onConflict: "contact_id" })
+      }
     } else {
       // Update leads table
       await supabase
@@ -213,12 +293,11 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
  * Calculate engagement score (0-100)
  * Works for both contacts and leads tables
  */
-function calculateEngagementScore(record: any, table: string): number {
+function calculateEngagementScore(record: any, table: string, behavior: BehavioralSummary): number {
   let score = 0
 
   if (table === "contacts") {
     const interactions = record.property_interactions || []
-    const behavioralData = record.lead_behavioral_data?.[0]
 
     // Property views
     const views = interactions.filter((i: any) => i.interaction_type === "view").length
@@ -228,17 +307,14 @@ function calculateEngagementScore(record: any, table: string): number {
     const saves = interactions.filter((i: any) => i.interaction_type === "save").length
     score += Math.min(saves * 10, 25)
 
-    // Email opens
-    const emailOpens = behavioralData?.email_open_count || 0
-    score += Math.min(emailOpens * 2, 20)
-
-    // Website visits
-    const siteVisits = behavioralData?.site_visit_count || 0
-    score += Math.min(siteVisits * 3, 25)
+    // Logged behaviour — opens, clicks, visits, form submits and the rest, from the
+    // EVENT LOG. This replaced `behavioralData?.email_open_count` (max 20) and
+    // `behavioralData?.site_visit_count` (max 25): 45 of these 100 points read
+    // columns lead_behavioral_data does not have, so they were always zero.
+    score += Math.min(Math.round(behavior.engagement * 0.45), 45)
   } else {
     // For leads table - use external behavior signals
     const interactions = record.lead_idx_property_interactions || []
-    const behavioralData = record.lead_behavioral_data?.[0]
     const sellerSignals = record.lead_motivated_seller_signals || []
 
     // IDX property interactions
@@ -249,9 +325,10 @@ function calculateEngagementScore(record: any, table: string): number {
     const strongSignals = sellerSignals.filter((s: any) => s.signal_strength > 0.7).length
     score += Math.min(strongSignals * 15, 30)
 
-    // External behavioral events
-    const eventCount = behavioralData?.event_type ? 1 : 0
-    score += Math.min(eventCount * 10, 20)
+    // External behavioural events. Was `event_type ? 1 : 0` — a single boolean over
+    // the whole log, so one page view and a thousand showing requests scored the
+    // same 10 points. Now weighted by event type and recency.
+    score += Math.min(Math.round(behavior.engagement * 0.2), 20)
 
     // Scraping recency (more recent = more engagement)
     if (record.scraped_at) {
@@ -369,27 +446,14 @@ function calculateFitScore(record: any, table: string): number {
   return Math.min(score, 100)
 }
 
-/**
- * Calculate responsiveness score (0-100)
- */
-function calculateResponsivenessScore(contact: any): number {
-  let score = 50 // Default neutral
-
-  const behavioral = contact.lead_behavioral_data?.[0]
-
-  // Email response rate
-  const responseRate = behavioral?.response_rate || 0
-  score += responseRate * 30
-
-  // Average response time
-  const avgResponseHours = behavioral?.avg_response_time_hours || 48
-  if (avgResponseHours < 1) score += 20
-  else if (avgResponseHours < 4) score += 15
-  else if (avgResponseHours < 12) score += 10
-  else if (avgResponseHours < 24) score += 5
-
-  return Math.min(score, 100)
-}
+// calculateResponsivenessScore was DELETED, not repaired. It read
+// behavioral.response_rate and behavioral.avg_response_time_hours off
+// lead_behavioral_data; neither column exists, so it returned exactly 50 for every
+// lead and contact in the system — base 50, rate 0, and a 48h default that falls
+// through every branch. A factor that cannot vary is not a factor. Responsiveness
+// now comes from summarizeBehavioralEvents, which counts real reply events and says
+// plainly that it is a reply-presence signal rather than a rate (the log carries no
+// outbound count, so a true rate is not computable from it).
 
 /**
  * Generate actionable recommendations
