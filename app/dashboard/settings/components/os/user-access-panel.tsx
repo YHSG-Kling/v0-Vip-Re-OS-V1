@@ -13,6 +13,14 @@ import {
 
 interface UserStats {
   totalUsers: number
+  /** Users consuming a plan SEAT — partners (vendor, lender) and the `system`
+   *  AI-ISA actor never do, and suspended users do not either. */
+  seatCount: number
+  /** The plan's seat allowance; null = unlimited (Brokerage / Multi-Location). */
+  seatLimit: number | null
+  /** A staff-set per-tenant override is in force. */
+  seatOverridden: boolean
+  planTier: string | null
   activeUsers: number
   adminCount: number
   brokerCount: number
@@ -24,7 +32,13 @@ interface UserAccessPanelProps {
   stats: UserStats
 }
 
+const TIER_NAMES: Record<string, string> = {
+  solo_agent: "Solo", team: "Team", brokerage: "Brokerage", multi_location: "Multi-Location",
+}
+
 export function UserAccessPanel({ stats }: UserAccessPanelProps) {
+  const overSeats = stats.seatLimit !== null && stats.seatCount > stats.seatLimit
+  const tierName = TIER_NAMES[stats.planTier ?? ""] ?? "your"
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -41,17 +55,36 @@ export function UserAccessPanel({ stats }: UserAccessPanelProps) {
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* User Counts */}
+        {/* SEATS — the same number the user-management page shows, from the same
+            source. This tile used to read `users.length` twice ("Total Users" and
+            "Active"), which counted partners, the system actor and suspended
+            users as if they held seats, and never showed the plan's limit. */}
         <div className="grid grid-cols-2 gap-3">
           <div className="text-center p-2 bg-muted/50 rounded-md">
-            <p className="text-2xl font-bold">{stats.totalUsers}</p>
-            <p className="text-xs text-muted-foreground">Total Users</p>
+            <p className={`text-2xl font-bold ${overSeats ? "text-red-600" : ""}`}>
+              {stats.seatLimit === null
+                ? stats.seatCount
+                : `${stats.seatCount}/${stats.seatLimit}`}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Seats used{stats.seatOverridden ? " (custom)" : ""}
+            </p>
           </div>
           <div className="text-center p-2 bg-muted/50 rounded-md">
-            <p className="text-2xl font-bold">{stats.activeUsers}</p>
-            <p className="text-xs text-muted-foreground">Active</p>
+            <p className="text-2xl font-bold">{stats.totalUsers}</p>
+            <p className="text-xs text-muted-foreground">People in workspace</p>
           </div>
         </div>
+
+        {/* Say what the plan allows, and say it plainly when it is exceeded —
+            an admin could not previously tell either from this panel. */}
+        <p className={`text-xs ${overSeats ? "text-red-600 font-medium" : "text-muted-foreground"}`}>
+          {stats.seatLimit === null
+            ? `Unlimited seats on ${tierName}. Vendors, lenders and portal contacts never use one.`
+            : overSeats
+              ? `Over your ${tierName} plan's ${stats.seatLimit} seats — remove or suspend a user, or upgrade.`
+              : `${stats.seatLimit - stats.seatCount} of ${stats.seatLimit} seats left on ${tierName}. Vendors and lenders never use one.`}
+        </p>
 
         {/* Role Breakdown */}
         <div className="space-y-2">

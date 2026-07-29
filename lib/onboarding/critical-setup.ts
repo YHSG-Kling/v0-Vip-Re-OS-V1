@@ -29,6 +29,7 @@
 // app/components/onboarding/critical-setup-meter.tsx.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { SEAT_ROLES } from "@/lib/kernel/tier-role-matrix"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -406,7 +407,16 @@ export function composeSetupReadiness(params: {
 
 // ─── Facts loader — honest reads from the REAL tables, nothing invented ──────
 
-const SEAT_USER_TYPES = ["admin", "broker", "broker_admin", "team_lead", "agent", "tc", "isa", "compliance_officer"]
+// The seat list is NOT restated here. This file carried its own copy, and it had
+// drifted from the canonical one in three ways:
+//   · it contained "broker_admin", which users.user_type does not admit at all,
+//     so that entry could never match a row;
+//   · it omitted "broker_owner", which the column DOES admit — a brokerage owner
+//     counted as no seat anywhere;
+//   · it did not exclude SUSPENDED users, while the user-management page does.
+// The result is what the owner reported: the seat number an AGENT saw on the
+// setup meter disagreed with the one an ADMIN saw on the users page, for the same
+// tenant. One list now — lib/kernel/tier-role-matrix.ts SEAT_ROLES.
 
 export async function loadCriticalSetupFacts(
   svc: Svc,
@@ -450,7 +460,9 @@ export async function loadCriticalSetupFacts(
     svc.from("social_media_accounts").select("id", { count: "exact", head: true })
       .eq("brokerage_id", brokerageId).eq("is_active", true),
     svc.from("users").select("id", { count: "exact", head: true })
-      .eq("brokerage_id", brokerageId).in("user_type", SEAT_USER_TYPES),
+      .eq("brokerage_id", brokerageId)
+      .in("user_type", SEAT_ROLES as readonly string[])
+      .neq("status", "suspended"),
     svc.from("subscriptions").select("status, stripe_customer_id").eq("brokerage_id", brokerageId)
       .order("created_at", { ascending: false }).limit(1).maybeSingle(),
     svc.from("listings").select("id", { count: "exact", head: true })

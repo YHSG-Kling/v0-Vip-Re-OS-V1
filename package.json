@@ -432,6 +432,7 @@
     "test:approval-rail": "tsx scripts/approval-rail-simulator.ts",
     "test:coordination-status": "tsx scripts/coordination-status-simulator.ts",
     "test:sweep": "tsx scripts/simulator-sweep.ts",
+    "test:seat-display": "tsx scripts/seat-display-simulator.ts",
     "test:capability-contract": "tsx scripts/capability-contract-simulator.ts",
     "test:assignment-method": "tsx scripts/assignment-method-simulator.ts",
     "test:sequence-step-palette": "tsx scripts/sequence-step-palette-guard.ts",

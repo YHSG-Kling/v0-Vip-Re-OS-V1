@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { SEAT_ROLES, effectiveSeatLimit, parseSeatOverride } from "@/lib/kernel/tier-role-matrix"
 import { redirect } from "next/navigation"
 import { SettingsControlOSClient } from "./settings-control-os-client"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
@@ -43,6 +44,7 @@ export default async function SettingsControlOSPage() {
     notificationRulesRes,
     globalSettingsRes,
     commissionStructuresRes,
+    brokerageRowRes,
     accountingSyncRes,
   ] = await Promise.all([
     // Integrations/Providers
@@ -61,7 +63,7 @@ export default async function SettingsControlOSPage() {
     // Users
     service
       .from("users")
-      .select("id, role, user_type")
+      .select("id, role, user_type, status")
       .eq("brokerage_id", brokerageId),
     
     // Notification Rules
@@ -84,6 +86,13 @@ export default async function SettingsControlOSPage() {
       .eq("brokerage_id", brokerageId)
       .eq("is_active", true),
     
+    // Brokerage tier + seat override — the seat meter's inputs
+    service
+      .from("brokerages")
+      .select("plan_tier, billing_metadata")
+      .eq("id", brokerageId)
+      .maybeSingle(),
+
     // Accounting Sync Log (latest)
     service
       .from("accounting_sync_log")
@@ -96,6 +105,7 @@ export default async function SettingsControlOSPage() {
   const integrations = integrationRes.data || []
   const branding = brandingRes.data
   const users = usersRes.data || []
+  const brokerageRow = (brokerageRowRes.data ?? null) as { plan_tier: string | null; billing_metadata: unknown } | null
   const notificationRules = notificationRulesRes.data || []
   const globalSettings = globalSettingsRes.data
   const commissionStructures = commissionStructuresRes.data || []
@@ -107,13 +117,31 @@ export default async function SettingsControlOSPage() {
   const pendingCount = integrations.filter((i) => i.status === "pending" || i.status === "inactive").length
 
   // Calculate user stats
+  // SEATS — the same math the user-management page shows and the invite gate
+  // enforces, from the one source (tier-role-matrix). This panel used to report
+  // `users.length` as both total and active, which counted PARTNERS (vendor,
+  // lender), the `system` AI-ISA actor and SUSPENDED users as if they were seats,
+  // and showed no limit at all. So an admin here saw a different number from the
+  // one the users page showed for the same tenant, and neither told them what
+  // their plan allows.
+  const seatUsers = users.filter(
+    (u) => (SEAT_ROLES as readonly string[]).includes(u.user_type ?? "") && u.status !== "suspended",
+  )
+  const { limit: seatLimit, overridden: seatOverridden } =
+    effectiveSeatLimit(brokerageRow?.plan_tier ?? null, parseSeatOverride(brokerageRow?.billing_metadata))
+
   const userStats = {
     totalUsers: users.length,
-    activeUsers: users.length, // All fetched users are active (no deleted_at filter)
-    adminCount: users.filter((u) => u.user_type === "admin").length,
-    brokerCount: users.filter((u) => u.user_type === "broker").length,
-    agentCount: users.filter((u) => u.user_type === "agent").length,
-    coordinatorCount: users.filter((u) => u.user_type === "coordinator" || u.user_type === "tc").length,
+    // Seats, not headcount — partners and the system actor never consume one.
+    seatCount: seatUsers.length,
+    seatLimit,
+    seatOverridden,
+    planTier: brokerageRow?.plan_tier ?? null,
+    activeUsers: users.filter((u) => u.status !== "suspended").length,
+    adminCount: seatUsers.filter((u) => u.user_type === "admin").length,
+    brokerCount: seatUsers.filter((u) => u.user_type === "broker" || u.user_type === "broker_owner").length,
+    agentCount: seatUsers.filter((u) => u.user_type === "agent").length,
+    coordinatorCount: seatUsers.filter((u) => u.user_type === "tc").length,
   }
 
   // Calculate setup completeness

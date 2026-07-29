@@ -34,6 +34,11 @@ interface SetupItem {
 
 interface UserStats {
   totalUsers: number
+  /** Plan SEATS in use — partners and the system actor never consume one. */
+  seatCount: number
+  seatLimit: number | null
+  seatOverridden: boolean
+  planTier: string | null
   activeUsers: number
   adminCount: number
   brokerCount: number

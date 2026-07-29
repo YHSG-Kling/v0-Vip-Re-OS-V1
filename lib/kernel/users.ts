@@ -43,6 +43,10 @@ import { ROLE_DASHBOARD_ROUTES } from "./role-routes"
 export type UserDomainRole =
   | "agent"
   | "broker"
+  // Admitted by the users.user_type CHECK and mapped to brokerage_admin by
+  // normalizeCriticalRole, but it was in no seat list — so a brokerage OWNER
+  // consumed no seat on any surface.
+  | "broker_owner"
   | "admin"
   | "tc"
   | "isa"

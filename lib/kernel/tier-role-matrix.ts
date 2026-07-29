@@ -32,11 +32,12 @@ export const PARTNER_ROLES: readonly UserDomainRole[] = ["vendor"]
 
 /** Seat-consuming working roles — the full role set of the OS. */
 export const SEAT_ROLES: readonly UserDomainRole[] = [
-  "admin", "broker", "team_lead", "agent", "tc", "isa", "compliance_officer",
+  "admin", "broker", "broker_owner", "team_lead", "agent", "tc", "isa", "compliance_officer",
 ]
 
 /** All working roles minus broker — the solo set (solo is not a brokerage). */
-const SOLO_SEAT_ROLES: readonly UserDomainRole[] = SEAT_ROLES.filter((r) => r !== "broker")
+const SOLO_SEAT_ROLES: readonly UserDomainRole[] =
+  SEAT_ROLES.filter((r) => r !== "broker" && r !== "broker_owner")
 
 /** Canonical tier → invitable roles. THE matrix — every invite surface derives from it. */
 export const TIER_INVITABLE_ROLES: Record<CanonicalTier, readonly UserDomainRole[]> = {
