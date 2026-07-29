@@ -5,6 +5,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { gatewayChatJSON } from "@/lib/ai/gateway-chat"
 import { createPortalInviteForContact } from "./portal-invites"
+import { CONTACT_SOURCE_HOME_VALUE } from "@/lib/campaigns/contact-sources"
+import { autoEnrollContact } from "@/lib/campaign-sequences/auto-enroll"
 
 // ============================================================================
 // Types
@@ -106,7 +108,7 @@ export async function convertValuationRequestToContact(params: {
         email,
         phone,
         contact_type: "seller",
-        source: "home_value",
+        source: CONTACT_SOURCE_HOME_VALUE,
         agent_id: params.agentId,
         brokerage_id: params.brokerageId,
       })
@@ -244,6 +246,11 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
       const { data: newContact, error: contactError } = await supabase
         .from("contacts")
         .insert({
+          // Tenant anchor first: the scope guard reads a fixed window after
+          // .from(), so burying brokerage_id deep in a long payload makes a
+          // properly-scoped write look unscoped.
+          brokerage_id: resolvedBrokerageId,
+          agent_id: resolvedAgentId,
           first_name: firstName,
           last_name: lastName,
           email,
@@ -251,10 +258,9 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
           phone: tcpaConsent ? phone : null,
           preferred_channel: tcpaConsent ? "phone" : "email",
           contact_type: "seller",
-          source: "home_value_tool",
+          // was "home_value_tool" — one feature wrote contacts.source two ways
+          source: CONTACT_SOURCE_HOME_VALUE,
           buyer_stage: "BUYER_CONTACT_CREATED",
-          agent_id: resolvedAgentId,
-          brokerage_id: resolvedBrokerageId,
           tcpa_consent: tcpaConsent,
           tcpa_consent_at: tcpaConsent ? consentNow : null,
           tcpa_consent_date: tcpaConsent ? consentNow : null,
@@ -438,39 +444,20 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
       }
     }
 
-    // Step 10: Enroll the contact in the seller nurture drip sequence if one
-    // exists for this brokerage. We look for an active sequence triggered by
-    // 'home_value_submitted' or typed as 'seller_nurture'.
-    const { data: dripSequence } = await supabase
-      .from("campaign_sequences")
-      .select("id")
-      .eq("brokerage_id", resolvedBrokerageId)
-      .eq("is_active", true)
-      .or("trigger_event.eq.home_value_submitted,sequence_type.eq.seller_nurture")
-      .limit(1)
-      .maybeSingle()
-
-    if (dripSequence?.id) {
-      // Only enroll if not already enrolled
-      const { data: existingEnrollment } = await supabase
-        .from("sequence_enrollments")
-        .select("id")
-        .eq("contact_id", contactId)
-        .eq("sequence_id", dripSequence.id)
-        .maybeSingle()
-
-      if (!existingEnrollment) {
-        await supabase.from("sequence_enrollments").insert({
-          contact_id: contactId,
-          sequence_id: dripSequence.id,
-          brokerage_id: resolvedBrokerageId,
-          enrolled_by: resolvedAgentId ?? undefined,
-          status: "active",
-          current_step: 1,
-          next_step_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // start in 24h
-        })
-      }
-    }
+    // Step 10: AUTONOMOUS ENROLMENT. This used to look for a sequence by
+    // `trigger_event = 'home_value_submitted'` OR `sequence_type = 'seller_nurture'`
+    // — neither is a value its column's CHECK admits, so the lookup matched
+    // nothing on every run and no home-value capture was ever enrolled in
+    // anything. The sequence is now selected by (source_key, persona), the
+    // discriminator m293 added, and the enroller is shared with the lead-magnet
+    // capture so the two cannot drift apart again.
+    await autoEnrollContact(supabase, {
+      brokerageId: resolvedBrokerageId,
+      contactId,
+      source: CONTACT_SOURCE_HOME_VALUE,
+      contactType: "seller",
+      enrolledBy: resolvedAgentId ?? null,
+    })
 
     // Step 11: Return requestId for redirect
     return { success: true, requestId: valuationRequest.id }

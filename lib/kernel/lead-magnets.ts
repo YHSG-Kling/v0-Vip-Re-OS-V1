@@ -3,6 +3,8 @@
 // No mocks, stubs, or placeholders. All operations read/write real Supabase data.
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { CONTACT_SOURCE_LEAD_MAGNET } from "@/lib/campaigns/contact-sources"
+import { autoEnrollContact } from "@/lib/campaign-sequences/auto-enroll"
 
 // ============================================================================
 // INPUT / OUTPUT CONTRACTS
@@ -387,16 +389,21 @@ export async function captureFormSubmission(
   const data = input.submissionData as Record<string, string>
   let contactId: string | undefined
 
+  // Hoisted so the autonomous enroller below can resolve the persona whether the
+  // contact already existed or was created by this capture.
+  let capturedContactType: string | null = null
+
   if (data.email) {
     const { data: existingContact } = await supabase
       .from("contacts")
-      .select("id, agent_id")
+      .select("id, agent_id, contact_type")
       .eq("email", data.email)
       .eq("brokerage_id", input.brokerageId)
       .maybeSingle()
 
     if (existingContact) {
       contactId = existingContact.id
+      capturedContactType = (existingContact as { contact_type?: string | null }).contact_type ?? null
       // Claim an UNOWNED contact for the magnet's agent — a returning-but-unassigned person who fills
       // out this agent's lead magnet becomes that agent's lead. Never reassign a contact another agent
       // already owns (no lead-stealing). The contacts.agent_id trigger emits contact_agent_assigned.
@@ -414,13 +421,14 @@ export async function captureFormSubmission(
         last_name:  data.last_name ?? "",
         email:      data.email,
         phone:      data.phone ?? null,
-        source:     input.source ?? "lead_magnet",
+        source:     input.source ?? CONTACT_SOURCE_LEAD_MAGNET,
         source_channel: "online_form",
         brokerage_id: input.brokerageId,
         agent_id:   form.agent_id,
         status:     "lead",
       }
       if (intentRouting.contactType) newRow.contact_type = intentRouting.contactType
+      capturedContactType = (intentRouting.contactType as string | null) ?? null
       const { data: newContact } = await supabase
         .from("contacts")
         .insert(newRow)
@@ -601,44 +609,22 @@ export async function captureFormSubmission(
     }
   }
 
-  // Auto-enroll contact in a follow-up sequence — non-fatal
-  if (contactId && form.agent_id) {
-    try {
-      const { data: followUpSeq } = await supabase
-        .from("campaign_sequences")
-        .select("id")
-        .eq("brokerage_id", input.brokerageId)
-        .eq("sequence_type", "lead_magnet")
-        .eq("is_active", true)
-        .limit(1)
-        .maybeSingle()
-
-      if (followUpSeq) {
-        // Check for an existing active enrollment to avoid duplicates
-        const { data: existingEnrollment } = await supabase
-          .from("sequence_enrollments")
-          .select("id")
-          .eq("sequence_id", followUpSeq.id)
-          .eq("contact_id", contactId)
-          .eq("status", "active")
-          .limit(1)
-          .maybeSingle()
-
-        if (!existingEnrollment) {
-          await supabase.from("sequence_enrollments").insert({
-            sequence_id:  followUpSeq.id,
-            contact_id:   contactId,
-            brokerage_id: input.brokerageId,
-            enrolled_at:  submittedAt,
-            status:       "active",
-            current_step: 0,
-            next_step_at: new Date().toISOString(),
-          })
-        }
-      }
-    } catch {
-      // Non-fatal — sequence enrollment is optional
-    }
+  // AUTONOMOUS ENROLMENT — non-fatal by contract (the enroller never throws).
+  // This used to select the sequence by `sequence_type = 'lead_magnet'`, which is
+  // not a value that column's CHECK admits, so it matched nothing on every run
+  // and no lead-magnet capture was ever enrolled. Selection is now by
+  // (source_key, persona) — the discriminator m293 added — through the same
+  // enroller the home-value capture uses, so the two cannot drift apart again.
+  if (contactId) {
+    await autoEnrollContact(supabase, {
+      brokerageId: input.brokerageId,
+      contactId,
+      source: input.source ?? CONTACT_SOURCE_LEAD_MAGNET,
+      contactType: capturedContactType,
+      enrolledBy: form.agent_id ?? null,
+      firstStepDelayMs: 0,   // a magnet download is a warm moment — follow up now
+      now: new Date(submittedAt),
+    })
   }
 
   return {

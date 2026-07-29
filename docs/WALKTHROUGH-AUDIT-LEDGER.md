@@ -3724,3 +3724,69 @@ Verified live, both ladders walked end to end then deleted:
 
 `npm run test:deal-ladder` — 52 checks, pure, on the chain. Chain: **122 simulators**.
 `tsc --noEmit`: 0. `npm run guard`: exit 0.
+
+---
+
+## OWNER RULING: the capture enrols itself, keyed on source and persona
+
+> "the home value and lead magnets contacts should have a source and the campaign sequence
+> should be keyed on source… persona column should be present… the campaigns should be
+> automatically keyed off when the contact signs up for those campaigns automatically."
+
+This closes the item I flagged two commits ago and deliberately did **not** fix. Both capture
+flows hand-rolled a lookup for their follow-up sequence, and both asked for a literal the
+column's CHECK does not admit:
+
+| flow | asked for |
+| --- | --- |
+| home-value | `.or("trigger_event.eq.home_value_submitted, sequence_type.eq.seller_nurture")` |
+| lead-magnet | `.eq("sequence_type", "lead_magnet")` |
+
+`trigger_event` admits 14 values, none of them `home_value_submitted`; `sequence_type` admits
+drip/nurture/post_close/re_engagement/transaction, neither of the other two among them. **No
+capture from either flow was ever enrolled in anything.** The home-value flow even notified the
+agent "Review and start a drip campaign" — the manual fallback for an automation that never
+fired.
+
+**Why I left it before.** Rewriting `seller_nurture` → `nurture` would have made the lookup
+match an *arbitrary* nurture sequence, so a buyer drip could enrol a home-value seller. The
+table had no discriminator. That was the blocker, and the ruling resolves it.
+
+**m293** adds `source_key` and `persona` to `campaign_sequences` (persona CHECKed to
+buyer/seller/both/lifetime — the same axis `engage-contact.ts` already derives from
+`contact_type` when it picks a situational portal message), plus a partial index on the
+enroller's selection path. Both columns nullable: an existing hand-built sequence keys on
+nothing and is simply never auto-selected.
+
+**Source had to be canonicalised first.** `contacts.source` is free text, and the home-value
+capture wrote it **two ways from one feature** — `source: "home_value"` in one insert branch and
+`"home_value_tool"` in another. Keying on a value the writers disagree about would silently skip
+half the captures. `lib/campaigns/contact-sources.ts` pins the vocabulary and maps the loose
+spellings forward. `tcpa_consent_source` deliberately keeps `"home_value_tool"` — that column
+records which tool captured consent, which is TCPA provenance, not a campaign key.
+
+`lib/campaign-sequences/auto-enroll.ts` is the one enroller both captures call. Exact persona
+beats persona-agnostic; a non-keyed source (website, referral) enrols in **nothing** rather than
+something arbitrary; an active enrolment blocks a double form post but a **completed** one does
+not, so a past client who comes back through the home-value tool starts the drip again. It never
+throws into the capture — the contact is what matters, the drip is recoverable.
+
+Verified live against seeded sequences, then deleted: `home_value + seller` → the seller drip,
+`home_value + buyer` → still the seller drip (a home-value lead *is* a seller), `home_value +
+lifetime` → falls back to the agnostic drip, `persona = 'investor'` → refused by the CHECK.
+
+### Two guards caught what I would have missed
+
+The **schema-drift** guard flagged the m293 columns as unknown until `schema-snapshot.ts` was
+re-synced. Then the **tenant-scope** guard failed on a home-value `contacts` insert that had
+been passing — because it reads a fixed 500-character window after `.from()`, and
+`CONTACT_SOURCE_HOME_VALUE` being longer than `"home_value"` pushed `brokerage_id` past the
+boundary. The write was always correctly scoped; the *evidence* moved out of frame. Fixed by
+hoisting the tenant anchor to the top of the payload, which is where it belongs anyway — a
+properly-scoped write should not look unscoped because the payload got long.
+
+`npm run test:campaign-auto-enroll` — 45 checks, pure, on the chain, driving the enroller
+through a recording fake so the selection *filters* are asserted, not just the outcome.
+
+Vocabulary baseline: **77 → 74**. Chain: **123 simulators**. `tsc --noEmit`: 0.
+`npm run guard`: exit 0.
