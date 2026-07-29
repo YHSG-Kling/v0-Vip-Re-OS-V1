@@ -7,7 +7,8 @@ import { Badge } from "@/components/ui/badge"
 import { Users, AlertTriangle, CheckCircle2, Building2, ArrowRight } from "lucide-react"
 import { InviteUserButton } from "./invite-user-button"
 import { EditUserButton } from "./edit-user-button"
-import { SEAT_ROLES, effectiveSeatLimit, parseSeatOverride, tierLabel } from "@/lib/kernel/tier-role-matrix"
+import { effectiveSeatLimit, parseSeatOverride, tierLabel } from "@/lib/kernel/tier-role-matrix"
+import { resolveSeatUsage } from "@/lib/kernel/seat-usage"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const dynamic = "force-dynamic"
@@ -145,9 +146,10 @@ export default async function AdminUsersPage() {
   // SEAT METER — the same math the invite gate enforces (Solo 2 · Team 5 ·
   // Brokerage/Multi unlimited; a seat = active SEAT_ROLES user, partners and
   // suspended users never count).
-  const seatCount = userList.filter(
-    (u) => (SEAT_ROLES as readonly string[]).includes(u.user_type ?? "") && u.status !== "suspended"
-  ).length
+  // ONE resolver with Settings and the setup meter. Counting only user_type
+  // under-counts: a user may hold a seat role by user_role_assignments without
+  // their primary type being one, and a user with several roles is still ONE seat.
+  const { seatCount } = await resolveSeatUsage(service, profile.brokerage_id)
   // ONE resolution with the invite gate: staff-set per-tenant override wins over the tier default.
   const { limit: seatLimit, overridden: seatOverridden } = effectiveSeatLimit(planTier, parseSeatOverride(tenant?.billing_metadata))
 

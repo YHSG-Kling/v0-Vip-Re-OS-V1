@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { SEAT_ROLES, effectiveSeatLimit, parseSeatOverride } from "@/lib/kernel/tier-role-matrix"
+import { effectiveSeatLimit, parseSeatOverride } from "@/lib/kernel/tier-role-matrix"
+import { resolveSeatUsage } from "@/lib/kernel/seat-usage"
 import { redirect } from "next/navigation"
 import { SettingsControlOSClient } from "./settings-control-os-client"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
@@ -124,24 +125,30 @@ export default async function SettingsControlOSPage() {
   // and showed no limit at all. So an admin here saw a different number from the
   // one the users page showed for the same tenant, and neither told them what
   // their plan allows.
-  const seatUsers = users.filter(
-    (u) => (SEAT_ROLES as readonly string[]).includes(u.user_type ?? "") && u.status !== "suspended",
-  )
+  // A seat is a PERSON. resolveSeatUsage counts distinct non-suspended users
+  // holding a seat role by user_type OR by user_role_assignments — reading only
+  // user_type under-counts, because a user may be ASSIGNED a seat role without
+  // their primary type being one.
+  const seatUsage = await resolveSeatUsage(service, brokerageId)
+  const holderIds = new Set(seatUsage.seatHolderIds)
+  const seatHolders = users.filter((u) => holderIds.has(u.id))
   const { limit: seatLimit, overridden: seatOverridden } =
     effectiveSeatLimit(brokerageRow?.plan_tier ?? null, parseSeatOverride(brokerageRow?.billing_metadata))
 
   const userStats = {
-    totalUsers: users.length,
+    totalUsers: seatUsage.peopleCount,
     // Seats, not headcount — partners and the system actor never consume one.
-    seatCount: seatUsers.length,
+    seatCount: seatUsage.seatCount,
     seatLimit,
     seatOverridden,
     planTier: brokerageRow?.plan_tier ?? null,
     activeUsers: users.filter((u) => u.status !== "suspended").length,
-    adminCount: seatUsers.filter((u) => u.user_type === "admin").length,
-    brokerCount: seatUsers.filter((u) => u.user_type === "broker" || u.user_type === "broker_owner").length,
-    agentCount: seatUsers.filter((u) => u.user_type === "agent").length,
-    coordinatorCount: seatUsers.filter((u) => u.user_type === "tc").length,
+    // Badges describe the seat holders' PRIMARY type; a user with several roles
+    // still holds one seat, so these can sum to less than seatCount.
+    adminCount: seatHolders.filter((u) => u.user_type === "admin").length,
+    brokerCount: seatHolders.filter((u) => u.user_type === "broker" || u.user_type === "broker_owner").length,
+    agentCount: seatHolders.filter((u) => u.user_type === "agent").length,
+    coordinatorCount: seatHolders.filter((u) => u.user_type === "tc").length,
   }
 
   // Calculate setup completeness

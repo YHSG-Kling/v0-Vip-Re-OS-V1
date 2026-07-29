@@ -88,9 +88,19 @@ function sourceLayer() {
   console.log("\n[wiring — per-tenant seat override (cert blocker #4)]")
   check("seat-override writer is requireWrite gated + audited tenant.seat_override_set with old/new",
     /setTenantSeatOverrideAction/.test(act) && /"tenant\.seat_override_set"/.test(act) && /old, new: params\.seatOverride/.test(act))
+  // The `?? 0` this used to pin is gone: seatCount now comes from
+  // resolveSeatUsage (lib/kernel/seat-usage.ts), which returns a real number
+  // rather than a possibly-undefined count. The contract asserted here is
+  // unchanged — ONE enforcement point — plus the new requirement that both gates
+  // get the count from the shared resolver, since counting users.user_type alone
+  // misses a seat role held through user_role_assignments and would admit an
+  // invite past the tenant's paid limit.
   check("BOTH invite gates resolve seats through parseSeatOverride → seatCheck (one enforcement point)",
-    /seatCheck\(tenantTier, seatCount \?\? 0, parseSeatOverride\(/.test(src("app/actions/admin/invite-user.ts"))
-    && /seatCheck\(targetTier, seatCount \?\? 0, parseSeatOverride\(/.test(src("app/actions/superadmin/tenant-users.ts")))
+    /seatCheck\(tenantTier, seatCount, parseSeatOverride\(/.test(src("app/actions/admin/invite-user.ts"))
+    && /seatCheck\(targetTier, seatCount, parseSeatOverride\(/.test(src("app/actions/superadmin/tenant-users.ts")))
+  check("…and BOTH take that count from the one seat resolver",
+    /resolveSeatUsage\(/.test(src("app/actions/admin/invite-user.ts"))
+    && /resolveSeatUsage\(/.test(src("app/actions/superadmin/tenant-users.ts")))
   check("the tenant seat meter uses the SAME resolution and says 'custom limit' when overridden",
     /effectiveSeatLimit\(planTier, parseSeatOverride\(/.test(src("app/dashboard/admin/users/page.tsx"))
     && /custom limit/.test(src("app/dashboard/admin/users/page.tsx")))

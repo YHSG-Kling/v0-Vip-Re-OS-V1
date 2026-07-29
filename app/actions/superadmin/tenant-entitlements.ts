@@ -14,7 +14,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { requireSuperadmin } from "@/lib/auth/platform-guard"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { normalizeOverrideType } from "@/lib/kernel/override-vocab"
-import { parseSeatOverride, seatLimitForTier, effectiveSeatLimit, SEAT_ROLES } from "@/lib/kernel/tier-role-matrix"
+import { parseSeatOverride, seatLimitForTier, effectiveSeatLimit } from "@/lib/kernel/tier-role-matrix"
+import { resolveSeatUsage } from "@/lib/kernel/seat-usage"
 import { TENANT_AUTONOMY_FEATURE_KEY, loadTenantAutonomyHalt, __clearAutonomyCache } from "@/lib/managers/autonomy-gate"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
@@ -75,16 +76,19 @@ export async function getTenantEntitlementsAction(brokerageId: string): Promise<
   const tier = (brk as any)?.plan_tier ?? null
   const accessCol = TIER_ACCESS_COL[tier ?? ""] ?? "brokerage_access"
 
-  const [{ data: flags }, { data: overrides }, { data: quota }, { data: grants }, { count: seatCount }] = await Promise.all([
+  const [{ data: flags }, { data: overrides }, { data: quota }, { data: grants }] = await Promise.all([
     svc.from("feature_flags").select("feature_key, display_name, category, superadmin_only, solo_agent_access, team_access, brokerage_access, multi_location_access")
       .eq("enabled", true).eq("deprecated", false).order("category").order("display_name").limit(500),
     svc.from("feature_access_overrides").select("feature_key, override_type, trial_ends_at").eq("brokerage_id", brokerageId).is("user_id", null).is("team_id", null),
     svc.from("v_brokerage_ai_quota").select("tokens_used, token_limit, percent_used, quota_status").eq("brokerage_id", brokerageId).maybeSingle(),
     svc.from("ai_quota_overrides").select("id, extra_tokens, reason, effective_until, approved_at").eq("brokerage_id", brokerageId).eq("status", "approved").order("approved_at", { ascending: false }).limit(50),
-    // Same seat definition the invite gates enforce: active SEAT_ROLES users.
-    svc.from("users").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId)
-      .in("user_type", SEAT_ROLES as unknown as string[]).neq("status", "suspended"),
   ])
+
+  // Same seat resolver the invite gates and every display surface use. This was a
+  // count over users.user_type, which cannot see a seat role held through
+  // user_role_assignments — so the platform-staff entitlements panel could show a
+  // tenant under their limit while the gate (correctly) refused the next invite.
+  const seatUsage = await resolveSeatUsage(svc, brokerageId)
 
   const overrideByKey = new Map<string, { type: string; trialEndsAt: string | null }>()
   for (const o of (overrides ?? []) as any[]) overrideByKey.set(o.feature_key, { type: o.override_type, trialEndsAt: o.trial_ends_at })
@@ -113,7 +117,7 @@ export async function getTenantEntitlementsAction(brokerageId: string): Promise<
       seats: (() => {
         const override = parseSeatOverride((brk as any)?.billing_metadata)
         return {
-          inUse: seatCount ?? 0,
+          inUse: seatUsage.seatCount,
           tierLimit: seatLimitForTier(tier),
           override,
           effectiveLimit: effectiveSeatLimit(tier, override).limit,

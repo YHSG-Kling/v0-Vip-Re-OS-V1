@@ -1487,7 +1487,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   users: {
     platform_role: ["admin", "ai_isa_system", "marketing", "superadmin", "support"],
-    user_type: ["admin", "agent", "broker", "broker_owner", "compliance_officer", "contact", "isa", "lender", "superadmin", "support", "system", "tc", "team_lead", "title_agent", "vendor"],
+    user_type: ["admin", "agent", "broker", "broker_owner", "compliance_officer", "contact", "isa", "lender", "superadmin", "support", "system", "tc", "team_lead", "vendor"],
   },
   valuation_requests: {
     condition: ["excellent", "fair", "good", "poor"],

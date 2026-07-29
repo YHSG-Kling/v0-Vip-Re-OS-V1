@@ -55,6 +55,9 @@ export type UserDomainRole =
   | "vendor"
   | "lender"
   | "superadmin"
+  // Platform/OS staff — admitted by the users.user_type CHECK, absent from this
+  // union. Like superadmin it is NOT a tenant seat.
+  | "support"
   | "contact"
   | "system"
 

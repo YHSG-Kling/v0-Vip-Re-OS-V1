@@ -29,7 +29,7 @@
 // app/components/onboarding/critical-setup-meter.tsx.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { SEAT_ROLES } from "@/lib/kernel/tier-role-matrix"
+import { resolveSeatUsage } from "@/lib/kernel/seat-usage"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -435,7 +435,7 @@ export async function loadCriticalSetupFacts(
   const facts = emptyCriticalSetupFacts()
 
   const [brk, gs, markets, rules, brandVoice, aiIdentity, managed, smsCred, zoomCred, qbCred,
-    acctInt, social, seatUsers, sub, listings] = await Promise.all([
+    acctInt, social, sub, listings] = await Promise.all([
     svc.from("brokerages")
       .select("plan_tier, license_number, phone, email, website, logo_url, primary_color, trial_ends_at, billing_metadata")
       .eq("id", brokerageId).maybeSingle(),
@@ -459,10 +459,6 @@ export async function loadCriticalSetupFacts(
       .eq("provider_type", "accounting").limit(1),
     svc.from("social_media_accounts").select("id", { count: "exact", head: true })
       .eq("brokerage_id", brokerageId).eq("is_active", true),
-    svc.from("users").select("id", { count: "exact", head: true })
-      .eq("brokerage_id", brokerageId)
-      .in("user_type", SEAT_ROLES as readonly string[])
-      .neq("status", "suspended"),
     svc.from("subscriptions").select("status, stripe_customer_id").eq("brokerage_id", brokerageId)
       .order("created_at", { ascending: false }).limit(1).maybeSingle(),
     svc.from("listings").select("id", { count: "exact", head: true })
@@ -491,7 +487,9 @@ export async function loadCriticalSetupFacts(
   facts.zoomConnected = ((zoomCred.data ?? []) as any[]).length > 0
   facts.accountingConnected = ((acctInt.data ?? []) as any[]).length > 0 || ((qbCred.data ?? []) as any[]).length > 0
   facts.socialConnected = (social.count ?? 0) > 0
-  facts.workingSeats = seatUsers.count ?? 0
+  // Seats count PEOPLE, across both role sources. This is the same number the
+  // users page and Settings show — the three disagreed before.
+  facts.workingSeats = (await resolveSeatUsage(svc, brokerageId)).seatCount
   const s = (sub.data ?? {}) as any
   const bm = (b.billing_metadata && typeof b.billing_metadata === "object") ? b.billing_metadata : {}
   facts.billingReady = s.status === "active" || !!s.stripe_customer_id || !!(bm as any).stripe_customer_id

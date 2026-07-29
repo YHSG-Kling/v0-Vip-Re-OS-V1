@@ -12,6 +12,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { inviteTenantMember, type UserDomainRole } from "@/lib/kernel/users"
 import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS, roleConsumesSeat, seatCheck, parseSeatOverride, SEAT_ROLES } from "@/lib/kernel/tier-role-matrix"
 import { requireSuperadmin } from "@/lib/auth/platform-guard"
+import { resolveSeatUsage } from "@/lib/kernel/seat-usage"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
@@ -214,16 +215,14 @@ export async function createTenantUserAction(params: {
   // bypasses the role matrix bypasses the seat cap, with the same audit trail.
   let seatOverLimit = false
   if (roleConsumesSeat(params.userType as UserDomainRole)) {
-    const { count: seatCount, error: seatErr } = await svc
-      .from("users")
-      .select("id", { count: "exact", head: true })
-      .eq("brokerage_id", params.brokerageId)
-      .in("user_type", SEAT_ROLES as unknown as string[])
-      .neq("status", "suspended")
-    if (seatErr) return { ok: false, error: seatErr.message }
+    // ONE seat resolver with the tenant-side gate and every display surface —
+    // counting user_type alone misses a seat role held through
+    // user_role_assignments, and on an enforcement path that admits an invite
+    // past the tenant's paid limit.
+    const { seatCount } = await resolveSeatUsage(svc, params.brokerageId)
     // ONE resolution (effectiveSeatLimit inside seatCheck): staff-set per-tenant seat override
     // (billing_metadata.seat_override — the tenant-entitlements panel) wins over the tier default.
-    const seats = seatCheck(targetTier, seatCount ?? 0, parseSeatOverride((brk as any)?.billing_metadata))
+    const seats = seatCheck(targetTier, seatCount, parseSeatOverride((brk as any)?.billing_metadata))
     seatOverLimit = !seats.allowed
     if (seatOverLimit && !params.superadminOverride) {
       return {

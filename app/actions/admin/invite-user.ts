@@ -7,7 +7,8 @@ import { inviteTenantMember } from "@/lib/kernel/users"
 import { emitUserProvisionedEvent } from "@/lib/kernel/users"
 import { KernelEvent } from "@/lib/kernel/events"
 import type { UserDomainRole } from "@/lib/kernel/users"
-import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS, roleConsumesSeat, seatCheck, parseSeatOverride, SEAT_ROLES } from "@/lib/kernel/tier-role-matrix"
+import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS, roleConsumesSeat, seatCheck, parseSeatOverride } from "@/lib/kernel/tier-role-matrix"
+import { resolveSeatUsage } from "@/lib/kernel/seat-usage"
 
 export interface InviteUserParams {
   email: string
@@ -119,16 +120,15 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
   // working staff user; partners (vendor) never consume one. Suspended users
   // don't hold a seat — deactivate one to free it.
   if (roleConsumesSeat(requestedRole)) {
-    const { count: seatCount, error: seatErr } = await service
-      .from("users")
-      .select("id", { count: "exact", head: true })
-      .eq("brokerage_id", resolvedBrokerageId)
-      .in("user_type", SEAT_ROLES as unknown as string[])
-      .neq("status", "suspended")
-    if (seatErr) return { success: false, error: seatErr.message }
+    // ONE seat resolver with every display surface. This hand-rolled the count off
+    // users.user_type alone, which under-counts: a user may hold a seat role
+    // through user_role_assignments without their primary type being one. On the
+    // ENFORCEMENT path that is worse than a wrong label — it admits an invite that
+    // pushes the tenant past the limit they pay for.
+    const { seatCount } = await resolveSeatUsage(service, resolvedBrokerageId)
     // ONE resolution (effectiveSeatLimit inside seatCheck): staff-set per-tenant override
     // (brokerages.billing_metadata.seat_override) wins when set, else the tier default.
-    const seats = seatCheck(tenantTier, seatCount ?? 0, parseSeatOverride((tenant as any)?.billing_metadata))
+    const seats = seatCheck(tenantTier, seatCount, parseSeatOverride((tenant as any)?.billing_metadata))
     if (!seats.allowed) {
       return {
         success: false,

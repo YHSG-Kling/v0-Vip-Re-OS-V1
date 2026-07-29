@@ -87,37 +87,43 @@ console.log("\n[every seat role is a real user_type]")
     roleConsumesSeat("agent") && !roleConsumesSeat("vendor"))
 }
 
-console.log("\n[there is exactly ONE seat list]")
+console.log("\n[there is exactly ONE seat list, and ONE seat count]")
 {
-  // The defect: two more copies, both drifted.
+  // Two homes, each with one occupant:
+  //   the seat ROLE list  → lib/kernel/tier-role-matrix.ts SEAT_ROLES
+  //   the seat COUNT      → lib/kernel/seat-usage.ts resolveSeatUsage
+  // The defect was three surfaces each answering the count their own way.
   const setup = src("lib/onboarding/critical-setup.ts")
   check("the critical-setup meter no longer keeps its own seat list",
     !/const SEAT_USER_TYPES\s*=/.test(setup))
-  check("…it uses the canonical SEAT_ROLES", /in\("user_type", SEAT_ROLES/.test(setup))
-  check("…and excludes suspended users, like the users page does",
-    /SEAT_ROLES[\s\S]{0,160}?\.neq\("status", "suspended"\)/.test(setup))
 
   const settingsPage = src("app/dashboard/settings/page.tsx")
-  check("Settings derives seats from the canonical source",
-    /from "@\/lib\/kernel\/tier-role-matrix"/.test(settingsPage) &&
-    /SEAT_ROLES as readonly string\[\]/.test(settingsPage))
-  check("…resolves the limit through effectiveSeatLimit (override-aware)",
+  check("Settings resolves the limit through effectiveSeatLimit (override-aware)",
     /effectiveSeatLimit\(/.test(settingsPage))
   check("…and no longer reports users.length as the active count",
     !/activeUsers: users\.length/.test(settingsPage))
 
   const usersPage = src("app/dashboard/admin/users/page.tsx")
-  check("the users page still uses the same source (unchanged)",
-    /SEAT_ROLES as readonly string\[\]/.test(usersPage) && /effectiveSeatLimit\(/.test(usersPage))
+  check("the users page resolves the limit the same way",
+    /effectiveSeatLimit\(/.test(usersPage))
 
-  // No fourth copy anywhere.
-  const dupes: string[] = []
-  for (const f of ["lib/onboarding/critical-setup.ts", "app/dashboard/settings/page.tsx",
-                   "app/dashboard/admin/users/page.tsx", "app/actions/admin/invite-user.ts"]) {
-    const s = src(f)
-    if (/=\s*\[\s*"admin",\s*"broker"/.test(s)) dupes.push(f)
-  }
-  check("no surface restates the seat roles inline", dupes.length === 0, dupes.join(", "))
+  // No surface may inline the role list OR hand-roll the count.
+  // Display AND enforcement. The gates matter more: a meter that under-counts is
+  // a wrong label, but a GATE that under-counts admits an invite that pushes the
+  // tenant past the limit they pay for.
+  const SURFACES = [
+    "lib/onboarding/critical-setup.ts",
+    "app/dashboard/settings/page.tsx",
+    "app/dashboard/admin/users/page.tsx",
+    "app/actions/admin/invite-user.ts",
+    "app/actions/superadmin/tenant-users.ts",
+    "app/actions/superadmin/tenant-entitlements.ts",
+  ]
+  const inlined = SURFACES.filter((f) => /=\s*\[\s*"admin",\s*"broker"/.test(src(f)))
+  check("no surface restates the seat roles inline", inlined.length === 0, inlined.join(", "))
+  const handRolled = SURFACES.filter((f) => /in\("user_type", SEAT_ROLES/.test(src(f)))
+  check("no surface hand-rolls the seat count off user_type",
+    handRolled.length === 0, handRolled.join(", "))
 }
 
 console.log("\n[the display tells the truth, including when it is exceeded]")
@@ -136,6 +142,61 @@ console.log("\n[the display tells the truth, including when it is exceeded]")
   // Unlimited must never render as "3/null".
   check("an unlimited tier renders a bare count, not a division by null",
     /stats\.seatLimit === null[\s\S]{0,120}?stats\.seatCount/.test(panel))
+}
+
+console.log("\n[a seat is a PERSON, across BOTH role sources]")
+{
+  // The OS assigns roles two ways and both are real: users.user_type (primary)
+  // and user_role_assignments (RBAC, where a user may hold SEVERAL roles). Live
+  // today: 2 users hold more than one role and 3 assignments disagree with that
+  // user's user_type. Counting only user_type therefore under-counts by
+  // construction — an admin also carrying agent, a contact granted isa. It
+  // happened to agree on today's data, which is exactly why it would have gone
+  // unnoticed until a tenant slipped past their limit.
+  const usage = src("lib/kernel/seat-usage.ts")
+  check("there is ONE seat resolver", usage.length > 0)
+  check("…it reads user_type AND user_role_assignments",
+    /from\("users"\)/.test(usage) && /from\("user_role_assignments"\)/.test(usage))
+  check("…counts DISTINCT users, so a second role never charges twice",
+    /holders\.length/.test(usage) && /seatHolderIds/.test(usage))
+  check("…excludes suspended users", /status !== "suspended"/.test(usage))
+  check("…and reports people separately from seats", /peopleCount/.test(usage))
+  check("…never throws — a read failure returns zeroes, not a wrong number",
+    /Never throws/.test(usage))
+
+  // All three surfaces must call it — that is the whole point.
+  for (const f of [
+    "app/dashboard/admin/users/page.tsx",
+    "app/dashboard/settings/page.tsx",
+    "lib/onboarding/critical-setup.ts",
+    "app/actions/admin/invite-user.ts",
+    "app/actions/superadmin/tenant-users.ts",
+    "app/actions/superadmin/tenant-entitlements.ts",
+  ]) {
+    check(`${f} resolves seats through it`, /resolveSeatUsage\(/.test(src(f)))
+  }
+  check("no surface counts seats off user_type alone any more",
+    ![
+      "app/dashboard/admin/users/page.tsx",
+      "app/dashboard/settings/page.tsx",
+      "lib/onboarding/critical-setup.ts",
+    ].some((f) => /in\("user_type", SEAT_ROLES/.test(src(f))))
+}
+
+console.log("\n[title_agent is a vendor; support is a platform user type]")
+{
+  const admitted = CHECK_VOCABULARIES.users?.user_type ?? []
+  check("users.user_type no longer admits 'title_agent' (m307)",
+    !admitted.includes("title_agent"))
+  check("…because a title company is a VENDOR — the taxonomy already has 'title'",
+    (CHECK_VOCABULARIES.vendors?.category ?? []).includes("title"))
+  check("'support' IS admitted — it is a real platform/OS user type",
+    admitted.includes("support"))
+  check("…and it never consumes a tenant seat, like superadmin",
+    !(SEAT_ROLES as readonly string[]).includes("support"))
+  const mig = src("supabase/migrations/m307-title-agent-is-not-a-user-type.sql")
+  check("the migration refuses to run if any row still carries it",
+    /RAISE EXCEPTION/.test(mig) && /title_agent/.test(mig))
 }
 
 console.log("\n[the override still wins, on every surface]")
