@@ -46,28 +46,7 @@ import {
 } from "./rule-matcher"
 import { selectAgentByCapacity, resolveBrokerageMaxLoad } from "./capacity-pick"
 import { loadRoutingProfiles } from "./routing-profiles"
-
-
-// ─── LOAD-BALANCE FALLBACK ────────────────────────────────────────────────────
-// CAPACITY-AWARE — shares the SAME picker as resolveAgentForContact + the Capacity
-// Guardian (working load = contacts + leads + deals against the tier ceiling), so a lead
-// is never handed to an agent who is already at/over capacity. (Consolidated: the old
-// "fewest assigned leads" heuristic was a third, divergent load metric — removed.)
-
-async function loadBalanceFallback(brokerageId: string): Promise<string | null> {
-  const supabase = createServiceClient()
-
-  const { data: agents } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("brokerage_id", brokerageId)
-    .eq("is_active", true)
-
-  if (!agents || agents.length === 0) return null
-
-  const maxLoad = await resolveBrokerageMaxLoad(supabase, brokerageId)
-  return selectAgentByCapacity(supabase, brokerageId, agents.map((a) => a.id), maxLoad)
-}
+import { assignByDefaultMethod } from "./default-assignment"
 
 
 /** What the rule pass decided for a lead. */
@@ -221,8 +200,18 @@ export async function evaluateAndAssignLead(params: {
 
   // Step 5: Load-balance fallback if no rule matched
   if (!matchedAgentId) {
-    matchedAgentId = await loadBalanceFallback(brokerageId)
-    matchedMethod = "load_balance"
+    // THE DEFAULT — brokerages.default_assignment_method (m305), the admin's
+    // decision in Settings. This was a hardcoded capacity load-balance, so the
+    // method deciding most assignments was the one nobody could configure.
+    const fallback = await assignByDefaultMethod(supabase, brokerageId, typedLead)
+    if (fallback.held) {
+      return {
+        assigned: false,
+        reason: "The brokerage's default assignment method is Manual — this lead is held for a person to route.",
+      }
+    }
+    matchedAgentId = fallback.agentId
+    matchedMethod = fallback.method
     if (!matchedAgentId) {
       return { assigned: false, reason: "No eligible agent found" }
     }

@@ -191,7 +191,24 @@ export function pickAgentForRule(
   hints: LeadRoutingHints,
   profiles?: Record<string, AgentProfileForRouting>,
 ): RuleAgentPick {
-  const type = rule.rule_type
+  return pickByMethod(rule.rule_type, pool, hints, profiles, rule.times_triggered ?? 0)
+}
+
+/**
+ * PURE — apply a METHOD to a pool. Shared by the per-rule path and the
+ * brokerage-wide DEFAULT (brokerages.default_assignment_method, m305), so the
+ * method a broker picks in Settings behaves identically to the same method
+ * chosen on a rule. Two implementations of "what round robin means" is exactly
+ * the drift this consolidation exists to prevent.
+ */
+export function pickByMethod(
+  type: string,
+  pool: string[],
+  hints: LeadRoutingHints,
+  profiles?: Record<string, AgentProfileForRouting>,
+  rotation = 0,
+): RuleAgentPick {
+  if (pool.length === 0) return { kind: 'capacity', candidates: [], method: type }
 
   if (type === 'manual') {
     // A deliberate hold. The lead is left unassigned for a human to route —
@@ -200,11 +217,7 @@ export function pickAgentForRule(
   }
 
   if (type === 'round_robin') {
-    return {
-      kind: 'agent',
-      agentId: pickRoundRobinAgent(pool, rule.times_triggered ?? 0),
-      method: 'round_robin',
-    }
+    return { kind: 'agent', agentId: pickRoundRobinAgent(pool, rotation), method: 'round_robin' }
   }
 
   if (type === 'specialization') {

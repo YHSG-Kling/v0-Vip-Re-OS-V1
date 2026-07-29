@@ -39,6 +39,7 @@ import {
 } from "./rule-matcher"
 import { selectAgentByCapacity, resolveBrokerageMaxLoad } from "./capacity-pick"
 import { loadRoutingProfiles } from "./routing-profiles"
+import { assignByDefaultMethod } from "./default-assignment"
 
 export interface ResolveAgentForContactInput {
   brokerageId: string
@@ -207,10 +208,10 @@ export async function resolveAgentForContact(
   }
 
   // CAPACITY CEILING — derived from the brokerage's active-agent headcount, the SAME tier
-  // ceiling the Capacity Guardian enforces. The load-balance steps below prefer an agent with
-  // HEADROOM so a fresh contact never piles onto someone already at/over capacity (the
-  // guardian becomes PREVENTIVE, not just reactive). Never strands a contact.
-  const maxLoad = await resolveBrokerageMaxLoad(supabase, brokerageId)
+  // ceiling the Capacity Guardian enforces, so a fresh contact never piles onto someone
+  // already at/over capacity (the guardian becomes PREVENTIVE, not just reactive). It is
+  // resolved inside assignByDefaultMethod now, alongside the method itself, rather than
+  // read here and passed down — the two belong together.
 
   // 3b. Team fallback — the contact has a team affinity: stay within the team.
   //     Capacity-aware load-balance among team members; if the team has no routable
@@ -224,9 +225,19 @@ export async function resolveAgentForContact(
       .eq("is_active", true)
 
     if (teamAgents?.length) {
-      const bestTeamAgent = await selectAgentByCapacity(supabase, brokerageId, teamAgents.map((a) => a.id), maxLoad)
-      if (bestTeamAgent) {
-        return { agentId: bestTeamAgent, method: "team_load_balance", teamId: teamHint }
+      // The brokerage's configured default method, applied WITHIN the team —
+      // a brokerage on round-robin rotates inside the team rather than
+      // silently switching to load balancing just because the contact has a
+      // team affinity.
+      const teamPick = await assignByDefaultMethod(
+        supabase, brokerageId, { source, property_zip_code: propertyZipCode },
+        teamAgents.map((a) => a.id),
+      )
+      if (teamPick.held) {
+        return { agentId: null, method: "manual_hold", teamId: teamHint }
+      }
+      if (teamPick.agentId) {
+        return { agentId: teamPick.agentId, method: "team_load_balance", teamId: teamHint }
       }
     }
 
@@ -251,20 +262,24 @@ export async function resolveAgentForContact(
     // Team has nobody routable — fall through to brokerage-wide load balance.
   }
 
-  // 4. Load-balance fallback — capacity-aware: prefer the agent with the most HEADROOM
-  //    under the tier ceiling (least working load), never just the fewest contacts.
-  const { data: agents } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("brokerage_id", brokerageId)
-    .eq("is_active", true)
+  // 4. THE DEFAULT — brokerages.default_assignment_method (m305). This step used
+  //    to be hardcoded capacity-based load balancing, which meant the method
+  //    deciding MOST assignments (every contact no rule matched) was the one the
+  //    admin could not configure. It still defaults to load_balance, so
+  //    behaviour is unchanged until someone chooses otherwise in Settings.
+  const fallback = await assignByDefaultMethod(
+    supabase, brokerageId, { source, property_zip_code: propertyZipCode },
+  )
 
-  if (!agents?.length) return { agentId: null, method: "none" }
+  if (fallback.held) {
+    // The admin chose 'manual': hold for a person. This deliberately breaks the
+    // old "no contact is ever left unrouted" invariant — it is a policy, so it
+    // is reported as one rather than as a routing failure.
+    return { agentId: null, method: "manual_hold" }
+  }
 
-  const bestAgent = await selectAgentByCapacity(supabase, brokerageId, agents.map((a) => a.id), maxLoad)
-
-  return bestAgent
-    ? { agentId: bestAgent, method: "load_balance" }
+  return fallback.agentId
+    ? { agentId: fallback.agentId, method: "load_balance" }
     : { agentId: null, method: "none" }
 }
 

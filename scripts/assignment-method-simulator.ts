@@ -205,6 +205,81 @@ console.log("\n[one resolver — the third implementation is gone]")
   }
 }
 
+console.log("\n[the DEFAULT method is the admin's decision, not a hardcoded one (m305)]")
+{
+  // The per-rule methods only apply when a rule MATCHES. The ordinary case is a
+  // new contact — especially a newly converted lead — that no rule covers, and
+  // for that lead both routers did the same hardcoded thing: capacity-based load
+  // balancing, with no way to change it. A brokerage running a strict
+  // round-robin floor rotation, the most common convention in the business,
+  // could not have one. The method deciding MOST assignments was the only one
+  // the admin could not set.
+  const live = CHECK_VOCABULARIES.brokerages?.default_assignment_method ?? []
+  check("brokerages.default_assignment_method exists as a CHECK-constrained column",
+    live.length > 0)
+  check("…and shares assignment_rules.rule_type's vocabulary exactly",
+    live.length === RULE_TYPES.length && RULE_TYPES.every((t) => live.includes(t)))
+
+  const mig = src("supabase/migrations/m305-brokerage-default-assignment-method.sql")
+  check("the migration declares the column and the CHECK",
+    /ADD COLUMN IF NOT EXISTS default_assignment_method/.test(mig) &&
+    /brokerages_default_assignment_method_check/.test(mig))
+  check("…and defaults to load_balance, preserving the pre-m305 behaviour",
+    /DEFAULT 'load_balance'/.test(mig))
+
+  const def = src("lib/lead-assignment/default-assignment.ts")
+  check("the default runs through the SAME pickByMethod the per-rule path uses",
+    /pickByMethod\(/.test(def))
+  check("…so 'round robin' cannot mean two different things by code path",
+    !/round_robin.*rotate|localeCompare/.test(def))
+  check("an unset or unrecognised value falls back to load_balance, not to something new",
+    /isRuleType\(m\) \? m : "load_balance"/.test(def))
+  check("a default round-robin has a real rotation source (assignment history)",
+    /from\("contacts"\)[\s\S]{0,220}?count: "exact"/.test(def))
+  check("expertise/geo only pay for the profile query when they are the method",
+    /method === "specialization" \|\| method === "geo_based"/.test(def))
+  check("the capacity pick still uses the shared picker + tier ceiling",
+    /selectAgentByCapacity/.test(def) && /resolveBrokerageMaxLoad/.test(def))
+  check("the method is reported prefixed 'default_' so a ledger says WHERE it came from",
+    /default_\$\{pick\.method\}/.test(def))
+
+  // Both fallbacks must now read the setting rather than hardcode the method.
+  const contact = src("lib/lead-assignment/contact-assignment.ts")
+  const engine = src("lib/lead-assignment/assignment-engine.ts")
+  check("the contact resolver's fallback reads the configured default",
+    /assignByDefaultMethod\(/.test(contact))
+  check("Engine 2's fallback reads it too", /assignByDefaultMethod\(/.test(engine))
+  check("…and the engine's private loadBalanceFallback is gone",
+    !/async function loadBalanceFallback/.test(engine))
+  check("a team-affinity contact gets the default method applied WITHIN the team",
+    /assignByDefaultMethod\([\s\S]{0,200}?teamAgents\.map/.test(contact))
+  check("choosing manual is reported as a HOLD, never as a routing failure",
+    /method: "manual_hold"/.test(contact) && /held for a person/.test(engine))
+}
+
+console.log("\n[the admin can actually set it — broker/admin gated, in Settings]")
+{
+  const action = src("app/actions/admin/lead-routing-settings.ts")
+  check("the action exists and validates against the routing module",
+    /isRuleType\(method\)/.test(action))
+  check("…and is gated to broker + admin, the same gate the Settings page uses",
+    /\["broker", "admin"\]\.includes\(type\)/.test(action))
+  check("…and READS the write error rather than discarding it",
+    /if \(error\) return \{ success: false, error: error\.message \}/.test(action))
+
+  const panel = src("app/dashboard/settings/components/lead-routing-panel.tsx")
+  check("the Settings panel exists and derives its options from the module",
+    /RULE_TYPES\.map/.test(panel) && /RULE_TYPE_LABELS\[t\]/.test(panel))
+  check("…shows what the chosen method does, in the module's own words",
+    /RULE_TYPE_HELP\[method\]/.test(panel))
+  check("…warns that Manual leaves a contact unassigned",
+    /unassigned/.test(panel))
+  check("…and points at per-rule routing instead of duplicating it",
+    /dashboard\/admin\/assignment-rules/.test(panel))
+  const settings = src("app/dashboard/settings/settings-control-os-client.tsx")
+  check("the panel is mounted on the Settings control center", /<LeadRoutingPanel \/>/.test(settings))
+}
+
 console.log("\n[the picker offers every method the column admits]")
 {
   const page = src("app/dashboard/admin/assignment-rules/page.tsx")

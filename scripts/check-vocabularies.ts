@@ -297,6 +297,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     scope_type: ["agent", "brokerage", "multi_location", "platform", "team"],
   },
   brokerages: {
+    default_assignment_method: ["geo_based", "load_balance", "manual", "round_robin", "specialization"],
     non_cda_payout_default: ["check", "direct_deposit"],
     onboarding_status: ["abandoned", "completed", "in_progress", "pending"],
     plan_tier: ["brokerage", "multi_location", "solo_agent", "team"],

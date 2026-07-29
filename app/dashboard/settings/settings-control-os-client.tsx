@@ -13,6 +13,7 @@ import {
 } from "./components/os"
 import { IsaAutoRespondSettings } from "@/app/components/isa/IsaAutoRespondSettings"
 import { VoiceAccessSettings } from "@/app/components/settings/VoiceAccessSettings"
+import { LeadRoutingPanel } from "./components/lead-routing-panel"
 
 interface ProviderData {
   id: string
@@ -202,6 +203,12 @@ export function SettingsControlOSClient({
 
         {/* Voice Assistant Access — management-controlled staff expansion */}
         <VoiceAccessSettings />
+
+        {/* Lead Routing — the DEFAULT assignment method (m305). Per-rule methods
+            live on the assignment-rules page; this is the one that decides every
+            contact no rule matches, which is most of them, and it used to be
+            hardcoded. Broker + admin only, which is already this page's gate. */}
+        <LeadRoutingPanel />
       </div>
     </div>
   )
