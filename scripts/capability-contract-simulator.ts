@@ -222,6 +222,21 @@ console.log("\n[every declaration is grounded in the gate the code ACTUALLY hits
   check("…gift_send's real dependency is a vendor row, and it degrades to a task",
     /createGiftOrder/.test(src("lib/workflow/adapters/send-gift.ts")) &&
     /createPickProviderTask/.test(src("lib/workflow/adapters/send-gift.ts")))
+
+  // …and handwritten_note_send is HELD because a human delivers it, NOT because
+  // it lies. I flagged its sms sibling as a silent failure and was wrong: the
+  // affordance says "Mark Sent", never "Send", the toast says "marked as sent",
+  // and a Copy button hands the agent the draft to deliver themselves. Pinned so
+  // a later pass does not "fix" an honest human-in-the-loop log into a machine
+  // send the owner never asked for — and so the distinction from sendInboxReply
+  // (which DID claim sent while dispatching nothing) stays legible.
+  const repPanel = src("app/components/reputation/ReputationPanel.tsx")
+  check("the handwritten/sms note affordance says MARK SENT, not Send",
+    /Mark Sent \(SMS\)/.test(repPanel) && /Mark Sent \(Handwritten\)/.test(repPanel))
+  check("…and its confirmation says marked-as-sent, distinct from the email one",
+    /Note marked as sent/.test(repPanel) && /Note sent via email/.test(repPanel))
+  check("…with a Copy affordance, because the human is the delivery lane",
+    /copy\(tyDraft, "ty"\)/.test(repPanel))
 }
 
 console.log("\n[ANY-of spans BOTH kinds — the phase-1 early return is gone]")

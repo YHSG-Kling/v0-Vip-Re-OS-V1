@@ -191,13 +191,18 @@ export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = 
  *                  fake provider key to express it would be the drift.
  *
  *   handwritten_note_send
- *                  has NO delivery lane, by design as it stands: the reputation
- *                  kernel writes the thank_you_notes row and marks it sent
- *                  "(delivery handled externally)" — i.e. a human writes and
- *                  posts it. That is legitimate for handwriting, and it is also
- *                  why no provider can be asserted. Flagged for the owner:
- *                  the SAME branch marks an SMS note sent without dispatching
- *                  it, which is not legitimate — an sms is a machine channel.
+ *                  has NO delivery lane, by design: the reputation kernel writes
+ *                  the thank_you_notes row and marks it sent "(delivery handled
+ *                  externally)" — a human writes and posts it. The UI is honest
+ *                  about that end to end, and deliberately so: the button reads
+ *                  "Mark Sent (Handwritten)" rather than "Send", the toast says
+ *                  "marked as sent" rather than "sent", and a Copy button hands
+ *                  the agent the draft to deliver themselves. The same branch
+ *                  serves the sms channel the same way ("Mark Sent (SMS)"), which
+ *                  is a LOG of a human send, not a claimed dispatch — so there is
+ *                  no silent failure here and no provider to assert. Contrast
+ *                  sendInboxReply, which said "sent" while calling no dispatcher
+ *                  at all; that one was a lie and is fixed.
  *
  * Declared as data so the guard can hold the list at a known size and force this
  * comment to be revisited rather than letting an absent contract pass as a
