@@ -4,6 +4,7 @@ import { Progress } from "@/components/ui/progress"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { createClient } from "@/lib/supabase/server"
+import { MILESTONE_OPEN_STATUSES, DEADLINE_OPEN_STATUSES } from "@/lib/transactions/coordination-status"
 import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity"
 import { toCanonicalRoleOrDefault } from "@/lib/security"
@@ -170,7 +171,7 @@ export default async function CoordinatorDashboard({
         .from("transaction_deadlines")
         .select("*, transactions(property_address)")
         .in("transaction_id", transactionIds)
-        .in("status", ["pending", "in_progress"])
+        .in("status", [...DEADLINE_OPEN_STATUSES])
         .gte("deadline_date", today)
         .lte("deadline_date", twoWeeksOut)
         .order("deadline_date")
@@ -182,7 +183,7 @@ export default async function CoordinatorDashboard({
         .from("transaction_milestones")
         .select("*, transactions(property_address)")
         .in("transaction_id", transactionIds)
-        .in("status", ["pending", "in_progress"])
+        .in("status", [...MILESTONE_OPEN_STATUSES])
         .order("target_date")
     : { data: [] }
 

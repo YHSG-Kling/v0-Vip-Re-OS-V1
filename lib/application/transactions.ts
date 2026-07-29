@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { milestoneJourneyFor } from "@/lib/transactions/milestone-catalog"
+import { DOCUMENT_OPEN_STATUSES } from "@/lib/transactions/coordination-status"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { runPipelineSimple } from "@/lib/ai"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
@@ -1261,8 +1262,10 @@ export async function getTransactionStats(agentId?: string) {
 
   const { count: pendingDocsCount } = await supabase
     .from("transaction_documents")
+    // 'pending' is not a value this ladder has — the writer inserts
+    // 'requested' — so this count was always zero.
     .select("id", { count: "exact", head: true })
-    .eq("status", "pending")
+    .in("status", [...DOCUMENT_OPEN_STATUSES])
 
   const today = new Date().toISOString().split("T")[0]
   let tasksQuery = supabase
@@ -1300,7 +1303,7 @@ export async function getPendingDocuments(transactionId?: string, limit = 20) {
   let query = supabase
     .from("transaction_documents")
     .select("*, transactions(id, property_address)")
-    .eq("status", "pending")
+    .in("status", [...DOCUMENT_OPEN_STATUSES])
     .order("created_at", { ascending: false })
     .limit(limit)
 

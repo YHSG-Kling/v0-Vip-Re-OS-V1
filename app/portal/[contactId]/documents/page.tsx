@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server"
+import { CONTRACT_ESIGN_AWAITING_STATUSES } from "@/lib/transactions/coordination-status"
 import { redirect } from "next/navigation"
 import { DocumentsClient } from "./DocumentsClient"
 import { syncAllForContact } from "@/lib/transactions/sync-from-provider"
@@ -93,7 +94,10 @@ export default async function DocumentsPage({ params }: { params: Promise<{ cont
     .from("contract_signatures")
     .select("id, contract_type, provider_name, document_url, sent_at, esign_status")
     .eq("brokerage_id", contact.brokerage_id)
-    .in("esign_status", ["sent", "pending", "out_for_signature"])
+    // 'out_for_signature' is not a value this ladder has, and the set omitted
+    // 'viewed' and 'agent_signed' — so an envelope the contact OPENED, or one
+    // their agent had already signed, dropped off their own to-sign list.
+    .in("esign_status", [...CONTRACT_ESIGN_AWAITING_STATUSES])
     .order("sent_at", { ascending: false })
     .limit(20)
 

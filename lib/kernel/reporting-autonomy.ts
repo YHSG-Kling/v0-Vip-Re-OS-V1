@@ -27,6 +27,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { narrowReportAgentIds, type EgressScopeKind } from "./reporting-scope"
 import type { ReportingActorContext, KernelReportingResult } from "./reporting"
+import { DEADLINE_OPEN_STATUSES, deadlineAtRisk } from "@/lib/transactions/coordination-status"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -369,13 +370,24 @@ export async function generateCoachingSignalsReport(input: {
       followUpGaps = activeIds.filter((id) => !touched.has(id)).length
     }
 
-    // Deadlines at risk / missed
+    // Deadlines at risk / missed.
+    //
+    // This filtered `.in("status", ["at_risk", "missed"])` and then counted
+    // rows whose status equalled 'at_risk'. That is a RISK BAND, not a value
+    // transaction_deadlines.status admits, and nothing has ever written it — so
+    // this report told every brokerage it had ZERO deadlines at risk, every
+    // time, forever. A permanent zero on a governance surface is worse than no
+    // number: it reads as an all-clear.
+    //
+    // 'missed' IS a stored status and is counted as stored. At-risk is derived
+    // the way every other band in this product is derived — an open deadline
+    // falling due inside the window (see lib/transactions/coordination-status).
     const { data: deadlines } = await svc.from("transaction_deadlines")
-      .select("status")
+      .select("status, deadline_date")
       .eq("brokerage_id", ctx.brokerageId)
-      .in("status", ["at_risk", "missed"])
+      .in("status", ["missed", ...DEADLINE_OPEN_STATUSES])
       .limit(1000)
-    const dlRows = (deadlines ?? []) as Array<{ status: string }>
+    const dlRows = (deadlines ?? []) as Array<{ status: string; deadline_date: string | null }>
 
     return {
       success: true,
@@ -386,7 +398,7 @@ export async function generateCoachingSignalsReport(input: {
         contactsMeasured: responseMinutes.length,
         followUpGaps,
         deadlines: {
-          atRisk: dlRows.filter((d) => d.status === "at_risk").length,
+          atRisk: dlRows.filter((d) => deadlineAtRisk(d)).length,
           missed: dlRows.filter((d) => d.status === "missed").length,
         },
       },

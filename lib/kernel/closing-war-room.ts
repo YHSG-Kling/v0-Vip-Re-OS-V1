@@ -40,6 +40,7 @@
 // NOT server-only (simulator-driven). Pure helpers below; loadClosingWarRoom does the reads.
 
 import type { createServiceClient } from "@/lib/supabase/service"
+import { CONTRACT_ESIGN_DONE_STATUSES } from "@/lib/transactions/coordination-status"
 import {
   buildDateChain,
   computeCriticalPath,
@@ -318,7 +319,8 @@ export interface WarRoomSignals {
 }
 
 const CTC_DONE_STATUSES = ["clear_to_close", "funded", "cleared_to_close"] as const
-const SIGNATURE_DONE_STATUSES = ["fully_signed"] as const
+// Was a file-local duplicate; the canonical set lives with the ladder now.
+const SIGNATURE_DONE_STATUSES = CONTRACT_ESIGN_DONE_STATUSES
 
 /** Find a chain milestone's status by its canonical name(s). */
 function milestoneStatus(

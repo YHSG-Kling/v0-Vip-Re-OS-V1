@@ -1,3 +1,4 @@
+import { CONTRACT_ESIGN_SENT_AWAITING_STATUSES } from "@/lib/transactions/coordination-status"
 // lib/kernel/signature-chase.ts
 // ─────────────────────────────────────────────────────────────────────────────
 // SIGNATURE-CHASE AUTONOMY — PROVIDER-AGNOSTIC by the owner's rule: the tenant
@@ -84,7 +85,7 @@ export async function runSignatureChase(svc: any, now: Date = new Date()): Promi
     const cutoff = new Date(now.getTime() - NUDGE_HOURS * 3_600_000).toISOString()
     const { data: contracts } = await svc.from("contract_signatures")
       .select("id, brokerage_id, agent_id, contract_type, esign_status, sent_at")
-      .in("esign_status", ["sent", "viewed", "agent_signed"])
+      .in("esign_status", [...CONTRACT_ESIGN_SENT_AWAITING_STATUSES])
       .not("sent_at", "is", null).lt("sent_at", cutoff).limit(500)
     for (const c of (contracts ?? []) as any[]) {
       r.scanned += 1

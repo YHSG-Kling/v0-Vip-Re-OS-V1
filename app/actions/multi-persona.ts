@@ -5,6 +5,11 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { TRANSACTION_STATUSES_IN_ESCROW, closeConfidence } from "@/lib/transactions/transaction-status"
+import {
+  MILESTONE_OPEN_STATUSES,
+  DEADLINE_OPEN_STATUSES,
+  isMilestoneStatus,
+} from "@/lib/transactions/coordination-status"
 
 // Multi-persona file covers brokerage admin, TC, lender, vendor, compliance,
 // team, agent, and client surfaces. Every dashboard read in this file used
@@ -155,7 +160,7 @@ export async function getCoordinatorDashboard_v2(coordinatorId: string) {
     .from("transaction_deadlines")
     .select("*, transactions(property_address)")
     .in("transaction_id", transactionIds)
-    .eq("status", "pending")
+    .in("status", [...DEADLINE_OPEN_STATUSES])
     .gte("deadline_date", new Date().toISOString().split("T")[0])
     .order("deadline_date")
     .limit(20)
@@ -164,7 +169,7 @@ export async function getCoordinatorDashboard_v2(coordinatorId: string) {
     .from("transaction_milestones")
     .select("*, transactions(property_address)")
     .in("transaction_id", transactionIds)
-    .in("status", ["pending", "in_progress"])
+    .in("status", [...MILESTONE_OPEN_STATUSES])
     .order("target_date")
 
   return { coordinator, transactions, deadlines, incompleteMilestones }
@@ -709,6 +714,17 @@ export async function executeWorkflow(workflowId: string, contextData: any) {
         })
         break
       case "update_milestone":
+        // action.newStatus is operator-authored JSON from the automations UI —
+        // nothing constrained it, and the update result was discarded. A status
+        // the column cannot hold was rejected in silence while execution_count
+        // still incremented below, so the automation reported a successful run
+        // that moved nothing. Refuse the write instead of firing a doomed one.
+        if (!isMilestoneStatus(action.newStatus)) {
+          console.error(
+            `[executeWorkflow] automation ${workflowId}: '${action.newStatus}' is not a milestone status; milestone not updated`,
+          )
+          break
+        }
         await supabase
           .from("transaction_milestones")
           .update({ status: action.newStatus })
@@ -1559,6 +1575,19 @@ export async function bulkUpdateMilestones(
   const supabase = await createClient()
 
   try {
+    // Caller-supplied statuses were written straight through. supabase-js
+    // RESOLVES a rejected write with { error } rather than throwing, so a status
+    // outside the CHECK never reached the catch below — and `updated` reported
+    // the ARRAY LENGTH, not the number of rows that moved. Every milestone could
+    // fail and the coordinator would still be told they all updated.
+    const invalid = updates.filter((u) => !isMilestoneStatus(u.status))
+    if (invalid.length) {
+      return {
+        success: false,
+        error: `Not a milestone status: ${[...new Set(invalid.map((u) => u.status))].join(", ")}`,
+      }
+    }
+
     const results = await Promise.all(
       updates.map(({ milestoneId, status, notes }) =>
         supabase
@@ -1568,7 +1597,15 @@ export async function bulkUpdateMilestones(
       )
     )
 
+    const failed = results.filter((r) => r.error)
     revalidatePath("/dashboard/coordinator")
+    if (failed.length) {
+      return {
+        success: false,
+        updated: results.length - failed.length,
+        error: failed[0].error?.message ?? "milestone update failed",
+      }
+    }
     return { success: true, updated: results.length }
   } catch (error: any) {
     return { success: false, error: error.message }
@@ -1607,7 +1644,7 @@ export async function getCoordinatorDashboard(coordinatorId: string) {
     .from("transaction_deadlines")
     .select("*, transactions(property_address)")
     .in("transaction_id", transactionIds)
-    .eq("status", "pending")
+    .in("status", [...DEADLINE_OPEN_STATUSES])
     .gte("deadline_date", new Date().toISOString().split("T")[0])
     .order("deadline_date")
     .limit(20)
@@ -1616,7 +1653,7 @@ export async function getCoordinatorDashboard(coordinatorId: string) {
     .from("transaction_milestones")
     .select("*, transactions(property_address)")
     .in("transaction_id", transactionIds)
-    .in("status", ["pending", "in_progress"])
+    .in("status", [...MILESTONE_OPEN_STATUSES])
     .order("target_date")
 
   return { coordinator, transactions, deadlines, incompleteMilestones }

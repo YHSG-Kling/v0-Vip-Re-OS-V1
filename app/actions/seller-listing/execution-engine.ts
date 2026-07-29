@@ -21,6 +21,7 @@
 // Agent task (correct location, no changes) — activity_type: seller.appointment.scheduled, seller.cma.started, seller.presentation.*, seller.decision.*, and all seller lifecycle events
 
 import { createClient } from "@/lib/supabase/server"
+import { LISTING_AGREEMENT_EXECUTED_STATUS } from "@/lib/transactions/coordination-status"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { isValidUUID } from "@/lib/validations"
 import { resolveProvider } from "@/lib/kernel/providers"
@@ -378,7 +379,7 @@ export async function markAgreementSigned(params: {
       provider_name:               activeProviderKey,
       document_url:                uploadMode === "manual_upload" ? (documentUrl ?? null) : null,
       provider_ref:                uploadMode === "provider_pull" ? (providerRef ?? null) : null,
-      esign_status:                "executed",
+      esign_status:                LISTING_AGREEMENT_EXECUTED_STATUS,
       agreement_type:              "listing",
       seller_signed_at:            new Date().toISOString(),
       agent_signed_at:             new Date().toISOString(),
