@@ -288,7 +288,8 @@ export async function convertBuyerLeadOnIntent(
           // verified stays false on a NEW request — but an already-verified profile is
           // never un-verified by a lead-intent replay.
           verified:                 ex?.verified === true,
-          lender_referral_status:   "requested",
+          // (not_referred|referred|in_progress|pre_approved|declined)
+          lender_referral_status:   "referred",
           updated_at:               new Date().toISOString(),
         },
         { onConflict: "contact_id" },

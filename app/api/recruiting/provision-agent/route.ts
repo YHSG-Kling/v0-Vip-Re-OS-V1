@@ -145,7 +145,9 @@ export async function POST(req: Request) {
             is_active: true,
             years_experience: recruit.years_experience ?? 0,
             license_state: recruit.license_state ?? null,
-            onboarding_status: "pending",
+            // agents.onboarding_status is (not_started|in_progress|completed|
+            // pending_review). A freshly provisioned recruit has not started.
+            onboarding_status: "not_started",
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           },

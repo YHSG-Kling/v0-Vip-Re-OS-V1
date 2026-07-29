@@ -122,7 +122,7 @@ export async function POST(request: Request) {
             brokerage_id: contact.brokerage_id,
             agent_id:     contact.agent_id ?? null,
             source:       'portal',
-            session_type: 'portal_ai',
+            session_type: 'portal_widget',
             status:       'open',
             metadata:     { initiated_by_contact: true },
           })

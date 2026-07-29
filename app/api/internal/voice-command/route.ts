@@ -781,7 +781,10 @@ Respond with ONLY the intent string, nothing else.`,
       action_taken: action ?? intent,
       action_result: { spokenResponse, callQueueCount: callQueue.length },
       success: true,
-      source: "voice_assistant",
+      // voice_commands.source is the CLIENT SURFACE (web|mobile|pwa|voice_call)
+      // and is nullable. This internal route cannot know which one, and
+      // "voice_assistant" is the feature, not the surface — so it says nothing
+      // rather than guessing.
     })
     .then(() => {}, () => {}) // non-fatal
 

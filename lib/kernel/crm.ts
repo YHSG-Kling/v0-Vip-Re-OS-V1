@@ -216,9 +216,13 @@ export async function mergeOrUpdateContactIfDuplicate(params: {
     brokerage_id: params.brokerageId,
     duplicate_of_contact_id: params.existingContactId,
     raw_record_id: params.rawRecordId ?? null,
-    action_taken: "merged_into_existing",
+    // lead_deduplication_log.action_taken says 'merged'.
+    action_taken: "merged",
     match_score: 90,
-    stage: "contact",
+    // lead_deduplication_log.stage is (pre_enrichment|post_enrichment|
+    // viability_gate|lead_creation) — the point in the pipeline, not the
+    // record kind. This dedupe happens as the record is created.
+    stage: "lead_creation",
     created_at: now,
   })
 

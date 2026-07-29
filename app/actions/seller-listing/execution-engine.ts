@@ -411,8 +411,11 @@ export async function markAgreementSigned(params: {
       value:                 commissionTerms.adjustmentValue!,
       value_type:            commissionTerms.adjustmentValueType ?? "percent",
       notes:                 commissionTerms.adjustmentNotes ?? null,
-      applies_to:            "listing",
-      direction:             "reduction",
+      // commission_adjustments.applies_to is (gross|agent|brokerage) — a
+      // seller-negotiated listing concession comes off the GROSS commission —
+      // and direction is (credit|surcharge); a reduction IS a credit.
+      applies_to:            "gross",
+      direction:             "credit",
       is_active:             true,
       effective_date:        new Date().toISOString().slice(0, 10),
     })

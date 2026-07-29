@@ -172,7 +172,8 @@ Respond ONLY with valid JSON (no markdown):
     listing_id: listingId,
     brokerage_id: brokerageId,
     price: predictedPrice,
-    price_type: "ai_prediction",
+    // pricing_history.price_type says 'prediction'.
+    price_type: "prediction",
     notes: `Confidence: ${confidenceScore}% | Trend: ${trendDirection} ${trendPercentage}%`,
   })
 
@@ -186,7 +187,10 @@ Respond ONLY with valid JSON (no markdown):
       await supabase.from("price_trend_alerts").insert({
         listing_id: listingId,
         brokerage_id: brokerageId,
-        alert_type: "price_gap",
+        // price_trend_alerts has no 'price_gap'. A prediction BELOW the list
+        // price means the listing is priced too high; a prediction ABOVE it is
+        // the market having moved, and there is no "underpriced" value.
+        alert_type: direction === "below" ? "price_too_high" : "market_shift",
         severity,
         message: `AI prediction ($${predictedPrice.toLocaleString()}) is ${priceDeltaPct.toFixed(1)}% ${direction} current list price ($${currentListPrice.toLocaleString()}).`,
         recommended_action:

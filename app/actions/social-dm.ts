@@ -177,7 +177,8 @@ export async function sendSocialDmReply(params: {
           brokerage_id: brokerageId,
           message_id: message?.id ?? null,
           provider_key: platform,
-          channel: "social_dm",
+          // message_provider_logs.channel says 'ai_social_dm'.
+          channel: "ai_social_dm",
           direction: "outbound",
           provider_message_id: result.providerMessageId ?? null,
           provider_status: "sent",

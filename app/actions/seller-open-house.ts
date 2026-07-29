@@ -299,7 +299,8 @@ export async function createQrCodeForEvent(params: {
         label: `Open House Sign-In — ${params.eventId.slice(0, 8)}`,
         slug,
         target_url: targetUrl,
-        purpose: "open_house_signin",
+        // qr_codes.purpose says 'open_house'; there is no _signin variant.
+        purpose: "open_house",
         listing_id: params.listingId,
         is_active: true,
       },
@@ -609,7 +610,8 @@ export async function checkInAttendee(params: {
       tcpa_consent: params.tcpaConsent,
       check_in_time: new Date().toISOString(),
       arrival_time: new Date().toISOString(),
-      interest_level: "unknown",
+      // interest_level is NULLABLE and has no 'unknown' — at sign-in we have
+      // not assessed them yet, and NULL already says exactly that.
       ai_lead_score: 0,
     })
     .select("id")

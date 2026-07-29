@@ -129,7 +129,9 @@ export async function approveSphereTouch(actionId: string): Promise<{ success: b
   const { error } = await svc
     .from("predictive_listing_actions")
     .update({
-      status:               "approved",
+      // predictive_listing_actions.status has no 'approved'; approving a
+      // proposed action means it is now queued to send.
+      status:               "queued",
       reviewed_at:          new Date().toISOString(),
       reviewed_by_user_id:  user.id,
       // Move the send time to NOW so the dispatcher picks it up on the next tick

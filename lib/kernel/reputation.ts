@@ -503,7 +503,8 @@ export async function createReferralRequest(
         agent_id:             input.agentId,
         brokerage_id:         input.brokerageId,
         referral_name:        input.referralName.trim(),
-        status:               "new",
+        // referrals.status ladder starts at 'received'.
+        status:               "received",
         referred_by:          input.referredBy          ?? null,
         source_contact_name:  input.sourceContactName   ?? null,
         value_estimate:       input.valueEstimate        ?? null,

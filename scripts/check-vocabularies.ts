@@ -32,7 +32,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     approval_status: ["approved", "draft", "pending_review", "rejected"],
   },
   ad_insights: {
-    source_type: ["competitor_ad", "competitor_post"],
+    source_type: ["competitor_ad", "competitor_analysis", "competitor_post"],
   },
   ad_manager_actions: {
     action_type: ["launch_ad_campaign", "pause_ad_campaign", "scale_ad_creative", "shift_ad_budget"],
@@ -347,7 +347,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     resolution: ["app_wins", "manual_review", "merged", "provider_wins"],
   },
   calendar_sync_logs: {
-    direction: ["pull", "push"],
+    direction: ["both", "pull", "push"],
     status: ["failed", "partial", "success"],
   },
   calendar_sync_mappings: {
@@ -823,7 +823,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     usage_intent: ["both", "mls", "public_marketing"],
   },
   listing_packet_jobs: {
-    job_type: ["mls_packet", "offer_packet", "open_house_booklet", "seller_packet", "social_packet"],
+    job_type: ["full_packet", "mls_packet", "offer_packet", "open_house_booklet", "seller_packet", "social_packet"],
     status: ["completed", "failed", "pending", "processing", "queued"],
   },
   listing_presentations: {
@@ -1573,7 +1573,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     stream_status: ["failed", "pending", "preview_ready", "processing", "ready"],
   },
   voice_calls: {
-    call_type: ["agent_call", "ai_isa_call", "vapi_inbound", "warm_transfer"],
+    call_type: ["agent_call", "ai_isa_call", "vapi_inbound", "warm_transfer", "zoom_meeting"],
     direction: ["inbound", "outbound"],
     outcome: ["appointment_set", "authority_blocked", "busy", "callback_requested", "canceled", "completed", "failed", "no_answer", "not_interested", "opt_out", "transferred", "voicemail", "voicemail_left", "warm_bridge_missed", "warm_bridge_ringing", "warm_transferred"],
     sentiment: ["negative", "neutral", "positive"],
