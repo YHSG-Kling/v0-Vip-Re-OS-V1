@@ -177,6 +177,71 @@ console.log("\n[the same class, elsewhere: the vendor category picker]")
     /VENDOR_CATEGORY_OTHER/.test(scanner) && !/\?\? "Other"/.test(scanner))
 }
 
+console.log("\n[the same class, swept: every curated picker against its own column]")
+{
+  // The three instances above were found one at a time. This is the sweep: every
+  // .tsx option list in the app, checked against the live CHECK vocabulary of the
+  // column it writes. It turned up five more of exactly the same defect, each one
+  // a control a user could operate that the database would refuse:
+  //
+  //   valuation_requests.condition     offered "needs_work"; column says 'poor'.
+  //                                    A homeowner answering honestly about their
+  //                                    own house LOST THE LEAD, at the top of the
+  //                                    funnel.
+  //   property_alerts.frequency        offered "bi_weekly" (rejected) while
+  //                                    twice_daily and paused were real and
+  //                                    unreachable — a client could not slow an
+  //                                    alert down or pause it.
+  //   listing_media.media_type         offered "floor_plan"; the column spells it
+  //                                    'floorplan'. Every floor-plan upload
+  //                                    failed. graphic/reel/story unreachable.
+  //   podcast_templates.template_type  offered "property_spotlight" (column says
+  //                                    listing_spotlight) and "qa" (no such value).
+  //   campaign_sequences.sequence_type offered onboarding/retention/event — none
+  //                                    admitted — while post_close and
+  //                                    re_engagement, the two the business
+  //                                    actually runs, could not be chosen.
+  //
+  // The pairings are CURATED rather than inferred: a file mentioning a column
+  // name is not proof it writes it, and guessing produced mostly noise. Each row
+  // below is a verified writer. Add a row when a picker is added.
+  const PICKERS: Array<{ file: string; table: string; column: string }> = [
+    { file: "app/components/lead-magnet-forms/HomeValueForm.tsx", table: "valuation_requests", column: "condition" },
+    { file: "app/crm/components/os/property-alerts-panel.tsx", table: "property_alerts", column: "frequency" },
+    { file: "app/dashboard/listings/[id]/media/components/media-grid.tsx", table: "listing_media", column: "media_type" },
+    { file: "app/dashboard/marketing/podcast/components/templates-tab.tsx", table: "podcast_templates", column: "template_type" },
+    { file: "app/dashboard/campaigns/workflows/workflow-builder-client.tsx", table: "campaign_sequences", column: "sequence_type" },
+  ]
+
+  for (const { file, table, column } of PICKERS) {
+    const admitted = (CHECK_VOCABULARIES as Record<string, Record<string, string[]>>)[table]?.[column] ?? []
+    check(`${table}.${column} is a known CHECK vocabulary`, admitted.length > 0)
+    if (admitted.length === 0) continue
+
+    const source = src(file)
+    // Only the option values that plausibly belong to THIS vocabulary: a file may
+    // hold several pickers, so an option is judged only when its own list already
+    // agrees with the column somewhere. That keeps the check precise without
+    // needing to parse which <Select> is which.
+    const offered = new Set<string>()
+    for (const m of source.matchAll(/<SelectItem\s+[^>]*value=["']([\w.-]+)["']/g)) offered.add(m[1])
+    for (const m of source.matchAll(/\bvalue:\s*["']([\w.-]+)["']/g)) offered.add(m[1])
+
+    const related = [...offered].filter((v) => admitted.includes(v))
+    const rejected = [...offered].filter(
+      (v) => !admitted.includes(v) && v !== "all" && v !== "__all__" && v !== "none",
+    )
+    // A file whose options overlap this vocabulary must not ALSO offer values it
+    // rejects — that overlap is what identifies the picker as this column's.
+    const looksLikeThisColumn = related.length >= 2
+    check(`${file}: offers ${related.length} admitted ${column} values`, looksLikeThisColumn)
+    if (looksLikeThisColumn) {
+      const bad = rejected.filter((v) => !/^[A-Z]/.test(v))
+      check(`${file}: no ${column} option the column would reject`, bad.length === 0, bad.join(", "))
+    }
+  }
+}
+
 console.log("\n──────────────────────────────────────────────────")
 if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
 console.log(` RESULT: ${pass} passed, ${fail} failed`)

@@ -309,10 +309,16 @@ export function PropertyAlertsPanel({ contactId, brokerageId, agentId }: Props) 
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
+                      {/* property_alerts.frequency admits instant | twice_daily |
+                          daily | weekly | paused. "bi_weekly" was offered and is
+                          not one of them, so choosing it lost the alert; meanwhile
+                          twice_daily and paused were real and unreachable —
+                          a client could not slow an alert down or pause it. */}
                       <SelectItem value="instant">Instant</SelectItem>
+                      <SelectItem value="twice_daily">Twice daily</SelectItem>
                       <SelectItem value="daily">Daily</SelectItem>
                       <SelectItem value="weekly">Weekly</SelectItem>
-                      <SelectItem value="bi_weekly">Bi-weekly</SelectItem>
+                      <SelectItem value="paused">Paused</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>

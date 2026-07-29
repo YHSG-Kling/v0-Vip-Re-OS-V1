@@ -338,11 +338,18 @@ export function WorkflowBuilderClient({ brokerageId, userId, userType, initialSe
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
+                  {/* campaign_sequences.sequence_type admits exactly: drip |
+                      nurture | post_close | re_engagement | transaction. Three
+                      of the five options here (onboarding, retention, event)
+                      were not among them, so choosing any of them produced a
+                      workflow the database refused to save — while post_close
+                      and re_engagement, the two the business actually runs,
+                      could not be chosen at all. */}
                   <SelectItem value="drip" className="text-xs">Drip sequence</SelectItem>
                   <SelectItem value="nurture" className="text-xs">Nurture campaign</SelectItem>
-                  <SelectItem value="onboarding" className="text-xs">Onboarding</SelectItem>
-                  <SelectItem value="retention" className="text-xs">Retention</SelectItem>
-                  <SelectItem value="event" className="text-xs">Event-based</SelectItem>
+                  <SelectItem value="transaction" className="text-xs">Transaction</SelectItem>
+                  <SelectItem value="post_close" className="text-xs">Post-close</SelectItem>
+                  <SelectItem value="re_engagement" className="text-xs">Re-engagement</SelectItem>
                 </SelectContent>
               </Select>
             </div>

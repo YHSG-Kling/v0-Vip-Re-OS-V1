@@ -68,12 +68,19 @@ interface MediaGridProps {
   onMediaChange: (media: MediaItem[]) => void
 }
 
+// listing_media.media_type admits: photo | video | floorplan | virtual_tour |
+// document | graphic | reel | story. This list said "floor_plan" — one
+// underscore the column does not have — so every floor plan upload was rejected,
+// and graphic / reel / story were real types nobody could choose.
 const MEDIA_TYPE_OPTIONS = [
-  { value: "photo",         label: "Photo" },
-  { value: "video",         label: "Video" },
-  { value: "floor_plan",    label: "Floor Plan" },
-  { value: "virtual_tour",  label: "Virtual Tour" },
-  { value: "document",      label: "Document" },
+  { value: "photo",        label: "Photo" },
+  { value: "video",        label: "Video" },
+  { value: "floorplan",    label: "Floor Plan" },
+  { value: "virtual_tour", label: "Virtual Tour" },
+  { value: "graphic",      label: "Graphic" },
+  { value: "reel",         label: "Reel" },
+  { value: "story",        label: "Story" },
+  { value: "document",     label: "Document" },
 ]
 
 export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaChange }: MediaGridProps) {
