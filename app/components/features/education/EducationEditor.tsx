@@ -5,8 +5,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/ca
 import { Button } from "@/app/components/ui/button"
 import { createResourceAction } from "@/app/actions/education-kernel"
 import { generateText, generateVideo } from "@/app/actions/content-generation-engine"
-import { getHeyGenAvatars, createTalkingPhotoVideo, type HeyGenAvatar } from "@/app/actions/heygen-avatars"
-import { generateHeyGenVideo, getHeyGenVideoStatus } from "@/app/actions/external-services"
+import { getDidAvatars, createTalkingPhotoVideo, type AvatarOption } from "@/app/actions/avatar-voice-catalog"
+import { generateAvatarVideo, getAvatarVideoStatus } from "@/app/actions/external-services"
 import { createClient } from "@/lib/supabase/client"
 import { toast } from "sonner"
 import { Sparkles, Video, Loader2, RefreshCw } from 'lucide-react'
@@ -43,7 +43,7 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
   const photoPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Avatar video tab state
-  const [avatars, setAvatars] = useState<HeyGenAvatar[]>([])
+  const [avatars, setAvatars] = useState<AvatarOption[]>([])
   const [avatarsLoading, setAvatarsLoading] = useState(false)
   const [selectedAvatar, setSelectedAvatar] = useState<string>('')
   const [selectedVoice, setSelectedVoice] = useState<string>('')
@@ -62,7 +62,7 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
   useEffect(() => {
     if (tab !== 'avatar-video' || avatars.length > 0) return
     setAvatarsLoading(true)
-    getHeyGenAvatars().then(({ avatars: list }) => {
+    getDidAvatars().then(({ avatars: list }) => {
       setAvatars(list)
       setAvatarsLoading(false)
     })
@@ -160,7 +160,7 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
       let pollAttempts = 0
       photoPollRef.current = setInterval(async () => {
         pollAttempts++
-        const statusResult = await getHeyGenVideoStatus(result.videoId!)
+        const statusResult = await getAvatarVideoStatus(result.videoId!)
         if (!statusResult.success) return
         if ((statusResult as any).status === 'completed') {
           clearInterval(photoPollRef.current!)
@@ -179,7 +179,7 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
   const handleGenerateVideo = () => {
     if (!selectedAvatar || !videoScript) { toast.error('Select an avatar and enter a script'); return }
     startCreateVideo(async () => {
-      const result = await generateHeyGenVideo({
+      const result = await generateAvatarVideo({
         avatarId: selectedAvatar,
         voiceId: selectedVoice || 'default',
         script: videoScript,
@@ -197,7 +197,7 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
       const MAX_CONSECUTIVE_ERRORS = 5 // tolerate up to 5 transient errors before giving up
       pollRef.current = setInterval(async () => {
         pollAttempts++
-        const statusResult = await getHeyGenVideoStatus(result.videoId!)
+        const statusResult = await getAvatarVideoStatus(result.videoId!)
         if (!statusResult.success) {
           consecutiveErrors++
           if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {

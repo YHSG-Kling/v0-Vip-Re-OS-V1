@@ -1222,8 +1222,8 @@ export async function generateVideoFromScript(params: {
     // Non-fatal: if the provider isn't configured the item stays queued for the
     // render pipeline. (Was a direct api.heygen.com call — business-rule violation.)
     if (params.avatarId && params.voiceId) {
-      const { generateHeyGenVideo } = await import("@/app/actions/external-services")
-      const didRes = await generateHeyGenVideo({
+      const { generateAvatarVideo } = await import("@/app/actions/external-services")
+      const didRes = await generateAvatarVideo({
         avatarId: params.avatarId,
         voiceId: params.voiceId,
         script: params.script,
@@ -1346,8 +1346,8 @@ export async function createAvatarVideo(params: {
 
     // Platform engine: D-ID + ElevenLabs (no HeyGen). Delegate to the rewired
     // generation action (was a direct api.heygen.com call — business-rule violation).
-    const { generateHeyGenVideo } = await import("@/app/actions/external-services")
-    const didRes = await generateHeyGenVideo({
+    const { generateAvatarVideo } = await import("@/app/actions/external-services")
+    const didRes = await generateAvatarVideo({
       avatarId: params.avatarId || "",
       voiceId: params.voice || "",
       script: params.script,

@@ -89,11 +89,11 @@ const COLUMNS = [
   { id: "failed", title: "Failed", icon: AlertCircle, color: "bg-red-500" },
 ]
 
-function mapStatusToColumn(status: string, heygenStatus?: string): string {
-  if (status === "failed" || heygenStatus === "failed") return "failed"
+function mapStatusToColumn(status: string, providerStatus?: string): string {
+  if (status === "failed" || providerStatus === "failed") return "failed"
   if (status === "published") return "published"
-  if (status === "preview_ready" || heygenStatus === "completed") return "preview_ready"
-  if (status === "generating" || heygenStatus === "generating" || heygenStatus === "processing") return "generating"
+  if (status === "preview_ready" || providerStatus === "completed") return "preview_ready"
+  if (status === "generating" || providerStatus === "generating" || providerStatus === "processing") return "generating"
   return "pending"
 }
 

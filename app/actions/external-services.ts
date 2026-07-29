@@ -24,13 +24,15 @@ async function resolveBrokerageId(contactId?: string, given?: string): Promise<s
 
 // ─── AVATAR / EXPLAINER VIDEO ─────────────────────────────────────────────────
 // BUSINESS RULE (platform-locked): the avatar/explainer-video engine is D-ID +
-// ElevenLabs ONLY — HeyGen is NOT used. These functions keep their historical
-// names for backward-compat with existing callers, but every render goes through
-// D-ID. `avatarId` is treated as a D-ID source/actor reference, `voiceId` as the
-// ElevenLabs voice id. Brokerage scoping is resolved from the caller's session.
+// ElevenLabs ONLY — HeyGen is NOT used and there is no HeyGen branch here.
+// These were generateHeyGenVideo / getHeyGenVideoStatus until the l39 rename:
+// the names outlived the vendor, so the code read as if the platform still paid
+// HeyGen while every render went to api.d-id.com. `avatarId` is a D-ID
+// source/actor reference, `voiceId` an ElevenLabs voice id. Brokerage scoping is
+// resolved from the caller's session.
 const DID_API_BASE = "https://api.d-id.com"
 
-export async function generateHeyGenVideo(params: {
+export async function generateAvatarVideo(params: {
   avatarId: string
   voiceId: string
   script: string
@@ -69,7 +71,7 @@ export async function generateHeyGenVideo(params: {
   }
 }
 
-export async function getHeyGenVideoStatus(videoId: string) {
+export async function getAvatarVideoStatus(videoId: string) {
   const didApiKey = process.env.DID_API_KEY
   if (!didApiKey) {
     return { success: false, error: "D-ID API key not configured" }

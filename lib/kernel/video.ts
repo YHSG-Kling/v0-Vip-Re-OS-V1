@@ -85,7 +85,7 @@ export interface LoadVideoGenerationStateOutput {
   status: string
   scriptText?: string
   settings?: Record<string, unknown>
-  heygenStatus?: string
+  providerStatus?: string
   videoUrl?: string
   createdAt: string
   updatedAt: string
@@ -418,7 +418,7 @@ export async function loadVideoGenerationState(
     status: project.status,
     scriptText: project.script_content,
     settings: project.provider_metadata,
-    heygenStatus: project.provider_status,
+    providerStatus: project.provider_status,
     videoUrl: project.video_url,
     createdAt: project.created_at,
     updatedAt: project.updated_at,
@@ -681,7 +681,7 @@ function parseSceneBreakpoints(
  * D-ID + ElevenLabs, never HeyGen; getPlatformVideoProvider always resolves
  * "did"). Returns the provider's job id; the caller persists provider_job_id.
  *
- * Previously this function was named submitToHeyGen() which falsely implied
+ * Previously this function was named submitAvatarVideoRender() which falsely implied
  * a HeyGen-only path even though it has gone through dispatchVideo since the
  * D-ID-first refactor. Renamed for clarity.
  */

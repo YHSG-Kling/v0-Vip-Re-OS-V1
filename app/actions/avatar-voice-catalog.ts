@@ -1,16 +1,25 @@
 "use server"
 
 /**
- * AVATAR / VOICE LISTING + PHOTO VIDEO (platform-locked engine: D-ID + ElevenLabs).
+ * AVATAR / VOICE CATALOG + PHOTO VIDEO (platform-locked engine: D-ID + ElevenLabs).
  *
  * BUSINESS RULE: the avatar/explainer-video engine is D-ID + ElevenLabs ONLY —
- * HeyGen is NOT used. The function names below are retained for backward-compat
- * with existing importers, but every path now resolves D-ID avatars
- * (agent_avatar_assets) and ElevenLabs voices, and renders via D-ID.
+ * HeyGen is NOT used and there is no HeyGen branch anywhere in this file.
+ *
+ * This file was app/actions/heygen-avatars.ts, and its exports were named
+ * getHeyGenAvatars / listHeygenVoices / HeyGenAvatar / HeyGenVoice long after
+ * the last HeyGen call was removed. The names were kept "for backward-compat
+ * with existing importers" — but a name is not a compatibility surface, it is
+ * what the next reader believes. getHeyGenAvatars reads agent_avatar_assets
+ * (D-ID) and listHeygenVoices calls api.elevenlabs.io; anyone auditing which
+ * vendors this platform pays, or grepping for HeyGen before an integration
+ * decision, would have found a live-looking HeyGen surface that does not exist.
+ * Renamed after what each one actually calls. Behaviour is unchanged — this was
+ * a rename and nothing else.
  */
 import { createClient } from "@/lib/supabase/server"
 
-export interface HeyGenAvatar {
+export interface AvatarOption {
   avatar_id: string
   avatar_name: string
   preview_image_url: string | null
@@ -59,7 +68,7 @@ export async function createTalkingPhotoVideo(params: {
   return { success: true, videoId: result.videoId }
 }
 
-export interface HeyGenVoice {
+export interface VoiceOption {
   voice_id: string
   name: string
   language: string
@@ -70,7 +79,7 @@ export interface HeyGenVoice {
  * List the ElevenLabs voices available to the platform. HeyGen voice listing is
  * removed — the only voice engine is ElevenLabs.
  */
-export async function listHeygenVoices(): Promise<{ success: boolean; voices: HeyGenVoice[] }> {
+export async function listElevenLabsVoices(): Promise<{ success: boolean; voices: VoiceOption[] }> {
   const apiKey = process.env.ELEVENLABS_API_KEY
   if (!apiKey) return { success: false, voices: [] }
   const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
@@ -82,7 +91,7 @@ export async function listHeygenVoices(): Promise<{ success: boolean; voices: He
     auth: { style: "header", name: "xi-api-key", value: apiKey },
   })
   if (!res.ok || !res.data) return { success: false, voices: [] }
-  const voices: HeyGenVoice[] = (res.data.voices ?? []).map((v: any) => ({
+  const voices: VoiceOption[] = (res.data.voices ?? []).map((v: any) => ({
     voice_id: v.voice_id,
     name: v.name ?? v.voice_id,
     language: v.labels?.language ?? v.fine_tuning?.language ?? "en",
@@ -93,10 +102,10 @@ export async function listHeygenVoices(): Promise<{ success: boolean; voices: He
 
 /**
  * List the D-ID avatars (agent_avatar_assets) available to the current agent.
- * Returns ready avatars only, mapped into the legacy HeyGenAvatar shape so
+ * Returns ready avatars only, mapped into the legacy AvatarOption shape so
  * existing UI consumers keep working without a structural change.
  */
-export async function getHeyGenAvatars(): Promise<{ success: boolean; avatars: HeyGenAvatar[] }> {
+export async function getDidAvatars(): Promise<{ success: boolean; avatars: AvatarOption[] }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user?.id) return { success: false, avatars: [] }
@@ -114,7 +123,7 @@ export async function getHeyGenAvatars(): Promise<{ success: boolean; avatars: H
     .eq("agent_id", agentRow.id)
     .eq("status", "ready")
 
-  const avatars: HeyGenAvatar[] = (assets ?? [])
+  const avatars: AvatarOption[] = (assets ?? [])
     .filter((a: any) => a.did_avatar_id)
     .map((a: any) => ({
       avatar_id: a.did_avatar_id,

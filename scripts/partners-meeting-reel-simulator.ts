@@ -382,6 +382,49 @@ console.log("\n[18 · HEYGEN GONE FROM THE SCHEMA + D-ID V4 EXPRESSIVE ENGINE]")
     && src("lib/did/index.ts").includes("sentiment_id")
     && src("lib/did/index.ts").includes('includes("@avt_")')
     && src("app/api/cron/poll-did-videos/route.ts").includes('"expressives"'))
+
+  // ── THE CODE HALF OF THE PURGE (l39) ──────────────────────────────────────
+  // The schema stopped saying HeyGen; the CODE still did. app/actions/
+  // heygen-avatars.ts read agent_avatar_assets and called api.elevenlabs.io,
+  // and generateHeyGenVideo posted to api.d-id.com — the names were kept "for
+  // backward-compat with existing importers". A name is not a compatibility
+  // surface: anyone auditing which vendors this platform pays, or grepping for
+  // HeyGen before an integration decision, found a live-looking HeyGen surface
+  // that does not exist. Worse, the failure strings shipped it to users — an
+  // agent whose D-ID render failed was told "HeyGen video generation failed".
+  const RENAMED: Array<[string, string]> = [
+    ["generateHeyGenVideo",  "generateAvatarVideo"],
+    ["getHeyGenVideoStatus", "getAvatarVideoStatus"],
+    ["submitToHeyGen",       "submitAvatarVideoRender"],
+    ["getHeyGenAvatars",     "getDidAvatars"],
+    ["listHeygenVoices",     "listElevenLabsVoices"],
+    ["HeyGenAvatar",         "AvatarOption"],
+    ["HeyGenVoice",          "VoiceOption"],
+    ["heygenStatus",         "providerStatus"],
+  ]
+  const CODE = ["app/actions/avatar-voice-catalog.ts", "app/actions/external-services.ts",
+    "app/actions/video-generation.ts", "app/actions/video/create-video-project.ts",
+    "app/components/features/education/EducationEditor.tsx",
+    "app/dashboard/videos/board/page.tsx", "lib/kernel/video.ts"]
+  // Comments are stripped: these files legitimately DISCUSS the purge.
+  const code = (f: string) => src(f).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  for (const [old, now] of RENAMED) {
+    check(`${old} is gone from live code — it is ${now}`,
+      CODE.every((f) => !new RegExp(`\\b${old}\\b`).test(code(f))))
+  }
+  check("the file itself is renamed (it lists D-ID avatars and ElevenLabs voices)",
+    !existsSync(join(process.cwd(), "app/actions/heygen-avatars.ts"))
+    && existsSync(join(process.cwd(), "app/actions/avatar-voice-catalog.ts")))
+  check("…and no importer still points at the old path",
+    CODE.every((f) => !/heygen-avatars/.test(code(f))))
+  check("NO USER-FACING STRING blames HeyGen for a D-ID failure",
+    CODE.every((f) => !/(error|error_message)[:\s].*HeyGen/i.test(code(f))))
+
+  // The ONE deliberate survivor. Legacy training assets were rendered by HeyGen
+  // before the purge and are still hosted there — the player must keep matching
+  // the real domain or those videos stop playing.
+  check("legacy training playback still recognises heygen.com (deliberate — those assets exist)",
+    src("app/dashboard/onboarding/training/[id]/video-player-client.tsx").includes('url.includes("heygen.com")'))
 }
 
 console.log("\n[19 · THE MOVING ASSISTANT + SENTIMENT-FROM-CONTENT (V4 era)]")

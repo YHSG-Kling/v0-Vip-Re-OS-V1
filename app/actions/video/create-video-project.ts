@@ -8,7 +8,7 @@ import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
-import { generateHeyGenVideo, getHeyGenVideoStatus } from "@/app/actions/external-services"
+import { generateAvatarVideo, getAvatarVideoStatus } from "@/app/actions/external-services"
 
 // ============================================
 // VIDEO PROJECT CREATION — ai_video_projects
@@ -283,9 +283,13 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
   return { success: true, project: project as VideoProject }
 }
 
-// ─── SUBMIT TO HEYGEN ────────────────────────────────────────────────────────
+// ─── SUBMIT AVATAR VIDEO RENDER (D-ID + ElevenLabs) ──────────────────────────
+// Named submitToHeyGen until the l39 rename. There is no HeyGen path: this
+// dispatches through the platform video provider, which resolveVideoProvider
+// hard-locks to D-ID. The error strings below said "HeyGen" too — an agent
+// whose render failed was told a vendor we do not use had failed them.
 
-export async function submitToHeyGen(
+export async function submitAvatarVideoRender(
   projectId: string,
   brokerageId: string
 ): Promise<{ success: boolean; providerVideoId?: string; error?: string; requiresConfiguration?: boolean }> {
@@ -318,7 +322,7 @@ export async function submitToHeyGen(
     .eq("id", projectId)
 
   // Submit to D-ID (platform-locked engine; canonical provider_* columns)
-  const result = await generateHeyGenVideo({
+  const result = await generateAvatarVideo({
     avatarId: project.provider_avatar_id,
     voiceId: project.provider_voice_id,
     script: project.script_content,
@@ -332,7 +336,7 @@ export async function submitToHeyGen(
       .update({
         status: "failed",
         provider_status: "failed",
-        error_message: result.error ?? "HeyGen submission failed",
+        error_message: result.error ?? "Avatar video submission failed (D-ID)",
         updated_at: new Date().toISOString(),
       })
       .eq("id", projectId)
@@ -344,7 +348,7 @@ export async function submitToHeyGen(
     }
   }
 
-  // Store HeyGen job ID
+  // Store the D-ID job id
   await supabase
     .from("ai_video_projects")
     .update({
@@ -395,16 +399,16 @@ export async function pollVideoStatus(
     return { status: "generating" }
   }
 
-  // Poll HeyGen
-  const providerResult = await getHeyGenVideoStatus(project.provider_job_id)
+  // Poll the D-ID render
+  const providerResult = await getAvatarVideoStatus(project.provider_job_id)
 
   if (!providerResult.success) {
     return { status: "generating" }
   }
 
-  const heygenStatus: string = providerResult.status ?? "processing"
+  const providerStatus: string = providerResult.status ?? "processing"
 
-  if (heygenStatus === "completed" && providerResult.videoUrl) {
+  if (providerStatus === "completed" && providerResult.videoUrl) {
     // Update project to ready
     await supabase
       .from("ai_video_projects")
@@ -438,18 +442,18 @@ export async function pollVideoStatus(
     return { status: "ready", videoUrl: providerResult.videoUrl }
   }
 
-  if (heygenStatus === "failed") {
+  if (providerStatus === "failed") {
     await supabase
       .from("ai_video_projects")
       .update({
         status: "failed",
         provider_status: "failed",
-        error_message: "HeyGen video generation failed",
+        error_message: "Avatar video generation failed (D-ID)",
         updated_at: new Date().toISOString(),
       })
       .eq("id", projectId)
 
-    return { status: "failed", error: "Video generation failed in HeyGen" }
+    return { status: "failed", error: "Avatar video generation failed (D-ID)" }
   }
 
   // Still processing
@@ -536,7 +540,7 @@ export async function retryVideoGeneration(
     .eq("id", projectId)
 
   // Resubmit
-  const submitResult = await submitToHeyGen(projectId, brokerageId)
+  const submitResult = await submitAvatarVideoRender(projectId, brokerageId)
 
   if (!submitResult.success) {
     return { success: false, error: submitResult.error }
