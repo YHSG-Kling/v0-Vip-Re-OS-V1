@@ -20,6 +20,7 @@
 // NOT server-only (simulator-driven, like the rest of the kernel loaders).
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { VENDOR_CATEGORY_INSPECTOR } from "@/lib/kernel/vendor-categories"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 import {
   whisperTierCapability,
@@ -228,7 +229,7 @@ export async function runFireDrills(
     let inspectorCandidate: string | null = null
     if (threats.some((t) => t.kind === "inspection")) {
       const { data: vend } = await supabase.from("vendors").select("name")
-        .eq("brokerage_id", brokerageId).eq("category", "Inspector")
+        .eq("brokerage_id", brokerageId).eq("category", VENDOR_CATEGORY_INSPECTOR)
         .order("rating", { ascending: false, nullsFirst: false }).limit(1).maybeSingle()
       inspectorCandidate = (vend as { name: string } | null)?.name ?? null
     }

@@ -1553,7 +1553,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   vendors: {
     access_level: ["brokerage_full_access", "team_full_access", "transaction_only"],
-    category: ["Contractor", "Inspector", "Lender", "Other", "Stager", "Title Company"],
+    category: ["3d_tour", "appliance_repair", "attorney", "cleaner", "contractor", "drone_pilot", "electrician", "estate_sale", "financial_advisor", "flooring", "garage_door", "handyman", "home_warranty", "hvac", "insurance", "interior_design", "inspector", "landscaping", "lender", "mover", "organizer", "other", "painter", "pest_control", "photographer", "plumber", "pool_service", "property_management", "refinance_lender", "roofer", "security", "smart_home", "solar", "stager", "tax_pro", "title", "videographer", "window_treatment"],
     status: ["active", "archived", "inactive", "pending"],
   },
   video_assets: {

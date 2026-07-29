@@ -71,7 +71,7 @@ async function main() {
     const contactId = (con as any).id
 
     const { data: vendor } = await svc.from("vendors").insert({
-      brokerage_id: brokerageId, name: `${TAG} Ace Inspections`, category: "Inspector", phone: "555-0100",
+      brokerage_id: brokerageId, name: `${TAG} Ace Inspections`, category: "inspector", phone: "555-0100",
     }).select("id").single()
     cleanup.push({ table: "vendors", id: (vendor as any).id })
 

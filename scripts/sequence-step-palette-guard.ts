@@ -40,6 +40,11 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
 import { LISTING_STATUSES } from "../lib/constants"
+import {
+  VENDOR_CATEGORIES,
+  VENDOR_CATEGORY_GROUPS,
+  VENDOR_CATEGORY_LABELS,
+} from "../lib/kernel/vendor-categories"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -136,6 +141,67 @@ console.log("\n[the same class, elsewhere: the listing phase picker]")
     /isListingStatus\(status\)/.test(action))
   check("…and the constant is no longer a dead list (the picker + action use it)",
     /LISTING_STATUSES/.test(picker) && /LISTING_STATUSES/.test(action))
+}
+
+console.log("\n[the same class, elsewhere: the vendor category picker]")
+{
+  // The third instance of the defect, and the worst of the three: vendors.category
+  // was authored by a free-text <Input> whose placeholder read "e.g., Home
+  // Inspection, Photography" — under BOTH the pre-m304 six-value Title-Case CHECK
+  // and the post-m304 38-value one, typing either suggestion produced a rejected
+  // INSERT. A CHECK-constrained column may only be authored by a control that
+  // cannot express a value outside the CHECK.
+  const live = CHECK_VOCABULARIES.vendors?.category ?? []
+  check(`vendors.category admits ${live.length} values`, live.length > 0)
+  check("the vocabulary module matches the column exactly",
+    VENDOR_CATEGORIES.length === live.length &&
+    VENDOR_CATEGORIES.every((c) => live.includes(c)))
+  check("…and it is the SAME taxonomy vendor_directory uses (m304)",
+    (CHECK_VOCABULARIES.vendor_directory?.category ?? []).length === live.length)
+
+  // The groups are what the picker renders. If they drifted from the vocabulary a
+  // category would either never appear in the UI or appear twice — so they are
+  // proved to PARTITION it, not merely to overlap it.
+  const grouped = VENDOR_CATEGORY_GROUPS.flatMap((g) => g.categories)
+  check("every category appears in exactly one picker group",
+    grouped.length === VENDOR_CATEGORIES.length &&
+    new Set(grouped).size === grouped.length &&
+    VENDOR_CATEGORIES.every((c) => grouped.includes(c)))
+  check("every category has a display label",
+    VENDOR_CATEGORIES.every((c) => !!VENDOR_CATEGORY_LABELS[c]))
+
+  const picker = src("app/components/vendors/vendor-category-select.tsx")
+  check("the picker DERIVES its options from the vocabulary",
+    /VENDOR_CATEGORY_GROUPS\.map/.test(picker) && /VENDOR_CATEGORY_LABELS\[c\]/.test(picker))
+  const dialog = src("app/dashboard/vendors/vendor-directory-client.tsx")
+  check("the Add Vendor dialog uses the picker, not a free-text box",
+    /<VendorCategorySelect/.test(dialog))
+  // Scoped to the CATEGORY control specifically. The booking dialog on the same
+  // page keeps a free-text "e.g., Home Inspection" box, and correctly so —
+  // vendor_bookings.service_type has no CHECK. The rule is not "no free text on
+  // this page", it is "no free text into a constrained column".
+  check("…and the category state is no longer bound to a free-text Input",
+    !/<Input[^>]*value=\{newVendorCategory\}/s.test(dialog))
+
+  // The write path refuses in words rather than relaying a Postgres constraint.
+  const kernel = src("lib/kernel/vendors.ts")
+  check("createVendorRecord normalises through the vocabulary before INSERT",
+    /toVendorCategory\(category\)/.test(kernel))
+  check("updateVendorRecord does the same (a blind patch spread would not)",
+    /toVendorCategory\(nextPatch\.category\)/.test(kernel))
+  check("no second, untyped vendor writer survives",
+    !/from\("vendors"\)\.insert\(vendor\)/.test(src("services/supabaseService.ts")))
+
+  // The classifier is what makes the widened bench REACHABLE rather than merely
+  // spellable: before m304 it could only ever emit six of the values.
+  const classifier = src("lib/contacts/card-classifier.ts")
+  const emitted = new Set([...classifier.matchAll(/category: "([\w]+)"/g)].map((m) => m[1]))
+  check(`the business-card classifier can emit ${emitted.size} categories, not 6`, emitted.size >= 30)
+  check("…and every one of them is an admitted value",
+    [...emitted].every((c) => live.includes(c)))
+  const scanner = src("app/actions/business-card/business-card-actions.ts")
+  check("the scanner's fallback is the constant, not the Title-Case 'Other' the CHECK rejects",
+    /VENDOR_CATEGORY_OTHER/.test(scanner) && !/\?\? "Other"/.test(scanner))
 }
 
 console.log("\n──────────────────────────────────────────────────")

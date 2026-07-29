@@ -23,6 +23,7 @@
  * flows through context, not prompt rewrites.
  */
 import "server-only"
+import { VENDOR_CATEGORY_LENDER } from "@/lib/kernel/vendor-categories"
 import { createServiceClient } from "@/lib/supabase/service"
 import { applyBrandVoice }     from "@/lib/kernel/brand-voice"
 
@@ -116,7 +117,7 @@ export async function resolveBrokerageContext(params: {
       .from("vendors")
       .select("id, name, email, phone, rating")
       .eq("brokerage_id", params.brokerageId)
-      .eq("category", "Lender")
+      .eq("category", VENDOR_CATEGORY_LENDER)
       .eq("status", "active")
       // Stable, deterministic tie-break: rating DESC (nulls last), then id
       // so a brokerage with multiple equally-rated approved lenders sees the

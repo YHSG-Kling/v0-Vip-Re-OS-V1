@@ -34,7 +34,9 @@
  *
  * m303 gives vendor_directory a real vendor_id FK so the two tables can be
  * joined instead of guessed at by (name, category) — a match that could never be
- * reliable anyway, because the two category CHECKs disagree (see below).
+ * reliable anyway, because the two category CHECKs disagreed. m304 then widened
+ * the bench onto the directory's 38-value taxonomy, so they now share ONE
+ * vocabulary and 32 trades became bookable for the first time.
  *
  * VERIFIED LIVE against seeded rows: two curated stagers (one paid+preferred at
  * rating 3.0, one hidden) plus one uncurated 5.0 vendor. The paid vendor
@@ -127,20 +129,37 @@ console.log("\n── the paid path still writes what the reader now reads ─�
     /update\(\{ preferred: false, display_priority: 0 \}\)/.test(pp))
 }
 
-console.log("\n── KNOWN, NOT YET RESOLVED: the two category vocabularies ──")
+console.log("\n── ONE TAXONOMY, BOTH TABLES (m304) ──")
 {
-  // Pinned so the gap is visible rather than rediscovered. vendors admits 6
-  // Title-Case values; vendor_directory admits 38 lowercase_snake ones. This is
-  // why name+category matching could never be reliable ('Title Company' is not
-  // 'title'), and it caps the bookable marketplace at 6 trades even though the
-  // directory can describe 38.
+  // The bench admitted 6 Title-Case values while the directory described 38
+  // lowercase ones. `vendors` is the FK target of vendor_bookings, so a trade the
+  // bench could not SPELL was a trade the platform could not BOOK — the
+  // marketplace was capped at six trades by a CHECK nobody had revisited. m304
+  // widened the bench to the directory's taxonomy verbatim.
   const bench = CHECK_VOCABULARIES.vendors?.category ?? []
   const dir = CHECK_VOCABULARIES.vendor_directory?.category ?? []
-  check("both category vocabularies are known", bench.length > 0 && dir.length > 0)
-  check("they are NOT the same vocabulary (the open decision)", bench.length !== dir.length)
-  check("…and they do not even agree case-insensitively on every value",
-    !bench.every((b) => dir.includes(b.toLowerCase().replace(/\s+/g, "_"))))
-  check("the FK makes the join independent of category spelling",
+  check("both vocabularies are known", bench.length > 0 && dir.length > 0)
+  check(`they are now the SAME ${bench.length}-value taxonomy`,
+    bench.length === dir.length && bench.every((b) => dir.includes(b)))
+  check("the long tail a lifetime client actually asks for is bookable",
+    ["photographer", "landscaping", "hvac", "plumber", "roofer", "solar", "tax_pro"]
+      .every((c) => bench.includes(c)))
+
+  // THE CASE TRAP. This module's own header records the last time this
+  // vocabulary moved: three panels queried lowercase against a Title-Case column
+  // and matched zero rows forever. TypeScript cannot catch it — the argument to
+  // .eq() is a plain string — so it is checked here instead.
+  const CATEGORY_QUERY_FILES = [
+    "lib/agents/brokerage-context.ts", "lib/kernel/financing-pit-stop.ts",
+    "lib/kernel/fire-drills.ts", "app/title/dashboard/page.tsx",
+    "app/dashboard/partners/components/os/lender-status-panel.tsx",
+    "app/dashboard/partners/components/os/title-pipeline-panel.tsx",
+  ]
+  for (const f of CATEGORY_QUERY_FILES) {
+    check(`${f}: no hardcoded Title-Case category literal`,
+      !/category["']\s*,\s*["'][A-Z]/.test(src(f)))
+  }
+  check("the FK keeps the join independent of category spelling anyway",
     /vendors!inner\(/.test(src("lib/vendor-marketplace/resolve-contact-vendors.ts")))
 }
 

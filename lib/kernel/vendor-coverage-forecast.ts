@@ -26,11 +26,11 @@ export type VendorCategory = BenchVendorCategory
  *  orchestration stage→gap logic, but forward-looking (ALL categories the stage will need, not just the
  *  first uncovered one). Stager is settings-gated elsewhere and deliberately omitted from the forecast. */
 export const STAGE_VENDOR_NEEDS: Record<string, VendorCategory[]> = {
-  UNDER_CONTRACT: ["Inspector"],
-  INSPECTION: ["Inspector", "Contractor"],
-  APPRAISAL: ["Lender"],
-  FINANCING_PENDING: ["Lender"],
-  CLOSING_PREP: ["Title Company"],
+  UNDER_CONTRACT: ["inspector"],
+  INSPECTION: ["inspector", "contractor"],
+  APPRAISAL: ["lender"],
+  FINANCING_PENDING: ["lender"],
+  CLOSING_PREP: ["title"],
 }
 
 /** PURE: forecast upcoming vendor demand per category from the deals in the pipeline. */

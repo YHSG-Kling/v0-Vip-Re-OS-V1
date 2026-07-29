@@ -40,6 +40,7 @@
 // NOT server-only (simulator-driven). Pure helpers carry the math; the runner does the I/O.
 
 import type { createServiceClient } from "@/lib/supabase/service"
+import { VENDOR_CATEGORY_LENDER } from "@/lib/kernel/vendor-categories"
 import type { CopyGenerator } from "@/lib/kernel/ai-copy"
 import { rankVendors, type BenchVendor } from "@/lib/kernel/vendor-orchestration"
 
@@ -404,7 +405,7 @@ export async function runFinancingPitStop(
   // uses (vendors category 'Lender'). rankVendors is preferred-first then rating.
   const { data: benchRows } = await supabase.from("vendors")
     .select("id, name, category, email, rating")
-    .eq("brokerage_id", brokerageId).eq("category", "Lender").limit(200)
+    .eq("brokerage_id", brokerageId).eq("category", VENDOR_CATEGORY_LENDER).limit(200)
   const bench: BenchVendor[] = (benchRows ?? []) as BenchVendor[]
   const preferredBench = rankVendors(bench, {})
 

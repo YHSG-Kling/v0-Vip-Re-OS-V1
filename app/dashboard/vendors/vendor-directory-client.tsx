@@ -24,6 +24,20 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import { VendorCategorySelect } from "@/app/components/vendors/vendor-category-select"
+import { VENDOR_CATEGORY_LABELS, type VendorCategory } from "@/lib/kernel/vendor-categories"
+
+/** Stored token → the words a broker reads. vendors.category is lowercase_snake
+ *  ("pest_control", "title"), which is right for a vocabulary and wrong for a
+ *  card heading. Falls back to a title-cased form so a pre-m304 row still reads
+ *  as words rather than as a token. */
+function categoryLabel(raw: string | null | undefined): string {
+  if (!raw) return "General"
+  return (
+    VENDOR_CATEGORY_LABELS[raw as VendorCategory] ??
+    raw.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+  )
+}
 import {
   Search,
   Star,
@@ -141,7 +155,7 @@ export function VendorDirectoryClient({
   // Create Vendor dialog state
   const [createVendorOpen, setCreateVendorOpen] = useState(false)
   const [newVendorName, setNewVendorName] = useState("")
-  const [newVendorCategory, setNewVendorCategory] = useState("")
+  const [newVendorCategory, setNewVendorCategory] = useState<VendorCategory | "">("")
   const [newVendorPhone, setNewVendorPhone] = useState("")
   const [newVendorEmail, setNewVendorEmail] = useState("")
   const [newVendorWebsite, setNewVendorWebsite] = useState("")
@@ -569,7 +583,7 @@ export function VendorDirectoryClient({
                       <SelectItem value="__all__">All types</SelectItem>
                       {serviceTypes.map((type) => (
                         <SelectItem key={type} value={type}>
-                          {type}
+                          {categoryLabel(type)}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -617,7 +631,7 @@ export function VendorDirectoryClient({
                   <div className="flex items-start justify-between">
                     <div>
                       <CardTitle className="text-lg">{vendor.name}</CardTitle>
-                      <CardDescription>{vendor.category || "General"}</CardDescription>
+                      <CardDescription>{categoryLabel(vendor.category)}</CardDescription>
                     </div>
                     {!vendor.brokerage_id && (
                       <Badge variant="outline" className="text-xs">Global</Badge>
@@ -824,7 +838,7 @@ export function VendorDirectoryClient({
                     disabled={isPending}
                     className="bg-transparent"
                   >
-                    {type}
+                    {categoryLabel(type)}
                   </Button>
                 ))}
               </div>
@@ -915,7 +929,7 @@ export function VendorDirectoryClient({
           <DialogHeader>
             <DialogTitle>Book Vendor</DialogTitle>
             <DialogDescription>
-              {selectedVendor?.name} - {selectedVendor?.category}
+              {selectedVendor?.name} - {categoryLabel(selectedVendor?.category)}
             </DialogDescription>
           </DialogHeader>
 
@@ -1137,7 +1151,7 @@ export function VendorDirectoryClient({
           <DialogHeader>
             <DialogTitle>Reviews: {reviewsVendor?.name}</DialogTitle>
             <DialogDescription>
-              {reviewsVendor?.category} - {renderStars(reviewsVendor?.rating ?? null)}
+              {categoryLabel(reviewsVendor?.category)} - {renderStars(reviewsVendor?.rating ?? null)}
             </DialogDescription>
           </DialogHeader>
 
@@ -1202,11 +1216,18 @@ export function VendorDirectoryClient({
             </div>
 
             <div className="space-y-2">
-              <Label>Category / Service Type</Label>
-              <Input
+              <Label htmlFor="new-vendor-category">
+                Category / Service Type <span className="text-destructive">*</span>
+              </Label>
+              {/* vendors.category is CHECK-constrained — a free-text box here
+                  could only ever produce a rejected INSERT (its placeholder used
+                  to suggest "Home Inspection, Photography", neither of which the
+                  column has ever admitted). The picker cannot express an
+                  invalid value. */}
+              <VendorCategorySelect
+                id="new-vendor-category"
                 value={newVendorCategory}
-                onChange={(e) => setNewVendorCategory(e.target.value)}
-                placeholder="e.g., Home Inspection, Photography"
+                onChange={setNewVendorCategory}
               />
             </div>
 

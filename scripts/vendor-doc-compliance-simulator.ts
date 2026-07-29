@@ -84,7 +84,7 @@ async function liveLayer() {
   const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)
   try {
     const { data: v } = await svc.from("vendors").insert({
-      brokerage_id: brokerageId, name: "ZZ DocExpiry Sim Vendor", category: "Inspector", status: "active",
+      brokerage_id: brokerageId, name: "ZZ DocExpiry Sim Vendor", category: "inspector", status: "active",
       compliance_credentials: { insurance: { expiry: yesterday } },
     }).select("id").single()
     const vendorId = (v as any).id

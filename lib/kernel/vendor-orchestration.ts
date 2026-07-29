@@ -103,19 +103,19 @@ export function vendorGapForStage(stage: DealStage | string | null, coverage: De
     case "UNDER_CONTRACT":
     case "INSPECTION":
       if (!coverage.hasInspection) {
-        return { category: "Inspector", serviceType: "inspection", label: "home inspection" }
+        return { category: "inspector", serviceType: "inspection", label: "home inspection" }
       }
       // inspection covered → if staging is on and no stager, propose the stager next.
       return stagerGap(coverage)
     case "APPRAISAL":
     case "FINANCING_PENDING":
       if (!coverage.hasLender) {
-        return { category: "Lender", serviceType: "lending", label: "financing / lender" }
+        return { category: "lender", serviceType: "lending", label: "financing / lender" }
       }
       return stagerGap(coverage)
     case "CLOSING_PREP":
       if (!coverage.hasTitle) {
-        return { category: "Title Company", serviceType: "title_escrow", label: "title & escrow" }
+        return { category: "title", serviceType: "title_escrow", label: "title & escrow" }
       }
       return stagerGap(coverage)
     default:
@@ -126,7 +126,7 @@ export function vendorGapForStage(stage: DealStage | string | null, coverage: De
 /** Staging gap — ONLY when enabled in settings and not already covered. Default OFF. */
 function stagerGap(coverage: DealCoverage): VendorGap | null {
   if (coverage.stagingEnabled && !coverage.hasStager) {
-    return { category: "Stager", serviceType: "staging", label: "home staging" }
+    return { category: "stager", serviceType: "staging", label: "home staging" }
   }
   return null
 }
@@ -292,7 +292,7 @@ export async function runVendorOrchestration(
       if (!gap) {
         // Report metric: a stager WOULD have been the gap had staging been enabled — i.e.
         // the deal's deal-critical vendors are covered and staging is off + uncovered.
-        if (!stagingEnabled && !coverage.hasStager && vendorGapForStage(t.stage, { ...coverage, stagingEnabled: true })?.category === "Stager") {
+        if (!stagingEnabled && !coverage.hasStager && vendorGapForStage(t.stage, { ...coverage, stagingEnabled: true })?.category === "stager") {
           result.stagingSkipped += 1
         }
         continue

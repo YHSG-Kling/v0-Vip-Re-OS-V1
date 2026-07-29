@@ -869,8 +869,8 @@ async function main() {
     const vrBad = validateVendorRequest({ requestType: "demand", details: "utilities on please and the gate code" })
     const vrThin = validateVendorRequest({ requestType: "access", details: "keys" })
     const vrOk = validateVendorRequest({ requestType: "access", details: "Need utilities on and the lockbox code for Thursday inspection" })
-    const vrTask = composeVendorRequestTask({ vendorName: "Apex Inspections", vendorCategory: "Inspector", requestType: "access", details: "Need utilities on and the lockbox code", propertyAddress: "12 Oak Ln", neededBy: "2026-07-16" })
-    const vrBody = composeClientRequestBody({ vendorName: "Apex Inspections", vendorCategory: "Inspector", requestType: "access", details: "utilities on for Thursday", neededBy: null })
+    const vrTask = composeVendorRequestTask({ vendorName: "Apex Inspections", vendorCategory: "inspector", requestType: "access", details: "Need utilities on and the lockbox code", propertyAddress: "12 Oak Ln", neededBy: "2026-07-16" })
+    const vrBody = composeClientRequestBody({ vendorName: "Apex Inspections", vendorCategory: "inspector", requestType: "access", details: "utilities on for Thursday", neededBy: null })
     check("VENDOR REQUEST RAIL (owner rule generalized) — typed vocabulary with honest refusals (unknown type + too-thin details both refused with the WHY), the agent's task names who/what/where/by-when, property-side asks route to the OCCUPANT while paperwork asks route to the buyer (gated either way), and the client draft is warm + vendor-attributed; auth mirrors the lender gate and the jobs surface carries the dialog; registered to deal_coordinator",
       vrBad.ok === false && Boolean(!vrBad.ok && vrBad.error.includes("document"))
       && vrThin.ok === false
@@ -1574,7 +1574,7 @@ async function main() {
       && financed.pctLow > 0 && financed.pctHigh >= financed.pctLow
       && Boolean(financed.lines.find((l) => l.label.includes("Lender fees"))!.note!.includes("0.5%"))
       && Boolean(financed.disclaimer.includes("Loan Estimate")) && Boolean(financed.disclaimer.includes("Closing Disclosure"))
-      && cash.isCash === true && cash.lines.every((l) => !l.label.includes("Lender") || l.label.includes("Lender's title") === false)
+      && cash.isCash === true && cash.lines.every((l) => !l.label.includes("lender") || l.label.includes("Lender's title") === false)
       && cash.lines.length < financed.lines.length
       && src("app/actions/buyer-closing-costs.ts").includes("isParty")
       && src("app/actions/buyer-closing-costs.ts").includes("No purchase price")
@@ -3033,8 +3033,8 @@ async function main() {
     const { classifyCardTarget } = await import("../lib/contacts/card-classifier")
     check("BUSINESS CARD → VENDOR (owner directive) — an inspector's card routes to the VENDOR book with the live CHECK category, a blank card defaults to the human-reviewed contact path; the action creates a PENDING vendors row and keeps company/title (previously dropped)",
       classifyCardTarget({ title: "Senior Home Inspector", company: "Acme Inspections LLC" }).target === "vendor"
-      && classifyCardTarget({ title: "Senior Home Inspector", company: "Acme Inspections LLC" }).category === "Inspector"
-      && classifyCardTarget({ title: "Loan Officer NMLS 12345", company: null }).category === "Lender"
+      && classifyCardTarget({ title: "Senior Home Inspector", company: "Acme Inspections LLC" }).category === "inspector"
+      && classifyCardTarget({ title: "Loan Officer NMLS 12345", company: null }).category === "lender"
       && classifyCardTarget({ title: null, company: null }).target === "contact"
       && src("app/actions/business-card/business-card-actions.ts").includes('status: "pending"')
       && src("app/actions/business-card/business-card-actions.ts").includes("classifyCardTarget")

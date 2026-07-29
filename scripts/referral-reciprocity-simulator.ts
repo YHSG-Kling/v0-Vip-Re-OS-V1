@@ -93,7 +93,12 @@ async function main() {
   const unlinkedPartnerId = uuid()
   const vendorName = `ZZ Inspector ${uuid().slice(0, 8)}`
   try {
-    await svc.from("vendors").insert({ id: vendorId, brokerage_id: brokerageId, name: vendorName, category: "home_inspector" })
+    // vendors.category and referral_partners.partner_type are DIFFERENT
+    // vocabularies for the same trade: the bench says 'inspector' (the 38-value
+    // CHECK it shares with vendor_directory), the partner table says
+    // 'home_inspector'. lib/compliance/vendor-respa.ts normalises across both —
+    // which is exactly why this row must use the bench's spelling here.
+    await svc.from("vendors").insert({ id: vendorId, brokerage_id: brokerageId, name: vendorName, category: "inspector" })
     // Linked partner: sent us 5, we've booked them 0 → one_sided_inbound.
     await svc.from("referral_partners").insert({
       id: linkedPartnerId, brokerage_id: brokerageId, partner_name: vendorName, partner_type: "home_inspector",

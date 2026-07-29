@@ -6,6 +6,7 @@ import { captureContact } from "@/lib/contact-pipeline/contact-capture"
 import { gatewayChat } from "@/lib/ai/gateway-chat"
 import { processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
+import { VENDOR_CATEGORY_OTHER } from "@/lib/kernel/vendor-categories"
 
 // Was trusting caller-supplied agentId + brokerageId. Caller could
 // upload business cards attributed to any agent in any brokerage
@@ -161,7 +162,7 @@ export async function uploadBusinessCard(params: {
     const { data: vendor, error: vendorError } = await supabase.from("vendors").insert({
       brokerage_id: brokerageId,
       name: (extracted.company ?? "").trim() || fullName || "Scanned vendor",
-      category: cls.category ?? "Other",
+      category: cls.category ?? VENDOR_CATEGORY_OTHER,
       email: extracted.email ?? null,
       phone: extracted.phone ?? null,
       website: extracted.website ?? null,
@@ -183,7 +184,7 @@ export async function uploadBusinessCard(params: {
       entity_type: "vendor",
       entity_id: vendor.id,
       event_type: KernelEvent.BUSINESS_CARD_APPROVED,
-      metadata: { scanId: scan!.id, routed_to: "vendor", category: cls.category ?? "Other" },
+      metadata: { scanId: scan!.id, routed_to: "vendor", category: cls.category ?? VENDOR_CATEGORY_OTHER },
     })
 
     return { scanId: scan!.id, contactId: null, vendorId: vendor.id, recruitId: null, target: "vendor", viable: true }

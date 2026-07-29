@@ -43,15 +43,15 @@ function pureLayer() {
 
   console.log("\n[pickBackupVendor · pure — different same-category vendor, preference-first]")
   const bench: BenchVendor[] = [
-    { id: "v1", name: "Ghost Inspect", category: "Inspector", email: null, rating: 5 },   // the failed vendor
-    { id: "v2", name: "Reliable Inspect", category: "Inspector", email: null, rating: 3 },
-    { id: "v3", name: "Preferred Inspect", category: "Inspector", email: null, rating: 2 },
-    { id: "v4", name: "Some Title", category: "Title Company", email: null, rating: 5 },
+    { id: "v1", name: "Ghost Inspect", category: "inspector", email: null, rating: 5 },   // the failed vendor
+    { id: "v2", name: "Reliable Inspect", category: "inspector", email: null, rating: 3 },
+    { id: "v3", name: "Preferred Inspect", category: "inspector", email: null, rating: 2 },
+    { id: "v4", name: "Some Title", category: "title", email: null, rating: 5 },
   ]
-  check("excludes the failed vendor + picks same category", pickBackupVendor(bench, "v1", "Inspector", new Set())?.id === "v2")
-  check("preference-first: a preferred lower-rated backup beats a higher-rated one", pickBackupVendor(bench, "v1", "Inspector", new Set(["v3"]))?.id === "v3")
-  check("no other same-category vendor → null (honest)", pickBackupVendor([bench[0], bench[3]], "v1", "Inspector", new Set()) === null)
-  check("wrong category is never offered as a backup", pickBackupVendor(bench, "v1", "Inspector", new Set())?.category === "Inspector")
+  check("excludes the failed vendor + picks same category", pickBackupVendor(bench, "v1", "inspector", new Set())?.id === "v2")
+  check("preference-first: a preferred lower-rated backup beats a higher-rated one", pickBackupVendor(bench, "v1", "inspector", new Set(["v3"]))?.id === "v3")
+  check("no other same-category vendor → null (honest)", pickBackupVendor([bench[0], bench[3]], "v1", "inspector", new Set()) === null)
+  check("wrong category is never offered as a backup", pickBackupVendor(bench, "v1", "inspector", new Set())?.category === "inspector")
 
   console.log("\n[computeVendorSla · pure — the shared SLA source of truth]")
   const sla = computeVendorSla([
@@ -71,9 +71,9 @@ function pureLayer() {
 
   console.log("\n[rankVendors · pure — a PROVEN breacher is auto-demoted, unproven is not]")
   const rankBench: BenchVendor[] = [
-    { id: "good", name: "Reliable", category: "Inspector", email: null, rating: 4 },
-    { id: "bad", name: "Flaky", category: "Inspector", email: null, rating: 5 },   // higher rating but breaching
-    { id: "new", name: "Unproven", category: "Inspector", email: null, rating: 3 },
+    { id: "good", name: "Reliable", category: "inspector", email: null, rating: 4 },
+    { id: "bad", name: "Flaky", category: "inspector", email: null, rating: 5 },   // higher rating but breaching
+    { id: "new", name: "Unproven", category: "inspector", email: null, rating: 3 },
   ]
   const slaMap = { bad: { slaPct: 40, total: 6 }, good: { slaPct: 95, total: 5 }, new: { slaPct: 50, total: 1 } }
   const ranked2 = rankVendors(rankBench, { slaByVendor: slaMap })
@@ -113,9 +113,9 @@ async function liveLayer() {
   const brokerageId = (brk as any).id
   const cleanup: Array<{ table: string; id: string }> = []
   try {
-    const { data: v1 } = await svc.from("vendors").insert({ brokerage_id: brokerageId, name: "Ghost Inspect (test)", category: "Inspector", rating: 5, status: "active" }).select("id").single()
+    const { data: v1 } = await svc.from("vendors").insert({ brokerage_id: brokerageId, name: "Ghost Inspect (test)", category: "inspector", rating: 5, status: "active" }).select("id").single()
     cleanup.push({ table: "vendors", id: (v1 as any).id })
-    const { data: v2 } = await svc.from("vendors").insert({ brokerage_id: brokerageId, name: "Backup Inspect (test)", category: "Inspector", rating: 4, status: "active" }).select("id").single()
+    const { data: v2 } = await svc.from("vendors").insert({ brokerage_id: brokerageId, name: "Backup Inspect (test)", category: "inspector", rating: 4, status: "active" }).select("id").single()
     cleanup.push({ table: "vendors", id: (v2 as any).id })
     const pastDate = new Date(Date.now() - 5 * 86_400_000).toISOString().slice(0, 10)
     const { data: bkg } = await svc.from("vendor_bookings").insert({ brokerage_id: brokerageId, vendor_id: (v1 as any).id, service_type: "home inspection", scheduled_date: pastDate, status: "confirmed" }).select("id").single()

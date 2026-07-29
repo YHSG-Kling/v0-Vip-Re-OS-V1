@@ -40,6 +40,11 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
 import { sendEmail } from "@/lib/providers/messaging"
+import {
+  toVendorCategory,
+  VENDOR_CATEGORIES,
+  VENDOR_CATEGORY_LABELS,
+} from "@/lib/kernel/vendor-categories"
 
 // ─── STATUS TRANSITION GRAPH ─────────────────────────────────────────────────
 // Allowed booking status transitions. Any→cancelled and any→no_show are always
@@ -385,12 +390,25 @@ export async function createVendorRecord(
     }
   }
 
+  // vendors.category is CHECK-constrained. Normalising here — rather than letting
+  // the raw string reach the INSERT — is what turns "violates check constraint
+  // vendors_category_check" into a sentence a broker can act on. toVendorCategory
+  // accepts the legacy Title-Case spellings and the space/hyphen forms an import
+  // or an AI extraction produces, and returns null rather than guessing.
+  const resolvedCategory = category?.trim() ? toVendorCategory(category) : null
+  if (category?.trim() && !resolvedCategory) {
+    return {
+      success: false,
+      error: `"${category.trim()}" is not a service type we recognise. Choose one of: ${VENDOR_CATEGORIES.map((c) => VENDOR_CATEGORY_LABELS[c]).join(", ")}.`,
+    }
+  }
+
   const { data: vendor, error: insertError } = await supabase
     .from("vendors")
     .insert({
       brokerage_id: brokerageId,
       name:         name.trim(),
-      category:     category?.trim() ?? null,
+      category:     resolvedCategory,
       phone:        phone?.trim() ?? null,
       email:        email?.trim() ?? null,
       website:      website?.trim() ?? null,
@@ -442,9 +460,23 @@ export async function updateVendorRecord(
     return { success: false, error: "Vendor not found or access denied." }
   }
 
+  // Same CHECK, same honest refusal as the create path — a blind spread would
+  // otherwise put any string a caller passed straight into a constrained column.
+  const nextPatch = { ...patch }
+  if (typeof nextPatch.category === "string") {
+    const resolved = toVendorCategory(nextPatch.category)
+    if (!resolved) {
+      return {
+        success: false,
+        error: `"${nextPatch.category}" is not a service type we recognise. Choose one of: ${VENDOR_CATEGORIES.map((c) => VENDOR_CATEGORY_LABELS[c]).join(", ")}.`,
+      }
+    }
+    nextPatch.category = resolved
+  }
+
   const { error } = await supabase
     .from("vendors")
-    .update({ ...patch })
+    .update(nextPatch)
     .eq("id", vendorId)
     .eq("brokerage_id", brokerageId)
 

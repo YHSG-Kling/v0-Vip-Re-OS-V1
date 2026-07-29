@@ -385,19 +385,13 @@ export const supabaseService = {
     }
   },
 
-  async createVendor(vendor: Record<string, unknown>) {
-    try {
-      const supabase = getSupabaseAdmin()
-      const { data, error } = await supabase.from("vendors").insert(vendor).select().single()
-
-      if (error) throw error
-
-      return data
-    } catch (error) {
-      console.error("[Supabase Service] Error creating vendor:", error)
-      return null
-    }
-  },
+  // createVendor removed — it took a Record<string, unknown> straight into
+  // `vendors`.insert(), so it could write any string into the CHECK-constrained
+  // `category` column, and it swallowed the rejection and returned null. It had
+  // zero call sites. lib/kernel/vendors.ts createVendorRecord is the one writer:
+  // it dedups on name per brokerage, normalises the category through the
+  // vocabulary module, refuses unrecognised values in words a broker can act on,
+  // and emits VENDOR_RECORD_CREATED.
 
   // =====================================================
   // COPILOT PLANS & TASKS

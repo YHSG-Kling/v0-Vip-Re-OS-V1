@@ -34,6 +34,7 @@
 import { readFileSync } from "node:fs"
 import {
   VENDOR_CATEGORIES,
+  VENDOR_CATEGORY_LABELS,
   BENCH_VENDOR_CATEGORIES,
   VENDOR_CATEGORY_LENDER,
   VENDOR_CATEGORY_TITLE,
@@ -55,42 +56,55 @@ const src = (p: string) =>
 console.log("\n── the module matches the live CHECK, exactly ──")
 {
   const live = CHECK_VOCABULARIES.vendors?.category ?? []
-  check(`the snapshot carries 6 categories (${live.length})`, live.length === 6)
+  const dir  = CHECK_VOCABULARIES.vendor_directory?.category ?? []
+  check(`the snapshot carries the widened taxonomy (${live.length})`, live.length === 38)
   check("every category the module declares is admitted",
     VENDOR_CATEGORIES.every((c) => live.includes(c)))
   check("every category the CHECK admits is declared",
     live.every((c) => (VENDOR_CATEGORIES as readonly string[]).includes(c)))
-  check("the title category is spelled 'Title Company', two words",
-    VENDOR_CATEGORY_TITLE === "Title Company" && live.includes("Title Company"))
-  check("the lender category is 'Lender', capitalised",
-    VENDOR_CATEGORY_LENDER === "Lender" && live.includes("Lender"))
-  check("the bench set is the vocabulary minus 'Other'",
-    BENCH_VENDOR_CATEGORIES.length === VENDOR_CATEGORIES.length - 1 &&
+  check("bench and directory now share ONE taxonomy (m304)",
+    live.length === dir.length && live.every((c) => dir.includes(c)))
+  check("the title category is the single token 'title'",
+    VENDOR_CATEGORY_TITLE === "title" && live.includes("title"))
+  check("the lender category is 'lender'",
+    VENDOR_CATEGORY_LENDER === "lender" && live.includes("lender"))
+  check("every label maps to a real category and vice versa",
+    Object.keys(VENDOR_CATEGORY_LABELS).length === VENDOR_CATEGORIES.length &&
+    VENDOR_CATEGORIES.every((c) => !!VENDOR_CATEGORY_LABELS[c]))
+  check("the bench set is the transaction-side trades a STAGE can demand",
     BENCH_VENDOR_CATEGORIES.every((c) => (VENDOR_CATEGORIES as readonly string[]).includes(c)) &&
-    !(BENCH_VENDOR_CATEGORIES as readonly string[]).includes("Other"))
+    !(BENCH_VENDOR_CATEGORIES as readonly string[]).includes("other") &&
+    BENCH_VENDOR_CATEGORIES.length < VENDOR_CATEGORIES.length)
 }
 
-console.log("\n── case matters, and the module says so ──")
+console.log("\n── case still matters — it just points the other way now ──")
 {
-  check("'Lender' is a category", isVendorCategory("Lender"))
-  check("'lender' is NOT — this is the whole bug", !isVendorCategory("lender"))
-  check("'title' is NOT", !isVendorCategory("title"))
-  check("'Title Company' is", isVendorCategory("Title Company"))
+  // Before m304 the column was Title Case and lowercase queries matched nothing.
+  // The vocabulary is lowercase_snake now, so the trap is inverted: a surviving
+  // Title-Case literal is the one that would match zero rows forever.
+  check("'lender' is a category", isVendorCategory("lender"))
+  check("'Lender' is NOT — the legacy spelling is refused", !isVendorCategory("Lender"))
+  check("'Title Company' is NOT", !isVendorCategory("Title Company"))
+  check("'title' is", isVendorCategory("title"))
   check("null is not", !isVendorCategory(null))
   check("'' is not", !isVendorCategory(""))
 
-  check("toVendorCategory repairs 'lender'", toVendorCategory("lender") === "Lender")
-  check("toVendorCategory repairs 'title' to the two-word value",
-    toVendorCategory("title") === "Title Company")
-  check("toVendorCategory repairs 'escrow'", toVendorCategory("escrow") === "Title Company")
-  check("toVendorCategory repairs 'mortgage'", toVendorCategory("mortgage") === "Lender")
-  check("toVendorCategory is case- and space-tolerant on exact names",
-    toVendorCategory("  TITLE COMPANY ") === "Title Company")
-  check("toVendorCategory refuses to guess rather than mis-file a vendor",
-    toVendorCategory("plumber") === null && toVendorCategory("photographer") === null)
+  check("toVendorCategory repairs the legacy 'Lender'", toVendorCategory("Lender") === "lender")
+  check("toVendorCategory repairs the legacy 'Title Company'",
+    toVendorCategory("Title Company") === "title")
+  check("toVendorCategory repairs 'escrow'", toVendorCategory("escrow") === "title")
+  check("toVendorCategory repairs 'mortgage'", toVendorCategory("mortgage") === "lender")
+  check("toVendorCategory is case- and space-tolerant",
+    toVendorCategory("  TITLE COMPANY ") === "title")
+  check("the widened trades now resolve instead of returning null",
+    toVendorCategory("plumber") === "plumber" && toVendorCategory("photographer") === "photographer")
+  check("a space/hyphen spelling snaps to the snake token",
+    toVendorCategory("Pest Control") === "pest_control" && toVendorCategory("smart-home") === "smart_home")
+  check("it still refuses to guess at something unknown",
+    toVendorCategory("astrologer") === null)
   check("toVendorCategory on empty input is null", toVendorCategory("") === null && toVendorCategory(null) === null)
   check("everything it returns is a value the column accepts",
-    ["lender", "title", "escrow", "mortgage", "Stager", "Other"]
+    ["Lender", "Title Company", "escrow", "mortgage", "stager", "other", "plumber", "Pest Control"]
       .map(toVendorCategory).filter(Boolean).every((c) => isVendorCategory(c as string)))
 }
 
@@ -125,7 +139,7 @@ console.log("\n── the five copies of the vocabulary are gone ──")
     const s = src(p)
     check(`${p} imports the one module`, re.test(s))
     check(`${p} carries no inline copy of the six values`,
-      !/"Lender"\s*\|\s*"Inspector"\s*\|\s*"Title Company"/.test(s))
+      !/"lender"\s*\|\s*"inspector"\s*\|\s*"title"/.test(s))
   }
   const linkage = src("lib/kernel/lender-linkage.ts")
   check("the stale 'vendors.category is free-text' claim is gone",
@@ -142,20 +156,31 @@ console.log("\n── downstream consumers still speak the same spelling ──"
 
   // The business-card classifier files a scanned card straight into vendors.category.
   const cards: Array<[string, string]> = [
-    ["Senior Loan Officer, NMLS #12345", "Lender"],
-    ["Certified Home Inspector", "Inspector"],
-    ["Escrow Officer, Lone Star Title", "Title Company"],
-    ["Licensed General Contractor", "Contractor"],
-    ["Home Staging & Interior Design", "Stager"],
+    ["Senior Loan Officer, NMLS #12345", "lender"],
+    ["Certified Home Inspector", "inspector"],
+    ["Escrow Officer, Lone Star Title", "title"],
+    ["Licensed General Contractor", "contractor"],
+    // Staging outranks interior design — this card is a stager who also decorates.
+    ["Home Staging & Interior Design", "stager"],
     // Every one of these is a STEM that a trailing \b used to reject, so the card
     // fell through to the CRM contact path instead of the vendor book.
-    ["Real Estate Photographer", "Other"],
-    ["Landscaping & Grounds", "Other"],
-    ["Certified Residential Appraiser", "Other"],
-    ["Roofing Specialist", "Contractor"],
-    ["Master Electrician", "Contractor"],
-    ["Kitchen Remodeling", "Contractor"],
-    ["Interior Designer", "Stager"],
+    //
+    // They now file on the trade they NAME rather than on the nearest of six
+    // values. Until m304 the column admitted six categories, so a photographer, a
+    // landscaper and an electrician had nowhere to go: the first two were swept
+    // into "other" and the electrician into "contractor". The information was on
+    // the card and the OS threw it away. This is the payoff of the widen — the
+    // bench is bookable by trade, not merely spellable.
+    ["Real Estate Photographer", "photographer"],
+    ["Landscaping & Grounds", "landscaping"],
+    ["Roofing Specialist", "roofer"],
+    ["Master Electrician", "electrician"],
+    ["Interior Designer", "interior_design"],
+    // Generic enough that only the family fits.
+    ["Kitchen Remodeling", "contractor"],
+    // Still genuinely "other": the taxonomy has no appraiser token, and pretending
+    // otherwise would be worse than an honest catch-all.
+    ["Certified Residential Appraiser", "other"],
   ]
   for (const [title, expected] of cards) {
     const cls = classifyCardTarget({ title, company: null })
