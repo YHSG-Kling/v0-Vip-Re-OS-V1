@@ -21,9 +21,9 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   CONNECTABLE_AD_PLATFORMS,
-  AD_PLATFORMS_WITHOUT_CREDENTIALS,
+  AD_PLATFORMS_WITHOUT_CONNECTIONS,
   isConnectableAdPlatform,
-} from "@/lib/integrations/credential-platforms"
+} from "@/lib/integrations/ad-campaign-vocabulary"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import type { ActorContext } from "@/lib/kernel/types"
@@ -284,7 +284,7 @@ export async function loadAdsWorkspace(input: LoadAdsWorkspaceInput): Promise<Ke
     // codebase could ever write it: there is no TikTok OAuth provider and no
     // TikTok connect form. Querying it produced a permanently absent row that
     // rendered as "not connected", which is a different claim from "cannot be
-    // connected here" — see lib/integrations/credential-platforms.ts.
+    // connected here" — see lib/integrations/ad-campaign-vocabulary.ts.
     const { data: accountConnections } = await supabase
       .from("platform_credentials")
       .select("platform, is_active, account_name")
@@ -303,7 +303,7 @@ export async function loadAdsWorkspace(input: LoadAdsWorkspaceInput): Promise<Ke
         avgCpl,
       },
       accountConnections: accountConnections || [],
-      unconnectableAdPlatforms: AD_PLATFORMS_WITHOUT_CREDENTIALS,
+      unconnectableAdPlatforms: AD_PLATFORMS_WITHOUT_CONNECTIONS,
     }
 
     return { success: true, campaign: workspaceData }

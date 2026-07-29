@@ -2,7 +2,8 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { CREDENTIAL_PLATFORMS, isCredentialPlatform } from "@/lib/integrations/credential-platforms"
+import { CONNECTOR_PROVIDERS, domainsForScope } from "@/lib/connections/scope"
+import { canonicalProvider } from "@/lib/integrations/connection-manager"
 
 export type PlatformCredential = {
   id: string
@@ -34,6 +35,16 @@ export type ProviderOverride = {
   enabled: boolean
   created_at: string
   updated_at: string
+}
+
+/** The providers a BROKERAGE may connect, derived from the Connection OS.
+ *  Deliberately computed, never restated — see upsertPlatformCredential. */
+function BROKERAGE_CONNECTABLE_PROVIDERS(): string[] {
+  const out = new Set<string>()
+  for (const domain of domainsForScope("brokerage")) {
+    for (const p of CONNECTOR_PROVIDERS[domain]) out.add(p)
+  }
+  return [...out].sort()
 }
 
 /** Roles allowed to see or change a brokerage's provider credentials. */
@@ -151,15 +162,23 @@ export async function upsertPlatformCredential(params: {
   const supabase = await createClient()
   const { brokerageId } = await getBrokerageId(supabase)
 
-  // The form takes `platform` as FREE TEXT and this wrote it straight into a
-  // CHECK-constrained column, so a value slightly off — or one of the three
-  // finished integrations the CHECK did not admit before m297 — came back as a
-  // raw Postgres constraint string that does not say which platforms are valid.
-  // Fail here instead, naming the vocabulary.
-  if (!isCredentialPlatform(params.platform)) {
+  // The form takes `platform` as FREE TEXT and wrote it straight into a
+  // CHECK-constrained column, so a near-miss came back as a raw Postgres
+  // constraint string that does not say which platforms are valid.
+  //
+  // The allow-list is NOT restated here. lib/connections/scope.ts is the
+  // Connection OS single source of truth for what a scope may connect ("the UI
+  // selector, write-side gating, and dispatch resolvers all read from here so
+  // the allow-lists never drift apart again"), so this derives from it. A
+  // second hand-kept list next to it is exactly the drift this file is meant to
+  // prevent — a provider must be decided in scope.ts (and owned in
+  // lib/providers/tenancy-matrix.ts), never by being typed into this box.
+  const canonical = canonicalProvider(params.platform)
+  const allowed = BROKERAGE_CONNECTABLE_PROVIDERS()
+  if (!allowed.includes(canonical)) {
     return {
       success: false,
-      error: `'${params.platform}' is not a supported platform. Supported: ${CREDENTIAL_PLATFORMS.join(", ")}`,
+      error: `'${params.platform}' is not a connectable provider. Connectable: ${allowed.join(", ")}`,
     }
   }
 

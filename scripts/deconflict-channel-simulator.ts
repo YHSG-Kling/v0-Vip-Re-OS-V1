@@ -5,9 +5,9 @@
  * THE OVER-TOUCH CAP COULD NOT COUNT THE TWO CHANNELS THAT MATTER MOST.
  *
  * The de-confliction engine is the one gate that stops the platform's lanes
- * over-contacting a person. It has its OWN channel names
- * (email|sms|phone|mail|video) and sums touches across three ledgers, each of
- * which spells its channels differently under its own CHECK:
+ * over-contacting a person. It has its OWN channel names (email|sms|phone|mail)
+ * and sums touches across three ledgers, each of which spells its channels
+ * differently under its own CHECK:
  *
  *   isa_outreach_log               … voice, direct_mail   (NOT phone, NOT mail)
  *   marketing_campaign_touchpoints … phone, direct_mail   (NOT mail)
@@ -25,8 +25,16 @@
  *     Always 0, so only direct_mail_recipients counted toward "1 piece / 30
  *     days".
  *
- * email / sms / video spell the same in every table, which is why three of five
- * channels worked and the failure looked like ordinary quiet.
+ * email / sms spell the same in every table, which is why half the lanes worked
+ * and the failure looked like ordinary quiet.
+ *
+ * ── AND A FIFTH CHANNEL THAT WAS NEVER A CHANNEL ────────────────────────────
+ * The engine also carried a "video" channel. Video is NOT a lane — the lanes are
+ * email / phone / voicedrop / in-app / sms / blog / direct mail / ad / newsletter
+ * / podcast, and a video is DELIVERED IN an sms or an email. dispatchVideo takes
+ * a recipientEmail and sends over email, so its cap now spends the recipient's
+ * EMAIL allowance. Before, it charged an imaginary video budget and the real
+ * email lane went uncounted for that send.
  *
  * VERIFIED LIVE: each engine word was rejected by the NAMED channel constraint
  * on each ledger (isa_outreach_log_channel_check,
@@ -60,7 +68,7 @@ import {
   BUYER_STAGES, BUYER_ACTIVE_STAGES, BUYER_INACTIVE_STAGES,
   BUYER_SHOWING_FEEDBACK_STAGE, isBuyerStage,
 } from "../lib/contacts/buyer-stage"
-import { AD_CAMPAIGN_STATUSES, AD_CAMPAIGN_RUNNING_STATUSES } from "../lib/integrations/credential-platforms"
+import { AD_CAMPAIGN_STATUSES, AD_CAMPAIGN_RUNNING_STATUSES } from "../lib/integrations/ad-campaign-vocabulary"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -105,9 +113,37 @@ console.log("\n── the engine's own words are NOT storable — that was the b
     check(`${t} cannot hold 'mail' (it says 'direct_mail')`,
       !liveChannel(t).includes("mail") && sourceChannel(t, "mail") === "direct_mail")
   }
-  check("email / sms / video are the same word everywhere — why 3 of 5 worked",
-    (["email", "sms", "video"] as DeconflictChannel[]).every((ch) =>
+  check("email / sms are the same word everywhere — why half the lanes worked",
+    (["email", "sms"] as DeconflictChannel[]).every((ch) =>
       TOUCH_SOURCE_TABLES.every((t) => sourceChannel(t, ch) === ch)))
+}
+
+console.log("\n── video is NOT a channel (owner ruling) ──")
+{
+  // The channels are email / phone / voicedrop / in-app / sms / blog / direct
+  // mail / ad / newsletter / podcast. A VIDEO IS DELIVERED IN an sms or an
+  // email — it is a payload, not a lane. The engine had a fifth channel named
+  // "video" whose cap counted an imaginary budget while the real email lane
+  // that actually carried the send went uncounted for that send.
+  check("the engine has exactly four channels", DECONFLICT_CHANNELS.length === 4)
+  check("'video' is not one of them",
+    !(DECONFLICT_CHANNELS as readonly string[]).includes("video"))
+
+  const lc = src("lib/kernel/deconflict/lead-channel.ts")
+  check("no channel type still declares video", !/"video"/.test(lc))
+  const d = src("lib/kernel/deconflict/index.ts")
+  check("the policy table has no video entry", !/^\s*video:\s*\{/m.test(d))
+  check("countVideoTouches is gone", !/countVideoTouches/.test(d))
+
+  // A video send spends the allowance of whatever CARRIED it. dispatchVideo
+  // takes a recipientEmail, so it consumes email.
+  const dp = src("lib/providers/dispatch.ts")
+  check("dispatchVideo no longer gates on a 'video' channel",
+    !/channel:\s*"video"/.test(dp))
+  check("dispatchVideo still gates — it is not simply uncapped",
+    /export async function dispatchVideo[\s\S]*?deconflictGate\(\{[\s\S]*?channel:\s*"email"/.test(dp))
+  check("…and it is still the video PROVIDER that renders it",
+    /providerType:\s*"video"/.test(dp))
 }
 
 console.log("\n── the lead-side helper is the same map, not a second one ──")

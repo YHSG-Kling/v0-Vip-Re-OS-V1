@@ -23,16 +23,24 @@ export async function getProviderConnectionStatus(brokerageId: string) {
   // (owner_type='brokerage'), not integration_credentials — read that row too so the
   // card reflects the connection the flow actually writes (exact owner match; the
   // status shown is this brokerage's own connection, never an inherited one).
+  //
+  // QUICKBOOKS ONLY. Xero is deliberately absent from this list: it is not a
+  // connectable provider in the Connection OS (lib/connections/scope.ts —
+  // CONNECTOR_PROVIDERS.financial is [quickbooks, stripe]) and so it is not an
+  // admitted platform_credentials.platform value either. Asking for it here
+  // returned nothing every single time; it read like "not connected yet" when it
+  // was in fact unaskable. The Xero half of the card below still reads
+  // integration_credentials, whose provider_name is free text and CAN hold it —
+  // so nothing is lost by dropping the impossible half of this query.
   const svc = createServiceClient()
   const { data: ownerRows } = await svc
     .from("platform_credentials")
     .select("platform, account_name, account_id, is_active")
     .eq("owner_type", "brokerage")
     .eq("owner_id", brokerageId)
-    .in("platform", ["quickbooks", "xero"])
+    .eq("platform", "quickbooks")
     .eq("is_active", true)
   const qbOwnerRow = ownerRows?.find((r) => r.platform === "quickbooks")
-  const xeroOwnerRow = ownerRows?.find((r) => r.platform === "xero")
 
   // Get last sync for each provider
   const { data: lastSyncs } = await supabase
@@ -55,8 +63,9 @@ export async function getProviderConnectionStatus(brokerageId: string) {
       credentialId: quickbooks?.id ?? null,
     },
     xero: {
-      connected: (xero?.is_active ?? false) || !!xeroOwnerRow,
-      companyName: (xeroOwnerRow?.account_name ?? xero?.webhook_url) ?? null,
+      // integration_credentials only — see the owner-row note above.
+      connected: xero?.is_active ?? false,
+      companyName: xero?.webhook_url ?? null,
       lastSyncedAt: xeroLastSync?.completed_at ?? null,
       credentialId: xero?.id ?? null,
     },

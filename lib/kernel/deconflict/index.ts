@@ -21,8 +21,6 @@
  *           lifetime_customer_touchpoints ('call')
  *   mail  — direct_mail_recipients, marketing_campaign_touchpoints ('direct_mail'),
  *           lifetime_customer_touchpoints ('direct_mail')
- *   video — isa_outreach_log, marketing_campaign_touchpoints,
- *           lifetime_customer_touchpoints
  *
  * Each ledger spells its channels differently under its own CHECK; ./lead-channel
  * owns the per-table translation. Filtering with the ENGINE's word returned zero
@@ -33,7 +31,6 @@
  *   sms   — 1 send  / 7  days
  *   phone — 1 call  / 7  days
  *   mail  — 1 piece / 30 days
- *   video — 1 send  / 21 days
  *
  * Auditable: every decision (allowed OR suppressed) writes one row to
  * deconflict_suppression_log (m113), which the broker cockpit reads.
@@ -63,7 +60,6 @@ const DEFAULT_POLICY: Record<DeconflictChannel, ChannelPolicy> = {
   sms:   { maxTouches: 1, windowDays: 7 },
   phone: { maxTouches: 1, windowDays: 7 },
   mail:  { maxTouches: 1, windowDays: 30 },
-  video: { maxTouches: 1, windowDays: 21 },
 }
 
 export interface DeconflictInput {
@@ -177,9 +173,6 @@ async function countMailTouches(svc: Svc, brokerageId: string, contactId: string
   return direct + await countLedgerTouches(svc, "mail", brokerageId, contactId, since)
 }
 
-async function countVideoTouches(svc: Svc, brokerageId: string, contactId: string, since: string): Promise<number> {
-  return countLedgerTouches(svc, "video", brokerageId, contactId, since)
-}
 
 // ─── Broadcast (1:many) frequency cap ───────────────────────────────────────
 // Counts brokerage-wide broadcast sends per channel + optional segment in the
@@ -307,7 +300,6 @@ async function countTouchesByChannel(
     case "sms":   return countSmsTouches  (svc, args.brokerageId, args.contactId, args.since)
     case "phone": return countPhoneTouches(svc, args.brokerageId, args.contactId, args.since)
     case "mail":  return countMailTouches (svc, args.brokerageId, args.contactId, args.since)
-    case "video": return countVideoTouches(svc, args.brokerageId, args.contactId, args.since)
   }
 }
 

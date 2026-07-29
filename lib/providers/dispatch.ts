@@ -2,12 +2,19 @@
  * OUTBOUND DISPATCH LAYER
  * lib/providers/dispatch.ts
  *
- * Single entry point for all outbound comms: email, SMS, phone, direct mail, video.
+ * Single entry point for all outbound comms: email, SMS, phone, direct mail.
  * Provider selection is always resolved via kernel/providers.ts cascade:
  *   user → team → brokerage → superadmin → system default
  * Never hardcode a provider name in feature code — use these dispatchers.
  *
- * direct_mail and video are SYSTEM_ONLY: superadmin-controlled, no per-brokerage override.
+ * VIDEO IS NOT A CHANNEL (owner ruling). dispatchVideo is a RENDER-AND-DELIVER
+ * dispatcher: it renders a D-ID avatar clip and delivers it over a real channel
+ * (today: email — it takes a recipientEmail). Its de-confliction therefore spends
+ * the recipient's EMAIL allowance, not a video one. "video" survives here only as
+ * a providerType (which D-ID/Remotion renderer to call), never as a lane.
+ *
+ * direct_mail and the video renderer are SYSTEM_ONLY: superadmin-controlled, no
+ * per-brokerage override.
  * SMS and phone are supported via the existing Twilio messaging provider.
  */
 
@@ -1011,13 +1018,26 @@ export async function dispatchVideo(params: DispatchVideoParams): Promise<Dispat
   const autonomyHeld = await autonomyGate(params)
   if (autonomyHeld) return autonomyHeld
   // ── De-Conflict gate (over-touch suppression) ────────────────────────────
-  // D-ID renders are expensive AND avatar-video saturation hurts engagement;
-  // default policy caps 1 video / 21 days per contact.
+  // OWNER RULING: video is NOT a channel. The channels are email / phone /
+  // voicedrop / in-app / sms / blog / direct mail / ad / newsletter / podcast —
+  // a video is DELIVERED IN an sms or an email. This function takes a
+  // recipientEmail and sends over email, so the send consumes the CONTACT'S
+  // EMAIL ALLOWANCE and is counted against it. A "video" cap counted nothing:
+  // no ledger stores 'video' as a distinct budget, so it capped one imaginary
+  // lane while the real email lane stayed uncounted for this send.
+  //
+  // NOT REINVENTED HERE: the old comment claimed a "1 video / 21 days" render
+  // budget. D-ID render cost IS real, but it is a SPEND control, not an
+  // over-touch control, and the platform already meters renders (usageType:
+  // "video_renders" below). Adding a second cap shaped like a channel is how
+  // the video-as-channel drift started; a render budget belongs on the metering
+  // side and is the owner's call, not something to smuggle back in here.
   if (params.contactId) {
     const deferred = await deconflictGate({
       brokerageId:  params.brokerageId,
-      channel:      "video",
+      channel:      "email",
       contactId:    params.contactId,
+      recipientEmail: params.recipientEmail,
       systemSource: params.systemSource,
     })
     if (deferred) return deferred

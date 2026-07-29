@@ -54,7 +54,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { AD_CAMPAIGN_RUNNING_STATUSES } from "@/lib/integrations/credential-platforms"
+import { AD_CAMPAIGN_RUNNING_STATUSES } from "@/lib/integrations/ad-campaign-vocabulary"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 import {
   MANAGERS, MANAGER_COLLABORATIONS, type ManagerKey, type CollaborationDomain,

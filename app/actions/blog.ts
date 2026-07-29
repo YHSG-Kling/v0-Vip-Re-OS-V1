@@ -16,6 +16,7 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { pickTopics, renderTopicsForPrompt, type TopicCandidate } from "@/lib/content-intel/topic-bank"
 import { logTopicUses } from "@/lib/content-intel/performance-aggregator"
+import { resolveWordPressCredential, wordPressUnavailableReason } from "@/lib/blog/wordpress-connection"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -530,17 +531,13 @@ export async function publishToWordPress(
     return { success: false, error: "Post must be approved before publishing to WordPress" }
   }
 
-  // ── 2. Get WordPress credentials from platform_credentials ──────────────────
-  const { data: credentials } = await supabase
-    .from("platform_credentials")
-    .select("api_url, api_key, access_token")
-    .eq("brokerage_id", post.brokerage_id)
-    .eq("platform", "wordpress")
-    .eq("is_active", true)
-    .maybeSingle()
+  // ── 2. Get WordPress credentials ────────────────────────────────────────────
+  // Resolution is gated on the Connection OS — see lib/blog/wordpress-connection.ts
+  // for why this used to be an unanswerable query and what decision unblocks it.
+  const credentials = await resolveWordPressCredential(supabase, post.brokerage_id)
 
   if (!credentials || !credentials.api_url) {
-    return { success: false, error: "WordPress credentials not configured" }
+    return { success: false, error: wordPressUnavailableReason() }
   }
 
   // ── 3. Call WordPress REST API ──────────────────────────────────────────────

@@ -1,11 +1,11 @@
 // lib/kernel/deconflict/lead-channel.ts
 // PURE (no I/O, no server-only) — so simulators can import it directly.
 // ─────────────────────────────────────────────────────────────────────────────
-// ONE ENGINE CHANNEL, FOUR SOURCE VOCABULARIES.
+// ONE ENGINE CHANNEL, THREE SOURCE VOCABULARIES.
 //
-// The de-confliction engine has its OWN channel names (email|sms|phone|mail|
-// video) and sums touches across four ledgers — each of which spells its
-// channels differently, under its own CHECK:
+// The de-confliction engine has its OWN channel names (email|sms|phone|mail) and
+// sums touches across three ledgers — each of which spells its channels
+// differently, under its own CHECK:
 //
 //   isa_outreach_log.channel
 //     email | direct_mail | video | sms | in_app | voice | social
@@ -29,15 +29,20 @@
 //     Both say 'direct_mail'. Only direct_mail_recipients was ever counted, so a
 //     campaign or lifetime mail piece did not count toward "1 piece / 30 days".
 //
-// email / sms / video happened to spell the same in every table, which is why
-// three of five channels worked and the failure looked like normal quiet.
+// email / sms happened to spell the same in every table, which is why half the
+// channels worked and the failure looked like normal quiet.
 //
 // The mapping is now per TABLE, exhaustive, and pinned by
 // scripts/deconflict-channel-simulator.ts against the live CHECK vocabularies —
 // so a source table that renames a channel breaks the guard instead of silently
 // uncapping a lane.
 
-export type DeconflictChannel = "email" | "sms" | "phone" | "mail" | "video"
+// OWNER RULING: video is NOT a channel. The channels are email / phone /
+// voicedrop / in-app / sms / blog / direct mail / ad / newsletter / podcast — and
+// a video is DELIVERED IN an sms or an email. The de-confliction cap therefore
+// governs the delivery channels; a video send consumes the allowance of whatever
+// carried it (dispatchVideo takes a recipientEmail, so it consumes email).
+export type DeconflictChannel = "email" | "sms" | "phone" | "mail"
 
 /** The ledgers the engine sums, each with its own channel vocabulary. */
 export type TouchSourceTable =
@@ -59,21 +64,18 @@ const CHANNEL_BY_TABLE: Record<TouchSourceTable, Record<DeconflictChannel, strin
     sms:   "sms",
     phone: "voice",          // the log's word for a call
     mail:  "direct_mail",
-    video: "video",
   },
   marketing_campaign_touchpoints: {
     email: "email",
     sms:   "sms",
     phone: "phone",          // this table really does say 'phone'
     mail:  "direct_mail",
-    video: "video",
   },
   lifetime_customer_touchpoints: {
     email: "email",
     sms:   "sms",
     phone: "call",           // this table's word for a call
     mail:  "direct_mail",
-    video: "video",
   },
 }
 
@@ -98,4 +100,4 @@ export const TOUCH_SOURCE_TABLES = [
   "lifetime_customer_touchpoints",
 ] as const satisfies readonly TouchSourceTable[]
 
-export const DECONFLICT_CHANNELS = ["email", "sms", "phone", "mail", "video"] as const
+export const DECONFLICT_CHANNELS = ["email", "sms", "phone", "mail"] as const
