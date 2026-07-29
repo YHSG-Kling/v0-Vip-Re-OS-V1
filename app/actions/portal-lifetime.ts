@@ -539,17 +539,21 @@ export async function getLifetimeContext(contactId: string) {
     .eq("brokerage_id", access.brokerageId)
     .order("created_at", { ascending: false })
 
-  // Vendors from caller's brokerage (already auth-scoped) — vendors replaced vendor_directory —
-  // vendor_directory was a writer-less legacy twin (burn-down round 4 repoint). No `preferred`
-  // column on vendors; broker approval (status='active') is the closest real flag, ranked by rating.
-  const { data: vendors } = await supabase
-    .from("vendors")
-    .select("id, name, category, phone, email, website, rating")
-    .eq("brokerage_id", access.brokerageId)
-    .eq("status", "active")
-    .order("rating", { ascending: false })
-    .limit(3)
-  const preferredVendors = vendors || []
+  // THE PREFERRED VENDORS A LIFETIME CLIENT SEES. This ran its own `vendors`
+  // query and ranked by rating, because `vendors` has no preferred column — but
+  // the flag it needed lives on vendor_directory, which premium-placement writes
+  // when a vendor PAYS the brokerage for featured placement. Ranking by rating
+  // here meant the paid vendor was simply one of the list, in whatever order
+  // their star average happened to fall. Same shared resolver as the portal
+  // vendors page (m303), so "preferred" means one thing across the product.
+  const { resolveContactVendors: resolveLifetimeVendors } = await import("@/lib/vendor-marketplace/resolve-contact-vendors")
+  const preferredVendors = (await resolveLifetimeVendors(supabase as never, {
+    contactId,
+    brokerageId: access.brokerageId,
+    teamId: null,
+    stage: "forever",
+    audienceTags: ["lifetime_customer"],
+  })).slice(0, 3)
 
   // All vendor categories the brokerage marketplace carries (not just preferred) —
   // lets the maintenance card decide "request an intro" vs "browse pros".
@@ -823,15 +827,23 @@ export async function getVendorResources(contactId: string) {
 
   const supabase = createServiceClient()
 
-  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint).
-  // No preferred/display_priority/visible_in_portal on vendors: portal visibility → broker approval
-  // (status='active'), ranking → rating.
-  const { data: vendors } = await supabase
-    .from("vendors")
-    .select("id, category, name, phone, email, website, rating")
-    .eq("brokerage_id", access.brokerageId)
-    .eq("status", "active")
-    .order("rating", { ascending: false, nullsFirst: false })
-
-  return vendors || []
+  // ONE RESOLVER (m303). This ran its own `vendors` query and noted that the
+  // curation columns did not exist there — which was true of `vendors` and not
+  // true of the system: they live on vendor_directory, which premium-placement
+  // writes when a vendor PAYS for featured placement. Reading the bench meant
+  // portal visibility, display priority and the preferred badge were all
+  // ignored on the surface the placement was sold for. Now routed through the
+  // shared resolver so this page and /portal/[contactId]/vendors cannot
+  // disagree about who a client should see.
+  const { resolveContactVendors } = await import("@/lib/vendor-marketplace/resolve-contact-vendors")
+  const curated = await resolveContactVendors(supabase as never, {
+    contactId,
+    brokerageId: access.brokerageId,
+    teamId: null,
+    // No transaction context on this surface — the lifetime toolkit is the
+    // "forever" stage by definition, and audience tags are unfiltered here.
+    stage: "forever",
+    audienceTags: ["lifetime_customer"],
+  })
+  return curated
 }
