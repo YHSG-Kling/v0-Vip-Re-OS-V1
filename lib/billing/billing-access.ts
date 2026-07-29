@@ -23,7 +23,12 @@ export interface BillingSubRow {
   trial_end: string | null
 }
 
-const BLOCKING_STATUSES = new Set(["past_due", "unpaid", "incomplete_expired", "canceled", "cancelled", "paused"])
+// subscriptions.status admits exactly: active | past_due | cancelled | trialing |
+// paused. 'unpaid', 'incomplete_expired' and the American 'canceled' are values
+// this column cannot hold — they rode along inertly with the three real ones.
+// Kept OUT rather than kept "just in case": a set that lists impossible states
+// reads as though they are reachable.
+const BLOCKING_STATUSES = new Set(["past_due", "cancelled", "paused"])
 const ACTIVE_STATUSES = new Set(["active", "trialing"])
 
 /** PURE: classify a brokerage's access from its subscription row + now. */

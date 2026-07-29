@@ -107,7 +107,12 @@ export async function runDunningSweep(svc: any, now: Date = new Date()): Promise
   const { data: subs } = await svc
     .from("subscriptions")
     .select("id, brokerage_id, status, updated_at")
-    .in("status", ["past_due", "unpaid"])
+    // 'unpaid' was a rider here: subscriptions.status admits
+    // active|past_due|cancelled|trialing|paused, and lib/billing/stripe-status.ts
+    // normalizes Stripe's 'unpaid' to 'past_due' before anything is stored — so no
+    // row has ever carried it. Harmless inside an .in(), and exactly the kind of
+    // dead literal that teaches the next reader a state exists when it cannot.
+    .eq("status", "past_due")
     .limit(500)
 
   for (const sub of (subs ?? []) as Array<{ id: string; brokerage_id: string; status: string; updated_at: string | null }>) {

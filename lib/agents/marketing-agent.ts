@@ -224,7 +224,7 @@ interface MarketingSnapshot {
      *  Candidate set for verify_lead_address. */
     leadsWithUnverifiedAddresses:   number
     /** Recent delivery-status failures across direct_mail_recipients
-     *  (returned, undeliverable, failed). Candidate set for
+     *  (returned, failed). Candidate set for
      *  flag_design_for_review when concentrated in one campaign. */
     recentDeliveryFailures28d:      number
     /** The single oldest currently-pending campaign so the agent can
@@ -657,7 +657,9 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
       svc.from("direct_mail_recipients")
         .select("id", { count: "exact", head: true })
         .eq("brokerage_id", brokerageId)
-        .in("delivery_status", ["returned", "undeliverable", "failed"])
+        // direct_mail_recipients.delivery_status is
+        // pending|mailed|delivered|returned|failed — no 'undeliverable'.
+        .in("delivery_status", ["returned", "failed"])
         .gte("created_at", since28d),
       svc.from("direct_mail_campaigns")
         .select("id, created_at")

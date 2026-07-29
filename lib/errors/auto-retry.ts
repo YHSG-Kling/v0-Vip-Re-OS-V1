@@ -119,7 +119,7 @@ export async function scheduleRetry(
             action_type: "auto_retry",
             action_by: "system",
             retry_attempt: currentRetryCount + 1,
-            retry_result: "success",
+            retry_result: RETRY_RESULT_SUCCESS,
           })
 
         return { success: true, attemptNumber: currentRetryCount + 1 }
@@ -133,7 +133,7 @@ export async function scheduleRetry(
             action_type: "auto_retry",
             action_by: "system",
             retry_attempt: currentRetryCount + 1,
-            retry_result: "failure",
+            retry_result: RETRY_RESULT_FAILURE,
             notes: retryError instanceof Error ? retryError.message : "Unknown error",
             resolution_metadata: {
               next_retry_at: nextRetryAt.toISOString(),
@@ -170,8 +170,11 @@ export async function scheduleRetry(
         }
       }
     } else {
-      // No callback - just schedule for cron pickup
-      await supabase
+      // No callback - just schedule for cron pickup.
+      // The result is CHECKED: this row IS the schedule. If it does not land
+      // there is nothing for the cron to find, and returning success:true on a
+      // rejected insert is how this lane stayed silently dead.
+      const { error: scheduleErr } = await supabase
         .from("error_resolution_log")
         .insert({
           error_id: errorId,
@@ -179,16 +182,25 @@ export async function scheduleRetry(
           action_type: "auto_retry",
           action_by: "system",
           retry_attempt: currentRetryCount + 1,
-          retry_result: "scheduled",
+          retry_result: RETRY_RESULT_SCHEDULED,
           resolution_metadata: {
             next_retry_at: nextRetryAt.toISOString(),
             scheduled_delay_ms: delayMs,
           },
         })
 
-      return { 
-        success: true, 
-        attemptNumber: currentRetryCount + 1 
+      if (scheduleErr) {
+        console.error("[scheduleRetry] could not record the schedule:", scheduleErr.message)
+        return {
+          success: false,
+          error: `Retry not scheduled: ${scheduleErr.message}`,
+          attemptNumber: currentRetryCount + 1,
+        }
+      }
+
+      return {
+        success: true,
+        attemptNumber: currentRetryCount + 1
       }
     }
   } catch (err) {
@@ -199,6 +211,20 @@ export async function scheduleRetry(
     }
   }
 }
+
+/**
+ * error_resolution_log.retry_result values. The column's CHECK is
+ * (success | failure | pending) — there is no 'scheduled'.
+ *
+ * The deferred lane wrote retry_result='scheduled' and the cron sweep filtered
+ * for it, so the lane was dead at BOTH ends: the insert was rejected (its error
+ * discarded, the function still returned success:true) and getErrorsDueForRetry
+ * matched nothing. Nothing was ever scheduled and nothing was ever retried.
+ * 'pending' is the admitted value that means exactly "queued, not yet run".
+ */
+export const RETRY_RESULT_SCHEDULED = "pending" as const
+export const RETRY_RESULT_SUCCESS = "success" as const
+export const RETRY_RESULT_FAILURE = "failure" as const
 
 /**
  * Get errors that are due for retry (called by cron)
@@ -212,7 +238,7 @@ export async function getErrorsDueForRetry(): Promise<string[]> {
       .from("error_resolution_log")
       .select("error_id, resolution_metadata")
       .eq("action_type", "auto_retry")
-      .eq("retry_result", "scheduled")
+      .eq("retry_result", RETRY_RESULT_SCHEDULED)
       .order("created_at", { ascending: false })
 
     if (!resolutionLogs || resolutionLogs.length === 0) {
@@ -273,7 +299,7 @@ export async function getRetryStatus(errorId: string): Promise<{
     const lastRetry = retryLogs[0]
     let nextRetryAt: Date | null = null
     
-    if (lastRetry?.retry_result === "scheduled") {
+    if (lastRetry?.retry_result === RETRY_RESULT_SCHEDULED) {
       const metadata = lastRetry.resolution_metadata as { next_retry_at?: string } | null
       if (metadata?.next_retry_at) {
         nextRetryAt = new Date(metadata.next_retry_at)

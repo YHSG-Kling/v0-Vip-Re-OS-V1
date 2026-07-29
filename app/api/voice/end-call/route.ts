@@ -49,15 +49,35 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (!ended.ok) console.error("[end-call] Twilio hangup (non-fatal):", ended.error)
 
   // Close our DB record — scoped to the owning brokerage.
-  await service
+  //
+  // outcome was 'ended_by_agent', which voice_calls.outcome does not admit. It
+  // is set in the SAME update as status and ended_at, so the whole update was
+  // rejected: the agent hung up, Twilio ended the call, this route returned
+  // success — and the ledger row stayed open with no ended_at, forever.
+  //
+  // 'completed' is the admitted disposition for a call that ran and ended
+  // normally, and it matches the Twilio status callback, which closes every
+  // terminated leg as completed and puts the real disposition in outcome. That
+  // an agent ended it is implicit in this route being the agent's action.
+  const { error: closeErr } = await service
     .from("voice_calls")
     .update({
       status: "completed",
-      outcome: "ended_by_agent",
+      outcome: "completed",
       ended_at: new Date().toISOString(),
     })
     .eq("vapi_call_id", callId)
     .eq("brokerage_id", brokerageId)
+
+  if (closeErr) {
+    // Twilio has already hung up; the ledger is what failed. Say so rather than
+    // reporting a success that leaves the row open.
+    console.error("[end-call] ledger close failed:", closeErr.message)
+    return NextResponse.json(
+      { success: false, error: "Call ended, but the record could not be closed." },
+      { status: 500 },
+    )
+  }
 
   return NextResponse.json({ success: true })
 }

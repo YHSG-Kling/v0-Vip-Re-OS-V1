@@ -433,7 +433,10 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
           .select("id")
           .eq("campaign_id", c.id)
           .eq("contact_id", s.contact_id)
-          .in("status", ["sent", "delivered"])
+          // newsletter_sends.status has no 'delivered' (queued|sent|failed|
+          // bounced|opened|clicked|suppressed). 'sent' is the real "already went
+          // out" marker and every later state implies it.
+          .in("status", ["sent", "opened", "clicked"])
           .limit(1)
           .maybeSingle()
         if (prior) continue
