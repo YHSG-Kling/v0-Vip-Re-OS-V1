@@ -200,18 +200,24 @@ console.log("\n[title_agent is a vendor; support is a platform user type]")
     /RAISE EXCEPTION/.test(mig) && /title_agent/.test(mig))
 }
 
-console.log("\n[the tier sells SEATS — the role menu is the tenant's to spend]")
+console.log("\n[the tier sells SEATS — with ONE role constraint on solo]")
 {
-  // OWNER RULING: "they can use those seats anyway they want" — and "solo agent
-  // will now have a broker owner or broker". Solo used to exclude BOTH, so a
-  // one-person brokerage could not seat its own owner on the tier built for them.
-  for (const role of SEAT_ROLES) {
-    check(`solo may invite ${role} — every tier offers the same menu`,
+  // OWNER RULING: "they can use those seats anyway they want" — the tier sells
+  // SEATS, not a narrower menu. AND, held firm after I briefly reversed it and was
+  // corrected: "no solo agent tier subscription does NOT have a broker owner or
+  // broker." A solo subscription is not a brokerage, so the two roles that exist
+  // to GOVERN a brokerage are off its menu. Its 2 seats are spent inside the rest.
+  check("solo has NO broker", !TIER_INVITABLE_ROLES.solo_agent.includes("broker"))
+  check("solo has NO broker_owner", !TIER_INVITABLE_ROLES.solo_agent.includes("broker_owner"))
+  for (const role of SEAT_ROLES.filter((r) => r !== "broker" && r !== "broker_owner")) {
+    check(`solo may invite ${role} — every other working role is on its menu`,
       TIER_INVITABLE_ROLES.solo_agent.includes(role))
   }
-  check("solo's menu equals brokerage's, role for role",
-    [...TIER_INVITABLE_ROLES.solo_agent].sort().join(",") ===
-    [...TIER_INVITABLE_ROLES.brokerage].sort().join(","))
+  check("solo's menu is brokerage's MINUS exactly the two governance roles",
+    [...TIER_INVITABLE_ROLES.brokerage].filter((r) => r !== "broker" && r !== "broker_owner").sort().join(",") ===
+    [...TIER_INVITABLE_ROLES.solo_agent].sort().join(","))
+  check("team and above DO get them — that is where a brokerage begins",
+    TIER_INVITABLE_ROLES.team.includes("broker") && TIER_INVITABLE_ROLES.brokerage.includes("broker_owner"))
   check("…and the limits still differ, because SEATS are what a tier sells",
     TIER_SEAT_LIMITS.solo_agent === 2 && TIER_SEAT_LIMITS.brokerage === null)
 }

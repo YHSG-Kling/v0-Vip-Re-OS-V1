@@ -306,6 +306,30 @@ export async function GET(req: Request) {
     nudged = (await runConnectionNudgeAll(svc)).notified
   } catch (e) { console.error("[connector-health] tenant nudge:", e) }
 
+  // ── CLOSE THE LOOP: A DARK CAPABILITY REACHES ITS MANAGER ──────────────────
+  // The probes above establish WHAT is down. This turns that into a DECISION
+  // someone owns: each capability that cannot run routes to the manager
+  // accountable for it (lib/agentic-os/capability-ownership.ts) — except one the
+  // self-healer already has an open proposal for, which raises nothing, because a
+  // workaround decided mid-repair is wrong by the time it lands.
+  //
+  // Deliberately on THIS cron and not a new one: the Cron Manager owns loop
+  // health, and a second heartbeat asking the same question is the drift this
+  // codebase keeps paying for. Never throws — a readiness sweep must not take the
+  // connector-health run down with it.
+  let capabilitiesEscalated = 0
+  let capabilitiesHeldForHealer = 0
+  let capabilityDarkTotal = 0
+  try {
+    const { escalateDarkCapabilities } = await import("@/lib/agentic-os/escalate-dark-capabilities")
+    for (const b of brokerages ?? []) {
+      const r = await escalateDarkCapabilities((b as { id: string }).id)
+      capabilitiesEscalated += r.escalated
+      capabilitiesHeldForHealer += r.heldForHealer
+      capabilityDarkTotal += r.dark
+    }
+  } catch (e) { console.error("[connector-health] capability escalation:", e) }
+
   return NextResponse.json({
     success: true,
     timestamp: now.toISOString(),
@@ -317,6 +341,9 @@ export async function GET(req: Request) {
       healingProposed,
       healingSkippedExisting,
       tenantNudged:      nudged,
+      capabilityDark:            capabilityDarkTotal,
+      capabilitiesEscalated,
+      capabilitiesHeldForHealer,
     },
   })
 }

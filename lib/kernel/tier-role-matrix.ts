@@ -7,13 +7,14 @@
 // is safe in client bundles.
 //
 // THE BUSINESS MODEL (owner-corrected, round 16):
-//   • Every tier gets access to ALL the working roles — admin, agent, tc,
-//     compliance_officer, isa, team_lead, broker, broker_owner. The constraint
-//     is SEATS, not the role menu, with NO exception: the owner's ruling is
-//     "they can use those seats anyway they want", and a solo subscription DOES
-//     get a broker_owner or broker (most solo agents are their own broker).
-//     Solo previously excluded both, so a one-person brokerage could not seat
-//     its own owner on the tier built for them.
+//   • Every tier gets access to the working roles — admin, agent, tc,
+//     compliance_officer, isa, team_lead — and the constraint is SEATS, not the
+//     role menu: "they can use those seats anyway they want" (owner).
+//   • THE ONE EXCEPTION, and it is a hard one: a SOLO subscription has NO
+//     broker and NO broker_owner. Owner, explicitly: "no solo agent tier
+//     subscription does NOT have a broker owner or broker." A solo
+//     subscription is not a brokerage, so the roles that exist to govern one
+//     are not on its menu. Its 2 seats are spent inside the remaining set.
 //   • SEATS: solo_agent = 2 · team = 5 · brokerage / multi_location =
 //     unlimited. A "seat" is a working staff user (SEAT_ROLES). Partner
 //     users do NOT consume seats.
@@ -47,11 +48,16 @@ export const SEAT_ROLES: readonly UserDomainRole[] = [
   "admin", "broker", "broker_owner", "team_lead", "agent", "tc", "isa", "compliance_officer",
 ]
 
+/** The solo set: every working role EXCEPT the two brokerage-governance ones.
+ *  A solo subscription is not a brokerage — owner's ruling, held firm. */
+const SOLO_SEAT_ROLES: readonly UserDomainRole[] =
+  SEAT_ROLES.filter((r) => r !== "broker" && r !== "broker_owner")
+
 /** Canonical tier → invitable roles. THE matrix — every invite surface derives
- *  from it. Every tier now offers the SAME role menu: the tier sells SEATS, and
- *  what a tenant does with them is theirs to decide (owner's ruling). */
+ *  from it. The tier sells SEATS and how a tenant spends them is theirs; the one
+ *  role constraint is that solo has no broker/broker_owner. */
 export const TIER_INVITABLE_ROLES: Record<CanonicalTier, readonly UserDomainRole[]> = {
-  solo_agent:     [...SEAT_ROLES, ...PARTNER_ROLES],
+  solo_agent:     [...SOLO_SEAT_ROLES, ...PARTNER_ROLES],
   team:           [...SEAT_ROLES, ...PARTNER_ROLES],
   brokerage:      [...SEAT_ROLES, ...PARTNER_ROLES],
   multi_location: [...SEAT_ROLES, ...PARTNER_ROLES],

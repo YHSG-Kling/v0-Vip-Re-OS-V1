@@ -435,6 +435,8 @@
     "test:seat-display": "tsx scripts/seat-display-simulator.ts",
     "test:capability-contract": "tsx scripts/capability-contract-simulator.ts",
     "test:lead-score-consolidation": "tsx scripts/lead-score-consolidation-simulator.ts",
+    "test:capability-ownership": "tsx scripts/capability-ownership-simulator.ts",
+    "test:proof-ownership": "tsx scripts/manager-proof-ownership-guard.ts",
     "test:assignment-method": "tsx scripts/assignment-method-simulator.ts",
     "test:sequence-step-palette": "tsx scripts/sequence-step-palette-guard.ts",
     "test:step-palette-consolidation": "tsx scripts/step-palette-consolidation-simulator.ts",
