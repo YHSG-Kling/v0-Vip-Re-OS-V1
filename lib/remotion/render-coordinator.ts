@@ -186,12 +186,31 @@ export async function finalizeCoordinatedRender(
       .select("input_props").eq("id", renderId).maybeSingle()
     const voUrl = (renderRow as any)?.input_props?.voiceover_url
     if (typeof voUrl === "string" && voUrl.startsWith("http")) {
+      // How long the voice runs, from the alignment we already cached for
+      // captions — so a script longer than this composition's FIXED
+      // duration_frames extends the video instead of being cut off mid-sentence
+      // (m313). A miss leaves it null and the mux keeps its old behaviour.
+      const { data: narr } = await svc.from("narration_cache")
+        .select("duration_seconds")
+        .eq("brokerage_id", intent.brokerageId)
+        .eq("audio_url", voUrl)
+        .maybeSingle()
+      const narrationSeconds = (narr as { duration_seconds: number | null } | null)?.duration_seconds ?? null
+      const videoSeconds = composition.duration_frames / Math.max(1, composition.fps)
+
       const { mixNarrationVoiceover } = await import("./voiceover-mixer")
-      const narrated = await mixNarrationVoiceover({ videoBuffer: working, voiceoverUrl: voUrl })
+      const narrated = await mixNarrationVoiceover({
+        videoBuffer: working, voiceoverUrl: voUrl, narrationSeconds, videoSeconds,
+      })
       if (narrated.ok && narrated.outputBuffer.length > 0) {
         working = narrated.outputBuffer
         usedVoiceover = true
         narrationAudioUrl = voUrl
+        if ((narrated.paddedSeconds ?? 0) > 0) {
+          console.info(
+            `[render-coordinator] narration ran ${narrated.paddedSeconds}s past ${composition.composition_id}; held the final frame so it finished`,
+          )
+        }
       }
     }
   } catch (e) {

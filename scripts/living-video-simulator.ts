@@ -21,6 +21,7 @@ import {
   LIVING_VIDEO_STALE_SIGNAL,
   type LivingFacts,
 } from "../lib/video/living-video"
+import { paddingSecondsFor } from "../lib/remotion/voiceover-mixer"
 import { SIGNAL_REGISTRY } from "../lib/kernel/signal-registry"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
 
@@ -214,7 +215,75 @@ console.log("\n═══ 7. The seven-day window that used to swallow a price dr
     registry.includes("living_kind:") && registry.includes("facts_key:") && registry.includes("facts:"))
 }
 
-console.log("\n═══ 8. Wiring + ownership ═══")
+console.log("\n═══ 8. THE DELIVERY HALF — where the refresh nearly died ═══")
+{
+  const producer = code("lib/agents/seller-update-reel-producer.ts")
+  // The refresh re-renders; THIS is where that work reaches the seller or is
+  // thrown away. It was being thrown away: delivery kept its own seven-day
+  // window, so the corrected video was skipped until the following Monday —
+  // the same defect one stage downstream, burning a real render every time.
+  ok("delivery de-duplicates per VIDEO, not per calendar week",
+    producer.includes('.ilike("body", `%${r.output_url}%`)'))
+  ok("a REFRESH is exempt from the weekly cadence guard",
+    producer.includes("if (!r.refreshed_from_render_id) {"))
+  ok("...but an ordinary cadence render is still guarded, so nothing spams",
+    producer.includes("recentProposal"))
+  ok("the NEWEST cut per (listing, seller) is the one proposed — never a superseded one",
+    producer.includes("const seen = new Set<string>()") &&
+    producer.includes('.order("completed_at", { ascending: false })'))
+  ok("the render read is bounded", producer.includes(".limit(500)"))
+  ok("the human sees WHY this cut arrived off-cadence",
+    producer.includes("REFRESHED seller-update video"))
+  ok("it still proposes rather than sends — the gate is unchanged",
+    producer.includes("proposeClientMessage"))
+}
+
+console.log("\n═══ 9. Narration is never cut off mid-sentence ═══")
+{
+  // Every composition has a FIXED duration_frames and none uses Remotion's
+  // calculateMetadata to size itself to its audio, while the script is capped at
+  // 2400 chars — minutes of speech. The mux used -shortest, so the agent was
+  // silently truncated in a video that went to a client.
+  ok("no padding when the video is already long enough",
+    paddingSecondsFor(10, 14) === 0)
+  ok("no padding for a sub-quarter-second encode boundary",
+    paddingSecondsFor(14.1, 14) === 0)
+  ok("a genuine overrun IS padded", paddingSecondsFor(22, 14) === 8)
+  ok("an unknown narration length pads nothing rather than guessing",
+    paddingSecondsFor(null, 14) === 0)
+  ok("an unknown video length pads nothing either", paddingSecondsFor(22, null) === 0)
+  ok("a nonsense duration cannot produce an hour of frozen frame",
+    paddingSecondsFor(99999, 14) === 120)
+  ok("NaN is refused", paddingSecondsFor(NaN, 14) === 0)
+  ok("a zero-length narration is refused", paddingSecondsFor(0, 14) === 0)
+
+  const mixer = code("lib/remotion/voiceover-mixer.ts")
+  ok("the padded path holds the FINAL FRAME rather than cutting the voice",
+    mixer.includes("tpad=stop_mode=clone"))
+  ok("...and follows the LONGEST stream so the held frame survives",
+    mixer.includes('pad > 0 ? "longest" : "first"'))
+  ok("...and drops -shortest, which is what did the truncating",
+    mixer.includes('...(pad > 0 ? [] : ["-shortest"])'))
+  ok("the unpadded path still stream-copies the video (no needless re-encode)",
+    mixer.includes('["-c:v", "copy"]'))
+  ok("BOTH ffmpeg attempts pad — the silent-video fallback is not forgotten",
+    (mixer.match(/tpad=stop_mode=clone/g) ?? []).length >= 2)
+
+  const vo = code("lib/video/reel-voiceover.ts")
+  ok("the length comes free from the alignment already cached for captions",
+    vo.includes("character_end_times_seconds"))
+  ok("...is persisted so the coordinator can read it back",
+    vo.includes("duration_seconds: p.durationSeconds"))
+  ok("...and a reused clip reports it too", vo.includes("cached.durationSeconds"))
+
+  const coord = code("lib/remotion/render-coordinator.ts")
+  ok("the coordinator looks the narration length up by url, tenant-scoped",
+    coord.includes('.eq("audio_url", voUrl)') && coord.includes('.eq("brokerage_id", intent.brokerageId)'))
+  ok("...and passes the composition's own length as the comparison",
+    coord.includes("composition.duration_frames / Math.max(1, composition.fps)"))
+}
+
+console.log("\n═══ 10. Wiring + ownership ═══")
 {
   const cron = code("app/api/cron/composition-render-queue/route.ts")
   ok("the video-ops cron runs the refresh", cron.includes("refreshLivingVideos"))

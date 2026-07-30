@@ -12,7 +12,13 @@
 //     remotion_composition_renders ── D-ID poll cron renders it ──▶ output_url
 //       deliverSellerUpdateReels ── proposeClientMessage(audience='seller') ──▶ GATE
 //
-// Both halves idempotent (one render + one proposal per listing per 7-day window).
+// Both halves are idempotent, but NOT on the same key (m312). The CADENCE is
+// guarded per 7-day window so the scheduled sweep cannot render or propose twice
+// in a week. A LIVING REFRESH — a re-render triggered because a fact the seller
+// cares about actually moved — is exempt from both windows and instead
+// de-duplicates per VIDEO: one proposal per distinct cut. Keying delivery on the
+// calendar would have meant the refresh burned a real render every time and the
+// seller never saw it, which is the same defect one stage further downstream.
 // Pure builders (props + copy) are unit-tested; the producers are live-probed.
 
 import { createServiceClient } from "@/lib/supabase/service"
@@ -291,8 +297,27 @@ export async function requestSellerUpdateReel(
 
 /**
  * Sweep finished seller-update renders and PROPOSE each to the seller through the
- * client-message gate (audience='seller', Listing Concierge). Idempotent: skips a
- * render whose seller already has a seller-update proposal this week.
+ * client-message gate (audience='seller', Listing Concierge).
+ *
+ * ── THE OTHER HALF OF THE LIVING-VIDEO LOOP (m312) ──────────────────────────
+ * The refresh sweep re-renders a seller's video when the facts move, and this is
+ * where that work either reaches the seller or dies. It nearly died here, in
+ * three ways, all fixed below:
+ *
+ *   1. THE SAME WINDOW, ONE STAGE LATER. Idempotency was "one proposal per
+ *      listing per WEEK", so a video re-rendered because the price changed on
+ *      Tuesday was silently skipped until the following Monday. Closing the
+ *      seven-day window on the render side and leaving it on the delivery side
+ *      would have moved the defect, not fixed it — the sweep would burn a real
+ *      render every time and the seller would never see it.
+ *      Idempotency is now per VIDEO: has THIS output_url already been proposed?
+ *      The cadence guard stays for non-refresh renders, so nothing spams.
+ *   2. IT PROPOSED AN ARBITRARY CUT. The read took EVERY succeeded seller-update
+ *      render with no ordering. The moment a refresh exists there are two for
+ *      one listing, and which one got proposed depended on row order — so the
+ *      OS could have mailed the seller the SUPERSEDED video. Worse than not
+ *      refreshing at all. Now: newest completed cut per (listing, seller).
+ *   3. UNBOUNDED. No limit on a table that grows with every render.
  */
 export async function deliverSellerUpdateReels(
   brokerageId: string, client?: Svc,
@@ -302,14 +327,32 @@ export async function deliverSellerUpdateReels(
 
   const { data: renders } = await supabase
     .from("remotion_composition_renders")
-    .select("id, brokerage_id, entity_id, agent_user_id, output_url, input_props")
+    .select("id, brokerage_id, entity_id, agent_user_id, output_url, input_props, completed_at, refreshed_from_render_id")
     .eq("brokerage_id", brokerageId)
     .eq("composition_id", SELLER_UPDATE_COMPOSITION)
     .eq("render_status", "succeeded").not("output_url", "is", null)
-  const rows = ((renders ?? []) as Array<{
+    .order("completed_at", { ascending: false })
+    .limit(500)
+  type RenderRow = {
     id: string; entity_id: string | null; agent_user_id: string | null
     output_url: string | null; input_props: Record<string, unknown> | null
-  }>).filter((r) => (r.input_props as { kind?: string } | null)?.kind === SELLER_UPDATE_KIND)
+    completed_at: string | null; refreshed_from_render_id: string | null
+  }
+  const all = ((renders ?? []) as RenderRow[])
+    .filter((r) => (r.input_props as { kind?: string } | null)?.kind === SELLER_UPDATE_KIND)
+
+  // NEWEST cut per (listing, seller). The query is already newest-first, so the
+  // first sighting wins — a superseded video is never the one proposed.
+  const rows: RenderRow[] = []
+  const seen = new Set<string>()
+  for (const r of all) {
+    const listingId = (r.input_props as { listing_id?: string } | null)?.listing_id ?? null
+    if (!listingId || !r.entity_id) continue
+    const k = `${listingId}:${r.entity_id}`
+    if (seen.has(k)) continue
+    seen.add(k)
+    rows.push(r)
+  }
 
   let proposed = 0
   const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString()
@@ -320,15 +363,32 @@ export async function deliverSellerUpdateReels(
     const sellerContactId = r.entity_id
     if (!listingId || !sellerContactId || !r.output_url) continue
 
-    // Idempotency — one VIDEO proposal per seller per listing per week (distinct entity_type so it
-    // doesn't collide with the separate text seller-update).
-    const { data: existing } = await supabase
+    // Idempotency, per VIDEO. The proposal body embeds the video URL, so "has
+    // this exact cut already been offered to this seller?" is answerable without
+    // a new column — and it is the right question, because the thing we must not
+    // duplicate is a VIDEO, not a calendar week.
+    const { data: sameVideo } = await supabase
       .from("agent_client_messages")
       .select("id")
       .eq("brokerage_id", brokerageId).eq("entity_type", SELLER_UPDATE_ENTITY_TYPE).eq("entity_id", listingId)
       .eq("agent_kind", "listing_concierge").eq("audience", "seller")
-      .gte("created_at", weekAgo).limit(1).maybeSingle()
-    if (existing) continue
+      .ilike("body", `%${r.output_url}%`)
+      .limit(1).maybeSingle()
+    if (sameVideo) continue
+
+    // The weekly cadence guard still applies to an ORDINARY render, so the
+    // scheduled sweep cannot propose twice in a week. A REFRESH is exempt: it
+    // exists precisely because something the seller cares about changed, and
+    // making them wait for the calendar is the defect this closes.
+    if (!r.refreshed_from_render_id) {
+      const { data: recentProposal } = await supabase
+        .from("agent_client_messages")
+        .select("id")
+        .eq("brokerage_id", brokerageId).eq("entity_type", SELLER_UPDATE_ENTITY_TYPE).eq("entity_id", listingId)
+        .eq("agent_kind", "listing_concierge").eq("audience", "seller")
+        .gte("created_at", weekAgo).limit(1).maybeSingle()
+      if (recentProposal) continue
+    }
 
     const gathered = await gatherSellerUpdateStats(supabase, brokerageId, listingId)
     if (!gathered) continue
@@ -343,7 +403,9 @@ export async function deliverSellerUpdateReels(
       brokerageId, agentKind: "listing_concierge", entityType: SELLER_UPDATE_ENTITY_TYPE, entityId: listingId,
       recipientContactId: sellerContactId, audience: "seller",
       subject: msg.subject, body: msg.body,
-      rationale: `Weekly seller-update video for ${gathered.stats.listingAddress} — review/edit before it reaches the seller.`,
+      rationale: r.refreshed_from_render_id
+        ? `REFRESHED seller-update video for ${gathered.stats.listingAddress} — the facts changed since the last one, so this cut is the current truth. Review/edit before it reaches the seller.`
+        : `Weekly seller-update video for ${gathered.stats.listingAddress} — review/edit before it reaches the seller.`,
       channel: "portal",
     }, supabase)
     if (res.ok) proposed += 1

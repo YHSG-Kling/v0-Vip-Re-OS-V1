@@ -46,6 +46,26 @@ export interface ReelVoiceover {
   alignment: CharacterAlignment | null
   /** True when this clip came from narration_cache — no TTS call was made. */
   reused?: boolean
+  /**
+   * How long the narration actually runs.
+   *
+   * Free: the last entry of the alignment we already fetch for captions. The
+   * render coordinator needs it because it muxes with -shortest — a script
+   * longer than the composition's FIXED duration_frames was silently cut off
+   * mid-sentence. NULL when the plain synthesis path returned no alignment, and
+   * the mux then keeps its old behaviour rather than guessing a length.
+   */
+  durationSeconds?: number | null
+}
+
+/** The narration's length in seconds, from the alignment. Pure. */
+export function narrationDurationSeconds(
+  alignment: CharacterAlignment | null | undefined,
+): number | null {
+  const ends = alignment?.character_end_times_seconds
+  if (!Array.isArray(ends) || ends.length === 0) return null
+  const last = ends[ends.length - 1]
+  return Number.isFinite(last) && last > 0 ? Number(last.toFixed(3)) : null
 }
 
 /** The synthesis cap. Applied BEFORE hashing so the key names what is actually
@@ -64,7 +84,12 @@ export async function prepareReelVoiceover(
 
   // ── Reuse before spend ────────────────────────────────────────────────────
   const cached = await loadCachedNarration(p.brokerageId, p.voiceId, scriptHash)
-  if (cached) return { url: cached.url, alignment: cached.alignment, reused: true }
+  if (cached) {
+    return {
+      url: cached.url, alignment: cached.alignment, reused: true,
+      durationSeconds: cached.durationSeconds ?? narrationDurationSeconds(cached.alignment),
+    }
+  }
 
   try {
     const { synthesizeSpeech, synthesizeSpeechWithTimestamps } = await import("@/lib/voice/elevenlabs-tts")
@@ -96,12 +121,13 @@ export async function prepareReelVoiceover(
 
     // Record it so the next identical script costs nothing. Best-effort: a
     // cache-write failure must not lose a clip we already paid for and hosted.
+    const durationSeconds = narrationDurationSeconds(alignment)
     await storeCachedNarration({
       brokerageId: p.brokerageId, voiceId: p.voiceId, scriptHash, script,
-      audioUrl: url, alignment, renderKey: p.renderKey,
+      audioUrl: url, alignment, renderKey: p.renderKey, durationSeconds,
     })
 
-    return { url, alignment, reused: false }
+    return { url, alignment, reused: false, durationSeconds }
   } catch {
     return null
   }
@@ -113,23 +139,30 @@ export async function prepareReelVoiceover(
  */
 async function loadCachedNarration(
   brokerageId: string, voiceId: string, scriptHash: string,
-): Promise<{ url: string; alignment: CharacterAlignment | null } | null> {
+): Promise<{ url: string; alignment: CharacterAlignment | null; durationSeconds: number | null } | null> {
   try {
     const { createServiceClient } = await import("@/lib/supabase/service")
     const svc = createServiceClient()
     const { data } = await svc.from("narration_cache")
-      .select("id, audio_url, alignment, hit_count")
+      .select("id, audio_url, alignment, hit_count, duration_seconds")
       .eq("brokerage_id", brokerageId)
       .eq("voice_id", voiceId)
       .eq("script_hash", scriptHash)
       .maybeSingle()
     if (!data) return null
-    const row = data as { id: string; audio_url: string; alignment: unknown; hit_count: number }
+    const row = data as {
+      id: string; audio_url: string; alignment: unknown
+      hit_count: number; duration_seconds: number | null
+    }
     if (!row.audio_url) return null
     await svc.from("narration_cache")
       .update({ hit_count: (row.hit_count ?? 0) + 1, last_used_at: new Date().toISOString() })
       .eq("id", row.id)
-    return { url: row.audio_url, alignment: (row.alignment as CharacterAlignment | null) ?? null }
+    return {
+      url: row.audio_url,
+      alignment: (row.alignment as CharacterAlignment | null) ?? null,
+      durationSeconds: row.duration_seconds ?? null,
+    }
   } catch {
     return null
   }
@@ -138,6 +171,7 @@ async function loadCachedNarration(
 async function storeCachedNarration(p: {
   brokerageId: string; voiceId: string; scriptHash: string; script: string
   audioUrl: string; alignment: CharacterAlignment | null; renderKey: string
+  durationSeconds: number | null
 }): Promise<void> {
   try {
     const { createServiceClient } = await import("@/lib/supabase/service")
@@ -154,6 +188,7 @@ async function storeCachedNarration(p: {
       audio_url: p.audioUrl,
       alignment: p.alignment as unknown as Record<string, unknown> | null,
       first_render_key: p.renderKey,
+      duration_seconds: p.durationSeconds,
       last_used_at: new Date().toISOString(),
     }, { onConflict: "brokerage_id,voice_id,script_hash" })
   } catch { /* the clip is already hosted; the cache row is the optimization */ }
