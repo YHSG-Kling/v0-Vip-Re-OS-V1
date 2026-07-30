@@ -5,6 +5,7 @@ import {
   ProviderHealthPanel,
   AgentCapabilityPanel,
   OutcomeProofPanel,
+  RenderCachePanel,
   ObservabilityPanel,
   AIQualityPanel,
   SyncHealthPanel,
@@ -73,6 +74,11 @@ export default async function SystemPage() {
           <div className="space-y-6">
             <ObservabilityPanel brokerageId={brokerageId} />
             <AIQualityPanel brokerageId={brokerageId} />
+            {/* Video is the OS's most expensive output. This says how much of it was
+                delivered WITHOUT re-rendering, and names the compositions whose inputs
+                make reuse impossible — the same finding the Asset Manager gets on the
+                bus, put where a broker can see a fix is pending. */}
+            <RenderCachePanel brokerageId={brokerageId} />
           </div>
 
           {/* Column 3: Alerts & Impact */}

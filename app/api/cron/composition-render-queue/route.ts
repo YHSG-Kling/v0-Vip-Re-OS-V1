@@ -37,6 +37,14 @@ export async function GET(req: NextRequest) {
 
   const svc = createServiceClient()
 
+  // Determinism sweep (m310) — this is the video-ops cron, so it is where the
+  // Asset Manager learns that a composition can never reuse a render. Runs
+  // whether or not there is a queued row, because a leak is a standing
+  // condition and an empty queue is when the tick has time for it. Never
+  // throws; a sweep failure must not stop the queue from draining.
+  const { sweepDeterminismLeaks } = await import("@/lib/remotion/render-cache")
+  const leakSweep = await sweepDeterminismLeaks({ limit: 200 })
+
   // Oldest queued row first (idx_remotion_renders_queued covers this).
   const { data: rows, error } = await svc.from("remotion_composition_renders")
     .select("id, composition_id, brokerage_id")
@@ -44,7 +52,9 @@ export async function GET(req: NextRequest) {
     .order("created_at", { ascending: true })
     .limit(1)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  if (!rows || rows.length === 0) return NextResponse.json({ ran_at: new Date().toISOString(), processed: 0 })
+  if (!rows || rows.length === 0) {
+    return NextResponse.json({ ran_at: new Date().toISOString(), processed: 0, leak_sweep: leakSweep })
+  }
 
   const row = rows[0] as { id: string; composition_id: string; brokerage_id: string }
 
@@ -69,6 +79,7 @@ export async function GET(req: NextRequest) {
       composition_id: row.composition_id,
       render_status:  r.status,
       render_body:    renderBody,
+      leak_sweep:     leakSweep,
     })
   } catch (e) {
     return NextResponse.json({

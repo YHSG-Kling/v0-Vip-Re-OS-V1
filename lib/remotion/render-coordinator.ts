@@ -36,9 +36,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
-  canAccessComposition,
   getComposition,
-  recordRenderQueued,
   recordRenderCompleted,
   estimateCompositionCost,
   type CompositionTier,
@@ -46,6 +44,8 @@ import {
 } from "./registry"
 import { concatIntroOutro } from "@/lib/video/composite-attribution"
 import { mixBackgroundMusic } from "./music-mixer"
+import { pickStockAsset } from "./stock-pick"
+import { computeArtifactKey, type FinishInputs } from "./composition-cache"
 
 export interface RenderIntent {
   brokerageId:     string
@@ -77,65 +77,27 @@ export interface RenderIntent {
   musicMood?:      string | null
 }
 
-export interface CoordinatedRenderResult {
-  ok:                boolean
-  renderId?:         string
-  composition?:      RemotionCompositionRow
-  /** When ok=false, the structured reason. */
-  blockedReason?:
-    | "composition_not_registered"
-    | "composition_not_reachable_at_tier"
-  /** Helpers populated when bookends / music actually stitched. */
-  introAssetId?:     string | null
-  outroAssetId?:     string | null
-  musicAssetId?:     string | null
-}
-
 /**
- * Step 1 — claim a render row, tier-gate, return the registry row +
- * the renderId the caller stamps on the entity. The caller then
- * runs the actual @remotion/renderer call (via the per-composition
- * endpoint) and hands the buffer back to finalizeCoordinatedRender.
- *
- * Split into two phases so the Remotion render itself (which is
- * heavy and lives in a separate function with its own timeout) is
- * decoupled from the registry / stock-asset / blob-upload work that
- * must run on either side of it.
- */
-export async function beginCoordinatedRender(
-  intent: RenderIntent,
-): Promise<CoordinatedRenderResult> {
-  const composition = await getComposition(intent.compositionId)
-  if (!composition) {
-    return { ok: false, blockedReason: "composition_not_registered" }
-  }
-  if (!canAccessComposition(intent.callerTier, composition)) {
-    return { ok: false, blockedReason: "composition_not_reachable_at_tier" }
-  }
-
-  const queued = await recordRenderQueued({
-    brokerageId:    intent.brokerageId,
-    compositionId:  intent.compositionId,
-    agentUserId:    intent.agentUserId ?? null,
-    entityType:     intent.entityType ?? null,
-    entityId:       intent.entityId ?? null,
-    usedDidAvatar:  composition.requires_did_avatar,
-    usedVoiceover:  composition.requires_voiceover,
-  })
-  if (!queued.ok || !queued.renderId) {
-    return { ok: false, blockedReason: "composition_not_registered" }
-  }
-  return { ok: true, renderId: queued.renderId, composition }
-}
-
-/**
- * Step 3 — caller hands back the rendered buffer; coordinator stitches
- * bookends + music + uploads + completes the audit row.
+ * Caller hands back the rendered buffer; coordinator stitches bookends +
+ * narration + music + uploads + completes the audit row.
  *
  * The caller path looks like:
- *   const begin = await beginCoordinatedRender(intent)
- *   const buffer = await runActualRemotionRender(intent, begin.composition!)
- *   const result = await finalizeCoordinatedRender(intent, begin.renderId!, buffer)
+ *   const queued = await recordRenderQueued(...)          // registry
+ *   const buffer = await runActualRemotionRender(...)     // per-composition endpoint
+ *   const result = await finalizeCoordinatedRender(intent, renderId, buffer)
+ *
+ * (There used to be a beginCoordinatedRender step-1 here. It had ZERO callers —
+ * every producer queues through recordRenderQueued directly — and it was the
+ * ONLY place canAccessComposition was ever consulted, which meant the tier gate
+ * on remotion_compositions.tier_access was decorative: a solo_agent brokerage
+ * could render ProductPromoReel, whose tier_access is {platform}. The gate now
+ * runs on the live path in render-composition/route.ts, where it can actually
+ * refuse, and the dead entry point is gone rather than left as a second way to
+ * queue a render.)
+ *
+ * FINISH INPUTS ARE RETURNED, not just applied: the render cache keys on the
+ * clip/track/narration this pass ACTUALLY muxed, so the caller stamps identity
+ * from reality rather than from what it predicted before rendering.
  *
  * On any failure we mark the render row failed so the Asset Manager
  * surfaces the failure signal next cycle.
@@ -144,9 +106,15 @@ export async function finalizeCoordinatedRender(
   intent:     RenderIntent,
   renderId:   string,
   buffer:     Buffer,
+  /** Frame identity from the props actually rendered; when supplied, the
+   *  coordinator stamps the artifact key it truly produced. */
+  frameKey?:  string | null,
 ): Promise<{
   ok: boolean; outputUrl?: string | null; thumbnailUrl?: string | null;
   introAssetId?: string | null; outroAssetId?: string | null; musicAssetId?: string | null;
+  /** The finish inputs muxed over the frames — the second half of the cache key. */
+  finish?: FinishInputs;
+  artifactKey?: string | null;
   error?: string;
 }> {
   const svc = createServiceClient()
@@ -165,6 +133,12 @@ export async function finalizeCoordinatedRender(
   let introAssetId: string | null = null
   let outroAssetId: string | null = null
   let musicAssetId: string | null = null
+  // The finish identity, recorded as each pass actually lands. Only an APPLIED
+  // pass counts: a bookend whose ffmpeg concat failed did not change the video,
+  // so it must not change the video's key either.
+  let musicVolumePct: number | null = null
+  let musicLoop: boolean | null = null
+  let voiceoverUrl: string | null = null
 
   // ─── Bookends ───
   const wantsBookends = intent.applyBookends ?? composition.supports_bookends
@@ -211,6 +185,7 @@ export async function finalizeCoordinatedRender(
       if (narrated.ok && narrated.outputBuffer.length > 0) {
         working = narrated.outputBuffer
         usedVoiceover = true
+        voiceoverUrl = voUrl
       }
     }
   } catch (e) {
@@ -234,6 +209,8 @@ export async function finalizeCoordinatedRender(
         if (mixed.ok && mixed.outputBuffer.length > 0) {
           working = mixed.outputBuffer
           musicAssetId = musicRow.id
+          musicVolumePct = musicRow.music_volume_pct ?? 20
+          musicLoop = musicRow.music_loop ?? true
         }
       } catch (e) {
         console.warn("[render-coordinator] music mix failed; continuing:", (e as Error).message)
@@ -250,6 +227,16 @@ export async function finalizeCoordinatedRender(
     const path = `compositions/${intent.brokerageId}/${composition.composition_id}/${renderId}.mp4`
     const uploaded = { url: await hostRenderedMedia(svc, path, working, "video/mp4") }
 
+    // The finish identity, from what actually landed — the second half of the
+    // cache key. Stamped only when the caller supplied a frame key; a caller
+    // that does not participate in the cache leaves artifact_key NULL and is
+    // simply never served from (and never serves), rather than being keyed on a
+    // guess.
+    const finish: FinishInputs = {
+      introAssetId, outroAssetId, musicAssetId, musicVolumePct, musicLoop, voiceoverUrl,
+    }
+    const artifactKey = frameKey ? computeArtifactKey(frameKey, finish) : null
+
     // Audit: record the per-asset attribution alongside the standard fields.
     await svc.from("remotion_composition_renders")
       .update({
@@ -259,6 +246,8 @@ export async function finalizeCoordinatedRender(
         used_outro_asset_id: outroAssetId,
         used_music_asset_id: musicAssetId,
         used_voiceover:      usedVoiceover,
+        frame_key:           frameKey ?? null,
+        artifact_key:        artifactKey,
         completed_at:        new Date().toISOString(),
       })
       .eq("id", renderId)
@@ -281,6 +270,7 @@ export async function finalizeCoordinatedRender(
       outputUrl:    uploaded.url,
       thumbnailUrl: null,
       introAssetId, outroAssetId, musicAssetId,
+      finish, artifactKey,
     }
   } catch (e) {
     await recordRenderCompleted({
@@ -291,65 +281,6 @@ export async function finalizeCoordinatedRender(
     })
     return { ok: false, error: (e as Error).message }
   }
-}
-
-/**
- * Look up a stock video_assets row for the caller's scope. Walks
- * the tier cascade: caller's scope → brokerage scope → no row.
- * Picks the most recently created so brokerages with multiple
- * intro options get rotation without us building a separate
- * selection policy.
- */
-async function pickStockAsset(
-  svc:      ReturnType<typeof createServiceClient>,
-  intent:   RenderIntent,
-  category: string,
-  /** When category is "music" and a mood is supplied, PREFER a track tagged with
-   *  it; if none in scope, fall back to any music track (mood-preferred, never
-   *  mood-required, so single-track libraries still work). */
-  moodPref?: string | null,
-): Promise<{
-  id:                string
-  video_url:         string
-  music_volume_pct:  number | null
-  music_loop:        boolean | null
-} | null> {
-  const tryScope = async (scopeType: string, scopeId: string, mood?: string | null) => {
-    let q = svc.from("video_assets")
-      .select("id, video_url, music_volume_pct, music_loop")
-      .eq("brokerage_id", intent.brokerageId)
-      .eq("scope_type", scopeType)
-      .eq("scope_id",   scopeId)
-      .eq("category",   category)
-      .not("video_url", "is", null)
-    if (mood) q = q.contains("tags", [mood])
-    const { data } = await q.order("created_at", { ascending: false }).limit(1).maybeSingle()
-    return data as { id: string; video_url: string; music_volume_pct: number | null; music_loop: boolean | null } | null
-  }
-
-  // Resolve the agent's team so agent renders also inherit team-uploaded stock.
-  let teamId: string | null = null
-  if (intent.scopeType === "agent") {
-    const { data: agentRow } = await svc.from("agents").select("team_id").eq("id", intent.scopeId).maybeSingle()
-    teamId = (agentRow as { team_id?: string | null } | null)?.team_id ?? null
-  }
-
-  // Walk the agent → team → brokerage cascade; most specific available wins.
-  const { resolveStockScopeOrder } = await import("./stock-scope")
-  const scopes = resolveStockScopeOrder(intent, teamId)
-  // Pass 1: prefer a MOOD-tagged track across the whole cascade (the Director's
-  // mood is honored before falling back). Pass 2: any track in the cascade.
-  if (moodPref) {
-    for (const ref of scopes) {
-      const hit = await tryScope(ref.scopeType, ref.scopeId, moodPref)
-      if (hit) return hit
-    }
-  }
-  for (const ref of scopes) {
-    const hit = await tryScope(ref.scopeType, ref.scopeId)
-    if (hit) return hit
-  }
-  return null
 }
 
 export { estimateCompositionCost }

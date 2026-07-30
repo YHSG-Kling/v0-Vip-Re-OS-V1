@@ -16,6 +16,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import {
   listAllCompositions,
   estimateCompositionCost,
+  canAccessComposition,
   type RemotionCompositionRow,
   type CompositionTier,
 } from "@/lib/remotion/registry"
@@ -83,16 +84,14 @@ export async function getCompositionLibrarySnapshot(): Promise<{
     rendersByComp.set(r.composition_id, agg)
   }
 
-  // Tier hierarchy — mirror registry.canAccessComposition shape.
-  const TIER_RANK: Record<CompositionTier, number> = {
-    solo_agent: 1, team: 2, brokerage: 3, multi_location: 4, platform: 5,
-  }
-  const callerRank = TIER_RANK[brokerageTier]
-
   const rows: CompositionLibraryRow[] = allCompositions.map((c) => {
     const agg = rendersByComp.get(c.composition_id) ?? { count: 0, lastSucceeded: null }
-    const lowestRequired = Math.min(...c.tier_access.map((t) => TIER_RANK[t as CompositionTier]))
-    const reachable = c.is_active && callerRank >= lowestRequired
+    // The tier ladder used to be re-implemented here ("mirror
+    // registry.canAccessComposition shape") — a second copy of the rule that
+    // decides what a tenant may render. It agreed with the registry today and
+    // was one edit away from not agreeing, and the library is the surface a
+    // broker trusts to tell them what they have. One implementation.
+    const reachable = canAccessComposition(brokerageTier, c)
     return {
       ...c,
       brokerage_render_count:  agg.count,

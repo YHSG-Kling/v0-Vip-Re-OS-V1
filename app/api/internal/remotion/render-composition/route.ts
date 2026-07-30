@@ -36,8 +36,12 @@ import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolvePlanTier } from "@/lib/billing/plan-tier"
 import { getBundle } from "@/lib/remotion/bundle-cache"
-import { getComposition, recordRenderCompleted, type CompositionTier } from "@/lib/remotion/registry"
+import { getComposition, recordRenderCompleted, canAccessComposition, type CompositionTier } from "@/lib/remotion/registry"
 import { finalizeCoordinatedRender } from "@/lib/remotion/render-coordinator"
+import { NO_FINISH } from "@/lib/remotion/composition-cache"
+import {
+  predictFinishInputs, probeRenderCache, serveFromCache, stampRenderKeys,
+} from "@/lib/remotion/render-cache"
 import {
   isStillComposition,
   buildRenderIntent,
@@ -103,12 +107,81 @@ export async function POST(req: NextRequest) {
     }
     const callerTier = await resolveBrokerageTier(svc, row.brokerage_id)
 
+    // 2b. TIER GATE — enforced here because this is the only place it can
+    //     refuse. canAccessComposition existed but was called ONLY from
+    //     beginCoordinatedRender, which had zero callers, so tier_access was
+    //     collected and never honoured: a solo_agent brokerage could queue
+    //     ProductPromoReel (tier_access = {platform}, the platform's own
+    //     product marketing) and it would render. Cancelled rather than failed
+    //     — nothing went wrong, the render was simply not theirs to have.
+    if (!canAccessComposition(callerTier, composition)) {
+      await recordRenderCompleted({
+        renderId: row.id, compositionId: row.composition_id,
+        status: "cancelled",
+        errorMessage: `composition_not_reachable_at_tier:${callerTier}`,
+      })
+      return NextResponse.json({
+        skipped: "composition_not_reachable_at_tier",
+        render_id: row.id, caller_tier: callerTier, tier_access: composition.tier_access,
+      }, { status: 200 })
+    }
+
+    const inputProps = resolveInputProps(row.input_props)
+    const isStill = isStillComposition(composition.duration_frames)
+
+    // 2c. CACHE PROBE — before the bundle, before Chromium, before any spend.
+    //     Identity is (composition + deploy code revision + geometry + canonical
+    //     props) for the frames, plus the finish inputs the coordinator will mux
+    //     over them. A still has no finish pass, so its finish is the empty one.
+    //     We look up on the PREDICTED finish and stamp on the ACTUAL one, so a
+    //     misprediction costs a wasted render, never a wrong artifact.
+    const cacheScope = {
+      brokerageId: row.brokerage_id,
+      scopeType: (row.scope_type ?? "brokerage") as "agent" | "team" | "brokerage",
+      scopeId: row.scope_id ?? row.brokerage_id,
+    }
+    const predictedFinish = isStill
+      ? NO_FINISH
+      : await predictFinishInputs(svc, cacheScope, composition, {
+          musicMood: ((row.input_props as { music_mood?: unknown } | null)?.music_mood as string | undefined) ?? null,
+          voiceoverUrl: ((row.input_props as { voiceover_url?: unknown } | null)?.voiceover_url as string | undefined) ?? null,
+        })
+    const probe = await probeRenderCache(svc, {
+      brokerageId: row.brokerage_id,
+      composition,
+      props: row.input_props,
+      finish: predictedFinish,
+    })
+
+    if (probe.hit) {
+      const served = await serveFromCache(svc, row.id, probe)
+      if (served.ok) {
+        // Downstream coordination still runs: the reel is genuinely ready, it
+        // just did not need re-rendering. The marketing_assets capture is the
+        // ONE thing skipped — the origin render already filed this exact file,
+        // and the capture dedupes on render id, not on url.
+        await runPostRenderCoordination(svc, row, served.outputUrl!, probe.hit.thumbnailUrl)
+        return NextResponse.json({
+          ok: true, render_id: row.id, kind: isStill ? "still" : "video",
+          output_url: served.outputUrl, thumbnail_url: probe.hit.thumbnailUrl,
+          cache_hit: true, served_from_render_id: probe.hit.renderId,
+          artifact_key: probe.artifactKey,
+        })
+      }
+      // The serve write was REFUSED. Fall through and render: leaving the row
+      // 'rendering' while reporting a hit is exactly the silent failure this
+      // build exists to remove.
+      console.warn("[render-composition] cache serve refused; rendering instead:", served.reason)
+    }
+
+    // Identity stamped before the heavy work so a concurrent sibling can see
+    // what is already in flight for this key.
+    await stampRenderKeys(svc, row.id, { frameKey: probe.frameKey, artifactKey: probe.artifactKey })
+
     // 3. Bundle once (module-cached) + resolve Chromium.
     const entryPoint = path.join(process.cwd(), "remotion", "index.ts")
     const bundleLocation = await getBundle(entryPoint)
-    const inputProps = resolveInputProps(row.input_props)
     const executablePath = await resolveChromium()
-    const isStill = isStillComposition(composition.duration_frames)
 
     if (isStill) {
       // 4a. STILL — renderStill → PNG → blob. No coordinator (stills
@@ -152,7 +225,11 @@ export async function POST(req: NextRequest) {
     await fs.unlink(outPath).catch(() => {})
 
     const intent = buildRenderIntent(row, callerTier)
-    const result = await finalizeCoordinatedRender(intent, row.id, buffer)
+    // The frame key travels into finalize so the artifact key persisted is
+    // computed from the finish inputs that ACTUALLY landed (a bookend whose
+    // ffmpeg concat failed did not change the video and must not change its
+    // key), overwriting the prediction stamped above.
+    const result = await finalizeCoordinatedRender(intent, row.id, buffer, probe.frameKey)
     if (!result.ok) {
       // finalize already marked the row failed.
       return NextResponse.json({ ok: false, render_id: row.id, error: result.error }, { status: 500 })
@@ -181,23 +258,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── Director reel completion → hand the finished COMPOSITE to the Campaign Orchestrator ──
-    // When this render is the final composite for a Director-commissioned reel
-    // (entity_type='video_project'), flip the linked ai_video_projects to completed with the BRANDED
-    // composite URL, then publish the coordination signal so the Asset Manager → Campaign Orchestrator
-    // 1:1 delivery (contact_outreach_ready) fires on the branded cut. This closes the autonomous loop
-    // that previously died at staging (commissionVideo staged but nothing rendered/announced it).
-    if (row.entity_type === "video_project" && row.entity_id) {
-      try {
-        await svc.from("ai_video_projects")
-          .update({ status: "completed", video_url: result.outputUrl, thumbnail_url: thumbnailUrl ?? undefined, updated_at: new Date().toISOString() })
-          .eq("id", row.entity_id)
-        const { publishVideoCoordinationSignals } = await import("@/lib/kernel/video-coordination")
-        await publishVideoCoordinationSignals(row.entity_id, svc)
-      } catch (e) {
-        console.error("[render-composition] director-reel coordination publish failed:", (e as Error).message)
-      }
-    }
+    await runPostRenderCoordination(svc, row, result.outputUrl ?? null, thumbnailUrl)
 
     return NextResponse.json({
       ok: true, render_id: row.id, kind: "video", output_url: result.outputUrl,
@@ -205,6 +266,9 @@ export async function POST(req: NextRequest) {
       used_intro_asset_id: result.introAssetId,
       used_outro_asset_id: result.outroAssetId,
       used_music_asset_id: result.musicAssetId,
+      cache_hit: false,
+      frame_key: probe.frameKey,
+      artifact_key: result.artifactKey,
     })
   } catch (err) {
     const msg = (err as Error).message
@@ -217,6 +281,45 @@ export async function POST(req: NextRequest) {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * Director reel completion → hand the finished COMPOSITE to the Campaign
+ * Orchestrator.
+ *
+ * When this render is the final composite for a Director-commissioned reel
+ * (entity_type='video_project'), flip the linked ai_video_projects to completed
+ * with the BRANDED composite URL, then publish the coordination signal so the
+ * Asset Manager → Campaign Orchestrator 1:1 delivery (contact_outreach_ready)
+ * fires on the branded cut. This closes the autonomous loop that previously
+ * died at staging (commissionVideo staged but nothing rendered/announced it).
+ *
+ * Extracted so a CACHE HIT runs the identical loop: the reel is genuinely ready
+ * whether or not this particular request had to render it, and a cached reel
+ * that never reached the Campaign Orchestrator would be a delivery the client
+ * silently never got — a caching "win" that loses the actual outcome.
+ */
+async function runPostRenderCoordination(
+  svc: ReturnType<typeof createServiceClient>,
+  row: { id: string; entity_type: string | null; entity_id: string | null },
+  outputUrl: string | null,
+  thumbnailUrl: string | null,
+): Promise<void> {
+  if (row.entity_type !== "video_project" || !row.entity_id) return
+  try {
+    await svc.from("ai_video_projects")
+      .update({
+        status: "completed",
+        video_url: outputUrl,
+        thumbnail_url: thumbnailUrl ?? undefined,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", row.entity_id)
+    const { publishVideoCoordinationSignals } = await import("@/lib/kernel/video-coordination")
+    await publishVideoCoordinationSignals(row.entity_id, svc)
+  } catch (e) {
+    console.error("[render-composition] director-reel coordination publish failed:", (e as Error).message)
+  }
+}
 
 /** Select a still composition by id + render it to a PNG Buffer. Shared by
  *  the still branch (the composition itself) and the moving branch's
