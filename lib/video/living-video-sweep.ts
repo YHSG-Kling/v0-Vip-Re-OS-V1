@@ -104,6 +104,28 @@ const PROVIDERS: Record<string, LivingProvider> = {
       return { ok: r.queued, renderId: r.renderId, reason: r.reason }
     },
   },
+
+  buyer_match_reel: {
+    // The Shopping Agent owns the buyer relationship, but the RENDER ledger is
+    // the Asset Manager's, and what went stale is a render. Kept with the
+    // Asset Manager so one manager is accountable for every living video and a
+    // broker has one place to look.
+    manager: "asset_manager",
+    // The subject IS the contact here — a buyer reel is about a person's
+    // search, not about one property.
+    subjectIdOf: (row) => row.entity_id,
+    async factsFor(svc, brokerageId, contactId) {
+      const { buyerMatchFacts } = await import("@/lib/agents/buyer-match-reel-producer")
+      return buyerMatchFacts(svc, brokerageId, contactId)
+    },
+    async requeue(svc, brokerageId, contactId, staleRenderId) {
+      const { produceBuyerMatchReel } = await import("@/lib/agents/buyer-match-reel-producer")
+      const r = await produceBuyerMatchReel(brokerageId, contactId, svc, {
+        force: true, refreshedFromRenderId: staleRenderId,
+      })
+      return { ok: r.queued, renderId: r.renderId, reason: r.reason }
+    },
+  },
 }
 
 export interface RefreshResult extends LivingRefreshSummary {

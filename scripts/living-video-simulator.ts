@@ -22,6 +22,7 @@ import {
   type LivingFacts,
 } from "../lib/video/living-video"
 import { paddingSecondsFor } from "../lib/remotion/voiceover-mixer"
+import { isUnavailableStatus } from "../lib/property/resolve-property-facts"
 import { SIGNAL_REGISTRY } from "../lib/kernel/signal-registry"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
 
@@ -283,7 +284,85 @@ console.log("\n═══ 9. Narration is never cut off mid-sentence ═══")
     coord.includes("composition.duration_frames / Math.max(1, composition.fps)"))
 }
 
-console.log("\n═══ 10. Wiring + ownership ═══")
+console.log("\n═══ 10. BUYER MATCH REEL — the second living kind ═══")
+{
+  const B = "buyer_match_reel"
+  // A reel delivered to a buyer showing three available homes.
+  const sent: LivingFacts = {
+    shownCount: 3, unavailableCount: 0, unverifiableCount: 1,
+    priceSignature: "545000|610000|489000",
+    matchSetSignature: "aaa|bbb|ccc",
+    agentName: "Dana Reyes",
+  }
+
+  ok("the kind is registered", !!livingKind(B))
+  ok("it reuses the AffordabilitySnapshotReel composition, not a new one",
+    livingKind(B)!.compositionId === "AffordabilitySnapshotReel")
+
+  // THE reason this kind exists: the buyer ACTS on what the reel shows.
+  const oneGone = diffLivingFacts(B, sent, { ...sent, unavailableCount: 1 })
+  ok("a shown home going under contract is detected", oneGone.length === 1)
+  ok("...and is material — the buyer would ask about a home that is gone",
+    isStale(oneGone))
+  ok("...and the sentence says so plainly",
+    describeFactChanges(B, oneGone).includes("no longer available"))
+
+  ok("a price change on a shown card is material",
+    isStale(diffLivingFacts(B, sent, { ...sent, priceSignature: "529000|610000|489000" })))
+  ok("a card dropping out entirely is material",
+    isStale(diffLivingFacts(B, sent, { ...sent, shownCount: 2 })))
+  ok("a buyer reassigned to another agent is material — the footer invites a reply\n    to someone who no longer works their file",
+    isStale(diffLivingFacts(B, sent, { ...sent, agentName: "Sam Okafor" })))
+
+  // THE GOVERNING RULE: the refresh stops a video LYING; the cadence owns NOVELTY.
+  const reranked = diffLivingFacts(B, sent, { ...sent, matchSetSignature: "bbb|aaa|ddd" })
+  ok("a re-ranked match set is DETECTED", reranked.length === 1)
+  ok("...but is NOT material — a better match appearing is news, and news is the\n    weekly cadence's job, not the refresh's",
+    !isStale(reranked))
+  ok("an unverifiable external match is recorded but never acted on",
+    !isStale(diffLivingFacts(B, sent, { ...sent, unverifiableCount: 2 })))
+  ok("a re-rank plus an unverifiable change together still do nothing",
+    !isStale(diffLivingFacts(B, sent, { ...sent, matchSetSignature: "x|y|z", unverifiableCount: 3 })))
+  ok("but a re-rank alongside a home going unavailable DOES fire",
+    isStale(diffLivingFacts(B, sent, { ...sent, matchSetSignature: "x|y|z", unavailableCount: 1 })))
+
+  ok("the two kinds do not share a facts key namespace",
+    computeFactsKey(B, sent) !== computeFactsKey(KIND, sent))
+
+  // Availability truth: unknown must never be read as unavailable.
+  ok("an active listing is available", !isUnavailableStatus("active"))
+  ok("a coming-soon listing is still available", !isUnavailableStatus("coming_soon"))
+  ok("pending is unavailable", isUnavailableStatus("pending"))
+  ok("sold is unavailable", isUnavailableStatus("sold"))
+  ok("withdrawn is unavailable", isUnavailableStatus("withdrawn"))
+  ok("UNKNOWN (external/MLS, no status column) is NOT treated as unavailable —\n    we do not invent bad news about a listing we cannot see",
+    !isUnavailableStatus(null) && !isUnavailableStatus(undefined))
+
+  const resolver = code("lib/property/resolve-property-facts.ts")
+  ok("the resolver now carries availability at all", resolver.includes("status: l.status ?? null"))
+  ok("...and an external snapshot is explicitly unknown, not defaulted",
+    resolver.includes("status: null"))
+
+  const producer = code("lib/agents/buyer-match-reel-producer.ts")
+  ok("the producer exposes a read-only fact projection",
+    producer.includes("export async function buyerMatchFacts"))
+  ok("...and a refresh can override the weekly cooldown",
+    producer.includes("recent && !opts.force"))
+  ok("...and stamps the living identity on the queued render",
+    producer.includes('livingKind: livingFacts ? "buyer_match_reel" : null'))
+
+  const delivery = code("lib/agents/buyer-reel-delivery.ts")
+  ok("buyer delivery de-duplicates per VIDEO, not per week",
+    delivery.includes('.ilike("body", `%${render.output_url}%`)'))
+  ok("...and exempts a refresh from the cooldown",
+    delivery.includes("if (!render.refreshed_from_render_id) {"))
+  ok("...while an ordinary reel is still cooled down",
+    delivery.includes('"already delivered this week"'))
+  ok("...and the human is told why an off-cadence cut arrived",
+    delivery.includes("REFRESHED property-match reel"))
+}
+
+console.log("\n═══ 11. Wiring + ownership ═══")
 {
   const cron = code("app/api/cron/composition-render-queue/route.ts")
   ok("the video-ops cron runs the refresh", cron.includes("refreshLivingVideos"))

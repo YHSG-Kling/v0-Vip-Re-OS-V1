@@ -54,11 +54,71 @@ export function buildBuyerMatchReelProps(
 }
 
 /**
+ * THE FACTS this reel asserts — read-only (no QR minting, no writes), so the
+ * living-video sweep can re-derive them cheaply and tell whether the reel has
+ * started showing homes that are gone.
+ *
+ * Availability is the point. saved_properties (the external/MLS snapshot cache)
+ * has no status column, so third-party matches are counted as UNVERIFIABLE
+ * rather than assumed available — we do not invent bad news about a listing we
+ * cannot see.
+ */
+export async function buyerMatchFacts(
+  supabase: ReturnType<typeof createServiceClient>,
+  brokerageId: string,
+  contactId: string,
+): Promise<import("@/lib/video/living-video").LivingFacts | null> {
+  const { data: c } = await supabase
+    .from("contacts").select("id, brokerage_id, agent_id").eq("id", contactId).maybeSingle()
+  const contact = c as { brokerage_id: string | null; agent_id: string | null } | null
+  if (!contact || contact.brokerage_id !== brokerageId) return null
+
+  const { data: pm } = await supabase.from("property_matches")
+    .select("property_id, match_score")
+    .eq("brokerage_id", brokerageId).eq("contact_id", contactId)
+    .gte("match_score", MATCH_SCORE_THRESHOLD)
+    .order("match_score", { ascending: false }).limit(MAX_CARDS)
+  const propertyIds = ((pm ?? []) as Array<{ property_id: string | null }>)
+    .map((r) => r.property_id).filter(Boolean) as string[]
+
+  const { resolvePropertyFacts, isUnavailableStatus } = await import("@/lib/property/resolve-property-facts")
+  const factsMap = await resolvePropertyFacts(supabase, brokerageId, propertyIds)
+  const shown = propertyIds.map((id) => factsMap.get(id)).filter(Boolean) as PropertyFacts[]
+
+  let agentName = "Your Agent"
+  if (contact.agent_id) {
+    const { data: a } = await supabase.from("agents").select("user_id").eq("id", contact.agent_id).maybeSingle()
+    const uid = (a as { user_id: string | null } | null)?.user_id ?? null
+    if (uid) {
+      const { data: u } = await supabase.from("users").select("first_name, last_name").eq("id", uid).maybeSingle()
+      const full = [(u as any)?.first_name, (u as any)?.last_name].filter(Boolean).join(" ").trim()
+      if (full) agentName = full
+    }
+  }
+
+  return {
+    shownCount: shown.length,
+    unavailableCount: shown.filter((f) => isUnavailableStatus(f.status)).length,
+    unverifiableCount: shown.filter((f) => f.status === null).length,
+    // Order matters — the cards are ordered by match score, so a re-order IS a
+    // different reel. Joined rather than hashed so a human can read the diff.
+    priceSignature: shown.map((f) => (f.price == null ? "?" : String(Math.round(f.price)))).join("|"),
+    matchSetSignature: shown.map((f) => f.id).join("|"),
+    agentName,
+  }
+}
+
+/**
  * Enqueue a personalized buyer property-match reel render (deliverable-gated).
- * Idempotent — at most one reel per buyer per REEL_COOLDOWN_DAYS.
+ *
+ * Idempotent — at most one reel per buyer per REEL_COOLDOWN_DAYS. `force` is the
+ * LIVING refresh: the cooldown is a spam guard against the cadence cron, not a
+ * rule that a buyer must keep being shown a home that went under contract on
+ * Tuesday.
  */
 export async function produceBuyerMatchReel(
   brokerageId: string, contactId: string, client?: ReturnType<typeof createServiceClient>,
+  opts: { force?: boolean; refreshedFromRenderId?: string | null } = {},
 ): Promise<BuyerMatchReelResult> {
   const supabase = client ?? createServiceClient()
   if (!brokerageId || !contactId) return { queued: false, reason: "missing ids" }
@@ -74,7 +134,7 @@ export async function produceBuyerMatchReel(
     .select("id").eq("brokerage_id", brokerageId).eq("composition_id", COMPOSITION_ID)
     .eq("entity_type", "contact").eq("entity_id", contactId)
     .gte("created_at", sinceIso).limit(1).maybeSingle()
-  if (recent) return { queued: false, reason: "reel already produced this week" }
+  if (recent && !opts.force) return { queued: false, reason: "reel already produced this week" }
 
   // Top high-score matches → resolve facts from EITHER our listings OR the external/MLS
   // cache (RentCast / IDX), via the unified resolver. property_matches.property_id is a
@@ -126,11 +186,19 @@ export async function produceBuyerMatchReel(
     }
   } catch { /* QR is additive */ }
 
+  // The LIVING identity — what this reel asserts, so the sweep can re-derive it.
+  const { computeFactsKey } = await import("@/lib/video/living-video")
+  const livingFacts = await buyerMatchFacts(supabase, brokerageId, contactId)
+
   const { recordRenderQueued } = await import("@/lib/remotion/registry")
   const r = await recordRenderQueued({
     brokerageId, compositionId: COMPOSITION_ID, agentUserId,
     entityType: "contact", entityId: contactId,
     inputProps, scopeType: "brokerage", scopeId: brokerageId, requestedVia: "cron",
+    livingKind: livingFacts ? "buyer_match_reel" : null,
+    factsKey: livingFacts ? computeFactsKey("buyer_match_reel", livingFacts) : null,
+    facts: livingFacts ?? null,
+    refreshedFromRenderId: opts.refreshedFromRenderId ?? null,
   })
   return r.ok ? { queued: true, renderId: r.renderId } : { queued: false, reason: r.error }
 }

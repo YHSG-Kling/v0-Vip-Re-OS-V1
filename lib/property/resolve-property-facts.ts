@@ -26,6 +26,30 @@ export interface PropertyFacts {
   photoUrl:  string | null
   /** Where the facts came from: our listing, or a cached external/MLS snapshot. */
   source:    "listing" | "saved" | string
+  /**
+   * Is this home still on the market?
+   *
+   * NULL means UNKNOWN, not available — the external/MLS snapshot table carries
+   * no status column, so for a cached third-party property we genuinely cannot
+   * tell. Callers must treat null as "cannot verify" rather than assuming the
+   * home is still for sale; a buyer shown a home that sold last week is the
+   * most damaging kind of wrong this product can be.
+   */
+  status:    string | null
+}
+
+/** Listing statuses that mean a buyer can still pursue the home. */
+export const AVAILABLE_STATUSES = ["active", "coming_soon"] as const
+
+/**
+ * True when a status means the home is OFF the market.
+ *
+ * Unknown (null) is deliberately NOT unavailable — we do not know, and inventing
+ * bad news about a third-party listing is its own failure.
+ */
+export function isUnavailableStatus(status: string | null | undefined): boolean {
+  if (!status) return false
+  return !(AVAILABLE_STATUSES as readonly string[]).includes(status)
 }
 
 /**
@@ -44,13 +68,13 @@ export async function resolvePropertyFacts(
   // (1) Our brokerage listings.
   try {
     const { data } = await supabase.from("listings")
-      .select("id, address, city, state, list_price, bedrooms, bathrooms")
+      .select("id, address, city, state, list_price, bedrooms, bathrooms, status")
       .eq("brokerage_id", brokerageId).in("id", unique)
     for (const l of (data ?? []) as any[]) {
       out.set(l.id, {
         id: l.id, address: l.address ?? null, city: l.city ?? null, state: l.state ?? null,
         price: l.list_price ?? null, bedrooms: l.bedrooms ?? null, bathrooms: l.bathrooms ?? null,
-        photoUrl: null, source: "listing",
+        photoUrl: null, source: "listing", status: l.status ?? null,
       })
     }
   } catch { /* best-effort */ }
@@ -67,6 +91,8 @@ export async function resolvePropertyFacts(
           id: s.id, address: s.property_address ?? null, city: s.city ?? null, state: s.state ?? null,
           price: s.list_price ?? null, bedrooms: s.bedrooms ?? null, bathrooms: s.bathrooms ?? null,
           photoUrl: s.primary_photo_url ?? null, source: s.source ?? "saved",
+          // saved_properties carries no status column — unknown, not available.
+          status: null,
         })
       }
     } catch { /* best-effort */ }

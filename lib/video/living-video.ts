@@ -137,6 +137,73 @@ export const LIVING_KINDS: Record<string, LivingKindSpec> = {
   },
 }
 
+// ── THE GOVERNING RULE FOR ADDING A KIND ────────────────────────────────────
+// The refresh exists to stop a video LYING, not to keep it NOVEL. The cadence
+// cron already owns novelty ("here are this week's new matches"); if a fact only
+// makes the video less fresh, it belongs to the cadence and is "never" material
+// here. Confusing the two is what turns this from a trust feature into a spam
+// generator — see matchSetSignature below, the clearest example.
+LIVING_KINDS.buyer_match_reel = {
+  kind: "buyer_match_reel",
+  label: "Buyer match reel",
+  compositionId: "AffordabilitySnapshotReel",
+  entityType: "contact",
+  facts: {
+    unavailableCount: {
+      label: "homes no longer available",
+      materiality: "always",
+      why:
+        "THE reason this kind is here. A buyer reel says 'fresh homes matching " +
+        "your search'; when one of those goes under contract the video is " +
+        "actively wrong and the buyer ACTS on it — they ask about a home that " +
+        "is gone, and the agent looks like they are not paying attention. " +
+        "Inventory turns in days, and the cooldown was a week.",
+    },
+    priceSignature: {
+      label: "the prices shown",
+      materiality: "always",
+      why:
+        "Each card states a price. A price cut on a shown home makes the card " +
+        "wrong in the direction that matters most to a buyer, and a rise makes " +
+        "the agent look like they are advertising something they cannot deliver.",
+    },
+    shownCount: {
+      label: "homes in the reel",
+      materiality: "always",
+      why:
+        "The card count changing means a home could no longer be resolved at " +
+        "all (delisted, purged). The reel is structurally different, not just " +
+        "out of date.",
+    },
+    agentName: {
+      label: "the agent named on the card",
+      materiality: "always",
+      why:
+        "The footer names an agent and invites a reply. After a reassignment " +
+        "the buyer is being pointed at someone who no longer works their file.",
+    },
+    matchSetSignature: {
+      label: "which homes were picked",
+      materiality: "never",
+      why:
+        "Scores churn constantly, so the top-3 set changes for reasons that are " +
+        "not errors — a slightly better match appearing is NEWS, and news is the " +
+        "weekly cadence's job. Material here would re-render and re-propose a " +
+        "video to a buyer every time the ranking wobbled, which is the fastest " +
+        "way to teach an agent to ignore this whole system.",
+    },
+    unverifiableCount: {
+      label: "homes whose availability we cannot check",
+      materiality: "never",
+      why:
+        "External/MLS snapshots (saved_properties) carry no status column, so " +
+        "for those we genuinely do not know. Recorded so a human reading the " +
+        "diff can see the limit of what was checked, and never acted on — " +
+        "inventing bad news about a third-party listing is its own failure.",
+    },
+  },
+}
+
 export function livingKind(kind: string): LivingKindSpec | null {
   return LIVING_KINDS[kind] ?? null
 }
