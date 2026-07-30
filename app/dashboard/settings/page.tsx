@@ -1,6 +1,8 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { effectiveSeatLimit, parseSeatOverride } from "@/lib/kernel/tier-role-matrix"
+import {
+  effectiveSeatLimit, parseSeatOverride, seatDecision, seatDecisionMessage, agentRoleAdvisory,
+} from "@/lib/kernel/tier-role-matrix"
 import { resolveSeatUsage } from "@/lib/kernel/seat-usage"
 import { redirect } from "next/navigation"
 import { SettingsControlOSClient } from "./settings-control-os-client"
@@ -135,8 +137,25 @@ export default async function SettingsControlOSPage() {
   const { limit: seatLimit, overridden: seatOverridden } =
     effectiveSeatLimit(brokerageRow?.plan_tier ?? null, parseSeatOverride(brokerageRow?.billing_metadata))
 
+  // Over the limit is a BILLING CHOICE, not a wall (owner's ruling): the panel
+  // names the upgrade first and the per-seat price second. And the agent-role
+  // advisory — a workspace with seats but no Agent looks staffed and is inert,
+  // because contacts, deals, listings and campaigns all attach to an agent.
+  const seatDecisionForTenant = seatDecision(
+    brokerageRow?.plan_tier ?? null,
+    seatUsage.seatCount,
+    parseSeatOverride(brokerageRow?.billing_metadata),
+    0, // asking about the CURRENT state, not a new invite
+  )
+  const agentAdvisory = agentRoleAdvisory(seatUsage.rolesInUse)
+
   const userStats = {
     totalUsers: seatUsage.peopleCount,
+    seatMessage: seatDecisionMessage(seatDecisionForTenant),
+    upgradeTo: seatDecisionForTenant.upgradeTo,
+    upgradeSeats: seatDecisionForTenant.upgradeSeats,
+    additionalSeatMonthlyUsd: seatDecisionForTenant.additionalSeatMonthlyUsd,
+    agentRoleAdvisory: agentAdvisory.advisory,
     // Seats, not headcount — partners and the system actor never consume one.
     seatCount: seatUsage.seatCount,
     seatLimit,

@@ -7,7 +7,7 @@ import { inviteTenantMember } from "@/lib/kernel/users"
 import { emitUserProvisionedEvent } from "@/lib/kernel/users"
 import { KernelEvent } from "@/lib/kernel/events"
 import type { UserDomainRole } from "@/lib/kernel/users"
-import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS, roleConsumesSeat, seatCheck, parseSeatOverride } from "@/lib/kernel/tier-role-matrix"
+import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS, roleConsumesSeat, seatDecision, seatDecisionMessage, parseSeatOverride } from "@/lib/kernel/tier-role-matrix"
 import { resolveSeatUsage } from "@/lib/kernel/seat-usage"
 
 export interface InviteUserParams {
@@ -23,6 +23,12 @@ export interface InviteUserParams {
 export interface InviteUserResult {
   success: boolean
   error?: string
+  /**
+   * Present only when the invite was held because it would cross the seat limit.
+   * Carries the upgrade-vs-paid-seat choice so the UI can offer both instead of
+   * rendering a dead end (see seatDecision in lib/kernel/tier-role-matrix).
+   */
+  seatDecision?: import("@/lib/kernel/tier-role-matrix").SeatDecision
 }
 
 // Roles a team lead is allowed to assign (never admin/broker)
@@ -126,17 +132,24 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
     // ENFORCEMENT path that is worse than a wrong label — it admits an invite that
     // pushes the tenant past the limit they pay for.
     const { seatCount } = await resolveSeatUsage(service, resolvedBrokerageId)
-    // ONE resolution (effectiveSeatLimit inside seatCheck): staff-set per-tenant override
-    // (brokerages.billing_metadata.seat_override) wins when set, else the tier default.
-    const seats = seatCheck(tenantTier, seatCount, parseSeatOverride((tenant as any)?.billing_metadata))
-    if (!seats.allowed) {
+    // ONE resolution (effectiveSeatLimit inside seatDecision): staff-set per-tenant
+    // override (brokerages.billing_metadata.seat_override) wins when set, else the
+    // tier default.
+    //
+    // PAST THE LIMIT IS A BILLING CHOICE, NOT A DEAD END. This used to refuse the
+    // invite and tell the tenant to deactivate someone — at the exact moment they
+    // were trying to grow. The owner's ruling is to offer the upgrade first and the
+    // per-seat price second, so the answer now names both paths and the decision is
+    // theirs. The invite still does not go through on its own: adding a seat they
+    // have not paid for is a billing event, and the caller confirms which way.
+    const decision = seatDecision(
+      tenantTier, seatCount, parseSeatOverride((tenant as any)?.billing_metadata),
+    )
+    if (!decision.withinLimit) {
       return {
         success: false,
-        error: seats.overridden
-          ? `This account has a custom limit of ${seats.limit} seat${seats.limit === 1 ? "" : "s"} (set by VIP support) and all are in use. ` +
-            `Deactivate a user to free a seat, or contact support to raise the limit.`
-          : `The ${tierLabel(tenantTier)} plan includes ${seats.limit} seat${seats.limit === 1 ? "" : "s"} and all are in use. ` +
-            `Deactivate a user to free a seat, or upgrade the plan.`,
+        seatDecision: decision,
+        error: seatDecisionMessage(decision) ?? undefined,
       }
     }
   }

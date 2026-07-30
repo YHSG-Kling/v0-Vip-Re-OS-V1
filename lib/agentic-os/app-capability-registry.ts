@@ -163,8 +163,18 @@ export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = 
   // an sms, so the contract names the DELIVERY lanes, not the render providers.
   // (D-ID + ElevenLabs render the video; a render key does not distribute one.)
   video_distribute:         { capability: "video_distribute",          verb: "PUBLISH", scope: "marketing:write",  domain: "marketing",      mutates: true,  purpose: "Distribute a marketing video asset across configured channels.", inputs: ["brokerageId", "videoProjectId", "channels"], requires: { connections: CONNECTOR_PROVIDERS.social, platform: ["sendgrid"] } },
-  gift_send:                { capability: "gift_send",                 verb: "NOTIFY",  scope: "gifting:write",    domain: "gifting",        mutates: true,  purpose: "Trigger a closing/nurture gift order for a contact.", inputs: ["brokerageId", "contactId", "giftType?"] },
-  handwritten_note_send:    { capability: "handwritten_note_send",     verb: "NOTIFY",  scope: "gifting:write",    domain: "gifting",        mutates: true,  purpose: "Send a handwritten thank-you note to a contact.", inputs: ["brokerageId", "contactId", "message?"] },
+  // GROUNDED, and the grounding is that it needs NO external provider. Per the
+  // owner's ruling, a gift with no vendor row still produces a real outcome: the
+  // Gift Studio's composer (lib/gifting/gift-studio composeGiftSelections) mines
+  // the contact's own file for memory-grounded picks, personalizes from THEIR
+  // closed address, dedupes against past gifts and hands the agent pre-scoped
+  // ETSY vendor searches on the task. Deterministic, in-repo, always available —
+  // so this is operable on the kernel alone, not held.
+  gift_send:                { capability: "gift_send",                 verb: "NOTIFY",  scope: "gifting:write",    domain: "gifting",        mutates: true,  purpose: "Recommend and order a closing/nurture gift for a contact (AI picks + Etsy vendors when no gifting vendor is on file).", inputs: ["brokerageId", "contactId", "giftType?"] },
+  // GROUNDED: per the owner's ruling a handwritten note "runs the same line as a
+  // postcard or card" — it is the DIRECT MAIL lane, dispatchDirectMail → Lob,
+  // gated by process.env.LOB_API_KEY exactly like direct_mail_send.
+  handwritten_note_send:    { capability: "handwritten_note_send",     verb: "NOTIFY",  scope: "gifting:write",    domain: "gifting",        mutates: true,  purpose: "Mail a handwritten-style thank-you card to a contact (print + delivery via the direct-mail lane).", inputs: ["brokerageId", "contactId", "message?"], requires: { platform: ["lob"] } },
 
   connectivity_scan:        { capability: "connectivity_scan",         verb: "GET",     scope: "connectivity:read", domain: "connectivity",  mutates: false, purpose: "Report live connection health of every api/oauth/mcp connector for the brokerage (expiry-aware).", inputs: ["brokerageId?"] },
 
@@ -174,45 +184,31 @@ export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = 
 }
 
 /**
- * CAPABILITIES WHOSE DEPENDENCY IS REAL BUT CANNOT BE EXPRESSED AS A PROVIDER.
+ * THE BACKLOG IS EMPTY — every capability now states what it needs.
  *
- * Six of the original eight are now declared above, each against the gate its
- * dispatcher actually hits. These two are NOT, and the reason is not laziness —
- * it is that their dependency is not a credential at all:
+ * This list existed because two capabilities had a real dependency nobody had
+ * asserted, and an absent contract must never read like a satisfied one. Both are
+ * now declared, and the owner's rulings are why:
  *
- *   gift_send      needs a VENDOR ROW, not an API key. lib/workflow/adapters/
- *                  send-gift.ts routes the order through the vendor marketplace
- *                  (aiRecommendGift → createGiftOrder), and when the brokerage
- *                  has no gifting vendor it does the honest thing already: it
- *                  creates a "Pick a closing gift provider" TASK on the agent
- *                  rather than failing silently. A CapabilityRequirement names
- *                  providers; "at least one vendor row of the right kind exists
- *                  for this tenant" is a different assertion, and inventing a
- *                  fake provider key to express it would be the drift.
+ *   handwritten_note_send  "handwritten notes run the same line as a postcard or
+ *                          card" — so it is the direct-mail lane (Lob), not a
+ *                          human errand. Declared platform: ["lob"], same gate as
+ *                          direct_mail_send, and the reputation kernel now
+ *                          actually dispatches it there.
  *
- *   handwritten_note_send
- *                  has NO delivery lane, by design: the reputation kernel writes
- *                  the thank_you_notes row and marks it sent "(delivery handled
- *                  externally)" — a human writes and posts it. The UI is honest
- *                  about that end to end, and deliberately so: the button reads
- *                  "Mark Sent (Handwritten)" rather than "Send", the toast says
- *                  "marked as sent" rather than "sent", and a Copy button hands
- *                  the agent the draft to deliver themselves. The same branch
- *                  serves the sms channel the same way ("Mark Sent (SMS)"), which
- *                  is a LOG of a human send, not a claimed dispatch — so there is
- *                  no silent failure here and no provider to assert. Contrast
- *                  sendInboxReply, which said "sent" while calling no dispatcher
- *                  at all; that one was a lie and is fixed.
+ *   gift_send              "when the gift send has no gifting vendor row, ai makes
+ *                          a suggestion of the gift and a selection of etsy
+ *                          vendors within the task" — which the Gift Studio's
+ *                          composer already did. That makes the capability
+ *                          operable on the KERNEL ALONE: no vendor row, no API
+ *                          key, no held state. The picks are deterministic and
+ *                          in-repo, so there is nothing external to require.
  *
- * Declared as data so the guard can hold the list at a known size and force this
- * comment to be revisited rather than letting an absent contract pass as a
- * satisfied one. Resolution reports these as "requirement not modelled" — never
- * as ready.
+ * The array stays, at length zero, deliberately: the guard pins it empty, so the
+ * next capability added without a contract has to come through here and justify
+ * itself rather than slipping in as "no dependency known".
  */
-export const UNDECLARED_REQUIREMENTS: readonly AppCapability[] = [
-  "gift_send",              // a gifting VENDOR ROW, not a credential — degrades to a task
-  "handwritten_note_send",  // no delivery lane at all: a human writes and posts it
-] as const
+export const UNDECLARED_REQUIREMENTS: readonly AppCapability[] = [] as const
 
 export function getAppCapability(capability: AppCapability): AppCapabilityDef {
   return APP_CAPABILITY_REGISTRY[capability]

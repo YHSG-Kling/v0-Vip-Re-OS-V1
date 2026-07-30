@@ -8,12 +8,24 @@
 //
 // THE BUSINESS MODEL (owner-corrected, round 16):
 //   • Every tier gets access to ALL the working roles — admin, agent, tc,
-//     compliance_officer, isa, team_lead, broker — the constraint is SEATS,
-//     not the role menu. The one role exception: solo_agent has NO broker
-//     role (a solo subscription is not a brokerage).
+//     compliance_officer, isa, team_lead, broker, broker_owner. The constraint
+//     is SEATS, not the role menu, with NO exception: the owner's ruling is
+//     "they can use those seats anyway they want", and a solo subscription DOES
+//     get a broker_owner or broker (most solo agents are their own broker).
+//     Solo previously excluded both, so a one-person brokerage could not seat
+//     its own owner on the tier built for them.
 //   • SEATS: solo_agent = 2 · team = 5 · brokerage / multi_location =
 //     unlimited. A "seat" is a working staff user (SEAT_ROLES). Partner
 //     users do NOT consume seats.
+//   • OVER THE LIMIT IS A CHOICE, NOT A WALL. Owner's ruling: "if they try to
+//     go over alloted seats, we can charge them monthly for each additional
+//     seats but I would rather get them to upgrade to the team level." So the
+//     gate offers both, upgrade first — see seatDecision() below. Blocking the
+//     invite outright loses the expansion the tenant was asking for.
+//   • THE AGENT-ROLE ADVISORY. Owner's ruling: "if they don't use atleast 1
+//     agent role, then they won't get much out of the system." Advisory, never
+//     a block — the OS's whole contact/deal/marketing spine hangs off an agent
+//     record, so a workspace with none is quietly inert.
 //   • PARTNERS: vendor ONLY. There is no lender partner role — lenders ARE
 //     vendors (vendor_directory categories 'lender' / 'refinance_lender');
 //     they come in through the vendor invite flow. The legacy 'lender'
@@ -35,13 +47,11 @@ export const SEAT_ROLES: readonly UserDomainRole[] = [
   "admin", "broker", "broker_owner", "team_lead", "agent", "tc", "isa", "compliance_officer",
 ]
 
-/** All working roles minus broker — the solo set (solo is not a brokerage). */
-const SOLO_SEAT_ROLES: readonly UserDomainRole[] =
-  SEAT_ROLES.filter((r) => r !== "broker" && r !== "broker_owner")
-
-/** Canonical tier → invitable roles. THE matrix — every invite surface derives from it. */
+/** Canonical tier → invitable roles. THE matrix — every invite surface derives
+ *  from it. Every tier now offers the SAME role menu: the tier sells SEATS, and
+ *  what a tenant does with them is theirs to decide (owner's ruling). */
 export const TIER_INVITABLE_ROLES: Record<CanonicalTier, readonly UserDomainRole[]> = {
-  solo_agent:     [...SOLO_SEAT_ROLES, ...PARTNER_ROLES],
+  solo_agent:     [...SEAT_ROLES, ...PARTNER_ROLES],
   team:           [...SEAT_ROLES, ...PARTNER_ROLES],
   brokerage:      [...SEAT_ROLES, ...PARTNER_ROLES],
   multi_location: [...SEAT_ROLES, ...PARTNER_ROLES],
@@ -135,6 +145,135 @@ export function seatCheck(tier: string | null | undefined, currentSeatCount: num
   if (limit === null) return { allowed: true, limit: null, remaining: null, overridden }
   const remaining = Math.max(0, limit - currentSeatCount)
   return { allowed: remaining > 0, limit, remaining, overridden }
+}
+
+/**
+ * PRICE OF ONE ADDITIONAL SEAT, per month, when a tenant chooses to expand past
+ * their tier rather than upgrade. Stated once here so the invite gate, the seat
+ * meter and the billing copy quote the SAME number.
+ */
+export const ADDITIONAL_SEAT_MONTHLY_USD = 25
+
+export type SeatOutcome =
+  /** Inside the limit — nothing to decide. */
+  | "within_limit"
+  /** Over the limit, and a higher tier exists: the preferred path. */
+  | "upgrade_offered"
+  /** Over the limit on the TOP tier, or on a staff override: paid seat only. */
+  | "paid_seat_only"
+
+export interface SeatDecision {
+  outcome: SeatOutcome
+  /** May the seat be added right now, without a billing choice? */
+  withinLimit: boolean
+  limit: number | null
+  remaining: number | null
+  overridden: boolean
+  /** The tier to recommend, when one is better than paying per seat. */
+  upgradeTo: CanonicalTier | null
+  /** Seats the recommended tier would give them (null = unlimited). */
+  upgradeSeats: number | null
+  /** Monthly cost if they instead add seats one at a time. */
+  additionalSeatMonthlyUsd: number
+  /** How many extra seats this request would put them over by. */
+  seatsOver: number
+}
+
+/**
+ * PURE: WHAT HAPPENS WHEN A TENANT ASKS FOR A SEAT THEY HAVE NOT PAID FOR?
+ *
+ * Not a wall. The owner's ruling: "if they try to go over alloted seats, we can
+ * charge them monthly for each additional seats but I would rather get them to
+ * upgrade to the team level." Refusing the invite is the one outcome that serves
+ * nobody — the tenant is trying to GROW, which is the moment to sell, and a hard
+ * stop just teaches them the OS is in the way.
+ *
+ * So: inside the limit, proceed silently. Over it, offer the upgrade FIRST
+ * (cheaper per seat and it unlocks the rest of the tier) with the per-seat price
+ * as the fallback for someone who genuinely needs one more person and nothing
+ * else. On the top tier — or where staff have set an explicit override, which is
+ * a deliberate cap, not an accident of pricing — there is no tier to climb, so
+ * the paid seat is the only honest offer.
+ */
+export function seatDecision(
+  tier: string | null | undefined,
+  currentSeatCount: number,
+  seatOverride?: number | null,
+  seatsRequested = 1,
+): SeatDecision {
+  const { limit, overridden } = effectiveSeatLimit(tier, seatOverride)
+  const base: SeatDecision = {
+    outcome: "within_limit",
+    withinLimit: true,
+    limit,
+    remaining: limit === null ? null : Math.max(0, limit - currentSeatCount),
+    overridden,
+    upgradeTo: null,
+    upgradeSeats: null,
+    additionalSeatMonthlyUsd: ADDITIONAL_SEAT_MONTHLY_USD,
+    seatsOver: 0,
+  }
+  if (limit === null) return base
+  // Math.max(0, …), not max(1, …): a caller asking about the CURRENT state passes
+  // 0, and clamping that to 1 invented an overage for a tenant sitting exactly at
+  // their limit — the settings panel would have nagged a healthy full plan.
+  const after = currentSeatCount + Math.max(0, seatsRequested)
+  if (after <= limit) return base
+
+  const seatsOver = after - limit
+  // The next tier UP that actually grants more seats. A staff override is a
+  // deliberate cap, so it is never answered with "upgrade" — that would send a
+  // tenant to buy a tier they may already be on.
+  let upgradeTo: CanonicalTier | null = null
+  let upgradeSeats: number | null = null
+  if (!overridden && isCanonicalTier(tier)) {
+    for (const t of TIER_ORDER.slice(TIER_ORDER.indexOf(tier) + 1)) {
+      const s = TIER_SEAT_LIMITS[t]
+      if (s === null || s >= after) { upgradeTo = t; upgradeSeats = s; break }
+    }
+  }
+  return {
+    ...base,
+    outcome: upgradeTo ? "upgrade_offered" : "paid_seat_only",
+    withinLimit: false,
+    remaining: 0,
+    upgradeTo,
+    upgradeSeats,
+    seatsOver,
+  }
+}
+
+/** PURE: the sentence a tenant reads when they ask for a seat past their limit. */
+export function seatDecisionMessage(d: SeatDecision): string | null {
+  if (d.withinLimit) return null
+  const over = `${d.seatsOver} seat${d.seatsOver === 1 ? "" : "s"}`
+  if (d.outcome === "upgrade_offered" && d.upgradeTo) {
+    const seats = d.upgradeSeats === null ? "unlimited seats" : `${d.upgradeSeats} seats`
+    return `That is ${over} past your ${d.limit}-seat plan. Upgrading to ${TIER_LABELS[d.upgradeTo]} gives you ${seats} — or keep this plan and add the seat for $${d.additionalSeatMonthlyUsd}/month.`
+  }
+  return `That is ${over} past your ${d.limit}-seat plan. You can add ${d.seatsOver === 1 ? "it" : "them"} for $${d.additionalSeatMonthlyUsd}/month per seat.`
+}
+
+/**
+ * PURE: does this workspace have anyone in the AGENT role?
+ *
+ * Owner's ruling: "they can use those seats anyway they want but if they don't
+ * use atleast 1 agent role, then they won't get much out of the system." That is
+ * an ADVISORY, never a gate — but it is a real one, because the contact, deal,
+ * listing, commission and marketing spines all hang off an `agents` record. A
+ * workspace of admins and a TC looks staffed and quietly does nothing.
+ *
+ * Roles come from BOTH sources (users.user_type and user_role_assignments), same
+ * as the seat count — an admin who also carries agent satisfies this.
+ */
+export function agentRoleAdvisory(rolesInUse: readonly string[]): { hasAgent: boolean; advisory: string | null } {
+  const hasAgent = rolesInUse.includes("agent")
+  return {
+    hasAgent,
+    advisory: hasAgent
+      ? null
+      : "No one in this workspace holds the Agent role. Contacts, deals, listings and campaigns all attach to an agent — assign one of your seats the Agent role to switch the OS on.",
+  }
 }
 
 /** Lowest tier whose matrix includes the role — null for platform-only roles. */

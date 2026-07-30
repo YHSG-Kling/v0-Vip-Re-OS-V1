@@ -295,7 +295,15 @@ export function ReputationPanel({
         transactionId: tyClient.id,
       })
       if (result.success) {
-        toast.success(tyChannel === "email" ? "Note sent via email" : "Note marked as sent")
+        // All three channels now really dispatch — email through the email lane,
+        // sms through dispatchSms, and the handwritten card down the SAME
+        // direct-mail line as a postcard (owner's ruling). The old copy said
+        // "marked as sent" for the last two because nothing sent them.
+        toast.success(
+          tyChannel === "email" ? "Note sent via email"
+          : tyChannel === "sms" ? "Text sent"
+          : "Card sent to print & mail",
+        )
         setTyDialogOpen(false)
       } else {
         toast.error(result.error ?? "Failed to send note")
@@ -897,7 +905,7 @@ export function ReputationPanel({
             </Button>
             <Button onClick={handleSendThankYou} disabled={tySending || !tyDraft}>
               {tySending ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Send className="w-4 h-4 mr-1" />}
-              {tyChannel === "email" ? "Send Email" : tyChannel === "sms" ? "Mark Sent (SMS)" : "Mark Sent (Handwritten)"}
+              {tyChannel === "email" ? "Send Email" : tyChannel === "sms" ? "Send Text" : "Mail Card"}
             </Button>
           </DialogFooter>
         </DialogContent>

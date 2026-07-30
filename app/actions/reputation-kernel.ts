@@ -30,7 +30,7 @@ import type {
 
 // ─── ACTOR CONTEXT RESOLVER ───────────────────────────────────────────────────
 
-async function resolveActor(): Promise<{ agentId: string; brokerageId: string } | null> {
+async function resolveActor(): Promise<{ agentId: string; brokerageId: string; userId: string } | null> {
   const cookieStore = await cookies()
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
@@ -53,7 +53,10 @@ async function resolveActor(): Promise<{ agentId: string; brokerageId: string } 
     .maybeSingle()
 
   if (!profile?.id || !profile?.brokerage_id) return null
-  return { agentId: profile.id, brokerageId: profile.brokerage_id }
+  // userId travels too: the dispatchers take the ACTING USER (for the autonomy
+  // gate and per-actor provider credentials), which is a users.id — not the
+  // agents.id that agentId carries.
+  return { agentId: profile.id, brokerageId: profile.brokerage_id, userId: user.id }
 }
 
 // ─── EXPORTED SERVER ACTIONS ──────────────────────────────────────────────────
@@ -183,12 +186,102 @@ export async function sendThankYouNoteAction(input: {
         sent_at:        new Date().toISOString(),
       }).eq("id", noteRow.id)
     }
-  } else {
-    // SMS / handwritten — mark sent immediately (delivery handled externally)
+  } else if (channel === "sms") {
+    // ── SMS RUNS THE SMS LANE ─────────────────────────────────────────────
+    // OWNER RULING: "route sms through dispatchsms." This branch used to stamp
+    // the note 'sent' and stop — an sms is a machine channel, so nothing about
+    // that was honest. dispatchSms carries the suppression list, DNC, quiet
+    // hours, opt-out, de-conflict and content-safety gates; a refusal leaves
+    // the note 'failed' with the provider's reason rather than a false 'sent'.
+    const { data: c } = await service
+      .from("contacts").select("phone").eq("id", input.contactId).maybeSingle()
+    const phone = ((c as any)?.phone as string | null) ?? null
+    if (!phone) {
+      await service.from("thank_you_notes")
+        .update({ status: "failed" }).eq("id", noteRow?.id)
+      return { success: false, error: "Contact has no phone number for an SMS note." }
+    }
+    const { dispatchSms } = await import("@/lib/providers/dispatch")
+    const sms = await dispatchSms({
+      brokerageId: actor.brokerageId,
+      userId:      actor.userId,
+      agentId:     actor.agentId,
+      to:          phone,
+      message:     input.noteText,
+      contactId:   input.contactId,
+      systemSource: "thank_you_note",
+      metadata:    { note_id: noteRow?.id, occasion },
+    })
     await service.from("thank_you_notes").update({
-      status:  "sent",
-      sent_at: new Date().toISOString(),
+      status:  sms.success ? "sent" : "failed",
+      sent_at: sms.success ? new Date().toISOString() : null,
     }).eq("id", noteRow?.id)
+    if (!sms.success) {
+      return { success: false, noteId: noteRow?.id, error: sms.error ?? "SMS note could not be sent." }
+    }
+  } else {
+    // ── HANDWRITTEN RUNS THE SAME LINE AS A POSTCARD OR CARD ──────────────
+    // OWNER RULING: "handwritten notes run the same line as a postcard or card."
+    // So this is the DIRECT MAIL lane — dispatchDirectMail → Lob — not a human
+    // errand. It used to mark the note sent with nothing behind it.
+    //
+    // Piece type is the card: Lob's postcard product is the printed-card lane
+    // (LOB_NOTECARD_ID overrides the postcard template when a brokerage has a
+    // notecard design on file). Every direct-mail gate still applies upstream:
+    // the CASS deliverability check, the per-contact physical-touch cap, budget.
+    const { data: c } = await service
+      .from("contacts")
+      .select("first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, city, state, zip_code")
+      .eq("id", input.contactId).maybeSingle()
+    const row = c as any
+    const street = (row?.mailing_address as string | null) ?? null
+    const city   = (row?.mailing_city as string | null) ?? (row?.city as string | null) ?? null
+    const state  = (row?.mailing_state as string | null) ?? (row?.state as string | null) ?? null
+    const zip    = (row?.mailing_zip as string | null) ?? (row?.zip_code as string | null) ?? null
+    if (!street || !city || !state || !zip) {
+      // No mailing address = no card. Held honestly so the agent can add one,
+      // rather than a note that claims to have been posted.
+      await service.from("thank_you_notes")
+        .update({ status: "failed" }).eq("id", noteRow?.id)
+      return {
+        success: false,
+        noteId: noteRow?.id,
+        error: "No complete mailing address on this contact — a handwritten card needs street, city, state and ZIP.",
+      }
+    }
+    const templateId = process.env.LOB_NOTECARD_ID || process.env.LOB_POSTCARD_FRONT_ID || ""
+    if (!templateId) {
+      await service.from("thank_you_notes")
+        .update({ status: "failed" }).eq("id", noteRow?.id)
+      return {
+        success: false,
+        noteId: noteRow?.id,
+        error: "No notecard template configured (LOB_NOTECARD_ID) — the platform must add one before cards can be mailed.",
+      }
+    }
+    const { dispatchDirectMail } = await import("@/lib/providers/dispatch")
+    const mail = await dispatchDirectMail({
+      brokerageId:   actor.brokerageId,
+      userId:        actor.userId,
+      agentId:       actor.agentId,
+      contactId:     input.contactId,
+      recipientName: input.contactName,
+      mailingAddress: street,
+      city, state, zip,
+      templateId,
+      pieceType:     "postcard",
+      color:         true,
+      mergeVars:     { note_body: input.noteText, recipient_name: input.contactName },
+      systemSource:  "thank_you_note",
+      metadata:      { note_id: noteRow?.id, occasion },
+    })
+    await service.from("thank_you_notes").update({
+      status:  mail.success ? "sent" : "failed",
+      sent_at: mail.success ? new Date().toISOString() : null,
+    }).eq("id", noteRow?.id)
+    if (!mail.success) {
+      return { success: false, noteId: noteRow?.id, error: mail.error ?? "Card could not be mailed." }
+    }
   }
 
   return { success: true, noteId: noteRow?.id }

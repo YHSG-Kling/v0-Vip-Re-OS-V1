@@ -32,6 +32,16 @@ export interface SeatUsage {
   seatHolderIds: string[]
   /** Everyone in the workspace, seat-holding or not (partners, contacts, system). */
   peopleCount: number
+  /**
+   * Every DISTINCT role in use by a non-suspended seat holder, from BOTH sources.
+   *
+   * Exists for the owner's agent-role advisory: "they can use those seats anyway
+   * they want but if they don't use atleast 1 agent role, then they won't get much
+   * out of the system." Answering that needs the roles, not just the count — and it
+   * must consider assigned roles too, or an admin who also carries agent would read
+   * as a workspace with no agent.
+   */
+  rolesInUse: string[]
 }
 
 /**
@@ -61,9 +71,23 @@ export async function resolveSeatUsage(svc: Svc, brokerageId: string): Promise<S
       (seatRoles.has(u.user_type ?? "") || assignedSeatRole.has(u.id)),
   )
 
+  // Roles actually in use across both sources, restricted to seat holders — a
+  // suspended user's role is not "in use", and a partner's never was.
+  const holderIds = new Set(holders.map((u) => u.id))
+  const rolesInUse = new Set<string>()
+  for (const u of holders) {
+    if (u.user_type && seatRoles.has(u.user_type)) rolesInUse.add(u.user_type)
+  }
+  for (const a of assignments) {
+    if (a.user_id && a.role && seatRoles.has(a.role) && holderIds.has(a.user_id)) {
+      rolesInUse.add(a.role)
+    }
+  }
+
   return {
     seatCount: holders.length,
     seatHolderIds: holders.map((u) => u.id),
     peopleCount: users.length,
+    rolesInUse: [...rolesInUse].sort(),
   }
 }

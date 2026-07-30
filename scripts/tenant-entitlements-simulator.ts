@@ -95,9 +95,18 @@ function sourceLayer() {
   // get the count from the shared resolver, since counting users.user_type alone
   // misses a seat role held through user_role_assignments and would admit an
   // invite past the tenant's paid limit.
-  check("BOTH invite gates resolve seats through parseSeatOverride → seatCheck (one enforcement point)",
-    /seatCheck\(tenantTier, seatCount, parseSeatOverride\(/.test(src("app/actions/admin/invite-user.ts"))
+  // The TENANT gate now resolves through seatDecision, not seatCheck: past the
+  // limit is a billing CHOICE (upgrade first, per-seat price second) rather than a
+  // refusal, per the owner's ruling. The SUPERADMIN gate keeps the hard check —
+  // platform staff already hold the seat_override lever, so for them a stop is
+  // actionable rather than a dead end. Both still read the ONE override parser and
+  // the ONE seat resolver, which is what "one enforcement point" protects.
+  check("BOTH invite gates resolve seats through parseSeatOverride (one enforcement point)",
+    /seatDecision\(\s*\n?\s*tenantTier, seatCount, parseSeatOverride\(/.test(src("app/actions/admin/invite-user.ts"))
     && /seatCheck\(targetTier, seatCount, parseSeatOverride\(/.test(src("app/actions/superadmin/tenant-users.ts")))
+  check("…and the tenant gate offers the upgrade instead of a dead end",
+    /seatDecisionMessage/.test(src("app/actions/admin/invite-user.ts"))
+    && !/Deactivate a user to free a seat/.test(src("app/actions/admin/invite-user.ts")))
   check("…and BOTH take that count from the one seat resolver",
     /resolveSeatUsage\(/.test(src("app/actions/admin/invite-user.ts"))
     && /resolveSeatUsage\(/.test(src("app/actions/superadmin/tenant-users.ts")))

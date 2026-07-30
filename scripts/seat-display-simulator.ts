@@ -33,8 +33,9 @@ import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
 import {
-  SEAT_ROLES, PARTNER_ROLES, TIER_SEAT_LIMITS, TIER_ORDER,
+  SEAT_ROLES, PARTNER_ROLES, TIER_SEAT_LIMITS, TIER_ORDER, TIER_INVITABLE_ROLES,
   seatLimitForTier, roleConsumesSeat, effectiveSeatLimit,
+  seatDecision, seatDecisionMessage, agentRoleAdvisory, ADDITIONAL_SEAT_MONTHLY_USD,
 } from "../lib/kernel/tier-role-matrix"
 
 let pass = 0, fail = 0
@@ -197,6 +198,114 @@ console.log("\n[title_agent is a vendor; support is a platform user type]")
   const mig = src("supabase/migrations/m307-title-agent-is-not-a-user-type.sql")
   check("the migration refuses to run if any row still carries it",
     /RAISE EXCEPTION/.test(mig) && /title_agent/.test(mig))
+}
+
+console.log("\n[the tier sells SEATS — the role menu is the tenant's to spend]")
+{
+  // OWNER RULING: "they can use those seats anyway they want" — and "solo agent
+  // will now have a broker owner or broker". Solo used to exclude BOTH, so a
+  // one-person brokerage could not seat its own owner on the tier built for them.
+  for (const role of SEAT_ROLES) {
+    check(`solo may invite ${role} — every tier offers the same menu`,
+      TIER_INVITABLE_ROLES.solo_agent.includes(role))
+  }
+  check("solo's menu equals brokerage's, role for role",
+    [...TIER_INVITABLE_ROLES.solo_agent].sort().join(",") ===
+    [...TIER_INVITABLE_ROLES.brokerage].sort().join(","))
+  check("…and the limits still differ, because SEATS are what a tier sells",
+    TIER_SEAT_LIMITS.solo_agent === 2 && TIER_SEAT_LIMITS.brokerage === null)
+}
+
+console.log("\n[over the limit is a CHOICE — upgrade first, paid seat second]")
+{
+  // OWNER RULING: "if they try to go over alloted seats, we can charge them
+  // monthly for each additional seats but I would rather get them to upgrade to
+  // the team level." Refusing the invite is the one outcome that serves nobody —
+  // the tenant is trying to grow.
+  const inside = seatDecision("solo_agent", 1)
+  check("inside the limit there is nothing to decide", inside.withinLimit && inside.outcome === "within_limit")
+  check("…and no message, so a healthy tenant is not nagged", seatDecisionMessage(inside) === null)
+
+  const full = seatDecision("solo_agent", 2)
+  check("a full Solo plan OFFERS the upgrade rather than refusing",
+    !full.withinLimit && full.outcome === "upgrade_offered" && full.upgradeTo === "team")
+  check("…naming the seats the upgrade brings", full.upgradeSeats === 5)
+  check("…and the per-seat price as the alternative, not the only option",
+    (seatDecisionMessage(full) ?? "").includes(`$${ADDITIONAL_SEAT_MONTHLY_USD}/month`) &&
+    (seatDecisionMessage(full) ?? "").includes("Upgrading to Team"))
+  check("…never telling a growing tenant to remove someone",
+    !/remove|deactivate|suspend/i.test(seatDecisionMessage(full) ?? ""))
+
+  const team = seatDecision("team", 5)
+  check("a full Team plan points at Brokerage and its unlimited seats",
+    team.upgradeTo === "brokerage" && team.upgradeSeats === null)
+
+  check("an unlimited tier is never 'over'", seatDecision("brokerage", 5000).withinLimit)
+
+  // A staff-set override is a DELIBERATE cap — answering it with "upgrade" would
+  // send a tenant to buy a tier they may already be on.
+  const capped = seatDecision("solo_agent", 3, 3)
+  check("a staff override offers the paid seat only, never a tier upgrade",
+    capped.outcome === "paid_seat_only" && capped.upgradeTo === null && capped.overridden)
+
+  check("the over-by count is exact, so the billing quote is exact",
+    seatDecision("solo_agent", 4).seatsOver === 3)
+  check("asking about the CURRENT state (0 requested) does not invent an overage",
+    seatDecision("solo_agent", 2, null, 0).withinLimit)
+}
+
+console.log("\n[a workspace with no AGENT is inert, and says so]")
+{
+  // OWNER RULING: "if they don't use atleast 1 agent role, then they won't get
+  // much out of the system." Advisory, never a gate — but a real one: contacts,
+  // deals, listings, commissions and campaigns all attach to an agents record.
+  const none = agentRoleAdvisory(["admin", "tc", "compliance_officer"])
+  check("seats held with no Agent among them raises the advisory", !none.hasAgent && !!none.advisory)
+  check("…and it explains WHY, not just that", /Contacts, deals, listings/.test(none.advisory ?? ""))
+  check("…and it is advice, not a refusal", !/cannot|not allowed|blocked/i.test(none.advisory ?? ""))
+  const has = agentRoleAdvisory(["admin", "agent"])
+  check("one Agent silences it", has.hasAgent && has.advisory === null)
+  check("…including an admin who ALSO carries agent by assignment",
+    agentRoleAdvisory(["admin", "agent"]).hasAgent)
+
+  // The advisory needs roles, so the resolver must report them.
+  const usage = src("lib/kernel/seat-usage.ts")
+  check("the seat resolver reports the roles in use, from BOTH sources",
+    /rolesInUse/.test(usage) && /assignments\b/.test(usage))
+  check("…restricted to seat HOLDERS — a suspended user's role is not in use",
+    /holderIds\.has\(a\.user_id\)/.test(usage))
+  const panel = src("app/dashboard/settings/components/os/user-access-panel.tsx")
+  check("the panel shows the advisory", /agentRoleAdvisory/.test(panel))
+  // Comment-stripped: the fix documents the phrase it replaced, so a raw search
+  // trips on the very explanation that proves the copy changed.
+  const panelCode = panel
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n").map((l) => l.replace(/(^|\s)\/\/.*$/, "")).join("\n")
+  check("…and the over-limit copy offers the plan, not a scolding",
+    /See plans/.test(panelCode) && !/remove or suspend a user/.test(panelCode))
+}
+
+console.log("\n[a tenant user without a brokerage_id is locked out by RLS]")
+{
+  // OWNER RULING: "a solo agent tier subscription has 2 seats but should be
+  // assigned a brokerageid so access isn't restricted."
+  //
+  // This is not cosmetic. has_brokerage_access() and current_user_brokerage_id()
+  // — the predicates in nearly every tenant RLS policy — read users.brokerage_id.
+  // A tenant user with NULL there is invisible to their own data: not an error, a
+  // silently empty app. Live audit found 2 ACTIVE AGENTS and 4 contacts in exactly
+  // that state, none resolvable from an agents or contacts row.
+  //
+  // Platform staff (superadmin/support, or any platform_role) legitimately have no
+  // brokerage — the guard must exempt them and only them.
+  const invite = src("app/actions/admin/invite-user.ts")
+  check("the tenant invite path resolves a brokerage before provisioning",
+    /resolvedBrokerageId/.test(invite))
+  check("…and refuses rather than creating a tenant user with no tenant",
+    /brokerage/i.test(invite) && /return \{\s*success: false/.test(invite))
+  const usersKernel = src("lib/kernel/users.ts")
+  check("inviteTenantMember takes the brokerage as a required input",
+    /brokerageId/.test(usersKernel))
 }
 
 console.log("\n[the override still wins, on every surface]")

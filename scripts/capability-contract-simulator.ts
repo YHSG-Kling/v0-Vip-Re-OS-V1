@@ -121,8 +121,16 @@ console.log("\n[every declared requirement names a REAL provider]")
 
 console.log("\n[the honest backlog stays visible]")
 {
-  check("UNDECLARED_REQUIREMENTS is non-empty and every entry is a real capability",
-    UNDECLARED_REQUIREMENTS.length > 0 &&
+  // THE BACKLOG IS EMPTY. It held two capabilities whose dependency looked
+  // unassertable; the owner's rulings settled both — a handwritten note runs the
+  // POSTCARD line (Lob), and a gift with no vendor row still delivers a real AI
+  // recommendation with Etsy vendors from the Gift Studio's own composer, so it
+  // needs nothing external at all. The array is pinned EMPTY rather than deleted:
+  // the next capability added without a contract has to come through here.
+  check("the backlog is EMPTY — every capability states what it needs",
+    UNDECLARED_REQUIREMENTS.length === 0,
+    [...UNDECLARED_REQUIREMENTS].join(", "))
+  check("…and every entry, if one is ever re-added, must be a real capability",
     UNDECLARED_REQUIREMENTS.every((c) => CAPS.includes(c)))
 
   // A capability cannot be both "declared" and "not modelled" — that ambiguity is
@@ -215,27 +223,56 @@ console.log("\n[every declaration is grounded in the gate the code ACTUALLY hits
     !(UNDECLARED_REQUIREMENTS as readonly string[]).includes("direct_mail_send") &&
     !(UNDECLARED_REQUIREMENTS as readonly string[]).includes("video_distribute"))
 
-  // The backlog shrank for good reasons and holds ONLY the two that cannot be
-  // expressed as a provider. If a third appears, this comment gets revisited.
-  check("the backlog is exactly the two whose dependency is not a credential",
-    [...UNDECLARED_REQUIREMENTS].sort().join(",") === "gift_send,handwritten_note_send")
-  check("…gift_send's real dependency is a vendor row, and it degrades to a task",
-    /createGiftOrder/.test(src("lib/workflow/adapters/send-gift.ts")) &&
-    /createPickProviderTask/.test(src("lib/workflow/adapters/send-gift.ts")))
+  // ── The owner's two rulings, pinned ──────────────────────────────────────
+  // "handwritten notes run the same line as a postcard or card" → the direct-mail
+  // lane, same Lob gate as direct_mail_send. NOT a human errand.
+  check("handwritten_note_send requires the direct-mail lane, like a postcard",
+    (APP_CAPABILITY_REGISTRY.handwritten_note_send.requires?.platform ?? []).includes("lob"))
+  check("…and it really dispatches there rather than stamping itself sent",
+    /dispatchDirectMail/.test(src("app/actions/reputation-kernel.ts")) &&
+    /pieceType:\s*"postcard"/.test(src("app/actions/reputation-kernel.ts")))
+  check("…with the same platform gate direct_mail_send names",
+    (APP_CAPABILITY_REGISTRY.direct_mail_send.requires?.platform ?? []).join() ===
+    (APP_CAPABILITY_REGISTRY.handwritten_note_send.requires?.platform ?? []).join())
 
-  // …and handwritten_note_send is HELD because a human delivers it, NOT because
-  // it lies. I flagged its sms sibling as a silent failure and was wrong: the
-  // affordance says "Mark Sent", never "Send", the toast says "marked as sent",
-  // and a Copy button hands the agent the draft to deliver themselves. Pinned so
-  // a later pass does not "fix" an honest human-in-the-loop log into a machine
-  // send the owner never asked for — and so the distinction from sendInboxReply
-  // (which DID claim sent while dispatching nothing) stays legible.
+  // "when the gift send has no gifting vendor row, ai makes a suggestion of the
+  // gift and a selection of etsy vendors within the task" → the Gift Studio's
+  // composer already did this, so gift_send needs NOTHING external.
+  check("gift_send declares no external requirement — the AI picks are in-repo",
+    !APP_CAPABILITY_REGISTRY.gift_send.requires)
+  const giftAdapter = src("lib/workflow/adapters/send-gift.ts")
+  check("…and the no-vendor path runs the STUDIO composer, not a generic search",
+    /composeGiftSelections/.test(giftAdapter) && /mineGiftInterests/.test(giftAdapter))
+  check("…putting ETSY vendor links for each pick on the agent's task",
+    /Etsy vendors: \$\{s\.etsyUrl\}/.test(giftAdapter))
+  check("…grounded in the contact's own file, not one link for every client",
+    /life_events/.test(giftAdapter) && /ai_insights/.test(giftAdapter) &&
+    /pastGiftKeys/.test(giftAdapter))
+  check("…and the occasion vocabularies are mapped, since the step offers one the studio does not",
+    /normalizeGiftOccasion/.test(giftAdapter) && /just_because/.test(giftAdapter))
+  check("the generic keyword search survives ONLY as the zero-picks floor",
+    /selections\.length === 0[\s\S]{0,200}?composeShoppableLinks/.test(giftAdapter))
+
+  // The SMS sibling: a machine channel must be dispatched, not declared sent.
+  check("an SMS thank-you note routes through dispatchSms",
+    /dispatchSms/.test(src("app/actions/reputation-kernel.ts")))
+  check("…and records failed with the provider's reason when it is refused",
+    /status:\s*sms\.success \? "sent" : "failed"/.test(src("app/actions/reputation-kernel.ts")))
+
+  // ── THE AFFORDANCE FOLLOWS THE LANE ──────────────────────────────────────
+  // A previous pass pinned "Mark Sent (SMS)" / "Mark Sent (Handwritten)" as the
+  // honest wording, on the reading that a human delivered both. The owner settled
+  // it the other way: sms goes through dispatchSms and a handwritten note "runs
+  // the same line as a postcard or card". Both are machine channels now, so
+  // "Mark Sent" would be the dishonest wording — it would understate a real send.
   const repPanel = src("app/components/reputation/ReputationPanel.tsx")
-  check("the handwritten/sms note affordance says MARK SENT, not Send",
-    /Mark Sent \(SMS\)/.test(repPanel) && /Mark Sent \(Handwritten\)/.test(repPanel))
-  check("…and its confirmation says marked-as-sent, distinct from the email one",
-    /Note marked as sent/.test(repPanel) && /Note sent via email/.test(repPanel))
-  check("…with a Copy affordance, because the human is the delivery lane",
+  check("every channel's button promises a real send, because every channel does one",
+    /Send Email/.test(repPanel) && /Send Text/.test(repPanel) && /Mail Card/.test(repPanel) &&
+    !/Mark Sent/.test(repPanel))
+  check("…and the confirmation names the lane it actually went down",
+    /Note sent via email/.test(repPanel) && /Text sent/.test(repPanel) &&
+    /Card sent to print & mail/.test(repPanel))
+  check("the Copy affordance survives — an agent may still want the draft",
     /copy\(tyDraft, "ty"\)/.test(repPanel))
 }
 

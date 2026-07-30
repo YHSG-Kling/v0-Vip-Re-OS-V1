@@ -26,6 +26,19 @@ interface UserStats {
   brokerCount: number
   agentCount: number
   coordinatorCount: number
+  /**
+   * Over-limit copy that names the UPGRADE first and the per-seat price second.
+   * Null while inside the plan. Being over is a billing choice, not a scolding —
+   * the previous copy said "remove or suspend a user", which is the one thing a
+   * growing tenant does not want to hear.
+   */
+  seatMessage?: string | null
+  upgradeTo?: string | null
+  upgradeSeats?: number | null
+  additionalSeatMonthlyUsd?: number
+  /** Seats can be used any way the tenant likes — but with no Agent among them
+   *  the OS is inert, because contacts, deals and campaigns attach to an agent. */
+  agentRoleAdvisory?: string | null
 }
 
 interface UserAccessPanelProps {
@@ -78,13 +91,29 @@ export function UserAccessPanel({ stats }: UserAccessPanelProps) {
 
         {/* Say what the plan allows, and say it plainly when it is exceeded —
             an admin could not previously tell either from this panel. */}
-        <p className={`text-xs ${overSeats ? "text-red-600 font-medium" : "text-muted-foreground"}`}>
+        <p className={`text-xs ${overSeats ? "text-amber-700 font-medium" : "text-muted-foreground"}`}>
           {stats.seatLimit === null
             ? `Unlimited seats on ${tierName}. Vendors, lenders and portal contacts never use one.`
             : overSeats
-              ? `Over your ${tierName} plan's ${stats.seatLimit} seats — remove or suspend a user, or upgrade.`
+              // The choice, in the tenant's favour: upgrade (better value) or keep
+              // the plan and pay per seat. Never "remove someone".
+              ? stats.seatMessage ??
+                `Over your ${tierName} plan's ${stats.seatLimit} seats. Upgrade for more, or add seats at $${stats.additionalSeatMonthlyUsd ?? 25}/month each.`
               : `${stats.seatLimit - stats.seatCount} of ${stats.seatLimit} seats left on ${tierName}. Vendors and lenders never use one.`}
+          {overSeats && (
+            <a href="/settings/billing" className="ml-1 underline">
+              {stats.upgradeTo ? "See plans" : "Add a seat"}
+            </a>
+          )}
         </p>
+
+        {/* THE AGENT-ROLE ADVISORY — never a block, but the difference between a
+            workspace that looks staffed and one that actually works. */}
+        {stats.agentRoleAdvisory && (
+          <p className="text-xs text-amber-700 rounded-md border border-amber-500/40 bg-amber-500/5 p-2">
+            {stats.agentRoleAdvisory}
+          </p>
+        )}
 
         {/* Role Breakdown */}
         <div className="space-y-2">
