@@ -148,8 +148,26 @@ console.log("\n[the signal is governed, like every other signal on the bus]")
   const esc = src("lib/agentic-os/escalate-dark-capabilities.ts")
   check("…so the escalator sends AS cron_manager when the target is the Steward",
     esc.includes('route.to === "data_steward" ? "cron_manager" : "data_steward"'))
-  check("the signal dedupes on the capability, so a week dark is ONE signal",
-    esc.includes("entityId: r.capability"))
+  // THE BUG LIVE TESTING CAUGHT, pinned shut. manager_signals.entity_id is a UUID
+  // column; I first passed the capability NAME into it, which made Postgres reject
+  // both the dedupe SELECT and the INSERT. publishManagerSignal returns
+  // { ok: false } rather than throwing, so the cron would have logged
+  // `capabilitiesEscalated: 0` on a healthy-looking run — forever, having published
+  // nothing. Reading the code did not find it; writing a real row did.
+  check("the capability is NEVER written to entity_id (a uuid column)",
+    !esc.includes("entityId: r.capability"))
+  check("…entity_id is explicitly null, with the reason stated",
+    esc.includes("entityId: null") && /this column is a uuid/.test(esc))
+  check("…the capability travels in the payload, where a string belongs",
+    esc.includes("capability: r.capability"))
+  check("the dedupe is done HERE, reading payload.capability",
+    esc.includes("openFor.has(r.capability)") && esc.includes("dedupe: false"))
+  check("…seeded from ONE read of the open signals, not one per capability",
+    /signal_type", CAPABILITY_DARK_SIGNAL/.test(esc) && esc.includes('eq("status", "open")'))
+  check("a FAILED publish is counted, never swallowed as 'nothing dark'",
+    esc.includes("result.failed++") && /publish failure that reads as/.test(esc))
+  check("…and the cron surfaces that count",
+    src("app/api/cron/connector-health/route.ts").includes("capabilityEscalationsFailed"))
   check("…and it never throws — a readiness sweep cannot take the cron down",
     esc.includes("result.error = e instanceof Error"))
   check("operable capabilities are skipped before any work is done",

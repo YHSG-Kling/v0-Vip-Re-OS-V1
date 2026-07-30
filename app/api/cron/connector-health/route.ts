@@ -320,6 +320,8 @@ export async function GET(req: Request) {
   let capabilitiesEscalated = 0
   let capabilitiesHeldForHealer = 0
   let capabilityDarkTotal = 0
+  // Surfaced, never swallowed: a publish failure must not read as "nothing dark".
+  let capabilityEscalationsFailed = 0
   try {
     const { escalateDarkCapabilities } = await import("@/lib/agentic-os/escalate-dark-capabilities")
     for (const b of brokerages ?? []) {
@@ -327,6 +329,7 @@ export async function GET(req: Request) {
       capabilitiesEscalated += r.escalated
       capabilitiesHeldForHealer += r.heldForHealer
       capabilityDarkTotal += r.dark
+      capabilityEscalationsFailed += r.failed
     }
   } catch (e) { console.error("[connector-health] capability escalation:", e) }
 
@@ -344,6 +347,7 @@ export async function GET(req: Request) {
       capabilityDark:            capabilityDarkTotal,
       capabilitiesEscalated,
       capabilitiesHeldForHealer,
+      capabilityEscalationsFailed,
     },
   })
 }
