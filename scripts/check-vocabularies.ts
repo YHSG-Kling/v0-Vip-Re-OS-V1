@@ -959,6 +959,10 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   newsletter_sections: {
     section_type: ["agent_intro", "community_eats", "cta", "custom", "local_event", "local_news", "market_update", "mortgage_rates", "neighborhood_spotlight", "new_listings", "property_highlight", "testimonial", "tips"],
   },
+  outcome_reconciliations: {
+    channel: ["direct_mail", "email", "sms", "social", "video"],
+    verdict: ["confirmed", "contradicted", "pending", "unverifiable"],
+  },
   newsletter_sends: {
     status: ["bounced", "clicked", "failed", "opened", "queued", "sent", "suppressed"],
   },

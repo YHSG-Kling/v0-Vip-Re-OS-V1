@@ -1,6 +1,7 @@
 export { SystemCommandStrip } from './system-command-strip'
 export { ProviderHealthPanel } from './provider-health-panel'
 export { AgentCapabilityPanel } from './agent-capability-panel'
+export { OutcomeProofPanel } from './outcome-proof-panel'
 export { ObservabilityPanel } from './observability-panel'
 export { AIQualityPanel } from './ai-quality-panel'
 export { SyncHealthPanel } from './sync-health-panel'

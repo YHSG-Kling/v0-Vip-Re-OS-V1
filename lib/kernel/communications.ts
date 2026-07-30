@@ -673,6 +673,10 @@ export async function sendInboxReply(
       let dispatched = false
       let dispatchError: string | null = null
       let providerKey: string | null = null
+      // The provider's id for this send. Stored on the message so the delivery
+      // webhook can correlate EXACTLY — without it the truth arrives and has
+      // nothing to attach to, and the thread keeps showing an unproven "sent".
+      let providerMessageId: string | null = null
 
       if (channel === "email") {
         if (!contact.email) return { success: false, error: "Contact has no email address" }
@@ -711,6 +715,7 @@ export async function sendInboxReply(
           dispatched = result.success
           providerKey = result.providerKey
           dispatchError = result.error ?? null
+          providerMessageId = result.messageId ?? null
         }
       } else {
         // sms
@@ -728,6 +733,7 @@ export async function sendInboxReply(
         dispatched = result.success
         providerKey = result.providerKey
         dispatchError = result.error ?? null
+        providerMessageId = result.messageId ?? null
       }
 
       // Record the attempt either way — an agent must be able to see that the
@@ -743,6 +749,14 @@ export async function sendInboxReply(
           direction: "outbound",
           body,
           status: dispatched ? "sent" : "failed",
+          // The correlation key for outcome reconciliation. twilio_sid for sms,
+          // sg_message_id for email — each named for the provider that issued it,
+          // matching what the corresponding webhook looks for.
+          metadata: providerMessageId
+            ? (channel === "sms"
+                ? { twilio_sid: providerMessageId }
+                : { sg_message_id: providerMessageId })
+            : {},
           created_at: new Date().toISOString(),
         })
         .select("id")

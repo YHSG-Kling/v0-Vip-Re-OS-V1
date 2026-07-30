@@ -4,6 +4,7 @@ import {
   SystemCommandStrip,
   ProviderHealthPanel,
   AgentCapabilityPanel,
+  OutcomeProofPanel,
   ObservabilityPanel,
   AIQualityPanel,
   SyncHealthPanel,
@@ -61,6 +62,10 @@ export default async function SystemPage() {
                 broker actually asks before switching autonomy on — what the agents can
                 DO. Same resolver the MCP tool list uses, so screen and tool list agree. */}
             <AgentCapabilityPanel brokerageId={brokerageId} />
+            {/* Capabilities say what the team CAN do; this says what the providers
+                CONFIRMED it did. The gap between them is the only honest measure of
+                whether autonomy can be trusted. */}
+            <OutcomeProofPanel brokerageId={brokerageId} />
             <SyncHealthPanel brokerageId={brokerageId} />
           </div>
 

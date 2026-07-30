@@ -20,7 +20,7 @@ export function classifyCoordination(signalType: string | null | undefined): Coo
   // capability the OS cannot run is a condition that needs review, which is
   // exactly what this bucket means — but a broad match would sweep up any future
   // signal that happens to contain the word.
-  if (/violation|compliance_failed|surprise|finding|regulatory|fatigue|autopsy|withdrawn|endpoint_dead|custom_domain_error|capability_dark/.test(t)) return "alert"
+  if (/violation|compliance_failed|surprise|finding|regulatory|fatigue|autopsy|withdrawn|endpoint_dead|custom_domain_error|capability_dark|outcome_contradicted/.test(t)) return "alert"
   // One manager handed work/an asset to another (claimed, ready, routed).
   if (/claim|ready|appointment|recovery|watch|handoff|candidate|reengage|call_|next_move|relocation|certification_issued/.test(t)) return "handoff"
   return "update"

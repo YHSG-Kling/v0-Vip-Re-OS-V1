@@ -614,6 +614,28 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
     budgetWarning: smsBudget.warning,
   }
 
+  // ── OUTCOME RECONCILIATION: open a PENDING claim, not a fact ────────────────
+  // Twilio's response says "queued". Recording that as sent-and-done is what left
+  // every carrier rejection invisible. The claim is opened against the sid, and the
+  // StatusCallback (app/api/webhooks/twilio-sms-status) proves or contradicts it.
+  // Fire-and-forget: a ledger failure must never fail a send that already happened.
+  if (raw.success && raw.messageId) {
+    void (async () => {
+      const { recordOutcomeClaim } = await import("@/lib/outcomes/reconciliation-ledger")
+      await recordOutcomeClaim({
+        brokerageId: params.brokerageId,
+        channel: "sms",
+        providerRef: raw.messageId!,
+        // The provider's OWN word for where it is, not our optimistic label.
+        claimedStatus: raw.status ?? "queued",
+        entityType: "sms",
+        contactId: params.contactId ?? null,
+        leadId: params.leadId ?? null,
+        claimedByManager: "campaign_orchestrator",
+      })
+    })().catch(() => {})
+  }
+
   void logVendorUsage({
     vendorName: providerKey,
     usageType: "sms_messages",
@@ -994,6 +1016,26 @@ export async function dispatchDirectMail(
       ...(params.metadata ?? {}),
     },
   })
+
+  // ── OUTCOME RECONCILIATION: a Lob ACCEPT is not a delivery ─────────────────
+  // A physical piece takes days and can be re-routed or returned to sender. The
+  // claim opens pending against the Lob piece id; app/api/webhooks/lob-events
+  // proves or contradicts it as the piece moves.
+  void (async () => {
+    const { recordOutcomeClaim } = await import("@/lib/outcomes/reconciliation-ledger")
+    await recordOutcomeClaim({
+      brokerageId: params.brokerageId,
+      channel: "direct_mail",
+      // Lob's SDK types id as optional; a piece with no id cannot be reconciled, so
+      // the claim records that honestly rather than coercing a fake reference.
+      providerRef: data.id ?? null,
+      claimedStatus: "accepted_by_lob",
+      entityType: "direct_mail",
+      contactId: params.contactId ?? null,
+      leadId: params.leadId ?? null,
+      claimedByManager: "campaign_orchestrator",
+    })
+  })().catch(() => {})
 
   return { success: true, providerKey, messageId: data.id, budgetWarning: mailBudget.warning }
 }
