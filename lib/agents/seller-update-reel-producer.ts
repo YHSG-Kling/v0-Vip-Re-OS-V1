@@ -148,11 +148,64 @@ async function gatherSellerUpdateStats(supabase: Svc, brokerageId: string, listi
 }
 
 /**
+ * THE FACTS this video asserts — read-only, no side effects (no QR minting, no
+ * identity lookups, no writes), so the living-video sweep can re-derive them on
+ * every tick for pennies and tell whether the delivered video has started saying
+ * something untrue.
+ *
+ * Kept deliberately narrow. The video's input_props also carry a QR data URL, a
+ * photo array, and the agent's phone — cosmetics that change for reasons a
+ * seller would never call "my video is out of date". Only what is asserted
+ * on screen is a fact.
+ */
+export async function sellerUpdateFacts(
+  supabase: Svc, brokerageId: string, listingId: string,
+): Promise<import("@/lib/video/living-video").LivingFacts | null> {
+  const gathered = await gatherSellerUpdateStats(supabase, brokerageId, listingId)
+  if (!gathered) return null
+
+  // The AVATAR is a fact about the video, not a setting beside it: the agent
+  // onboards by recording one from a photo or a video, it lands in our storage
+  // bucket, and when they re-record it every already-delivered living video is
+  // still fronted by the old face until it re-renders.
+  let avatarId: string | null = null
+  if (gathered.agentId) {
+    try {
+      const { data: a } = await supabase.from("agents").select("user_id").eq("id", gathered.agentId).maybeSingle()
+      const uid = (a as { user_id: string | null } | null)?.user_id ?? null
+      if (uid) {
+        const { resolveSelfAvatar } = await import("@/lib/voice/voice-resolver")
+        avatarId = (await resolveSelfAvatar(uid)).avatarId
+      }
+    } catch { /* an unresolvable avatar is recorded as null, not as a change */ }
+  }
+
+  return {
+    listingAddress:    gathered.stats.listingAddress,
+    listPrice:         gathered.stats.listPrice,
+    showingsThisWeek:  gathered.stats.showingsThisWeek,
+    interestLabel:     gathered.stats.interestLabel,
+    daysOnMarket:      gathered.stats.daysOnMarket,
+    // Optional on the stats type; absent and zero mean the same thing to a
+    // seller, and collapsing them here keeps the key stable across the two.
+    videoScans:        gathered.stats.videoScans ?? 0,
+    avatarId,
+  }
+}
+
+/**
  * Enqueue a weekly seller-update avatar render for a listing. Idempotent: skips if a
  * seller-update render for this listing was queued/rendered in the last 7 days.
+ *
+ * `force` exists for the LIVING-VIDEO refresh. The weekly window is a spam guard
+ * against the cadence cron, not a rule that the seller must live with a stale
+ * number: when the facts have materially moved (a price change on Tuesday), the
+ * sweep passes force and the seller gets the true video instead of waiting until
+ * Monday for one that opens with the old price.
  */
 export async function requestSellerUpdateReel(
   brokerageId: string, listingId: string, client?: Svc,
+  opts: { force?: boolean; refreshedFromRenderId?: string | null } = {},
 ): Promise<{ queued: boolean; renderId?: string; reason?: string }> {
   const supabase = client ?? createServiceClient()
   if (!brokerageId || !listingId) return { queued: false, reason: "missing ids" }
@@ -173,7 +226,7 @@ export async function requestSellerUpdateReel(
   const already = ((recent ?? []) as Array<{ input_props: Record<string, unknown> | null }>)
     .some((r) => (r.input_props as { kind?: string } | null)?.kind === SELLER_UPDATE_KIND
       && (r.input_props as { listing_id?: string } | null)?.listing_id === listingId)
-  if (already) return { queued: false, reason: "already queued this week" }
+  if (already && !opts.force) return { queued: false, reason: "already queued this week" }
 
   // Agent + brokerage identity for the avatar card.
   let agentName = "Your Agent", agentPhone = "", agentUserId: string | null = null, agentPhotoUrl: string | null = null
@@ -217,12 +270,21 @@ export async function requestSellerUpdateReel(
     }
   } catch { /* QR is additive */ }
 
+  // The LIVING identity: what this video asserts, so the refresh sweep can
+  // re-derive the same facts later and diff them.
+  const { computeFactsKey, LIVING_KINDS } = await import("@/lib/video/living-video")
+  const facts = await sellerUpdateFacts(supabase, brokerageId, listingId)
+
   const { recordRenderQueued } = await import("@/lib/remotion/registry")
   const r = await recordRenderQueued({
     brokerageId, compositionId: SELLER_UPDATE_COMPOSITION, agentUserId,
     entityType: "contact", entityId: gathered.sellerContactId,
     usedDidAvatar: true, usedVoiceover: true,
     inputProps: props, scopeType: "brokerage", scopeId: brokerageId, requestedVia: "cron",
+    livingKind: facts ? LIVING_KINDS.seller_weekly_update.kind : null,
+    factsKey: facts ? computeFactsKey(LIVING_KINDS.seller_weekly_update.kind, facts) : null,
+    facts: facts ?? null,
+    refreshedFromRenderId: opts.refreshedFromRenderId ?? null,
   })
   return r.ok ? { queued: true, renderId: r.renderId } : { queued: false, reason: r.error }
 }

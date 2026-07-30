@@ -215,6 +215,14 @@ export async function recordRenderQueued(args: {
   scopeType?:     "agent" | "team" | "brokerage"
   scopeId?:       string | null
   requestedVia?:  "asset_manager" | "ad_creator" | "cron" | "manual" | "api"
+  /** m312 — LIVING VIDEO. Set when this render is a claim about facts that
+   *  move, so the refresh sweep can re-derive them later and tell whether the
+   *  video has started saying something untrue. See lib/video/living-video.ts. */
+  livingKind?:    string | null
+  factsKey?:      string | null
+  facts?:         Record<string, unknown> | null
+  /** The stale render this one replaces, when it was queued by the sweep. */
+  refreshedFromRenderId?: string | null
 }): Promise<{ ok: boolean; renderId?: string; error?: string }> {
   const svc = createServiceClient()
   const { data, error } = await svc
@@ -231,6 +239,10 @@ export async function recordRenderQueued(args: {
       scope_type:       args.scopeType ?? "brokerage",
       scope_id:         args.scopeId ?? args.brokerageId,
       requested_via:    args.requestedVia ?? "asset_manager",
+      living_kind:      args.livingKind ?? null,
+      facts_key:        args.factsKey ?? null,
+      facts:            args.facts ?? null,
+      refreshed_from_render_id: args.refreshedFromRenderId ?? null,
       render_status:    "queued",
     })
     .select("id")

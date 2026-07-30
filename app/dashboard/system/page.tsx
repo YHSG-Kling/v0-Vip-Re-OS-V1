@@ -6,6 +6,7 @@ import {
   AgentCapabilityPanel,
   OutcomeProofPanel,
   RenderCachePanel,
+  LivingVideoPanel,
   ObservabilityPanel,
   AIQualityPanel,
   SyncHealthPanel,
@@ -79,6 +80,11 @@ export default async function SystemPage() {
                 make reuse impossible — the same finding the Asset Manager gets on the
                 bus, put where a broker can see a fix is pending. */}
             <RenderCachePanel brokerageId={brokerageId} />
+            {/* The cache made a render reusable by giving it an identity. The same
+                technique, pointed at a narrower set of inputs, gives a DELIVERED
+                video an identity too — and an identity you can recompute is one
+                you can check. This is what the OS is telling clients right now. */}
+            <LivingVideoPanel brokerageId={brokerageId} />
           </div>
 
           {/* Column 3: Alerts & Impact */}
