@@ -28,8 +28,8 @@ function testPure() {
   console.log("\n[Layer 1 · buildBuyerMatchReelProps — resolved facts from EITHER source]")
   const props = buildBuyerMatchReelProps(
     [
-      { id: "1", address: "12 Oak St", city: "Maple Grove", state: "MN", price: 485000, bedrooms: 3, bathrooms: 2, photoUrl: "https://cdn/x.jpg", source: "listing", status: "active" },
-      { id: "2", address: "9 Elm Ave", city: "Maple Grove", state: "MN", price: 525000, bedrooms: 4, bathrooms: 3, photoUrl: null, source: "idx", status: "active" },
+      { id: "1", address: "12 Oak St", city: "Maple Grove", state: "MN", price: 485000, bedrooms: 3, bathrooms: 2, photoUrl: "https://cdn/x.jpg", source: "listing", status: "active", listingId: null, propertyId: "MLS-1", mlsNumber: "MLS-1", listingUrl: null, statusSource: "unknown" as const },
+      { id: "2", address: "9 Elm Ave", city: "Maple Grove", state: "MN", price: 525000, bedrooms: 4, bathrooms: 3, photoUrl: null, source: "idx", status: "active", listingId: null, propertyId: "MLS-1", mlsNumber: "MLS-1", listingUrl: null, statusSource: "unknown" as const },
     ],
     { agentName: "Dana Kling", agentPhone: "(555) 555-1212", brokerageName: "Kling Realty" },
   ) as any
@@ -40,7 +40,7 @@ function testPure() {
   check("buyer-match framing headline (not a generic affordability band)", /matching your search/i.test(props.monthlyHeadline))
   check("carries agent + brokerage for the footer", props.agentName === "Dana Kling" && props.brand.brokerageName === "Kling Realty")
   check("Fair-Housing clean labels", !/famil|kids|perfect for|safe neighborhood/i.test(JSON.stringify(props)))
-  const none = buildBuyerMatchReelProps([{ id: "x", address: null, city: null, state: null, price: null, bedrooms: null, bathrooms: null, photoUrl: null, source: "saved", status: "active" }], { agentName: "X", agentPhone: "", brokerageName: "Y" })
+  const none = buildBuyerMatchReelProps([{ id: "x", address: null, city: null, state: null, price: null, bedrooms: null, bathrooms: null, photoUrl: null, source: "saved", status: "active", listingId: null, propertyId: "MLS-1", mlsNumber: "MLS-1", listingUrl: null, statusSource: "unknown" as const }], { agentName: "X", agentPhone: "", brokerageName: "Y" })
   check("no renderable facts → null (no empty reel)", none === null)
 }
 

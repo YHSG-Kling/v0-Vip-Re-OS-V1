@@ -22,7 +22,7 @@ import {
   type LivingFacts,
 } from "../lib/video/living-video"
 import { paddingSecondsFor } from "../lib/remotion/voiceover-mixer"
-import { isUnavailableStatus } from "../lib/property/resolve-property-facts"
+import { isUnavailableStatus, normalizeVendorStatus } from "../lib/property/resolve-property-facts"
 import { SIGNAL_REGISTRY } from "../lib/kernel/signal-registry"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
 
@@ -339,9 +339,64 @@ console.log("\n═══ 10. BUYER MATCH REEL — the second living kind ══�
     !isUnavailableStatus(null) && !isUnavailableStatus(undefined))
 
   const resolver = code("lib/property/resolve-property-facts.ts")
-  ok("the resolver now carries availability at all", resolver.includes("status: l.status ?? null"))
-  ok("...and an external snapshot is explicitly unknown, not defaulted",
-    resolver.includes("status: null"))
+  ok("the resolver carries availability at all", resolver.includes('statusSource: "listing"'))
+
+  // ── BOTH IDS (m315) ───────────────────────────────────────────────────────
+  // A property arrives by one of two doors and a caller must know which.
+  ok("an in-house match exposes OUR listing id", resolver.includes("listingId: l.id"))
+  ok("an outside match exposes the MLS/vendor property id",
+    resolver.includes("propertyId: s.mls_number ?? s.external_property_id ?? null"))
+  ok("...and the mls number specifically, which is what an agent recognises",
+    resolver.includes("mlsNumber: s.mls_number ?? null"))
+  ok("...and where a human can go look at it", resolver.includes("listingUrl: s.listing_url"))
+
+  // ── EXTERNAL LISTINGS ARE CHECKABLE, NOT UNKNOWABLE ───────────────────────
+  // The first cut called every external match unverifiable. Wrong twice over.
+  ok("a saved row that LINKS BACK to one of our listings uses OUR status —\n    free, authoritative, and most 'external' matches are actually these",
+    resolver.includes('statusSource: linked_listing'.replace("linked_listing", '"linked_listing"')) ||
+    resolver.includes('"linked_listing" : "unknown"'))
+  ok("...resolved in ONE extra query, not per property", resolver.includes("linkedStatus"))
+  ok("a genuinely external listing is verified against the vendor",
+    resolver.includes("export async function verifyExternalAvailability"))
+  ok("...only for rows still unknown — never re-paying for what we already know",
+    resolver.includes('f.statusSource === "unknown" && f.propertyId'))
+  // A vendor outage must degrade to "we do not know", never to "still for sale".
+  // Structural, not a comment: the catch returns the facts UNCHANGED, and the
+  // only place statusSource becomes "rentcast" is behind a resolved status.
+  ok("...and a failed lookup leaves it unknown rather than guessing available",
+    resolver.includes("} catch {\n    \n    return facts\n  }") ||
+    /catch\s*\{[^}]*return facts/.test(resolver))
+  ok("...and a row only becomes vendor-verified when a status actually came back",
+    resolver.includes('s ? { ...f, status: s, statusSource: "rentcast" as const } : f'))
+  ok("the status source is DECLARED, so a human can see which lane answered",
+    resolver.includes("statusSource:"))
+
+  const rentcast = code("lib/property/rentcast.ts")
+  ok("the vendor lookup exists and is per-listing",
+    rentcast.includes("export async function getRentcastListingStatus"))
+  ok("...resolving through the tenant key, else the PLATFORM key (an agent with\n    no vendor account of their own is still covered)",
+    rentcast.includes("getApiKey(params.brokerageId)"))
+  ok("...and a 404 means off_market, not sold — we do not invent which terminal state",
+    rentcast.includes('if (res.status === 404) return "off_market"'))
+  ok("...and the call is metered like every other vendor call",
+    rentcast.includes('endpoint: "/listings/sale/{id}"'))
+
+  ok("a vendor 'Active' maps onto our vocabulary", normalizeVendorStatus("Active") === "active")
+  ok("'Under Contract' maps to pending", normalizeVendorStatus("Under Contract") === "pending")
+  ok("an UNRECOGNISED vendor status maps to off_market, never to active — the safe\n    direction is to stop advertising a home we are unsure about",
+    normalizeVendorStatus("Somethingelse") === "off_market")
+  ok("an absent vendor status stays null", normalizeVendorStatus(null) === null)
+
+  ok("the buyer facts VERIFY before counting", producerHasVerify())
+  function producerHasVerify() {
+    const pr = code("lib/agents/buyer-match-reel-producer.ts")
+    return pr.includes("verifyExternalAvailability(brokerageId, resolved)")
+  }
+  ok("...and the unverifiable count is the residue AFTER verification, not a shrug\n    at every external listing",
+    code("lib/agents/buyer-match-reel-producer.ts").includes('f.statusSource === "unknown"'))
+  ok("the match signature names BOTH doors — our listing id, or the MLS id",
+    code("lib/agents/buyer-match-reel-producer.ts")
+      .includes("f.listingId ?? f.propertyId ?? f.id"))
 
   const producer = code("lib/agents/buyer-match-reel-producer.ts")
   ok("the producer exposes a read-only fact projection",

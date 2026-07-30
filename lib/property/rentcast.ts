@@ -197,6 +197,51 @@ export async function searchRentcastSaleListings(params: {
 }
 
 // ---------------------------------------------------------------------------
+// Single-listing availability (m315) — is this outside home still for sale?
+// ---------------------------------------------------------------------------
+
+/**
+ * Look up ONE external listing's current status.
+ *
+ * Exists so a video that showed a buyer a third-party home can be checked
+ * rather than assumed. Resolves through the tenant's own RentCast key when they
+ * have one and the PLATFORM key otherwise (getApiKey already cascades), which
+ * is why an agent with no vendor account of their own is still covered.
+ *
+ * Returns a status on OUR vocabulary, or null when we could not find out.
+ * Null is never upgraded to "active" by any caller — an unverifiable home stays
+ * unverifiable, because telling a buyer a sold house is available is the one
+ * mistake this whole lane exists to prevent.
+ */
+export async function getRentcastListingStatus(params: {
+  brokerageId: string
+  externalId: string
+}): Promise<string | null> {
+  const apiKey = await getApiKey(params.brokerageId)
+  if (!apiKey || !params.externalId) return null
+  try {
+    const res = await rentcastGet(apiKey, `/listings/sale/${encodeURIComponent(params.externalId)}`, new URLSearchParams())
+    meterCall({
+      brokerageId: params.brokerageId,
+      usageType: "api_call",
+      cost: COST_PER_LISTING_SEARCH,
+      endpoint: "/listings/sale/{id}",
+      metadata: { ok: res.ok, status: res.status },
+    })
+    // A 404 means the vendor no longer carries the listing. That is genuinely
+    // informative — it is off the market — but it is not proof of WHICH
+    // terminal state, so it maps to off_market rather than to "sold".
+    if (res.status === 404) return "off_market"
+    if (!res.ok) return null
+    const row: any = Array.isArray(res.data) ? res.data[0] : res.data
+    const { normalizeVendorStatus } = await import("./resolve-property-facts")
+    return normalizeVendorStatus(row?.status ?? null)
+  } catch {
+    return null
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Search rental listings (used by investor mode + lifetime customer portal)
 // ---------------------------------------------------------------------------
 

@@ -81,9 +81,16 @@ export async function buyerMatchFacts(
   const propertyIds = ((pm ?? []) as Array<{ property_id: string | null }>)
     .map((r) => r.property_id).filter(Boolean) as string[]
 
-  const { resolvePropertyFacts, isUnavailableStatus } = await import("@/lib/property/resolve-property-facts")
+  const { resolvePropertyFacts, isUnavailableStatus, verifyExternalAvailability } =
+    await import("@/lib/property/resolve-property-facts")
   const factsMap = await resolvePropertyFacts(supabase, brokerageId, propertyIds)
-  const shown = propertyIds.map((id) => factsMap.get(id)).filter(Boolean) as PropertyFacts[]
+  const resolved = propertyIds.map((id) => factsMap.get(id)).filter(Boolean) as PropertyFacts[]
+  // VERIFY the outside listings. This runs on the living sweep, whose entire job
+  // is telling the truth about what a buyer was shown, so a metered per-property
+  // vendor lookup is exactly the right trade here (and is opt-in precisely so
+  // the render-time path does not pay it). Anything still unknown after this is
+  // genuinely unknowable — no lane could answer.
+  const shown = await verifyExternalAvailability(brokerageId, resolved)
 
   let agentName = "Your Agent"
   if (contact.agent_id) {
@@ -99,11 +106,15 @@ export async function buyerMatchFacts(
   return {
     shownCount: shown.length,
     unavailableCount: shown.filter((f) => isUnavailableStatus(f.status)).length,
-    unverifiableCount: shown.filter((f) => f.status === null).length,
+    // Still unknown AFTER our own data and the vendor lookup — the honest
+    // residue, not a shrug at every external listing.
+    unverifiableCount: shown.filter((f) => f.statusSource === "unknown").length,
     // Order matters — the cards are ordered by match score, so a re-order IS a
     // different reel. Joined rather than hashed so a human can read the diff.
     priceSignature: shown.map((f) => (f.price == null ? "?" : String(Math.round(f.price)))).join("|"),
-    matchSetSignature: shown.map((f) => f.id).join("|"),
+    // BOTH IDS, so the signature says which door each home came through: our
+    // listing id for in-house, the MLS/vendor id for outside.
+    matchSetSignature: shown.map((f) => f.listingId ?? f.propertyId ?? f.id).join("|"),
     agentName,
   }
 }
