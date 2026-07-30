@@ -38,8 +38,24 @@
 // PURE — no I/O — so every provider status mapping and every verdict is unit-tested
 // without a database or a vendor.
 
-/** The lanes an outcome can travel. Matches the dispatchers, not the UI copy. */
-export type OutcomeChannel = "email" | "sms" | "direct_mail" | "social" | "video"
+/**
+ * The lanes an outcome can travel. Matches the dispatchers, not the UI copy.
+ *
+ * `video` WAS in this list and should never have been. Owner ruling: "video is
+ * not a channel … video is delivered in a sms or email." The lane it described
+ * was D-ID's render status — which answers "did the video get MADE", a
+ * production fact, not "did it REACH anybody". Conflating the two is the exact
+ * error this whole module exists to end: a finished render sitting in storage
+ * that no client ever saw would have read as a confirmed outcome. A video's
+ * outcome is now the outcome of the email, SMS, or portal push that carried it.
+ * (D-ID render status is still tracked — by ai_video_projects.provider_status
+ * and the poll-did-avatars cron, where a production fact belongs.)
+ *
+ * voice_drop and in_app are here because they are real delivery lanes with live
+ * adapters, and the ledger should be able to say something true about them.
+ */
+export type OutcomeChannel =
+  | "email" | "sms" | "voice_drop" | "in_app" | "direct_mail" | "social"
 
 export type ReconciliationVerdict = "confirmed" | "contradicted" | "pending" | "unverifiable"
 
@@ -114,14 +130,32 @@ export const TRUTH_SOURCES: Record<OutcomeChannel, TruthSource> = {
       "A platform that returns an external_post_id has published. The id is the " +
       "receipt, and analytics-sync later reads engagement against it.",
   },
-  video: {
-    source: "did.provider_status",
-    confirms: ["done", "completed", "ready"],
-    contradicts: ["error", "rejected", "failed"],
-    inFlight: ["created", "started", "processing"],
+  voice_drop: {
+    // The provider (slybroadcast via callConnector) DOES return a job_id, so this
+    // lane is correlatable. Nothing ingests its callback yet, so declaring a
+    // truth source here would leave every drop 'pending' forever and read as a
+    // bug. null says the accurate thing: proof is possible, it is not wired.
+    source: null,
+    confirms: [],
+    contradicts: [],
+    inFlight: [],
     why:
-      "D-ID renders asynchronously; the poll-did-avatars cron reads provider_status " +
-      "until it is terminal. Already reconciled — declared here so the set is complete.",
+      "orchestrateVoicedropSend returns the provider's job_id, so a drop CAN be " +
+      "proven — but no provider callback is ingested yet, so nothing can confirm " +
+      "one today. Wire the provider's status callback and this lane becomes " +
+      "verifiable; until then the OS says so out loud instead of assuming delivery.",
+  },
+  in_app: {
+    // The one lane where WE are the provider, so the truth is ours to state.
+    source: "notifications.delivered_at",
+    confirms: ["delivered", "read"],
+    contradicts: ["failed"],
+    inFlight: ["queued"],
+    why:
+      "The portal notification is the only touch the OS delivers end to end, so " +
+      "its own ledger IS the authority: notifications.delivered_at proves it " +
+      "arrived and read_at proves it was seen. No third party can contradict us, " +
+      "which makes this the one lane where 'sent' and 'landed' can honestly match.",
   },
 }
 
@@ -242,9 +276,14 @@ export function reconcile(
 export const OVERDUE_HOURS: Record<OutcomeChannel, number> = {
   email: 24,
   sms: 6,
+  // No callback is ingested yet, so a drop can never clear on its own. Held at
+  // the SMS window so it surfaces as overdue quickly rather than aging quietly.
+  voice_drop: 6,
+  // We deliver it ourselves; if it has not landed in an hour, something is wrong
+  // on OUR side, and that is the fastest thing in this table to notice.
+  in_app: 1,
   direct_mail: 24 * 14,
   social: 6,
-  video: 24,
 }
 
 export function isOverdue(

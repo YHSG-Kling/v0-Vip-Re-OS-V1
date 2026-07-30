@@ -53,7 +53,8 @@ const VERDICT_META: Record<ReconciliationVerdict, {
 }
 
 const CHANNEL_LABEL: Record<OutcomeChannel, string> = {
-  email: 'Email', sms: 'Text', direct_mail: 'Direct mail', social: 'Social', video: 'Video',
+  email: 'Email', sms: 'Text', voice_drop: 'Voicemail drop',
+  in_app: 'In-app', direct_mail: 'Direct mail', social: 'Social',
 }
 
 export async function OutcomeProofPanel({ brokerageId }: OutcomeProofPanelProps) {

@@ -28,13 +28,14 @@ import {
   computeNarrationKey,
   findCachePoisoningProps,
   summarizeCacheEconomics,
-  buildRevision,
+  hashSourceFiles,
   leakBrief,
   NO_FINISH,
   FINISH_PROP_KEYS,
   RENDER_CACHE_LEAK_SIGNAL,
   type FinishInputs,
 } from "../lib/remotion/composition-cache"
+import { resolveCodeRevision, __resetCodeRevisionMemo } from "../lib/remotion/code-revision"
 import { SIGNAL_REGISTRY } from "../lib/kernel/signal-registry"
 import { TABLE_MANAGER, MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
 
@@ -94,8 +95,8 @@ console.log("\n═══ 2. Frame vs finish — the split that stops needless re
   ok("a narration swap does NOT change the frame key",
     computeFrameKey(base) === computeFrameKey(swappedNarration))
   ok("a narration swap DOES change the artifact key",
-    computeArtifactKey(computeFrameKey(base), { ...NO_FINISH, voiceoverUrl: "https://x/y.mp3" })
-      !== computeArtifactKey(computeFrameKey(base), { ...NO_FINISH, voiceoverUrl: "https://x/z.mp3" }))
+    computeArtifactKey(computeFrameKey(base), { ...NO_FINISH, narrationAudioUrl: "https://x/y.mp3" })
+      !== computeArtifactKey(computeFrameKey(base), { ...NO_FINISH, narrationAudioUrl: "https://x/z.mp3" }))
 }
 
 console.log("\n═══ 3. Frame key — everything that changes the frames changes it ═══")
@@ -126,16 +127,17 @@ console.log("\n═══ 4. Artifact key — the finish inputs are part of the v
 {
   const fk = computeFrameKey({ compositionId: "CMAReel", codeRevision: "r1", geometry: GEO, props: { a: 1 } })
   const f: FinishInputs = {
-    introAssetId: "i1", outroAssetId: "o1", musicAssetId: "m1",
-    musicVolumePct: 20, musicLoop: true, voiceoverUrl: "https://x/a.mp3",
+    introClipUrl: "https://cdn/intro-a.mp4", outroClipUrl: "https://cdn/outro-a.mp4",
+    musicTrackUrl: "https://cdn/bed-a.mp3",
+    musicVolumePct: 20, musicLoop: true, narrationAudioUrl: "https://x/a.mp3",
   }
   ok("identical finish → identical key", computeArtifactKey(fk, f) === computeArtifactKey(fk, { ...f }))
   ok("a NEW BRAND INTRO changes the artifact (the whole point of the second key)",
-    computeArtifactKey(fk, f) !== computeArtifactKey(fk, { ...f, introAssetId: "i2" }))
+    computeArtifactKey(fk, f) !== computeArtifactKey(fk, { ...f, introClipUrl: "https://cdn/intro-b.mp4" }))
   ok("a different outro changes it",
-    computeArtifactKey(fk, f) !== computeArtifactKey(fk, { ...f, outroAssetId: "o2" }))
+    computeArtifactKey(fk, f) !== computeArtifactKey(fk, { ...f, outroClipUrl: "https://cdn/outro-b.mp4" }))
   ok("a different music track changes it",
-    computeArtifactKey(fk, f) !== computeArtifactKey(fk, { ...f, musicAssetId: "m2" }))
+    computeArtifactKey(fk, f) !== computeArtifactKey(fk, { ...f, musicTrackUrl: "https://cdn/bed-b.mp3" }))
   ok("a different music VOLUME changes it",
     computeArtifactKey(fk, f) !== computeArtifactKey(fk, { ...f, musicVolumePct: 40 }))
   ok("music loop on/off changes it",
@@ -145,7 +147,7 @@ console.log("\n═══ 4. Artifact key — the finish inputs are part of the v
   ok("the empty finish is distinguishable from a populated one",
     computeArtifactKey(fk, NO_FINISH) !== computeArtifactKey(fk, f))
   ok("a still (no finish pass) is keyed by the same function, no special case",
-    computeArtifactKey(fk, NO_FINISH).startsWith("a1_"))
+    computeArtifactKey(fk, NO_FINISH).startsWith("a2_"))
   ok("NO_FINISH is entirely null so it cannot accidentally match a real finish",
     Object.values(NO_FINISH).every((v) => v === null))
 }
@@ -163,19 +165,52 @@ console.log("\n═══ 5. Narration key — the precondition for a stable arti
   ok("the key is prefixed", computeNarrationKey("v1", "Hello").startsWith("n1_"))
 }
 
-console.log("\n═══ 6. Code revision — derived, never hand-declared ═══")
+console.log("\n═══ 6. Code revision — derived from the SOURCE, and able to say I don't know ═══")
 {
-  ok("a commit sha is used when present",
-    buildRevision({ VERCEL_GIT_COMMIT_SHA: "0123456789abcdef" }) === "0123456789ab")
-  ok("a deployment id is the fallback",
-    buildRevision({ VERCEL_DEPLOYMENT_ID: "dpl_abcdefghijklmn" }) === "dpl_abcdefgh")
-  ok("local dev shares one revision so the cache is observable while iterating",
-    buildRevision({}) === "dev")
-  ok("a truncated/garbage sha does not silently become the revision",
-    buildRevision({ VERCEL_GIT_COMMIT_SHA: "abc" }) === "dev")
-  const src = code("lib/remotion/composition-cache.ts")
-  ok("the revision comes from the environment, not a database version column",
-    src.includes("VERCEL_GIT_COMMIT_SHA") && !src.includes("code_revision_column"))
+  // Keyed on the composition source itself, not on VERCEL_GIT_COMMIT_SHA. The
+  // sha was a proxy that (a) nothing in this repo guarantees is set — absent, it
+  // silently collapsed to a constant and a composition edit would have served
+  // stale frames forever — and (b) changes on every deploy, discarding the cache
+  // for edits that touched no composition.
+  const a = [{ path: "MarketUpdateReel.tsx", content: "export const A = 1" }]
+  const b = [{ path: "MarketUpdateReel.tsx", content: "export const A = 2" }]
+  ok("identical source → identical revision", hashSourceFiles(a) === hashSourceFiles([...a]))
+  ok("an EDITED composition changes the revision", hashSourceFiles(a) !== hashSourceFiles(b))
+  ok("file order in the walk does not matter", (() => {
+    const one = [{ path: "a.tsx", content: "x" }, { path: "b.tsx", content: "y" }]
+    const two = [{ path: "b.tsx", content: "y" }, { path: "a.tsx", content: "x" }]
+    return hashSourceFiles(one) === hashSourceFiles(two)
+  })())
+  ok("RENAMING a composition changes the revision (Remotion resolves by id)",
+    hashSourceFiles([{ path: "Old.tsx", content: "x" }])
+      !== hashSourceFiles([{ path: "New.tsx", content: "x" }]))
+  ok("an added file changes the revision",
+    hashSourceFiles(a) !== hashSourceFiles([...a, { path: "New.tsx", content: "z" }]))
+
+  __resetCodeRevisionMemo()
+  const live = resolveCodeRevision()
+  ok("the real remotion/ tree resolves to a revision", typeof live === "string" && live!.length > 0)
+  ok("...derived from source, not from a deploy id", live!.startsWith("src_"))
+  ok("...and it is memoized (source cannot change under a running server)",
+    resolveCodeRevision() === live)
+
+  __resetCodeRevisionMemo()
+  ok("a tree with NO composition source yields null — unknown, not a constant",
+    resolveCodeRevision("/nonexistent-root-for-this-proof") === null
+      || resolveCodeRevision("/nonexistent-root-for-this-proof")!.startsWith("sha_")
+      || resolveCodeRevision("/nonexistent-root-for-this-proof")!.startsWith("dep_"))
+  __resetCodeRevisionMemo()
+
+  const cacheSrc = code("lib/remotion/render-cache.ts")
+  ok("a null revision DISABLES the cache rather than keying on a constant",
+    cacheSrc.includes("if (!codeRevision)") && cacheSrc.includes("cacheable: false"))
+  const routeSrc = code("app/api/internal/remotion/render-composition/route.ts")
+  ok("an uncacheable render is never stamped with a key", routeSrc.includes("if (probe.cacheable)"))
+  ok("...and never asks finalize to stamp one either",
+    routeSrc.includes("probe.cacheable ? probe.frameKey : null"))
+  const revSrc = code("lib/remotion/code-revision.ts")
+  ok("the env proxy is only a FALLBACK, never the primary",
+    revSrc.indexOf("fromSource(root)") < revSrc.indexOf("fromEnv()"))
 }
 
 console.log("\n═══ 7. Poisoning detector — the guard against this bug returning ═══")
@@ -325,7 +360,10 @@ console.log("\n═══ 14. Look up on the prediction, stamp on the reality ═
   ok("music volume is recorded only when the mix actually applied",
     coord.includes("musicVolumePct = musicRow.music_volume_pct"))
   ok("the narration url is recorded only when the mux actually applied",
-    coord.includes("voiceoverUrl = voUrl"))
+    coord.includes("narrationAudioUrl = voUrl"))
+  ok("the intro/outro CLIP URLS are the key, not the row ids — a delete+re-upload of\n    the same file keeps its cached artifact instead of missing forever",
+    coord.includes("introClipUrl = introRow?.video_url") &&
+    coord.includes("musicTrackUrl = musicRow.video_url"))
   ok("a caller that does not participate leaves the key NULL rather than guessing",
     coord.includes("frameKey ? computeArtifactKey(frameKey, finish) : null"))
 
@@ -333,7 +371,7 @@ console.log("\n═══ 14. Look up on the prediction, stamp on the reality ═
   ok("the route probes the cache before bundling",
     route.indexOf("probeRenderCache") < route.indexOf("getBundle(entryPoint)"))
   ok("the route passes the frame key into finalize",
-    route.includes("finalizeCoordinatedRender(intent, row.id, buffer, probe.frameKey)"))
+    route.includes("finalizeCoordinatedRender(") && route.includes("probe.cacheable ? probe.frameKey : null"))
 }
 
 console.log("\n═══ 15. A cache hit is a real delivery, and a refused serve renders ═══")

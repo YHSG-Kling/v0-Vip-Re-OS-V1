@@ -60,7 +60,7 @@ CREATE INDEX IF NOT EXISTS remotion_renders_frame_key
 COMMENT ON COLUMN remotion_composition_renders.frame_key IS
   'Identity of the FRAMES: composition id + deploy code revision + geometry + canonical frame-relevant props. Stamped from what was actually rendered.';
 COMMENT ON COLUMN remotion_composition_renders.artifact_key IS
-  'Identity of the FINISHED file: frame_key + the finish inputs actually muxed (intro/outro/music asset ids, music volume + loop, narration url). The cache lookup key.';
+  'Identity of the FINISHED file: frame_key + the finish inputs actually muxed (intro/outro/music CLIP URLS, music volume + loop, narration mp3 url). Keyed on URLs rather than video_assets ids because ffmpeg consumes the URL — see m311. The cache lookup key.';
 COMMENT ON COLUMN remotion_composition_renders.cache_hit IS
   'TRUE when this render served an existing artifact instead of rendering. Its output_url is shared with served_from_render_id, and it is NOT re-captured into marketing_assets.';
 

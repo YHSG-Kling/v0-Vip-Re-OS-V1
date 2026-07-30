@@ -148,7 +148,6 @@ export function ISACampaignsClient({
             open={showCreate}
             onClose={() => setShowCreate(false)}
             brokerageId={brokerageId}
-            videoEnabled={videoEnabled}
             directMailEnabled={directMailEnabled}
             onCreated={refresh}
           />

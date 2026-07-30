@@ -35,7 +35,6 @@ import {
   computeArtifactKey,
   findCachePoisoningProps,
   summarizeCacheEconomics,
-  buildRevision,
   leakBrief,
   NO_FINISH,
   RENDER_CACHE_LEAK_SIGNAL,
@@ -43,6 +42,7 @@ import {
   type CacheEconomics,
   type CachePoisoningFinding,
 } from "./composition-cache"
+import { resolveCodeRevision } from "./code-revision"
 
 export { RENDER_CACHE_LEAK_SIGNAL }
 
@@ -58,9 +58,9 @@ export async function predictFinishInputs(
   svc: ReturnType<typeof createServiceClient>,
   scope: StockPickScope,
   composition: RemotionCompositionRow,
-  opts: { musicMood?: string | null; voiceoverUrl?: string | null; applyBookends?: boolean; applyMusic?: boolean } = {},
+  opts: { musicMood?: string | null; narrationAudioUrl?: string | null; applyBookends?: boolean; applyMusic?: boolean } = {},
 ): Promise<FinishInputs> {
-  const finish: FinishInputs = { ...NO_FINISH, voiceoverUrl: opts.voiceoverUrl ?? null }
+  const finish: FinishInputs = { ...NO_FINISH, narrationAudioUrl: opts.narrationAudioUrl ?? null }
   try {
     const wantsBookends = opts.applyBookends ?? composition.supports_bookends
     if (wantsBookends && (composition.stock_intro_category || composition.stock_outro_category)) {
@@ -72,14 +72,14 @@ export async function predictFinishInputs(
           ? pickStockAsset(svc, scope, composition.stock_outro_category)
           : Promise.resolve(null),
       ])
-      finish.introAssetId = intro?.id ?? null
-      finish.outroAssetId = outro?.id ?? null
+      finish.introClipUrl = intro?.video_url ?? null
+      finish.outroClipUrl = outro?.video_url ?? null
     }
     const wantsMusic = (opts.applyMusic ?? true) && opts.musicMood !== "none"
     if (wantsMusic) {
       const music = await pickStockAsset(svc, scope, "music", opts.musicMood ?? null)
       if (music?.video_url) {
-        finish.musicAssetId = music.id
+        finish.musicTrackUrl = music.video_url
         finish.musicVolumePct = music.music_volume_pct ?? 20
         finish.musicLoop = music.music_loop ?? true
       }
@@ -91,6 +91,14 @@ export async function predictFinishInputs(
 }
 
 export interface CacheProbe {
+  /**
+   * FALSE when the deployed composition revision cannot be established. The
+   * caller must then neither serve from nor write to the cache: without knowing
+   * which version of the code is running we cannot tell a reusable artifact from
+   * a stale one, and serving a stale cut of a client's listing video is not a
+   * recoverable mistake. Rendering anyway costs a minute.
+   */
+  cacheable: boolean
   frameKey: string
   artifactKey: string
   /** The existing render to serve, when there is one. */
@@ -114,9 +122,13 @@ export async function probeRenderCache(
     finish: FinishInputs
   },
 ): Promise<CacheProbe> {
+  const codeRevision = resolveCodeRevision()
+  if (!codeRevision) {
+    return { cacheable: false, frameKey: "", artifactKey: "", hit: null, leaks: [] }
+  }
   const frameKey = computeFrameKey({
     compositionId: input.composition.composition_id,
-    codeRevision: buildRevision(),
+    codeRevision,
     geometry: {
       width: input.composition.width,
       height: input.composition.height,
@@ -128,7 +140,7 @@ export async function probeRenderCache(
   const artifactKey = computeArtifactKey(frameKey, input.finish)
   const leaks = findCachePoisoningProps(input.props)
   const hit = await lookupCachedArtifact(svc, input.brokerageId, artifactKey)
-  return { frameKey, artifactKey, hit, leaks }
+  return { cacheable: true, frameKey, artifactKey, hit, leaks }
 }
 
 /** The lookup. Tenant-scoped, succeeded-only, newest first. */

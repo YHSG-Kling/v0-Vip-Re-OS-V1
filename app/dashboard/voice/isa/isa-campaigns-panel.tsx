@@ -72,7 +72,6 @@ export function ISACampaignsPanel({ campaigns: initialCampaigns, brokerageId }: 
           open={showCreateDrawer}
           onClose={() => setShowCreateDrawer(false)}
           brokerageId={brokerageId}
-          videoEnabled={false}
           directMailEnabled={false}
           onCreated={() => { setShowCreateDrawer(false); router.refresh() }}
         />
@@ -164,7 +163,6 @@ export function ISACampaignsPanel({ campaigns: initialCampaigns, brokerageId }: 
         open={showCreateDrawer}
         onClose={() => setShowCreateDrawer(false)}
         brokerageId={brokerageId}
-        videoEnabled={false}
         directMailEnabled={false}
         onCreated={() => { setShowCreateDrawer(false); router.refresh() }}
       />

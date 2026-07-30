@@ -144,7 +144,7 @@ export async function POST(req: NextRequest) {
       ? NO_FINISH
       : await predictFinishInputs(svc, cacheScope, composition, {
           musicMood: ((row.input_props as { music_mood?: unknown } | null)?.music_mood as string | undefined) ?? null,
-          voiceoverUrl: ((row.input_props as { voiceover_url?: unknown } | null)?.voiceover_url as string | undefined) ?? null,
+          narrationAudioUrl: ((row.input_props as { voiceover_url?: unknown } | null)?.voiceover_url as string | undefined) ?? null,
         })
     const probe = await probeRenderCache(svc, {
       brokerageId: row.brokerage_id,
@@ -175,8 +175,12 @@ export async function POST(req: NextRequest) {
     }
 
     // Identity stamped before the heavy work so a concurrent sibling can see
-    // what is already in flight for this key.
-    await stampRenderKeys(svc, row.id, { frameKey: probe.frameKey, artifactKey: probe.artifactKey })
+    // what is already in flight for this key. Skipped when the revision is
+    // unknowable — an unkeyed render is simply never reused, which is the safe
+    // direction.
+    if (probe.cacheable) {
+      await stampRenderKeys(svc, row.id, { frameKey: probe.frameKey, artifactKey: probe.artifactKey })
+    }
 
     // 3. Bundle once (module-cached) + resolve Chromium.
     const entryPoint = path.join(process.cwd(), "remotion", "index.ts")
@@ -229,7 +233,9 @@ export async function POST(req: NextRequest) {
     // computed from the finish inputs that ACTUALLY landed (a bookend whose
     // ffmpeg concat failed did not change the video and must not change its
     // key), overwriting the prediction stamped above.
-    const result = await finalizeCoordinatedRender(intent, row.id, buffer, probe.frameKey)
+    const result = await finalizeCoordinatedRender(
+      intent, row.id, buffer, probe.cacheable ? probe.frameKey : null,
+    )
     if (!result.ok) {
       // finalize already marked the row failed.
       return NextResponse.json({ ok: false, render_id: row.id, error: result.error }, { status: 500 })
@@ -267,7 +273,8 @@ export async function POST(req: NextRequest) {
       used_outro_asset_id: result.outroAssetId,
       used_music_asset_id: result.musicAssetId,
       cache_hit: false,
-      frame_key: probe.frameKey,
+      cacheable: probe.cacheable,
+      frame_key: probe.cacheable ? probe.frameKey : null,
       artifact_key: result.artifactKey,
     })
   } catch (err) {

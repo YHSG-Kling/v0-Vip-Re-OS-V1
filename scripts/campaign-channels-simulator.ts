@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import {
   CAMPAIGN_CHANNELS, OUTREACH_CHANNELS, BROADCAST_CHANNELS,
+  VIDEO_DELIVERY_CHANNELS, CAMPAIGN_PAYLOADS,
   sanitizeOutreachChannels, sanitizeChannels,
 } from "../lib/campaigns/channels"
 
@@ -27,8 +28,37 @@ console.log("\n── PURE: the true-channel taxonomy ──")
   }
   check("outreach ⊂ broadcast are disjoint and cover the registry",
     OUTREACH_CHANNELS.length + BROADCAST_CHANNELS.length === CAMPAIGN_CHANNELS.length)
-  check("email/sms/phone/direct_mail/video are OUTREACH (1:1)",
-    ["email", "sms", "phone", "direct_mail", "video"].every((k) => OUTREACH_CHANNELS.some((c) => c.key === k)))
+  check("email/sms/phone/voice_drop/in_app/direct_mail are OUTREACH (1:1)",
+    ["email", "sms", "phone", "voice_drop", "in_app", "direct_mail"]
+      .every((k) => OUTREACH_CHANNELS.some((c) => c.key === k)))
+
+  // ── A CHANNEL IS HOW A MESSAGE TRAVELS, NOT WHAT IS IN IT ──────────────────
+  // Owner ruling. `video` used to sit in OUTREACH_CHANNELS labelled "Video
+  // (D-ID)", so the ISA picker offered it as a peer of email — but read the
+  // adapter and its last act is "deliver via email if contact has email". The
+  // picker was really offering "email, with a reel in it" and could not say so.
+  check("video is NOT a channel — it is a payload that rides one",
+    !CAMPAIGN_CHANNELS.some((c) => c.key === ("video" as never)))
+  check("...and the taxonomy names what CAN carry it",
+    VIDEO_DELIVERY_CHANNELS.includes("email") && VIDEO_DELIVERY_CHANNELS.includes("sms"))
+  check("...every carrier named is a real registered channel",
+    VIDEO_DELIVERY_CHANNELS.every((k) => keys.includes(k)))
+  check("no payload is undeliverable — a payload with no carrier never reaches anybody",
+    CAMPAIGN_PAYLOADS.every((p) => p.deliveredBy.length > 0))
+  check("a qr code is a payload too, not a send",
+    !CAMPAIGN_CHANNELS.some((c) => c.key === ("qr_code" as never)) &&
+    CAMPAIGN_PAYLOADS.some((p) => p.key === "qr_code"))
+
+  // ── THE LAYER BETWEEN UI AND EXECUTOR MUST KNOW WHAT THE EXECUTOR CAN DO ───
+  // voice_drop and in_app had live adapters and live CHECK support the whole
+  // time; only this taxonomy — the thing every picker reads — did not list
+  // them, so no human could ever choose a working channel.
+  check("the voicemail-drop rail is offered, not just dispatchable",
+    OUTREACH_CHANNELS.some((c) => c.key === "voice_drop" && c.adapterChannel === "voice_drop"))
+  check("the portal push notification is offered too",
+    OUTREACH_CHANNELS.some((c) => c.key === "in_app" && c.adapterChannel === "in_app"))
+  check("every outreach channel names a real workflow adapter",
+    OUTREACH_CHANNELS.every((c) => !!c.adapterChannel))
   check("social/ads/blog/newsletter/podcast are BROADCAST",
     ["social", "ads", "blog", "newsletter", "podcast"].every((k) => BROADCAST_CHANNELS.some((c) => c.key === k)))
   check("sanitizeOutreachChannels drops broadcast + unknown, dedupes, keeps order",

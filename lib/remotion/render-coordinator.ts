@@ -136,9 +136,12 @@ export async function finalizeCoordinatedRender(
   // The finish identity, recorded as each pass actually lands. Only an APPLIED
   // pass counts: a bookend whose ffmpeg concat failed did not change the video,
   // so it must not change the video's key either.
+  let introClipUrl: string | null = null
+  let outroClipUrl: string | null = null
+  let musicTrackUrl: string | null = null
   let musicVolumePct: number | null = null
   let musicLoop: boolean | null = null
-  let voiceoverUrl: string | null = null
+  let narrationAudioUrl: string | null = null
 
   // ─── Bookends ───
   const wantsBookends = intent.applyBookends ?? composition.supports_bookends
@@ -162,6 +165,9 @@ export async function finalizeCoordinatedRender(
           working = concat.outputBuffer
           introAssetId = introRow?.id ?? null
           outroAssetId = outroRow?.id ?? null
+          // The URL is what ffmpeg actually consumed — that is the cache identity.
+          introClipUrl = introRow?.video_url ?? null
+          outroClipUrl = outroRow?.video_url ?? null
         }
       } catch (e) {
         console.warn("[render-coordinator] bookend stitch failed; continuing:", (e as Error).message)
@@ -185,7 +191,7 @@ export async function finalizeCoordinatedRender(
       if (narrated.ok && narrated.outputBuffer.length > 0) {
         working = narrated.outputBuffer
         usedVoiceover = true
-        voiceoverUrl = voUrl
+        narrationAudioUrl = voUrl
       }
     }
   } catch (e) {
@@ -209,6 +215,7 @@ export async function finalizeCoordinatedRender(
         if (mixed.ok && mixed.outputBuffer.length > 0) {
           working = mixed.outputBuffer
           musicAssetId = musicRow.id
+          musicTrackUrl = musicRow.video_url
           musicVolumePct = musicRow.music_volume_pct ?? 20
           musicLoop = musicRow.music_loop ?? true
         }
@@ -233,7 +240,7 @@ export async function finalizeCoordinatedRender(
     // simply never served from (and never serves), rather than being keyed on a
     // guess.
     const finish: FinishInputs = {
-      introAssetId, outroAssetId, musicAssetId, musicVolumePct, musicLoop, voiceoverUrl,
+      introClipUrl, outroClipUrl, musicTrackUrl, musicVolumePct, musicLoop, narrationAudioUrl,
     }
     const artifactKey = frameKey ? computeArtifactKey(frameKey, finish) : null
 

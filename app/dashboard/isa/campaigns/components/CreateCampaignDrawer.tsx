@@ -7,22 +7,27 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Slider } from "@/components/ui/slider"
-import { Mail, MessageSquare, Video, FileText, Phone } from "lucide-react"
+import { Mail, MessageSquare, Video, FileText, Phone, Voicemail, Bell } from "lucide-react"
 import { createISACampaign, type CampaignType } from "@/app/actions/ai-isa"
-import { OUTREACH_CHANNELS, type CampaignChannelKey } from "@/lib/campaigns/channels"
+import {
+  OUTREACH_CHANNELS, VIDEO_OUTREACH_CHANNELS, channelCarriesVideo,
+  type CampaignChannelKey,
+} from "@/lib/campaigns/channels"
 
 const CHANNEL_ICON: Record<string, React.ReactNode> = {
   email:       <Mail className="h-4 w-4 text-blue-500" />,
   sms:         <MessageSquare className="h-4 w-4 text-green-500" />,
   phone:       <Phone className="h-4 w-4 text-gray-500" />,
-  video:       <Video className="h-4 w-4 text-purple-500" />,
+  voice_drop:  <Voicemail className="h-4 w-4 text-indigo-500" />,
+  in_app:      <Bell className="h-4 w-4 text-sky-500" />,
   direct_mail: <FileText className="h-4 w-4 text-orange-500" />,
 }
 
 const CHANNEL_DESCRIPTION: Record<string, string> = {
   sms:         "TCPA consent required per contact",
   phone:       "TCPA consent required — the AI places the call",
-  video:       "Personalized AI video (D-ID + ElevenLabs)",
+  voice_drop:  "Ringless voicemail — TCPA gated, needs an active voicedrop preset",
+  in_app:      "Portal notification — no carrier, no postage, already consented",
   direct_mail: "Personalized postcard (Lob)",
 }
 
@@ -40,7 +45,6 @@ interface Props {
   open:              boolean
   onClose:           () => void
   brokerageId:       string
-  videoEnabled:      boolean
   directMailEnabled: boolean
   onCreated:         () => void
 }
@@ -49,7 +53,6 @@ export function CreateCampaignDrawer({
   open,
   onClose,
   brokerageId,
-  videoEnabled,
   directMailEnabled,
   onCreated,
 }: Props) {
@@ -64,7 +67,9 @@ export function CreateCampaignDrawer({
   const [error, setError]               = useState<string | null>(null)
 
   // Which activation-gated channels the tenant has enabled (superadmin capability).
-  const activation: Record<string, boolean> = { video: videoEnabled, direct_mail: directMailEnabled }
+  // `video` is deliberately absent: it is not a destination a campaign sends to,
+  // it is a payload a sequence STEP produces and hands to one of these channels.
+  const activation: Record<string, boolean> = { direct_mail: directMailEnabled }
   const isLocked = (c: (typeof OUTREACH_CHANNELS)[number]) => !!c.requiresActivation && !activation[c.key]
 
   function toggleChannel(key: CampaignChannelKey) {
@@ -173,6 +178,18 @@ export function CreateCampaignDrawer({
                 />
               )
             })}
+
+            {/* Video is a payload, not a destination — say so where the choice is
+                made, so nobody goes looking for a "video channel" that should not
+                exist. The reel itself is added as a step in the sequence builder,
+                and it rides whichever of these channels the step targets. */}
+            <p className="text-xs text-muted-foreground">
+              Sending a <span className="font-medium text-foreground">video</span> is not a
+              channel choice — a reel is produced by a step in the sequence and delivered
+              inside {VIDEO_OUTREACH_CHANNELS.filter(channelCarriesVideo).length > 0
+                ? OUTREACH_CHANNELS.filter((c) => channelCarriesVideo(c.key)).map((c) => c.label).join(", ")
+                : "another channel"}.
+            </p>
           </div>
 
           {/* Score Threshold */}

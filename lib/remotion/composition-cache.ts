@@ -61,19 +61,56 @@ export interface CompositionGeometry {
   durationFrames: number
 }
 
+/**
+ * What the finish pass muxed over the frames.
+ *
+ * KEYED ON URLs, NOT ROW IDs. The first cut of this used video_assets.id, and
+ * the owner was right to push back: the id is an indirection, and the URL is
+ * what the finish pass actually consumes — concatIntroOutro takes introVideoUrl,
+ * mixBackgroundMusic takes musicUrl. Naming the row instead of the bytes is
+ * wrong in both directions:
+ *
+ *   · Delete a brand intro and re-upload the same file: NEW row id, SAME storage
+ *     URL, byte-identical video. Under id-keying every cached artifact misses
+ *     forever — silent, permanent waste with nothing to point at. This happens
+ *     the first time anyone tidies their stock library.
+ *   · Re-point a row at a different file: same id, different video. Nothing
+ *     updates video_url today, so this is not live — but "no writer exists yet"
+ *     is exactly the assumption that ages badly, and the URL is immune to it.
+ *
+ * The URL is strictly closer to the delivered bytes, and pickStockAsset already
+ * selects it, so this costs nothing.
+ */
 export interface FinishInputs {
-  introAssetId: string | null
-  outroAssetId: string | null
-  musicAssetId: string | null
+  /** video_assets.video_url of the intro clip concatenated onto the front. */
+  introClipUrl: string | null
+  /** video_assets.video_url of the outro clip concatenated onto the end. */
+  outroClipUrl: string | null
+  /** video_assets.video_url of the licensed music bed mixed underneath. */
+  musicTrackUrl: string | null
   musicVolumePct: number | null
   musicLoop: boolean | null
-  voiceoverUrl: string | null
+  /**
+   * The RENDERED NARRATION MP3 that was muxed over the video — an audio file in
+   * Supabase storage.
+   *
+   * Named unambiguously because the old name (`voiceoverUrl`) invited exactly
+   * the question the owner asked: is this the voice or the avatar? Neither.
+   *   · the VOICE is an ElevenLabs voice_id — the agent's clone, or the
+   *     assistant's chosen generic id (see lib/voice/voice-resolver). It is an
+   *     identifier, never a URL, and it keys narration_cache.
+   *   · the AVATAR is a D-ID actor id or a photo URL (resolveSelfAvatar), and it
+   *     affects the FRAMES, so it travels in props and lands in the frame key.
+   *   · THIS is the output of synthesizing a script in that voice — the audio
+   *     that ends up in the finished file, which is why it belongs to the finish.
+   */
+  narrationAudioUrl: string | null
 }
 
 /** The finish identity of a render that had no finish pass (a still card). */
 export const NO_FINISH: FinishInputs = {
-  introAssetId: null, outroAssetId: null, musicAssetId: null,
-  musicVolumePct: null, musicLoop: null, voiceoverUrl: null,
+  introClipUrl: null, outroClipUrl: null, musicTrackUrl: null,
+  musicVolumePct: null, musicLoop: null, narrationAudioUrl: null,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -130,21 +167,11 @@ function shortHash(input: string): string {
 // Code revision
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * The identity of the composition CODE currently deployed.
- *
- * Derived, never declared: a composition edit ships in a commit, so the commit
- * sha covers it with no human bookkeeping to forget. Falls back to the Vercel
- * deployment id, then to "dev" — in local development every render shares one
- * revision, which is what makes the cache observable while iterating.
- */
-export function buildRevision(env: Record<string, string | undefined> = process.env): string {
-  const sha = env.VERCEL_GIT_COMMIT_SHA
-  if (sha && sha.length >= 7) return sha.slice(0, 12)
-  const dep = env.VERCEL_DEPLOYMENT_ID
-  if (dep) return dep.slice(0, 12)
-  return "dev"
-}
+// The code revision is resolved by lib/remotion/code-revision.ts, which hashes
+// the actual composition source (and returns null — DISABLING the cache — when
+// it cannot be established). It lives there rather than here because it reads
+// the filesystem, and this module stays pure so the proof can exercise every
+// key without a deploy.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The keys
@@ -173,14 +200,29 @@ export function computeFrameKey(input: FrameKeyInput): string {
 export function computeArtifactKey(frameKey: string, finish: FinishInputs): string {
   const payload = canonicalJson({
     f: frameKey,
-    i: finish.introAssetId,
-    o: finish.outroAssetId,
-    m: finish.musicAssetId,
+    i: finish.introClipUrl,
+    o: finish.outroClipUrl,
+    m: finish.musicTrackUrl,
     v: finish.musicVolumePct,
     l: finish.musicLoop,
-    n: finish.voiceoverUrl,
+    n: finish.narrationAudioUrl,
   })
-  return `a1_${shortHash(payload)}`
+  return `a2_${shortHash(payload)}`
+}
+
+/**
+ * Identity of a set of source files — the deployed composition CODE.
+ *
+ * Pure so it can be proven without a filesystem; lib/remotion/code-revision.ts
+ * supplies the real files. Path and content both feed the hash, so renaming a
+ * composition changes the revision even if its bytes are untouched (it is a
+ * different composition to Remotion, which resolves by id).
+ */
+export function hashSourceFiles(
+  files: ReadonlyArray<{ path: string; content: string }>,
+): string {
+  const sorted = [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+  return shortHash(canonicalJson(sorted.map((f) => [f.path, sha256(f.content)])))
 }
 
 /**

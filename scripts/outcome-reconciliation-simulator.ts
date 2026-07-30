@@ -64,9 +64,19 @@ console.log("\n[every lane declares WHERE its truth comes from]")
 {
   check(`all ${CHANNELS.length} lanes have a declared truth source spec`,
     CHANNELS.every((c) => !!TRUTH_SOURCES[c].why))
-  check("the two lanes that were already reconciled name their real mechanism",
-    TRUTH_SOURCES.email.source === "sendgrid.event_webhook" &&
-    TRUTH_SOURCES.video.source === "did.provider_status")
+  check("the lane that was already reconciled names its real mechanism",
+    TRUTH_SOURCES.email.source === "sendgrid.event_webhook")
+  // `video` is deliberately NOT a lane here. D-ID render status answers "did the
+  // video get MADE", which is production, not delivery; a finished render nobody
+  // received must never read as a landed outcome. A reel's outcome is the
+  // outcome of the email / SMS / portal push that carried it.
+  check("video is not a delivery lane",
+    !(CHANNELS as readonly string[]).includes("video"))
+  check("the lane we own end to end names our OWN ledger as the authority",
+    TRUTH_SOURCES.in_app.source === "notifications.delivered_at")
+  check("a correlatable-but-unwired lane says so rather than assuming delivery",
+    TRUTH_SOURCES.voice_drop.source === null &&
+    TRUTH_SOURCES.voice_drop.why.includes("no provider callback"))
   check("…and the two that were NOT now name theirs",
     TRUTH_SOURCES.sms.source === "twilio.status_callback" &&
     TRUTH_SOURCES.direct_mail.source === "lob.event_webhook")
@@ -78,8 +88,17 @@ console.log("\n[every lane declares WHERE its truth comes from]")
       const all = [...s.confirms, ...s.contradicts, ...s.inFlight].map((x) => x.toLowerCase())
       return new Set(all).size === all.length
     }))
-  check("every lane can be contradicted — a lane that can only succeed proves nothing",
-    CHANNELS.every((c) => TRUTH_SOURCES[c].contradicts.length > 0))
+  // The invariant is about VERIFIABLE lanes: if a lane claims a truth source, that
+  // source must be able to say no. A lane with no source declares no statuses at
+  // all and resolves to `unverifiable` — it is not a lane that "can only succeed",
+  // it is a lane that never claims success in the first place.
+  check("every VERIFIABLE lane can be contradicted — a lane that can only succeed proves nothing",
+    CHANNELS.filter(isVerifiable).every((c) => TRUTH_SOURCES[c].contradicts.length > 0))
+  check("an unverifiable lane declares NO statuses at all, so it cannot imply success",
+    CHANNELS.filter((c) => !isVerifiable(c)).every((c) => {
+      const s = TRUTH_SOURCES[c]
+      return s.confirms.length === 0 && s.contradicts.length === 0 && s.inFlight.length === 0
+    }))
 }
 
 console.log("\n[TWILIO'S 'sent' IS NOT DELIVERY — the original mistake]")
