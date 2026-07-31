@@ -67,41 +67,58 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  // ── Resolve the twin (default of the embed's owner agent) ───────────────
-  // If embed has default_twin_id, use it. Otherwise pull the owning agent's
-  // default twin. If the embed has no agent_id (brokerage-wide), we fall
-  // back to the brokerage's "primary" agent — picked as the first active
-  // agent in the brokerage. Brokerages can override by setting an agent_id
-  // on the embed config.
+  // ── Resolve the twin ────────────────────────────────────────────────────
+  // Two sources, both an explicit choice someone made: the twin pinned on the
+  // embed, or — for a PERSONAL embed, which is owned by one agent — that
+  // agent's own default twin.
+  //
+  // WHAT THIS NO LONGER DOES. A brokerage-wide embed (agent_id NULL) with no
+  // pinned twin used to select "the brokerage's primary agent", defined as the
+  // first active agent by created_at, and put THEIR face and THEIR cloned voice
+  // on a public website. Nobody chose that. The longest-tenured agent in the
+  // brokerage became the company's public spokesperson because of a row's
+  // timestamp, and they were never asked — an agent's likeness and voice clone
+  // are not brokerage property to reassign. It also contradicted the create
+  // dialog, which tells the admin brokerage-wide means "pick a twin from any
+  // agent"; the picker existed, the pick was simply never required, and the
+  // silent fallback covered for it.
+  //
+  // Now an unpinned brokerage-wide embed refuses and says what to do. The
+  // create dialog collects the twin up front, so this is the state of an embed
+  // whose twin was later deleted or unapproved — a real condition worth a real
+  // message, not a stranger's face.
   let twinId: string | null = widget.default_twin_id
-  let agentId: string | null = widget.agent_id
 
   if (!twinId) {
-    if (!agentId) {
-      const { data: primary } = await supabase
-        .from("agents")
-        .select("id")
-        .eq("brokerage_id", widget.brokerage_id)
-        .eq("is_active", true)
-        .order("created_at", { ascending: true })
-        .limit(1)
-        .maybeSingle()
-      agentId = primary?.id ?? null
-    }
-    if (!agentId) {
-      return NextResponse.json({ error: "No agent available for this embed" }, { status: 409 })
+    if (!widget.agent_id) {
+      return NextResponse.json(
+        {
+          error: "This chat isn't finished being set up yet.",
+          operator_hint:
+            "This brokerage-wide embed has no twin assigned. Pick one in Settings → Website Embeds — " +
+            "a brokerage-wide embed never borrows an agent's twin automatically.",
+        },
+        { status: 409 },
+      )
     }
     const { data: defaultTwin } = await supabase
       .from("agent_avatar_assets")
       .select("id")
-      .eq("agent_id", agentId)
+      .eq("agent_id", widget.agent_id)
       .eq("is_default", true)
       .maybeSingle()
     twinId = defaultTwin?.id ?? null
   }
 
   if (!twinId) {
-    return NextResponse.json({ error: "This brokerage has no twin configured yet" }, { status: 409 })
+    return NextResponse.json(
+      {
+        error: "This chat isn't finished being set up yet.",
+        operator_hint:
+          "The agent who owns this embed has no default twin. Set one up in Settings → Voice & Avatar.",
+      },
+      { status: 409 },
+    )
   }
 
   // Load the twin's full config for ensureDIDAgent

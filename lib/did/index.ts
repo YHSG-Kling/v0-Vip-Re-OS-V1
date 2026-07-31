@@ -63,9 +63,11 @@ export interface GenerateVideoInput {
    *  for `expression`/`expressionIntensity` when caller didn't pass them. */
   agentUserId?: string
   /**
-   * URL of the agent's photo used as the talking-head source.
-   * Resolved from agents.avatar_image_url by the caller; pass null to use
-   * the brokerage's configured default D-ID actor URL instead.
+   * URL of the agent's photo used as the talking-head source, resolved by the
+   * CALLER (agents.avatar_image_url / agent_voice_profiles.did_photo_url).
+   * Null/omitted no longer means "use the brokerage's default" — there is no
+   * brokerage default, by owner rule. With no actorId either, the render is
+   * REFUSED rather than handed to D-ID's stock presenter.
    */
   avatarImageUrl?: string | null
   /** D-ID actor ID (alternative to avatarImageUrl; preferred if set) */
@@ -80,7 +82,9 @@ export interface GenerateVideoInput {
   outroUrl?: string | null
   /** Logo/watermark URL — composited onto output video (requires ffmpeg; Sprint C) */
   logoUrl?: string | null
-  /** Brokerage ID — used to resolve brokerage-level D-ID config when agent has none */
+  /** Brokerage ID — the METERING and BUDGET scope for this render (vendor spend
+   *  ledger + the monthly vendor ceiling). It no longer resolves any identity:
+   *  a brokerage never supplies the face or the voice for an agent's video. */
   brokerageId: string
   /** Submit the D-ID job and return immediately (status='processing' + the talk id) WITHOUT
    *  inline-polling. For the AUTONOMOUS pipeline: the caller stamps the talk id onto an
@@ -208,28 +212,35 @@ async function pollUntilDone(talkId: string, engine: DidEngine): Promise<string 
 // Avatar source resolution
 // ---------------------------------------------------------------------------
 
+/**
+ * WHOSE FACE. Exactly two answers, both from the caller: the actor id the caller
+ * resolved, or the photo the caller resolved. There is no third answer.
+ *
+ * There used to be two more, and both were wrong for the same reason.
+ *
+ *   · A BROKERAGE FALLBACK — brokerages.did_actor_id / did_avatar_url. Against
+ *     the owner's rule that every user sets up their own avatar with no fallback
+ *     to the brokerage, and dead besides: those columns were added by a schema
+ *     reconciliation script and have NO writer anywhere in the app and no UI, so
+ *     nothing could ever populate them. Live check: 0 of 2 brokerages had either
+ *     set. The branch existed only to be skipped.
+ *
+ *   · AN "ULTIMATE FALLBACK" of returning {} and letting the request go out with
+ *     neither actor_id nor source_url — which does not mean "no video". It means
+ *     D-ID RENDERS WITH ITS OWN DEFAULT PRESENTER: a stock stranger. The job
+ *     succeeded, the poller marked it done, and a contact received a talking-head
+ *     video of someone who has never worked at the brokerage, under their agent's
+ *     name. Nothing in the pipeline could tell that apart from a real render.
+ *
+ * That is the whole defect class in one branch — the OS collects the intent
+ * (this agent's twin) and silently ships something else. Now the absence of a
+ * face is a refusal the caller can act on, not a stranger.
+ */
 async function resolveAvatarSource(
-  input: Pick<GenerateVideoInput, "avatarImageUrl" | "actorId" | "brokerageId">
+  input: Pick<GenerateVideoInput, "avatarImageUrl" | "actorId">
 ): Promise<{ sourceUrl?: string; actorId?: string }> {
-  // Caller-provided actor ID takes priority
   if (input.actorId) return { actorId: input.actorId }
-
-  // Caller-provided avatar photo URL
   if (input.avatarImageUrl) return { sourceUrl: input.avatarImageUrl }
-
-  // Fall back to brokerage-configured D-ID source
-  try {
-    const svc = createServiceClient()
-    const { data } = await svc
-      .from("brokerages")
-      .select("did_avatar_url, did_actor_id")
-      .eq("id", input.brokerageId)
-      .maybeSingle()
-    if ((data as any)?.did_actor_id) return { actorId: (data as any).did_actor_id }
-    if ((data as any)?.did_avatar_url) return { sourceUrl: (data as any).did_avatar_url }
-  } catch { /* best-effort */ }
-
-  // Ultimate fallback — D-ID will use its default presenter
   return {}
 }
 
@@ -313,6 +324,25 @@ export async function generateVideo(
 
   const avatarSrc = await resolveAvatarSource(input)
 
+  // NO FACE → NO RENDER. Refused here, before the budget gate and before a
+  // single provider call, because a D-ID submit with neither actor_id nor
+  // source_url does not fail — it renders a stock stranger and reports success.
+  // Callers that legitimately have no face already have a path for it: pass
+  // voiceOnly (partners-meeting does exactly this, degrading to audio), or
+  // handle the error and degrade to a memo. Every caller already branches on
+  // status === "error" / a null videoUrl, so this reaches them as a real
+  // instruction instead of a silent substitution.
+  if (!avatarSrc.actorId && !avatarSrc.sourceUrl) {
+    return {
+      videoId: "",
+      videoUrl: null,
+      status: "error",
+      note:
+        "No avatar to render with — this agent has no D-ID twin or photo configured. " +
+        "Set one up in Settings → Voice & Avatar, or request voice-only output.",
+    }
+  }
+
   const scriptBlock: Record<string, unknown> = {
     type: "text",
     input: input.script,
@@ -371,13 +401,14 @@ export async function generateVideo(
     config,
   }
 
-  // Actor vs source_url
+  // Actor vs source_url. One of the two is guaranteed present — the no-face case
+  // returned above, because "neither" is the branch where D-ID substitutes its
+  // own default presenter and nothing downstream can tell.
   if (avatarSrc.actorId) {
     bodyBase.actor_id = avatarSrc.actorId
-  } else if (avatarSrc.sourceUrl) {
+  } else {
     bodyBase.source_url = avatarSrc.sourceUrl
   }
-  // If neither is set, D-ID uses its default presenter
 
   // ---------------------------------------------------------------------------
   // 2. Submit the D-ID job

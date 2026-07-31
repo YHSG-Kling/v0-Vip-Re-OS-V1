@@ -74,6 +74,29 @@ export async function listMyEmbeds(): Promise<{ widgets: EmbedWidget[]; canCreat
   return { widgets: (data ?? []).map(rowToWidget), canCreateBrokerageWide }
 }
 
+/**
+ * A twin may only be pinned to an embed if it is a twin of THIS brokerage and is
+ * actually usable — ready + approved. Enforced server-side because the picker is
+ * a convenience, not a boundary: these actions accept an id straight from the
+ * client, and an unvalidated one would put an unapproved (or another tenant's)
+ * face on a public website.
+ */
+async function assertTwinAssignable(
+  supabase: ReturnType<typeof createServiceClient>,
+  twinId: string,
+  brokerageId: string,
+): Promise<string | null> {
+  const { data: twin } = await supabase
+    .from("agent_avatar_assets")
+    .select("id, brokerage_id, status, approval_status")
+    .eq("id", twinId)
+    .maybeSingle()
+  if (!twin || twin.brokerage_id !== brokerageId) return "Twin not found"
+  if (twin.status !== "ready") return "That twin is still processing — pick one that's ready"
+  if (twin.approval_status !== "approved") return "That twin is awaiting approval"
+  return null
+}
+
 export async function createEmbed(params: {
   label: string
   scope: "personal" | "brokerage"
@@ -87,6 +110,19 @@ export async function createEmbed(params: {
   }
 
   const supabase = createServiceClient()
+
+  // A BROKERAGE-WIDE EMBED MUST NAME ITS TWIN. There is no owner agent to fall
+  // back to, and the session route no longer invents one by picking the
+  // brokerage's longest-tenured agent — an agent's likeness and cloned voice are
+  // not brokerage property to assign on a timestamp. Required at the moment of
+  // creation so the admin never ships a widget that cannot greet anyone.
+  if (params.scope === "brokerage" && !params.defaultTwinId) {
+    return { ok: false, error: "Pick the twin that will greet visitors — a brokerage-wide embed has no owner agent to inherit from" }
+  }
+  if (params.defaultTwinId) {
+    const bad = await assertTwinAssignable(supabase, params.defaultTwinId, ctx.brokerageId)
+    if (bad) return { ok: false, error: bad }
+  }
 
   const insert: Record<string, any> = {
     brokerage_id: ctx.brokerageId,
@@ -144,6 +180,18 @@ export async function updateEmbed(params: {
   // Personal embeds editable only by their owner.
   if (existing.agent_id !== null && existing.agent_id !== ctx.agentId && !ADMIN_ROLES.includes(ctx.userType)) {
     return { ok: false, error: "Forbidden" }
+  }
+
+  // Same rule on edit: a brokerage-wide embed cannot be left twin-less, and any
+  // twin pinned here must belong to this brokerage and be ready + approved.
+  if (params.defaultTwinId !== undefined) {
+    if (!params.defaultTwinId && existing.agent_id === null) {
+      return { ok: false, error: "A brokerage-wide embed needs a twin — it has no owner agent to inherit one from" }
+    }
+    if (params.defaultTwinId) {
+      const bad = await assertTwinAssignable(supabase, params.defaultTwinId, ctx.brokerageId)
+      if (bad) return { ok: false, error: bad }
+    }
   }
 
   const update: Record<string, any> = { updated_at: new Date().toISOString() }

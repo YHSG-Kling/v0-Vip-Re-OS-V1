@@ -104,7 +104,15 @@ export function EmbedEditor({ widget, open, onOpenChange }: Props) {
               onChange={(e) => setDefaultTwinId(e.target.value || null)}
               className="w-full h-9 rounded-md border bg-background px-3 text-sm mt-1.5"
             >
-              <option value="">— Use owner agent's default —</option>
+              {/* The empty option resolves server-side to the OWNER AGENT's default
+                  twin — which only exists for a personal embed. On a
+                  brokerage-wide embed there is no owner agent, so the same
+                  option used to read as a promise the route could not keep; it
+                  now reads as the unset state it actually is, and the route
+                  refuses rather than borrowing someone's twin. */}
+              <option value="">
+                {widget.agentId ? "— Use owner agent's default —" : "— Select a twin (required) —"}
+              </option>
               {twins.map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.label}{t.agentName ? ` · ${t.agentName}` : ""}
@@ -112,7 +120,9 @@ export function EmbedEditor({ widget, open, onOpenChange }: Props) {
               ))}
             </select>
             <p className="text-xs text-muted-foreground mt-1">
-              Only ready + approved twins are listed.
+              {widget.agentId
+                ? "Only ready + approved twins are listed."
+                : "Required — a brokerage-wide embed never borrows an agent's twin automatically. Only ready + approved twins are listed."}
             </p>
           </div>
 
