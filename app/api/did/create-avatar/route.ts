@@ -20,6 +20,7 @@ import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { checkUsageCap } from "@/lib/usage/check-cap"
 import { logMediaUsage } from "@/lib/usage/log-media-usage"
+import { buildExpressAvatarRequest, classifyDidError } from "@/lib/did/contract"
 
 const DID_API_BASE = "https://api.d-id.com"
 
@@ -71,6 +72,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Agent profile not found" }, { status: 404 })
     }
 
+    // The avatar's NAME in the D-ID account. Operational rather than technical:
+    // without it a brokerage's avatars are all untitled and indistinguishable
+    // when something needs provider-side support.
+    let agentDisplayName: string | null = null
+    {
+      const { data: u } = await supabase
+        .from("users").select("first_name, last_name").eq("id", auth.userId).maybeSingle()
+      const full = [u?.first_name, u?.last_name].filter(Boolean).join(" ").trim()
+      agentDisplayName = full || null
+    }
+
     // ─── Usage cap on twin creations (skip when updating an existing twin) ──
     if (!twin_id) {
       const cap = await checkUsageCap({
@@ -119,19 +131,44 @@ export async function POST(request: NextRequest) {
         "Content-Type": "application/json",
         Accept: "application/json",
       },
-      body: JSON.stringify({
-        source_url,
-        // presenter_config is optional — D-ID uses defaults when omitted
-      }),
+      // THE COMPLETE CONTRACT. This used to send source_url alone. The
+      // published POST /scenes/avatars body also takes name, consent_id,
+      // webhook, user_data and is_greenscreen — so every avatar was untitled
+      // in the D-ID account (a brokerage with fifty agents got fifty untitled
+      // avatars with no way to tell whose was whose during support), and
+      // nothing correlated the job back to our row except an id we happened to
+      // store on a separate write. user_data is the field D-ID designed for
+      // exactly that: it is echoed on the job AND on the webhook.
+      body: JSON.stringify(buildExpressAvatarRequest({
+        sourceUrl: source_url,
+        assetId: twin_id ?? null,
+        agentName: agentDisplayName,
+        label,
+        consentId: body?.consent_id ?? null,
+        isGreenscreen: body?.is_greenscreen === true,
+      })),
     })
 
-    const didData = await didRes.json()
+    const didData = await didRes.json().catch(() => ({}))
 
     if (!didRes.ok) {
-      console.error("[create-avatar] D-ID error:", didData)
+      // Structured, per the published error contract: {kind, description}
+      // across 400 (BadRequestError | InvalidFileSizeError | InvalidFaceError),
+      // 401, 402, 403 and 451 (moderation / celebrity recognition). We used to
+      // read only `description` and drop `kind`, so "no face in that video",
+      // "out of credits" and "flagged as a public figure" all reached the agent
+      // as the same shrug — three different problems, only one of which the
+      // agent can act on, and none of which is worth retrying.
+      const failure = classifyDidError(didRes.status, didData)
+      console.error("[create-avatar] D-ID refused:", failure.operatorMessage)
       return NextResponse.json(
-        { error: didData.description ?? didData.message ?? "D-ID avatar creation failed" },
-        { status: 502 }
+        {
+          error: failure.userMessage,
+          kind: failure.kind,
+          needs_human_action: failure.needsHumanAction,
+          retryable: failure.retryable,
+        },
+        { status: failure.retryable ? 503 : 422 },
       )
     }
 

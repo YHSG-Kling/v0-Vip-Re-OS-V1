@@ -25,13 +25,19 @@
  * you have the answer is the same failure as the render content contract in
  * this pass: the OS collected the answer and then used something else.
  *
- * NOTE ON VERIFICATION. api.d-id.com and docs.d-id.com are blocked by this
- * environment's network policy, so these assertions are grounded in the repo
- * and in the installed SDK's own type definitions — never in a remembered API
- * surface. That is deliberate: asserting a provider contract we cannot read
- * would be the same fabrication this build exists to remove.
+ * NOTE ON VERIFICATION. The published D-ID reference (docs.d-id.com, v4.2.1) is
+ * now readable, and lib/did/contract.ts transcribes it: the {kind, description}
+ * error envelope with its documented 400/401/402/403/451 classes, the closed
+ * created|started|error|done|rejected status vocabulary, the full
+ * POST /scenes/avatars body, and x-api-key-external for our own ElevenLabs IVC
+ * voices. Assertions here are grounded in that reference, in the repo, and in
+ * the installed SDK's own type definitions — never in a remembered surface.
  */
 import { readFileSync } from "node:fs"
+import {
+  classifyDidError, classifyDidStatus, buildExpressAvatarRequest,
+  assetIdFromUserData, externalKeyHeader, DID_STATUS_IN_FLIGHT,
+} from "../lib/did/contract"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -48,8 +54,8 @@ console.log("\n═══ 1. The inline poller treats UNKNOWN as terminal, not as
 {
   const s = code("lib/did/index.ts")
   ok("in-flight statuses are an ALLOW-LIST", s.includes("DID_IN_FLIGHT_STATUSES"))
-  ok("...containing the states that really mean 'still working'",
-    /DID_IN_FLIGHT_STATUSES\s*=\s*new Set\(\[[^\]]*"created"[^\]]*"started"/.test(s))
+  ok("...sourced from the ONE shared vocabulary in lib/did/contract, not a\n    second local copy that could drift from the crons'",
+    /DID_IN_FLIGHT_STATUSES\s*=\s*new Set<string>\(DID_STATUS_IN_FLIGHT\)/.test(s))
   ok("...and the loop only CONTINUES for those",
     /if \(DID_IN_FLIGHT_STATUSES\.has\(status\)\) continue/.test(s))
   ok("anything else THROWS rather than polling to the timeout",
@@ -137,6 +143,120 @@ console.log("\n═══ 6. The streaming SDK bump is source-compatible where we
     && widget.includes("externalId: contactId"))
   ok("...and still degrades to text chat on any connection failure, which is\n    what makes the major bump a contained risk",
     widget.includes('fail("Connection lost — switching to chat")'))
+}
+
+console.log("\n═══ 7. Errors are CLASSIFIED, per the published contract ═══")
+{
+  // D-ID returns {kind, description} with documented HTTP classes. We used to
+  // read `description` and drop `kind`, so three completely different problems
+  // — no face in the video, out of credits, flagged as a public figure —
+  // reached the agent as the same shrug, and all three were retried forever.
+  const face = classifyDidError(400, { kind: "InvalidFaceError", description: "no face detected" })
+  ok("InvalidFaceError tells the agent what to re-record",
+    /face/i.test(face.userMessage) && /re-record/i.test(face.userMessage))
+  ok("...and is NOT retryable — no tick count fixes a faceless video", !face.retryable)
+  ok("...and says a human must act", face.needsHumanAction)
+  ok("...while the operator line keeps the provider's own words",
+    face.operatorMessage.includes("InvalidFaceError"))
+
+  const credits = classifyDidError(402, { kind: "InsufficientCreditsError", description: "not enough credits" })
+  ok("out-of-credits is a BILLING instruction, not a retry",
+    !credits.retryable && /credits/i.test(credits.userMessage) && /admin/i.test(credits.userMessage))
+
+  const celeb = classifyDidError(451, { kind: "CelebrityRecognizedError", description: "celebrity" })
+  ok("celebrity recognition explains itself rather than saying 'error'",
+    !celeb.retryable && /public figure/i.test(celeb.userMessage))
+
+  const moderation = classifyDidError(451, { kind: "ImageModerationError", description: "moderation" })
+  ok("moderation points at manual review", /manual review/i.test(moderation.userMessage))
+
+  ok("429 IS retryable", classifyDidError(429, {}).retryable)
+  ok("5xx IS retryable", classifyDidError(503, {}).retryable)
+  ok("404 is terminal but needs no human action",
+    !classifyDidError(404, {}).retryable && !classifyDidError(404, {}).needsHumanAction)
+  ok("an undocumented shape does not crash the classifier",
+    classifyDidError(418, null).kind === "UnknownError")
+  ok("...and every classification carries a non-empty user message",
+    [400, 401, 402, 403, 404, 429, 451, 500].every((c) => classifyDidError(c, {}).userMessage.length > 10))
+}
+
+console.log("\n═══ 8. The status vocabulary is ONE allow-list ═══")
+{
+  ok("created/started are in flight",
+    classifyDidStatus("created") === "in_flight" && classifyDidStatus("started") === "in_flight")
+  ok("the AVATAR TRAINING states are in flight too — draft, validating and\n    training-started all precede 'started', and failing one of those would\n    kill a job that was simply still training",
+    ["draft", "validating", "training-started"].every((s) => classifyDidStatus(s) === "in_flight"))
+  ok("done is success", classifyDidStatus("done") === "succeeded")
+  ok("error AND rejected are failures",
+    classifyDidStatus("error") === "failed" && classifyDidStatus("rejected") === "failed")
+  ok("anything unrecognised is UNKNOWN, so a caller must treat it as terminal\n    rather than polling forever", classifyDidStatus("banana") === "unknown")
+  ok("null is unknown, not in-flight", classifyDidStatus(null) === "unknown")
+  ok("the inline poller uses the SHARED vocabulary, not a second copy",
+    code("lib/did/index.ts").includes("new Set<string>(DID_STATUS_IN_FLIGHT)"))
+  ok("...and the shared list really contains the training states",
+    (DID_STATUS_IN_FLIGHT as readonly string[]).includes("validating"))
+}
+
+console.log("\n═══ 9. Avatar creation sends the COMPLETE documented body ═══")
+{
+  const req = buildExpressAvatarRequest({
+    sourceUrl: "https://cdn.example.invalid/agent.mp4",
+    assetId: "11111111-2222-4333-8444-555555555555",
+    agentName: "Dana Reyes", label: "Studio twin",
+    consentId: "cns_abc123", webhookUrl: "https://app.invalid/api/webhooks/did",
+  })
+  ok("source_url is carried", req.source_url.endsWith("agent.mp4"))
+  ok("the avatar is NAMED — fifty untitled avatars in a brokerage's D-ID\n    account is a support problem with no answer",
+    req.name === "Dana Reyes — Studio twin")
+  ok("consent_id is carried — V3 instant avatars require consent verification",
+    req.consent_id === "cns_abc123")
+  ok("user_data carries OUR row id, which D-ID echoes on the job AND the\n    webhook — the correlation field designed for exactly this",
+    req.user_data === "asset:11111111-2222-4333-8444-555555555555")
+  ok("...and it round-trips back out",
+    assetIdFromUserData(req.user_data) === "11111111-2222-4333-8444-555555555555")
+  ok("a non-https webhook is DROPPED rather than sent and rejected — the\n    schema pattern is https-only",
+    buildExpressAvatarRequest({ sourceUrl: "https://x.invalid/a.mp4", webhookUrl: "http://localhost:3000/hook" }).webhook === undefined)
+  ok("absent optionals are omitted, not sent as nulls",
+    Object.keys(buildExpressAvatarRequest({ sourceUrl: "https://x.invalid/a.mp4" })).join() === "source_url")
+  ok("garbage user_data does not parse into a fake id", assetIdFromUserData("asset:nope") === null)
+
+  const route = code("app/api/did/create-avatar/route.ts")
+  ok("the route builds its body through the contract", route.includes("buildExpressAvatarRequest("))
+  ok("...and classifies the refusal instead of guessing at `description`",
+    route.includes("classifyDidError(didRes.status, didData)"))
+  ok("...returning 422 for a human-fixable refusal and 503 only when a retry\n    could actually help",
+    /failure\.retryable \? 503 : 422/.test(route))
+}
+
+console.log("\n═══ 10. OUR ElevenLabs clones resolve, because we send OUR key ═══")
+{
+  // The reference is explicit: x-api-key-external is "your own ElevenLabs API
+  // key for TTS (IVC voices only)". Every agent voice here is an IVC clone in
+  // OUR account, so without this header D-ID resolves voice_id in ITS account,
+  // where our clones do not exist — the avatar speaks in a stock voice that is
+  // not the agent's, and nothing reports a problem.
+  const h = externalKeyHeader("el_test_key")
+  ok("the header is present when a key exists", !!h["x-api-key-external"])
+  ok("...and is the documented JSON shape",
+    JSON.parse(h["x-api-key-external"]).elevenlabs === "el_test_key")
+  ok("no key → NO header, so we fall back to D-ID's own voices honestly rather\n    than sending an empty credential",
+    Object.keys(externalKeyHeader("")).length === 0)
+  ok("the D-ID client actually sends it", code("lib/did/index.ts").includes("headers: externalKeyHeader()"))
+}
+
+console.log("\n═══ 11. Both crons refuse on a TERMINAL provider error ═══")
+{
+  for (const [path, label] of [
+    ["app/api/cron/poll-did-avatars/route.ts", "avatar cron"],
+    ["app/api/cron/poll-did-videos/route.ts", "video cron"],
+  ] as Array<[string, string]>) {
+    const s = code(path)
+    ok(`${label} classifies a non-ok response`, s.includes("classifyDidError(statusRes.status"))
+    ok(`${label} retries ONLY when the classifier says it is worth retrying`,
+      /if \(failure\.retryable\) continue/.test(s))
+    ok(`${label} writes the AGENT-facing message, not the raw provider string`,
+      s.includes("failure.userMessage"))
+  }
 }
 
 console.log(`\n${"═".repeat(70)}`)

@@ -12,8 +12,8 @@
  *   5. On error: mark failed with D-ID error message
  */
 
-import {
-type NextRequest, NextResponse } from "next/server"
+import { type NextRequest, NextResponse } from "next/server"
+import { classifyDidError } from "@/lib/did/contract"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   createCronRunContextAction,
@@ -145,8 +145,24 @@ export async function GET(request: NextRequest) {
           results.failed++
           continue
         }
-        // Anything else non-ok IS transient — leave the row alone and retry.
-        if (!statusRes.ok) continue
+        // Everything else goes through the ONE classifier. Not all non-404
+        // failures are transient: a 402 (out of credits) or a 451 (moderation /
+        // celebrity recognition) will NEVER succeed on a later tick, and
+        // retrying them forever hides the real answer from the agent waiting on
+        // their avatar while burning cron ticks against the provider.
+        if (!statusRes.ok) {
+          const body = await statusRes.json().catch(() => ({}))
+          const failure = classifyDidError(statusRes.status, body)
+          if (failure.retryable) continue
+          await supabase.from("agent_avatar_assets").update({
+            status: "failed",
+            error_message: failure.userMessage,
+            updated_at: new Date().toISOString(),
+          }).eq("id", asset.id)
+          console.error(`[poll-did-avatars] terminal for ${asset.id}: ${failure.operatorMessage}`)
+          results.failed++
+          continue
+        }
 
         const data = await statusRes.json()
         const didStatus: string = data.status
@@ -226,7 +242,10 @@ export async function GET(request: NextRequest) {
 
           results.ready++
         } else if (didStatus === "error" || didStatus === "rejected") {
-          const errorMsg: string = data.error?.description ?? data.error ?? "D-ID avatar creation failed"
+          // The provider's structured {kind, description} turned into something
+          // the agent can act on — "we couldn't find a clear face" rather than
+          // "InvalidFaceError".
+          const errorMsg: string = classifyDidError(null, data.error ?? data).userMessage
 
           await supabase
             .from("agent_avatar_assets")

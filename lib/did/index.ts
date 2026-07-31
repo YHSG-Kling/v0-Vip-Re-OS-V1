@@ -32,6 +32,7 @@ import { put } from "@vercel/blob"
 import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
 import { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { classifyDidError, externalKeyHeader, DID_STATUS_IN_FLIGHT } from "./contract"
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -121,9 +122,22 @@ async function didPost(path: string, body: unknown): Promise<{ id: string }> {
     path,
     method: "POST",
     auth: { style: "basic", username: didKey(), password: "" },
+    // OUR ElevenLabs key, so OUR voice clones resolve. The D-ID reference is
+    // explicit that x-api-key-external is "your own ElevenLabs API key for TTS
+    // (IVC voices only)". Every agent voice in this OS is an IVC clone created
+    // in our ElevenLabs account, so without this header D-ID looks the voice_id
+    // up in ITS account, where our clones do not exist — the avatar renders in
+    // a stock voice that is not the agent's, and nothing reports a problem.
+    // Absent key → no header → D-ID's own voices, which is the honest fallback.
+    headers: externalKeyHeader(),
     body,
   })
-  if (!res.ok || !res.data) throw new Error(`D-ID API error (${res.status ?? "—"}): ${res.error ?? "unknown"}`)
+  if (!res.ok || !res.data) {
+    // Structured, per the published contract, so a 402/451/400 is legible and
+    // the caller can tell "never going to work" from "try again".
+    const failure = classifyDidError(res.status ?? null, (res as { data?: unknown }).data ?? { description: res.error })
+    throw new Error(`D-ID ${failure.kind}: ${failure.userMessage}`)
+  }
   return res.data
 }
 
@@ -151,7 +165,7 @@ async function didGet(path: string): Promise<Record<string, unknown>> {
  * with its own name in the message, which is correct whatever the provider's
  * vocabulary turns out to be.
  */
-const DID_IN_FLIGHT_STATUSES = new Set(["created", "started", "processing", "pending"])
+const DID_IN_FLIGHT_STATUSES = new Set<string>(DID_STATUS_IN_FLIGHT)
 
 /** Which endpoint holds a given job — known at SUBMIT time, never guessed. */
 export type DidEngine = "talks" | "expressives"

@@ -14,6 +14,7 @@
  */
 
 import { type NextRequest, NextResponse } from "next/server"
+import { classifyDidError } from "@/lib/did/contract"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   createCronRunContextAction,
@@ -130,8 +131,20 @@ export async function GET(request: NextRequest) {
             results.failed++
             continue
           }
-          // Everything else (429, 5xx, a network blip) IS transient — try again
-          // next cron tick.
+          // Everything else goes through the ONE classifier. A 402 (out of
+          // credits) or 451 (moderation) never succeeds on a later tick;
+          // retrying them forever hides the answer from the agent waiting.
+          const errBody = await statusRes.json().catch(() => ({}))
+          const failure = classifyDidError(statusRes.status, errBody)
+          if (failure.retryable) continue
+          await supabase.from("ai_video_projects").update({
+            status: "failed",
+            provider_status: failure.kind,
+            error_message: failure.userMessage,
+            retry_count: (video.retry_count ?? 0) + 1,
+          }).eq("id", video.id)
+          console.error(`[poll-did-videos] terminal for ${video.id}: ${failure.operatorMessage}`)
+          results.failed++
           continue
         }
 
@@ -504,7 +517,8 @@ export async function GET(request: NextRequest) {
 
           results.completed++
         } else if (didStatus === "error" || didStatus === "rejected") {
-          const errorMsg: string = data.error?.description ?? data.error ?? "D-ID render failed"
+          // Structured {kind, description} → something the agent can act on.
+          const errorMsg: string = classifyDidError(null, data.error ?? data).userMessage
           const retryCount = video.retry_count ?? 0
 
           await supabase
