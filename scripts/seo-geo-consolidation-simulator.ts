@@ -35,8 +35,15 @@ console.log("\n── the SEO page is a tabbed SEO / GEO surface with all four t
     page.includes("AiCitationVisibilityCard") && page.includes("ai_search_citation_observations"))
   check("tab switching is driven by the ?tab= search param",
     /searchParams/.test(page) && /\?tab=\$\{t\.key\}/.test(page))
-  check("GEO tab has an explicit empty state (card returns null on no rows)",
-    /No AI-search citation data yet/.test(page))
+  // The empty state MOVED rather than disappeared (m335): it is now per-scope,
+  // because "you have published nothing citable yet" is a different fact from
+  // "the company has no data". Retargeted at the delegation plus the sentence's
+  // new home — not weakened to "some empty state exists somewhere".
+  check("GEO tab has an explicit empty state (per-scope, from citation-scope)",
+    /emptyScopeMessage\(active\.scope/.test(page) &&
+    /No AI-search citation data yet/.test(src("lib/geo/citation-scope.ts")))
+  check("...and the scope switcher is wired to the same resolver",
+    /allowedScopes\(/.test(page) && /resolveScope\(/.test(page))
 }
 
 console.log("\n── the MarketTrendsPanel keeps the trending-keyword + competitor-post view ──")

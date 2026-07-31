@@ -15,6 +15,9 @@ import {
 } from "@/app/dashboard/intelligence/components/ai-citation-visibility-card"
 import { CitationShareCard } from "./citation-share-card"
 import type { ShareObservationRow } from "@/lib/geo/citation-share"
+import {
+  allowedScopes, resolveScope, emptyScopeMessage, type CitationScope,
+} from "@/lib/geo/citation-scope"
 
 export const metadata = {
   title: "SEO / GEO | Marketing",
@@ -33,9 +36,9 @@ type TabKey = (typeof TABS)[number]["key"]
 export default async function SeoGeoPage({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string }>
+  searchParams: Promise<{ tab?: string; scope?: string }>
 }) {
-  const { tab } = await searchParams
+  const { tab, scope } = await searchParams
   const supabase = await createClient()
 
   const {
@@ -103,7 +106,7 @@ export default async function SeoGeoPage({
         <CompetitorsTab brokerageId={brokerageId} defaultTerritory={defaultTerritory ?? ""} />
       )}
       {activeTab === "trends" && <TrendsTab />}
-      {activeTab === "geo" && <GeoTab brokerageId={brokerageId} />}
+      {activeTab === "geo" && <GeoTab brokerageId={brokerageId} requestedScope={scope ?? null} />}
     </div>
   )
 }
@@ -173,13 +176,40 @@ async function TrendsTab() {
 }
 
 // ─── GEO / AI Visibility ─────────────────────────────────────────────────────
-async function GeoTab({ brokerageId }: { brokerageId: string }) {
+// SCOPED, per the owner's rule that GEO is for agents, teams AND brokerages.
+// This read used to filter on brokerage_id alone, so an agent opened GEO to a
+// company aggregate: every reel in the brokerage, none of them identifiable as
+// theirs, and no way to see the one number they can actually move. The scope
+// choices come from lib/geo/citation-scope — built from what the viewer ACTUALLY
+// has (no team → no team tab), never from the role alone.
+async function GeoTab({
+  brokerageId, requestedScope,
+}: { brokerageId: string; requestedScope: string | null }) {
   const supabase = await createClient()
+  const { agentId, userType } = await getAgentContext()
+
+  // The viewer's team, read from their own agents row — the same column the
+  // monitor stamps onto each observation.
+  let teamId: string | null = null
+  if (agentId) {
+    const { data: a } = await supabase.from("agents").select("team_id").eq("id", agentId).maybeSingle()
+    teamId = (a as { team_id: string | null } | null)?.team_id ?? null
+  }
+
+  const choices = allowedScopes({ role: userType, agentId, teamId }, brokerageId)
+  const active = resolveScope(choices, requestedScope, userType)
+
   const citationSince = new Date(Date.now() - 30 * 86_400_000).toISOString()
-  const { data: citationRows, error } = await supabase
+  let query = supabase
     .from("ai_search_citation_observations")
     .select("id, platform, outcome, cited_url, provider, public_slug, observed_at, project_id, observed_on, competitors_cited")
+    // The tenant filter ALWAYS applies. The scope filter narrows within it — it
+    // never replaces it, so a narrower scope can never widen the read.
     .eq("brokerage_id", brokerageId)
+  if (active.column !== "brokerage_id" && active.value) {
+    query = query.eq(active.column, active.value)
+  }
+  const { data: citationRows, error } = await query
     .gte("observed_at", citationSince)
     .order("observed_at", { ascending: false })
     .limit(60)
@@ -187,26 +217,50 @@ async function GeoTab({ brokerageId }: { brokerageId: string }) {
     ? []
     : ((citationRows ?? []) as CitationObservationRow[])
 
+  const scopeBar =
+    choices.length > 1 ? (
+      <div className="flex gap-1">
+        {choices.map((c) => (
+          <Link
+            key={c.scope}
+            href={`/dashboard/marketing/seo?tab=geo&scope=${c.scope}`}
+            className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+              active.scope === c.scope
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            {c.label}
+          </Link>
+        ))}
+      </div>
+    ) : null
+
   if (observations.length === 0) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base flex items-center gap-2">
-            <Search className="h-4 w-4" />
-            GEO / AI-Search Visibility
-          </CardTitle>
-          <CardDescription>
-            Whether AI search engines (ChatGPT, Perplexity, Gemini, Google AI Overviews) cite your
-            published pages. Generative Engine Optimization is the new organic traffic.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground py-6 text-center">
-            No AI-search citation data yet. Once you publish reel pages and the citation monitor runs,
-            you'll see which platforms are citing your content here.
-          </p>
-        </CardContent>
-      </Card>
+      <div className="space-y-4">
+        {scopeBar}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Search className="h-4 w-4" />
+              GEO / AI-Search Visibility
+            </CardTitle>
+            <CardDescription>
+              Whether AI search engines (ChatGPT, Perplexity, Gemini, Google AI Overviews) cite your
+              published pages. Generative Engine Optimization is the new organic traffic.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {/* The reason for an empty state differs by scope — "you have published
+                nothing citable yet" is a different fact from "your brokerage has no
+                data", and only one of them is the viewer's to act on. */}
+            <p className="text-sm text-muted-foreground py-6 text-center">
+              {emptyScopeMessage(active.scope as CitationScope)}
+            </p>
+          </CardContent>
+        </Card>
+      </div>
     )
   }
 
@@ -221,6 +275,7 @@ async function GeoTab({ brokerageId }: { brokerageId: string }) {
 
   return (
     <div className="space-y-4">
+      {scopeBar}
       <CitationShareCard rows={shareRows} />
       <AiCitationVisibilityCard observations={observations} />
     </div>

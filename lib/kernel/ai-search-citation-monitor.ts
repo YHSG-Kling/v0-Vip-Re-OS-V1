@@ -347,6 +347,82 @@ async function loadCompetitorTargets(supabase: Svc, brokerageId: string): Promis
 }
 
 /**
+ * WHO OWNS THE PAGE — resolved ONCE per pass for every agent the pass touches,
+ * not once per page (a per-page read would multiply the query count by the page
+ * count for data that cannot change mid-pass).
+ *
+ * Returns the agent's team AND their display name, because both are needed and
+ * both come from the same two rows:
+ *
+ *   · team_id is stamped onto the observation so a team lead has a team view.
+ *     Stamped AS OF the observation — an agent changing teams must not silently
+ *     rewrite last quarter's GEO history.
+ *   · the NAME becomes a detection brand. This is the fix for a defect the code
+ *     had documented but never implemented: the reel loop's comment said "agent
+ *     attribution for the brand targets" while brands carried the BROKERAGE name
+ *     alone. So an AI answer that named the agent — the single most valuable
+ *     citation a real-estate agent can get, and the one their personal brand is
+ *     built on — was recorded as not_cited. The score was not merely incomplete;
+ *     it asserted a miss that had not happened.
+ *
+ * Never throws: scope + attribution are enrichment, and a read failure must not
+ * stop the monitor from recording OUR outcome.
+ */
+interface PageOwner {
+  /** ALWAYS agents.id — the observation column FKs agents, and agents.team_id is
+   *  where the team lives. Never a users.id, whatever the source column held. */
+  agentId: string
+  teamId: string | null
+  name: string | null
+}
+
+/**
+ * TWO IDENTITY CLASSES, ONE COLUMN NAME — the trap this function exists to
+ * absorb. The two citable-page tables both call their owner column `agent_id`
+ * and they mean different things:
+ *
+ *   · ai_video_projects.agent_id  FKs USERS  (a users.id)
+ *   · lead_capture_forms.agent_id FKs AGENTS (an agents.id)
+ *
+ * Stamping either straight onto the observation would be wrong for one of them:
+ * the observation's agent_id FKs agents, and every scoped read joins through
+ * agents.team_id. The reel path would have raised a foreign-key violation on
+ * EVERY write — caught by inserting a real row against the live schema rather
+ * than by reading the column name and trusting it.
+ *
+ * So the caller declares which class its ids are, and this returns a map keyed
+ * by THAT id whose value always carries the canonical agents.id.
+ */
+async function loadPageOwners(
+  supabase: Svc,
+  ids: string[],
+  keyClass: "users" | "agents",
+  brokerageId: string,
+): Promise<Map<string, PageOwner>> {
+  const owners = new Map<string, PageOwner>()
+  const unique = [...new Set(ids.filter((a): a is string => !!a))]
+  if (unique.length === 0) return owners
+  try {
+    const keyColumn = keyClass === "users" ? "user_id" : "id"
+    const { data } = await supabase.from("agents")
+      .select("id, team_id, user_id, users(first_name, last_name)")
+      // TENANT-SCOPED. The ids come from this brokerage's own pages, so this
+      // filter should never change the result — which is exactly why it belongs
+      // here: an id that somehow crossed tenants would otherwise resolve a
+      // stranger's name and team onto our observation, and nothing would say so.
+      .eq("brokerage_id", brokerageId)
+      .in(keyColumn, unique)
+    for (const r of (data ?? []) as any[]) {
+      const full = [r.users?.first_name, r.users?.last_name].filter(Boolean).join(" ").trim()
+      const key = keyClass === "users" ? r.user_id : r.id
+      if (!key) continue
+      owners.set(key, { agentId: r.id, teamId: r.team_id ?? null, name: full || null })
+    }
+  } catch { /* enrichment only */ }
+  return owners
+}
+
+/**
  * Run one citation-monitor pass for a brokerage.
  *
  * For each recently-published reel (ai_video_projects.is_published, public_slug set,
@@ -395,7 +471,7 @@ export async function runCitationMonitor(
 
   // Recently-published reels with a live public page.
   const { data: reels } = await supabase.from("ai_video_projects")
-    .select("id, title, listing_id, public_slug, published_at")
+    .select("id, title, listing_id, public_slug, published_at, agent_id")
     .eq("brokerage_id", brokerageId)
     .eq("is_published", true)
     .not("public_slug", "is", null)
@@ -404,8 +480,12 @@ export async function runCitationMonitor(
     .limit(maxPages)
   const pages = (reels ?? []) as Array<{
     id: string; title: string | null; listing_id: string | null;
-    public_slug: string | null; published_at: string | null
+    public_slug: string | null; published_at: string | null; agent_id: string | null
   }>
+
+  // One read for every agent in the pass — team (for scope) + name (for brand).
+  // ai_video_projects.agent_id is a USERS id despite the column name.
+  const owners = await loadPageOwners(supabase, pages.map((p) => p.agent_id ?? ""), "users", brokerageId)
 
   const allObs: CitationObservation[] = []
 
@@ -413,7 +493,9 @@ export async function runCitationMonitor(
     if (!page.public_slug) continue
     result.pagesMonitored += 1
 
-    // Listing place for the query + agent attribution for the brand targets.
+    // Listing place for the query. (Agent attribution for the brand targets is
+    // resolved above from loadPageOwners — this comment used to claim it
+    // happened here, while brands carried the brokerage name alone.)
     let city: string | null = null, state: string | null = null
     if (page.listing_id) {
       const { data: l } = await supabase.from("listings")
@@ -424,10 +506,16 @@ export async function runCitationMonitor(
 
     const slug = page.public_slug
     const pageUrl = `${origin}/v/${slug}`
+    // BOTH brands. The agent's own name is the citation that matters most to
+    // them and it was never a target — see loadPageOwners. The brokerage name
+    // stays: a brokerage-level page has no agent, and an answer naming the
+    // company is still a real citation.
+    const owner = page.agent_id ? owners.get(page.agent_id) ?? null : null
     const target: DetectionTarget = {
       slugs:   [pageUrl, `/v/${slug}`, slug],
       domains: [host],
-      brands:  [brandName].filter((b): b is string => !!b && b.trim().length >= 3),
+      brands:  [brandName, owner?.name ?? null]
+        .filter((b): b is string => !!b && b.trim().length >= 3),
     }
 
     const query = buildCitationQuery({ brandName, title: page.title, city, state })
@@ -452,6 +540,11 @@ export async function runCitationMonitor(
       const { error } = await supabase.from("ai_search_citation_observations")
         .upsert({
           brokerage_id: brokerageId,
+          // WHOSE citation this is (m335) — GEO is for agents, teams and
+          // brokerages, and a row that knows only its tenant can answer only
+          // the brokerage question.
+          agent_id:     owner?.agentId ?? null,
+          team_id:      owner?.teamId ?? null,
           project_id:   page.id,
           public_slug:  slug,
           platform,
@@ -558,12 +651,17 @@ export async function runLandingPageCitationMonitor(
 
   // Active lead magnets that carry AI landing copy (the citable GEO surface).
   const { data: forms } = await supabase.from("lead_capture_forms")
-    .select("id, name, slug, landing_content")
+    .select("id, name, slug, landing_content, agent_id")
     .eq("brokerage_id", brokerageId)
     .eq("is_active", true)
     .not("landing_content", "is", null)
     .limit(maxPages)
-  const pages = (forms ?? []) as Array<{ id: string; name: string | null; slug: string | null; landing_content: unknown }>
+  const pages = (forms ?? []) as Array<{
+    id: string; name: string | null; slug: string | null; landing_content: unknown; agent_id: string | null
+  }>
+
+  // lead_capture_forms.agent_id IS an agents id — the other class.
+  const owners = await loadPageOwners(supabase, pages.map((p) => p.agent_id ?? ""), "agents", brokerageId)
 
   const allObs: CitationObservation[] = []
 
@@ -576,10 +674,12 @@ export async function runLandingPageCitationMonitor(
 
     const slug = page.slug
     const pageUrl = `${origin}/lm/${slug}`
+    const owner = page.agent_id ? owners.get(page.agent_id) ?? null : null
     const target: DetectionTarget = {
       slugs:   [pageUrl, `/lm/${slug}`, slug],
       domains: [host],
-      brands:  [brandName].filter((b): b is string => !!b && b.trim().length >= 3),
+      brands:  [brandName, owner?.name ?? null]
+        .filter((b): b is string => !!b && b.trim().length >= 3),
     }
 
     const query = buildLandingCitationQuery({
@@ -604,6 +704,8 @@ export async function runLandingPageCitationMonitor(
       const { error } = await supabase.from("ai_search_landing_citation_observations")
         .upsert({
           brokerage_id: brokerageId,
+          agent_id:     owner?.agentId ?? null,
+          team_id:      owner?.teamId ?? null,
           form_id:      page.id,
           public_slug:  slug,
           platform,
