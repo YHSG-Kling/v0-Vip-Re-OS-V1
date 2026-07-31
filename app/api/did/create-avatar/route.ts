@@ -22,6 +22,7 @@ import { checkUsageCap } from "@/lib/usage/check-cap"
 import { logMediaUsage } from "@/lib/usage/log-media-usage"
 import { buildExpressAvatarRequest, classifyDidError } from "@/lib/did/contract"
 import { didWebhookUrl } from "@/lib/did/webhook"
+import { didRequest } from "@/lib/did/gateway"
 import { randomUUID } from "node:crypto"
 
 const DID_API_BASE = "https://api.d-id.com"
@@ -163,13 +164,12 @@ export async function POST(request: NextRequest) {
     // row sat at 'pending' forever with no error anyone could see. Two silent
     // failures stacked: a wrong path, and a poll that cannot tell "not ready"
     // from "not there".
-    const didRes = await fetch(`${DID_API_BASE}/scenes/avatars`, {
+    // THROUGH CONNECTION OS, not a bespoke fetch. The gateway is where auth is
+    // resolved, the response is shape-adapted (so a D-ID field rename self-heals
+    // and reports drift), and vendor spend is metered — a raw fetch here skipped
+    // all three. See lib/did/gateway.ts.
+    const didRes = await didRequest<{ id?: string }>("/scenes/avatars", {
       method: "POST",
-      headers: {
-        Authorization: `Basic ${Buffer.from(`${didApiKey}:`).toString("base64")}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
       // THE COMPLETE CONTRACT. This used to send source_url alone. The
       // published POST /scenes/avatars body also takes name, consent_id,
       // webhook, user_data and is_greenscreen — so every avatar was untitled
@@ -178,7 +178,7 @@ export async function POST(request: NextRequest) {
       // nothing correlated the job back to our row except an id we happened to
       // store on a separate write. user_data is the field D-ID designed for
       // exactly that: it is echoed on the job AND on the webhook.
-      body: JSON.stringify(buildExpressAvatarRequest({
+      body: buildExpressAvatarRequest({
         sourceUrl: source_url,
         assetId,
         agentName: agentDisplayName,
@@ -191,10 +191,10 @@ export async function POST(request: NextRequest) {
         // cron still finishes the job.
         webhookUrl: didWebhookUrl(),
         isGreenscreen: body?.is_greenscreen === true,
-      })),
+      }),
     })
 
-    const didData = await didRes.json().catch(() => ({}))
+    const didData = didRes.data ?? { description: didRes.error }
 
     if (!didRes.ok) {
       // Structured, per the published error contract: {kind, description}
@@ -217,7 +217,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const did_avatar_id: string = didData.id
+    const did_avatar_id: string = (didData as { id?: string }).id ?? ""
 
     // ─── Persist on existing twin row OR create new asset ────────────────────
     if (twin_id) {

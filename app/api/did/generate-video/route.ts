@@ -39,6 +39,7 @@
  */
 
 import { type NextRequest, NextResponse } from "next/server"
+import { didRequest } from "@/lib/did/gateway"
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -294,17 +295,15 @@ export async function POST(request: NextRequest) {
           face: { size: 1, top_x: 0, top_y: 0, overlap: "NO" },
         }
 
-    const didRes = await fetch(endpoint, {
+    // Through Connection OS. `endpoint` is an absolute URL built above from
+    // DID_API_BASE + the engine, so the path is derived from it rather than
+    // re-deciding the engine here — the engine is chosen once, upstream.
+    const didRes = await didRequest<any>(endpoint.replace(DID_API_BASE, ""), {
       method: "POST",
-      headers: {
-        Authorization: `Basic ${Buffer.from(`${didApiKey}:`).toString("base64")}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify(didPayload),
+      body: didPayload,
     })
 
-    const didData = await didRes.json()
+    const didData = didRes.data ?? { description: didRes.error }
 
     if (!didRes.ok) {
       console.error("[D-ID] API error:", didData)

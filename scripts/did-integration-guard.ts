@@ -86,7 +86,10 @@ console.log("\n═══ 3. Both crons key the endpoint off the RECORDED mode �
 {
   const v = code("app/api/cron/poll-did-videos/route.ts")
   ok("the video cron reads provider_metadata.mode", /pmeta\?\.mode === "clip"/.test(v))
-  ok("...and builds the path from it", v.includes("${DID_API_BASE}/${mode}/"))
+  // The path is still built from the RECORDED mode; only the transport changed
+  // (raw fetch → didRequest through Connection OS, m331). The invariant this
+  // protects is "engine comes from the row, never re-guessed" — unchanged.
+  ok("...and builds the path from it", /didRequest[\s\S]{0,40}`\/\$\{mode\}\/\$\{video\.provider_job_id\}`/.test(v))
 
   const a = code("app/api/cron/poll-did-avatars/route.ts")
   ok("the avatar cron posts to the real avatars path (m316)", a.includes("/scenes/avatars"))

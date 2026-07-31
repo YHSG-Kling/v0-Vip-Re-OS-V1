@@ -15,6 +15,7 @@
 
 import { type NextRequest, NextResponse } from "next/server"
 import { classifyDidError } from "@/lib/did/contract"
+import { didRequest } from "@/lib/did/gateway"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   createCronRunContextAction,
@@ -93,9 +94,10 @@ export async function GET(request: NextRequest) {
         const mode = pmeta?.mode === "clip" ? "clips"
           : pmeta?.mode === "expressive" || String(video.provider_job_id ?? "").startsWith("exp") ? "expressives"
           : "talks"
-        const statusRes = await fetch(`${DID_API_BASE}/${mode}/${video.provider_job_id}`, {
-          headers: { Authorization: auth, Accept: "application/json" },
-        })
+        // Through Connection OS — see lib/did/gateway.ts.
+        const statusRes = await didRequest<any>(
+          `/${mode}/${video.provider_job_id}`, { withExternalKey: false },
+        )
 
         if (!statusRes.ok) {
           // A 404 is TERMINAL, not transient: D-ID no longer has this job (it
@@ -134,7 +136,7 @@ export async function GET(request: NextRequest) {
           // Everything else goes through the ONE classifier. A 402 (out of
           // credits) or 451 (moderation) never succeeds on a later tick;
           // retrying them forever hides the answer from the agent waiting.
-          const errBody = await statusRes.json().catch(() => ({}))
+          const errBody = statusRes.data ?? { description: statusRes.error }
           const failure = classifyDidError(statusRes.status, errBody)
           if (failure.retryable) continue
           await supabase.from("ai_video_projects").update({
@@ -148,7 +150,7 @@ export async function GET(request: NextRequest) {
           continue
         }
 
-        const data = await statusRes.json()
+        const data = statusRes.data ?? {}
         const didStatus: string = data.status
 
         if (didStatus === "done") {

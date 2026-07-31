@@ -24,6 +24,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { classifyDidError } from "@/lib/did/contract"
 import { applyAvatarOutcome } from "@/lib/did/avatar-completion"
+import { didRequest, didConfigured } from "@/lib/did/gateway"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   createCronRunContextAction,
@@ -32,8 +33,6 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
-
-const DID_API_BASE = "https://api.d-id.com"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -55,9 +54,10 @@ export async function GET(request: NextRequest) {
 
   try {
     const supabase = createServiceClient()
-    const didApiKey = process.env.DID_API_KEY
 
-    if (!didApiKey) {
+    // Asked of the gateway rather than re-read from env here — one place decides
+    // whether D-ID is configured.
+    if (!didConfigured()) {
       await recordCronSuccessAction({
         context_id: contextId,
         records_processed: 0,
@@ -77,15 +77,16 @@ export async function GET(request: NextRequest) {
     if (fetchError) throw fetchError
 
     const results = { processed: 0, ready: 0, failed: 0, still_processing: 0, already_settled: 0 }
-    const auth = `Basic ${Buffer.from(`${didApiKey}:`).toString("base64")}`
 
     for (const asset of pending ?? []) {
       results.processed++
 
       try {
-        const statusRes = await fetch(`${DID_API_BASE}/scenes/avatars/${asset.did_avatar_id}`, {
-          headers: { Authorization: auth, Accept: "application/json" },
-        })
+        // Through Connection OS — see lib/did/gateway.ts for why a raw fetch
+        // here cost self-healing, credential rotation and vendor metering.
+        const statusRes = await didRequest<Record<string, unknown>>(
+          `/scenes/avatars/${asset.did_avatar_id}`, { withExternalKey: false },
+        )
 
         // A 404 is TERMINAL, not a blip: the job does not exist (submitted to
         // the wrong path, deleted, or created under another account). Treating
@@ -106,7 +107,7 @@ export async function GET(request: NextRequest) {
         // retrying them forever hides the real answer from the agent waiting on
         // their avatar while burning cron ticks against the provider.
         if (!statusRes.ok) {
-          const body = await statusRes.json().catch(() => ({}))
+          const body = statusRes.data ?? { description: statusRes.error }
           const failure = classifyDidError(statusRes.status, body)
           if (failure.retryable) continue
           await supabase.from("agent_avatar_assets").update({
@@ -119,7 +120,7 @@ export async function GET(request: NextRequest) {
           continue
         }
 
-        const data = await statusRes.json()
+        const data = statusRes.data ?? {}
 
         // The shared applier. Everything the old inline block did — high-res
         // image preference, re-host into our bucket, profile mirror for the
