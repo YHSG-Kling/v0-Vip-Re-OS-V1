@@ -155,6 +155,48 @@ console.log("\n═══ 8. The live constraints, exercised against the real tab
   ok("the resolver reads with maybeSingle, which is only safe BECAUSE of that\n    partial index", code("lib/did/consent.ts").includes(".maybeSingle()"))
 }
 
+console.log("\n═══ 9. The capture surface records — and offers no way around it ═══")
+{
+  const rec = code("app/dashboard/settings/twin-studio/components/consent-recorder.tsx")
+  ok("the component exists", rec.length > 0)
+  ok("it captures VIDEO AND AUDIO — voice verification is one of D-ID's three\n    checks, so a muted take passes the eye test and fails at the provider",
+    /getUserMedia\(\{[\s\S]{0,200}video:[\s\S]{0,200}audio: true/.test(rec))
+  ok("NO file picker anywhere — D-ID rejects uploads for consent by design, and\n    the absence of this path IS the feature",
+    !/<input[^>]*type="file"/.test(rec) && !rec.includes('accept="video'))
+  ok("the passcode is displayed for the agent to read", rec.includes("consent.consentText"))
+  ok("...and it comes from the SERVER, never generated client-side — the words\n    are the anti-replay check", !/Math\.random|crypto\.randomUUID/.test(rec))
+  ok("the recording is submitted for verification", rec.includes('"/api/did/consent/verify"'))
+  ok("a permission denial names the missing permission rather than saying\n    'failed' — camera/mic denial is the common first-run problem and the fix\n    is in the browser",
+    rec.includes("NotAllowedError") && /camera and microphone access/.test(rec))
+  ok("the live preview is MIRRORED so the agent frames themselves naturally",
+    rec.includes("-scale-x-100"))
+  ok("...while the REVIEW is not, because that is what D-ID actually receives",
+    /ref=\{reviewRef\}[\s\S]{0,220}className=\{phase === "review" \? "block h-auto w-full"/.test(rec))
+  ok("the camera is released when the component unmounts", rec.includes("stopStream()"))
+}
+
+console.log("\n═══ 10. Consent comes BEFORE the D-ID submit, not after ═══")
+{
+  // The ordering bug this locks: the look step used to POST create-avatar
+  // immediately. With the consent gate in place that returns 428 for a video
+  // twin BEFORE the agent has been offered the consent step — they would see a
+  // failure for something they were never given a chance to do.
+  const wiz = code("app/dashboard/settings/twin-studio/components/twin-wizard.tsx")
+  ok("a VIDEO source DEFERS the D-ID hand-off out of the look step",
+    /if \(kind === "video"\)[\s\S]{0,160}onComplete\(draft\.twinId, "video", upload\.url\)[\s\S]{0,40}return/.test(wiz))
+  ok("...and routes to the consent step", /setStep\(kind === "video" \? "consent" : "voice"\)/.test(wiz))
+  ok("a PHOTO source still submits immediately — it needs no consent, so adding\n    the step would be friction with nothing behind it",
+    /onComplete\(draft\.twinId, kind!, upload\.url\)/.test(wiz))
+  ok("the deferred submit happens once consent VERIFIES",
+    /onVerified=\{async \(\) => \{[\s\S]{0,400}\/api\/did\/create-avatar/.test(wiz))
+  ok("...and ALSO when consent was already on file from a previous twin —\n    otherwise the second video twin an agent makes would never be submitted",
+    /onSkip=\{async \(\) => \{[\s\S]{0,500}\/api\/did\/create-avatar/.test(wiz))
+  ok("the source url is held across the step so the deferred submit has it",
+    wiz.includes("const [sourceUrl, setSourceUrl]"))
+  ok("the consent step appears in the stepper ONLY for a video twin",
+    /showConsent \? \[\{ key: "consent"/.test(wiz))
+}
+
 console.log(`\n${"═".repeat(70)}`)
 console.log(`D-ID CONSENT — ${pass} passed, ${fail} failed`)
 if (fail > 0) {

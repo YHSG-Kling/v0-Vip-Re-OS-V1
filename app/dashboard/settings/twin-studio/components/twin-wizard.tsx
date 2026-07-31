@@ -13,8 +13,9 @@ import { toast } from "sonner"
 import { createTwinDraft, finalizeTwin } from "@/app/actions/twin-studio"
 import { uploadTwinAvatar, uploadTwinVoiceSample } from "@/app/actions/twin-studio-upload"
 import { VoiceRecorder } from "./voice-recorder"
+import { ConsentRecorder } from "./consent-recorder"
 
-type Step = "look" | "voice" | "personality" | "done"
+type Step = "look" | "consent" | "voice" | "personality" | "done"
 
 interface Props {
   open: boolean
@@ -31,6 +32,13 @@ const PERSONALITY_PRESETS = [
 export function TwinWizard({ open, onOpenChange }: Props) {
   const [step, setStep] = useState<Step>("look")
   const [twinId, setTwinId] = useState<string | null>(null)
+  // Which source the agent chose. A VIDEO twin is a V3 Instant Avatar and D-ID
+  // requires a recorded consent for those; a PHOTO twin does not, so the step
+  // is skipped rather than shown-and-auto-passed.
+  const [sourceKind, setSourceKind] = useState<"photo" | "video" | null>(null)
+  // The uploaded source, held back for a VIDEO twin so the D-ID submit can
+  // happen AFTER consent is verified rather than being refused before it.
+  const [sourceUrl, setSourceUrl] = useState<string | null>(null)
   const [label, setLabel] = useState("My Twin")
   const [personality, setPersonality] = useState("")
   const [setAsDefault, setSetAsDefault] = useState(true)
@@ -42,6 +50,8 @@ export function TwinWizard({ open, onOpenChange }: Props) {
     setTimeout(() => {
       setStep("look")
       setTwinId(null)
+      setSourceKind(null)
+      setSourceUrl(null)
       setLabel("My Twin")
       setPersonality("")
       setSetAsDefault(true)
@@ -58,13 +68,77 @@ export function TwinWizard({ open, onOpenChange }: Props) {
           </DialogDescription>
         </DialogHeader>
 
-        <Steps current={step} />
+        <Steps current={step} showConsent={sourceKind === "video"} />
 
         {step === "look" && (
           <LookStep
             label={label}
             onLabelChange={setLabel}
-            onComplete={(id) => { setTwinId(id); setStep("voice") }}
+            onComplete={(id, kind, url) => {
+              setTwinId(id)
+              setSourceKind(kind)
+              setSourceUrl(url)
+              // Consent only stands between a VIDEO twin and D-ID.
+              setStep(kind === "video" ? "consent" : "voice")
+            }}
+          />
+        )}
+
+        {step === "consent" && (
+          <ConsentRecorder
+            // Consent verified → NOW submit the video to D-ID. This is the
+            // deferred hand-off from the look step: a V3 Instant Avatar cannot
+            // be created without the consent that just completed.
+            onVerified={async () => {
+              if (!twinId || !sourceUrl) { setStep("voice"); return }
+              try {
+                const res = await fetch("/api/did/create-avatar", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    source_url: sourceUrl,
+                    source_type: "video",
+                    twin_id: twinId,
+                    label: label.trim() || "My Twin",
+                  }),
+                })
+                if (!res.ok) {
+                  const err = await res.json().catch(() => ({}))
+                  toast.error(err.error ?? "Avatar processing failed")
+                  return
+                }
+              } catch {
+                toast.error("Couldn't start avatar processing — try again.")
+                return
+              }
+              setStep("voice")
+            }}
+            onSkip={async () => {
+              // Consent was ALREADY on file from a previous twin, so the submit
+              // that the look step deferred still has to happen.
+              if (!twinId || !sourceUrl) { setStep("voice"); return }
+              try {
+                const res = await fetch("/api/did/create-avatar", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    source_url: sourceUrl,
+                    source_type: "video",
+                    twin_id: twinId,
+                    label: label.trim() || "My Twin",
+                  }),
+                })
+                if (!res.ok) {
+                  const err = await res.json().catch(() => ({}))
+                  toast.error(err.error ?? "Avatar processing failed")
+                  return
+                }
+              } catch {
+                toast.error("Couldn't start avatar processing — try again.")
+                return
+              }
+              setStep("voice")
+            }}
           />
         )}
 
@@ -112,7 +186,7 @@ export function TwinWizard({ open, onOpenChange }: Props) {
 
 function LookStep({
   label, onLabelChange, onComplete,
-}: { label: string; onLabelChange: (v: string) => void; onComplete: (twinId: string) => void }) {
+}: { label: string; onLabelChange: (v: string) => void; onComplete: (twinId: string, kind: "photo" | "video", sourceUrl: string) => void }) {
   const [kind, setKind] = useState<"photo" | "video" | null>(null)
   const [uploading, setUploading] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -151,7 +225,17 @@ function LookStep({
         return
       }
 
-      // Hand off to D-ID — async; cron polls until ready
+      // ORDER MATTERS. A VIDEO twin is a V3 Instant Avatar and D-ID refuses one
+      // without a verified consent, so submitting here would 428 before the
+      // agent has had any chance to record it — they would see a failure for
+      // something they were never offered. Video therefore defers the D-ID
+      // hand-off until AFTER the consent step; photo submits immediately,
+      // because a photo twin needs no consent at all.
+      if (kind === "video") {
+        onComplete(draft.twinId, "video", upload.url)
+        return
+      }
+
       const didRes = await fetch("/api/did/create-avatar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -168,7 +252,7 @@ function LookStep({
         return
       }
 
-      onComplete(draft.twinId)
+      onComplete(draft.twinId, kind!, upload.url)
     } finally {
       setUploading(false)
     }
@@ -401,9 +485,11 @@ function DoneStep({ label, onClose }: { label: string; onClose: () => void }) {
 
 // ─── Steps indicator ──────────────────────────────────────────────────────
 
-function Steps({ current }: { current: Step }) {
+function Steps({ current, showConsent }: { current: Step; showConsent: boolean }) {
   const steps: { key: Step; label: string }[] = [
     { key: "look", label: "Look" },
+    // Shown only once the agent has chosen video — a photo twin never sees it.
+    ...(showConsent ? [{ key: "consent" as Step, label: "Consent" }] : []),
     { key: "voice", label: "Voice" },
     { key: "personality", label: "Personality" },
   ]
