@@ -224,6 +224,11 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({
     didAgentId: ensured.didAgentId,
     clientKey: keyResult.clientKey,
+    // The presenter FAMILY, so the browser knows what it may offer before it
+    // connects. The live widget's microphone and sentiment are Expressive (V4)
+    // only, and streamOptions are v2/v3 only — sending the client a capability
+    // it cannot use is how a dead button gets shipped.
+    presenterType: ensured.presenterType,
     softWarning: cap.soft_warning ? cap.message : undefined,
   })
 }

@@ -26,20 +26,28 @@
  *      transcribes it and answers — the contact talks, the avatar talks back.
  *   2. LETS THE CONTACT INTERRUPT. A person who has heard enough talks over
  *      you; an avatar that keeps going for another twenty seconds reads as a
- *      recording, not a conversation. interrupt() needs a FLUENT stream, so
- *      streamOptions.fluent is now requested — without it the SDK's
- *      getIsInterruptAvailable() is false and the button would be another lie.
+ *      recording, not a conversation.
  *   3. REPORTS ITS STATE FROM THE SDK, not from a guess. Status used to be
  *      inferred from whether a message arrived as "partial"; the SDK publishes
  *      AgentActivityState (IDLE / LOADING / TALKING / TOOL_ACTIVE) directly.
  *
- * ── EVERY AFFORDANCE IS FEATURE-DETECTED ────────────────────────────────────
- * publishMicrophoneStream and unpublishMicrophoneStream are OPTIONAL on the
- * AgentManager interface — the SDK documents them as "supported only for
- * livekit manager" — and interrupt only works on a fluent stream with an active
- * video. So both are probed at runtime, and when a capability is absent the UI
- * SAYS SO instead of showing a dead control. That is the rule the old mic
- * button broke.
+ * ── THE CAPABILITY IS THE PRESENTER'S, NOT THE SDK'S ────────────────────────
+ * The first cut of this wired those methods on the assumption every agent could
+ * use them. It cannot. Verbatim from the Agents SDK overview:
+ * publishMicrophoneStream is "supported only with Expressive (V4) agents";
+ * sentiment and should_queue_speaks are "supported for Expressive (V4) agents
+ * only"; interrupt is "supported for Fluent streams (V3 Pro Avatars) and all
+ * Expressive (V4) agents"; and streamOptions apply to "v2/v3 avatars only"
+ * because V4 "manage[s] transport settings automatically". So the server now
+ * tells this component which presenter family it is talking to, and
+ * lib/did/agent-presenter.ts turns that into what may be offered.
+ *
+ * ── TWO GATES, AND WHY BOTH ─────────────────────────────────────────────────
+ * The capability table says what the FAMILY supports; the SDK says what THIS
+ * SESSION has. Barge-in needs both — it is live on Expressive and on fluent
+ * V3 Pro streams, and Pro is a plan-level fact invisible from here, so the
+ * runtime probe casts the deciding vote. When either gate says no, the control
+ * says WHY rather than sitting dead. That is the rule the old mic button broke.
  *
  * Per-session contact context is injected by prefixing the first user message
  * with `[[CTX:contactId=<uuid>]]`. The custom-LLM route extracts and strips it.
@@ -49,6 +57,7 @@
 import { useEffect, useRef, useState, useCallback } from "react"
 import { Loader2, Mic, MicOff, Send, Video, MessageSquare, Square } from "lucide-react"
 import * as didSdk from "@d-id/client-sdk"
+import { capabilitiesFor, type DidPresenterType } from "@/lib/did/agent-presenter"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { toast } from "sonner"
@@ -75,6 +84,8 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
   const videoRef = useRef<HTMLVideoElement>(null)
   const managerRef = useRef<didSdk.AgentManager | null>(null)
   const micStreamRef = useRef<MediaStream | null>(null)
+  /** What the presenter family supports — read before any control is offered. */
+  const capsRef = useRef(capabilitiesFor(null))
   const ctxMarkerSentRef = useRef(false)
   // Minute metering: avatar minutes only burn in LIVE mode. Track when live
   // mode started + accumulate elapsed seconds; report once on teardown via
@@ -110,10 +121,19 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
           return
         }
 
-        const { didAgentId, clientKey } = (await res.json()) as {
+        const { didAgentId, clientKey, presenterType } = (await res.json()) as {
           didAgentId: string
           clientKey: string
+          presenterType?: DidPresenterType
         }
+
+        // WHAT THIS AVATAR CAN ACTUALLY DO, decided from the presenter family
+        // the server built the D-ID Agent with rather than assumed. The
+        // microphone and sentiment are Expressive (V4) only, and streamOptions
+        // are documented as v2/v3 only — so this must be known BEFORE
+        // createAgentManager, not probed after it.
+        const caps = capabilitiesFor(presenterType)
+        capsRef.current = caps
 
         if (cancelled) return
         didAgentIdRef.current = didAgentId
@@ -126,13 +146,13 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
           mode: didSdk.ChatMode.TextOnly,
           // Tag the session with contactId for D-ID-side analytics
           externalId: contactId,
-          streamOptions: {
-            // FLUENT IS THE PRECONDITION FOR BARGE-IN. The SDK documents
-            // interrupt() as "only available for Fluent streams", so without
-            // this the interrupt control could never appear and a contact who
-            // has heard enough would have to sit through the rest.
-            fluent: true,
-          },
+          // streamOptions are documented as applying to Talks (V2) and Clips
+          // (V3) ONLY — "Expressive avatars manage transport settings
+          // automatically and do not use these options", and fluent is "always
+          // enabled for V4". m324 sent fluent:true unconditionally, which is a
+          // V3-Pro option a V4 avatar ignores; sending it anyway would read as
+          // configuration that does something.
+          ...(caps.streamOptions ? { streamOptions: { fluent: true } } : {}),
           callbacks: {
             onSrcObjectReady: (srcObject) => {
               if (videoRef.current) videoRef.current.srcObject = srcObject
@@ -193,9 +213,18 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
 
         managerRef.current = manager
         await manager.connect()
-        // Probe once connected — before connect, the stream type is unknown.
-        setCanInterrupt(safeIsInterruptAvailable(manager))
-        setMicState(typeof manager.publishMicrophoneStream === "function" ? "off" : "unsupported")
+
+        // TWO GATES, BOTH REQUIRED. The capability table says what this
+        // presenter FAMILY supports; the SDK says what this SESSION actually
+        // has. Barge-in is the case that needs both — it is live on Expressive
+        // and on FLUENT (V3 Pro) clip streams, and Pro is a plan-level fact we
+        // cannot see from here, so the runtime probe is the deciding vote.
+        setCanInterrupt(caps.interrupt && safeIsInterruptAvailable(manager))
+        setMicState(
+          caps.microphone && typeof manager.publishMicrophoneStream === "function"
+            ? "off"
+            : "unsupported",
+        )
         setStatus("ready")
       } catch (e) {
         console.error("D-ID Agents boot failed", e)
@@ -334,9 +363,9 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
   const startMic = useCallback(async () => {
     const m = managerRef.current
     if (!m) return
-    if (typeof m.publishMicrophoneStream !== "function") {
+    if (!capsRef.current.microphone || typeof m.publishMicrophoneStream !== "function") {
       setMicState("unsupported")
-      toast.error("Voice input isn't available on this connection — type instead")
+      toast.error("Voice input isn't available on this avatar — type instead")
       return
     }
     // Speaking implies live: publishing audio to an avatar that is muted would

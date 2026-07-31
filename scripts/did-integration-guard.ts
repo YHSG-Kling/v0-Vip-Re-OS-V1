@@ -38,6 +38,9 @@ import {
   classifyDidError, classifyDidStatus, buildExpressAvatarRequest,
   assetIdFromUserData, externalKeyHeader, DID_STATUS_IN_FLIGHT,
 } from "../lib/did/contract"
+import {
+  presenterTypeForTwin, capabilitiesFor, DID_PRESENTER_TYPES, DID_SENTIMENTS, isDidSentiment,
+} from "../lib/did/agent-presenter"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -172,8 +175,6 @@ console.log("\n═══ 6b. The live widget USES the SDK it pinned — no dead 
   ok("the SDK really exposes interrupt + getIsInterruptAvailable", /interrupt: \(interrupt: Interrupt\)/.test(mgr) && /getIsInterruptAvailable/.test(mgr))
   ok("the widget can be interrupted — a conversation the contact cannot cut\n    off is a recording that happens to be listening",
     /m\.interrupt\(\{ type: "click" \}\)/.test(widget))
-  ok("...and requests the FLUENT stream interrupt requires, so the control is\n    not offered on a stream that would ignore it",
-    /streamOptions:\s*\{[\s\S]{0,200}fluent: true/.test(widget))
   ok("...with the control gated on the SDK's own interruptible signal",
     widget.includes("onInterruptibleChange") && /canInterrupt &&/.test(widget))
 
@@ -181,6 +182,59 @@ console.log("\n═══ 6b. The live widget USES the SDK it pinned — no dead 
     widget.includes("onAgentActivityStateChange") && widget.includes("AgentActivityState.Talking"))
   ok("AgentActivityState really is an SDK export",
     /enum AgentActivityState/.test(src("node_modules/@d-id/client-sdk/dist/src/types/stream/stream.d.ts")))
+}
+
+console.log("\n═══ 6c. The presenter FAMILY decides the capability, and it is resolved ═══")
+{
+  // THE DEFECT: lib/did/agents.ts hardcoded presenter type "clip" and passed
+  // our twin's did_avatar_id as its presenter_id. Published ClipAgentPresenter
+  // says presenter_id is "Retrieved from the GET /presenters endpoint" — D-ID's
+  // pre-built gallery — while every avatar this OS creates is an `avt_…` from
+  // POST /scenes/avatars, the id shape the EXPRESSIVE schema documents. That
+  // mis-typing also darkened the live widget, because the microphone and
+  // sentiment are Expressive-only.
+  const agents = code("lib/did/agents.ts")
+  const widget = code("app/components/features/ai-avatar-chat/AgentsWidget.tsx")
+  ok("the presenter block is BUILT, not hardcoded", agents.includes("buildAgentPresenter({"))
+  ok('the "clip" hardcode is gone — the regression that mis-typed every twin',
+    !/type: "clip" as const/.test(agents))
+  ok("an `avt_` twin resolves to the EXPRESSIVE family",
+    presenterTypeForTwin("avt_abc123") === "expressive")
+  ok("...including the public compound form name@avt_xxx the schema documents",
+    presenterTypeForTwin("public_mia_elegant@avt_TJ0Tq5") === "expressive")
+  ok("a gallery presenter id stays CLIP — that is the family whose presenter_id\n    really does come from GET /presenters",
+    presenterTypeForTwin("v2_public_amber") === "clip")
+
+  ok("expressive is the only family that carries the microphone",
+    capabilitiesFor("expressive").microphone && !capabilitiesFor("clip").microphone && !capabilitiesFor("talk").microphone)
+  ok("...and the only one that carries sentiment",
+    capabilitiesFor("expressive").sentiment && !capabilitiesFor("clip").sentiment)
+  ok("streamOptions are v2/v3 ONLY — V4 manages transport itself, so sending\n    them there would read as configuration that does something",
+    capabilitiesFor("talk").streamOptions && capabilitiesFor("clip").streamOptions && !capabilitiesFor("expressive").streamOptions)
+  ok("an UNKNOWN family offers nothing optional rather than guessing",
+    !capabilitiesFor("nonsense" as any).microphone && !capabilitiesFor(null).sentiment && !capabilitiesFor(undefined).interrupt)
+  ok("every capability line states WHY, so a disabled control can be explained",
+    DID_PRESENTER_TYPES.every((t) => capabilitiesFor(t).why.length > 20))
+
+  ok("the sentiment vocabulary is the documented closed set — an unsupported\n    value silently falls back, so a typo would be invisible",
+    DID_SENTIMENTS.length === 5 && isDidSentiment("empathetic") && !isDidSentiment("cheerful"))
+
+  const session = code("app/api/did/agents/session/route.ts")
+  const embedSession = code("app/api/embed/session/route.ts")
+  ok("the portal session route reports the family to the browser",
+    session.includes("presenterType: ensured.presenterType"))
+  ok("...and so does the embed session route — the same widget contract",
+    embedSession.includes("presenterType: ensured.presenterType"))
+  ok("the widget decides from that family BEFORE createAgentManager, because\n    streamOptions cannot be probed after the manager exists",
+    widget.indexOf("capabilitiesFor(presenterType)") < widget.indexOf("createAgentManager(didAgentId"))
+  ok("streamOptions are sent CONDITIONALLY, not unconditionally",
+    /\.\.\.\(caps\.streamOptions \? \{ streamOptions/.test(widget))
+  ok("the mic offer is gated on the family AND the runtime method",
+    /caps\.microphone && typeof manager\.publishMicrophoneStream === "function"/.test(widget))
+  ok("...and starting the mic re-checks the family, so a stale state cannot\n    open a capture the avatar cannot use",
+    /!capsRef\.current\.microphone \|\| typeof m\.publishMicrophoneStream !== "function"/.test(widget))
+  ok("barge-in is gated on the family AND the SDK probe",
+    /caps\.interrupt && safeIsInterruptAvailable\(manager\)/.test(widget))
 }
 
 console.log("\n═══ 7. Errors are CLASSIFIED, per the published contract ═══")
