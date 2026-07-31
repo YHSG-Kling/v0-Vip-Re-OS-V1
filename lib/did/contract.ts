@@ -251,3 +251,43 @@ export function externalKeyHeader(elevenLabsKey?: string | null): Record<string,
   if (!key) return {}
   return { "x-api-key-external": JSON.stringify({ elevenlabs: key }) }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Consent (pure half) — the server I/O lives in lib/did/consent.ts
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The languages D-ID accepts for a consent script. */
+export const CONSENT_LANGUAGES = [
+  "english", "spanish", "french", "german", "italian", "portuguese", "dutch",
+  "polish", "turkish", "swedish", "indonesian", "filipino", "czech",
+  "romanian", "danish", "malay", "slovak", "croatian",
+] as const
+export type ConsentLanguage = (typeof CONSENT_LANGUAGES)[number]
+
+export function normalizeConsentLanguage(input?: string | null): ConsentLanguage {
+  const v = (input ?? "").trim().toLowerCase()
+  return (CONSENT_LANGUAGES as readonly string[]).includes(v) ? (v as ConsentLanguage) : "english"
+}
+
+/**
+ * Does this avatar source require a verified consent?
+ *
+ * VIDEO does — that is a V3 Instant Avatar, built from footage of a real person,
+ * and it is the flow the consent process exists to police. A PHOTO-sourced V2
+ * talking head does not go through instant-avatar training, so demanding a
+ * passcode performance for one would be friction with nothing behind it.
+ */
+export function consentRequiredFor(sourceType: "photo" | "video"): boolean {
+  return sourceType === "video"
+}
+
+/**
+ * The on-screen instruction set, here so every surface says the same thing —
+ * and so the capture component (a client component) can read it without
+ * pulling in the server-only D-ID client.
+ */
+export const CONSENT_INSTRUCTIONS = [
+  "Look straight at the camera in a well-lit room, with only you in frame.",
+  "Read the three words on screen aloud, clearly and at a normal pace.",
+  "Recording must be done here on camera — an uploaded file cannot be accepted.",
+] as const

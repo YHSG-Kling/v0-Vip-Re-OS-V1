@@ -30,6 +30,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   agent_api_credentials: ["access_token", "agent_id", "api_key", "api_secret", "brokerage_id", "config", "created_at", "error_message", "id", "is_active", "is_verified", "last_verified_at", "refresh_token", "service_name", "service_type", "token_expires_at", "updated_at"],
   agent_assistant_sessions: ["agent_id", "brokerage_id", "context_contact_id", "context_listing_id", "context_transaction_id", "context_url", "conversation_id", "duration_seconds", "ended_at", "ended_reason", "id", "message_count", "metadata", "started_at", "tool_call_count", "user_id"],
   agent_assistant_tool_calls: ["brokerage_id", "error_message", "id", "latency_ms", "session_id", "success", "tool_input", "tool_name", "tool_output", "ts"],
+  agent_did_consents: ["agent_id", "brokerage_id", "consent_text", "created_at", "did_consent_id", "failure_reason", "id", "language", "source_url", "status", "updated_at", "verified_at"],
   agent_avatar_assets: ["agent_id", "approval_status", "approved_at", "approved_by", "avatar_url", "brokerage_id", "created_at", "did_agent_id", "did_avatar_id", "error_message", "id", "is_default", "label", "personality", "rejection_reason", "source_type", "source_url", "status", "thumbnail_url", "updated_at", "voice_id", "voice_sample_url"],
   agent_badges: ["agent_id", "awarded_at", "awarded_reason", "badge_id", "brokerage_id", "id"],
   agent_cap_tracking: ["agent_id", "anniversary_end", "anniversary_start", "brokerage_id", "cap_amount", "cap_paid_to_date", "created_at", "id", "is_capped"],

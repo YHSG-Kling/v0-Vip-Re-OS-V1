@@ -72,6 +72,34 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Agent profile not found" }, { status: 404 })
     }
 
+    // ─── CONSENT GATE ───────────────────────────────────────────────────────
+    // A video source is a V3 Instant Avatar, and D-ID REQUIRES a verified
+    // consent statement for those: a random passcode read aloud on camera,
+    // checked by transcription, face recognition against this very footage, and
+    // voice verification. We had none of it — this route posted a source_url
+    // with no consent_id, so every video twin was submitted without the one
+    // thing the endpoint exists to require.
+    //
+    // Refused here rather than submitted-and-rejected: the agent gets a clear
+    // next step instead of a job that fails minutes later inside a cron, and no
+    // provider quota is spent on a submission that cannot succeed.
+    const { resolveConsentIdForAvatar, consentRequiredFor } = await import("@/lib/did/consent")
+    let consentId: string | null = null
+    if (consentRequiredFor(source_type)) {
+      consentId = await resolveConsentIdForAvatar(supabase, agentRow.id, source_type)
+      if (!consentId) {
+        return NextResponse.json({
+          error:
+            "Before we can build a video twin, you need to record a short consent statement — " +
+            "you'll read three words on camera so D-ID can verify it's really you.",
+          kind: "ConsentRequired",
+          needs_consent: true,
+          needs_human_action: true,
+          retryable: false,
+        }, { status: 428 })
+      }
+    }
+
     // The avatar's NAME in the D-ID account. Operational rather than technical:
     // without it a brokerage's avatars are all untitled and indistinguishable
     // when something needs provider-side support.
@@ -144,7 +172,7 @@ export async function POST(request: NextRequest) {
         assetId: twin_id ?? null,
         agentName: agentDisplayName,
         label,
-        consentId: body?.consent_id ?? null,
+        consentId,
         isGreenscreen: body?.is_greenscreen === true,
       })),
     })
