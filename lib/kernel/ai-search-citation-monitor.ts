@@ -111,6 +111,52 @@ export function detectOurCitation(searchResultText: string, target: DetectionTar
   return { cited: false, matched: null, kind: null }
 }
 
+// ── PURE: who ELSE did the answer name? ──
+
+/** A competitor we watch, as stored on competitors / competitor_profiles. */
+export interface CompetitorTarget {
+  name: string
+  /** Their site, when we know it. A domain match is the strong signal. */
+  domain?: string | null
+}
+
+/**
+ * PURE + total: which of the brokerages we watch appear in this SAME answer?
+ *
+ * This is the other half of the citation question, and the half that was being
+ * thrown away. detectOurCitation reads the answer and decides about US, then the
+ * text was discarded — so the OS could report a hit rate but never share of
+ * voice, which is the number that can move the OPPOSITE way. Run against the
+ * text already in memory, so it costs no extra provider call.
+ *
+ * Conservative by design: a domain match, or a competitor NAME long enough not
+ * to collide with ordinary prose. Short names are skipped rather than guessed —
+ * a false competitor citation would understate our own share and send a broker
+ * chasing a rival who was never mentioned.
+ */
+export function detectCompetitorCitations(
+  searchResultText: string, competitors: ReadonlyArray<CompetitorTarget>,
+): string[] {
+  const hay = norm(searchResultText || "")
+  if (!hay || !competitors?.length) return []
+
+  const found = new Set<string>()
+  for (const c of competitors) {
+    const name = String(c?.name ?? "").trim()
+    if (!name) continue
+
+    const domain = norm(String(c?.domain ?? "").replace(/^https?:\/\//, "").replace(/\/.*$/, ""))
+    if (domain.length >= 4 && hay.includes(domain)) { found.add(name); continue }
+
+    // 4 chars is the same floor detectOurCitation uses for a slug/domain. A
+    // brokerage called "EXP" or "KW" is skipped rather than matched against
+    // every occurrence of those letters inside other words.
+    const needle = norm(name)
+    if (needle.length >= 4 && hay.includes(needle)) found.add(name)
+  }
+  return [...found].sort()
+}
+
 // ── PURE: score AI-search visibility from REAL recorded observations ──
 
 export interface VisibilityScore {
@@ -268,6 +314,39 @@ export interface CitationMonitorResult {
 }
 
 /**
+ * The brokerage's watched competitors, for share-of-voice detection.
+ *
+ * Two tables hold them for two different features (competitors is the simple
+ * watch list, competitor_profiles the richer intel record), so both are read and
+ * merged by name — a broker who added a rival in one surface must not be
+ * invisible to the other. Never throws: share of voice is an enrichment, and a
+ * read failure must not stop the citation monitor from recording OUR outcome.
+ */
+async function loadCompetitorTargets(supabase: Svc, brokerageId: string): Promise<CompetitorTarget[]> {
+  const byName = new Map<string, CompetitorTarget>()
+  const add = (name: unknown, domain: unknown) => {
+    const n = String(name ?? "").trim()
+    if (!n) return
+    const key = n.toLowerCase()
+    const d = String(domain ?? "").trim() || null
+    const existing = byName.get(key)
+    if (!existing) byName.set(key, { name: n, domain: d })
+    else if (!existing.domain && d) existing.domain = d
+  }
+  try {
+    const { data } = await supabase.from("competitors")
+      .select("competitor_name, competitor_url").eq("brokerage_id", brokerageId)
+    for (const r of (data ?? []) as any[]) add(r.competitor_name, r.competitor_url)
+  } catch { /* enrichment only */ }
+  try {
+    const { data } = await supabase.from("competitor_profiles")
+      .select("competitor_name, website_url").eq("brokerage_id", brokerageId).eq("is_active", true)
+    for (const r of (data ?? []) as any[]) add(r.competitor_name, r.website_url)
+  } catch { /* enrichment only */ }
+  return [...byName.values()]
+}
+
+/**
  * Run one citation-monitor pass for a brokerage.
  *
  * For each recently-published reel (ai_video_projects.is_published, public_slug set,
@@ -297,6 +376,10 @@ export async function runCitationMonitor(
   const maxPages = opts.maxPages ?? 25
   const windowDays = opts.windowDays ?? 30
   const observedOn = now.toISOString().slice(0, 10)
+
+  // Loaded ONCE per pass, not per page — the watch list does not change between
+  // pages and a per-page read would multiply the query count by the page count.
+  const competitorTargets = await loadCompetitorTargets(supabase, brokerageId)
   const since = new Date(now.getTime() - windowDays * 86_400_000).toISOString()
 
   const result: CitationMonitorResult = {
@@ -356,6 +439,11 @@ export async function runCitationMonitor(
 
     const outcome: CitationOutcome = !ran ? "not_checked" : detection.cited ? "cited" : "not_cited"
     const citedUrl = outcome === "cited" ? detection.matched : null
+    // WHO ELSE the answer named, from the SAME text — no extra provider call.
+    // NULL when the search never ran: an empty array would claim we looked and
+    // found nobody, which is a different (and false) statement from "we could
+    // not look at all".
+    const competitorsCited = ran ? detectCompetitorCitations(fetched.text, competitorTargets) : null
 
     const pageObs: CitationObservation[] = []
     for (const platform of platforms) {
@@ -370,6 +458,7 @@ export async function runCitationMonitor(
           query,
           outcome,
           cited_url:    citedUrl,
+          competitors_cited: competitorsCited,
           provider:     fetched.provider,
           observed_on:  observedOn,
           observed_at:  now.toISOString(),
@@ -453,6 +542,10 @@ export async function runLandingPageCitationMonitor(
   const maxPages = opts.maxPages ?? 25
   const observedOn = now.toISOString().slice(0, 10)
 
+  // Loaded ONCE per pass, not per page — the watch list does not change between
+  // pages and a per-page read would multiply the query count by the page count.
+  const competitorTargets = await loadCompetitorTargets(supabase, brokerageId)
+
   const result: LandingCitationMonitorResult = {
     pagesMonitored: 0, observations: 0, cited: 0, notCited: 0, notChecked: 0,
     visibility: scoreCitationVisibility([]), pages: [],
@@ -500,6 +593,11 @@ export async function runLandingPageCitationMonitor(
     const detection = ran ? detectOurCitation(fetched.text, target) : { cited: false, matched: null, kind: null as null }
     const outcome: CitationOutcome = !ran ? "not_checked" : detection.cited ? "cited" : "not_cited"
     const citedUrl = outcome === "cited" ? detection.matched : null
+    // WHO ELSE the answer named, from the SAME text — no extra provider call.
+    // NULL when the search never ran: an empty array would claim we looked and
+    // found nobody, which is a different (and false) statement from "we could
+    // not look at all".
+    const competitorsCited = ran ? detectCompetitorCitations(fetched.text, competitorTargets) : null
 
     const pageObs: CitationObservation[] = []
     for (const platform of platforms) {
@@ -512,6 +610,7 @@ export async function runLandingPageCitationMonitor(
           query,
           outcome,
           cited_url:    citedUrl,
+          competitors_cited: competitorsCited,
           provider:     fetched.provider,
           observed_on:  observedOn,
           observed_at:  now.toISOString(),

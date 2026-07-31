@@ -13,6 +13,8 @@ import {
   AiCitationVisibilityCard,
   type CitationObservationRow,
 } from "@/app/dashboard/intelligence/components/ai-citation-visibility-card"
+import { CitationShareCard } from "./citation-share-card"
+import type { ShareObservationRow } from "@/lib/geo/citation-share"
 
 export const metadata = {
   title: "SEO / GEO | Marketing",
@@ -176,7 +178,7 @@ async function GeoTab({ brokerageId }: { brokerageId: string }) {
   const citationSince = new Date(Date.now() - 30 * 86_400_000).toISOString()
   const { data: citationRows, error } = await supabase
     .from("ai_search_citation_observations")
-    .select("id, platform, outcome, cited_url, provider, public_slug, observed_at")
+    .select("id, platform, outcome, cited_url, provider, public_slug, observed_at, project_id, observed_on, competitors_cited")
     .eq("brokerage_id", brokerageId)
     .gte("observed_at", citationSince)
     .order("observed_at", { ascending: false })
@@ -208,5 +210,19 @@ async function GeoTab({ brokerageId }: { brokerageId: string }) {
     )
   }
 
-  return <AiCitationVisibilityCard observations={observations} />
+  // The share KPI collapses the per-platform rows onto the ANSWER they came
+  // from, so its sample size is answers-read rather than rows-written.
+  const shareRows: ShareObservationRow[] = (citationRows ?? []).map((r: any) => ({
+    pageId: String(r.project_id ?? ""),
+    observedOn: String(r.observed_on ?? String(r.observed_at ?? "").slice(0, 10)),
+    outcome: r.outcome,
+    competitorsCited: r.competitors_cited ?? null,
+  }))
+
+  return (
+    <div className="space-y-4">
+      <CitationShareCard rows={shareRows} />
+      <AiCitationVisibilityCard observations={observations} />
+    </div>
+  )
 }
