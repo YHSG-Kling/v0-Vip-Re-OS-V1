@@ -160,7 +160,11 @@ async function drainEmailQueue(supabase: Svc): Promise<QueueCounts> {
       // no second suppression implementation here.
       const result = await dispatchEmail({
         brokerageId: row.brokerage_id,
-        from: process.env.SENDGRID_FROM_EMAIL || "noreply@yourdomain.com",
+        // No invented sender — the queue drain refuses rather than sending
+        // from a domain nobody owns (see lib/providers/outbound-sender).
+        from: (await import("@/lib/providers/outbound-sender"))
+          .formatSenderOrUndefined(await (await import("@/lib/providers/outbound-sender"))
+            .resolveOutboundSender(supabase as any, row.brokerage_id)),
         to: toEmail,
         subject: row.subject ?? "(no subject)",
         html: looksHtml ? body : body.replace(/\n/g, "<br>"),

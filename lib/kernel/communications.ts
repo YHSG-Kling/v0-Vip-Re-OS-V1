@@ -703,7 +703,12 @@ export async function sendInboxReply(
             brokerageId: actorContext.brokerageId,
             userId: actorContext.userId,
             agentId: agentId ?? undefined,
-            from: process.env.SENDGRID_FROM_EMAIL || "noreply@yourdomain.com",
+            // No invented sender. sendEmail now validates and refuses, so an
+            // unresolvable from-address returns a reason instead of failing at
+            // the provider with an opaque unverified-sender 403.
+            from: (await import("@/lib/providers/outbound-sender"))
+              .formatSenderOrUndefined(await (await import("@/lib/providers/outbound-sender"))
+                .resolveOutboundSender(supabase as any, actorContext.brokerageId)),
             to: contact.email,
             subject,
             html: body.replace(/\n/g, "<br>"),

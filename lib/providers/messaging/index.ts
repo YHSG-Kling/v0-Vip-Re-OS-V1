@@ -20,6 +20,7 @@ import { enforceTCPACompliance } from "@/lib/communication/tcpa-gate"
 import { resolveSMSProviderForActor } from "./resolve-sms-provider"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { SMS_ADAPTERS } from "./sms-adapters"
+import { isUsableSender, NO_SENDER_ERROR } from "@/lib/providers/outbound-sender"
 
 // ─── TWILIO SMS ────────────────────────────────────────────────────────────────
 
@@ -292,8 +293,27 @@ export async function sendEmail(params: SendEmailParams): Promise<SendEmailResul
   }
 
   // Tier 2: SendGrid (transactional / no personal account configured)
+  //
+  // THE FROM ADDRESS IS NEVER INVENTED. This line used to read
+  //   params.from || SENDGRID_FROM_EMAIL || "noreply@yourdomain.com"
+  // which had two failures stacked on each other: it would send from a
+  // documentation placeholder, AND a caller passing its own placeholder as a
+  // fallback (four of the five call sites did) OVERRODE the tenant's real,
+  // verified, configured sender. SendGrid rejects an unverified sender
+  // identity, so the result was an opaque provider 403 on a brokerage that had
+  // actually configured everything correctly.
+  //
+  // Now a placeholder from EITHER source is treated as absent — a typo'd env
+  // var is exactly how one reaches production — and with no usable sender we
+  // refuse with a reason instead of spending the tenant's quota to fail.
   const apiKey = process.env.SENDGRID_API_KEY
-  const defaultFrom = process.env.SENDGRID_FROM_EMAIL || "noreply@yourdomain.com"
+  const callerFrom = isUsableSender(params.from) ? (params.from as string) : null
+  const envFrom = isUsableSender(process.env.SENDGRID_FROM_EMAIL) ? (process.env.SENDGRID_FROM_EMAIL as string) : null
+  const resolvedFrom = callerFrom ?? envFrom
+
+  if (!resolvedFrom) {
+    return { success: false, error: NO_SENDER_ERROR }
+  }
 
   if (!apiKey) {
     return {
@@ -311,7 +331,7 @@ export async function sendEmail(params: SendEmailParams): Promise<SendEmailResul
     auth: { style: "bearer", token: apiKey },
     body: {
       personalizations: [{ to: [{ email: params.to }] }],
-      from: { email: params.from || defaultFrom },
+      from: { email: resolvedFrom },
       subject: params.subject,
       content: [
         { type: "text/plain", value: params.text || params.html.replace(/<[^>]*>/g, "") },

@@ -245,7 +245,15 @@ export async function dispatchConciergeActionEmail(args: {
   if (!action) return { success: false, error: "Action not found" }
 
   const { data: agentUser } = await svc.from("users").select("email").eq("id", user.id).maybeSingle()
-  const fromEmail = agentUser?.email ?? "noreply@example.com"
+  // The agent's own mailbox, else the tenant's configured sender. Never a
+  // placeholder: "noreply@example.com" both fails SendGrid's verified-sender
+  // check and OVERRIDES the brokerage's real from-address, because sendEmail
+  // resolves params.from first.
+  const { resolveOutboundSender, formatSenderOrUndefined, isUsableSender } =
+    await import("@/lib/providers/outbound-sender")
+  const fromEmail = isUsableSender(agentUser?.email)
+    ? (agentUser!.email as string)
+    : formatSenderOrUndefined(await resolveOutboundSender(svc as any, action.brokerage_id))
 
   const result = await dispatchEmail({
     brokerageId:    action.brokerage_id,

@@ -72,8 +72,18 @@ export async function POST(req: NextRequest) {
       contactId: contact.id,
     })
 
+    // The from-address is never a placeholder. "noreply@example.com" both
+    // fails SendGrid's verified-sender check and OVERRIDES the brokerage's own
+    // configured sender, because sendEmail resolves params.from first.
+    const { resolveOutboundSender, formatSender, NO_SENDER_ERROR } =
+      await import("@/lib/providers/outbound-sender")
+    const sender = await resolveOutboundSender(service, contact.brokerage_id)
+    if (!sender) {
+      return NextResponse.json({ success: false, error: NO_SENDER_ERROR }, { status: 422 })
+    }
+
     await dispatchEmail({
-      from: process.env.OUTBOUND_EMAIL_FROM || "noreply@example.com",
+      from: formatSender(sender),
       to: contact.email,
       subject: "Following up on your real estate inquiry",
       html: emailPayload.html,

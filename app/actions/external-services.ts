@@ -133,7 +133,11 @@ export async function sendSendGridEmail(params: {
     const brokerageId = await resolveBrokerageId(params.contactId, params.brokerageId)
     return await dispatchEmail({
       brokerageId, to: params.to, subject: params.subject, html: params.html, text: params.text,
-      from: params.from ?? (process.env.SENDGRID_FROM_EMAIL || "noreply@yourdomain.com"),
+      // No invented sender — see lib/providers/outbound-sender. Undefined lets
+      // sendEmail resolve and refuse, rather than this layer guessing.
+      from: params.from ?? (await import("@/lib/providers/outbound-sender"))
+        .formatSenderOrUndefined(await (await import("@/lib/providers/outbound-sender"))
+          .resolveOutboundSender(createServiceClient() as any, brokerageId)),
       contactId: params.contactId, channelPurpose: "transactional", systemSource: "external_services",
     })
   } catch (error: any) {

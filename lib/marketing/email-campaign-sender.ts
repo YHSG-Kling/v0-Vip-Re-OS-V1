@@ -72,11 +72,29 @@ export async function sendCampaignNow(svc: Svc, campaignId: string): Promise<Cam
     .select("id").maybeSingle()
   if (!claimed) return { ok: false, sent: 0, failed: 0, recipients: 0, error: "Campaign claimed by another worker" }
 
-  // From: the campaign agent's real address.
-  let fromEmail = "noreply@example.com"
+  // From: the campaign agent's real address, else the tenant's configured
+  // sender. NEVER a placeholder — this used to fall back to
+  // "noreply@example.com", which SendGrid rejects as an unverified sender
+  // identity AND which OVERRODE the brokerage's real configured from-address,
+  // because sendEmail resolves `params.from || SENDGRID_FROM_EMAIL`. A tenant
+  // with SendGrid fully set up still had every campaign fail at the provider.
+  const { resolveOutboundSender, formatSender, isUsableSender, NO_SENDER_ERROR } =
+    await import("@/lib/providers/outbound-sender")
+  let fromEmail: string | null = null
   if (campaign.agent_id) {
     const { data: u } = await svc.from("users").select("email").eq("id", campaign.agent_id).maybeSingle()
-    if ((u as { email: string | null } | null)?.email) fromEmail = (u as { email: string }).email
+    const agentEmail = (u as { email: string | null } | null)?.email ?? null
+    if (isUsableSender(agentEmail)) fromEmail = agentEmail
+  }
+  if (!fromEmail) {
+    const sender = await resolveOutboundSender(svc, campaign.brokerage_id)
+    fromEmail = sender ? formatSender(sender) : null
+  }
+  if (!fromEmail) {
+    // Refuse before spending the tenant's quota to fail. The campaign returns
+    // to its prior status so a human can configure a sender and re-run it.
+    await svc.from("email_campaigns").update({ status: campaign.status }).eq("id", campaignId)
+    return { ok: false, sent: 0, failed: 0, recipients: 0, error: NO_SENDER_ERROR }
   }
 
   const { dispatchEmail } = await import("@/lib/providers/dispatch")

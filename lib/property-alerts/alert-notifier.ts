@@ -59,8 +59,14 @@ export async function deliverAlertResults(
           n,
         })
 
-        const fromEmail = (sgCred.config as any)?.from_email ?? process.env.SENDGRID_FROM_EMAIL ?? "alerts@vip-re.com"
-        const fromName  = (sgCred.config as any)?.from_name  ?? (await import("@/lib/platform/product-brand")).DEFAULT_PRODUCT_BRAND.name
+        // This site already read the tenant credential — the ONE of five that
+        // did — but still ended in a hardcoded address. The shared resolver
+        // walks the same cascade and returns null instead of inventing one.
+        const { resolveOutboundSender } = await import("@/lib/providers/outbound-sender")
+        const resolvedSender = await resolveOutboundSender(supabase as any, brokerageId)
+        if (!resolvedSender) throw new Error("no_verified_sender")
+        const fromEmail = resolvedSender.email
+        const fromName  = resolvedSender.name ?? (await import("@/lib/platform/product-brand")).DEFAULT_PRODUCT_BRAND.name
 
         await dispatchEmail({
           brokerageId,

@@ -275,7 +275,15 @@ async function deconflictGate(args: {
 // ─── EMAIL ────────────────────────────────────────────────────────────────────
 
 export interface DispatchEmailParams extends DispatchActorContext {
-  from: string
+  /**
+   * The sender. OPTIONAL on purpose: undefined means "resolve it downstream",
+   * and sendEmail then walks the tenant credential / platform env cascade and
+   * REFUSES if neither yields a real address. A caller that cannot establish a
+   * sender must pass undefined rather than a placeholder — `params.from ||
+   * SENDGRID_FROM_EMAIL` means a caller's guess would otherwise beat the
+   * brokerage's own configured, verified from-address (lib/providers/outbound-sender).
+   */
+  from?: string
   to: string
   subject: string
   html: string
