@@ -20,6 +20,7 @@
  */
 
 import { resolveWriteContext } from "@/lib/kernel/identity"
+import { isDidSentiment } from "@/lib/did/agent-presenter"
 import { createServiceClient } from "@/lib/supabase/service"
 import { syncAgentVoiceId } from "@/lib/voice/sync-voice-id"
 import { revalidatePath } from "next/cache"
@@ -38,6 +39,10 @@ export interface Twin {
   voiceId: string | null
   voiceSampleUrl: string | null
   personality: string | null
+  /** The agent's OWN opening line — the only sentence the avatar may speak
+   *  that did not come from the brain. Null means it says nothing. */
+  greeting: string | null
+  greetingSentiment: string | null
   status: "pending" | "processing" | "ready" | "failed"
   approvalStatus: "pending" | "approved" | "rejected"
   rejectionReason: string | null
@@ -59,6 +64,8 @@ function rowToTwin(row: any): Twin {
     voiceId: row.voice_id,
     voiceSampleUrl: row.voice_sample_url,
     personality: row.personality,
+    greeting: row.greeting ?? null,
+    greetingSentiment: row.greeting_sentiment ?? null,
     status: row.status,
     approvalStatus: row.approval_status,
     rejectionReason: row.rejection_reason,
@@ -366,6 +373,9 @@ export async function attachVoiceToTwin(params: {
 export async function finalizeTwin(params: {
   twinId: string
   personality?: string
+  /** Authored opening line. Empty string clears it — that is a real choice. */
+  greeting?: string
+  greetingSentiment?: string
   setAsDefault?: boolean
 }): Promise<{ ok: boolean; error?: string }> {
   const ctx = await resolveWriteContext()
@@ -379,11 +389,25 @@ export async function finalizeTwin(params: {
     .maybeSingle()
   if (!twin || twin.agent_id !== ctx.agentId) return { ok: false, error: "Twin not found" }
 
-  if (params.personality !== undefined) {
-    await supabase
-      .from("agent_avatar_assets")
-      .update({ personality: params.personality, updated_at: new Date().toISOString() })
-      .eq("id", params.twinId)
+  const details: Record<string, unknown> = {}
+  if (params.personality !== undefined) details.personality = params.personality
+  // The greeting is REFUSED rather than truncated when it is too long, and the
+  // sentiment is refused rather than defaulted when it is not in the vocabulary
+  // — D-ID silently falls back on an unknown sentiment, so accepting one here
+  // would store a preference that never reaches the avatar.
+  if (params.greeting !== undefined) {
+    const g = params.greeting.trim()
+    if (g.length > 300) return { ok: false, error: "Keep the greeting under 300 characters — it is spoken aloud." }
+    details.greeting = g || null
+  }
+  if (params.greetingSentiment !== undefined) {
+    const v = params.greetingSentiment.trim()
+    if (v && !isDidSentiment(v)) return { ok: false, error: "That tone isn't one D-ID supports." }
+    details.greeting_sentiment = v || null
+  }
+  if (Object.keys(details).length > 0) {
+    details.updated_at = new Date().toISOString()
+    await supabase.from("agent_avatar_assets").update(details).eq("id", params.twinId)
   }
 
   // setDefault is only honored when the twin is ready + approved — same gate

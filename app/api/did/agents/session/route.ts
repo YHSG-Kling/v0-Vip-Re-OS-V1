@@ -107,7 +107,7 @@ export async function POST(request: NextRequest) {
   // to the per-twin model yet.
   const { data: defaultTwin } = await supabase
     .from("agent_avatar_assets")
-    .select("id, did_avatar_id, voice_id, personality, status, approval_status")
+    .select("id, did_avatar_id, voice_id, personality, greeting, greeting_sentiment, status, approval_status")
     .eq("agent_id", agentRow.id)
     .eq("is_default", true)
     .maybeSingle()
@@ -116,6 +116,8 @@ export async function POST(request: NextRequest) {
   let presenterId: string | null = null
   let voiceId: string | null = null
   let personality: string | null = null
+  let greeting: string | null = null
+  let greetingSentiment: string | null = null
 
   if (defaultTwin) {
     if (defaultTwin.status !== "ready") {
@@ -134,6 +136,8 @@ export async function POST(request: NextRequest) {
     presenterId = defaultTwin.did_avatar_id
     voiceId = defaultTwin.voice_id
     personality = defaultTwin.personality
+    greeting = defaultTwin.greeting ?? null
+    greetingSentiment = defaultTwin.greeting_sentiment ?? null
   } else {
     const { data: voiceProfile } = await supabase
       .from("agent_voice_profiles")
@@ -229,6 +233,11 @@ export async function POST(request: NextRequest) {
     // only, and streamOptions are v2/v3 only — sending the client a capability
     // it cannot use is how a dead button gets shipped.
     presenterType: ensured.presenterType,
+    // The agent's OWN opening line, or null. Null is the common case and it is
+    // not a gap: an avatar that waits to be spoken to is better than one
+    // reciting a sentence its owner never wrote.
+    greeting,
+    greetingSentiment,
     softWarning: cap.soft_warning ? cap.message : undefined,
   })
 }

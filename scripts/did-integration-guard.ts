@@ -237,6 +237,46 @@ console.log("\n═══ 6c. The presenter FAMILY decides the capability, and it
     /caps\.interrupt && safeIsInterruptAvailable\(manager\)/.test(widget))
 }
 
+console.log("\n═══ 6d. The avatar speaks only words its owner wrote ═══")
+{
+  // speak() is the ONE path where the avatar says something the brain did not
+  // produce — a literal string, in a named real-estate agent's cloned voice, to
+  // their own client. So the string has to be authored by that agent or not
+  // exist. This section exists to stop a well-meaning later edit from adding a
+  // friendly-sounding default, which would be a sentence the human never
+  // approved being spoken in their voice.
+  const widget = code("app/components/features/ai-avatar-chat/AgentsWidget.tsx")
+  const wizard = code("app/dashboard/settings/twin-studio/components/twin-wizard.tsx")
+  const action = code("app/actions/twin-studio.ts")
+  const session = code("app/api/did/agents/session/route.ts")
+
+  ok("the agent can AUTHOR an opening line in Twin Studio",
+    wizard.includes("onGreetingChange") && wizard.includes('id="twin-greeting"'))
+  ok("...and the tone chips come from the SHARED vocabulary, not retyped —\n    an invented tone would look chosen and do nothing on the wire",
+    /GREETING_TONES = DID_SENTIMENTS\.map/.test(wizard))
+  ok("the greeting is persisted through finalizeTwin", action.includes("details.greeting = g || null"))
+  ok("an over-long greeting is REFUSED, not truncated — it is spoken aloud and\n    a silently-cut sentence would end mid-word",
+    /g\.length > 300[\s\S]{0,120}ok: false/.test(action))
+  ok("an unsupported tone is REFUSED, not defaulted — D-ID silently falls back,\n    so accepting one would store a preference that never reaches the avatar",
+    /!isDidSentiment\(v\)[\s\S]{0,80}ok: false/.test(action))
+  ok("the session route hands the authored line to the browser",
+    session.includes("greeting,") && session.includes("greetingSentiment,"))
+
+  ok("the widget speaks it ONLY on entering live mode — not on connect, which\n    would talk at a contact who never asked and burn avatar minutes on a\n    page view",
+    /const enterLive = useCallback\([\s\S]{0,900}m\.speak\(\{/.test(widget))
+  ok("...exactly once per session", /greetedRef\.current = true/.test(widget))
+  ok("...and NEVER when the agent wrote nothing — silence is the default,\n    a hardcoded hello is not",
+    /if \(!line \|\| greetedRef\.current\) return/.test(widget))
+  ok("THERE IS EXACTLY ONE speak() IN THE WIDGET — every other utterance comes\n    from chat() through our own brain",
+    (widget.match(/\.speak\(/g) ?? []).length === 1)
+  ok("no invented fallback greeting anywhere in the speak path",
+    !/speak\(\{[\s\S]{0,200}input: ["`'][A-Za-z]/.test(widget))
+  ok("the sentiment rides only where the family supports it",
+    /tone && capsRef\.current\.sentiment/.test(widget))
+  ok("a failed greeting does not break the conversation",
+    /greeting speak\(\) failed/.test(widget))
+}
+
 console.log("\n═══ 7. Errors are CLASSIFIED, per the published contract ═══")
 {
   // D-ID returns {kind, description} with documented HTTP classes. We used to

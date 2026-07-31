@@ -1,6 +1,7 @@
 "use client"
 
 import { useRef, useState, useTransition } from "react"
+import { DID_SENTIMENTS } from "@/lib/did/agent-presenter"
 import { Camera, Video, Loader2, ChevronRight, ChevronLeft, CheckCircle2, Sparkles } from "lucide-react"
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
@@ -22,6 +23,18 @@ interface Props {
   onOpenChange: (open: boolean) => void
 }
 
+/**
+ * The greeting tones D-ID actually supports, verbatim from their SDK reference.
+ *
+ * CLOSED, and sourced from the shared vocabulary rather than retyped: D-ID
+ * documents that an unsupported sentiment silently falls back to the default,
+ * so an invented tone would look chosen here and do nothing on the wire.
+ */
+const GREETING_TONES = DID_SENTIMENTS.map((value) => ({
+  value,
+  label: value.charAt(0).toUpperCase() + value.slice(1),
+}))
+
 const PERSONALITY_PRESETS = [
   { label: "Warm & reassuring", text: "Warm and reassuring. Lead with empathy. Plain English." },
   { label: "Direct & informative", text: "Direct and informative. Get to the point with the facts that matter." },
@@ -41,6 +54,11 @@ export function TwinWizard({ open, onOpenChange }: Props) {
   const [sourceUrl, setSourceUrl] = useState<string | null>(null)
   const [label, setLabel] = useState("My Twin")
   const [personality, setPersonality] = useState("")
+  // The agent's OWN opening line. Optional, and empty is a real answer — an
+  // avatar that says nothing until spoken to is better than one that says
+  // something its owner never wrote.
+  const [greeting, setGreeting] = useState("")
+  const [greetingSentiment, setGreetingSentiment] = useState("")
   const [setAsDefault, setSetAsDefault] = useState(true)
   const [pending, startTransition] = useTransition()
 
@@ -155,6 +173,10 @@ export function TwinWizard({ open, onOpenChange }: Props) {
           <PersonalityStep
             personality={personality}
             onPersonalityChange={setPersonality}
+            greeting={greeting}
+            onGreetingChange={setGreeting}
+            greetingSentiment={greetingSentiment}
+            onGreetingSentimentChange={setGreetingSentiment}
             setAsDefault={setAsDefault}
             onSetAsDefaultChange={setSetAsDefault}
             pending={pending}
@@ -164,6 +186,8 @@ export function TwinWizard({ open, onOpenChange }: Props) {
                 const res = await finalizeTwin({
                   twinId,
                   personality: personality || undefined,
+                  greeting,
+                  greetingSentiment,
                   setAsDefault,
                 })
                 if (res.ok) {
@@ -397,11 +421,17 @@ function VoiceStep({
 // ─── Step 3 — Personality ──────────────────────────────────────────────────
 
 function PersonalityStep({
-  personality, onPersonalityChange, setAsDefault, onSetAsDefaultChange,
+  personality, onPersonalityChange,
+  greeting, onGreetingChange, greetingSentiment, onGreetingSentimentChange,
+  setAsDefault, onSetAsDefaultChange,
   pending, onBack, onFinish,
 }: {
   personality: string
   onPersonalityChange: (v: string) => void
+  greeting: string
+  onGreetingChange: (v: string) => void
+  greetingSentiment: string
+  onGreetingSentimentChange: (v: string) => void
   setAsDefault: boolean
   onSetAsDefaultChange: (v: boolean) => void
   pending: boolean
@@ -436,6 +466,53 @@ function PersonalityStep({
           rows={3}
           maxLength={500}
         />
+      </div>
+
+      {/* THE ONLY WORDS THE AVATAR SPEAKS THAT THE BRAIN DID NOT WRITE.
+          Everything else the twin says comes from chat() through our custom-LLM.
+          A greeting is spoken verbatim, in this agent's cloned voice, to their
+          own client — so it is authored here or it does not exist. There is
+          deliberately no default: a friendly-sounding placeholder would be a
+          sentence the agent never approved. */}
+      <div>
+        <Label htmlFor="twin-greeting">Opening line (optional)</Label>
+        <p className="text-xs text-muted-foreground mt-1">
+          Spoken in your voice when a client starts a live conversation. Leave it
+          blank and your twin simply waits for them to speak first.
+        </p>
+        <Textarea
+          id="twin-greeting"
+          value={greeting}
+          onChange={(e) => onGreetingChange(e.target.value)}
+          placeholder="Hi — good to see you. What can I help you with today?"
+          className="mt-2 text-sm"
+          rows={2}
+          maxLength={300}
+        />
+        <div className="flex items-center justify-between mt-1">
+          <span className="text-[11px] text-muted-foreground">
+            {greeting.length}/300 — it is read aloud, so keep it short
+          </span>
+        </div>
+        {greeting.trim().length > 0 && (
+          <div className="mt-2">
+            <Label className="text-xs">Tone</Label>
+            <div className="flex flex-wrap gap-1.5 mt-1.5">
+              {GREETING_TONES.map((t) => (
+                <button
+                  key={t.value}
+                  type="button"
+                  onClick={() => onGreetingSentimentChange(greetingSentiment === t.value ? "" : t.value)}
+                  className={`rounded-full border px-2.5 py-1 text-xs hover:bg-muted/50 transition-colors ${
+                    greetingSentiment === t.value ? "border-primary bg-primary/5 text-foreground" : "text-muted-foreground"
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex items-center gap-2 rounded-md border bg-muted/30 p-3">

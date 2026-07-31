@@ -57,7 +57,9 @@
 import { useEffect, useRef, useState, useCallback } from "react"
 import { Loader2, Mic, MicOff, Send, Video, MessageSquare, Square } from "lucide-react"
 import * as didSdk from "@d-id/client-sdk"
-import { capabilitiesFor, type DidPresenterType } from "@/lib/did/agent-presenter"
+import {
+  capabilitiesFor, isDidSentiment, type DidPresenterType, type DidSentiment,
+} from "@/lib/did/agent-presenter"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { toast } from "sonner"
@@ -86,6 +88,11 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
   const micStreamRef = useRef<MediaStream | null>(null)
   /** What the presenter family supports — read before any control is offered. */
   const capsRef = useRef(capabilitiesFor(null))
+  /** The agent's OWN opening line, and whether it has already been spoken.
+   *  Null when they never wrote one, which is the common case and not a gap. */
+  const greetingRef = useRef<string | null>(null)
+  const greetingSentimentRef = useRef<DidSentiment | null>(null)
+  const greetedRef = useRef(false)
   const ctxMarkerSentRef = useRef(false)
   // Minute metering: avatar minutes only burn in LIVE mode. Track when live
   // mode started + accumulate elapsed seconds; report once on teardown via
@@ -121,11 +128,16 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
           return
         }
 
-        const { didAgentId, clientKey, presenterType } = (await res.json()) as {
-          didAgentId: string
-          clientKey: string
-          presenterType?: DidPresenterType
-        }
+        const { didAgentId, clientKey, presenterType, greeting, greetingSentiment } =
+          (await res.json()) as {
+            didAgentId: string
+            clientKey: string
+            presenterType?: DidPresenterType
+            greeting?: string | null
+            greetingSentiment?: string | null
+          }
+        greetingRef.current = (greeting ?? "").trim() || null
+        greetingSentimentRef.current = isDidSentiment(greetingSentiment) ? greetingSentiment : null
 
         // WHAT THIS AVATAR CAN ACTUALLY DO, decided from the presenter family
         // the server built the D-ID Agent with rather than assumed. The
@@ -319,13 +331,47 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
     }
   }, [contactId])
 
-  /** Enter live mode — the avatar speaks, and the meter starts. */
+  /**
+   * Enter live mode — the avatar speaks, and the meter starts.
+   *
+   * THE GREETING IS SPOKEN HERE AND NOWHERE ELSE. Not on connect: the widget
+   * boots in TextOnly precisely so a portal visit does not burn avatar minutes,
+   * and an avatar that talks at someone who never asked it to is worse than a
+   * silent one. Entering live mode IS the contact asking.
+   *
+   * It is also the ONLY speak() in this component. Everything else the twin
+   * says comes from chat() through our custom-LLM; speak() bypasses the brain
+   * and says a literal string, so the only string it may ever carry is one the
+   * agent wrote in Twin Studio. No default, no fallback — silence instead.
+   */
   const enterLive = useCallback(() => {
     const m = managerRef.current
     if (!m || mode === "live") return
     m.changeMode(didSdk.ChatMode.Functional)
     liveSinceRef.current = Date.now()
     setMode("live")
+
+    const line = greetingRef.current
+    if (!line || greetedRef.current) return
+    greetedRef.current = true
+    const tone = greetingSentimentRef.current
+    try {
+      void Promise.resolve(
+        m.speak({
+          type: "text",
+          input: line,
+          // sentiment is Expressive-only; sending it to a family that ignores
+          // it would be a stored preference that never reaches the avatar.
+          ...(tone && capsRef.current.sentiment ? { sentiment: tone } : {}),
+        }),
+      ).catch((e) => {
+        // A greeting that fails is not worth interrupting the conversation
+        // over — the contact can still talk, and the brain still answers.
+        console.error("greeting speak() failed", e)
+      })
+    } catch (e) {
+      console.error("greeting speak() threw", e)
+    }
   }, [mode])
 
   const toggleMode = useCallback(async () => {
