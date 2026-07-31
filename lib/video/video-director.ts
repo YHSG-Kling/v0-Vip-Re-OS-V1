@@ -1040,12 +1040,51 @@ export async function commissionVideo(
     broll_sourced_scope: brollSourcedScope,
   }
 
+  // 6b. THE CONTENT. Everything above this line is CHROME — the bookends, the
+  //     tracked QR, the music mood, the b-roll. None of it is what the video
+  //     SAYS. The staged props used to stop there, and Remotion merges input
+  //     props over each composition's Studio defaults, so the unsupplied half
+  //     did not render blank: the equity reel reported $600,000 against
+  //     $500,000 paid, the listing reel advertised 123 Main Street at $625,000,
+  //     the testimonial published a five-star review from a client who does not
+  //     exist. The callers were already handing over real facts (equity-trigger
+  //     passes a RentCast valuation and the closed transaction's basis price;
+  //     video-plays passes a real agent_reviews row) — the Director read them
+  //     only for the hook's fact list and dropped them here.
+  const { resolveDirectorContentProps } = await import("@/lib/video/director-content")
+  const contentProps = await resolveDirectorContentProps(svc, situation, format.compositionId, {
+    brokerageId: opts.brokerageId,
+    agentUserId: opts.agentUserId,
+    listingId: opts.listingId ?? null,
+    contactId: opts.contactId ?? null,
+    hookLine,
+  })
+
+  // 6c. REFUSE rather than fabricate. A commission whose composition still has
+  //     unsupplied content props would render the Studio sample data as this
+  //     client's facts. Blocked here rather than at render time so the manager
+  //     sees WHICH facts could not be established, and no queue row, no render
+  //     spend and no delivery is created. render-composition enforces the same
+  //     contract as the backstop for every producer that does not come through
+  //     the Director.
+  const { missingContentProps, describeMissingContent } = await import("@/lib/remotion/content-contract")
+  const missing = missingContentProps(format.compositionId, contentProps)
+  if (missing.length > 0) {
+    return {
+      ok: false, status: "blocked",
+      compositionId: format.compositionId,
+      reason: describeMissingContent(format.compositionId, missing),
+      violations: missing.map((m) => `content_prop_missing:${m}`),
+    }
+  }
+
   const providerMetadata = {
     composition_id: format.compositionId,
     // music_mood rides input_props so buildRenderIntent threads it to the
     // coordinator's mood-matched music pick. brollClips rides input_props so the
     // render path feeds the composition's brollClips prop the real clips.
     input_props: {
+      ...contentProps,
       intro: introProps,
       outro: outroProps,
       // FLAT outro-QR props — the compositions read qrCodeDataUrl/qrCaption/mlsClean at the TOP level

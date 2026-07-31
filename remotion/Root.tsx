@@ -331,7 +331,7 @@ export const RemotionRoot: React.FC = () => {
           ],
           ctaLabel:  "Want my take on your block?",
           agentName: "Your Agent",
-          agentPhone: "(555) 555-1212",
+          agentPhone: null,
           avatarVideoUrl: null,
           agentPhotoUrl:  null,
           brand: {
@@ -432,7 +432,7 @@ export const RemotionRoot: React.FC = () => {
           bodyLine:   "Modern 3-bed with rooftop deck — RSVP not required.",
           ctaLabel:   "Save the date",
           agentName:  "Your Agent",
-          agentPhone: "(555) 555-1212",
+          agentPhone: null,
           brand: {
             primaryColor:  "#0F172A",
             accentColor:   "#F59E0B",
@@ -489,7 +489,7 @@ export const RemotionRoot: React.FC = () => {
           brollClips:   [],
           ctaLabel:     "Want a private tour?",
           agentName:    "Your Agent",
-          agentPhone:   "(555) 555-1212",
+          agentPhone:   null,
           brand: {
             primaryColor:  "#0F172A",
             accentColor:   "#F59E0B",
@@ -593,7 +593,7 @@ export const RemotionRoot: React.FC = () => {
           ratesAssumption: "Estimated at 6.5% / 30yr / 20% down · actual rate varies",
           ctaLabel:   "Want a real list?",
           agentName:  "Your Agent",
-          agentPhone: "(555) 555-1212",
+          agentPhone: null,
           brand: {
             primaryColor:  "#0F172A",
             accentColor:   "#F59E0B",
@@ -837,7 +837,7 @@ export const RemotionRoot: React.FC = () => {
           price: "$1,250,000", beds: "4", baths: "3.5", sqft: "3,240",
           propertyType: "Single Family", highlights: ["Chef's kitchen with quartz island", "Saltwater pool + lanai", "Half-acre corner lot", "3-car garage"],
           heroImageUrl: null, photoUrls: [], agentName: "Your Agent",
-          agentPhone: "(555) 010-2000", agentPhotoUrl: null,
+          agentPhone: null, agentPhotoUrl: null,
           qrCodeDataUrl: null, qrCaption: "Scan to tour",
           statusLine: "JUST LISTED",
           brand: { primaryColor: "#0F172A", accentColor: "#F59E0B", logoUrl: null, brokerageName: "Your Brokerage", licenseLine: null, showEhoMark: true },
@@ -881,7 +881,7 @@ export const RemotionRoot: React.FC = () => {
           address: "128 Harborview Lane", cityState: "Naples, FL 34102",
           heroImageUrl: null,
           hook: "Curious what YOUR home is worth in today's market?",
-          agentName: "Your Agent", agentPhone: "(555) 010-2000", agentPhotoUrl: null,
+          agentName: "Your Agent", agentPhone: null, agentPhotoUrl: null,
           qrCodeDataUrl: null, qrCaption: "Scan for your home's value",
           brand: { primaryColor: "#0F172A", accentColor: "#F59E0B", logoUrl: null, brokerageName: "Your Brokerage", licenseLine: null, showEhoMark: true },
         }}
@@ -904,9 +904,15 @@ export const RemotionRoot: React.FC = () => {
             accentColor:     "#F59E0B",
             logoUrl:         null,
             brokerageName:   "Your Brokerage",
-            websiteWordmark: "yourbrokerage.com",
-            phone:           "(555) 555-1212",
-            licenseLine:     "CA License # 02345678",
+            // NO SAMPLE CONTACT DETAILS. A brand block is classified COSMETIC by
+            // lib/remotion/content-contract, so unlike the content props these
+            // defaults REMAIN reachable on a real render — and these three were a
+            // phone number, a website and a state licence number that would have
+            // been printed onto a mailed postcard. Null renders the block empty,
+            // which is honest; the tenant's real values arrive via resolveReelBrand.
+            websiteWordmark: null,
+            phone:           null,
+            licenseLine:     null,
             shortDisclosure: "Equal Housing Opportunity. All information deemed reliable but not guaranteed.",
           },
         }}
@@ -930,9 +936,15 @@ export const RemotionRoot: React.FC = () => {
             accentColor:     "#F59E0B",
             logoUrl:         null,
             brokerageName:   "Your Brokerage",
-            websiteWordmark: "yourbrokerage.com",
-            phone:           "(555) 555-1212",
-            licenseLine:     "CA License # 02345678",
+            // NO SAMPLE CONTACT DETAILS. A brand block is classified COSMETIC by
+            // lib/remotion/content-contract, so unlike the content props these
+            // defaults REMAIN reachable on a real render — and these three were a
+            // phone number, a website and a state licence number that would have
+            // been printed onto a mailed postcard. Null renders the block empty,
+            // which is honest; the tenant's real values arrive via resolveReelBrand.
+            websiteWordmark: null,
+            phone:           null,
+            licenseLine:     null,
             shortDisclosure: "Equal Housing Opportunity. All information deemed reliable but not guaranteed.",
           },
         }}
@@ -961,9 +973,15 @@ export const RemotionRoot: React.FC = () => {
             accentColor:     "#F59E0B",
             logoUrl:         null,
             brokerageName:   "Your Brokerage",
-            websiteWordmark: "yourbrokerage.com",
-            phone:           "(555) 555-1212",
-            licenseLine:     "CA License # 02345678",
+            // NO SAMPLE CONTACT DETAILS. A brand block is classified COSMETIC by
+            // lib/remotion/content-contract, so unlike the content props these
+            // defaults REMAIN reachable on a real render — and these three were a
+            // phone number, a website and a state licence number that would have
+            // been printed onto a mailed postcard. Null renders the block empty,
+            // which is honest; the tenant's real values arrive via resolveReelBrand.
+            websiteWordmark: null,
+            phone:           null,
+            licenseLine:     null,
             shortDisclosure: "Equal Housing Opportunity. All information deemed reliable but not guaranteed.",
           },
         }}
@@ -988,9 +1006,15 @@ export const RemotionRoot: React.FC = () => {
             accentColor:     "#F59E0B",
             logoUrl:         null,
             brokerageName:   "Your Brokerage",
-            websiteWordmark: "yourbrokerage.com",
-            phone:           "(555) 555-1212",
-            licenseLine:     "CA License # 02345678",
+            // NO SAMPLE CONTACT DETAILS. A brand block is classified COSMETIC by
+            // lib/remotion/content-contract, so unlike the content props these
+            // defaults REMAIN reachable on a real render — and these three were a
+            // phone number, a website and a state licence number that would have
+            // been printed onto a mailed postcard. Null renders the block empty,
+            // which is honest; the tenant's real values arrive via resolveReelBrand.
+            websiteWordmark: null,
+            phone:           null,
+            licenseLine:     null,
             shortDisclosure: "Equal Housing Opportunity. All information deemed reliable but not guaranteed.",
           },
         }}

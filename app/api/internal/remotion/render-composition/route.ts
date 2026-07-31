@@ -50,6 +50,9 @@ import {
   resolveThumbnailProps,
   type QueuedRenderRow,
 } from "@/lib/remotion/render-decision"
+import {
+  missingContentProps, describeMissingContent, contentContractError,
+} from "@/lib/remotion/content-contract"
 import { selectComposition, renderMedia, renderStill } from "@remotion/renderer"
 import path from "node:path"
 import fs from "node:fs/promises"
@@ -123,6 +126,40 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         skipped: "composition_not_reachable_at_tier",
         render_id: row.id, caller_tier: callerTier, tier_access: composition.tier_access,
+      }, { status: 200 })
+    }
+
+    // 2c. CONTENT CONTRACT — the backstop that makes "no demo data" a property
+    //     of the OS rather than a promise each producer keeps. Remotion MERGES
+    //     input props over the composition's Studio defaults, so a render whose
+    //     content props were never staged does not come out blank; it comes out
+    //     confident and wrong (123 Main Street at $625,000, equity of $600,000
+    //     against $500,000 paid, a five-star review from a client who does not
+    //     exist) and reports success. Refused BEFORE the cache probe, so a
+    //     refusal never keys or serves an artifact.
+    //
+    //     This also closes a race the audit turned up: render-just-listed and
+    //     render-newsletter-video render directly and then file an AUDIT row via
+    //     recordRenderQueued, which inserts at render_status='queued'. If the
+    //     coordinator finalize that follows fails — or the queue cron ticks in
+    //     between — that row is drained through here and re-rendered from its
+    //     near-empty props. Before this gate that produced a second, fully
+    //     fabricated cut of a real listing promo.
+    //
+    //     Cancelled, not failed: nothing broke. The render was not renderable.
+    const missingContent = missingContentProps(row.composition_id, row.input_props)
+    if (missingContent.length > 0) {
+      await recordRenderCompleted({
+        renderId: row.id, compositionId: row.composition_id,
+        status: "cancelled",
+        errorMessage: contentContractError(missingContent),
+      })
+      console.warn(`[render-composition] ${describeMissingContent(row.composition_id, missingContent)}`)
+      return NextResponse.json({
+        skipped: "content_props_missing",
+        render_id: row.id, composition_id: row.composition_id,
+        missing: missingContent,
+        detail: describeMissingContent(row.composition_id, missingContent),
       }, { status: 200 })
     }
 
