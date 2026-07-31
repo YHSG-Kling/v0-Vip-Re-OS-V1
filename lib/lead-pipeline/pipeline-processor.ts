@@ -1,6 +1,7 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
+import type { RawProcessingStatus } from "./processing-status"
 import { calculateFuzzyMatch, isConfidentMatch } from './fuzzy-matcher'
 import { extractPropertySpecs, leadSpecPatch } from '@/lib/data-steward/property-spec-extractor'
 import { skipTraceWithPeopleData } from '@/lib/external'
@@ -21,20 +22,10 @@ import {
 //   | insufficient_identity_for_promotion → promoted | error
 // ─────────────────────────────────────────────────────────────────────────────
 
-type ProcessingStatus =
-  | 'pending'
-  | 'processing'
-  | 'queued_for_enrichment'
-  | 'duplicate_pre_enrich'
-  | 'enriching'
-  | 'duplicate_post_enrich'
-  | 'territory_mismatch'
-  | 'insufficient_contact_data'
-  | 'insufficient_identity'
-  | 'insufficient_identity_for_promotion'
-  | 'unassigned_no_market'
-  | 'promoted'
-  | 'error'
+// The vocabulary moved to lib/lead-pipeline/processing-status.ts so the cockpit
+// and the database CHECK are generated from the SAME list. It used to be
+// declared here and hand-copied into lead-intake-cockpit's REJECTION_STATUSES.
+type ProcessingStatus = RawProcessingStatus
 
 // RawRecord shape after reading from raw_scraped_leads
 interface RawRecord {

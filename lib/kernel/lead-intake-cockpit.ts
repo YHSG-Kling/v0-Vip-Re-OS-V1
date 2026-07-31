@@ -50,15 +50,8 @@ export type FunnelStage = "pending" | "promoted" | "rejected" | "error"
 /** Every raw processing_status that means "the GATE stopped this row" — each is a
  *  rejection REASON the Steward can act on. Kept verbatim from ProcessingStatus so the
  *  reason text is the pipeline's own truth, not a relabel. */
-export const REJECTION_STATUSES = [
-  "unassigned_no_market",
-  "territory_mismatch",
-  "insufficient_contact_data",
-  "insufficient_identity",
-  "insufficient_identity_for_promotion",
-  "duplicate_pre_enrich",
-  "duplicate_post_enrich",
-] as const
+import { REJECTION_STATUSES } from "@/lib/lead-pipeline/processing-status"
+export { REJECTION_STATUSES }
 
 export type RejectionStatus = (typeof REJECTION_STATUSES)[number]
 
