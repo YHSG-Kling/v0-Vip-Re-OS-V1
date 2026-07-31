@@ -21,28 +21,45 @@ const fails: string[] = []
 const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) } }
 const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 
-console.log("\n── the poll cron downloads + re-hosts the finished avatar ──")
+// m324 moved the completion body out of the cron and into ONE shared module
+// that the cron and the D-ID webhook both call, so the two ways this OS learns
+// an avatar finished can never disagree about what "done" means. The re-host
+// contract is unchanged — it just lives where both callers can reach it, and
+// these assertions follow it rather than pinning it to the cron forever.
+const COMPLETION = "lib/did/avatar-completion.ts"
+
+console.log("\n── the completion path downloads + re-hosts the finished avatar ──")
 {
-  const cron = src("app/api/cron/poll-did-avatars/route.ts")
-  check("re-hosts into the twin-avatars bucket", cron.includes('AVATAR_BUCKET = "twin-avatars"'))
+  const done = src(COMPLETION)
+  check("re-hosts into the twin-avatars bucket", done.includes('AVATAR_BUCKET = "twin-avatars"'))
   check("a rehostAvatarImage helper downloads then uploads to storage",
-    cron.includes("async function rehostAvatarImage") &&
-    /fetch\(sourceUrl\)/.test(cron) &&
-    /\.storage[\s\S]*?\.from\(AVATAR_BUCKET\)[\s\S]*?\.upload\(/.test(cron) &&
-    cron.includes("getPublicUrl"))
+    /function rehostAvatarImage/.test(done) &&
+    /fetch\(sourceUrl\)/.test(done) &&
+    /\.storage\.from\(AVATAR_BUCKET\)[\s\S]*?\.upload\(/.test(done) &&
+    done.includes("getPublicUrl"))
   check("it is best-effort (returns null on failure, caller falls back to D-ID url)",
-    /return null/.test(cron) && cron.includes("rehostedUrl ?? didAssetUrl"))
+    /return null/.test(done) && done.includes("rehosted ?? didAssetUrl"))
 }
 
 console.log("\n── the PROFILE stores the bucket URL (not just the id) ──")
 {
-  const cron = src("app/api/cron/poll-did-avatars/route.ts")
+  const done = src(COMPLETION)
   check("the ready asset saves avatar_url (the self-hosted URL)",
-    /agent_avatar_assets[\s\S]*?avatar_url: avatarUrl/.test(cron))
+    /agent_avatar_assets[\s\S]*?avatar_url: avatarUrl/.test(done))
   check("the default twin's profile stores avatar_url",
-    /agent_voice_profiles[\s\S]*?avatar_url: avatarUrl/.test(cron))
+    /agent_voice_profiles[\s\S]*?avatar_url: avatarUrl/.test(done))
   check("did_avatar_id is still mirrored (needed for clip generation)",
-    /did_avatar_id: asset\.did_avatar_id/.test(cron))
+    /did_avatar_id: asset\.did_avatar_id/.test(done))
+}
+
+console.log("\n── and BOTH ways of learning it finished go through that one module ──")
+{
+  const cron = src("app/api/cron/poll-did-avatars/route.ts")
+  const hook = src("app/api/webhooks/did/route.ts")
+  check("the poll cron delegates to the shared applier",
+    cron.includes('from "@/lib/did/avatar-completion"') && cron.includes("applyAvatarOutcome("))
+  check("the D-ID webhook delegates to the SAME applier",
+    hook.includes('from "@/lib/did/avatar-completion"') && hook.includes("applyAvatarOutcome("))
 }
 
 console.log("\n── onboarding + schema recognize the new column ──")

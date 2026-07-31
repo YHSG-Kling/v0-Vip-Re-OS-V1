@@ -145,6 +145,44 @@ console.log("\n═══ 6. The streaming SDK bump is source-compatible where we
     widget.includes('fail("Connection lost — switching to chat")'))
 }
 
+console.log("\n═══ 6b. The live widget USES the SDK it pinned — no dead affordances ═══")
+{
+  // THE DEFECT THIS SECTION EXISTS FOR: the widget's mic button was
+  // permanently `disabled` with the tooltip "Voice in: built into Talk live
+  // mode", and the empty state read "Tap the mic or type" — while nothing in
+  // the component ever opened a microphone. The SDK bump to 2.x was made for
+  // exactly these methods and then none of them were called. An affordance
+  // that names a capability the code does not have is the failure mode this
+  // whole OS is built to refuse.
+  const widget = code("app/components/features/ai-avatar-chat/AgentsWidget.tsx")
+  const mgr = src("node_modules/@d-id/client-sdk/dist/src/types/entities/agents/manager.d.ts")
+
+  ok("the SDK really exposes publishMicrophoneStream (not assumed)",
+    /publishMicrophoneStream\?:/.test(mgr))
+  ok("the widget actually opens a microphone", /getUserMedia\(\{\s*$|getUserMedia\(/.test(widget) && widget.includes("publishMicrophoneStream(stream)"))
+  ok("...and releases it, both the SDK publication and the OS capture, so the\n    browser's recording indicator clears",
+    widget.includes("unpublishMicrophoneStream?.()") && /getTracks\(\)\.forEach\(\(t\) => t\.stop\(\)\)/.test(widget))
+  ok("the mic is FEATURE-DETECTED — the SDK marks it optional and livekit-only,\n    so an absent method must read as unsupported rather than as a dead button",
+    /typeof m(anager)?\.publishMicrophoneStream === "function"/.test(widget))
+  ok("the button is disabled ONLY when the capability is genuinely absent",
+    /disabled=\{[^}]*micUnavailable/.test(widget) && !/title="Voice in: built into Talk live mode"/.test(widget))
+  ok("a permission denial and a missing device get DIFFERENT messages — the\n    fixes are in different places and 'microphone failed' sends the contact\n    hunting in the wrong one",
+    widget.includes("NotAllowedError") && widget.includes("NotFoundError"))
+
+  ok("the SDK really exposes interrupt + getIsInterruptAvailable", /interrupt: \(interrupt: Interrupt\)/.test(mgr) && /getIsInterruptAvailable/.test(mgr))
+  ok("the widget can be interrupted — a conversation the contact cannot cut\n    off is a recording that happens to be listening",
+    /m\.interrupt\(\{ type: "click" \}\)/.test(widget))
+  ok("...and requests the FLUENT stream interrupt requires, so the control is\n    not offered on a stream that would ignore it",
+    /streamOptions:\s*\{[\s\S]{0,200}fluent: true/.test(widget))
+  ok("...with the control gated on the SDK's own interruptible signal",
+    widget.includes("onInterruptibleChange") && /canInterrupt &&/.test(widget))
+
+  ok("status comes from the SDK's AgentActivityState rather than being inferred\n    from message types, so 'thinking' and 'speaking' cannot drift out of sync\n    with the avatar on screen",
+    widget.includes("onAgentActivityStateChange") && widget.includes("AgentActivityState.Talking"))
+  ok("AgentActivityState really is an SDK export",
+    /enum AgentActivityState/.test(src("node_modules/@d-id/client-sdk/dist/src/types/stream/stream.d.ts")))
+}
+
 console.log("\n═══ 7. Errors are CLASSIFIED, per the published contract ═══")
 {
   // D-ID returns {kind, description} with documented HTTP classes. We used to

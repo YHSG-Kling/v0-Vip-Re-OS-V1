@@ -21,6 +21,8 @@ import { requireAuth } from "@/lib/kernel/api-auth"
 import { checkUsageCap } from "@/lib/usage/check-cap"
 import { logMediaUsage } from "@/lib/usage/log-media-usage"
 import { buildExpressAvatarRequest, classifyDidError } from "@/lib/did/contract"
+import { didWebhookUrl } from "@/lib/did/webhook"
+import { randomUUID } from "node:crypto"
 
 const DID_API_BASE = "https://api.d-id.com"
 
@@ -139,6 +141,15 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // ─── The correlation id, decided BEFORE the submit ──────────────────────
+    // user_data is how a webhook finds our row, and it can only carry an id
+    // that exists at submit time. The non-twin path used to insert the asset
+    // AFTER the D-ID call, so `assetId: twin_id ?? null` sent NOTHING for a
+    // first-time avatar — the one case where correlation matters most. The id
+    // is minted here and the insert below uses it explicitly, so every job
+    // carries `asset:<uuid>` back to a row that is guaranteed to exist.
+    const assetId: string = twin_id ?? randomUUID()
+
     // ─── Submit to D-ID /scenes/avatars ───────────────────────────────────────
     // D-ID creates a reusable avatar from the source video. The response is
     // immediate; the avatar is not usable until status === "done".
@@ -169,10 +180,16 @@ export async function POST(request: NextRequest) {
       // exactly that: it is echoed on the job AND on the webhook.
       body: JSON.stringify(buildExpressAvatarRequest({
         sourceUrl: source_url,
-        assetId: twin_id ?? null,
+        assetId,
         agentName: agentDisplayName,
         label,
         consentId,
+        // Completions come back on /api/webhooks/did within seconds instead of
+        // waiting up to three minutes for the poll cron. Null when there is no
+        // https origin or no DID_WEBHOOK_SECRET — buildExpressAvatarRequest
+        // drops it rather than registering a callback into the void, and the
+        // cron still finishes the job.
+        webhookUrl: didWebhookUrl(),
         isGreenscreen: body?.is_greenscreen === true,
       })),
     })
@@ -203,7 +220,6 @@ export async function POST(request: NextRequest) {
     const did_avatar_id: string = didData.id
 
     // ─── Persist on existing twin row OR create new asset ────────────────────
-    let assetId: string
     if (twin_id) {
       // Update path — wizard already created the row via createTwinDraft.
       // Verify the row belongs to this agent before mutating.
@@ -225,11 +241,12 @@ export async function POST(request: NextRequest) {
           updated_at: new Date().toISOString(),
         })
         .eq("id", twin_id)
-      assetId = twin_id
     } else {
       const { data: asset, error: insertError } = await supabase
         .from("agent_avatar_assets")
         .insert({
+          // Explicit, because this id already travelled to D-ID as user_data.
+          id: assetId,
           agent_id: agentRow.id,
           brokerage_id: agentRow.brokerage_id ?? auth.brokerageId,
           label,
@@ -247,15 +264,13 @@ export async function POST(request: NextRequest) {
         console.error("[create-avatar] DB insert error:", insertError)
         return NextResponse.json({ error: insertError?.message ?? "Insert failed" }, { status: 500 })
       }
-      assetId = asset.id
-
       // If other avatars exist, clear their is_default flag when this one is set as default
       if (set_as_default) {
         await supabase
           .from("agent_avatar_assets")
           .update({ is_default: false })
           .eq("agent_id", agentRow.id)
-          .neq("id", asset.id)
+          .neq("id", assetId)
       }
     }
 

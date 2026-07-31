@@ -48,10 +48,21 @@ These are automatically set but not directly used (Supabase client handles conne
 - `SENDGRID_API_KEY`
 - `SENDGRID_FROM_EMAIL`
 
-### HeyGen (AI Video)
-- `HEYGEN_API_KEY`
+### D-ID (AI Avatar Video)
+- `DID_API_KEY`
+- `DID_WEBHOOK_SECRET` — the shared secret in the completion callback URL
+  (`/api/webhooks/did?secret=…`). D-ID publishes no webhook signature, so this
+  secret is the verification. **Unset means the endpoint 404s and no callback is
+  registered** — avatars still finish, on the 3-minute poll cron instead of in
+  seconds. Requires `NEXT_PUBLIC_APP_URL` to be the https production origin,
+  since D-ID's schema rejects a non-https callback.
+- `ELEVENLABS_API_KEY` — also sent to D-ID as `x-api-key-external` so our own
+  instant voice clones resolve; without it D-ID uses its stock voices.
 
-### Vapi (Voice AI)
+### Vapi (Voice AI) — LEGACY, migration window only
+The voice lane is Twilio-native. These are still read by the ISA console's
+readiness banner and by the `vapi_legacy` launch-checklist entry; new tenants
+never need them.
 - `VAPI_API_KEY`
 - `VAPI_ASSISTANT_ID`
 - `VAPI_ISA_ASSISTANT_ID`

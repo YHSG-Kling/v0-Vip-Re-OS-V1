@@ -1,25 +1,53 @@
 "use client"
 
 /**
- * AgentsWidget — D-ID Agents (real-time conversational avatar) replacement
- * for AvatarChatWidget. Talks to the contact in their portal using:
+ * AgentsWidget — the real-time conversational avatar the contact talks to in
+ * their portal, using:
  *
  *   • the agent's trained presenter (did_avatar_id) as the visual
  *   • the agent's ElevenLabs voice clone as the voice
  *   • our /api/did/custom-llm as the brain (so brand voice + persona +
  *     contact context + compliance all stay in our code)
  *
- * Two modes (toggle without reconnecting):
- *   • Text — cheap, no avatar minutes burned, agent's avatar shows but stays still
- *   • Live — Functional mode: avatar speaks every reply in real time
+ * ── WHAT THIS USED TO BE, AND WHY THAT MATTERED ─────────────────────────────
+ * A text chat with a face on it — and, worse, a text chat with a face that
+ * CLAIMED to be more. The mic button was permanently `disabled` with the
+ * tooltip "Voice in: built into Talk live mode", and the empty state told the
+ * contact to "Tap the mic or type". Neither was true: nothing in this component
+ * ever opened a microphone. A seller tapping that mic got silence and concluded
+ * the product was broken, which is the same defect this OS keeps producing —
+ * an affordance that describes a capability the code does not have.
+ *
+ * The SDK does have it. @d-id/client-sdk v2 exposes publishMicrophoneStream,
+ * unpublishMicrophoneStream, interrupt() and onAgentActivityStateChange, and
+ * none of them were called. So the widget now actually:
+ *
+ *   1. PUBLISHES THE MICROPHONE. Real getUserMedia audio goes to D-ID, which
+ *      transcribes it and answers — the contact talks, the avatar talks back.
+ *   2. LETS THE CONTACT INTERRUPT. A person who has heard enough talks over
+ *      you; an avatar that keeps going for another twenty seconds reads as a
+ *      recording, not a conversation. interrupt() needs a FLUENT stream, so
+ *      streamOptions.fluent is now requested — without it the SDK's
+ *      getIsInterruptAvailable() is false and the button would be another lie.
+ *   3. REPORTS ITS STATE FROM THE SDK, not from a guess. Status used to be
+ *      inferred from whether a message arrived as "partial"; the SDK publishes
+ *      AgentActivityState (IDLE / LOADING / TALKING / TOOL_ACTIVE) directly.
+ *
+ * ── EVERY AFFORDANCE IS FEATURE-DETECTED ────────────────────────────────────
+ * publishMicrophoneStream and unpublishMicrophoneStream are OPTIONAL on the
+ * AgentManager interface — the SDK documents them as "supported only for
+ * livekit manager" — and interrupt only works on a fluent stream with an active
+ * video. So both are probed at runtime, and when a capability is absent the UI
+ * SAYS SO instead of showing a dead control. That is the rule the old mic
+ * button broke.
  *
  * Per-session contact context is injected by prefixing the first user message
- * with `[[CTX:contactId=<uuid>]]`. The custom-LLM route extracts and strips
- * it. D-ID Agents does not expose per-session metadata of its own.
+ * with `[[CTX:contactId=<uuid>]]`. The custom-LLM route extracts and strips it.
+ * D-ID Agents does not expose per-session metadata of its own.
  */
 
 import { useEffect, useRef, useState, useCallback } from "react"
-import { Loader2, Mic, Send, Video, MessageSquare } from "lucide-react"
+import { Loader2, Mic, MicOff, Send, Video, MessageSquare, Square } from "lucide-react"
 import * as didSdk from "@d-id/client-sdk"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -31,8 +59,10 @@ interface AgentsWidgetProps {
   onFallbackToText: () => void
 }
 
-type Status = "connecting" | "ready" | "speaking" | "error"
+type Status = "connecting" | "ready" | "thinking" | "speaking" | "error"
 type Mode = "text" | "live"
+/** Why the mic is in the state it is in — the contact is told which. */
+type MicState = "off" | "starting" | "on" | "unsupported" | "denied" | "no-device"
 
 interface DisplayMessage {
   role: "user" | "agent"
@@ -44,6 +74,7 @@ const CTX_PREFIX_RE = /\[\[CTX:contactId=[0-9a-f-]{36}\]\]\s*/i
 export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: AgentsWidgetProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const managerRef = useRef<didSdk.AgentManager | null>(null)
+  const micStreamRef = useRef<MediaStream | null>(null)
   const ctxMarkerSentRef = useRef(false)
   // Minute metering: avatar minutes only burn in LIVE mode. Track when live
   // mode started + accumulate elapsed seconds; report once on teardown via
@@ -56,6 +87,8 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
 
   const [status, setStatus] = useState<Status>("connecting")
   const [mode, setMode] = useState<Mode>("text")
+  const [micState, setMicState] = useState<MicState>("off")
+  const [canInterrupt, setCanInterrupt] = useState(false)
   const [inputText, setInputText] = useState("")
   const [messages, setMessages] = useState<DisplayMessage[]>([])
 
@@ -93,6 +126,13 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
           mode: didSdk.ChatMode.TextOnly,
           // Tag the session with contactId for D-ID-side analytics
           externalId: contactId,
+          streamOptions: {
+            // FLUENT IS THE PRECONDITION FOR BARGE-IN. The SDK documents
+            // interrupt() as "only available for Fluent streams", so without
+            // this the interrupt control could never appear and a contact who
+            // has heard enough would have to sit through the rest.
+            fluent: true,
+          },
           callbacks: {
             onSrcObjectReady: (srcObject) => {
               if (videoRef.current) videoRef.current.srcObject = srcObject
@@ -108,9 +148,27 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
                 setStatus("ready")
               }
             },
+            // THE SDK'S OWN STATE, not our inference from message types. IDLE /
+            // LOADING / TALKING is exactly the three-way distinction the UI
+            // needs, and reading it directly means "thinking" and "speaking"
+            // stop being guesses that drift out of sync with the avatar.
+            onAgentActivityStateChange: (state) => {
+              if (state === didSdk.AgentActivityState.Talking) setStatus("speaking")
+              else if (
+                state === didSdk.AgentActivityState.Loading ||
+                state === didSdk.AgentActivityState.ToolActive
+              ) setStatus("thinking")
+              else setStatus("ready")
+            },
+            // Whether a barge-in is possible RIGHT NOW. Driving the button off
+            // this rather than off our own idea of "is it talking" is what
+            // keeps the control from being pressable when it would do nothing.
+            onInterruptibleChange: (interruptible: boolean) => setCanInterrupt(!!interruptible),
             onNewMessage: (msgs, type) => {
               // Map D-ID's message stream into our display state. Strip the
-              // hidden context marker so it never reaches the user.
+              // hidden context marker so it never reaches the user. This
+              // includes messages D-ID TRANSCRIBED from the microphone, which
+              // is how spoken turns appear in the transcript at all.
               const display: DisplayMessage[] = msgs
                 .filter((m) => m.role === "user" || m.role === "assistant")
                 .map((m): DisplayMessage => ({
@@ -120,7 +178,6 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
                 .filter((m) => m.text.length > 0)
               setMessages(display)
               if (type === "answer") setStatus("ready")
-              if (type === "partial") setStatus("speaking")
             },
             onError: (err) => {
               console.error("D-ID Agents error", err)
@@ -136,6 +193,9 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
 
         managerRef.current = manager
         await manager.connect()
+        // Probe once connected — before connect, the stream type is unknown.
+        setCanInterrupt(safeIsInterruptAvailable(manager))
+        setMicState(typeof manager.publishMicrophoneStream === "function" ? "off" : "unsupported")
         setStatus("ready")
       } catch (e) {
         console.error("D-ID Agents boot failed", e)
@@ -148,6 +208,8 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
     return () => {
       cancelled = true
       reportLiveUsage()
+      stopMicTracks()
+      managerRef.current?.unpublishMicrophoneStream?.().catch(() => {})
       managerRef.current?.disconnect().catch(() => {})
       managerRef.current = null
       ctxMarkerSentRef.current = false
@@ -198,6 +260,12 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
     setTimeout(onFallbackToText, 1200)
   }
 
+  /** Release the OS-level capture so the browser's recording indicator clears. */
+  function stopMicTracks() {
+    micStreamRef.current?.getTracks().forEach((t) => t.stop())
+    micStreamRef.current = null
+  }
+
   const sendMessage = useCallback(async (text: string) => {
     const trimmed = text.trim()
     if (!trimmed || !managerRef.current) return
@@ -212,7 +280,7 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
     ctxMarkerSentRef.current = true
 
     setInputText("")
-    setStatus("speaking")
+    setStatus("thinking")
     try {
       await managerRef.current.chat(payload)
     } catch (e) {
@@ -222,28 +290,115 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
     }
   }, [contactId])
 
+  /** Enter live mode — the avatar speaks, and the meter starts. */
+  const enterLive = useCallback(() => {
+    const m = managerRef.current
+    if (!m || mode === "live") return
+    m.changeMode(didSdk.ChatMode.Functional)
+    liveSinceRef.current = Date.now()
+    setMode("live")
+  }, [mode])
+
   const toggleMode = useCallback(async () => {
-    if (!managerRef.current) return
-    const next: Mode = mode === "text" ? "live" : "text"
+    const m = managerRef.current
+    if (!m) return
     try {
-      managerRef.current.changeMode(
-        next === "live" ? didSdk.ChatMode.Functional : didSdk.ChatMode.TextOnly,
-      )
-      // Meter live-mode time: open the window entering live, close it leaving.
-      if (next === "live") {
-        liveSinceRef.current = Date.now()
-      } else if (liveSinceRef.current !== null) {
+      if (mode === "text") {
+        enterLive()
+        return
+      }
+      // Leaving live: the microphone has no meaning in text mode, and leaving
+      // a hot mic open after the avatar has stopped speaking is the kind of
+      // thing a contact never forgives.
+      await stopMic()
+      m.changeMode(didSdk.ChatMode.TextOnly)
+      if (liveSinceRef.current !== null) {
         liveSecondsRef.current += (Date.now() - liveSinceRef.current) / 1000
         liveSinceRef.current = null
       }
-      setMode(next)
+      setMode("text")
     } catch (e) {
       console.error("changeMode failed", e)
       toast.error("Couldn't switch modes")
     }
-  }, [mode])
+  }, [mode, enterLive])
+
+  /**
+   * Open the microphone and hand the track to D-ID.
+   *
+   * Two failures get their own message because they have different fixes and
+   * both are common on a first run: a permission denial is fixed in the browser,
+   * and no-device-found is fixed by plugging something in. "Microphone failed"
+   * would send the contact hunting in the wrong place.
+   */
+  const startMic = useCallback(async () => {
+    const m = managerRef.current
+    if (!m) return
+    if (typeof m.publishMicrophoneStream !== "function") {
+      setMicState("unsupported")
+      toast.error("Voice input isn't available on this connection — type instead")
+      return
+    }
+    // Speaking implies live: publishing audio to an avatar that is muted would
+    // transcribe the contact into a void.
+    enterLive()
+    setMicState("starting")
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      })
+      micStreamRef.current = stream
+      await m.publishMicrophoneStream(stream)
+      setMicState("on")
+    } catch (e: any) {
+      stopMicTracks()
+      const name = String(e?.name ?? "")
+      if (name === "NotAllowedError" || name === "SecurityError") {
+        setMicState("denied")
+        toast.error("Microphone permission was blocked — allow it in your browser to talk")
+      } else if (name === "NotFoundError" || name === "OverconstrainedError") {
+        setMicState("no-device")
+        toast.error("No microphone found — type your message instead")
+      } else {
+        console.error("publishMicrophoneStream failed", e)
+        setMicState("off")
+        toast.error("Couldn't start the microphone")
+      }
+    }
+  }, [enterLive])
+
+  const stopMic = useCallback(async () => {
+    const m = managerRef.current
+    try { await m?.unpublishMicrophoneStream?.() } catch { /* releasing must not throw */ }
+    stopMicTracks()
+    setMicState((s) => (s === "on" || s === "starting" ? "off" : s))
+  }, [])
+
+  /**
+   * Barge-in. A real conversation lets the other person cut you off; without
+   * this the avatar reads as a recording that happens to be listening.
+   */
+  const interrupt = useCallback(() => {
+    const m = managerRef.current
+    if (!m || !canInterrupt) return
+    try {
+      m.interrupt({ type: "click" })
+      setStatus("ready")
+    } catch (e) {
+      console.error("interrupt failed", e)
+    }
+  }, [canInterrupt])
 
   // ── UI ───────────────────────────────────────────────────────────────────
+
+  const micUnavailable = micState === "unsupported" || micState === "no-device"
+  const micLabel =
+    micState === "on" ? "Stop talking"
+      : micState === "starting" ? "Starting microphone…"
+      : micState === "unsupported" ? "Voice input isn't available on this connection"
+      : micState === "denied" ? "Microphone blocked — allow it in your browser"
+      : micState === "no-device" ? "No microphone found"
+      : "Talk to " + agentFirstName
 
   return (
     <div className="flex flex-col" style={{ height: 420 }}>
@@ -264,10 +419,24 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
             status === "connecting" ? "opacity-0" : "opacity-100"
           }`}
         />
-        {status === "speaking" && mode === "live" && (
+        {mode === "live" && (status === "speaking" || status === "thinking") && (
           <div className="absolute bottom-2 left-2 bg-black/60 text-white text-xs rounded px-2 py-1">
-            {agentFirstName} is responding…
+            {status === "speaking" ? `${agentFirstName} is responding…` : `${agentFirstName} is thinking…`}
           </div>
+        )}
+        {/* Barge-in — shown only while the stream actually accepts one. */}
+        {mode === "live" && status === "speaking" && canInterrupt && (
+          <button
+            onClick={interrupt}
+            className="absolute bottom-2 right-2 bg-white/90 text-black text-xs rounded-full px-3 py-1 flex items-center gap-1.5 hover:bg-white"
+          >
+            <Square className="h-3 w-3" /> Stop
+          </button>
+        )}
+        {micState === "on" && (
+          <span className="absolute top-2 left-2 flex items-center gap-1.5 bg-red-600/90 text-white text-xs rounded-full px-2.5 py-1">
+            <span className="h-1.5 w-1.5 rounded-full bg-white animate-pulse" /> Listening
+          </span>
         )}
         {/* Mode toggle — only enabled once connected */}
         {status !== "connecting" && status !== "error" && (
@@ -290,11 +459,13 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
 
       {/* Transcript */}
       <div className="flex-1 overflow-y-auto px-3 py-2 space-y-1.5">
-        {messages.length === 0 && status === "ready" && (
+        {messages.length === 0 && status !== "connecting" && status !== "error" && (
           <p className="text-xs text-muted-foreground text-center py-2">
-            {mode === "live"
-              ? `Tap the mic or type — ${agentFirstName} will respond live`
-              : `Type to chat with ${agentFirstName}`}
+            {micUnavailable
+              ? `Type to chat with ${agentFirstName}`
+              : mode === "live"
+                ? `Tap the mic to talk, or type — ${agentFirstName} answers out loud`
+                : `Type to chat, or tap the mic to talk with ${agentFirstName}`}
           </p>
         )}
         {messages.map((m, i) => (
@@ -318,15 +489,29 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
           value={inputText}
           onChange={(e) => setInputText(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendMessage(inputText)}
-          disabled={status !== "ready" && status !== "speaking"}
+          disabled={status === "connecting" || status === "error"}
         />
-        <Button size="sm" variant="ghost" disabled title="Voice in: built into Talk live mode">
-          <Mic className="h-4 w-4" />
+        {/* THE MIC IS REAL NOW. It was disabled with a tooltip claiming voice
+            input was "built into Talk live mode" while nothing here ever opened
+            a microphone. It is disabled ONLY when the capability genuinely is
+            absent, and the tooltip then says which reason. */}
+        <Button
+          size="sm"
+          variant={micState === "on" ? "default" : "ghost"}
+          onClick={() => (micState === "on" ? stopMic() : startMic())}
+          disabled={status === "connecting" || status === "error" || micUnavailable || micState === "starting"}
+          title={micLabel}
+          aria-label={micLabel}
+          aria-pressed={micState === "on"}
+        >
+          {micState === "starting" ? <Loader2 className="h-4 w-4 animate-spin" />
+            : micUnavailable || micState === "denied" ? <MicOff className="h-4 w-4" />
+            : <Mic className="h-4 w-4" />}
         </Button>
         <Button
           size="sm"
           onClick={() => sendMessage(inputText)}
-          disabled={(status !== "ready" && status !== "speaking") || !inputText.trim()}
+          disabled={status === "connecting" || status === "error" || !inputText.trim()}
         >
           <Send className="h-4 w-4" />
         </Button>
@@ -344,4 +529,16 @@ function extractText(message: { content?: string | unknown }): string {
 
 function stripContextMarker(text: string): string {
   return text.replace(CTX_PREFIX_RE, "").trim()
+}
+
+/** getIsInterruptAvailable() is documented but stream-type dependent; a throw
+ *  or an absent method must read as "no", never as an enabled dead button. */
+function safeIsInterruptAvailable(manager: didSdk.AgentManager): boolean {
+  try {
+    return typeof manager.getIsInterruptAvailable === "function"
+      ? !!manager.getIsInterruptAvailable()
+      : false
+  } catch {
+    return false
+  }
 }
