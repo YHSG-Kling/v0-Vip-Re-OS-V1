@@ -99,10 +99,20 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // ─── Submit to D-ID /avatars ──────────────────────────────────────────────
-    // D-ID creates a reusable avatar from the source video.
-    // The response is immediate but the avatar is not ready until status === "done".
-    const didRes = await fetch(`${DID_API_BASE}/avatars`, {
+    // ─── Submit to D-ID /scenes/avatars ───────────────────────────────────────
+    // D-ID creates a reusable avatar from the source video. The response is
+    // immediate; the avatar is not usable until status === "done".
+    //
+    // THE PATH. This posted to `/avatars`, which is not an endpoint D-ID
+    // documents — the Express / Instant avatar family lives under
+    // `/scenes/avatars` and returns `{id:"avt_…", object:"scene_avatar",
+    // status:"validating"}`. So every avatar an agent recorded at onboarding
+    // was submitted to a URL that answers 404, and the poll cron's
+    // `if (!statusRes.ok) continue` then swallowed the 404 on every tick — the
+    // row sat at 'pending' forever with no error anyone could see. Two silent
+    // failures stacked: a wrong path, and a poll that cannot tell "not ready"
+    // from "not there".
+    const didRes = await fetch(`${DID_API_BASE}/scenes/avatars`, {
       method: "POST",
       headers: {
         Authorization: `Basic ${Buffer.from(`${didApiKey}:`).toString("base64")}`,

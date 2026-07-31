@@ -128,19 +128,41 @@ export async function GET(request: NextRequest) {
       results.processed++
 
       try {
-        const statusRes = await fetch(`${DID_API_BASE}/avatars/${asset.did_avatar_id}`, {
+        const statusRes = await fetch(`${DID_API_BASE}/scenes/avatars/${asset.did_avatar_id}`, {
           headers: { Authorization: auth, Accept: "application/json" },
         })
 
+        // A 404 is TERMINAL, not a blip: the job does not exist (submitted to
+        // the wrong path, deleted, or created under another account). Treating
+        // it the same as a transient error is what let broken avatars sit at
+        // 'pending' forever with nothing to show the agent.
+        if (statusRes.status === 404) {
+          await supabase.from("agent_avatar_assets").update({
+            status: "failed",
+            error_message: "D-ID has no record of this avatar job — it was never accepted. Re-record the avatar.",
+            updated_at: new Date().toISOString(),
+          }).eq("id", asset.id)
+          results.failed++
+          continue
+        }
+        // Anything else non-ok IS transient — leave the row alone and retry.
         if (!statusRes.ok) continue
 
         const data = await statusRes.json()
         const didStatus: string = data.status
         const notifyUserId = asset.agent_id ? userByAgent.get(asset.agent_id) ?? null : null
 
-        if (didStatus === "done" || didStatus === "ready") {
+        // D-ID's scene-avatar vocabulary is:
+        //   draft | validating | created | started | training-started | done | error | rejected
+        // "ready" was tested here and is not in that set — a dead branch.
+        if (didStatus === "done") {
+          // HIGH RES FIRST. This preferred thumbnail_url ("a low resolution
+          // image") and then preview_url — which is documented as a short GIF —
+          // over image_url, the actual high-resolution avatar. So the profile
+          // picture an agent saw could be a low-res still or an animated GIF
+          // while the good asset went unused.
           const didAssetUrl: string | null =
-            data.thumbnail_url ?? data.preview_url ?? data.image_url ?? null
+            data.image_url ?? data.thumbnail_url ?? data.preview_url ?? null
 
           // Download the finished avatar and re-host it in our bucket so the
           // profile URL is stable (D-ID CDN links expire). Fall back to the
@@ -187,6 +209,21 @@ export async function GET(request: NextRequest) {
             })
           }
 
+          // A voice clone can fail on an avatar that otherwise finished. D-ID
+          // reports it in creation_notes, and nothing read it — so the agent
+          // got a working face with a silently missing voice.
+          const cloneFailed = data.creation_notes?.is_clone_voice_failed === true
+          const workerErrors: string[] = Array.isArray(data.creation_notes?.worker_errors)
+            ? data.creation_notes.worker_errors : []
+          if (cloneFailed || workerErrors.length > 0) {
+            await supabase.from("agent_avatar_assets").update({
+              error_message: cloneFailed
+                ? "The avatar is ready, but its voice clone failed — record a voice sample in Twin Studio."
+                : `The avatar is ready with warnings: ${workerErrors.slice(0, 3).join("; ")}`,
+              updated_at: new Date().toISOString(),
+            }).eq("id", asset.id)
+          }
+
           results.ready++
         } else if (didStatus === "error" || didStatus === "rejected") {
           const errorMsg: string = data.error?.description ?? data.error ?? "D-ID avatar creation failed"
@@ -216,7 +253,7 @@ export async function GET(request: NextRequest) {
 
           results.failed++
         } else {
-          // status: created | training | processing — still working
+          // draft | validating | created | started | training-started — still working
           await supabase
             .from("agent_avatar_assets")
             .update({ status: "processing", updated_at: new Date().toISOString() })

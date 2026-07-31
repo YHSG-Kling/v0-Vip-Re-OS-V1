@@ -1117,11 +1117,24 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const c = contact as { first_name: string | null; contact_type: string | null }
     const firstName = c.first_name || "there"
     const subject = `A quick personal update for you, ${firstName}`
-    // Idempotency: one proposed/approved reel email per (contact, this subject).
+    // ── IDEMPOTENCY, PER VIDEO (m316) ────────────────────────────────────────
+    // This deduped on the SUBJECT, which is a CONSTANT string per contact — no
+    // kind, no video id, no date — and only on status proposed/approved, which
+    // never age out. So a contact received exactly ONE situational reel email,
+    // EVER. Every later reel was silently swallowed: a refreshed cut, the same
+    // kind a year later, and — because the subject is shared by every
+    // contact-addressed reel that routes through this handler — a DIFFERENT
+    // KIND entirely. An equity reel was blocked by a buyer-match reel proposed
+    // months earlier, and the only escape was the first one being rejected.
+    //
+    // The thing that must not duplicate is a VIDEO, not a greeting. The body
+    // always embeds the url (guaranteed above: the AI draft is post-checked and
+    // the link appended if the model dropped it), so that is the honest key.
     const { data: dup } = await ctx.supabase.from("agent_client_messages").select("id")
       .eq("brokerage_id", ctx.brokerageId).eq("recipient_contact_id", contactId)
-      .eq("subject", subject).in("status", ["proposed", "approved"]).limit(1).maybeSingle()
-    if (dup) return "contact reel email already proposed (gated, deduped)"
+      .ilike("body", `%${videoUrl}%`)
+      .in("status", ["proposed", "approved", "sent"]).limit(1).maybeSingle()
+    if (dup) return "this exact reel was already proposed to the contact (gated, deduped)"
 
     const audience: "seller" | "buyer" = c.contact_type === "seller" ? "seller" : "buyer"
     const agentKind = c.contact_type === "seller" ? "listing_concierge" : "shopping_agent"
