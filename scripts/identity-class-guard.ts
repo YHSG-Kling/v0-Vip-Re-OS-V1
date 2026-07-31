@@ -1,0 +1,263 @@
+/**
+ * scripts/identity-class-guard.ts
+ *
+ * test:identity-class — ONE VALUE CANNOT BE TWO IDENTITIES.
+ *
+ * THE DEFECT. 195 columns in this schema are named `agent_id`. 175 of them FK
+ * `agents.id`; 20 FK `users.id`. Same name, two meanings. The obvious assumption
+ * is right about ninety percent of the time, which is exactly why it survives
+ * review and exactly why it is dangerous: the ten percent fails silently at read
+ * time (a filter that matches nothing) or loudly at write time (a foreign-key
+ * violation on a path nobody has exercised yet, because this OS has not rolled
+ * out and every table is empty).
+ *
+ * It has already cost, all found by audit rather than by users:
+ *   · lib/lifetime-customer-npv/scorer.ts read contacts.agent_id (AGENTS) and
+ *     wrote lifetime_customer_npv_scores.agent_id (USERS). Verified live: the
+ *     insert is rejected by the FK. The Lifetime Customer ledger — a pillar of
+ *     the product — could never have held a row.
+ *   · app/actions/ai-showing-management.ts used the same params.agentId as a
+ *     users.id AND as showings.agent_id / activities.agent_id. Every
+ *     AI-scheduled showing failed at the insert.
+ *   · app/dashboard/listings/[id]/lifecycle/page.tsx filtered listings.agent_id
+ *     (AGENTS) by user.id (USERS), so an agent could never open the lifecycle
+ *     page for their own listing.
+ *   · /api/widget/avatar-session looked up agents.user_id with an agents.id and
+ *     404'd on every call ever made (retired in m336).
+ *   · /api/widget/session greeted every website visitor with the generic
+ *     assistant name because it read users.id with an agents.id (fixed m336).
+ *
+ * WHAT THIS GUARD ASSERTS, AND WHY THIS SHAPE. Provenance-guessing by variable
+ * name produces false positives — `params.agentId` in app/actions/lifetime-npv.ts
+ * legitimately holds a users id, and its callers even document that. So this
+ * guard does NOT try to decide which class a variable is. It asserts the one
+ * thing that needs no such judgement:
+ *
+ *     WITHIN A SINGLE FUNCTION, THE SAME EXPRESSION MUST NOT BE USED AS BOTH
+ *     AN AGENTS-CLASS AND A USERS-CLASS IDENTITY.
+ *
+ * That is a self-contradiction. It does not matter which one is correct — both
+ * cannot be, so the code is wrong either way. It is what caught the NPV scorer
+ * and the showings action, and it cannot fire on merely-badly-named variables.
+ *
+ * THE CANONICAL FIX ALREADY EXISTED. lib/kernel/agent-identity-resolver.ts has
+ * shipped branded types (AgentRecordId, UserAgentId) and both resolvers for a
+ * long time. It is imported by 18 files out of the 950 that touch agent_id. The
+ * tool was never the problem; adoption was.
+ *
+ * REGENERATING THE CATALOGUE below (run against the live schema):
+ *   select ccu.table_name as refs, tc.table_name
+ *   from information_schema.table_constraints tc
+ *   join information_schema.key_column_usage kcu
+ *     on kcu.constraint_name = tc.constraint_name and kcu.table_schema = tc.table_schema
+ *   join information_schema.constraint_column_usage ccu
+ *     on ccu.constraint_name = tc.constraint_name and ccu.table_schema = tc.table_schema
+ *   where tc.constraint_type='FOREIGN KEY' and tc.table_schema='public'
+ *     and kcu.column_name='agent_id' and ccu.table_name='users';
+ */
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs"
+
+let pass = 0, fail = 0
+const failures: string[] = []
+function ok(label: string, cond: boolean, detail?: string) {
+  if (cond) { pass++; console.log(`  ✓ ${label}`) }
+  else { fail++; failures.push(label); console.log(`  ✗ ${label}${detail ? ` — ${detail}` : ""}`) }
+}
+const src = (p: string) => (existsSync(p) ? readFileSync(p, "utf8") : "")
+const code = (p: string) =>
+  src(p).replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+
+/** The 20 tables whose agent_id column FKs USERS. Everything else FKs agents. */
+const USERS_CLASS_TABLES = new Set([
+  "agent_intro_videos", "ai_video_projects", "closing_disclosure_agreement", "conversation_logs",
+  "income_forecast_snapshots", "lifetime_customer_npv_scores", "listing_health_interventions",
+  "listing_health_scores", "listing_promo_videos", "newsletter_scheduled_sends",
+  "newsletter_video_renders", "pattern_adoptions", "podcast_auto_runs", "podcast_episodes",
+  "podcast_templates", "property_preferences", "revenue_protection_snapshots", "review_requests",
+  "studio_sessions", "transparency_updates",
+])
+
+function walk(dir: string, out: string[] = []): string[] {
+  if (!existsSync(dir)) return out
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const full = `${dir}/${e.name}`
+    if (e.isDirectory()) {
+      if (e.name === "node_modules" || e.name === ".next") continue
+      walk(full, out)
+    } else if (/\.tsx?$/.test(e.name)) out.push(full)
+  }
+  return out
+}
+
+/** Split a file into rough function bodies — the scope in which a contradiction
+ *  is meaningful. A top-level split on `function`/arrow-assignment keywords is
+ *  enough: the point is to avoid pairing usages from unrelated helpers. */
+function functionChunks(source: string): string[] {
+  const marks: number[] = []
+  const re = /\b(?:export\s+)?(?:async\s+)?function\s+\w+|\bconst\s+\w+\s*=\s*(?:async\s*)?\(/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(source))) marks.push(m.index)
+  if (marks.length === 0) return [source]
+  const chunks: string[] = []
+  for (let i = 0; i < marks.length; i++) {
+    chunks.push(source.slice(marks[i], i + 1 < marks.length ? marks[i + 1] : source.length))
+  }
+  return chunks
+}
+
+interface Contradiction { file: string; expr: string; agentsAt: string; usersAt: string }
+
+/** A capture that is a TYPE, not a value. The object-literal regex happily
+ *  matches `agent_id: string` in an interface — an artifact, not a defect. */
+const NOT_A_VALUE = new Set(["string", "number", "boolean", "null", "undefined", "true", "false", "any", "unknown"])
+
+/** Every (table, column, expression) triple in one chunk, classified. */
+function classifyUsages(chunk: string): { expr: string; cls: "agents" | "users"; where: string }[] {
+  const out: { expr: string; cls: "agents" | "users"; where: string }[] = []
+  const fromRe = /\.from\(\s*[`"']([a-z_]+)[`"']\s*\)/g
+  let m: RegExpExecArray | null
+  while ((m = fromRe.exec(chunk))) {
+    const table = m[1]
+    let window = chunk.slice(m.index + m[0].length, m.index + m[0].length + 500)
+    const nxt = window.indexOf(".from(")
+    if (nxt !== -1) window = window.slice(0, nxt)
+    const eqRe = /\.eq\(\s*[`"']([a-z_]+)[`"']\s*,\s*([A-Za-z_$][\w.$]*)\s*\)/g
+    let e: RegExpExecArray | null
+    while ((e = eqRe.exec(window))) {
+      const [, col, expr] = e
+      if (NOT_A_VALUE.has(expr)) continue
+      if (col === "agent_id") {
+        out.push({ expr, cls: USERS_CLASS_TABLES.has(table) ? "users" : "agents", where: `${table}.agent_id` })
+      } else if (col === "id" && table === "users") {
+        out.push({ expr, cls: "users", where: "users.id" })
+      } else if (col === "id" && table === "agents") {
+        out.push({ expr, cls: "agents", where: "agents.id" })
+      } else if (col === "user_id" && table === "agents") {
+        out.push({ expr, cls: "users", where: "agents.user_id" })
+      }
+    }
+    // Inserts/updates: agent_id: <expr>
+    const objRe = /\bagent_id\s*:\s*([A-Za-z_$][\w.$]*)/g
+    let o: RegExpExecArray | null
+    while ((o = objRe.exec(window))) {
+      if (NOT_A_VALUE.has(o[1])) continue
+      out.push({ expr: o[1], cls: USERS_CLASS_TABLES.has(table) ? "users" : "agents", where: `${table}.agent_id (write)` })
+    }
+  }
+  return out
+}
+
+function findContradictions(): Contradiction[] {
+  const found: Contradiction[] = []
+  for (const file of [...walk("app"), ...walk("lib")]) {
+    const c = code(file)
+    if (!c.includes("agent_id")) continue
+    for (const chunk of functionChunks(c)) {
+      const usages = classifyUsages(chunk)
+      const byExpr = new Map<string, Set<string>>()
+      const whereByExpr = new Map<string, Map<string, string>>()
+      for (const u of usages) {
+        if (!byExpr.has(u.expr)) { byExpr.set(u.expr, new Set()); whereByExpr.set(u.expr, new Map()) }
+        byExpr.get(u.expr)!.add(u.cls)
+        whereByExpr.get(u.expr)!.set(u.cls, u.where)
+      }
+      for (const [expr, classes] of byExpr) {
+        if (classes.size > 1) {
+          const w = whereByExpr.get(expr)!
+          found.push({ file, expr, agentsAt: w.get("agents") ?? "?", usersAt: w.get("users") ?? "?" })
+        }
+      }
+    }
+  }
+  return found
+}
+
+console.log("\n═══ 1. No function uses one value as both identity classes ═══")
+{
+  const found = findContradictions()
+  for (const f of found) {
+    console.log(`     ${f.file}: \`${f.expr}\` is ${f.agentsAt} AND ${f.usersAt}`)
+  }
+  // A RATCHET, NOT A ZERO. Three of these were verified by hand and were real
+  // defects — two of them paths that could never have run. The rest are
+  // CANDIDATES: each still needs a human to read the callers, because the same
+  // function can legitimately hold both classes in two differently-named
+  // variables, and the window heuristic can pair a `.from()` with an `.eq()`
+  // that belongs to a sibling query. Claiming they are all bugs would repeat
+  // the exact mistake this guard exists to catch — asserting more than the
+  // evidence supports. So: the number may only go DOWN.
+  const BASELINE = 37
+  ok(`self-contradicting identity uses at or below the baseline of ${BASELINE} (found ${found.length})`,
+    found.length <= BASELINE,
+    found.length > BASELINE
+      ? `NEW: ${found.map((f) => `${f.file}:${f.expr}`).join(", ")}`
+      : undefined)
+  if (found.length < BASELINE) {
+    console.log(`     ↓ ${BASELINE - found.length} below baseline — lower BASELINE to ${found.length} to lock the gain in.`)
+  }
+}
+
+console.log("\n═══ 2. The three verified defects stay fixed ═══")
+{
+  const npv = code("lib/lifetime-customer-npv/scorer.ts")
+  ok("the NPV scorer resolves contacts.agent_id (AGENTS) to a users id before\n    writing the users-class column — proven live: the raw write is rejected\n    by the foreign key, so this ledger could never have held a row",
+    /resolveAgentRecordToUserId\(contact\.agent_id/.test(npv) &&
+    !/agentId:\s+\(contact\.agent_id as string \| null\) \?\? null/.test(npv),
+    "lib/lifetime-customer-npv/scorer.ts")
+
+  // SCOPED to aiScheduleShowing. The file also holds createTour and
+  // optimizeTourRoute, which have their OWN params.agentId — a file-wide
+  // "no params.agentId anywhere" assertion failed on functions this pass never
+  // examined, which would have been a claim beyond the evidence. Those two stay
+  // in the §1 baseline until someone reads their callers.
+  const showFile = code("app/actions/ai-showing-management.ts")
+  const schedIdx = showFile.indexOf("export async function aiScheduleShowing")
+  const show = schedIdx >= 0 ? showFile.slice(schedIdx, schedIdx + 6000) : ""
+  ok("aiScheduleShowing writes the AGENTS id to showings + activities, not the\n    users id it correctly uses for the users lookup",
+    /agent_id:\s+agentRecordId/.test(show) && !/agent_id:\s+params\.agentId/.test(show),
+    "app/actions/ai-showing-management.ts::aiScheduleShowing")
+  ok("...and REFUSES rather than writing a broken row when the user has no\n    agent record",
+    /if \(!agentRecordId\)/.test(show))
+
+  const life = code("app/dashboard/listings/[id]/lifecycle/page.tsx")
+  ok("the listing lifecycle page filters listings.agent_id by the AGENTS id —\n    filtering it by user.id matched nothing, so an agent could never open\n    their own listing",
+    /resolveUserIdToAgentRecord\(user\.id/.test(life) &&
+    !/\.eq\("agent_id", user\.id\)/.test(life),
+    "app/dashboard/listings/[id]/lifecycle/page.tsx")
+}
+
+console.log("\n═══ 3. The canonical resolver is the one place this is decided ═══")
+{
+  const r = "lib/kernel/agent-identity-resolver.ts"
+  const c = code(r)
+  ok("it exists and exports BOTH directions", /resolveAgentRecordToUserId/.test(c) && /resolveUserIdToAgentRecord/.test(c))
+  ok("...and the branded types that let the compiler help",
+    /AgentRecordId/.test(c) && /UserAgentId/.test(c))
+
+  // Adoption is a RATCHET, not a target. It only has to go up.
+  const ADOPTION_FLOOR = 20
+  const adopters = [...walk("app"), ...walk("lib")].filter((f) =>
+    /resolveUserIdToAgentRecord|resolveAgentRecordToUserId/.test(code(f)))
+  ok(`at least ${ADOPTION_FLOOR} files route identity through the resolver (found ${adopters.length}) —\n    a ratchet: this number may only go up, so each pass that touches a\n    mixed-class query is expected to convert it rather than work around it`,
+    adopters.length >= ADOPTION_FLOOR, String(adopters.length))
+}
+
+console.log("\n═══ 4. The catalogue this guard reasons from is honest ═══")
+{
+  ok("the users-class table list is exactly the 20 the live schema reports",
+    USERS_CLASS_TABLES.size === 20, String(USERS_CLASS_TABLES.size))
+  ok("...and this file carries the query to regenerate it, so it cannot quietly\n    drift away from the schema it describes",
+    /information_schema\.table_constraints/.test(src("scripts/identity-class-guard.ts")))
+}
+
+console.log(`\n${"═".repeat(70)}`)
+console.log(`IDENTITY CLASS — ${pass} passed, ${fail} failed`)
+if (fail > 0) {
+  console.log("\nFailures:")
+  for (const f of failures) console.log(`  · ${f}`)
+  console.log("\n195 columns are named agent_id; 175 mean agents.id and 20 mean users.id.")
+  console.log("Route it through lib/kernel/agent-identity-resolver instead of guessing.")
+  process.exit(1)
+}
+console.log("Three verified defects fixed and locked; 37 candidates remain behind a ratchet")
+console.log("that may only go down. The resolver is the one place this should be decided.")

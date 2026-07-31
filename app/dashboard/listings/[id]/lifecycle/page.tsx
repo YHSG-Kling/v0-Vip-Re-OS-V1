@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server"
+import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { notFound, redirect } from "next/navigation"
 import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
 import { getAllStages, getStageDefinition, getEnabledSystemGates } from "@/lib/listing-lifecycle/lifecycle-definitions"
@@ -66,7 +67,14 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
     .eq("brokerage_id", userRow.brokerage_id)
 
   if ((userRow.user_type ?? "agent") === "agent") {
-    listingQuery = listingQuery.eq("agent_id", user.id)
+    // IDENTITY CLASS. listings.agent_id FKs AGENTS, and user.id is a USERS id —
+    // filtering one by the other matches nothing, so an agent could never open
+    // the lifecycle page for their own listing. Resolved through the canonical
+    // resolver; a caller with no agents row keeps the restrictive path and is
+    // given an id that matches nothing on purpose rather than being widened to
+    // the whole brokerage.
+    const agentRecordId = await resolveUserIdToAgentRecord(user.id, userRow.brokerage_id)
+    listingQuery = listingQuery.eq("agent_id", agentRecordId ?? "00000000-0000-0000-0000-000000000000")
   }
 
   const { data: listing } = await listingQuery.single()

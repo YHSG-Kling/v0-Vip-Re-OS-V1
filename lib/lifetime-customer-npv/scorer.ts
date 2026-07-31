@@ -31,6 +31,7 @@
  */
 
 import "server-only"
+import { resolveAgentRecordToUserId } from "@/lib/kernel/agent-identity-resolver"
 import { latestByContact } from "./current"
 import { createServiceClient } from "@/lib/supabase/service"
 import { WEALTH_ACTIVE_STATUSES } from "@/lib/wealth-advisor/recommendation-status"
@@ -284,10 +285,21 @@ export async function scoreContactNpv(input: {
   const previousScore: number | null = prev?.npv_score ?? null
   const scoreDelta = previousScore != null ? npvScore - Number(previousScore) : null
 
+  // IDENTITY CLASS. contacts.agent_id is an AGENTS id;
+  // lifetime_customer_npv_scores.agent_id FKs USERS. Writing the one into the
+  // other is not a subtle mismatch — it is a foreign-key violation, verified
+  // live against this schema, so EVERY NPV computation failed to persist and
+  // the Lifetime Customer ledger has never held a row it could not have held.
+  // The canonical resolver has existed in lib/kernel/agent-identity-resolver
+  // the whole time; this path simply never called it.
+  const ownerUserId = contact.agent_id
+    ? await resolveAgentRecordToUserId(contact.agent_id as string)
+    : null
+
   const result: NpvScoreResult = {
     contactId:   input.contactId,
     brokerageId: input.brokerageId,
-    agentId:     (contact.agent_id as string | null) ?? null,
+    agentId:     ownerUserId,
     npvScore,
     npvDollars,
     tier,

@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
@@ -244,12 +245,26 @@ Return JSON only:
       aiRecommendations = { recommendedTime: params.requestedTime }
     }
 
-    // Resolve brokerage_id from the agent's user record
+    // Resolve brokerage_id from the agent's user record. params.agentId is a
+    // USERS id — the caller (tour-confirm-tab) passes agentUserId — so this
+    // lookup is the correct half.
     const { data: agentUser } = await supabase
       .from("users")
       .select("brokerage_id")
       .eq("id", params.agentId)
       .maybeSingle()
+
+    // IDENTITY CLASS. showings.agent_id and activities.agent_id both FK AGENTS,
+    // not users — so writing params.agentId straight into them is a foreign-key
+    // violation and every AI-scheduled showing failed at the insert. The same
+    // value was being used as BOTH classes inside this one function, which is
+    // the self-contradiction test:identity-class now fails on.
+    const agentRecordId = agentUser?.brokerage_id
+      ? await resolveUserIdToAgentRecord(params.agentId, agentUser.brokerage_id)
+      : null
+    if (!agentRecordId) {
+      return { success: false, error: "No agent record for this user — can't book the showing to them." }
+    }
 
     const recommendedTime = aiRecommendations.recommendedTime || params.requestedTime
     const scheduledAt = params.requestedDate && recommendedTime
@@ -269,7 +284,7 @@ Return JSON only:
       .insert({
         listing_id:     propertyIsUuid ? params.propertyId : null,
         contact_id:     params.contactId,
-        agent_id:       params.agentId,
+        agent_id:       agentRecordId,
         brokerage_id:   agentUser?.brokerage_id ?? null,
         scheduled_date: params.requestedDate,
         scheduled_at:   scheduledAt,
@@ -289,7 +304,7 @@ Return JSON only:
     try {
       await supabase.from("activities").insert({
         brokerage_id:  agentUser?.brokerage_id ?? null,
-        agent_id:      params.agentId,
+        agent_id:      agentRecordId,
         contact_id:    params.contactId,
         activity_type: "showing",
         title:         `Showing scheduled — ${params.requestedDate} at ${resolvedTime}`,
