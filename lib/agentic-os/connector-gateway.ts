@@ -44,7 +44,13 @@ export interface GatewayRequest {
    *  application/x-www-form-urlencoded (Stripe, Intuit-style APIs); "binary" → the body is sent
    *  as-is (Buffer/Uint8Array) and Content-Type is taken from `headers` (resumable byte uploads).
    *  Body must be a flat string/number map when "form" (nested keys pre-flattened, e.g. "metadata[id]"). */
-  bodyType?: "json" | "form" | "binary"
+  /** "multipart" → the body is a FormData and is passed through untouched, with
+   *  NO Content-Type set so fetch supplies the multipart boundary itself (a
+   *  hand-set multipart Content-Type without the generated boundary is rejected
+   *  by every vendor). Declared explicitly rather than smuggled through
+   *  "binary": that mode documents Buffer/Uint8Array, and FormData only worked
+   *  there because BodyInit happens to accept it. */
+  bodyType?: "json" | "form" | "binary" | "multipart"
   timeoutMs?: number
 }
 
@@ -71,10 +77,11 @@ export function buildAuthedRequest(req: GatewayRequest): { url: string; headers:
   for (const [k, v] of Object.entries(req.query ?? {})) url.searchParams.set(k, v)
 
   const headers: Record<string, string> = { Accept: "application/json", ...(req.headers ?? {}) }
-  if (req.body !== undefined && req.bodyType !== "binary") {
+  if (req.body !== undefined && req.bodyType !== "binary" && req.bodyType !== "multipart") {
     headers["Content-Type"] = req.bodyType === "form" ? "application/x-www-form-urlencoded" : "application/json"
   }
   // binary: Content-Type is whatever the caller put in `headers` (e.g. video/*); never overridden.
+  // multipart: NO Content-Type at all — fetch generates it with the boundary.
 
   // auth is optional — when omitted, no auth header is added (callers like public probes /
   // self-healer pings don't need auth). Without this guard the `.style` access throws and the
@@ -165,7 +172,7 @@ async function executeConnector<T = any>(req: GatewayRequest): Promise<GatewayRe
           }
           return p.toString()
         })()
-      : req.bodyType === "binary"
+      : req.bodyType === "binary" || req.bodyType === "multipart"
         ? (req.body as BodyInit)
         : JSON.stringify(req.body)
   try {

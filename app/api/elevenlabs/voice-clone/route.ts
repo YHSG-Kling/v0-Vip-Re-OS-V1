@@ -12,6 +12,7 @@ import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { checkUsageCap } from "@/lib/usage/check-cap"
 import { logMediaUsage } from "@/lib/usage/log-media-usage"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 const EL_API_BASE = "https://api.elevenlabs.io/v1"
 
@@ -80,18 +81,27 @@ export async function POST(request: NextRequest) {
       formData.append("files", blob, "sample.mp3")
     }
 
-    const elRes = await fetch(`${EL_API_BASE}/voices/add`, {
+    // Through Connection OS. Multipart is a first-class bodyType on the gateway
+    // (m333) rather than a raw fetch: this is a real egress that spends money
+    // and creates a durable asset, so it belongs in the same place as every
+    // other one — self-healing on a field rename, credential resolution, and
+    // connector-health attribution.
+    const elRes = await callConnector<{ voice_id?: string; detail?: { message?: string } }>({
+      connector: "elevenlabs",
+      baseUrl: EL_API_BASE,
+      path: "/voices/add",
       method: "POST",
-      headers: { "xi-api-key": apiKey },
+      auth: { style: "header", name: "xi-api-key", value: apiKey },
+      bodyType: "multipart",
       body: formData,
     })
 
-    const elData = await elRes.json()
+    const elData = elRes.data ?? {}
 
-    if (!elRes.ok) {
-      console.error("[ElevenLabs] voice clone error:", elData)
+    if (!elRes.ok || !elData.voice_id) {
+      console.error("[ElevenLabs] voice clone error:", elRes.error ?? elData)
       return NextResponse.json(
-        { error: elData.detail?.message ?? "ElevenLabs voice clone failed" },
+        { error: elData.detail?.message ?? elRes.error ?? "ElevenLabs voice clone failed" },
         { status: 500 }
       )
     }

@@ -450,6 +450,7 @@
     "test:did-consent": "tsx scripts/did-consent-guard.ts",
     "test:did-webhook": "tsx scripts/did-webhook-guard.ts",
     "test:did-egress": "tsx scripts/did-egress-guard.ts",
+    "test:elevenlabs-egress": "tsx scripts/elevenlabs-egress-guard.ts",
     "test:lifetime-ledger": "tsx scripts/lifetime-ledger-guard.ts",
     "test:proof-ownership": "tsx scripts/manager-proof-ownership-guard.ts",
     "test:assignment-method": "tsx scripts/assignment-method-simulator.ts",
