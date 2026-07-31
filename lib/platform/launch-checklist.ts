@@ -226,13 +226,6 @@ const ROWS: RowDef[] = [
     tier: "launch-degraded",
   },
   {
-    key: "vapi_legacy",
-    capability: "Vapi legacy voice lane (migration window only)",
-    envVars: ["VAPI_API_KEY"],
-    whatLightsUp: "Only tenants still on VOICE_ENGINE=vapi; new tenants bind to the Twilio-native lane.",
-    tier: "launch-degraded",
-  },
-  {
     key: "contact_enrichment",
     capability: "Contact enrichment (PeopleData)",
     envVars: ["PEOPLEDATA_API_KEY"],

@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { resolveIsaCallingReadiness } from '@/lib/voice/isa-readiness'
 import { getAIISASettings } from '@/app/actions/ai-isa-settings'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -57,21 +58,11 @@ export default async function ISACallingPage() {
     .eq('id', user.id)
     .single()
 
-  // ai_isa_settings was a writer-less legacy twin (burn-down round 4 repoint):
-  // vapi_assistant_id lives on ai_identity_profiles (written by lib/voice/vapi-numbers.ts,
-  // read back by lib/ai-isa/build-call-context.ts) and the ISA enabled toggle lives in
-  // global_settings.additional_settings->ai_isa_settings (app/actions/ai-isa-settings.ts).
-  const { data: identityProfiles } = profile?.brokerage_id
-    ? await supabase
-        .from('ai_identity_profiles')
-        .select('vapi_assistant_id')
-        .eq('brokerage_id', profile.brokerage_id)
-        .eq('active', true)
-        .not('vapi_assistant_id', 'is', null)
-        .limit(1)
-    : { data: null }
-
-  const vapiConfigured = !!identityProfiles?.[0]?.vapi_assistant_id
+  // The same one readiness answer every ISA surface uses — see
+  // lib/voice/isa-readiness.ts for why the VAPI test it replaces was wrong.
+  // The ai_identity_profiles query that used to sit here went with it: its only
+  // consumer was that test, so it was a round-trip nothing read.
+  const callingReadiness = await resolveIsaCallingReadiness(supabase, profile?.brokerage_id ?? null)
   const isaActive = profile?.brokerage_id
     ? (await getAIISASettings(profile.brokerage_id)).enabled
     : false
@@ -126,27 +117,29 @@ export default async function ISACallingPage() {
         </Link>
       </div>
 
-      {/* VAPI not configured banner */}
-      {!vapiConfigured && (
-        <Alert variant="destructive" className="border-amber-300 bg-amber-50 text-amber-900">
+      {/* Shown only when AI calling genuinely cannot run. Manual dialling is
+          unaffected either way, which is why this is amber and not destructive. */}
+      {!callingReadiness.canPlaceAiCalls && (
+        <Alert className="border-amber-300 bg-amber-50 text-amber-900">
           <AlertTriangle className="h-4 w-4 text-amber-600" />
-          <AlertTitle className="text-amber-800">VAPI Assistant Not Configured</AlertTitle>
+          <AlertTitle className="text-amber-800">AI calling isn&apos;t ready yet</AlertTitle>
           <AlertDescription className="text-amber-700">
-            AI-automated calling requires a VAPI assistant ID. Manual calls still work — configure
-            VAPI in Settings to enable AI outbound dialing.{' '}
-            <Link
-              href="/settings?tab=ai-isa"
-              className="font-semibold underline underline-offset-2 hover:text-amber-900"
-            >
-              Configure now
-              <ExternalLink className="inline w-3 h-3 ml-1" />
-            </Link>
+            {callingReadiness.reason} Manual calls still work.{' '}
+            {callingReadiness.ctaHref && (
+              <Link
+                href={callingReadiness.ctaHref}
+                className="font-semibold underline underline-offset-2 hover:text-amber-900"
+              >
+                {callingReadiness.ctaLabel}
+                <ExternalLink className="inline w-3 h-3 ml-1" />
+              </Link>
+            )}
           </AlertDescription>
         </Alert>
       )}
 
       {/* ISA inactive banner */}
-      {vapiConfigured && !isaActive && (
+      {callingReadiness.canPlaceAiCalls && !isaActive && (
         <Alert className="border-blue-200 bg-blue-50">
           <AlertTriangle className="h-4 w-4 text-blue-600" />
           <AlertTitle className="text-blue-800">AI-ISA is Paused</AlertTitle>
@@ -242,7 +235,7 @@ export default async function ISACallingPage() {
                         {contact.status}
                       </Badge>
 
-                      {vapiConfigured ? (
+                      {callingReadiness.canPlaceAiCalls ? (
                         <Link href={`/dashboard/voice/isa?contactId=${contact.id}`}>
                           <Button
                             size="sm"

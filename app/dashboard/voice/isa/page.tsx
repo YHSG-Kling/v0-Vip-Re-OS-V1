@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server"
+import { resolveIsaCallingReadiness } from "@/lib/voice/isa-readiness"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { getAIISASettings } from "@/app/actions/ai-isa-settings"
 import { redirect } from "next/navigation"
@@ -217,19 +218,12 @@ export default async function VoiceISAPage() {
     .eq("agent_id", agentId)
     .maybeSingle()
 
-  // ai_isa_settings was a writer-less legacy twin (burn-down round 4 repoint):
-  // vapi_assistant_id lives on ai_identity_profiles (written by lib/voice/vapi-numbers.ts,
-  // read back by lib/ai-isa/build-call-context.ts) and the ISA enabled toggle lives in
-  // global_settings.additional_settings->ai_isa_settings (app/actions/ai-isa-settings.ts).
-  const { data: identityProfiles } = await supabase
-    .from("ai_identity_profiles")
-    .select("vapi_assistant_id")
-    .eq("brokerage_id", brokerageId)
-    .eq("active", true)
-    .not("vapi_assistant_id", "is", null)
-    .limit(1)
-
-  const vapiConfigured = !!identityProfiles?.[0]?.vapi_assistant_id
+  // READINESS FROM THE REAL GATES, not from a retired vendor's assistant id.
+  // This tested ai_identity_profiles.vapi_assistant_id, so a fully-working
+  // Twilio brokerage was told AI calling was unavailable and sent off to
+  // configure VAPI — which this OS no longer calls at all. The profile query
+  // went with it: that test was its only consumer.
+  const callingReadiness = await resolveIsaCallingReadiness(supabase, brokerageId)
   const isaActive      = brokerageId ? (await getAIISASettings(brokerageId)).enabled : false
   // require_broker_approval has no real store (it existed only on the phantom ai_isa_settings
   // table, which was never written) — its effective value was always the `?? false` fallback.
@@ -256,21 +250,22 @@ export default async function VoiceISAPage() {
         </div>
       </div>
 
-      {/* VAPI not configured CTA — shown instead of a blank failure */}
-      {!vapiConfigured && (
+      {/* Shown only when AI calling genuinely cannot run, and it names the one
+          thing the agent has to do about it. */}
+      {!callingReadiness.canPlaceAiCalls && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 flex flex-col sm:flex-row sm:items-center gap-3">
           <div className="flex-1">
-            <p className="text-sm font-semibold text-amber-800">Configure VAPI to enable AI calling</p>
-            <p className="text-xs text-amber-700 mt-0.5">
-              AI-ISA outbound calling requires a VAPI assistant ID. Add it in AI-ISA Settings to activate automated dialing.
-            </p>
+            <p className="text-sm font-semibold text-amber-800">AI calling isn&apos;t ready yet</p>
+            <p className="text-xs text-amber-700 mt-0.5">{callingReadiness.reason}</p>
           </div>
-          <Button size="sm" variant="outline" className="border-amber-400 text-amber-800 hover:bg-amber-100 shrink-0" asChild>
-            <Link href="/settings?tab=ai-isa">
-              Configure VAPI
-              <ArrowRight className="h-3 w-3 ml-1" />
-            </Link>
-          </Button>
+          {callingReadiness.ctaHref && (
+            <Button size="sm" variant="outline" className="border-amber-400 text-amber-800 hover:bg-amber-100 shrink-0" asChild>
+              <Link href={callingReadiness.ctaHref}>
+                {callingReadiness.ctaLabel}
+                <ArrowRight className="h-3 w-3 ml-1" />
+              </Link>
+            </Button>
+          )}
         </div>
       )}
 

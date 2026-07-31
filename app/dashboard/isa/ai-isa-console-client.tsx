@@ -136,7 +136,10 @@ interface AIISAConsoleClientProps {
   pendingDrafts: any[]
   userId: string
   brokerageId: string
-  vapiConfigured?: boolean
+  /** Whether an AI outbound call could actually be placed — resolved from the
+   *  real Twilio-lane gates, not from a retired vendor's assistant id. */
+  callingReady?: boolean
+  callingBlockedReason?: string | null
 }
 
 const TAB_FILTERS: { label: string; value: string; states: AIISAState[] | 'all' }[] = [
@@ -149,7 +152,7 @@ const TAB_FILTERS: { label: string; value: string; states: AIISAState[] | 'all' 
   { label: 'Completed',              value: 'completed',        states: ['handoff_complete'] },
 ]
 
-export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId, vapiConfigured = false }: AIISAConsoleClientProps) {
+export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId, callingReady = false, callingBlockedReason = null }: AIISAConsoleClientProps) {
   const router = useRouter()
   const supabase = createClient()
   const [activeTab, setActiveTab] = useState('all')
@@ -352,12 +355,13 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
       })
       const data = await res.json()
       if (!res.ok) {
-        if (data.vapiNotConfigured) {
-          toast.error('Configure VAPI to enable AI calling', {
-            description: 'Go to Settings → AI-ISA to add your VAPI assistant ID.',
-            action: { label: 'Configure', onClick: () => router.push('/settings?tab=ai-isa') },
-          })
-        } else if (data.blocked) {
+        // A `vapiNotConfigured` branch used to live here, telling the agent to
+        // add a VAPI assistant id. No route has ever returned that field, so it
+        // was dead — and it pointed at a vendor the voice lane retired. The
+        // executor's own refusal is precise ("No active tenant phone number to
+        // dial from — provision a number first. No call was placed."), so it is
+        // shown verbatim instead of being replaced by a worse guess.
+        if (data.blocked) {
           toast.error(`Call blocked: ${data.reason}`)
         } else {
           toast.error(data.error ?? 'Failed to initiate call')
@@ -652,13 +656,18 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
                           </Link>
                         </Button>
 
-                        {/* AI Call Now — triggers VAPI outbound via /api/voice/initiate-call */}
+                        {/* AI Call Now — Twilio-native outbound via /api/voice/initiate-call.
+                            Disabled up-front when the brokerage cannot place AI
+                            calls at all, so the agent learns it before spending
+                            a click and a lead's turn on a refusal. */}
                         {item.phone && !item.call_stop_flag && (
                           <Button
                             size="sm"
                             variant="outline"
                             className="w-full justify-start text-green-700 border-green-300 hover:bg-green-50"
                             onClick={() => handleAICallNow(item)}
+                            disabled={!callingReady}
+                            title={callingReady ? undefined : callingBlockedReason ?? undefined}
                           >
                             <PhoneCall className="h-3.5 w-3.5 mr-1.5" />
                             AI Call Now

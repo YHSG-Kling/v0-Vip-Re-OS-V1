@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation'
+import { resolveIsaCallingReadiness } from "@/lib/voice/isa-readiness"
 import { createClient } from '@/lib/supabase/server'
 import {
   listISACampaigns,
@@ -246,8 +247,11 @@ export default async function AIISAOperationsConsolePage() {
 
   const activeCampaigns = campaigns.filter((c: any) => c.status === 'active')
 
-  // Server-side VAPI config check — no client env leak required
-  const vapiConfigured = !!(process.env.VAPI_ISA_ASSISTANT_ID && process.env.VAPI_API_KEY)
+  // CAN THIS BROKERAGE ACTUALLY PLACE AN AI CALL? This probed
+  // VAPI_ISA_ASSISTANT_ID + VAPI_API_KEY — env vars for a vendor the voice lane
+  // retired, which placeOutboundAiCall never reads. One answer, from the gates
+  // the executor really enforces: lib/voice/isa-readiness.ts.
+  const callingReadiness = await resolveIsaCallingReadiness(supabase, brokerageId)
 
   // Calculate Qualification Radar metrics from real data
   const totalContacted = qualOutcomes.outcomes?.length || 0
@@ -388,19 +392,23 @@ export default async function AIISAOperationsConsolePage() {
         pendingDrafts={pendingDrafts}
         userId={user.id}
         brokerageId={brokerageId}
-        vapiConfigured={vapiConfigured}
+        callingReady={callingReadiness.canPlaceAiCalls}
+        callingBlockedReason={callingReadiness.reason}
       />
 
-      {/* VAPI configuration warning — shown only when AI calling is not set up */}
-      {!vapiConfigured && (
-        <Alert variant="destructive" className="border-amber-300 bg-amber-50 text-amber-900 [&>svg]:text-amber-600">
+      {/* Shown only when AI calling genuinely cannot run, naming the one thing
+          the agent has to do — not a retired vendor's integration page. */}
+      {!callingReadiness.canPlaceAiCalls && (
+        <Alert className="border-amber-300 bg-amber-50 text-amber-900 [&>svg]:text-amber-600">
           <AlertTriangle className="h-4 w-4" />
-          <AlertTitle>AI Calling Not Configured</AlertTitle>
+          <AlertTitle>AI calling isn&apos;t ready yet</AlertTitle>
           <AlertDescription>
-            VAPI is not configured. AI outbound calls will not execute.{' '}
-            <Link href="/settings/integrations" className="underline font-medium ml-1">
-              Configure in Admin Integrations →
-            </Link>
+            {callingReadiness.reason}{' '}
+            {callingReadiness.ctaHref && (
+              <Link href={callingReadiness.ctaHref} className="underline font-medium ml-1">
+                {callingReadiness.ctaLabel} →
+              </Link>
+            )}
           </AlertDescription>
         </Alert>
       )}
@@ -512,9 +520,9 @@ export default async function AIISAOperationsConsolePage() {
                 <CardContent className="py-12 text-center">
                   <Mic className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
                   <p className="text-sm text-muted-foreground">No AI voice calls recorded yet.</p>
-                  {!vapiConfigured && (
-                    <Link href="/settings/integrations" className="text-xs text-indigo-600 underline mt-1 block">
-                      Configure VAPI to enable AI calling
+                  {!callingReadiness.canPlaceAiCalls && callingReadiness.ctaHref && (
+                    <Link href={callingReadiness.ctaHref} className="text-xs text-indigo-600 underline mt-1 block">
+                      {callingReadiness.ctaLabel} to enable AI calling
                     </Link>
                   )}
                 </CardContent>
