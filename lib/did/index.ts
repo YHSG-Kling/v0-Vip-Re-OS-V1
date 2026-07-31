@@ -139,26 +139,53 @@ async function didGet(path: string): Promise<Record<string, unknown>> {
   return res.data
 }
 
-/** Poll until done/error or timeout. Returns null on timeout (still processing). */
-async function pollUntilDone(talkId: string): Promise<string | null> {
+/**
+ * The statuses that mean the job is still being worked on.
+ *
+ * DELIBERATELY AN ALLOW-LIST, not a deny-list of terminal states. The previous
+ * loop continued on anything that was not exactly "done" or "error", so ANY
+ * status this code does not know about — a rejection, a moderation block, a
+ * cancellation, whatever the provider adds next — polled silently to the
+ * timeout and then reported "still processing" for a job that would never
+ * finish. Inverting it means an unrecognised status is surfaced immediately,
+ * with its own name in the message, which is correct whatever the provider's
+ * vocabulary turns out to be.
+ */
+const DID_IN_FLIGHT_STATUSES = new Set(["created", "started", "processing", "pending"])
+
+/** Which endpoint holds a given job — known at SUBMIT time, never guessed. */
+export type DidEngine = "talks" | "expressives"
+
+/**
+ * Poll until the job reaches a terminal state, or the deadline passes.
+ * Returns null ONLY on timeout (genuinely still processing).
+ *
+ * The engine is a PARAMETER because the caller already knows it: generateVideo
+ * computes it from the avatar id and returns it, and the poll cron records it
+ * on the row as provider_metadata.mode. The old code threw that away and
+ * probed — `try { GET /talks/id } catch { GET /expressives/id }` — which is
+ * wrong in both directions: a transient 5xx or a rate-limit on /talks diverted
+ * a healthy talks job to /expressives, where it 404s, and the 404 surfaced as
+ * "D-ID poll failed" on a render that was fine.
+ */
+async function pollUntilDone(talkId: string, engine: DidEngine): Promise<string | null> {
   const deadline = Date.now() + POLL_TIMEOUT_MS
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
-    // Both engines: photo avatars live at /talks; V4 expressive at /expressives.
-    let data: Record<string, unknown>
-    try {
-      data = await didGet(`/talks/${talkId}`)
-    } catch {
-      data = await didGet(`/expressives/${talkId}`)
-    }
-    const status = data.status as string | undefined
+    const data = await didGet(`/${engine}/${talkId}`)
+    const status = String(data.status ?? "")
     if (status === "done") {
       return (data.result_url as string) ?? null
     }
-    if (status === "error") {
-      throw new Error(`D-ID talk failed: ${String(data.error ?? "unknown error")}`)
-    }
-    // status === "created" | "started" — continue polling
+    if (DID_IN_FLIGHT_STATUSES.has(status)) continue
+    // Terminal, and not success. "error" carries a description; anything else
+    // is named verbatim so an unhandled provider state is legible rather than
+    // silently indistinguishable from a slow render.
+    throw new Error(
+      status === "error"
+        ? `D-ID ${engine} failed: ${String(data.error ?? "unknown error")}`
+        : `D-ID ${engine} ended in status "${status || "(none)"}": ${String(data.error ?? "no description")}`,
+    )
   }
   return null // timed out — still processing
 }
@@ -408,7 +435,7 @@ export async function generateVideo(
 
   let videoUrl: string | null = null
   try {
-    videoUrl = await pollUntilDone(talkId)
+    videoUrl = await pollUntilDone(talkId, isV4Expressive ? "expressives" : "talks")
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     throw new Error(`D-ID poll failed: ${msg}`)

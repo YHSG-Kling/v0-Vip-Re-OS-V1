@@ -97,7 +97,41 @@ export async function GET(request: NextRequest) {
         })
 
         if (!statusRes.ok) {
-          // Skip on transient API error — try again next cron tick
+          // A 404 is TERMINAL, not transient: D-ID no longer has this job (it
+          // expired, or the id was never valid), so no number of ticks will
+          // ever resolve it. `continue` on every non-ok status meant such a row
+          // sat at 'generating' forever, re-fetched on every tick, invisible to
+          // the agent waiting on the video. Same defect the avatar poll cron
+          // carried (m316) — fixing one and not its sibling is how a defect
+          // class survives being found.
+          if (statusRes.status === 404) {
+            await supabase
+              .from("ai_video_projects")
+              .update({
+                status: "failed",
+                provider_status: "not_found",
+                error_message: `D-ID no longer has job ${video.provider_job_id} (404 on /${mode}) — it expired or was never created`,
+                retry_count: (video.retry_count ?? 0) + 1,
+              })
+              .eq("id", video.id)
+            if (video.agent_id) {
+              await supabase.from("notifications").insert({
+                user_id: video.agent_id,
+                brokerage_id: video.brokerage_id,
+                type: "video_failed",
+                title: "Video Generation Failed",
+                body: "Your video could not be retrieved from the provider. Please try generating it again.",
+                entity_type: "video_project",
+                entity_id: video.id,
+                priority: "high",
+                is_read: false,
+              })
+            }
+            results.failed++
+            continue
+          }
+          // Everything else (429, 5xx, a network blip) IS transient — try again
+          // next cron tick.
           continue
         }
 
