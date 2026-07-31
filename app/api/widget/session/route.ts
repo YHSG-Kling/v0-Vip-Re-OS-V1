@@ -131,23 +131,30 @@ async function resolveIdentity(
     if (data) profile = data
   }
 
-  // Avatar + display info
-  let agentHasDIDAvatar = false
+  // Display info. agent_has_did_avatar used to be computed here from
+  // agent_voice_profiles and returned to the widget — its ONLY consumer was the
+  // "Live Agent" button, retired in m336 because the lane behind it could never
+  // have worked. A computed field with no reader is the same dead weight this
+  // pass is burning, so it went with the button; the live/voice agent lives on
+  // the embed widget, which asks the session route for the real presenter
+  // family instead of guessing from a column.
   let displayName = profile?.assistant_name ?? 'Your Real Estate Assistant'
   let brokerageName = ''
 
-  const [voiceRes, agentUserRes, brokerageRes] = await Promise.all([
+  const [agentUserRes, brokerageRes] = await Promise.all([
+    // THE AGENT'S NAME, VIA THEIR USERS ROW. agentId here is an AGENTS id — the
+    // widget URL is built from agents.id in Settings → Widget, and the
+    // ai_identity_profiles (scope_id) and agent_voice_profiles (agent_id)
+    // lookups above and below both key on it correctly. This one did not: it
+    // queried users.id with an agents.id, which never matches, so displayName
+    // silently stayed at the generic assistant name and every website visitor
+    // was greeted by "Your Real Estate Assistant" instead of the agent whose
+    // widget they were on. Same identity-class confusion that made the retired
+    // /api/widget/avatar-session 404 on every call (m336).
     agentId
       ? supabase
-          .from('agent_voice_profiles')
-          .select('did_photo_url, did_video_url')
-          .eq('agent_id', agentId)
-          .maybeSingle()
-      : Promise.resolve({ data: null }),
-    agentId
-      ? supabase
-          .from('users')
-          .select('first_name, last_name')
+          .from('agents')
+          .select('users!inner(first_name, last_name)')
           .eq('id', agentId)
           .maybeSingle()
       : Promise.resolve({ data: null }),
@@ -158,11 +165,9 @@ async function resolveIdentity(
       .maybeSingle(),
   ])
 
-  if (voiceRes.data) {
-    agentHasDIDAvatar = !!(voiceRes.data.did_photo_url || voiceRes.data.did_video_url)
-  }
   if (agentUserRes.data) {
-    const agentName = `${agentUserRes.data.first_name ?? ''} ${agentUserRes.data.last_name ?? ''}`.trim()
+    const u = (agentUserRes.data as { users?: { first_name?: string | null; last_name?: string | null } }).users
+    const agentName = `${u?.first_name ?? ''} ${u?.last_name ?? ''}`.trim()
     if (agentName) displayName = agentName
   }
   brokerageName = brokerageRes.data?.name ?? ''
@@ -173,7 +178,6 @@ async function resolveIdentity(
     tone: profile?.tone ?? 'conversational',
     faq_knowledge: profile?.faq_knowledge ?? [],
     followup_style: profile?.followup_style ?? 'warm_persistent',
-    agent_has_did_avatar: agentHasDIDAvatar,
     display_name: displayName,
     brokerage_name: brokerageName,
   }

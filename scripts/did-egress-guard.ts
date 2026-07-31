@@ -21,13 +21,22 @@
  *   · METERING AND ATTRIBUTION. Vendor spend and connector health are counted at
  *     the gateway. Thirteen calls were spending money invisibly.
  *
- * SCOPE, STATED: this guard covers the AUTHENTICATED D-ID lane. The public
- * website-widget lane (/api/widget/avatar-*) is still on raw fetch AND on
- * talks/streams — the API lib/did/agents.ts itself calls deprecated. That is a
- * consolidation, not a swap, and it is tracked separately rather than pretended
- * away here.
+ * SCOPE, CLOSED (m336): this guard used to cover only the AUTHENTICATED D-ID
+ * lane, and §5 asserted — deliberately, as a TRUE assertion — that the public
+ * website-widget lane (/api/widget/avatar-*) was STILL on raw fetch and still on
+ * talks/streams, so a green run could never be mistaken for a converted lane.
+ *
+ * That assertion has now done its job by FAILING. The widget lane is gone:
+ * /api/widget/avatar-session and /api/widget/avatar-talk were retired in m336
+ * once the audit showed they could never have worked (they looked up
+ * `agents.user_id` with an agents.id, so every call 404'd), and the real public
+ * agent is the embed widget on the D-ID Agents SDK — through this gateway,
+ * capped, budget-gated and metered.
+ *
+ * §5 is now the inverse claim, asserted just as literally: no raw D-ID fetch and
+ * no deprecated talks/clips stream call survives ANYWHERE in the app.
  */
-import { readFileSync, existsSync } from "node:fs"
+import { readFileSync, existsSync, readdirSync } from "node:fs"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -101,18 +110,50 @@ console.log("\n═══ 4. Callers still classify the failure ═══")
     /statusRes\.data \?\? \{ description: statusRes\.error \}/.test(code("app/api/cron/poll-did-avatars/route.ts")))
 }
 
-console.log("\n═══ 5. The remaining gap is NAMED, not hidden ═══")
+console.log("\n═══ 5. THE GAP IS CLOSED — no lane left outside the gateway ═══")
 {
-  // Honesty check: the widget lane is still raw. This guard must say so rather
-  // than quietly scoping it out — a guard that looks green while a lane is
-  // unconverted is the same lie it exists to prevent.
-  const widgetRaw =
-    /await fetch\(`\$\{DID_API_BASE\}/.test(code("app/api/widget/avatar-session/route.ts")) ||
-    /await fetch\(`\$\{DID_API_BASE\}/.test(code("app/api/widget/avatar-talk/route.ts"))
-  ok("the public widget lane is still on raw fetch — asserted TRUE so this\n    guard cannot silently start passing if someone believes it was done",
-    widgetRaw)
-  ok("...and this file states that scope in its header",
-    /public website-widget lane/.test(src("scripts/did-egress-guard.ts")))
+  // This section used to assert the widget lane was STILL raw, so a green run
+  // could not be mistaken for a converted lane. m336 converted it by RETIRING
+  // it, and that assertion failed — which is the guard working, not breaking.
+  ok("the raw widget avatar routes no longer exist",
+    !existsSync("app/api/widget/avatar-session/route.ts") &&
+    !existsSync("app/api/widget/avatar-talk/route.ts"))
+
+  // Sweep the whole app rather than two known paths: the point of closing a gap
+  // is that a NEW one must not open somewhere else.
+  const offenders: string[] = []
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = `${dir}/${e.name}`
+      if (e.isDirectory()) { if (e.name !== "node_modules") walk(full); continue }
+      if (!/\.tsx?$/.test(e.name)) continue
+      const c = code(full)
+      if (/await fetch\([^)]*api\.d-id\.com/.test(c) ||
+          /await fetch\(\s*`\$\{DID_API_BASE\}/.test(c)) offenders.push(full)
+    }
+  }
+  for (const d of ["app", "lib"]) if (existsSync(d)) walk(d)
+  ok("NO file under app/ or lib/ raw-fetches D-ID any more — every call leaves\n    through lib/did/gateway.ts",
+    offenders.length === 0, offenders.join(", "))
+
+  const deprecated: string[] = []
+  const walkDep = (dir: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = `${dir}/${e.name}`
+      if (e.isDirectory()) { if (e.name !== "node_modules") walkDep(full); continue }
+      if (!/\.tsx?$/.test(e.name)) continue
+      // A PATH EXPRESSION, not the words. The manager registry documents the
+      // retired lane inside a string literal (prose in data, which code() cannot
+      // strip), and lib/did/agents.ts names the deprecated APIs in its header to
+      // explain what it replaced. Matching the bare words flagged both — the
+      // pattern was wrong, the code was right. Anchor on a URL path opening:
+      // `${BASE}/talks/streams` or "/clips/streams".
+      if (/[`"'](?:\$\{[^}]*\})?\/(?:talks|clips)\/streams/.test(code(full))) deprecated.push(full)
+    }
+  }
+  for (const d of ["app", "lib"]) if (existsSync(d)) walkDep(d)
+  ok("...and nothing calls the DEPRECATED talks/streams or clips/streams APIs",
+    deprecated.length === 0, deprecated.join(", "))
 }
 
 console.log(`\n${"═".repeat(70)}`)
@@ -124,4 +165,4 @@ if (fail > 0) {
   console.log("A bespoke fetch loses self-healing, credential rotation and metering.")
   process.exit(1)
 }
-console.log("The authenticated D-ID lane is fully on Connection OS; the widget lane is named, not hidden.")
+console.log("Every D-ID call in the app leaves through Connection OS — no lane left outside.")

@@ -30,14 +30,15 @@
  *    second time and did none of it. Same vendor, same endpoint, two error
  *    vocabularies, one of them unmetered.
  *
- * SCOPE, STATED: the public website-widget lane (/api/widget/avatar-talk) is
- * STILL a raw fetch to ElevenLabs, alongside its raw D-ID talks/streams calls.
- * That whole lane is a consolidation held pending an owner decision — it is a
- * public, unauthenticated surface, so retiring it changes what an anonymous
- * visitor can do. §5 asserts it is still raw so this guard cannot quietly go
- * green on a lane nobody converted.
+ * SCOPE, CLOSED (m336): §5 used to assert — deliberately, as a TRUE assertion —
+ * that the public website-widget lane (/api/widget/avatar-talk) was STILL a raw
+ * fetch to ElevenLabs, so this guard could not quietly go green on a lane nobody
+ * had converted. The owner authorised the consolidation and the audit found the
+ * lane was dead code besides (its voice lookup keyed an agents-class column with
+ * a users id, so it could never resolve a voice). The route is gone; §5 is now
+ * the inverse claim, swept across the whole app rather than one known path.
  */
-import { readFileSync, existsSync } from "node:fs"
+import { readFileSync, existsSync, readdirSync } from "node:fs"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -115,16 +116,29 @@ console.log("\n═══ 4. One caller per capability ═══")
     gatewayCalls >= 2, `callConnector call sites: ${gatewayCalls}`)
 }
 
-console.log("\n═══ 5. The remaining gap is NAMED, not hidden ═══")
+console.log("\n═══ 5. THE GAP IS CLOSED — swept, not spot-checked ═══")
 {
-  // Honesty check, same shape as did-egress-guard §5. The public widget lane is
-  // still raw against BOTH vendors. Asserted TRUE so this guard cannot start
-  // passing on the belief that the lane was converted.
-  const w = code("app/api/widget/avatar-talk/route.ts")
-  ok("the public widget lane still raw-fetches ElevenLabs — asserted TRUE so a\n    green run can never mean \"converted\" when it means \"unconverted\"",
-    /await fetch\(`\$\{EL_API_BASE\}\/text-to-speech/.test(w))
-  ok("...and this file states that scope in its header",
-    /public website-widget lane/.test(src("scripts/elevenlabs-egress-guard.ts")))
+  ok("the raw widget TTS route no longer exists",
+    !existsSync("app/api/widget/avatar-talk/route.ts"))
+
+  // The whole app, because closing one gap must not let another open elsewhere.
+  // The ONE legitimate exception is the streaming read in the TTS library, which
+  // §4 already pins by count and reason.
+  const offenders: string[] = []
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = `${dir}/${e.name}`
+      if (e.isDirectory()) { if (e.name !== "node_modules") walk(full); continue }
+      if (!/\.tsx?$/.test(e.name)) continue
+      if (full === TTS_LIB) continue
+      const c = code(full)
+      if (/await fetch\([^)]*api\.elevenlabs\.io/.test(c) ||
+          /await fetch\(\s*`\$\{EL_API_BASE\}/.test(c)) offenders.push(full)
+    }
+  }
+  for (const d of ["app", "lib"]) if (existsSync(d)) walk(d)
+  ok("NO file outside the documented streaming exception raw-fetches ElevenLabs",
+    offenders.length === 0, offenders.join(", "))
 }
 
 console.log(`\n${"═".repeat(70)}`)
@@ -136,4 +150,4 @@ if (fail > 0) {
   console.log("the one documented exception, and one capability has one caller.")
   process.exit(1)
 }
-console.log("ElevenLabs egress is on Connection OS; the widget lane is named, not hidden.")
+console.log("Every ElevenLabs call is on Connection OS; the streaming read is the one stated exception.")

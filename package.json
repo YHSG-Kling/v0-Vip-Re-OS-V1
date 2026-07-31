@@ -453,6 +453,7 @@
     "test:elevenlabs-egress": "tsx scripts/elevenlabs-egress-guard.ts",
     "test:no-brokerage-face": "tsx scripts/no-brokerage-face-guard.ts",
     "test:geo-scope": "tsx scripts/geo-scope-guard.ts",
+    "test:public-agent": "tsx scripts/public-agent-guard.ts",
     "test:lifetime-ledger": "tsx scripts/lifetime-ledger-guard.ts",
     "test:proof-ownership": "tsx scripts/manager-proof-ownership-guard.ts",
     "test:assignment-method": "tsx scripts/assignment-method-simulator.ts",

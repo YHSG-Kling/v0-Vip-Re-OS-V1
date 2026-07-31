@@ -7,6 +7,7 @@
 import { resolveWriteContext } from "@/lib/kernel/identity"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
+import { normalizeEnabledModes, type EmbedMode } from "@/lib/embed/widget-modes"
 
 export interface EmbedWidget {
   id: string
@@ -17,7 +18,7 @@ export interface EmbedWidget {
   label: string
   defaultTwinId: string | null
   welcomeMessage: string | null
-  enabledModes: ("text" | "live")[]
+  enabledModes: EmbedMode[]
   leadCaptureMode: "immediate" | "after_first_message" | "optional"
   leadCaptureFields: string[]
   allowedDomains: string[]
@@ -37,7 +38,7 @@ function rowToWidget(r: any): EmbedWidget {
     label: r.label ?? "My Website",
     defaultTwinId: r.default_twin_id,
     welcomeMessage: r.welcome_message,
-    enabledModes: (r.enabled_modes ?? ["text"]) as ("text" | "live")[],
+    enabledModes: normalizeEnabledModes(r.enabled_modes),
     leadCaptureMode: r.lead_capture_mode,
     leadCaptureFields: r.lead_capture_fields ?? [],
     allowedDomains: r.allowed_domains ?? [],
@@ -152,7 +153,7 @@ export async function updateEmbed(params: {
   label?: string
   defaultTwinId?: string | null
   welcomeMessage?: string | null
-  enabledModes?: ("text" | "live")[]
+  enabledModes?: EmbedMode[]
   leadCaptureMode?: "immediate" | "after_first_message" | "optional"
   leadCaptureFields?: string[]
   allowedDomains?: string[]
@@ -198,7 +199,11 @@ export async function updateEmbed(params: {
   if (params.label !== undefined) update.label = params.label.slice(0, 64)
   if (params.defaultTwinId !== undefined) update.default_twin_id = params.defaultTwinId
   if (params.welcomeMessage !== undefined) update.welcome_message = params.welcomeMessage
-  if (params.enabledModes !== undefined) update.enabled_modes = params.enabledModes
+  // NORMALISED, not trusted. The stored array is CHECK-constrained (m336) to the
+  // EMBED_MODES vocabulary with 'text' always present, and this is the single
+  // writer — so it normalises rather than letting a stale client shape reach the
+  // constraint as a raw error the broker cannot act on.
+  if (params.enabledModes !== undefined) update.enabled_modes = normalizeEnabledModes(params.enabledModes)
   if (params.leadCaptureMode !== undefined) update.lead_capture_mode = params.leadCaptureMode
   if (params.leadCaptureFields !== undefined) update.lead_capture_fields = params.leadCaptureFields
   if (params.allowedDomains !== undefined) update.allowed_domains = sanitizeDomains(params.allowedDomains)
