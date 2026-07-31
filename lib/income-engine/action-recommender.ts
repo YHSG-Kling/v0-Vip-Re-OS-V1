@@ -32,6 +32,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { GapAnalysisResult } from "./gap-analyzer"
+import { loadCurrentLedger, topByValue } from "@/lib/lifetime-customer-npv/current"
 
 export type ActionCategory =
   | "prospecting" | "listing_acquisition" | "referral_ask" | "conversion_focus"
@@ -73,7 +74,21 @@ function nextSundayISO(): string {
 }
 
 export async function recommendActionsForAgent(params: {
+  /** agents.id — what contacts/transactions/listings.agent_id reference. */
   agentId:      string
+  /**
+   * users.id — what lifetime_customer_npv_scores.agent_id references.
+   *
+   * TWO ID CLASSES, and the ledger is the odd one out: of every table this
+   * recommender reads, contacts/transactions/listings all FK agent_id to
+   * agents(id) while lifetime_customer_npv_scores FKs it to users(id). Rule 4
+   * filtered the ledger with the agents.id and therefore matched ZERO rows —
+   * the sphere-nurture action has never once reached an agent's queue. The
+   * caller already resolves this id three lines before calling us (it needs it
+   * for income_forecast_snapshots, which is also users-keyed) and then passed
+   * the other one.
+   */
+  agentUserId:  string
   brokerageId:  string
   gap:          GapAnalysisResult
   maxActions?:  number
@@ -142,16 +157,27 @@ export async function recommendActionsForAgent(params: {
   }
 
   // ── Rule 4: Reactivation — sphere with next_touchpoint_due ≤ 7d ──
-  const { data: dueSphere } = await svc
-    .from("lifetime_customer_npv_scores")
-    .select("contact_id, npv_dollars, tier, recommended_action, recommended_cadence, next_touchpoint_due")
-    .eq("agent_id", params.agentId)
-    .lte("next_touchpoint_due", new Date(now + 7 * 86_400_000).toISOString())
-    .in("tier", ["platinum", "gold", "silver"])
-    .order("npv_dollars", { ascending: false })
-    .limit(10)
+  // lifetime_customer_npv_scores is an APPEND-ONLY LEDGER (scoreContactNpv
+  // inserts a row per run and keeps previous_score/score_delta). This used to
+  // read it with `.order("npv_dollars", desc).limit(10)`, which ranks HISTORY as
+  // if it were state: the same contact appeared once per historical row, each
+  // was selected at their PEAK npv_dollars rather than their current standing —
+  // carrying that stale figure into estimated_gci_impact_cents below — and one
+  // well-scored contact's history could consume the whole 10-row budget, hiding
+  // every other client actually due. The three sibling readers each hand-rolled
+  // the newest-per-contact rule; loadCurrentLedger is now the single copy.
+  const dueSphere = await loadCurrentLedger<{
+    contact_id: string; npv_dollars: number | null; tier: string | null
+    recommended_action: string | null; recommended_cadence: string | null
+    next_touchpoint_due: string | null
+  }>(svc, {
+    agentId: params.agentUserId,
+    brokerageId: params.brokerageId,
+    dueOnOrBefore: new Date(now + 7 * 86_400_000).toISOString().slice(0, 10),
+    tiers: ["platinum", "gold", "silver"],
+  }).then((rows) => topByValue(rows, 10))
 
-  for (const s of dueSphere ?? []) {
+  for (const s of dueSphere) {
     const expectedGCI = Math.round(Number(s.npv_dollars ?? 0) * 100 / 12)  // monthly slice of NPV
     candidates.push({
       action_rank: 0,

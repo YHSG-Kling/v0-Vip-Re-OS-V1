@@ -10,6 +10,7 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
+import { latestByContact as dedupeLedger } from "@/lib/lifetime-customer-npv/current"
 import { isValidUUID } from "@/lib/validations"
 import { revalidatePath } from "next/cache"
 
@@ -80,15 +81,16 @@ export async function getAgentLifetimeNpvRanked(params: {
   const { data, error } = await q
   if (error) return { success: false, error: error.message }
 
+  // Newest ledger row per contact via the ONE shared rule (this table is
+  // append-only). The map below preserves this action's richer projection.
   const latestByContact = new Map<string, NpvRow>()
-  for (const r of (data ?? []) as Array<{
+  for (const r of dedupeLedger((data ?? []) as Array<{
     contact_id: string; npv_score: number; npv_dollars: number; tier: NpvTier;
     recommended_action: string | null; recommended_cadence: string | null;
     next_touchpoint_due: string | null;
     signals: Array<{ label: string; weight?: number; dollars?: number }> | null;
     score_delta: number | null; computed_at: string
-  }>) {
-    if (latestByContact.has(r.contact_id)) continue
+  }>)) {
     latestByContact.set(r.contact_id, {
       contactId:          r.contact_id,
       contactName:        null,  // hydrated below

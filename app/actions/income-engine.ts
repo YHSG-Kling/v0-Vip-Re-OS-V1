@@ -110,7 +110,11 @@ export async function computeAndPersistGapAction(params?: {
   const gap = await analyzeIncomeGap({ agentId, userId, brokerageId })
 
   // 2. Generate ranked actions
-  const actions = await recommendActionsForAgent({ agentId, brokerageId, gap, maxActions: 5 })
+  // BOTH ids: contacts/transactions/listings key on agents.id, while the
+  // lifetime NPV ledger keys on users.id. Passing only agentId made the
+  // sphere-nurture rule filter a users.id column with an agents.id and
+  // silently return nothing.
+  const actions = await recommendActionsForAgent({ agentId, agentUserId: userId, brokerageId, gap, maxActions: 5 })
 
   // 3. Persist (upsert by (agent_id, analysis_date))
   const svc = createServiceClient()

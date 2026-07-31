@@ -33,6 +33,7 @@
 
 import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { latestByContact } from "@/lib/lifetime-customer-npv/current"
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -382,12 +383,12 @@ async function fetchNpvDueActions(
   }>
   if (rows.length === 0) return []
 
-  // Dedupe to latest snapshot per contact
-  const latestByContact = new Map<string, typeof rows[number]>()
-  for (const r of rows) {
-    if (!latestByContact.has(r.contact_id)) latestByContact.set(r.contact_id, r)
-  }
-  const deduped = Array.from(latestByContact.values()).slice(0, input.limit ?? 15)
+  // Dedupe to the latest ledger row per contact. lifetime_customer_npv_scores is
+  // append-only, so "newest per contact" is the current value and everything
+  // older is history — one shared implementation (lib/lifetime-customer-npv/
+  // current) rather than a copy here, because the income engine had this same
+  // rule inlined and got it wrong.
+  const deduped = latestByContact(rows).slice(0, input.limit ?? 15)
 
   const contactNames = await hydrateContactNames(supabase, deduped.map((r) => r.contact_id))
 

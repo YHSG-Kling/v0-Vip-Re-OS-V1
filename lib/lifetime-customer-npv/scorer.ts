@@ -31,6 +31,7 @@
  */
 
 import "server-only"
+import { latestByContact } from "./current"
 import { createServiceClient } from "@/lib/supabase/service"
 import { WEALTH_ACTIVE_STATUSES } from "@/lib/wealth-advisor/recommendation-status"
 
@@ -368,18 +369,17 @@ export async function projectAgentSphereReferralValue(input: {
     .order("computed_at", { ascending: false })
     .limit(5000)
 
-  const latestByContact = new Map<string, { npv_dollars: number; tier: NpvTier }>()
-  for (const r of (rows ?? []) as Array<{ contact_id: string; npv_dollars: number; tier: NpvTier }>) {
-    if (!latestByContact.has(r.contact_id)) {
-      latestByContact.set(r.contact_id, { npv_dollars: r.npv_dollars, tier: r.tier })
-    }
-  }
+  // One shared newest-per-contact rule (./current) — this ledger is append-only,
+  // and the income engine's copy of this logic was the one that got it wrong.
+  const current = latestByContact(
+    (rows ?? []) as Array<{ contact_id: string; npv_dollars: number; tier: NpvTier; computed_at?: string }>,
+  )
 
   // Pro-rate the 5-year NPV $ to the requested horizon and apply the tier's
   // annual referral rate as the conversion probability per year.
   const fraction = horizonDays / 365
   let expected = 0
-  for (const { npv_dollars, tier } of latestByContact.values()) {
+  for (const { npv_dollars, tier } of current) {
     const annualRate = ANNUAL_REFERRAL_RATE[tier]
     expected += (Number(npv_dollars) / HORIZON_YEARS) * fraction * Math.min(annualRate, 1.0)
   }
