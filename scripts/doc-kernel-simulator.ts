@@ -1731,7 +1731,12 @@ async function main() {
         && !src("app/actions/marketing-studio.ts").includes('.eq("agent_user_id", agentId)')
         && src("lib/listing-presentation/section-narration-orchestrator.ts").includes('eq("user_id", pres.agent_user_id)')
         && src("lib/video/video-identity.ts").includes("agentRecordId")
-        && src("lib/ai-isa/book-seller-appointment.ts").includes("agentId: agentUserId ?? params.agentId")
+        // m362: this froze `agentId: agentUserId ?? params.agentId` — a resolved
+        // USERS id falling back to the AGENTS id it was resolved FROM, on the
+        // column pass 12 itself identified as users-class. Assert the resolve
+        // and the refusal, not the expression that undid them.
+        && src("lib/ai-isa/book-seller-appointment.ts").includes("agentId: agentUserId,")
+        && src("lib/ai-isa/book-seller-appointment.ts").includes("the appointment was not scheduled")
         && src("app/actions/voice-assistant.ts").includes("getTodayAppointments(caller.userId)")
         && src("lib/intelligence/daily-briefing-generator.ts").includes("const briefingUserId = identityRow?.user_id ?? agentId")
         && src("lib/intelligence/daily-briefing-generator.ts").includes("user_id: briefingUserId")
