@@ -128,13 +128,23 @@ interface SuggestionInput {
 export async function generateSmartSuggestion(input: SuggestionInput): Promise<void> {
   const supabase = await createServerClient()
 
+  const { data: sugAgentRow } = await supabase
+    .from("agents").select("id").eq("user_id", input.user_id).eq("brokerage_id", input.brokerage_id).maybeSingle()
+  const suggestionAgentId = (sugAgentRow as { id?: string } | null)?.id ?? null
+  if (!suggestionAgentId) return
+
   // pass 14 (array-literal sweep): the live columns are agent_id /
   // action_payload_json, and context_id rides metadata (no such column) —
   // the old user_id/context_id/action_payload keys errored every insert.
   const { error } = await supabase.from("smart_assistant_suggestions").insert([
     {
       brokerage_id: input.brokerage_id,
-      agent_id: input.user_id,
+      // IDENTITY CLASS (m365). pass 14 fixed the COLUMN NAMES here — its
+      // comment above records that the old user_id/context_id keys "errored
+      // every insert" — and left the users id in the renamed agents-class
+      // column. So the insert still errored, just for a different reason: a
+      // rename that moved the bug rather than removing it.
+      agent_id: suggestionAgentId,
       context_type: input.context_type,
       suggestion_type: input.suggestion_type,
       title: input.title,

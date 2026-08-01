@@ -53,8 +53,17 @@ export function buildWhisperScript(f: WhisperFacts): string {
 /** The user's ASSISTANT voice — voice_assistant_config.voice_profile_id →
  *  agent_voice_profiles.elevenlabs_voice_id. Null when unconfigured (text fallback). */
 export async function resolveAssistantVoiceId(supabase: Svc, agentUserId: string): Promise<string | null> {
+  // IDENTITY CLASS (m365). voice_assistant_config.agent_id FKs AGENTS (and is
+  // NOT NULL, so every row holds a real agents id) while agentUserId is a users
+  // id — the filter matched nothing, resolveAssistantVoiceId returned null on
+  // every call, and the whisper silently fell back to text. The agent's cloned
+  // voice was configured and never used.
+  const { data: whisperAgentRow } = await supabase
+    .from("agents").select("id").eq("user_id", agentUserId).maybeSingle()
+  const whisperAgentId = (whisperAgentRow as { id?: string } | null)?.id ?? null
+  if (!whisperAgentId) return null
   const { data: cfg } = await supabase
-    .from("voice_assistant_config").select("voice_profile_id").eq("agent_id", agentUserId).maybeSingle()
+    .from("voice_assistant_config").select("voice_profile_id").eq("agent_id", whisperAgentId).maybeSingle()
   const profileId = (cfg as { voice_profile_id: string | null } | null)?.voice_profile_id ?? null
   if (!profileId) return null
   const { data: vp } = await supabase

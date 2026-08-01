@@ -489,6 +489,31 @@ console.log("\n═══ 3f. Every write into a users-class agent_id, enumerated
     (mk.match(/agent_id:\s*ctx\.agentId \?\? null,/g) ?? []).length === 3)
 }
 
+console.log("\n═══ 3g. The MIRROR sweep — this guard's own documented blind spot ═══")
+{
+  // m365. m364 enumerated writes into users-class agent_id columns. Run the
+  // same enumeration the other way — agents-class columns receiving a users-ish
+  // value — and four more appear, NONE of which this guard can see: each is a
+  // single-class use inside its function, so nothing contradicts itself. That
+  // is the cross-call-boundary blind spot the header names, now measured
+  // rather than merely acknowledged.
+  const sb = code("app/actions/auth/signup-brokerage.ts")
+  ok("the brokerage-signup audit entry writes NULL, not a users id — activities\n    .agent_id FKs agents and no agents row exists at signup, so the insert was\n    rejected inside a non-fatal try/catch and that audit line was never written",
+    /agent_id:      null,/.test(sb))
+
+  const ms = code("lib/kernel/manager-signals.ts")
+  ok("the AI ISA intro postcard resolves users→agents — the campaign was\n    FK-rejected after the QR mint and AI copy draft had already run",
+    /const dmAgentId = /.test(ms) && /agent_id: dmAgentId,/.test(ms))
+
+  const asst = code("app/actions/assistant.ts")
+  ok("smart_assistant_suggestions gets a resolved agents id — pass 14 fixed this\n    insert's COLUMN NAMES and left the users id in the renamed agents column,\n    so it still errored, just for a different reason",
+    /agent_id: suggestionAgentId,/.test(asst) && /const suggestionAgentId = /.test(asst))
+
+  const aw = code("lib/intelligence/appointment-whisper.ts")
+  ok("the assistant voice lookup resolves first — voice_assistant_config.agent_id\n    is a NOT NULL agents FK, so every row holds an agents id and the users-id\n    filter matched nothing: the whisper fell back to text with the agent's\n    cloned voice sitting configured and unused",
+    /const whisperAgentId = /.test(aw) && /\.eq\("agent_id", whisperAgentId\)/.test(aw))
+}
+
 console.log("\n═══ 4. The catalogue this guard reasons from is honest ═══")
 {
   ok("the users-class table list is exactly the 20 the live schema reports",

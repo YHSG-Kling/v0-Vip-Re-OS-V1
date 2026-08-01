@@ -134,8 +134,16 @@ async function proposeLeadIntroPostcard(
   } catch { /* keep the grounded fallback copy */ }
 
   const name = [lead.first_name, lead.last_name].filter(Boolean).join(" ").trim() || "there"
+  // IDENTITY CLASS (m365). direct_mail_campaigns.agent_id FKs AGENTS and
+  // agentUserId is a users id, so the AI ISA intro postcard campaign was
+  // FK-rejected and never created — after the QR mint and the AI copy draft
+  // above had already done their work.
+  const { data: dmAgentRow } = await supabase
+    .from("agents").select("id").eq("user_id", agentUserId).eq("brokerage_id", brokerageId).maybeSingle()
+  const dmAgentId = (dmAgentRow as { id?: string } | null)?.id ?? null
+
   const { data: campaign, error } = await supabase.from("direct_mail_campaigns").insert({
-    brokerage_id: brokerageId, agent_id: agentUserId, lead_id: leadId,
+    brokerage_id: brokerageId, agent_id: dmAgentId, lead_id: leadId,
     campaign_name: `AI ISA intro postcard — ${name}`.slice(0, 120),
     target_audience: "ai_isa_lead_intro", quantity: 1, piece_type: "postcard",
     copy_text: copyText, qr_code_id: qrCodeId, is_ai_generated: true,

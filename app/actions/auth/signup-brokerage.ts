@@ -378,7 +378,12 @@ export async function signupBrokerageAction(
     await service.from("activities").insert({
       activity_type: "brokerage.self_serve_signup",
       brokerage_id:  brokerage.id,
-      agent_id:      newUser.id,
+      // IDENTITY CLASS (m365). activities.agent_id FKs AGENTS and newUser.id is
+      // a users id, so this insert was rejected — inside a try/catch marked
+      // "non-fatal", which is why the audit entry for a brokerage signing up
+      // has never once been written. No agents row exists at signup, and the
+      // column is nullable: NULL is the truthful value, not a users id.
+      agent_id:      null,
       title:         `Self-serve signup: ${input.brokerageName}`,
       notes:         JSON.stringify({
         tier:           input.tier,
