@@ -17,11 +17,25 @@ export async function launchAIISACampaignService(params: {
   const { campaignType, campaignName, contactSegment, loginId } = params
   const supabase = await createClient()
 
+  // IDENTITY CLASS (m354). loginId is a USERS id — every other lookup in this
+  // file reads `users` by it, and the comment below says so explicitly. But
+  // contacts.agent_id FKs AGENTS, so this filter matched nothing for every
+  // agent, the guard below returned "No contacts match the criteria", and the
+  // AI ISA — the engine that turns scraped leads into calls — could not launch
+  // a single campaign. The error blamed the agent's segment for a class
+  // mismatch, which is why it reads as a data problem rather than a bug.
+  const { data: isaAgentRow } = await supabase
+    .from("agents").select("id").eq("user_id", loginId).maybeSingle()
+  const isaAgentRecordId = (isaAgentRow as { id?: string } | null)?.id ?? null
+  if (!isaAgentRecordId) {
+    return { success: false, error: "No agent profile for this user — an AI ISA campaign is agent-scoped." }
+  }
+
   // Get contacts matching segment
   let query = supabase
     .from("contacts")
     .select("id, first_name, last_name, phone, lead_score, stage:buyer_stage")
-    .eq("agent_id", loginId)
+    .eq("agent_id", isaAgentRecordId)
 
   if (campaignType === "new_lead_follow_up") {
     query = query

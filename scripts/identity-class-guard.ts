@@ -211,7 +211,7 @@ console.log("\n═══ 1. No function uses one value as both identity classes 
   // So a high remaining count is not the same as a high remaining risk. Grep
   // for a caller first; if there is none, the entry belongs in the dead-surface
   // triage, not here.
-  const BASELINE = 25
+  const BASELINE = 23
   ok(`self-contradicting identity uses at or below the baseline of ${BASELINE} (found ${found.length})`,
     found.length <= BASELINE,
     found.length > BASELINE
@@ -391,6 +391,24 @@ console.log("\n═══ 3. The canonical resolver is the one place this is deci
     adopters.length >= ADOPTION_FLOOR, String(adopters.length))
 }
 
+console.log("\n═══ 3b. The AI ISA could not launch a campaign ═══")
+{
+  // m354. loginId is a USERS id — every other lookup in lib/application/ai-isa.ts
+  // reads `users` by it and says so. But the contact segment filtered
+  // contacts.agent_id, which FKs AGENTS, so it matched nothing for every agent
+  // and the function returned "No contacts match the criteria". The engine that
+  // turns scraped leads into calls could not launch a single campaign, and the
+  // error blamed the agent's segment for a class mismatch.
+  const isa = code("lib/application/ai-isa.ts")
+  ok("the contact segment is filtered by the RESOLVED agents id, not the users id\n    the rest of the file legitimately uses",
+    /\.from\("agents"\)\.select\("id"\)\.eq\("user_id", loginId\)/.test(isa.replace(/\n\s*/g, "")) &&
+    /\.eq\("agent_id", isaAgentRecordId\)/.test(isa))
+  ok("...and it REFUSES when there is no agents row, instead of reporting an\n    empty segment as though the agent simply had no matching contacts",
+    /No agent profile for this user — an AI ISA campaign is agent-scoped/.test(isa))
+  ok("...while the users-class lookups in the same file are untouched — loginId\n    still reads `users` for the brokerage and the caller identity",
+    /\.from\("users"\)[\s\S]{0,120}\.eq\("id", loginId\)/.test(isa))
+}
+
 console.log("\n═══ 4. The catalogue this guard reasons from is honest ═══")
 {
   ok("the users-class table list is exactly the 20 the live schema reports",
@@ -408,5 +426,5 @@ if (fail > 0) {
   console.log("Route it through lib/kernel/agent-identity-resolver instead of guessing.")
   process.exit(1)
 }
-console.log("Verified defects fixed and locked; 25 candidates remain behind a ratchet")
+console.log("Verified defects fixed and locked; 23 candidates remain behind a ratchet")
 console.log("that may only go down. The resolver is the one place this should be decided.")
