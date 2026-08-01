@@ -194,7 +194,7 @@ console.log("\n═══ 1. No function uses one value as both identity classes 
   // that belongs to a sibling query. Claiming they are all bugs would repeat
   // the exact mistake this guard exists to catch — asserting more than the
   // evidence supports. So: the number may only go DOWN.
-  const BASELINE = 31
+  const BASELINE = 30
   ok(`self-contradicting identity uses at or below the baseline of ${BASELINE} (found ${found.length})`,
     found.length <= BASELINE,
     found.length > BASELINE
@@ -251,6 +251,23 @@ console.log("\n═══ 2. The three verified defects stay fixed ═══")
     "lib/income-forecast/forecaster.ts")
   ok("...and still writes income_forecast_snapshots with the users id",
     /agent_id:\s+input\.agentId|\.eq\("agent_id", input\.agentId\)/.test(inc))
+
+  // m342 — onboarding PROGRESS. Its two branches produced DIFFERENT classes into
+  // the same variable: the self path resolved an agents id, the admin path kept
+  // the caller-supplied users id. Everything downstream is agents-class, so a
+  // broker looking at one of their agents got an empty progress report rather
+  // than an error. Both branches now end on an agents id — and because a nearby
+  // comment had been COMPENSATING for the old inconsistency when deriving a
+  // users id for learning_assignments, that compensation had to be rewritten in
+  // the same pass or the fix would have introduced a fresh bug.
+  const prog = code("app/actions/onboarding/progress.ts")
+  ok("both the self and admin branches resolve to an AGENTS id",
+    (prog.match(/resolveAgentId\(supabase, targetAgentId\)|resolveAgentId\(supabase, user\.id\)/g) ?? []).length >= 3,
+    "app/actions/onboarding/progress.ts")
+  ok("...the brokerage lookups read `agents`, which is the class the id holds",
+    !/\.from\('users'\)\s*\n\s*\.select\('brokerage_id'\)\s*\n\s*\.eq\('id', targetAgentId\)/.test(prog))
+  ok("...and the learning_assignments users id is RESOLVED rather than assuming\n    the old mixed-class invariant that no longer holds",
+    /resolveAgentRecordToUserId\(targetAgentId\)/.test(prog))
 
   // m341 — the BRAND VOICE settings page. Four callers of getBrandVoiceProfile;
   // three (the CRM composer, relationship panel and reply coach) already passed
@@ -339,5 +356,5 @@ if (fail > 0) {
   console.log("Route it through lib/kernel/agent-identity-resolver instead of guessing.")
   process.exit(1)
 }
-console.log("Ten verified defects fixed and locked; 31 candidates remain behind a ratchet")
+console.log("Eleven verified defects fixed and locked; 30 candidates remain behind a ratchet")
 console.log("that may only go down. The resolver is the one place this should be decided.")

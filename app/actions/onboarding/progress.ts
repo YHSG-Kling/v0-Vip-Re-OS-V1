@@ -7,6 +7,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { resolveAgentRecordToUserId } from "@/lib/kernel/agent-identity-resolver"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import {
   checkCertificationEligibility as checkCertEligibilityEngine,
@@ -90,6 +91,14 @@ export async function getAgentProgress(
 
   // Resolve target agent: default to self. If caller specifies someone
   // else, must be admin AND in same brokerage.
+  // IDENTITY CLASS (m342). The two branches used to produce DIFFERENT classes
+  // into the same variable: the self path resolves an AGENTS id, while the admin
+  // path validated the caller-supplied id against `users` and kept it as a USERS
+  // id. Everything downstream (agent_onboarding, agent_step_completions,
+  // video_completion_tracking, agent_performance_reports) is agents-class, so
+  // the ADMIN path silently returned an empty progress report — a broker looking
+  // at one of their agents saw "nothing completed" rather than an error.
+  // Both branches now end on an agents id.
   let targetAgentId = agentId
   if (!targetAgentId) {
     targetAgentId = await resolveAgentId(supabase, user.id) ?? undefined
@@ -100,6 +109,12 @@ export async function getAgentProgress(
     if (!tgt || tgt.brokerage_id !== callerProfile.brokerage_id) {
       return { success: false, error: 'Forbidden' }
     }
+    targetAgentId = await resolveAgentId(supabase, targetAgentId) ?? undefined
+    if (!targetAgentId) return { success: false, error: 'That user has no agent profile yet' }
+  } else {
+    // Caller passed their OWN users id explicitly — same resolution as the
+    // default path, not a third behaviour.
+    targetAgentId = await resolveAgentId(supabase, user.id) ?? undefined
   }
 
   if (!targetAgentId) return { success: false, error: 'Agent profile not found' }
@@ -199,13 +214,14 @@ export async function getAgentProgress(
   // course-taking runtime (agent_courses was never written), so it always rendered the
   // same three seed courses as permanently "not started" — a duplicate of the
   // certifications list. This shows the agent's REAL assigned + completed modules.
-  // learning_assignments.agent_user_id is a users.id. targetAgentId is NOT always a
-  // users.id: in the self-view path it is an agents.id (resolveAgentId returns the
-  // agents PK), while the explicit/admin paths pass a users.id. Resolve the target's
-  // users.id for this query so the course list is never silently empty.
+  // learning_assignments.agent_user_id is a users.id. targetAgentId is now ALWAYS
+  // an agents.id — m342 made both branches above agree, where they previously
+  // produced different classes and this line compensated for the difference.
+  // Compensating for an invariant that no longer holds would have been a fresh
+  // bug, so this resolves the one class into the other explicitly.
   const targetUserId = (!agentId || agentId === user.id)
     ? user.id
-    : targetAgentId
+    : (await resolveAgentRecordToUserId(targetAgentId)) ?? user.id
   const { data: courseAssignments } = await supabase
     .from('learning_assignments')
     .select('module_id, status, quiz_score, completed_at, learning_modules!inner(title, stage_tags, required, audience_roles)')
@@ -311,11 +327,15 @@ export async function checkCertEligibility(
     return { success: false, error: 'Agent profile not found' }
   }
 
+  // IDENTITY CLASS (m342). targetAgentId is an AGENTS id (resolveAgentId returns
+  // the agents PK), so reading `users` by it never matched and targetBrokerageId
+  // fell back to whatever the caller supplied — or to undefined, which failed the
+  // action. agents carries brokerage_id directly; no second class needed.
   const { data: userData } = await supabase
-    .from('users')
+    .from('agents')
     .select('brokerage_id')
     .eq('id', targetAgentId)
-    .single()
+    .maybeSingle()
 
   const targetBrokerageId = brokerageId || userData?.brokerage_id
   if (!targetBrokerageId) {
@@ -350,11 +370,15 @@ export async function claimCertification(
     return { success: false, error: 'Agent profile not found' }
   }
 
+  // IDENTITY CLASS (m342). targetAgentId is an AGENTS id (resolveAgentId returns
+  // the agents PK), so reading `users` by it never matched and targetBrokerageId
+  // fell back to whatever the caller supplied — or to undefined, which failed the
+  // action. agents carries brokerage_id directly; no second class needed.
   const { data: userData } = await supabase
-    .from('users')
+    .from('agents')
     .select('brokerage_id')
     .eq('id', targetAgentId)
-    .single()
+    .maybeSingle()
 
   const targetBrokerageId = brokerageId || userData?.brokerage_id
   if (!targetBrokerageId) {
@@ -390,11 +414,15 @@ export async function generatePerformanceReport(
     return { success: false, error: 'Agent profile not found' }
   }
 
+  // IDENTITY CLASS (m342). targetAgentId is an AGENTS id (resolveAgentId returns
+  // the agents PK), so reading `users` by it never matched and targetBrokerageId
+  // fell back to whatever the caller supplied — or to undefined, which failed the
+  // action. agents carries brokerage_id directly; no second class needed.
   const { data: userData } = await supabase
-    .from('users')
+    .from('agents')
     .select('brokerage_id')
     .eq('id', targetAgentId)
-    .single()
+    .maybeSingle()
 
   const targetBrokerageId = brokerageId || userData?.brokerage_id
   if (!targetBrokerageId) {
