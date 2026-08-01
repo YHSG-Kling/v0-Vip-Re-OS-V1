@@ -132,7 +132,7 @@ export async function adoptInsightAction(params: {
   insightId: string
   /** Agent user_ids to push the playbook to. Empty array → all agents
    *  in the brokerage. */
-  /** users.id values. `agentIds` is accepted as the pre-m350 name. */
+  /** users.id values. `agentIds` is accepted as the older parameter name. */
   agentUserIds?: string[]
   agentIds?: string[]
 }): Promise<{ success: boolean; error?: string; adopted?: number }> {
@@ -155,10 +155,11 @@ export async function adoptInsightAction(params: {
   }
 
   // Resolve target agent list — if empty, broadcast to all agents
-  // NAMED agentUserIds, not agentIds (m350). These are `users.id` — the query
+  // NAMED agentUserIds, not agentIds (m352). These are `users.id` — the query
   // below reads the users table — and the distinction is load-bearing: the
-  // pattern_adoptions write wants exactly this class, while the contacts update
-  // in applyAction wants the OTHER one. Under the old name both looked right.
+  // pattern_adoptions write wants exactly this class (that table is one of the
+  // twenty whose agent_id FK points at users), while the contacts update in
+  // applyAction wants the other. One variable, two classes, one name.
   let agentUserIds = (params.agentUserIds ?? params.agentIds ?? []).filter(Boolean)
   if (agentUserIds.length === 0) {
     const { data: allAgents } = await svc
@@ -182,7 +183,7 @@ export async function adoptInsightAction(params: {
       await svc.from("pattern_adoptions").insert({
         insight_id:       insight.id,
         brokerage_id:     auth.brokerageId,
-        agent_user_id:    agentUserId,
+        agent_id:         agentUserId,
         adopted_by:       auth.userId,
         applied_actions:  applied,
         status:           applied.length === actions.length ? "applied" : (applied.length === 0 ? "failed" : "applied"),
@@ -212,7 +213,7 @@ async function applyAction(input: {
       // Flip ai_isa_enabled=true on the agent's contacts where eligibility
       // is met (not dnc, not opted out). Bounded write to avoid surprise.
       const onlyExisting = action.type === "enable_ai_isa_on_existing_leads"
-      // IDENTITY CLASS (m350, found by the rename). agentUserId is a users id —
+      // IDENTITY CLASS (m352). agentUserId is a users id —
       // adoptInsightAction reads the target list straight out of `users`. But
       // contacts.agent_id FKs AGENTS, so this update matched ZERO rows for every
       // agent, every time, and still returned true: the playbook reported

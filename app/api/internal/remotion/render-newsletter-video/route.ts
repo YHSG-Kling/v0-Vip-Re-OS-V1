@@ -209,9 +209,24 @@ Return ONLY the spoken text.${fix}`
     const script = complianceResult.script
 
     // 4. ElevenLabs voiceover.
+    // IDENTITY CLASS (m352). Both sides of this lookup are spelled `agent_id`
+    // and they are not the same thing: agent_voice_profiles.agent_id FKs AGENTS,
+    // while newsletter_video_renders.agent_id is one of the twenty that FK USERS.
+    // The two never overlap, so the lookup matched nothing on every render and
+    // the route threw "agent has no elevenlabs_voice_id" — a message that blamed
+    // the agent's setup for a lookup bug. The voice clone existed; it was being
+    // asked for under the wrong key.
+    //
+    // Once newsletter_video_renders.agent_id is re-pointed to agents(id) with
+    // the rest of the twenty, this resolve step becomes unnecessary and should
+    // be deleted along with it.
+    const { data: voiceAgentRow } = await svc.from("agents")
+      .select("id").eq("user_id", ledger.agent_id).eq("brokerage_id", ledger.brokerage_id).maybeSingle()
+    const voiceAgentRecordId = (voiceAgentRow as { id?: string } | null)?.id ?? null
+    if (!voiceAgentRecordId) throw new Error("no agents row for this newsletter's owner — cannot resolve their cloned voice")
     const { data: profile } = await svc.from("agent_voice_profiles")
       .select("elevenlabs_voice_id")
-      .eq("agent_id", ledger.agent_id)
+      .eq("agent_id", voiceAgentRecordId)
       .maybeSingle()
     const voiceId = (profile as { elevenlabs_voice_id?: string } | null)?.elevenlabs_voice_id ?? null
     if (!voiceId) throw new Error("agent has no elevenlabs_voice_id — Settings → Voice & Avatar")

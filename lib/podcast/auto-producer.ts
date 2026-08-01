@@ -18,9 +18,10 @@
  *      Housing state-specific (Florida etc.) + Them-First. ONE redraft
  *      on violation.
  *   4. ElevenLabs TTS in the agent's cloned voice → Supabase Blob URL.
- *   5. Insert podcast_episodes row (podcast_episodes.agent_id FKs USERS —
- *      this header used to say agents.id and contradicted the comment at the
- *      write site 130 lines below. That is what the column name costs.
+ *   5. Insert podcast_episodes row (podcast_episodes.agent_id FKs USERS — one
+ *      of the twenty FKs that point at the wrong table. This header used to say
+ *      agents.id and contradicted the comment at the write site 130 lines
+ *      below; both were written deliberately, so one had to be wrong.
  *      status='completed', is_ai_generated=true,
  *      approval_status='pending_review' — the agent reviews before
  *      distribute-podcast-episodes cron syndicates).
@@ -74,7 +75,7 @@ export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
   // 1. Idempotency ledger.
   const ledgerIns = await svc.from("podcast_auto_runs").insert({
     brokerage_id:  input.brokerageId,
-    agent_user_id: input.hostUserId,
+    agent_id:      input.hostUserId,
     iso_week:     input.isoWeek,
     status:       "queued",
   }).select("id").maybeSingle()
