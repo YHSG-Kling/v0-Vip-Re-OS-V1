@@ -230,6 +230,32 @@ console.log("\n═══ 1. No function uses one value as both identity classes 
   // So a high remaining count is not the same as a high remaining risk. Grep
   // for a caller first; if there is none, the entry belongs in the dead-surface
   // triage, not here.
+  //
+  // TRIAGE COMPLETE (m373). Every one of the remaining 11 has now been read
+  // against the live schema, and NONE is a live defect. The list is:
+  //
+  //   UNWIRED — a real contradiction in code nothing calls (3):
+  //     · ai-content-generation    generateContentPlan
+  //     · ai-document-intelligence aiGenerateDocument
+  //     · ai-transaction-coordinator draftTransactionCommunication
+  //       (this one looked wired — AGENT_REGISTRY names it in a `lib` field —
+  //        but NOTHING reads that field. See the assertion in section 7.)
+  //
+  //   LIVE AND ALREADY CORRECT — the detector pairs two uses that the code
+  //   resolves BETWEEN, which is the artifact this ratchet exists to tolerate (8):
+  //     · ai-showing-management x2   (fixed earlier; see section 2)
+  //     · onboarding/license.ts x2 and onboarding/progress.ts (m371)
+  //     · api/cron/podcast-weekly-auto   resolves users-first, then agents,
+  //       and SKIPS with a stated reason when neither matches
+  //     · lib/video/listing-promo-reactor  resolves agents->users, and records
+  //       that an older doc comment claimed the opposite
+  //     · lib/workflow-orchestrator/chains/listing-appt-prep  resolves
+  //       users->agents at all three of its lookups
+  //
+  // So the number cannot go below 11 by fixing anything — only by WIRING or
+  // DELETING the three unwired functions, which is a product decision, not a
+  // correctness one. A ratchet that cannot move is still worth keeping: it
+  // fails the moment a TWELFTH contradiction appears.
   const BASELINE = 11
   ok(`self-contradicting identity uses at or below the baseline of ${BASELINE} (found ${found.length})`,
     found.length <= BASELINE,
@@ -648,6 +674,30 @@ console.log("\n═══ 6. Both activities writers (m372) ═══")
     /actor_user_id: callerUser\.id,/.test(cs))
   ok("...and an audit insert that fails is now LOGGED rather than silently\n    swallowed — the discarded rejection is why nobody noticed",
     /if \(auditErr\) console\.error/.test(cs))
+}
+
+console.log("\n═══ 7. Two fields that look like wiring and are not (m373) ═══")
+{
+  // Found while checking whether ai-transaction-coordinator was reachable.
+  // AGENT_REGISTRY gives every agent a `lib` module path. Nothing anywhere
+  // reads that field — the router uses the registry for names, capabilities
+  // and SESSION bookkeeping, and never loads a module from it. Recorded, not
+  // "fixed": removing the field or wiring the dispatch is a product decision.
+  // The danger is only that the next reader assumes the path means dispatch.
+  const reg = src("lib/intelligence/agent-registry.ts")
+  const readers = ["lib/intelligence/multi-agent-router.ts",
+                   "app/dashboard/coordination/coordination-dashboard-client.tsx",
+                   "app/api/intelligence/coordinate/route.ts"].map(src)
+  ok("AGENT_REGISTRY still DECLARES a lib module path per agent, and no consumer\n    reads it — so a registry entry is not evidence that an action is wired",
+    /lib: '@\/app\/actions\//.test(reg) &&
+    readers.every((r) => !/\.lib\b/.test(r)))
+
+  // And the fourth-name column count, kept honest because it is an OWNER
+  // decision (agent_user_id is not one of the three names this OS uses).
+  // Four tables carry it: ai_message_drafts, blog_posts, marketing_campaigns
+  // and activities — the last found in m373 via listing-appt-prep's write.
+  ok("the agent_user_id writers still target tables that really have the column,\n    so the naming question stays a naming question and not a broken write",
+    /agent_user_id: ctx\.agentUserId/.test(code("lib/workflow-orchestrator/chains/listing-appt-prep.ts")))
 }
 
 console.log(`\n${"═".repeat(70)}`)
