@@ -7,6 +7,7 @@
 // All server actions verify session, enforce RLS, and return typed { data, error }.
 
 import { createClient } from "@/lib/supabase/server"
+import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
@@ -99,11 +100,25 @@ export async function getAgentLicenseStatus(
       return { data: null, error: "Forbidden" }
     }
 
+    // IDENTITY CLASS (m340). This action is keyed by a USERS id — agentId is
+    // compared against user.id above and looked up in `users` — but
+    // agent_onboarding, agent_licenses and agent_step_completions ALL FK AGENTS.
+    // Someone already hit this on the contract_signatures query below and left a
+    // comment about it ("caught by the pilot simulation"), then fixed only that
+    // one query. The other three kept the bug: the onboarding INSERT was a
+    // foreign-key violation, so a licence page could neither find nor create an
+    // onboarding record, and the licence + step reads returned empty as though
+    // the agent had simply not started.
+    const agentRecordId = await resolveUserIdToAgentRecord(agentId, agent.brokerage_id)
+    if (!agentRecordId) {
+      return { data: null, error: "No agent record for this user in this brokerage" }
+    }
+
     // Get or create onboarding record
     let { data: onboarding } = await supabase
       .from("agent_onboarding")
       .select("id, status")
-      .eq("agent_id", agentId)
+      .eq("agent_id", agentRecordId)
       .eq("brokerage_id", agent.brokerage_id)
       .single()
 
@@ -112,7 +127,7 @@ export async function getAgentLicenseStatus(
       const { data: newOnboarding, error: createError } = await supabase
         .from("agent_onboarding")
         .insert({
-          agent_id: agentId,
+          agent_id: agentRecordId,
           brokerage_id: agent.brokerage_id,
           status: "in_progress",
           start_date: new Date().toISOString().split("T")[0],
@@ -133,7 +148,7 @@ export async function getAgentLicenseStatus(
     const { data: licenseRecord } = await supabase
       .from("agent_licenses")
       .select("id, license_number, license_state, license_type, expiry_date:expiration_date, verification_status, document_url")
-      .eq("agent_id", agentId)
+      .eq("agent_id", agentRecordId)
       .eq("brokerage_id", agent.brokerage_id)
       .order("created_at", { ascending: false })
       .limit(1)
@@ -165,7 +180,7 @@ export async function getAgentLicenseStatus(
     const { data: completedStepsData } = await supabase
       .from("agent_step_completions")
       .select("step_id, completed")
-      .eq("agent_id", agentId)
+      .eq("agent_id", agentRecordId)
       .eq("brokerage_id", agent.brokerage_id)
       .eq("completed", true)
 

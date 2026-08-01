@@ -186,7 +186,7 @@ console.log("\n═══ 1. No function uses one value as both identity classes 
   // that belongs to a sibling query. Claiming they are all bugs would repeat
   // the exact mistake this guard exists to catch — asserting more than the
   // evidence supports. So: the number may only go DOWN.
-  const BASELINE = 32
+  const BASELINE = 31
   ok(`self-contradicting identity uses at or below the baseline of ${BASELINE} (found ${found.length})`,
     found.length <= BASELINE,
     found.length > BASELINE
@@ -278,6 +278,20 @@ console.log("\n═══ 3. The canonical resolver is the one place this is deci
   ok("...and the branded types that let the compiler help",
     /AgentRecordId/.test(c) && /UserAgentId/.test(c))
 
+  // ONE IMPLEMENTATION, TWO FACES (m340). lib/kernel/agent-identity.ts and
+  // agent-identity-resolver.ts were two separate users→agents lookups — 57 files
+  // imported the first, 27 the second, and they disagreed: only one cached, and
+  // only one was brokerage-scoped. The unscoped one used .maybeSingle(), which
+  // THROWS for a user with agents rows in two brokerages, so the more widely
+  // adopted module was the riskier one. Signatures kept, implementation merged.
+  const idm = code("lib/kernel/agent-identity.ts")
+  ok("agent-identity delegates to the canonical resolver instead of running a\n    second implementation of the same lookup",
+    /from ['"]\.\/agent-identity-resolver['"]/.test(idm), "lib/kernel/agent-identity.ts")
+  ok("...and offers the BROKERAGE-SCOPED variant callers should prefer",
+    /export async function resolveAgentIdInBrokerage/.test(idm))
+  ok("...while the unscoped path no longer uses maybeSingle(), which threw for a\n    user carrying agents rows in more than one brokerage",
+    !/\.eq\('user_id', userId\)\s*\n\s*\.maybeSingle\(\)/.test(idm) && /\.limit\(1\)/.test(idm))
+
   // Adoption is a RATCHET, not a target. It only has to go up.
   const ADOPTION_FLOOR = 20
   const adopters = [...walk("app"), ...walk("lib")].filter((f) =>
@@ -303,5 +317,5 @@ if (fail > 0) {
   console.log("Route it through lib/kernel/agent-identity-resolver instead of guessing.")
   process.exit(1)
 }
-console.log("Eight verified defects fixed and locked; 32 candidates remain behind a ratchet")
+console.log("Nine verified defects fixed and locked; 31 candidates remain behind a ratchet")
 console.log("that may only go down. The resolver is the one place this should be decided.")
