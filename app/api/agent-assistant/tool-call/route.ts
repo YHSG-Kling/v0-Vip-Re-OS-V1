@@ -2277,7 +2277,20 @@ async function dispatchTransactionPacket(
       ? "BBA + Offer packet"
       : bba ? "Buyer Broker Agreement" : "Offer packet",
     transactionType: "purchase",
-    agentId:         contact.agent_id ?? session.user_id,
+    // IDENTITY CLASS (m368). contact.agent_id is an AGENTS id and
+    // session.user_id is a USERS id, so this expression produced a value whose
+    // class depended on whether the contact had an agent assigned.
+    //
+    // NOT A LIVE DEFECT, and worth saying so precisely: CreateTransactionRequest
+    // .agentId is DECORATIVE. All four implementations (dotloop, skyslope,
+    // formsimplicity, brokermint) ignore it — dotloop scopes its loop by the
+    // profileId in its CREDENTIALS, not by any id the caller passes. So nothing
+    // downstream could observe the ambiguity.
+    //
+    // Fixed anyway, and without a fallback: the field is the kind that gets
+    // wired later, and an ambiguous value waiting in an unread parameter is how
+    // a future wiring inherits a bug it did nothing to cause.
+    agentId:         contact.agent_id ?? "",
     contactId,
   })
   if (!txReq.success || !txReq.externalTransactionId) {

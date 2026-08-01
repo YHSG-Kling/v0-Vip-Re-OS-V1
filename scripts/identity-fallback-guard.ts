@@ -148,7 +148,7 @@ function findFallbacks(): Hit[] {
 
 // ── A RATCHET AGAIN, AT THE HONEST NUMBER. See the header for why the zero
 // this briefly reported was false. Lower it as sites are audited; never raise.
-const BASELINE = 4
+const BASELINE = 3
 
 console.log("\n═══ 1. No NEW site manufactures an id of unknown class ═══")
 const hits = findFallbacks()
@@ -429,6 +429,30 @@ console.log("\n═══ 10. The INVERTED resolve — where the fallback was the
     /\.from\("podcast_episodes"\)[\s\S]{0,160}agent_id: ctx\.userId,/.test(cs))
   ok("...while the email campaign KEEPS its agents-id resolve, because\n    email_campaigns.agent_id genuinely FKs agents — this was not a blanket sweep",
     /agentId: agentId \?\? undefined,/.test(cs) && /const agentId = await resolveAgentRowId\(svc, ctx\.userId\)/.test(cs))
+}
+
+console.log("\n═══ 11. A decorative parameter is still worth getting right ═══")
+{
+  // m368. tool-call fed `contact.agent_id ?? session.user_id` to the e-sign
+  // provider's createTransaction. That is NOT a live defect:
+  // CreateTransactionRequest.agentId is decorative — all four implementations
+  // (dotloop, skyslope, formsimplicity, brokermint) ignore it, and dotloop
+  // scopes its loop by the profileId in its CREDENTIALS. Nothing downstream
+  // could observe the ambiguity.
+  //
+  // Fixed anyway, without a fallback. A field like this is the kind that gets
+  // wired later, and an ambiguous value waiting in an unread parameter is how a
+  // future wiring inherits a bug it did nothing to cause.
+  const tc = code(read("app/api/agent-assistant/tool-call/route.ts"))
+  ok("the e-sign createTransaction call passes an agents id or nothing",
+    /agentId:\s+contact\.agent_id \?\? "",/.test(tc))
+
+  // And the finding underneath it: the interface asks for an id nobody reads.
+  const iface = read("lib/integrations/providers/transaction-provider.interface.ts")
+  const impls = ["dotloop", "skyslope", "formsimplicity", "brokermint"]
+    .map((n) => code(read(`lib/integrations/providers/${n}-provider.ts`)))
+  ok("CreateTransactionRequest still DECLARES agentId, and zero of the four\n    providers read it — recorded so the next reader does not assume the field\n    carries meaning it has never carried",
+    /agentId: string/.test(iface) && impls.every((s2) => !/request\.agentId/.test(s2)))
 }
 
 console.log(`\n${"═".repeat(70)}`)
