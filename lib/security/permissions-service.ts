@@ -1,9 +1,13 @@
 "use client"
 
 /**
- * permissionsService — runtime permission checks used by Sidebar, hooks, and
- * dataAccessService.  All role logic delegates to the canonical role type
- * defined in lib/security/types.ts.
+ * permissionsService — runtime permission checks. All role logic delegates to
+ * the canonical role type defined in lib/security/types.ts.
+ *
+ * This is the ONLY permissionsService. It used to say it was used by "Sidebar,
+ * hooks, and dataAccessService"; those consumers were a parallel client-side
+ * permission stack with zero importers, removed in m370. Enforcement lives in
+ * RLS and the server guards under lib/auth — not in a hook.
  *
  * Legacy role strings (e.g. "transaction_coordinator", "compliance_manager")
  * must be normalised via toCanonicalRole() before reaching this service.

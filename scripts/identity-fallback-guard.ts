@@ -158,12 +158,16 @@ function findFallbacks(): Hit[] {
 // this briefly reported was false. Lower it as sites are audited; never raise.
 //
 // m369: the three app/lib sites are audited and fixed, and the roots widened
-// to hooks/services/contexts — which immediately surfaced a fourth. That one
-// is in hooks/usePermissions.ts, a hook with ZERO importers anywhere; it and
-// lib/hooks/usePermissions.ts are two dead hooks exporting the same name over
-// two different permission engines. Removal is its own change, so the number
-// is 1 and not 0. A dead site is still a site.
-const BASELINE = 1
+// to hooks/services/contexts — which immediately surfaced a fourth, in
+// hooks/usePermissions.ts.
+//
+// m370: that hook is gone, along with the rest of the dead client-side
+// permission stack it belonged to, so this is a real zero on real coverage —
+// not the coverage artifact m369 caught. It is still a RATCHET and not an
+// invariant: this guard has now reported a false zero twice, once for a
+// missing spelling and once for missing roots. Zero means "nothing matches
+// what we currently know to look for", which is not the same as "clean".
+const BASELINE = 0
 
 console.log("\n═══ 1. No NEW site manufactures an id of unknown class ═══")
 const hits = findFallbacks()
@@ -535,6 +539,38 @@ console.log("\n═══ 12. The last three sites — and the surface behind one
     !/agentId: userCtx\.userId,/.test(a2))
 }
 
+console.log("\n═══ 13. The dead permission stack that hid the last site ═══")
+{
+  // m370. The site m369 surfaced was `agentId: user?.agentId || user?.id` in
+  // hooks/usePermissions.ts — a hook with ZERO importers. Investigating it
+  // found a whole parallel client-side permission stack, closed over itself:
+  //
+  //   hooks/usePermissions.ts      -> services/permissionsService (a shim)
+  //   hooks/useDataAccess.ts       -> services/dataAccessService (458 real lines)
+  //   lib/hooks/usePermissions.ts  -> lib/security RoleManager  (a DIFFERENT engine)
+  //   lib/hooks/useCanAccess.ts    -> lib/security RoleManager
+  //   lib/hooks/index.ts           -> re-exported the two lib/hooks ones
+  //
+  // Two hooks exporting the SAME NAME over two different permission engines,
+  // and a client-side data-access service that filtered rows by role. Nothing
+  // imported any of it. Kept, it was a standing invitation to import the wrong
+  // `usePermissions` — and worse, to enforce access in a hook when this OS
+  // enforces it in RLS and the server guards under lib/auth. Removed.
+  const gone = [
+    "hooks/usePermissions.ts", "hooks/useDataAccess.ts",
+    "services/permissionsService.ts", "services/dataAccessService.ts",
+    "lib/hooks/usePermissions.ts", "lib/hooks/useCanAccess.ts", "lib/hooks/index.ts",
+  ]
+  ok("the parallel client-side permission stack is gone — all seven files",
+    gone.every((f) => !existsSync(f)))
+
+  // The survivor is canonical and says so.
+  const sec = read("lib/security/permissions-service.ts")
+  ok("lib/security/permissions-service is the only permissionsService, and its\n    header no longer claims consumers that no longer exist",
+    /This is the ONLY permissionsService/.test(sec) &&
+    !/used by Sidebar, hooks, and\n \* dataAccessService/.test(sec))
+}
+
 console.log(`\n${"═".repeat(70)}`)
 console.log(`IDENTITY FALLBACK — ${pass} passed, ${fail} failed`)
 if (fail > 0) {
@@ -545,4 +581,6 @@ if (fail > 0) {
   process.exit(1)
 }
 console.log(`${hits.length} sites manufacture an id of unknown class (baseline ${BASELINE}).`)
-console.log("A review queue, not a number to drive down automatically — and NOT a zero.")
+console.log("A ratchet, not an invariant: this guard has reported a false zero twice —")
+console.log("once for a missing spelling (m358), once for missing roots (m369). Zero means")
+console.log("nothing matches what we currently know to look for. That is not 'clean'.")
