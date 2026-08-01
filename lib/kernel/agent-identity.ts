@@ -78,6 +78,35 @@ export async function resolveAgentIdInBrokerage(
 }
 
 /**
+ * THE REVERSE DIRECTION — agents.id → users.id.
+ *
+ * Needed because ~20 columns named `agent_id` FK `users` rather than `agents`
+ * (review_requests, income_forecast_snapshots, podcast_episodes, …). Code that
+ * legitimately holds an AGENTS id still has to write those, and the agents id is
+ * FK-rejected there every single time — not "usually": no agents row's id is
+ * also a users id, so the write can never land.
+ *
+ * The server-only resolver has this too, but it builds a service-role client and
+ * cannot be imported from a module reachable by client bundling (see header).
+ * This version takes the caller's client, so a server action can use it.
+ *
+ * Returns null when the agents row is gone — callers must treat that as "do not
+ * write", never as "substitute the id I already have".
+ */
+export async function resolveUserIdForAgentRecord(
+  supabase: SupabaseClient,
+  agentRecordId: string
+): Promise<string | null> {
+  if (!agentRecordId) return null
+  const { data } = await supabase
+    .from('agents')
+    .select('user_id')
+    .eq('id', agentRecordId)
+    .limit(1)
+  return (data?.[0]?.user_id as string | undefined) ?? null
+}
+
+/**
  * Resolves agent ID or throws if not found.
  * Use when agent profile is required for the operation.
  */

@@ -497,20 +497,28 @@ export async function advanceStage(params: {
     // Creates a draft in review_requests so it's ready; agent is notified via task at day 5
     void (async () => {
       try {
-        const { aiGenerateReviewRequest } = await import("@/app/actions/ai-review-automation")
-        await aiGenerateReviewRequest({
-          transactionId: params.transactionId,
-          agentId: params.userId,
-          platform: "google",
-          channel: "email",
-        })
+        // ai-review-automation takes an AGENTS id (m346). This passed
+        // params.userId, so the action's `.from("agents").eq("id", …).single()`
+        // found nothing and threw — the draft was never generated, and the catch
+        // below swallowed it as "non-blocking". The activities insert three lines
+        // down already resolved the right id; it is now resolved once, for both.
+        const agentRecordId = await resolveAgentId(supabase, params.userId)
+        if (agentRecordId) {
+          const { aiGenerateReviewRequest } = await import("@/app/actions/ai-review-automation")
+          await aiGenerateReviewRequest({
+            transactionId: params.transactionId,
+            agentId: agentRecordId,
+            platform: "google",
+            channel: "email",
+          })
+        }
 
         // Schedule an agent notification 5 days from now to send the review
         const sendDate = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000)
         await supabase.from("activities").insert({
           brokerage_id: params.brokerageId,
           // FKs agents(id), not users(id) — a raw user id is FK-rejected (agent-identity rule).
-          agent_id: await resolveAgentId(supabase, params.userId),
+          agent_id: agentRecordId,
           activity_type: "review_request_scheduled",
           title: "Review request ready to send",
           notes: `Auto-generated review request draft created. Recommend sending on ${sendDate.toLocaleDateString()}.`,

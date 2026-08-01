@@ -194,7 +194,7 @@ console.log("\n═══ 1. No function uses one value as both identity classes 
   // that belongs to a sibling query. Claiming they are all bugs would repeat
   // the exact mistake this guard exists to catch — asserting more than the
   // evidence supports. So: the number may only go DOWN.
-  const BASELINE = 27
+  const BASELINE = 25
   ok(`self-contradicting identity uses at or below the baseline of ${BASELINE} (found ${found.length})`,
     found.length <= BASELINE,
     found.length > BASELINE
@@ -391,5 +391,5 @@ if (fail > 0) {
   console.log("Route it through lib/kernel/agent-identity-resolver instead of guessing.")
   process.exit(1)
 }
-console.log("Thirteen verified defects fixed and locked; 27 candidates remain behind a ratchet")
+console.log("Verified defects fixed and locked; 25 candidates remain behind a ratchet")
 console.log("that may only go down. The resolver is the one place this should be decided.")

@@ -288,7 +288,21 @@ export default function LifetimeCustomersPage() {
         supabase.from("agents").select("id").eq("user_id", authUser.id).maybeSingle(),
         supabase.from("users").select("brokerage_id").eq("id", authUser.id).maybeSingle(),
       ])
-      setCurrentAgentId(agentRow?.id ?? authUser.id)
+      // NOT `?? authUser.id` (m346). lib/kernel/agent-identity names that exact
+      // substitution as the thing never to do, and this page was the single
+      // biggest producer of it: currentAgentId feeds ReputationPanel,
+      // ReviewRequestPanel, CampaignsGiftingPanel, nurturePendingReferral,
+      // recommendReferralReward and awardPointsForAction — and EVERY one of them
+      // reads or writes an agents-class column. A users id there does not
+      // degrade gracefully; it silently matches nothing or is FK-rejected. The
+      // downstream "try both id columns" workarounds existed only to cope with
+      // the ambiguity this line manufactured.
+      //
+      // Empty is the honest answer for a user with no agents row: the actions
+      // reject an invalid uuid and say so, instead of appearing to work.
+      // The users-class id is already carried separately as currentUserId — see
+      // the NPV call below, which correctly passes authUser.id.
+      setCurrentAgentId(agentRow?.id ?? "")
       setCurrentBrokerageId(userRow?.brokerage_id ?? "")
 
       // Pull the NPV-ranked sphere (latest snapshots per contact for this agent).

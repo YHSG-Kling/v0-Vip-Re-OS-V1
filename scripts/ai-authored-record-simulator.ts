@@ -197,8 +197,19 @@ console.log("\n── the review automation resolves its tenant BEFORE it writes
 {
   const v = src("app/actions/ai-review-automation.ts")
   check("a shared brokerage resolver exists", /async function resolveNoteBrokerageId/.test(v))
-  check("…and it tries BOTH id classes (agents.id or users.id)",
-    /id\.eq\.\$\{agentId\},user_id\.eq\.\$\{agentId\}/.test(v))
+  // WAS: "…and it tries BOTH id classes (agents.id or users.id)".
+  // That assertion locked a WORKAROUND in as an invariant. Trying both columns
+  // was never the design — it was the symptom of callers passing two different
+  // id classes into the same parameter, and it kept the ambiguity alive
+  // downstream. m346 declared the class (agents.id), corrected the caller that
+  // disagreed, and resolves agents→users for the users-class columns. The guard
+  // now asserts the resolution rather than the guessing.
+  check("…and it takes ONE declared id class — agents.id — instead of guessing",
+    /\.eq\("id", agentRecordId\)/.test(v) && !/user_id\.eq\./.test(v))
+  check("…and the users-class columns are RESOLVED from it, not assumed: " +
+        "review_requests.agent_id and lifecycle_events.actor_user_id both FK users",
+    /resolveUserIdForAgentRecord\(supabase, params\.agentId\)/.test(v) &&
+    /agent_id:\s*agentUserId/.test(v) && /actor_user_id: agentUserId/.test(v))
   check("the producer class is a named constant, not a subsystem string",
     /const AI_NOTE_SOURCE = "ai_assistant"/.test(v))
   check("no call site still writes the subsystem into source",
