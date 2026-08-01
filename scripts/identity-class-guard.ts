@@ -211,7 +211,7 @@ console.log("\n═══ 1. No function uses one value as both identity classes 
   // So a high remaining count is not the same as a high remaining risk. Grep
   // for a caller first; if there is none, the entry belongs in the dead-surface
   // triage, not here.
-  const BASELINE = 20
+  const BASELINE = 19
   ok(`self-contradicting identity uses at or below the baseline of ${BASELINE} (found ${found.length})`,
     found.length <= BASELINE,
     found.length > BASELINE
@@ -447,6 +447,21 @@ console.log("\n═══ 3d. The CDA: four defects, one class confusion ══�
     !/\.eq\("id", cda\.agent_id\)/.test(cda))
 }
 
+console.log("\n═══ 3e. The certificate was issued to \"Agent\" ═══")
+{
+  // m357. certification-engine's agentId is an AGENTS id — every other query in
+  // the file filters agents-class tables with it, and progress.ts resolves to
+  // one in all branches (m342). But the certificate's NAME was looked up in
+  // `users` BY that id, matched nothing, and fell through to the literal
+  // fallback string. The PDF an agent frames and shows a client said "Agent".
+  const ce = code("lib/onboarding/certification-engine.ts")
+  ok("the certificate name is read THROUGH the agents row, so the PDF carries the\n    agent's actual name instead of the 'Agent' fallback",
+    /\.from\('agents'\)\.select\('users\(first_name, last_name\)'\)\.eq\('id', agentId\)/.test(ce))
+  ok("...and NEITHER name lookup is still keyed by the agents id — there were two,\n    and the admin notification told the brokerage that \"Agent\" had finished",
+    !/from\('users'\)[\s\S]{0,80}\.eq\('id', agentId\)/.test(ce) &&
+    /\.from\('agents'\)\s*\.select\('users\(first_name, last_name\)'\)/.test(ce))
+}
+
 console.log("\n═══ 4. The catalogue this guard reasons from is honest ═══")
 {
   ok("the users-class table list is exactly the 20 the live schema reports",
@@ -464,5 +479,5 @@ if (fail > 0) {
   console.log("Route it through lib/kernel/agent-identity-resolver instead of guessing.")
   process.exit(1)
 }
-console.log("Verified defects fixed and locked; 20 candidates remain behind a ratchet")
+console.log("Verified defects fixed and locked; 19 candidates remain behind a ratchet")
 console.log("that may only go down. The resolver is the one place this should be decided.")

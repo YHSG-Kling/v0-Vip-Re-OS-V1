@@ -279,10 +279,17 @@ export async function awardCertification(
   const issuedAt = new Date()
   let certificateUrl: string | null = null
   try {
-    const [{ data: agentUser }, { data: brokerage }] = await Promise.all([
-      supabase.from('users').select('first_name, last_name').eq('id', agentId).maybeSingle(),
+    // IDENTITY CLASS (m357). agentId is an AGENTS id — every other query in this
+    // file filters agents-class tables with it, and its caller resolves to one
+    // in all branches. This looked the NAME up in `users` BY that id, matched
+    // nothing, and fell through to the literal string 'Agent'. The certificate
+    // PDF — the artifact the agent frames and shows a client — was issued to
+    // "Agent". Read the users row THROUGH the agents row.
+    const [{ data: agentUserRow }, { data: brokerage }] = await Promise.all([
+      supabase.from('agents').select('users(first_name, last_name)').eq('id', agentId).maybeSingle(),
       supabase.from('brokerages').select('name').eq('id', brokerageId).maybeSingle(),
     ])
+    const agentUser = (agentUserRow as { users?: { first_name?: string; last_name?: string } | null } | null)?.users ?? null
     const agentName = agentUser
       ? `${agentUser.first_name ?? ''} ${agentUser.last_name ?? ''}`.trim() || 'Agent'
       : 'Agent'
@@ -452,14 +459,18 @@ export async function completeOnboarding(
     console.error('[CertificationEngine] Onboarding completed notification failed:', err)
   })
 
-  // 6. Get agent details for admin notification
-  const { data: agent } = await supabase
-    .from('users')
-    .select('first_name, last_name')
+  // 6. Get agent details for admin notification. Same class rule as the
+  // certificate above (m357): agentId is an AGENTS id, so the users row is read
+  // THROUGH agents. Keyed directly it matched nothing, and the brokerage admins
+  // were told that "Agent" had completed onboarding.
+  const { data: agentRowForNotify } = await supabase
+    .from('agents')
+    .select('users(first_name, last_name)')
     .eq('id', agentId)
-    .single()
+    .maybeSingle()
 
-  const agentName = agent ? `${agent.first_name} ${agent.last_name}`.trim() : 'Agent'
+  const agent = (agentRowForNotify as { users?: { first_name?: string; last_name?: string } | null } | null)?.users ?? null
+  const agentName = agent ? `${agent.first_name ?? ''} ${agent.last_name ?? ''}`.trim() || 'Agent' : 'Agent'
 
   // 7. Create notification for brokerage admins
   const { data: admins } = await supabase
