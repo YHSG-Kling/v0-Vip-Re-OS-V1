@@ -539,7 +539,9 @@ export async function submitCompleteOffer(params: OfferCreationParams) {
       return { success: false, error: "Forbidden" }
     }
 
-    const effectiveAgentId = ctx.agentId ?? ctx.userId
+    // NOT `?? ctx.userId` (m360) — every consumer below is agents-class.
+    const effectiveAgentId = ctx.agentId
+    if (!effectiveAgentId) return { success: false, error: "No agent profile for this user yet — finish account setup." }
 
     // Create transaction record — agent/brokerage from session, not params
     const { data: transaction, error: txError } = await supabase
@@ -654,7 +656,9 @@ export async function runCompleteOfferWorkflow(params: {
     if (!ctx.isAuthenticated || !ctx.brokerageId) {
       return { success: false, error: "Unauthorized" }
     }
-    const effectiveAgentId = ctx.agentId ?? ctx.userId
+    // NOT `?? ctx.userId` (m360) — every consumer below is agents-class.
+    const effectiveAgentId = ctx.agentId
+    if (!effectiveAgentId) return { success: false, error: "No agent profile for this user yet — finish account setup." }
 
     const supabase = await createClient()
 

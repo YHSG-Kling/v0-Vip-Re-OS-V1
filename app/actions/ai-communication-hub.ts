@@ -476,7 +476,11 @@ export async function generateSmartResponse(params: {
   // Auth gate — paid AI inference + contact PII access
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
-  const effAgentId = auth.agentId ?? auth.userId
+  // NOT `?? auth.userId` (m360) — brand_voice_profile and messages are both
+  // agents-class, so the substitution read an empty voice profile and an empty
+  // message history and presented both as the agent's real state.
+  const effAgentId = auth.agentId
+  if (!effAgentId) return { success: false, error: "No agent profile for this user yet — finish account setup." }
   const effBrokerageId = auth.brokerageId
 
   if (!isValidUUID(params.contactId)) {

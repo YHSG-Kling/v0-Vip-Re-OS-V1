@@ -148,7 +148,7 @@ function findFallbacks(): Hit[] {
 
 // ── A RATCHET AGAIN, AT THE HONEST NUMBER. See the header for why the zero
 // this briefly reported was false. Lower it as sites are audited; never raise.
-const BASELINE = 16
+const BASELINE = 10
 
 console.log("\n═══ 1. No NEW site manufactures an id of unknown class ═══")
 const hits = findFallbacks()
@@ -366,6 +366,27 @@ console.log("\n═══ 7. The cluster m358 made visible ═══")
     !/\?\?\s*(?:ctx|agentCtx)\.userId/.test(li))
   ok("...and each of the four refuses instead, so a user without an agents row is\n    told to finish setup rather than handed a silently empty listing intake",
     (li.match(/No agent profile for this user yet — finish account setup\./g) ?? []).length === 4)
+}
+
+console.log("\n═══ 8. The compliance + approval log kept the wrong rows ═══")
+{
+  // m360. content-compliance and content-approval-workflow each had ONE auth
+  // helper that manufactured agentId for every write in the file — four each,
+  // all attributing to agents-class columns. The substitution meant the record
+  // of what the OS decided and why silently lost exactly the rows belonging to
+  // users who had not finished setup. Fixing the helper fixed eight writes.
+  for (const f of ["app/actions/content-compliance.ts", "app/actions/content-approval-workflow.ts"]) {
+    const c = code(read(f))
+    ok(`${f.replace("app/actions/", "")} refuses at the ONE place agentId is\n    manufactured, rather than patching each of its four writes`,
+      !/ctx\.agentId \?\? ctx\.userId/.test(c) && /if \(!ctx\.agentId\)/.test(c) && /agentId: ctx\.agentId,/.test(c))
+  }
+  const hub = code(read("app/actions/ai-communication-hub.ts"))
+  ok("ai-communication-hub takes auth.agentId — brand_voice_profile and messages\n    are both agents-class, so the substitution read an empty voice profile and\n    an empty message history and presented both as the agent's real state",
+    !/auth\.agentId \?\? auth\.userId/.test(hub))
+  for (const f of ["app/actions/ai-offer-creation.ts", "app/actions/ai-contract-review.ts"]) {
+    ok(`${f.replace("app/actions/", "")} no longer substitutes ctx.userId`,
+      !/ctx\.agentId \?\? ctx\.userId/.test(code(read(f))))
+  }
 }
 
 console.log(`\n${"═".repeat(70)}`)

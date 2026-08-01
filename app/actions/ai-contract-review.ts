@@ -79,7 +79,9 @@ export async function reviewContract(params: {
     return { success: false, error: "Unauthorized" }
   }
   const brokerageId = ctx.brokerageId
-  const agentId = ctx.agentId ?? ctx.userId
+  // NOT `?? ctx.userId` (m360) — contract_reviews.agent_id is agents-class.
+  const agentId = ctx.agentId
+  if (!agentId) return { success: false, error: "No agent profile for this user yet — finish account setup." }
 
   const supabase = createServiceClient()
 
