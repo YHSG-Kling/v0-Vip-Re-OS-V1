@@ -239,6 +239,9 @@ export function SocialAccountsCard({ userId, initialAccounts }: SocialAccountsPr
     if (!account) return
     setDisconnecting(platformKey)
     try {
+      // NOTE: this imports disconnectSocialAccount from social-publishing, which
+      // THROWS on failure — not the same-named action in social-media-automation,
+      // which returns { success:false }. The catch below is the correct handler.
       await disconnectSocialAccount(account.id, userId)
       setAccounts((prev) => prev.filter((a) => a.id !== account.id))
       toast({ title: `${platformKey} disconnected` })

@@ -279,7 +279,10 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
   // Commits the reversal and logs the audit trail
   async function handleProceedReversal(isOverride: boolean) {
     if (!reversalOffer) return
-    await logSellerDecisionTransition({
+    // The toast below claims a COMPLIANCE RECORD exists. This action reports
+    // failure by return, so that claim was made without ever checking that the
+    // audit row was written. Never assert a record you did not confirm.
+    const r = await logSellerDecisionTransition({
       listing_id: listing.id,
       from_state: "SELLER_DECISION_READY" as any,
       to_state: "SELLER_DECISION_READY" as any,
@@ -288,6 +291,10 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
       override_reason: reversalReason || undefined,
       metadata: { offerId: reversalOffer.id, action: "decision_reversal", reason: reversalReason },
     })
+    if (!r?.success) {
+      toast({ title: "Reversal NOT logged", description: (r as any)?.error ?? "The audit trail was not written — do not treat this reversal as recorded.", variant: "destructive" })
+      return
+    }
     toast({ title: "Decision reversal logged to audit trail" })
     setReversalOffer(null)
     setReversalReason("")

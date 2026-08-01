@@ -90,7 +90,10 @@ export function DocumentUploadDialog({
       setProgress(30)
 
       // Upload document
-      await uploadDocument(
+      // uploadDocument reports failure BY RETURN, so the catch below — which
+      // carefully translates storage/size errors — never saw the common case.
+      // The bar filled to 100%, the dialog said uploaded, and nothing was.
+      const r = await uploadDocument(
         {
           name: file.name,
           type: file.type,
@@ -100,6 +103,11 @@ export function DocumentUploadDialog({
         contactId,
         transactionId
       )
+      if (!r?.success) {
+        setError((r as any)?.error ?? "The document was not uploaded.")
+        setProgress(0)
+        return
+      }
 
       setProgress(100)
       setSuccess(true)

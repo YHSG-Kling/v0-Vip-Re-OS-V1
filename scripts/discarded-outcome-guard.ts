@@ -61,6 +61,41 @@ function walk(dir: string, out: string[] = []): string[] {
   return out
 }
 
+/**
+ * RESOLVE THE IMPORT, DO NOT MATCH THE NAME. This codebase has TWO exported
+ * functions called disconnectSocialAccount: the one in social-media-automation
+ * RETURNS { success:false }, and the one in social-publishing THROWS. A
+ * name-only match flagged the page that imports the throwing one — correct code
+ * whose try/catch was exactly right — and very nearly "fixed" it into a type
+ * error. Keying on `${module}#${name}` is the difference between a detector that
+ * finds bugs and one that manufactures them.
+ */
+function moduleKey(specifier: string, importerFile: string): string {
+  if (specifier.startsWith("@/")) return specifier.slice(2)
+  if (specifier.startsWith(".")) {
+    const dir = importerFile.split("/").slice(0, -1)
+    for (const part of specifier.split("/")) {
+      if (part === ".") continue
+      else if (part === "..") dir.pop()
+      else dir.push(part)
+    }
+    return dir.join("/")
+  }
+  return specifier
+}
+/** name -> the modules that import it, per client file. */
+function importedFrom(src: string, file: string): Map<string, string> {
+  const m = new Map<string, string>()
+  for (const im of src.matchAll(/import\s*\{([^}]*)\}\s*from\s*["']([^"']+)["']/g)) {
+    const mod = moduleKey(im[2], file)
+    for (const raw of im[1].split(",")) {
+      const name = raw.split(/\s+as\s+/).pop()!.trim()
+      if (name) m.set(name, mod)
+    }
+  }
+  return m
+}
+
 /** Actions that report failure BY RETURN VALUE — the only ones worth tracking. */
 function actionsThatReturnFailure(files: string[]): Map<string, string> {
   const out = new Map<string, string>()
@@ -70,7 +105,7 @@ function actionsThatReturnFailure(files: string[]): Map<string, string> {
       let body = s.slice(m.index! + m[0].length, m.index! + m[0].length + 6000)
       const nxt = body.search(/\nexport\s+async\s+function\s/)
       if (nxt !== -1) body = body.slice(0, nxt)
-      if (/return\s*\{[^}]*success:\s*false/.test(body)) out.set(m[1], f)
+      if (/return\s*\{[^}]*success:\s*false/.test(body)) out.set(`${f.replace(/^\.\//, "").replace(/\.tsx?$/, "")}#${m[1]}`, f)
     }
   }
   return out
@@ -89,9 +124,12 @@ function findDiscarded(files: string[], returnsFailure: Map<string, string>): Hi
     if (!file.endsWith(".tsx")) continue
     const s = read(file)
     if (!s.includes('"use client"') && !s.includes("'use client'")) continue
+    const imports = importedFrom(s, file)
     for (const m of s.matchAll(/(?<![=\w.])await\s+(\w+)\s*\(/g)) {
       const fn = m[1]
-      const definedIn = returnsFailure.get(fn)
+      const mod = imports.get(fn)
+      if (!mod) continue
+      const definedIn = returnsFailure.get(`${mod}#${fn}`)
       if (!definedIn) continue
       const after = s.slice(m.index! + m[0].length, m.index! + m[0].length + 600)
       const succ = after.match(SUCCESS_SIGNAL)
@@ -113,9 +151,11 @@ function ok(label: string, cond: boolean, detail?: string) {
 const FILES = [...walk("app"), ...walk("lib"), ...walk("components")]
 const RETURNS_FAILURE = actionsThatReturnFailure(FILES)
 
-// 17 after the transaction-inspections and portal clusters were fixed. Lower
-// it as callers start reading their outcomes; never raise it.
-const BASELINE = 17
+// 13 after the inspections + portal clusters were fixed AND the detector was
+// taught to resolve imports (name-matching had inflated the count with
+// same-named-but-throwing actions). Lower it as callers start reading their
+// outcomes; never raise it.
+const BASELINE = 13
 
 console.log("\n═══ 1. No UI claims success without reading the outcome ═══")
 const hits = findDiscarded(FILES, RETURNS_FAILURE)
@@ -132,13 +172,19 @@ console.log("\n═══ 2. The discriminator holds in both directions ═══
     RETURNS_FAILURE.size > 0 &&
     /return\s*\{[^}]*success:\s*false/.test(read("app/actions/transaction-inspections.ts")))
 
+  // The two-functions-one-name case that name-matching got wrong.
+  ok("disconnectSocialAccount resolves per IMPORT — social-publishing THROWS and\n    must not be flagged, social-media-automation RETURNS and must be",
+    /throw new Error\("Unauthorized"\)/.test(read("app/actions/social-publishing.ts")) &&
+    RETURNS_FAILURE.has("app/actions/social-media-automation#disconnectSocialAccount") &&
+    !RETURNS_FAILURE.has("app/actions/social-publishing#disconnectSocialAccount"))
+
   // assignTransactionCoordinator THROWS (`if (txnError) throw txnError`) and its
   // caller wraps the await in try/catch. Discarding the return value there is
   // correct, and an earlier version of this detector flagged it — 48 hits, most
   // of them noise. A guard that flags correct code teaches people to ignore it.
   const mp = read("app/actions/multi-persona.ts")
   ok("assignTransactionCoordinator still reports failure by THROWING, so it is\n    correctly absent from the catalogue",
-    /throw txnError/.test(mp) && !RETURNS_FAILURE.has("assignTransactionCoordinator"))
+    /throw txnError/.test(mp) && !RETURNS_FAILURE.has("app/actions/multi-persona#assignTransactionCoordinator"))
 }
 
 console.log("\n═══ 3. The transaction-inspections cluster reads its outcomes ═══")
