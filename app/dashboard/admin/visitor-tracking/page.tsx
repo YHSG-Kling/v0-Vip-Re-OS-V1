@@ -57,8 +57,24 @@ export default function VisitorTrackingPage() {
         return
       }
 
-      // agent_id uses the auth user's id — the pixel snippet scopes tracking to this brokerage+agent
-      setProfile({ brokerage_id: prof.brokerage_id ?? '', agent_id: user.id, user_type: prof.user_type })
+      // IDENTITY CLASS (m366). This embedded the AUTH USER id in the pixel
+      // snippet, and the snippet's endpoint upserts website_visitors.agent_id,
+      // which FKs AGENTS. So every pixel hit was foreign-key rejected: the
+      // admin pasted the tracking script onto their site, visitors browsed, and
+      // nothing was ever recorded. The page then rendered an empty visitor list
+      // that looked like "no traffic yet" rather than a broken pipe.
+      const { data: pixelAgentRow } = await supabase
+        .from('agents')
+        .select('id')
+        .eq('user_id', user.id)
+        .maybeSingle()
+      const pixelAgentId = (pixelAgentRow as { id?: string } | null)?.id ?? ''
+      if (!pixelAgentId) {
+        setError('This account has no agent profile yet, so the tracking snippet cannot be scoped to an agent. Finish account setup first.')
+        setLoading(false)
+        return
+      }
+      setProfile({ brokerage_id: prof.brokerage_id ?? '', agent_id: pixelAgentId, user_type: prof.user_type })
 
       const { data: rows, error: fetchErr } = await supabase
         .from('website_visitors')

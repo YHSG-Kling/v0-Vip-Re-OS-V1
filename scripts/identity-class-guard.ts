@@ -211,7 +211,7 @@ console.log("\n═══ 1. No function uses one value as both identity classes 
   // So a high remaining count is not the same as a high remaining risk. Grep
   // for a caller first; if there is none, the entry belongs in the dead-surface
   // triage, not here.
-  const BASELINE = 18
+  const BASELINE = 17
   ok(`self-contradicting identity uses at or below the baseline of ${BASELINE} (found ${found.length})`,
     found.length <= BASELINE,
     found.length > BASELINE
@@ -514,6 +514,29 @@ console.log("\n═══ 3g. The MIRROR sweep — this guard's own documented bl
     /const whisperAgentId = /.test(aw) && /\.eq\("agent_id", whisperAgentId\)/.test(aw))
 }
 
+console.log("\n═══ 3h. The tracking pixel recorded nothing ═══")
+{
+  // m366. The visitor-tracking admin page embedded the AUTH USER id in the
+  // pixel snippet it tells an admin to paste onto their website. The snippet's
+  // endpoint upserts website_visitors.agent_id, which FKs AGENTS — proven live:
+  // the users id is foreign-key rejected, the resolved agents id is accepted.
+  // So every pixel hit was dropped, and the page rendered an empty visitor list
+  // that reads as "no traffic yet" rather than a broken pipe.
+  //
+  // NOTE ON THE FINDING: this guard flagged the file as "users.agent_id (write)"
+  // — and users has no agent_id column at all. That flag was a detector
+  // artifact (a local object literal near a .from("users") window). The real
+  // defect was one hop downstream, in the endpoint the snippet calls. A false
+  // flag pointed at a true bug, which is worth remembering before dismissing
+  // one as noise.
+  const vt = code("app/dashboard/admin/visitor-tracking/page.tsx")
+  ok("the pixel snippet is scoped by the RESOLVED agents id, so website_visitors\n    upserts are no longer rejected on every hit",
+    /const pixelAgentId = /.test(vt) && /agent_id: pixelAgentId,/.test(vt) &&
+    !/agent_id: user\.id,/.test(vt))
+  ok("...and the page REFUSES to hand out a snippet it knows cannot record,\n    instead of printing one that silently drops every visitor",
+    /cannot be scoped to an agent/.test(src("app/dashboard/admin/visitor-tracking/page.tsx")))
+}
+
 console.log("\n═══ 4. The catalogue this guard reasons from is honest ═══")
 {
   ok("the users-class table list is exactly the 20 the live schema reports",
@@ -531,5 +554,5 @@ if (fail > 0) {
   console.log("Route it through lib/kernel/agent-identity-resolver instead of guessing.")
   process.exit(1)
 }
-console.log("Verified defects fixed and locked; 18 candidates remain behind a ratchet")
+console.log("Verified defects fixed and locked; 17 candidates remain behind a ratchet")
 console.log("that may only go down. The resolver is the one place this should be decided.")
