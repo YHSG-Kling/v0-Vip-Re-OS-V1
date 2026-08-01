@@ -148,7 +148,7 @@ function findFallbacks(): Hit[] {
 
 // ── A RATCHET AGAIN, AT THE HONEST NUMBER. See the header for why the zero
 // this briefly reported was false. Lower it as sites are audited; never raise.
-const BASELINE = 20
+const BASELINE = 16
 
 console.log("\n═══ 1. No NEW site manufactures an id of unknown class ═══")
 const hits = findFallbacks()
@@ -351,6 +351,21 @@ console.log("\n═══ 6. The site that exposed the false zero ═══")
     /an outbound AI call is agent-scoped/.test(read("app/api/voice/initiate-call/route.ts")))
   ok("...and the redundant agents.user_id lookup is gone — auth.agentId already IS\n    the agents id, so that query asked the wrong column with the right value",
     !/\.eq\("user_id", agentId\)/.test(ic) && /agentId: agentId,|agentId,\n/.test(ic))
+}
+
+console.log("\n═══ 7. The cluster m358 made visible ═══")
+{
+  // The `ctx.agentId ?? ctx.userId` spelling. ai-listing-intake had four, and
+  // every consumer downstream is agents-class: ai_usage_log, brand_voice_profile,
+  // guardContent, the dotloop loop, aiGenerateListingDescription. The
+  // substitution fired only when the caller had no agents row — exactly when
+  // those queries had nothing to match anyway — so it bought a wrong-class id
+  // in place of an honest refusal.
+  const li = code(read("app/actions/ai-listing-intake.ts"))
+  ok("ai-listing-intake no longer substitutes ctx.userId at any of its four sites",
+    !/\?\?\s*(?:ctx|agentCtx)\.userId/.test(li))
+  ok("...and each of the four refuses instead, so a user without an agents row is\n    told to finish setup rather than handed a silently empty listing intake",
+    (li.match(/No agent profile for this user yet — finish account setup\./g) ?? []).length === 4)
 }
 
 console.log(`\n${"═".repeat(70)}`)

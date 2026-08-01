@@ -86,7 +86,15 @@ export async function aiEnrichPropertyData(address: string, _agentId?: string) {
     if (!ctx.isAuthenticated || !ctx.brokerageId) {
       return { success: false, error: "Unauthorized" }
     }
-    const agentId = ctx.agentId ?? ctx.userId
+    // NOT `?? ctx.userId` (m359). Everything this reaches is agents-class —
+    // ai_usage_log, brand_voice_profile, guardContent, the dotloop loop and
+    // aiGenerateListingDescription all key agents(id). The substitution only
+    // fired when the caller had no agents row, i.e. exactly when there was
+    // nothing for those queries to match anyway; it bought a wrong-class id in
+    // place of an honest refusal. This is the spelling test:identity-fallback
+    // could not see until m358.
+    const agentId = ctx.agentId
+    if (!agentId) return { success: false, error: "No agent profile for this user yet — finish account setup." }
 
     const supabase = await createClient()
 
@@ -262,7 +270,15 @@ export async function aiGenerateListingDescription(params: {
       return { success: false, error: "Unauthorized" }
     }
     const brokerageId = ctx.brokerageId
-    const agentId = ctx.agentId ?? ctx.userId
+    // NOT `?? ctx.userId` (m359). Everything this reaches is agents-class —
+    // ai_usage_log, brand_voice_profile, guardContent, the dotloop loop and
+    // aiGenerateListingDescription all key agents(id). The substitution only
+    // fired when the caller had no agents row, i.e. exactly when there was
+    // nothing for those queries to match anyway; it bought a wrong-class id in
+    // place of an honest refusal. This is the spelling test:identity-fallback
+    // could not see until m358.
+    const agentId = ctx.agentId
+    if (!agentId) return { success: false, error: "No agent profile for this user yet — finish account setup." }
 
     const supabase = await createClient()
 
@@ -708,7 +724,15 @@ export async function createListing(params: ListingIntakeData) {
       }
     }
 
-    const ownerAgentId = ctx.agentId ?? ctx.userId
+    // NOT `?? ctx.userId` (m359). Everything this reaches is agents-class —
+    // ai_usage_log, brand_voice_profile, guardContent, the dotloop loop and
+    // aiGenerateListingDescription all key agents(id). The substitution only
+    // fired when the caller had no agents row, i.e. exactly when there was
+    // nothing for those queries to match anyway; it bought a wrong-class id in
+    // place of an honest refusal. This is the spelling test:identity-fallback
+    // could not see until m358.
+    const ownerAgentId = ctx.agentId
+    if (!ownerAgentId) return { success: false, error: "No agent profile for this user yet — finish account setup." }
 
     // Create the listing — use live schema column names only
     const { data: listing, error } = await supabase
@@ -876,7 +900,15 @@ export async function runCompleteListingIntake(params: {
     }
     const brokerageId = agentCtx.brokerageId
     // Identity is session-derived; ignore caller-supplied agentId
-    const effectiveAgentId = agentCtx.agentId ?? agentCtx.userId
+    // NOT `?? ctx.userId` (m359). Everything this reaches is agents-class —
+    // ai_usage_log, brand_voice_profile, guardContent, the dotloop loop and
+    // aiGenerateListingDescription all key agents(id). The substitution only
+    // fired when the caller had no agents row, i.e. exactly when there was
+    // nothing for those queries to match anyway; it bought a wrong-class id in
+    // place of an honest refusal. This is the spelling test:identity-fallback
+    // could not see until m358.
+    const effectiveAgentId = agentCtx.agentId
+    if (!effectiveAgentId) return { success: false, error: "No agent profile for this user yet — finish account setup." }
 
     // Step 1: Enrich property data
     const enrichResult = await aiEnrichPropertyData(params.address, effectiveAgentId)
