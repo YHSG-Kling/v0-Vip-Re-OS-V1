@@ -329,7 +329,7 @@ export async function commissionStudioSession(
     .from("studio_sessions")
     .select("id, status, commissioned_count, skipped_count")
     .eq("brokerage_id", opts.brokerageId)
-    .eq("agent_id", opts.agentUserId)
+    .eq("agent_user_id", opts.agentUserId)
     .eq("session_key", sessionKey)
     .maybeSingle()
 
@@ -360,7 +360,7 @@ export async function commissionStudioSession(
     .from("studio_sessions")
     .insert({
       brokerage_id: opts.brokerageId,
-      agent_id: opts.agentUserId,
+      agent_user_id: opts.agentUserId,
       spoken_command: opts.spokenCommand,
       duration_label: plan.durationLabel,
       plan: plan.items,

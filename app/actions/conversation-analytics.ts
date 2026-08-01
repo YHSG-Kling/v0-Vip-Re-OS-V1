@@ -47,7 +47,7 @@ export async function logConversationMetadata(params: {
       .from("conversation_logs")
       .insert({
         contact_id: params.contactId,
-        agent_id: params.agentId,
+        agent_user_id: params.agentId,
         start_time: startTime.toISOString(),
         end_time: endTime.toISOString(),
         message_count: params.conversationHistory.length,
@@ -326,7 +326,7 @@ export async function runWeeklyAIAudit() {
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
     const { data: conversations, error } = await supabase
       .from("conversation_logs")
-      .select("id, contact_id, agent_id, created_at")
+      .select("id, contact_id, agent_user_id, created_at")
       .gte("created_at", weekAgo)
       .order("created_at", { ascending: false })
 
@@ -402,7 +402,7 @@ export async function getConversationAnalytics(params: {
 
     let query = supabase.from("conversation_logs").select("*")
 
-    if (params.agentId) query = query.eq("agent_id", params.agentId)
+    if (params.agentId) query = query.eq("agent_user_id", params.agentId)
     if (params.contactId) query = query.eq("contact_id", params.contactId)
     if (params.startDate) query = query.gte("created_at", params.startDate)
     if (params.endDate) query = query.lte("created_at", params.endDate)
@@ -452,7 +452,7 @@ export async function getAuditFlags(params: { status?: string; riskType?: string
         *,
         conversation:conversation_logs(
           contact_id,
-          agent_id,
+          agent_user_id,
           start_time,
           topics_discussed
         )

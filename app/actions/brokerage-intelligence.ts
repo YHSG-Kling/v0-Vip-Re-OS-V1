@@ -132,6 +132,8 @@ export async function adoptInsightAction(params: {
   insightId: string
   /** Agent user_ids to push the playbook to. Empty array → all agents
    *  in the brokerage. */
+  /** users.id values. `agentIds` is accepted as the pre-m350 name. */
+  agentUserIds?: string[]
   agentIds?: string[]
 }): Promise<{ success: boolean; error?: string; adopted?: number }> {
   if (!isValidUUID(params.insightId)) return { success: false, error: "Invalid insight id" }
@@ -153,37 +155,41 @@ export async function adoptInsightAction(params: {
   }
 
   // Resolve target agent list — if empty, broadcast to all agents
-  let agentIds = (params.agentIds ?? []).filter(Boolean)
-  if (agentIds.length === 0) {
+  // NAMED agentUserIds, not agentIds (m350). These are `users.id` — the query
+  // below reads the users table — and the distinction is load-bearing: the
+  // pattern_adoptions write wants exactly this class, while the contacts update
+  // in applyAction wants the OTHER one. Under the old name both looked right.
+  let agentUserIds = (params.agentUserIds ?? params.agentIds ?? []).filter(Boolean)
+  if (agentUserIds.length === 0) {
     const { data: allAgents } = await svc
       .from("users")
       .select("id")
       .eq("brokerage_id", auth.brokerageId)
       .eq("user_type", "agent")
-    agentIds = ((allAgents ?? []) as Array<{ id: string }>).map((a) => a.id)
+    agentUserIds = ((allAgents ?? []) as Array<{ id: string }>).map((a) => a.id)
   }
 
   const actions = (insight.playbook_actions as Array<{ type: string; [k: string]: unknown }>) ?? []
   let appliedCount = 0
 
-  for (const agentId of agentIds) {
+  for (const agentUserId of agentUserIds) {
     try {
       const applied: typeof actions = []
       for (const action of actions) {
-        const ok = await applyAction({ svc, agentId, brokerageId: auth.brokerageId, action })
+        const ok = await applyAction({ svc, agentUserId, brokerageId: auth.brokerageId, action })
         if (ok) applied.push(action)
       }
       await svc.from("pattern_adoptions").insert({
         insight_id:       insight.id,
         brokerage_id:     auth.brokerageId,
-        agent_id:         agentId,
+        agent_user_id:    agentUserId,
         adopted_by:       auth.userId,
         applied_actions:  applied,
         status:           applied.length === actions.length ? "applied" : (applied.length === 0 ? "failed" : "applied"),
       })
       appliedCount += 1
     } catch (e) {
-      console.error(`[adoptInsight] agent ${agentId}:`, e)
+      console.error(`[adoptInsight] agent ${agentUserId}:`, e)
     }
   }
 
@@ -193,11 +199,12 @@ export async function adoptInsightAction(params: {
 
 async function applyAction(input: {
   svc:         ReturnType<typeof createServiceClient>
-  agentId:     string
+  /** users.id — resolved to an agents id below for the contacts write. */
+  agentUserId: string
   brokerageId: string
   action:      { type: string; [k: string]: unknown }
 }): Promise<boolean> {
-  const { svc, agentId, brokerageId, action } = input
+  const { svc, agentUserId, brokerageId, action } = input
 
   switch (action.type) {
     case "enable_ai_isa_on_new_leads":
@@ -205,10 +212,20 @@ async function applyAction(input: {
       // Flip ai_isa_enabled=true on the agent's contacts where eligibility
       // is met (not dnc, not opted out). Bounded write to avoid surprise.
       const onlyExisting = action.type === "enable_ai_isa_on_existing_leads"
+      // IDENTITY CLASS (m350, found by the rename). agentUserId is a users id —
+      // adoptInsightAction reads the target list straight out of `users`. But
+      // contacts.agent_id FKs AGENTS, so this update matched ZERO rows for every
+      // agent, every time, and still returned true: the playbook reported
+      // "applied" and no contact ever had ai_isa_enabled flipped. The two ids
+      // sat in the same variable under the same name, which is the whole reason
+      // the users-class columns are being renamed.
+      const { data: agentRow } = await svc
+        .from("agents").select("id").eq("user_id", agentUserId).eq("brokerage_id", brokerageId).maybeSingle()
+      if (!agentRow?.id) return false
       let q = svc.from("contacts")
         .update({ ai_isa_enabled: true })
         .eq("brokerage_id", brokerageId)
-        .eq("agent_id", agentId)
+        .eq("agent_id", agentRow.id)
         .neq("dnc_status", true)
         .neq("ai_outreach_paused", true)
         .neq("ai_isa_enabled", true)
