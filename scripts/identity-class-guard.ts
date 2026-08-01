@@ -55,7 +55,7 @@
  *   where tc.constraint_type='FOREIGN KEY' and tc.table_schema='public'
  *     and kcu.column_name='agent_id' and ccu.table_name='users';
  */
-import { readFileSync, existsSync, readdirSync, statSync } from "node:fs"
+import { readFileSync, existsSync, readdirSync } from "node:fs"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -186,7 +186,7 @@ console.log("\n═══ 1. No function uses one value as both identity classes 
   // that belongs to a sibling query. Claiming they are all bugs would repeat
   // the exact mistake this guard exists to catch — asserting more than the
   // evidence supports. So: the number may only go DOWN.
-  const BASELINE = 37
+  const BASELINE = 35
   ok(`self-contradicting identity uses at or below the baseline of ${BASELINE} (found ${found.length})`,
     found.length <= BASELINE,
     found.length > BASELINE
@@ -218,6 +218,31 @@ console.log("\n═══ 2. The three verified defects stay fixed ═══")
     "app/actions/ai-showing-management.ts::aiScheduleShowing")
   ok("...and REFUSES rather than writing a broken row when the user has no\n    agent record",
     /if \(!agentRecordId\)/.test(show))
+
+  // m338 batch — the two per-agent ROLLUPS. Both crons read their agent list
+  // straight out of `users`, so the users-class snapshot tables were always
+  // right and the AGENTS-class source tables (transactions, listings) were
+  // always wrong: the scores were computed over an empty set and reported as
+  // real measurements. That is worse than a crash, which is why they survived.
+  const rev = code("lib/revenue-protection/scorer.ts")
+  // Targeted at the `q = q.eq(...)` shape the transactions/listings queries use.
+  // A blanket ban on `input.agentId` also forbade the two CORRECT users-class
+  // filters (listing_health_interventions, revenue_protection_snapshots) — the
+  // pattern was wrong, the code was right, same trap as three times before.
+  ok("revenue protection filters transactions + listings by the AGENTS id...",
+    !/q = q\.eq\("agent_id", input\.agentId\)/.test(rev) &&
+    (rev.match(/if \(agentRecordId\) q = q\.eq\("agent_id", agentRecordId\)/g) ?? []).length === 4,
+    "lib/revenue-protection/scorer.ts")
+  ok("...while its two users-class tables KEEP the users id",
+    /listingSavesQuery\.eq\("agent_id", input\.agentId\)/.test(rev) &&
+    /revenue_protection_snapshots/.test(rev))
+
+  const inc = code("lib/income-forecast/forecaster.ts")
+  ok("the income forecaster filters transactions + listings by the AGENTS id,\n    so the pipeline half of the forecast is no longer silently zero",
+    /\.eq\("agent_id", agentRecordId \?\? "00000000-0000-0000-0000-000000000000"\)/.test(inc),
+    "lib/income-forecast/forecaster.ts")
+  ok("...and still writes income_forecast_snapshots with the users id",
+    /agent_id:\s+input\.agentId|\.eq\("agent_id", input\.agentId\)/.test(inc))
 
   const life = code("app/dashboard/listings/[id]/lifecycle/page.tsx")
   ok("the listing lifecycle page filters listings.agent_id by the AGENTS id —\n    filtering it by user.id matched nothing, so an agent could never open\n    their own listing",
@@ -259,5 +284,5 @@ if (fail > 0) {
   console.log("Route it through lib/kernel/agent-identity-resolver instead of guessing.")
   process.exit(1)
 }
-console.log("Three verified defects fixed and locked; 37 candidates remain behind a ratchet")
+console.log("Five verified defects fixed and locked; 35 candidates remain behind a ratchet")
 console.log("that may only go down. The resolver is the one place this should be decided.")

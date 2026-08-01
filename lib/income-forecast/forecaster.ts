@@ -9,6 +9,7 @@
  */
 
 import "server-only"
+import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { createServiceClient } from "@/lib/supabase/service"
 import { projectAgentSphereReferralValue } from "@/lib/lifetime-customer-npv/scorer"
 
@@ -71,12 +72,24 @@ export async function computeIncomeForecastForAgent(input: {
   const supabase = createServiceClient()
   const now = new Date()
 
+  // IDENTITY CLASS (m338). input.agentId is a USERS id — the rollup cron reads it
+  // from `users` — and income_forecast_snapshots.agent_id is users-class, so that
+  // write is correct. But transactions.agent_id and listings.agent_id FK AGENTS,
+  // so filtering them by the users id matched NOTHING: every per-agent income
+  // forecast projected from an empty pipeline and reported the result as a real
+  // number. The sphere-referral term was already right (it reads the users-class
+  // NPV ledger), which is why the forecast looked plausible while the pipeline
+  // half was silently zero.
+  const agentRecordId = input.agentId
+    ? await resolveUserIdToAgentRecord(input.agentId, input.brokerageId)
+    : null
+
   // Pull open transactions for this agent (mirrors revenue-pipeline.ts
   // but service-role here so the cron can roll for everyone).
   const { data: transactions } = await supabase
     .from("transactions")
     .select("id, agent_id, stage, status, close_date, contract_date, purchase_price, commission_amount, estimated_commission, listing_id")
-    .eq("agent_id", input.agentId)
+    .eq("agent_id", agentRecordId ?? "00000000-0000-0000-0000-000000000000")
     .eq("brokerage_id", input.brokerageId)
     .not("status", "in", "(closed,cancelled,failed,withdrawn,expired)")
 
@@ -121,7 +134,7 @@ export async function computeIncomeForecastForAgent(input: {
   const { count: activeListingCount } = await supabase
     .from("listings")
     .select("id", { count: "exact", head: true })
-    .eq("agent_id", input.agentId)
+    .eq("agent_id", agentRecordId ?? "00000000-0000-0000-0000-000000000000")
     .eq("brokerage_id", input.brokerageId)
     .in("status", ["active", "coming_soon"])
 

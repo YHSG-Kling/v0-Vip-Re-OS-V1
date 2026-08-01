@@ -27,6 +27,7 @@
  */
 
 import "server-only"
+import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { createServiceClient } from "@/lib/supabase/service"
 import { logTenantFinding } from "@/lib/kernel/tenant-guard"
 
@@ -142,6 +143,19 @@ export async function calculateRevenueProtection(input: {
       latestByTransaction.set(r.transaction_id, { risk_level: r.risk_level })
     }
   }
+  // IDENTITY CLASS (m338). input.agentId is a USERS id — the rollup cron reads
+  // it straight out of `users` — and the two SNAPSHOT tables below
+  // (listing_health_interventions, revenue_protection_snapshots) are users-class
+  // and correctly filtered by it. But `transactions.agent_id` and
+  // `listings.agent_id` FK AGENTS, so filtering those by the users id matched
+  // NOTHING: every per-agent Revenue Protection snapshot counted zero at-risk
+  // deals and zero at-risk listings, and reported a score computed from an empty
+  // set as though it were a real measurement. Resolved once here rather than at
+  // each of the four call sites.
+  const agentRecordId = input.agentId
+    ? await resolveUserIdToAgentRecord(input.agentId, input.brokerageId)
+    : null
+
   const atRiskTransactionIds = Array.from(latestByTransaction.keys())
 
   let atRiskDealRows: Array<{ id: string; agent_id: string | null; estimated_commission: number | null; commission_amount: number | null }> = []
@@ -152,7 +166,7 @@ export async function calculateRevenueProtection(input: {
       .in("id", atRiskTransactionIds)
       .eq("brokerage_id", input.brokerageId)
       .not("status", "in", "(closed,cancelled,withdrawn)")
-    if (input.agentId) q = q.eq("agent_id", input.agentId)
+    if (agentRecordId) q = q.eq("agent_id", agentRecordId)
     const { data } = await q
     atRiskDealRows = (data ?? []) as typeof atRiskDealRows
   }
@@ -183,7 +197,7 @@ export async function calculateRevenueProtection(input: {
       .in("id", atRiskListingIds)
       .eq("brokerage_id", input.brokerageId)
       .in("status", ["active", "coming_soon"])
-    if (input.agentId) q = q.eq("agent_id", input.agentId)
+    if (agentRecordId) q = q.eq("agent_id", agentRecordId)
     const { data } = await q
     atRiskListingRows = (data ?? []) as typeof atRiskListingRows
   }
@@ -219,7 +233,7 @@ export async function calculateRevenueProtection(input: {
       .select("id, agent_id, estimated_commission, commission_amount")
       .in("id", savedDealIds)
       .eq("brokerage_id", input.brokerageId)
-    if (input.agentId) q = q.eq("agent_id", input.agentId)
+    if (agentRecordId) q = q.eq("agent_id", agentRecordId)
     const { data: rows } = await q
     for (const r of (rows ?? []) as Array<{ id: string; agent_id: string | null; estimated_commission: number | null; commission_amount: number | null }>) {
       const gci = Number(r.commission_amount ?? r.estimated_commission ?? 0)
@@ -237,7 +251,7 @@ export async function calculateRevenueProtection(input: {
       .select("id, agent_id, list_price")
       .in("id", savedListingIds)
       .eq("brokerage_id", input.brokerageId)
-    if (input.agentId) q = q.eq("agent_id", input.agentId)
+    if (agentRecordId) q = q.eq("agent_id", agentRecordId)
     const { data: rows } = await q
     const savedListings = (rows ?? []) as Array<{ id: string; agent_id: string | null; list_price: number | null }>
     const resolved = await resolveListingGci(
