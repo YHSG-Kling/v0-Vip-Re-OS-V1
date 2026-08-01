@@ -945,12 +945,19 @@ export default function CRMPage() {
 
   const handleAnalyzeCall = async (activity: any) => {
     if (!selectedContactId || !user) return
+    if (!agentId) { toast.error("Finishing your account setup — call analysis needs your agent profile."); return }
     setAnalyzingCallId(activity.id)
     try {
+      // NOT `?? user.id` (m349). This file's own resolution site says it, in
+      // capitals: "contacts.agent_id = agents.id (FK) — NEVER users.id". Every
+      // write this action makes — call_analyses, tasks.assigned_to_agent_id,
+      // activities — FKs agents, so the users id was rejected by all three
+      // while the UI still displayed the analysis it returned. The rule was
+      // written down 600 lines above and broken here.
       const result = await analyzeCallTranscript({
         transcript: activity.description || activity.notes || activity.title || "Call activity",
         contactId: selectedContactId,
-        agentId: agentId ?? user.id,
+        agentId,
         callType: activity.direction === "inbound" ? "inbound" : "outbound",
       })
       if (result.success && result.analysis) {
@@ -967,10 +974,11 @@ export default function CRMPage() {
     if (!user) return
     const analysis = callAnalyses[activity.id]
     if (!analysis?.id) return
+    if (!agentId) { toast.error("Finishing your account setup — this needs your agent profile."); return }
     const result = await generateCallSummaryEmail({
       analysisId: analysis.id,
       recipientType: "client",
-      agentId: agentId ?? user.id,
+      agentId,
     })
     if ((result as any).success) {
       toast.success("Summary email drafted")
@@ -1183,7 +1191,7 @@ export default function CRMPage() {
                     onClick={async () => {
                       if (!selectedContactId || !user) return
                       // Agent-triggered scoring: mode='override' lets AI overwrite the lead_score baseline
-                      const result = await scoreLeadWithAI({ contactId: selectedContactId, agentId: agentId ?? user.id, mode: "override" })
+                      const result = await scoreLeadWithAI({ contactId: selectedContactId, agentId: agentId ?? "", mode: "override" })
                       if (result.success && (result as any).scores) {
                         const overall = (result as any).scores.overallScore ?? 0
                         setLeadScores(prev => ({

@@ -853,8 +853,14 @@ export async function assignVendorToTransaction(data: {
     .eq("user_id", user.id)
     .maybeSingle()
 
-  // Create vendor assignment (agent may not have agents row — use user.id as fallback)
-  const agentRowId = agent?.id ?? user.id
+  // The comment that used to be here said "agent may not have agents row — use
+  // user.id as fallback". The INTENT was right and the code was the opposite of
+  // it (m349): vendor_assignments.assigned_by_agent_id FKs agents and is
+  // NULLABLE, so the users id was FK-rejected, assignError threw, and the whole
+  // vendor assignment failed for exactly the user the fallback was written to
+  // accommodate. NULL is how this column expresses "no agent row" — it was
+  // designed for this case and the code reached past it.
+  const agentRowId = agent?.id ?? null
 
   const { data: assignment, error: assignError } = await supabase
     .from("vendor_assignments")
@@ -898,7 +904,9 @@ export async function assignVendorToTransaction(data: {
       vendor_id: data.vendorId,
       transaction_id: data.transactionId,
       assignment_type: data.assignmentType,
-      assigned_by_agent_id: agent?.id ?? user.id,
+      // Same class rule as the row this event describes — the metadata must
+      // not disagree with the assignment it is reporting on.
+      assigned_by_agent_id: agentRowId,
     },
     created_at: new Date().toISOString(),
   })
@@ -953,7 +961,9 @@ export async function assignVendorToTransaction(data: {
       const fromEmail = process.env.SENDGRID_FROM_EMAIL ?? "noreply@vip-re.com"
       await dispatchEmail({
         brokerageId: profile?.brokerage_id ?? "",
-        agentId: agentRowId,
+        // dispatchEmail takes `agentId?: string` — an absent agent is `undefined`
+        // here for the same reason it is NULL in the row above.
+        agentId: agentRowId ?? undefined,
         userId: user.id,
         systemSource: "vendor_assignment",
         from: `${(await import("@/lib/platform/product-brand")).DEFAULT_PRODUCT_BRAND.name} <${fromEmail}>`,

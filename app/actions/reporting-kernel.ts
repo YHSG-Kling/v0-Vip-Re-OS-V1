@@ -60,7 +60,14 @@ async function resolveActorContext(): Promise<ReportingActorContext | null> {
 
   return {
     userId:      user.id,
-    agentId:     agent?.id ?? user.id,
+    // NOT `?? user.id` (m349). This is the ctx EVERY reporting action reads
+    // through — the "middle". The pages know who the user is and the schema
+    // knows what each report is keyed on; this object was the only place that
+    // guessed. Every report keys agents-class columns, so the users id produced
+    // a complete, internally consistent set of zeros: a quiet month, rendered
+    // with full confidence. An empty id produces the same zeros without an
+    // ambiguous value leaking into a dozen downstream readers.
+    agentId:     agent?.id ?? "",
     brokerageId: profile.brokerage_id,
     userType:    profile.user_type ?? "agent",
     locationId:  agent?.location_id ?? null,

@@ -119,7 +119,7 @@ function findFallbacks(): Hit[] {
 }
 
 // ── The ratchet. Lower it as sites are audited; never raise it. ──────────────
-const BASELINE = 14
+const BASELINE = 8
 
 console.log("\n═══ 1. No NEW site manufactures an id of unknown class ═══")
 const hits = findFallbacks()
@@ -234,6 +234,27 @@ console.log("\n═══ 4. The sites fixed in this pass stay fixed ═══")
     ok(`${file.replace("app/dashboard/", "")} says "finishing your account setup"\n    instead of showing an empty page as a real answer`,
       /Finishing your account setup/.test(code(read(file))))
   }
+
+  // ── The "middle" layer (m349) ────────────────────────────────────────────
+  // The clearest statement of the whole defect class: app/crm/page.tsx resolves
+  // its agent id under a comment that says, in capitals, "contacts.agent_id =
+  // agents.id (FK) — NEVER users.id" — and then broke that rule at three call
+  // sites 600 lines below. The UI knew. The schema knew. The middle guessed.
+  const crm = code(read("app/crm/page.tsx"))
+  ok("crm no longer passes a users id to the three actions whose every write —\n    call_analyses, tasks.assigned_to_agent_id, activities, contacts — FKs agents",
+    !/agentId \?\? user\.id/.test(crm))
+  ok("...and the rule it violated is still written at its resolution site, so the\n    guard is anchored to the file's own stated invariant",
+    /contacts\.agent_id = agents\.id \(FK\) — NEVER users\.id/.test(read("app/crm/page.tsx")))
+
+  const rk = code(read("app/actions/reporting-kernel.ts"))
+  ok("the reporting ctx every report action reads through no longer substitutes —\n    it produced a complete, internally consistent set of zeros: a quiet month",
+    /agentId:\s*agent\?\.id \?\? "",/.test(rk))
+
+  const vm = code(read("app/actions/vendor-marketplace.ts"))
+  ok("vendor assignment uses NULL for an absent agent, which is what the nullable\n    assigned_by_agent_id column was designed for — the users id was FK-rejected,\n    so the assignment threw for exactly the user the fallback meant to help",
+    /const agentRowId = agent\?\.id \?\? null/.test(vm))
+  ok("...and the lifecycle_events metadata reports the SAME id as the row it\n    describes, rather than disagreeing with it",
+    /assigned_by_agent_id: agentRowId,/.test(vm))
 
   const goals = code(read("app/actions/ai-agent-goals.ts"))
   ok("the goals sync counts review_requests by the RESOLVED users id — by the\n    agents id it counted 0 and then WROTE that 0 over the agent's real progress",
