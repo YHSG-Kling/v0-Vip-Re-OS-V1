@@ -50,7 +50,16 @@ export default async function ListingsPage() {
   ])
 
   // Build query — if no agent record found, fall back to user.id for brokers/admins
-  const agentId = agentRecord?.id ?? user.id
+  // NOT `?? user.id` (m348) — listings.agent_id FKs agents, so the users id
+  // matched nothing and the page showed an empty inventory as if that were real.
+  const agentId = agentRecord?.id ?? ""
+  if (!agentId) {
+    return (
+      <div className="p-8 text-center text-muted-foreground">
+        Finishing your account setup — refresh in a moment to view your listings.
+      </div>
+    )
+  }
   const brokerageId = userProfile?.brokerage_id ?? ""
 
   // Fetch listings with correct schema columns

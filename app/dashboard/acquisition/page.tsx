@@ -25,7 +25,15 @@ export default async function AcquisitionPage() {
     .maybeSingle()
 
   const role = roleRow?.role ?? "agent"
-  const agentId = roleRow?.agent_id ?? user.id
+  // NOT `?? user.id` (m348). business_card_scans.agent_id and qr_codes.agent_id
+  // both FK agents, so the users id matched nothing — the substitution bought
+  // an identical empty result with an ambiguous id attached to it.
+  //
+  // No page-level refusal here, unlike the other pages in this pass: a broker or
+  // admin legitimately has no agents row and this page still works for them
+  // through the brokerage branch below. The agent-scoped panels are empty for
+  // them either way, which is pre-existing and not this change's business.
+  const agentId = roleRow?.agent_id ?? ""
   const brokerageId = roleRow?.brokerage_id ?? ""
   const isAdminOrBroker = ["admin", "broker", "superadmin"].includes(role)
 

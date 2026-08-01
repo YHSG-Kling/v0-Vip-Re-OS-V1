@@ -31,7 +31,16 @@ export default async function VoiceIntelligencePage() {
     .select("id")
     .eq("user_id", user.id)
     .maybeSingle()
-  const agentId = agentRow?.id ?? user.id
+  // NOT `?? user.id` (m348) — voice_calls.agent_id FKs agents, so the users id
+  // matched no calls and the page showed an empty call history as if it were real.
+  const agentId = agentRow?.id ?? ""
+  if (!agentId) {
+    return (
+      <div className="p-8 text-center text-muted-foreground">
+        Finishing your account setup — refresh in a moment to view your call intelligence.
+      </div>
+    )
+  }
 
   // Recent calls — joined with the latest call_analyses row per call so
   // the list can show sentiment, intent, and outcome at a glance.

@@ -43,8 +43,19 @@ export default async function TransactionsPage() {
     .eq("user_id", user.id)
     .maybeSingle()
 
-  const agentId = agentRecord?.id ?? user.id
+  // NOT `?? user.id` (m348). transactions.agent_id FKs agents, so the users id
+  // matched nothing and this page rendered "no transactions" — indistinguishable
+  // from a genuinely empty pipeline. Say what is actually true instead. The
+  // notice mirrors app/dashboard/goals/page.tsx rather than inventing a new one.
+  const agentId = agentRecord?.id ?? ""
   const brokerageId = agentRecord?.brokerage_id ?? null
+  if (!agentId) {
+    return (
+      <div className="p-8 text-center text-muted-foreground">
+        Finishing your account setup — refresh in a moment to view your transactions.
+      </div>
+    )
+  }
 
   const { data: brokerageInfo } = brokerageId
     ? await supabase.from("brokerages").select("name, logo_url").eq("id", brokerageId).maybeSingle()

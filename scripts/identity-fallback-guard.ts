@@ -119,7 +119,7 @@ function findFallbacks(): Hit[] {
 }
 
 // ── The ratchet. Lower it as sites are audited; never raise it. ──────────────
-const BASELINE = 19
+const BASELINE = 14
 
 console.log("\n═══ 1. No NEW site manufactures an id of unknown class ═══")
 const hits = findFallbacks()
@@ -207,6 +207,33 @@ console.log("\n═══ 4. The sites fixed in this pass stay fixed ═══")
   const cr = code(read("app/dashboard/documents/contract-review/page.tsx"))
   ok("the contract-review page hands down an agents id or nothing, never the\n    auth user id wearing an agents id's name",
     /agentId=\{agentRow\?\.id \?\? ""\}/.test(cr))
+
+  // ── The five dashboard pages (m348) ──────────────────────────────────────
+  // Each filtered an agents-class table by the auth user id, so each rendered a
+  // convincingly empty page: no transactions, no listings, no calls, a full set
+  // of zeroed reports. Nothing errored, which is exactly why nobody found them.
+  for (const [file, table] of [
+    ["app/dashboard/transactions/page.tsx", "transactions"],
+    ["app/dashboard/listings/page.tsx", "listings"],
+    ["app/dashboard/voice-intelligence/page.tsx", "voice_calls"],
+    ["app/dashboard/acquisition/page.tsx", "business_card_scans / qr_codes"],
+    ["app/dashboard/reports/page.tsx", "every prefetched report"],
+  ] as const) {
+    const s = code(read(file))
+    ok(`${file.replace("app/dashboard/", "")}\n    no longer substitutes the user id for the agents id ${table} is keyed on`,
+      !/\?\?\s*user\??\.id/.test(s))
+  }
+  // Three of them REFUSE rather than render an empty page as if it were real.
+  // acquisition deliberately does not: a broker with no agents row is a normal
+  // user of that page, served by its brokerage branch.
+  for (const file of [
+    "app/dashboard/transactions/page.tsx",
+    "app/dashboard/listings/page.tsx",
+    "app/dashboard/voice-intelligence/page.tsx",
+  ]) {
+    ok(`${file.replace("app/dashboard/", "")} says "finishing your account setup"\n    instead of showing an empty page as a real answer`,
+      /Finishing your account setup/.test(code(read(file))))
+  }
 
   const goals = code(read("app/actions/ai-agent-goals.ts"))
   ok("the goals sync counts review_requests by the RESOLVED users id — by the\n    agents id it counted 0 and then WROTE that 0 over the agent's real progress",

@@ -35,7 +35,12 @@ export default async function ReportsPage() {
       .select("id")
       .eq("user_id", user.id)
       .maybeSingle()
-    resolvedAgentId = agentRow?.id ?? user.id
+    // NOT `?? user.id` (m348). Every report this page prefetches is keyed on
+    // agents-class columns, so the users id produced a full set of zeroed
+    // reports that looked like a real, quiet month. An empty id leaves them
+    // empty too, but without an ambiguous value travelling into the ctx below
+    // and out to every report reader.
+    resolvedAgentId = agentRow?.id ?? ""
   }
 
   const ctx = {
