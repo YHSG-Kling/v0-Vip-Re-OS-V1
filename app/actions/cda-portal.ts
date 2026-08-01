@@ -443,7 +443,11 @@ export async function draftOrUpdateCdaAction(input: {
         ...payload,
         transaction_id: input.transactionId,
         brokerage_id: txn.brokerage_id,
-        agent_id: txn.agent_id,
+        // IDENTITY CLASS (m364). m356 fixed ONE of this file's three CDA
+        // creation paths — the one the guard pointed at. This is the second:
+        // closing_disclosure_agreement.agent_id FKs USERS and txn.agent_id is
+        // an agents id, so this insert was rejected too.
+        agent_id: auth.userId,
         revision_number: 1,
       })
       .select("id")
@@ -1250,12 +1254,21 @@ export async function recordNonCdaPayoutPreferenceAction(input: {
     if (!txn || txn.brokerage_id !== auth.brokerageId) {
       return { success: false as const, error: "transaction_not_found" }
     }
+    // Unlike the draft path there is no "caller is the assigned agent" gate
+    // here, so the users id has to be resolved from the transaction's agent.
+    const { data: cdaAgentRow } = await supabase
+      .from("agents").select("user_id").eq("id", txn.agent_id ?? "").maybeSingle()
+    const cdaCreateUserId3 = (cdaAgentRow as { user_id?: string } | null)?.user_id ?? null
+    if (!cdaCreateUserId3) {
+      return { success: false as const, error: "agent_user_not_found" }
+    }
     const { data: created, error } = await supabase
       .from("closing_disclosure_agreement")
       .insert({
         transaction_id:        input.transactionId,
         brokerage_id:          txn.brokerage_id,
-        agent_id:              txn.agent_id,
+        // IDENTITY CLASS (m364) — the third creation path, same users FK.
+        agent_id:              cdaCreateUserId3,
         status:                "pending",
         revision_number:       1,
         uses_cda:              false,

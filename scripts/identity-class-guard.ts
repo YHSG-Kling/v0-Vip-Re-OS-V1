@@ -462,6 +462,33 @@ console.log("\n═══ 3e. The certificate was issued to \"Agent\" ═══")
     /\.from\('agents'\)\s*\.select\('users\(first_name, last_name\)'\)/.test(ce))
 }
 
+console.log("\n═══ 3f. Every write into a users-class agent_id, enumerated ═══")
+{
+  // m364. m356 fixed ONE of cda-portal's three CDA creation paths — the one the
+  // guard pointed at. An exhaustive enumeration of every write into the twenty
+  // users-class agent_id columns found the other two, plus three more elsewhere.
+  // The lesson is the method: fixing the site a detector names is not the same
+  // as fixing the class of write, and only the enumeration closes the gap.
+  const cda = code("app/actions/cda-portal.ts")
+  ok("ALL THREE cda-portal creation paths write a users id — the two m356 missed\n    were FK-rejected exactly like the one it caught",
+    /agent_id: agent\.user_id,/.test(cda) && /agent_id: auth\.userId,/.test(cda) &&
+    /agent_id:              cdaCreateUserId3,/.test(cda) &&
+    // Scoped to the CDA table's own windows. A blanket ban on `txn.agent_id`
+    // would forbid the activities + task writes in the same file, which are
+    // agents-class and correct — the same over-assertion m343 had to walk back.
+    !/from\("closing_disclosure_agreement"\)[\s\S]{0,400}?agent_id:\s*txn\.agent_id/.test(cda))
+
+  const lm = code("app/actions/listing-media.ts")
+  ok("listing-media writes user.id to ai_video_projects — it resolved an AGENTS\n    id for a users-class column, so every listing video insert was rejected",
+    /agent_id:            user\.id,/.test(lm) && !/agent_id:            agent\.id,/.test(lm))
+
+  const mk = code("lib/kernel/marketing.ts")
+  ok("kernel/marketing sends ctx.userId to the two users-class tables it writes\n    (ai_video_projects, podcast_episodes)",
+    (mk.match(/agent_id:\s*ctx\.userId,/g) ?? []).length === 2)
+  ok("...and KEEPS ctx.agentId for newsletter_campaigns, direct_mail_campaigns and\n    qr_codes, which genuinely FK agents — the same file, both classes, on purpose",
+    (mk.match(/agent_id:\s*ctx\.agentId \?\? null,/g) ?? []).length === 3)
+}
+
 console.log("\n═══ 4. The catalogue this guard reasons from is honest ═══")
 {
   ok("the users-class table list is exactly the 20 the live schema reports",

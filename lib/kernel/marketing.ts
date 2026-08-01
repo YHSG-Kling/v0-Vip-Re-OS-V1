@@ -906,7 +906,9 @@ export async function createVideoProject(
     .from("ai_video_projects")
     .insert({
       brokerage_id:        ctx.brokerageId,
-      agent_id:            ctx.agentId ?? null,
+      // IDENTITY CLASS (m364) — ai_video_projects.agent_id FKs USERS, and
+      // MarketingActorContext carries both ids. ctx.agentId is the agents id.
+      agent_id:            ctx.userId,
       title:               input.title.trim(),
       script_content:      input.scriptContent.trim(),
       video_type:          input.videoType,
@@ -1195,7 +1197,10 @@ export async function createPodcastEpisodeKernel(
     .from("podcast_episodes")
     .insert({
       brokerage_id: ctx.brokerageId,
-      agent_id: ctx.agentId ?? null,
+      // IDENTITY CLASS (m364) — podcast_episodes.agent_id FKs USERS. The three
+      // other ctx.agentId writes in this file (newsletter_campaigns,
+      // direct_mail_campaigns, qr_codes) are agents-class and stay as they are.
+      agent_id: ctx.userId,
       title: input.title.trim(),
       description: input.description ?? null,
       script: input.script ?? null,

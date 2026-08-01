@@ -227,7 +227,12 @@ export async function createVideoProject(params: {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { data: null, error: "Not authenticated" }
 
-  // Resolve agent record for agent_id (NOT NULL)
+  // IDENTITY CLASS (m364). ai_video_projects.agent_id is one of the twenty
+  // columns that FK USERS — so this resolve produces the WRONG class and the
+  // insert below was FK-rejected on every listing video. user.id is already in
+  // hand (it is passed as agent_user_id to resolveVideoProvider just below).
+  // The lookup is kept only for its existence check, which is a real gate.
+  // Resolve agent record to confirm the caller has one (agent_id itself is users-class)
   const { data: agent } = await supabase
     .from("agents")
     .select("id")
@@ -251,7 +256,7 @@ export async function createVideoProject(params: {
     .insert({
       listing_id:          params.listingId,
       brokerage_id:        params.brokerageId,
-      agent_id:            agent.id,
+      agent_id:            user.id,
       title:               params.title,
       script_content:      params.scriptContent,
       video_type:          params.videoType,
