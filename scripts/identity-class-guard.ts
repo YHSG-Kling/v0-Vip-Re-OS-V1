@@ -186,7 +186,7 @@ console.log("\n═══ 1. No function uses one value as both identity classes 
   // that belongs to a sibling query. Claiming they are all bugs would repeat
   // the exact mistake this guard exists to catch — asserting more than the
   // evidence supports. So: the number may only go DOWN.
-  const BASELINE = 35
+  const BASELINE = 32
   ok(`self-contradicting identity uses at or below the baseline of ${BASELINE} (found ${found.length})`,
     found.length <= BASELINE,
     found.length > BASELINE
@@ -244,6 +244,25 @@ console.log("\n═══ 2. The three verified defects stay fixed ═══")
   ok("...and still writes income_forecast_snapshots with the users id",
     /agent_id:\s+input\.agentId|\.eq\("agent_id", input\.agentId\)/.test(inc))
 
+  // m339 batch — three surfaces that returned an EMPTY RESULT rather than an
+  // error, which is why none of them ever looked broken.
+  const rep = code("lib/kernel/reputation.ts")
+  ok("review_requests (users-class) is keyed by the resolved users id, while\n    agent_reviews and referrals keep the agents id — the insert was an FK\n    violation, so no review request could ever be created",
+    /resolveAgentRecordToUserId\(input\.agentId\)/.test(rep) &&
+    /agent_id:\s+reviewRequestAgentId/.test(rep),
+    "lib/kernel/reputation.ts")
+
+  const pod = code("lib/podcast/auto-producer.ts")
+  ok("the podcast host's VOICE CLONE is looked up by the agents id — hostUserId\n    is users-class, so this never matched and every auto-produced episode fell\n    through to a non-cloned voice in silence",
+    /resolveUserIdToAgentRecord\(input\.hostUserId, input\.brokerageId\)/.test(pod) &&
+    !/\.eq\("agent_id", input\.hostUserId\)/.test(pod),
+    "lib/podcast/auto-producer.ts")
+
+  const vrec = code("app/api/ai/video-recommendations/route.ts")
+  ok("the \"already sent a market update?\" check reads ai_video_projects\n    (users-class) by user.id — keyed by the agents id it never matched, so the\n    route recommended the same video every single time",
+    /\.from\("ai_video_projects"\)[\s\S]{0,80}\.eq\("agent_id", user\.id\)/.test(vrec),
+    "app/api/ai/video-recommendations/route.ts")
+
   const life = code("app/dashboard/listings/[id]/lifecycle/page.tsx")
   ok("the listing lifecycle page filters listings.agent_id by the AGENTS id —\n    filtering it by user.id matched nothing, so an agent could never open\n    their own listing",
     /resolveUserIdToAgentRecord\(user\.id/.test(life) &&
@@ -284,5 +303,5 @@ if (fail > 0) {
   console.log("Route it through lib/kernel/agent-identity-resolver instead of guessing.")
   process.exit(1)
 }
-console.log("Five verified defects fixed and locked; 35 candidates remain behind a ratchet")
+console.log("Eight verified defects fixed and locked; 32 candidates remain behind a ratchet")
 console.log("that may only go down. The resolver is the one place this should be decided.")

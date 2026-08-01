@@ -30,6 +30,7 @@
  * cheap no-op.
  */
 import "server-only"
+import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { createServiceClient } from "@/lib/supabase/service"
 import { put } from "@vercel/blob"
 import { generateTextRouted } from "@/lib/ai/models"
@@ -85,10 +86,18 @@ export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
 
   try {
     // 2. Voice profile gate.
-    const { data: profile } = await svc.from("agent_voice_profiles")
-      .select("elevenlabs_voice_id")
-      .eq("agent_id", input.hostUserId)
-      .maybeSingle()
+    // IDENTITY CLASS (m339). hostUserId is a USERS id and podcast_auto_runs /
+    // podcast_episodes are users-class, which the comments below correctly note.
+    // agent_voice_profiles.agent_id is the OTHER class — it FKs AGENTS — so this
+    // lookup never matched and voiceId was always null: every auto-produced
+    // podcast fell through to a non-cloned voice and nothing said why.
+    const hostAgentRecordId = await resolveUserIdToAgentRecord(input.hostUserId, input.brokerageId)
+    const { data: profile } = hostAgentRecordId
+      ? await svc.from("agent_voice_profiles")
+          .select("elevenlabs_voice_id")
+          .eq("agent_id", hostAgentRecordId)
+          .maybeSingle()
+      : { data: null }
     const voiceId = (profile as { elevenlabs_voice_id?: string } | null)?.elevenlabs_voice_id ?? null
     if (!voiceId) {
       await svc.from("podcast_auto_runs").update({ status: "skipped", error_message: "host has no elevenlabs_voice_id" }).eq("id", ledgerId)
