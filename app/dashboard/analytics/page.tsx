@@ -42,7 +42,18 @@ export default async function AnalyticsPage() {
   // NOT users(id) — every filter below used user.id and returned ZERO for every
   // agent (the whole analytics page rendered empty). Resolve the agents.id once.
   const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
-  const agentId = (await resolveAgentId(supabase as any, user.id)) ?? user.id
+  // NOT `?? user.id` (m353). The comment directly above states that user.id
+  // "returned ZERO for every agent" — and then the fallback put user.id back.
+  // The diagnosis and the defect were the same expression. An unresolved agent
+  // gets an honest notice instead of a page of confident zeros.
+  const agentId = await resolveAgentId(supabase as any, user.id)
+  if (!agentId) {
+    return (
+      <div className="p-8 text-center text-muted-foreground">
+        Finishing your account setup — refresh in a moment to view your analytics.
+      </div>
+    )
+  }
 
   // Fetch comprehensive stats
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()

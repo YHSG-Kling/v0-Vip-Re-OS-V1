@@ -661,7 +661,13 @@ export async function POST(req: NextRequest) {
 
         // pass 11: showings/activities.agent_id FK agents(id) — resolve first.
         const { resolveAgentId: _resolveAgentId } = await import("@/lib/kernel/agent-identity")
-        const toolAgentId = (await _resolveAgentId(service as any, user.id)) ?? user.id
+        // NOT `?? user.id` (m353) — the line above says these tables FK
+        // agents(id). An unresolved agent means the tool has nothing to read,
+        // and saying so beats an empty schedule delivered as fact.
+        const toolAgentId = await _resolveAgentId(service as any, user.id)
+        if (!toolAgentId) {
+          return { success: false, error: "No agent profile for this user yet — finish account setup to use schedule tools." }
+        }
         const [showings, activities] = await Promise.all([
           service
             .from("showings")
@@ -797,10 +803,17 @@ export async function POST(req: NextRequest) {
 
         try {
           const { advanceListingStage } = await import("@/app/actions/listing-lifecycle")
+          // NOT `?? user.id` (m353). listings.agent_id IS the agents id, which
+          // is what advanceListingStage expects; user.id is a different class
+          // entirely, so the fallback fed a stage advance — a real business
+          // event — an id that could never match an agents row.
+          if (!listing.agent_id) {
+            return { success: false, error: "That listing has no agent assigned, so its stage cannot be advanced." }
+          }
           const result = await advanceListingStage(
             listing_id,
             target_stage,
-            listing.agent_id ?? user.id,
+            listing.agent_id,
             notes ?? undefined,
           )
           return {

@@ -30,11 +30,19 @@
  * and when it resolves to nothing, return null and let the caller say so. An
  * honest refusal is worth more than a plausible wrong id.
  *
- * THIS IS A RATCHET, NOT A ZERO. The remaining sites each need a human to read
- * what consumes the value before the fallback can be removed — the answer
- * differs per site, and m341 already showed that the fix sometimes belongs on
- * one outlier caller rather than in the shared code. The number may only go
- * DOWN. Adding a new one fails the build.
+ * IT IS NOW ZERO, AND THAT IS AN INVARIANT. This began as a ratchet at 20,
+ * because each site needed a human to read what consumed the value before the
+ * fallback could be removed — the right answer differed per site, and m341 had
+ * already shown the fix sometimes belongs on one outlier caller rather than in
+ * the shared code. All 20 have now been read and converted. Any new occurrence
+ * fails the build.
+ *
+ * THE SHAPE THE LAST EIGHT SHARED IS WORTH REMEMBERING. Each one carried a
+ * comment, written by someone who had correctly diagnosed the bug, saying in
+ * effect "the raw user.id filter returned ZERO for every agent" — and then the
+ * very next line put `?? user.id` back. The diagnosis and the defect were the
+ * same expression. Writing the reason down is not the same as fixing it, and a
+ * fallback is where a fix goes to be quietly undone.
  */
 import { readFileSync, existsSync, readdirSync } from "node:fs"
 
@@ -118,8 +126,9 @@ function findFallbacks(): Hit[] {
   return hits
 }
 
-// ── The ratchet. Lower it as sites are audited; never raise it. ──────────────
-const BASELINE = 8
+// ── ZERO. This started at 20 and was burned down site by site; it is now an
+// INVARIANT, not a ratchet. Any new occurrence fails the build. ─────────────
+const BASELINE = 0
 
 console.log("\n═══ 1. No NEW site manufactures an id of unknown class ═══")
 const hits = findFallbacks()
@@ -263,6 +272,43 @@ console.log("\n═══ 4. The sites fixed in this pass stay fixed ═══")
     /agentUserId \? \{ reviews_requested/.test(goals))
 }
 
+console.log("\n═══ 5. The last eight — where the fix and the bug were one line apart ═══")
+{
+  // Every one of these sat directly under a comment diagnosing the exact defect
+  // the fallback then reinstated.
+  const cases: Array<[string, string, RegExp]> = [
+    ["dashboard/analytics", "a page of confident zeros", /const agentId = await resolveAgentId\(supabase as any, user\.id\)/],
+    ["dashboard/financials/expenses", "an empty expense ledger", /const expenseAgentId = await resolveAgentId\(supabase as any, user\.id\)/],
+    ["api/onboarding/performance-report", "a performance report of zeros", /const agentId = await resolveAgentId\(supabase as any, user\.id\)/],
+    ["api/internal/voice-command", "a spoken \"you have nothing today\"", /const voiceAgentId = await resolveAgentId\(service as any, user\.id\)/],
+  ]
+  const paths: Record<string, string> = {
+    "dashboard/analytics": "app/dashboard/analytics/page.tsx",
+    "dashboard/financials/expenses": "app/dashboard/financials/expenses/page.tsx",
+    "api/onboarding/performance-report": "app/api/onboarding/performance-report/route.ts",
+    "api/internal/voice-command": "app/api/internal/voice-command/route.ts",
+  }
+  for (const [name, cost, re] of cases) {
+    const c = code(read(paths[name]))
+    ok(`${name} resolves without substituting — the fallback bought ${cost}`,
+      re.test(c) && !/\?\?\s*user\.id/.test(c))
+  }
+
+  const ai = code(read("app/api/internal/ai-chat/route.ts"))
+  ok("the ai-chat schedule tool refuses instead of reading with a users id, and\n    the listing stage advance — a real business event — no longer accepts an id\n    that could never match an agents row",
+    !/\?\?\s*user\.id/.test(ai) && /if \(!listing\.agent_id\)/.test(ai) && /if \(!toolAgentId\)/.test(ai))
+
+  const oh = code(read("app/dashboard/listings/[id]/open-house/page.tsx"))
+  ok("the open-house page uses listings.agent_id directly — it IS the agents id,\n    and the page was looking the agents row up BY user_id with it, so the record\n    was always null and the old `?? user?.id` silently supplied a users id",
+    /const listingAgentId = \(data\.listing\.agent_id as string \| null\) \?\? ""/.test(oh) &&
+    !/\.eq\("user_id", data\.listing\.agent_id\)/.test(oh))
+
+  const onb = code(read("app/dashboard/onboarding/page.tsx"))
+  ok("onboarding passes the agents id or refuses — the old fallback fired ONLY\n    for the non-agent roles that have no agent curriculum, so it substituted a\n    users id precisely when there was nothing to show",
+    /agentId,\n/.test(onb) && !/agentId: agentId \?\? user\.id/.test(onb) &&
+    /does not have an agent curriculum/.test(onb))
+}
+
 console.log(`\n${"═".repeat(70)}`)
 console.log(`IDENTITY FALLBACK — ${pass} passed, ${fail} failed`)
 if (fail > 0) {
@@ -272,5 +318,5 @@ if (fail > 0) {
   console.log("row existed. Resolve it, or return null and say so. Never substitute.")
   process.exit(1)
 }
-console.log(`${hits.length} fallback sites remain (baseline ${BASELINE}) — a review queue, not a number`)
-console.log("to drive to zero automatically. Each needs its consumers read first.")
+console.log(`${hits.length} sites manufacture an id of unknown class. This started at 20;`)
+console.log("every one was read and converted. Zero is now the invariant, not a target.")

@@ -72,13 +72,32 @@ export default async function OnboardingPage() {
     agentId = agent?.id ?? null
   }
 
-  // Fetch onboarding dashboard data using kernel function
-  // agentId may be null for non-agent roles (tc, broker, admin) — kernel handles this
+  // NOT `?? user.id` (m353). getAgentOnboardingDashboard filters
+  // agent_onboarding.agent_id, which FKs AGENTS — so the fallback handed it a
+  // users id and the query matched nothing. Worse, it was backwards: the
+  // substitution only ever happened for the non-agent roles the AGENT
+  // onboarding dashboard does not describe in the first place. A role without
+  // an agents row gets an honest notice, not an empty agent curriculum.
+  if (isAgentRole && !agentId) {
+    return (
+      <div className="p-8 text-center text-muted-foreground">
+        Finishing your account setup — refresh in a moment to view your onboarding.
+      </div>
+    )
+  }
+  if (!agentId) {
+    return (
+      <div className="p-8 text-center text-muted-foreground">
+        Onboarding is agent-scoped. Your role ({userType}) does not have an agent curriculum.
+      </div>
+    )
+  }
+
   let dashboard
   try {
     dashboard = await getAgentOnboardingDashboard({
       userId:  user.id,
-      agentId: agentId ?? user.id, // kernel expects a string; fall back to user.id for non-agent path
+      agentId,
     })
   } catch (error) {
     console.error('[Onboarding] Failed to load dashboard:', error)

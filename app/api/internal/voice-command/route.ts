@@ -80,7 +80,14 @@ export async function POST(req: NextRequest) {
   // FK agents(id), NOT users(id) — filtering by the raw user.id returned EMPTY,
   // so the voice admin found none of the agent's own showings/contacts/deals.
   const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
-  const voiceAgentId = (await resolveAgentId(service as any, user.id)) ?? user.id
+  // NOT `?? user.id` (m353) — the comment above says the raw user.id filter is
+  // why "the voice admin found none of the agent's own showings/contacts/deals".
+  // Falling back to it means the voice agent answers "you have nothing today"
+  // with total confidence, which is the worst possible failure for a spoken UI.
+  const voiceAgentId = await resolveAgentId(service as any, user.id)
+  if (!voiceAgentId) {
+    return NextResponse.json({ ok: false, spoken: "I can't reach your agent profile yet — finish account setup and try again." }, { status: 409 })
+  }
   const today = new Date().toISOString().slice(0, 10)
   const startOfWeek = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 

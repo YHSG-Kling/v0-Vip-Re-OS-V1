@@ -26,7 +26,16 @@ export default async function ExpensesPage() {
   // pass 11: business_expenses.agent_id FKs agents(id), not users(id) — the
   // old user.id filter returned zero for every agent. Resolve the agents.id.
   const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
-  const expenseAgentId = (await resolveAgentId(supabase as any, user.id)) ?? user.id
+  // NOT `?? user.id` (m353) — same self-cancelling shape as the comment above:
+  // it says the user.id filter "returned zero for every agent", then restores it.
+  const expenseAgentId = await resolveAgentId(supabase as any, user.id)
+  if (!expenseAgentId) {
+    return (
+      <div className="p-8 text-center text-muted-foreground">
+        Finishing your account setup — refresh in a moment to view your expenses.
+      </div>
+    )
+  }
   const { data: expenses } = await supabase
     .from('business_expenses')
     .select('id, category, amount, description, expense_date, receipt_url')

@@ -32,7 +32,13 @@ export async function POST(request: NextRequest) {
   // agent_quiz_attempts all FK agents(id) — the raw user.id filter read EMPTY
   // for every agent and the performance report showed zeros. Resolve it.
   const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
-  const agentId = (await resolveAgentId(supabase as any, user.id)) ?? user.id
+  // NOT `?? user.id` (m353). The comment above says the raw user.id filter
+  // "read EMPTY for every agent and the performance report showed zeros" — the
+  // fallback reinstated exactly that. A report of zeros is worse than no report.
+  const agentId = await resolveAgentId(supabase as any, user.id)
+  if (!agentId) {
+    return NextResponse.json({ error: 'No agent profile for this user — the performance report is agent-scoped.' }, { status: 409 })
+  }
 
   // Gather metrics
   const progressResult = await getAgentProgress(agentId, brokerageId)
