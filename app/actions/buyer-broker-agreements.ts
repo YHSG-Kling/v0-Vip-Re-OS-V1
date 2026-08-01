@@ -271,7 +271,6 @@ export async function dispatchBBAToSigningProviderAction(
   const txReq = await resolved.provider.createTransaction({
     propertyAddress: "Buyer Representation Agreement",
     transactionType: "purchase",
-    agentId:         bba.agent_id as string,
     contactId:       bba.buyer_contact_id as string,
   })
   if (!txReq.success || !txReq.externalTransactionId) {

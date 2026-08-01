@@ -450,28 +450,47 @@ console.log("\n═══ 10. The INVERTED resolve — where the fallback was the
     /agentId: agentId \?\? undefined,/.test(cs) && /const agentId = await resolveAgentRowId\(svc, ctx\.userId\)/.test(cs))
 }
 
-console.log("\n═══ 11. A decorative parameter is still worth getting right ═══")
+console.log("\n═══ 11. The decorative fields are GONE, not merely tolerated ═══")
 {
-  // m368. tool-call fed `contact.agent_id ?? session.user_id` to the e-sign
-  // provider's createTransaction. That is NOT a live defect:
-  // CreateTransactionRequest.agentId is decorative — all four implementations
-  // (dotloop, skyslope, formsimplicity, brokermint) ignore it, and dotloop
-  // scopes its loop by the profileId in its CREDENTIALS. Nothing downstream
-  // could observe the ambiguity.
+  // m368 fixed the e-sign call site while noting CreateTransactionRequest.agentId
+  // was decorative. m374 audited it properly and removed it.
   //
-  // Fixed anyway, without a fallback. A field like this is the kind that gets
-  // wired later, and an ambiguous value waiting in an unread parameter is how a
-  // future wiring inherits a bug it did nothing to cause.
-  const tc = code(read("app/api/agent-assistant/tool-call/route.ts"))
-  ok("the e-sign createTransaction call passes an agents id or nothing",
-    /agentId:\s+contact\.agent_id \?\? "",/.test(tc))
-
-  // And the finding underneath it: the interface asks for an id nobody reads.
+  // Seven callers computed a value for that field. FOUR passed a users id
+  // (input.targetUserId, user.id, userId, args.signerUserId) and THREE passed an
+  // agents id (contact.agent_id, bba.agent_id, session.agent_id). Two classes in
+  // one required field, and nobody was wrong, because none of the six providers
+  // ever read it — each scopes the transaction by the account in its own
+  // credentials. The day someone wired it, half the callers would have broken.
+  // Four of those seven were invisible to grep and only surfaced when the
+  // compiler was allowed to find them: the strongest argument for deleting a
+  // field rather than documenting it.
   const iface = read("lib/integrations/providers/transaction-provider.interface.ts")
-  const impls = ["dotloop", "skyslope", "formsimplicity", "brokermint"]
-    .map((n) => code(read(`lib/integrations/providers/${n}-provider.ts`)))
-  ok("CreateTransactionRequest still DECLARES agentId, and zero of the four\n    providers read it — recorded so the next reader does not assume the field\n    carries meaning it has never carried",
-    /agentId: string/.test(iface) && impls.every((s2) => !/request\.agentId/.test(s2)))
+  ok("CreateTransactionRequest no longer declares an agentId nobody reads",
+    !/^\s*agentId: string/m.test(code(iface)) && /THE ABSENT agentId/.test(iface))
+  // SCOPED TO THE createTransaction CALL WINDOW ON PURPOSE. The first version of
+  // this assertion banned `agentId:` anywhere in these files and immediately
+  // failed on requireActiveBBA({ agentId: contact.agent_id }) — a DIFFERENT
+  // function that correctly takes an agents id. An assertion that forbids a
+  // token rather than a construct is the m343/m364 mistake; it would have
+  // pressured a correct call site into changing.
+  ok("...and no createTransaction call still computes one for it",
+    ["lib/workflow/adapters/send-for-esign.ts", "app/actions/buyer-broker-agreements.ts",
+     "app/api/agent-assistant/tool-call/route.ts", "app/actions/admin/commission-agreement.ts",
+     "app/actions/buyer-offer/acknowledge-commission.ts", "app/actions/buyer-offer/submit-for-signature.ts",
+     "lib/transactions/cda-esign.ts"]
+      .every((f) => {
+        const src2 = code(read(f))
+        return [...src2.matchAll(/createTransaction\s*\(\s*\{/g)]
+          .every((m) => !/\bagentId\s*:/.test(src2.slice(m.index ?? 0, (m.index ?? 0) + 600)))
+      }))
+  ok("...and all six providers still ignore an agent id, which is why the field\n    had no meaning to carry in the first place",
+    ["dotloop", "skyslope", "formsimplicity", "brokermint", "docusign", "authentisign"]
+      .every((n) => !/request\.agentId/.test(code(read(`lib/integrations/providers/${n}-provider.ts`)))))
+
+  // AGENT_REGISTRY.lib — the other field that read as wiring and was not.
+  const reg = read("lib/intelligence/agent-registry.ts")
+  ok("AGENT_REGISTRY no longer declares a module path per agent — it made an\n    unwired action look reachable during the m373 audit",
+    !/\n\s*lib: '/.test(reg) && /THE ABSENT `lib` FIELD/.test(reg))
 }
 
 console.log("\n═══ 12. The last three sites — and the surface behind one of them ═══")

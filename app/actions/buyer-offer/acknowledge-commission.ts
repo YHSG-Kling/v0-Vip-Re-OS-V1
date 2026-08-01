@@ -114,7 +114,6 @@ export async function acknowledgeBuyerCommissionAction(
       const tx = await resolved.provider.createTransaction({
         propertyAddress: `Commission disclosure — offer ${input.offerId.slice(0, 8)}`,
         transactionType: "purchase",
-        agentId:         user.id,
         contactId:       offer.contact_id,
       })
       if (!tx.success || !tx.externalTransactionId) {

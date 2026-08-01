@@ -311,7 +311,6 @@ export async function sendCommissionAgreementAction(input: {
         const tx = await dotloop.createTransaction({
           propertyAddress: `Commission Agreement — ${signerName}`,
           transactionType: "purchase",
-          agentId: input.targetUserId,
           transactionId: rowId,
         })
         if (tx.success && tx.externalTransactionId) {

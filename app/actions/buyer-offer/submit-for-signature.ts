@@ -174,7 +174,6 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
         const createRes = await provider.createTransaction({
           propertyAddress: offer.property_address ?? "Real estate transaction",
           transactionType: "purchase",
-          agentId:         userId,
           contactId:       offer.contact_id ?? undefined,
           listingId:       offer.listing_id ?? undefined,
         })

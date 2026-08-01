@@ -290,7 +290,6 @@ export const sendForEsignAdapter: ChannelAdapter = {
         const txResult = await esignProv.createTransaction({
           propertyAddress,
           transactionType: document.document_type === "listing_agreement" ? "listing" : "purchase",
-          agentId: agentUserId ?? "",
           contactId: contact?.id,
           listingId: (document as any).listing_id ?? undefined,
           transactionId: (document as any).transaction_id ?? undefined,

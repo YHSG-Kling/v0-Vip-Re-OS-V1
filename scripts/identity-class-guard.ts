@@ -676,27 +676,25 @@ console.log("\n═══ 6. Both activities writers (m372) ═══")
     /if \(auditErr\) console\.error/.test(cs))
 }
 
-console.log("\n═══ 7. Two fields that look like wiring and are not (m373) ═══")
+console.log("\n═══ 7. The two fields that looked like wiring are GONE (m373 found, m374 removed) ═══")
 {
-  // Found while checking whether ai-transaction-coordinator was reachable.
-  // AGENT_REGISTRY gives every agent a `lib` module path. Nothing anywhere
-  // reads that field — the router uses the registry for names, capabilities
-  // and SESSION bookkeeping, and never loads a module from it. Recorded, not
-  // "fixed": removing the field or wiring the dispatch is a product decision.
-  // The danger is only that the next reader assumes the path means dispatch.
+  // m373 recorded these as documented state: AGENT_REGISTRY.lib gave every agent
+  // a module path nothing read, and it cost real time — it made an unwired action
+  // look reachable mid-audit. m374 audited and removed it rather than describing
+  // it, so this assertion had to INVERT. A guard that asserts the presence of an
+  // anti-pattern freezes it; that is the m346/m361/m362 mistake, and this section
+  // is where it nearly happened again.
   const reg = src("lib/intelligence/agent-registry.ts")
-  const readers = ["lib/intelligence/multi-agent-router.ts",
-                   "app/dashboard/coordination/coordination-dashboard-client.tsx",
-                   "app/api/intelligence/coordinate/route.ts"].map(src)
-  ok("AGENT_REGISTRY still DECLARES a lib module path per agent, and no consumer\n    reads it — so a registry entry is not evidence that an action is wired",
-    /lib: '@\/app\/actions\//.test(reg) &&
-    readers.every((r) => !/\.lib\b/.test(r)))
+  ok("AGENT_REGISTRY declares no module path — a registry entry is not evidence\n    that an action is wired",
+    !/\n\s*lib: '/.test(reg) && /THE ABSENT `lib` FIELD/.test(reg))
 
-  // And the fourth-name column count, kept honest because it is an OWNER
-  // decision (agent_user_id is not one of the three names this OS uses).
-  // Four tables carry it: ai_message_drafts, blog_posts, marketing_campaigns
-  // and activities — the last found in m373 via listing-appt-prep's write.
-  ok("the agent_user_id writers still target tables that really have the column,\n    so the naming question stays a naming question and not a broken write",
+  // The agent_user_id question, settled by counting rather than by impression.
+  // m373 called it "the fourth identity name" on the strength of four tables.
+  // The live schema says 36 tables carry it, 30 with foreign keys, across 671
+  // uses. That is not drift — it is an established convention meaning "the users
+  // id OF AN AGENT", distinct from agent_id (agents.id) and from a bare user_id.
+  // On `activities`, which has both, the pair encodes two different facts.
+  ok("the agent_user_id writers still target tables that really have the column,\n    so this stays a naming convention and not a broken write",
     /agent_user_id: ctx\.agentUserId/.test(code("lib/workflow-orchestrator/chains/listing-appt-prep.ts")))
 }
 
