@@ -145,9 +145,28 @@ function classifyUsages(chunk: string): { expr: string; cls: "agents" | "users";
       }
     }
     // Inserts/updates: agent_id: <expr>
+    //
+    // NESTED OBJECTS ARE NOT COLUMNS (m367). An `agent_id:` key inside a JSONB
+    // blob — metadata / payload / context / extracted_data — or inside a plain
+    // local object is NOT a database column, but it sits in the same .from()
+    // window and used to be classified as one. Two of the remaining candidates
+    // were exactly this: lib/application/listing-lifecycle stamps
+    // `metadata: { ..., agent_id: agentId }` on a calendar_events row whose
+    // real column is agent_user_id (calendar_events has no agent_id at all),
+    // and app/dashboard/admin/visitor-tracking sets a local object field near a
+    // .from("users") window — `users` has no agent_id either.
+    //
+    // Both were artifacts. One of them (m366) still led to a real bug one hop
+    // downstream, so the flag was worth following — but it should not be
+    // counted as a class contradiction here. Blank the nested blobs first so
+    // the count means what it claims to.
+    const window2 = window.replace(
+      /\b(?:metadata|payload|context|extracted_data|output_data|input_data|plan|config)\s*:\s*\{[^{}]*\}/g,
+      "",
+    )
     const objRe = /\bagent_id\s*:\s*([A-Za-z_$][\w.$]*)/g
     let o: RegExpExecArray | null
-    while ((o = objRe.exec(window))) {
+    while ((o = objRe.exec(window2))) {
       if (NOT_A_VALUE.has(o[1])) continue
       out.push({ expr: o[1], cls: USERS_CLASS_TABLES.has(table) ? "users" : "agents", where: `${table}.agent_id (write)` })
     }
@@ -211,7 +230,7 @@ console.log("\n═══ 1. No function uses one value as both identity classes 
   // So a high remaining count is not the same as a high remaining risk. Grep
   // for a caller first; if there is none, the entry belongs in the dead-surface
   // triage, not here.
-  const BASELINE = 17
+  const BASELINE = 16
   ok(`self-contradicting identity uses at or below the baseline of ${BASELINE} (found ${found.length})`,
     found.length <= BASELINE,
     found.length > BASELINE
@@ -537,6 +556,27 @@ console.log("\n═══ 3h. The tracking pixel recorded nothing ═══")
     /cannot be scoped to an agent/.test(src("app/dashboard/admin/visitor-tracking/page.tsx")))
 }
 
+console.log("\n═══ 3i. A nested JSONB key is not a column ═══")
+{
+  // m367. The classifier treated any `agent_id:` inside a .from() window as a
+  // column write. Two remaining candidates were JSONB/local-object keys:
+  // calendar_events has no agent_id column at all (only agent_user_id) and
+  // `users` has none either. Excluding the blobs makes the ratchet mean what it
+  // says. The risk of the exclusion is over-reach, so both directions are
+  // proven here rather than assumed.
+  const win = (src: string) => src.replace(
+    /\b(?:metadata|payload|context|extracted_data|output_data|input_data|plan|config)\s*:\s*\{[^{}]*\}/g, "")
+  const KEY = /\bagent_id\s*:\s*([A-Za-z_$][\w.$]*)/g
+  const count = (src: string) => { KEY.lastIndex = 0; return (win(src).match(KEY) ?? []).length }
+
+  ok("an agent_id inside a metadata blob is NOT counted as a column write",
+    count('insert({ agent_user_id: a, metadata: { contact_id: c, agent_id: a } })') === 0)
+  ok("...and a REAL top-level agent_id write in the same statement still IS",
+    count('insert({ agent_id: a, metadata: { agent_id: a } })') === 1)
+  ok("...and a row carrying both a real column and a blob counts exactly once",
+    count('insert({ agent_id: x, notes: n, payload: { agent_id: y, k: 1 } })') === 1)
+}
+
 console.log("\n═══ 4. The catalogue this guard reasons from is honest ═══")
 {
   ok("the users-class table list is exactly the 20 the live schema reports",
@@ -554,5 +594,5 @@ if (fail > 0) {
   console.log("Route it through lib/kernel/agent-identity-resolver instead of guessing.")
   process.exit(1)
 }
-console.log("Verified defects fixed and locked; 17 candidates remain behind a ratchet")
+console.log("Verified defects fixed and locked; 16 candidates remain behind a ratchet")
 console.log("that may only go down. The resolver is the one place this should be decided.")
