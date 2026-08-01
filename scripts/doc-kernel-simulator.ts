@@ -1736,7 +1736,13 @@ async function main() {
         && src("lib/intelligence/daily-briefing-generator.ts").includes("const briefingUserId = identityRow?.user_id ?? agentId")
         && src("lib/intelligence/daily-briefing-generator.ts").includes("user_id: briefingUserId")
         && src("app/actions/copilot.ts").includes("gameplanAgentId")
-        && src("app/actions/buyer-financial.ts").includes('.eq("agent_id", ctx.agentId ?? ctx.userId)'))
+        // m361: this assertion used to encode `.eq("agent_id", ctx.agentId ?? ctx.userId)`
+        // as the FIXED state. Pass 12's own note says the fix was "now ctx.agentId" —
+        // but the code it froze kept the `?? ctx.userId` fallback, so the guard
+        // protected the anti-pattern it was written to remove. referral_partners
+        // .agent_id FKs agents; a users id there matches nothing. Same shape as the
+        // `.or(id.eq,user_id.eq)` assertion m346 had to unwind.
+        && src("app/actions/buyer-financial.ts").includes('.eq("agent_id", ctx.agentId ?? "")'))
 
       // ── PASS 13: GLOBAL agent_user_id CLASS AUDIT + CAP-LEDGER CONSOLIDATION + E2E-IN-GUARD ──
       {

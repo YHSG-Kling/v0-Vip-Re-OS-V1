@@ -148,7 +148,7 @@ function findFallbacks(): Hit[] {
 
 // ── A RATCHET AGAIN, AT THE HONEST NUMBER. See the header for why the zero
 // this briefly reported was false. Lower it as sites are audited; never raise.
-const BASELINE = 10
+const BASELINE = 5
 
 console.log("\n═══ 1. No NEW site manufactures an id of unknown class ═══")
 const hits = findFallbacks()
@@ -387,6 +387,28 @@ console.log("\n═══ 8. The compliance + approval log kept the wrong rows �
     ok(`${f.replace("app/actions/", "")} no longer substitutes ctx.userId`,
       !/ctx\.agentId \?\? ctx\.userId/.test(code(read(f))))
   }
+}
+
+console.log("\n═══ 9. Five more, including two that wrote the rule then broke it ═══")
+{
+  const pairs: Array<[string, string]> = [
+    ["app/actions/seller-open-house.ts", "open_house_events.agent_id FKs agents, so the open house was never created"],
+    ["app/actions/buyer-financial.ts", "referral_partners.agent_id FKs agents — the comment above it says so"],
+    ["app/actions/business-card/business-card-actions.ts", "business_card_scans.agent_id FKs agents"],
+    ["app/api/onboarding/assistant/route.ts", "every agent_id and entity_id below is agents-class"],
+  ]
+  for (const [f, why] of pairs) {
+    ok(`${f.replace(/^app\//, "")} — ${why}`,
+      !/\?\?\s*(?:auth|ctx)\.userId/.test(code(read(f))))
+  }
+  const dc = code(read("app/actions/document-center.ts"))
+  ok("document-center's governed-document request carries an id whose CLASS\n    matches the `type: \"agent\"` label it travels under",
+    /id: ctx\.agentId \?\? null,/.test(dc))
+  // The two that stated the rule and broke it in the same breath.
+  ok("buyer-financial's comment no longer diagnoses the bug it then reinstates",
+    /m361 removes the\n  \/\/ fallback/.test(read("app/actions/buyer-financial.ts")))
+  ok("...and onboarding/assistant no longer says \"we need the agents.id; fall\n    back to users.id\" — a requirement and its violation in one sentence",
+    !/fall back to users\.id if no agent row/.test(read("app/api/onboarding/assistant/route.ts")))
 }
 
 console.log(`\n${"═".repeat(70)}`)

@@ -47,7 +47,9 @@ export async function uploadBusinessCard(params: {
   const auth = await requireCaller()
   if (!auth.ok) throw new Error(auth.error)
   const brokerageId = auth.brokerageId
-  const agentId = auth.agentId ?? auth.userId
+  // NOT `?? auth.userId` (m361) — business_card_scans.agent_id FKs agents.
+  const agentId = auth.agentId
+  if (!agentId) throw new Error("No agent profile for this user yet — finish account setup.")
 
   const supabase = createServiceClient()
   const scanId = crypto.randomUUID()

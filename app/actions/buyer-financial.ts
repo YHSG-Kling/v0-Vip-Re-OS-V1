@@ -383,13 +383,15 @@ export async function loadMortgageBrokers(params: {
   const supabase = createServiceClient()
 
   // Scope by session brokerage; agent_id pulled from session, not caller.
-  // pass 12: referral_partners.agent_id FKs agents(id) (referral-actions stamps
-  // agents.id) — the old users.id filter always returned zero partners.
+  // pass 12 diagnosed this correctly and then reinstated it: referral_partners
+  // .agent_id FKs agents(id), "the old users.id filter always returned zero
+  // partners" — and the line below said `?? ctx.userId`. m361 removes the
+  // fallback. Same self-cancelling shape as the eight sites in m353.
   const { data, error } = await supabase
     .from("referral_partners")
     .select("id, partner_name, company_name, phone, email")
     .eq("brokerage_id", ctx.brokerageId)
-    .eq("agent_id", ctx.agentId ?? ctx.userId)
+    .eq("agent_id", ctx.agentId ?? "")
     .eq("partner_type", "mortgage_broker")
     .eq("active", true)
     .limit(3)

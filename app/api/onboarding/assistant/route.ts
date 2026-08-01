@@ -13,8 +13,14 @@ export async function POST(request: Request) {
   if (!auth.ok) return auth.response
 
   const brokerageId = auth.brokerageId
-  // For lifecycle events we need the agents.id; fall back to users.id if no agent row
-  const agentId = auth.agentId ?? auth.userId
+  // The comment here used to say "we need the agents.id; fall back to users.id
+  // if no agent row" — stating the requirement and then breaking it in the same
+  // breath (m361). Every agent_id and entity_id below is agents-class, so a
+  // users id is not a lesser answer, it is a wrong one.
+  const agentId = auth.agentId
+  if (!agentId) {
+    return Response.json({ error: "No agent profile for this user yet — finish account setup." }, { status: 409 })
+  }
 
   try {
     const body = await request.json()

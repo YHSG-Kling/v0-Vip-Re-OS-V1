@@ -506,7 +506,12 @@ export async function createOpenHouseEvent(params: {
     .insert({
       listing_id: params.listingId,
       brokerage_id: auth.brokerageId,
-      agent_id: auth.agentId ?? auth.userId,
+      // NOT `?? auth.userId` (m361). open_house_events.agent_id FKs agents
+      // (verified live), so the substitution was FK-rejected and the open house
+      // was never created. created_by on the next line is the users id and is
+      // correct — the row wants BOTH classes, which is precisely why one of
+      // them must not be a guess.
+      agent_id: auth.agentId,
       created_by: auth.userId,
       event_date: params.eventDate,
       start_time: params.startTime,

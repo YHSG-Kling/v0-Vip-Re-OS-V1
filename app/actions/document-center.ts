@@ -215,8 +215,11 @@ export async function getGovernedDocumentUrl(
     {
       documentId,
       requestedBy: {
+        // `type: "agent"` names the class; the id must match it (m361). The old
+        // `?? ctx.userId` handed a governed-document authority check a users id
+        // labelled as an agent.
         type: "agent",
-        id: ctx.agentId ?? ctx.userId ?? null,
+        id: ctx.agentId ?? null,
       },
       purpose,
     },
