@@ -40,6 +40,14 @@
  * cannot be, so the code is wrong either way. It is what caught the NPV scorer
  * and the showings action, and it cannot fire on merely-badly-named variables.
  *
+ * WHAT IT CANNOT SEE, stated so nobody mistakes a green run for full coverage:
+ * a mismatch that lives ACROSS a call boundary. The brand-voice defect (m341)
+ * was exactly that — the settings page passed user.id into an action whose
+ * three other callers correctly passed agents.id, so no single function
+ * contradicted itself and the count never moved. That one was found by reading
+ * the callers, which is why the burn-down is manual review against this list
+ * rather than a number to drive to zero automatically.
+ *
  * THE CANONICAL FIX ALREADY EXISTED. lib/kernel/agent-identity-resolver.ts has
  * shipped branded types (AgentRecordId, UserAgentId) and both resolvers for a
  * long time. It is imported by 18 files out of the 950 that touch agent_id. The
@@ -244,6 +252,20 @@ console.log("\n═══ 2. The three verified defects stay fixed ═══")
   ok("...and still writes income_forecast_snapshots with the users id",
     /agent_id:\s+input\.agentId|\.eq\("agent_id", input\.agentId\)/.test(inc))
 
+  // m341 — the BRAND VOICE settings page. Four callers of getBrandVoiceProfile;
+  // three (the CRM composer, relationship panel and reply coach) already passed
+  // agents.id correctly from app/crm/page.tsx, and only the dedicated settings
+  // page passed user.id. So the fix belonged on the OUTLIER: resolving inside
+  // the action would have broken the three that already worked. Proven live —
+  // the users id is rejected by the FK, the agents id is accepted.
+  const bv = code("app/settings/brand-voice/page.tsx")
+  ok("the brand-voice settings page resolves users\u2192agents before reading or\n    saving the profile (it always read empty and every save was rejected)",
+    /\.from\("agents"\)\.select\("id"\)\.eq\("user_id", user\.id\)/.test(bv) &&
+    !/getBrandVoiceProfile\(user\.id\)/.test(bv),
+    "app/settings/brand-voice/page.tsx")
+  ok("...and refuses with a real instruction when the user has no agent row",
+    /No agent profile yet/.test(src("app/settings/brand-voice/page.tsx")))
+
   // m339 batch — three surfaces that returned an EMPTY RESULT rather than an
   // error, which is why none of them ever looked broken.
   const rep = code("lib/kernel/reputation.ts")
@@ -317,5 +339,5 @@ if (fail > 0) {
   console.log("Route it through lib/kernel/agent-identity-resolver instead of guessing.")
   process.exit(1)
 }
-console.log("Nine verified defects fixed and locked; 31 candidates remain behind a ratchet")
+console.log("Ten verified defects fixed and locked; 31 candidates remain behind a ratchet")
 console.log("that may only go down. The resolver is the one place this should be decided.")

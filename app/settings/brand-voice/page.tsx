@@ -50,8 +50,24 @@ export default function BrandVoicePage() {
       const supabase = createClient()
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) { setLoading(false); return }
-      setAgentId(user.id)
-      const profile = await getBrandVoiceProfile(user.id)
+
+      // IDENTITY CLASS (m341). brand_voice_profile.agent_id FKs AGENTS. This
+      // page was passing user.id — a USERS id — so it always read an empty
+      // profile even when one existed, and saving wrote an agents-class column
+      // with a users id, which the foreign key rejects. The three CRM callers
+      // (smart-note-composer, relationship-ai-chat-panel, inline-ai-reply-coach)
+      // were already correct: they receive agents.id from app/crm/page.tsx. So
+      // the fix belongs HERE, on the outlier — resolving inside the action would
+      // have broken the three call sites that already worked.
+      const { data: agentRow } = await supabase
+        .from("agents").select("id").eq("user_id", user.id).maybeSingle()
+      if (!agentRow?.id) {
+        setLoading(false)
+        toast.error("No agent profile yet — finish onboarding to set your brand voice")
+        return
+      }
+      setAgentId(agentRow.id)
+      const profile = await getBrandVoiceProfile(agentRow.id)
       if (profile) {
         setTone(profile.tone ?? "")
         setStyle(profile.style ?? "")
