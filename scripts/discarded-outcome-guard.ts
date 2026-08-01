@@ -113,9 +113,9 @@ function ok(label: string, cond: boolean, detail?: string) {
 const FILES = [...walk("app"), ...walk("lib"), ...walk("components")]
 const RETURNS_FAILURE = actionsThatReturnFailure(FILES)
 
-// 22 after the transaction-inspections cluster was fixed. Lower it as callers
-// start reading their outcomes; never raise it.
-const BASELINE = 22
+// 17 after the transaction-inspections and portal clusters were fixed. Lower
+// it as callers start reading their outcomes; never raise it.
+const BASELINE = 17
 
 console.log("\n═══ 1. No UI claims success without reading the outcome ═══")
 const hits = findDiscarded(FILES, RETURNS_FAILURE)
@@ -162,6 +162,32 @@ console.log("\n═══ 3. The transaction-inspections cluster reads its outcom
     const window = at === -1 ? "" : c.slice(at, at + 900)
     ok(`${fn} — its outcome is read before the screen claims success`,
       at !== -1 && /!res\?\.success|!result\?\.success|\.success\b/.test(window))
+  }
+}
+
+console.log("\n═══ 4. The partner portals read their outcomes (m378) ═══")
+{
+  // These are the ones an OUTSIDE party sees. A lender moves the loan status, a
+  // title company ticks a closing item — the page refreshes, the old value is
+  // still there, and nothing was said. Worse than an internal miss: the partner
+  // has no way to tell a refused update from a slow one, and no support path.
+  //
+  // Every one of these files already had an `error` state and used it elsewhere.
+  // lender-actions even checks r.error on its createLenderApplication call, four
+  // lines above a sibling that did not. The same "some paths fixed, others not"
+  // shape the CDA and activities clusters had.
+  const PORTAL: Array<[string, string]> = [
+    ["app/portal/lender/[transactionId]/lender-actions.tsx", "flagLenderIssue"],
+    ["app/portal/lender/[transactionId]/lender-actions.tsx", "updateLenderLoanStatus"],
+    ["app/portal/lender/[transactionId]/lender-actions.tsx", "updateLenderApplicationStatus"],
+    ["app/portal/title/[transactionId]/title-actions.tsx", "updateTitleStatus"],
+    ["app/portal/title/[transactionId]/closing-checklist.tsx", "updateClosingPrepItem"],
+  ]
+  for (const [file, fn] of PORTAL) {
+    const src = read(file)
+    const at = src.indexOf(`await ${fn}`)
+    ok(`${fn} — the portal reads the outcome before refreshing`,
+      at !== -1 && /!r\?\.success/.test(src.slice(at, at + 700)))
   }
 }
 
