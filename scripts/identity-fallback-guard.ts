@@ -148,7 +148,7 @@ function findFallbacks(): Hit[] {
 
 // ── A RATCHET AGAIN, AT THE HONEST NUMBER. See the header for why the zero
 // this briefly reported was false. Lower it as sites are audited; never raise.
-const BASELINE = 5
+const BASELINE = 4
 
 console.log("\n═══ 1. No NEW site manufactures an id of unknown class ═══")
 const hits = findFallbacks()
@@ -409,6 +409,26 @@ console.log("\n═══ 9. Five more, including two that wrote the rule then br
     /m361 removes the\n  \/\/ fallback/.test(read("app/actions/buyer-financial.ts")))
   ok("...and onboarding/assistant no longer says \"we need the agents.id; fall\n    back to users.id\" — a requirement and its violation in one sentence",
     !/fall back to users\.id if no agent row/.test(read("app/api/onboarding/assistant/route.ts")))
+}
+
+console.log("\n═══ 10. The INVERTED resolve — where the fallback was the correct value ═══")
+{
+  // m363. lib/wizard-staging/content-staging resolved users→AGENTS and passed
+  // that to two consumers whose column is one of the twenty that FK USERS.
+  //   · stageVideoProject → createVideoProject → ai_video_projects.agent_id.
+  //     It had `?? ctx.userId`, so the CORRECT value was reachable only through
+  //     the fallback: the feature worked ONLY for users with no agents row and
+  //     was FK-rejected for everyone else. Exactly backwards.
+  //   · stagePodcastEpisode → podcast_episodes.agent_id, with no fallback at
+  //     all, so that insert was simply rejected every time.
+  // The resolve is deleted in both, not reordered — nothing there needed it.
+  const cs = code(read("lib/wizard-staging/content-staging.ts"))
+  ok("stageVideoProject passes ctx.userId to createVideoProject, whose column and\n    actor context are both users-class",
+    /agentId: ctx\.userId,/.test(cs) && !/agentId: agentId \?\? ctx\.userId/.test(cs))
+  ok("...and the podcast_episodes insert uses ctx.userId too — that write was\n    FK-rejected on every staged episode",
+    /\.from\("podcast_episodes"\)[\s\S]{0,160}agent_id: ctx\.userId,/.test(cs))
+  ok("...while the email campaign KEEPS its agents-id resolve, because\n    email_campaigns.agent_id genuinely FKs agents — this was not a blanket sweep",
+    /agentId: agentId \?\? undefined,/.test(cs) && /const agentId = await resolveAgentRowId\(svc, ctx\.userId\)/.test(cs))
 }
 
 console.log(`\n${"═".repeat(70)}`)
