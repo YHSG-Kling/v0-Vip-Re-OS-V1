@@ -688,14 +688,29 @@ console.log("\n═══ 7. The two fields that looked like wiring are GONE (m37
   ok("AGENT_REGISTRY declares no module path — a registry entry is not evidence\n    that an action is wired",
     !/\n\s*lib: '/.test(reg) && /THE ABSENT `lib` FIELD/.test(reg))
 
-  // The agent_user_id question, settled by counting rather than by impression.
-  // m373 called it "the fourth identity name" on the strength of four tables.
-  // The live schema says 36 tables carry it, 30 with foreign keys, across 671
-  // uses. That is not drift — it is an established convention meaning "the users
-  // id OF AN AGENT", distinct from agent_id (agents.id) and from a bare user_id.
-  // On `activities`, which has both, the pair encodes two different facts.
-  ok("the agent_user_id writers still target tables that really have the column,\n    so this stays a naming convention and not a broken write",
-    /agent_user_id: ctx\.agentUserId/.test(code("lib/workflow-orchestrator/chains/listing-appt-prep.ts")))
+  // THE agent_user_id QUESTION — CORRECTED BY THE OWNER (m375).
+  //
+  // m373 called it a fourth identity name on the strength of four tables. m374
+  // then counted 36 tables / 30 FKs / 671 uses and concluded it was a sanctioned
+  // convention worth keeping. BOTH were wrong, and counting was the wrong test.
+  //
+  // The project deliberately moved AWAY from agent_user_id, and that decision is
+  // why the resolver exists at all. lib/kernel/agent-identity.ts states it in its
+  // first three lines:
+  //
+  //     NEVER do:  agentId = agentRow?.id ?? user.id
+  //     ALWAYS do: agentId = await resolveAgentId(supabase, user.id)
+  //
+  // The sanctioned way to cross between a users id and an agents id is to RESOLVE,
+  // not to mint a third column name that means "a bit of both". So the 36 tables
+  // are a LEGACY TAIL from before that call — a migration backlog, not a pattern
+  // to extend. Frequency is evidence of age, not of endorsement.
+  //
+  // Recorded here because m374 nearly acted on the inverted reading: its plan was
+  // to rename agent_id -> agent_user_id on 20 more tables, which would have spread
+  // a retired name rather than removed one.
+  ok("the resolver still states the rule this convention question turns on",
+    /ALWAYS do: agentId = await resolveAgentId/.test(src("lib/kernel/agent-identity.ts")))
 }
 
 console.log(`\n${"═".repeat(70)}`)

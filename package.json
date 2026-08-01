@@ -455,6 +455,7 @@
     "test:geo-scope": "tsx scripts/geo-scope-guard.ts",
     "test:public-agent": "tsx scripts/public-agent-guard.ts",
     "test:identity-class": "tsx scripts/identity-class-guard.ts",
+    "test:agent-id-repoint": "tsx scripts/agent-id-repoint-guard.ts",
     "test:server-only-boundary": "tsx scripts/server-only-boundary-guard.ts",
     "test:identity-fallback": "tsx scripts/identity-fallback-guard.ts",
     "test:lifetime-ledger": "tsx scripts/lifetime-ledger-guard.ts",
