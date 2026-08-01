@@ -70,17 +70,28 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
 
     const supabase = await createClient()
 
-    // Resolve brokerage_id from agent
+    // Resolve brokerage_id from agent. input.agentId is a USERS id — this
+    // lookup only works with one — and that is correct here.
     const { data: agentCMA } = await supabase
       .from("users")
       .select("brokerage_id")
       .eq("id", input.agentId)
       .maybeSingle()
 
+    // IDENTITY CLASS (m355). The three activities writes below key
+    // activities.agent_id, which FKs AGENTS — so passing the users id above
+    // FK-rejected every one of them. The CMA itself generated and saved; only
+    // its timeline vanished, which is why nothing ever looked broken: the
+    // seller got their CMA and the agent's activity feed simply never mentioned
+    // it. Same value, two classes, one variable.
+    const { data: cmaAgentRow } = await supabase
+      .from("agents").select("id").eq("user_id", input.agentId).maybeSingle()
+    const cmaAgentRecordId = (cmaAgentRow as { id?: string } | null)?.id ?? null
+
     // Emit start event
     await supabase.from("activities").insert({
       brokerage_id: agentCMA?.brokerage_id ?? null,
-      agent_id: input.agentId,
+      agent_id: cmaAgentRecordId,
       contact_id: input.contactId,
       activity_type: "seller.cma.started",
       title: "CMA generation started",
@@ -150,7 +161,7 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
     // Emit completion event referencing the cma_reports row
     await supabase.from("activities").insert({
       brokerage_id: agentCMA?.brokerage_id ?? null,
-      agent_id: input.agentId,
+      agent_id: cmaAgentRecordId,
       contact_id: input.contactId,
       activity_type: "seller.cma.completed",
       title: "CMA generation completed",
@@ -193,10 +204,14 @@ async function emitCMAFailed(
 ) {
   const supabase = await createClient()
   const { data: agentFail } = await supabase.from("users").select("brokerage_id").eq("id", agentId).maybeSingle()
+  // Same class split as generateCMA: users id for the brokerage lookup, the
+  // resolved agents id for activities.agent_id (m355).
+  const { data: failAgentRow } = await supabase
+    .from("agents").select("id").eq("user_id", agentId).maybeSingle()
 
   await supabase.from("activities").insert({
     brokerage_id: agentFail?.brokerage_id ?? null,
-    agent_id: agentId,
+    agent_id: (failAgentRow as { id?: string } | null)?.id ?? null,
     contact_id: contactId,
     activity_type: "seller.cma.failed",
     title: "CMA generation failed",

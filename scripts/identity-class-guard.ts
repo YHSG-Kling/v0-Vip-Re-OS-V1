@@ -211,7 +211,7 @@ console.log("\n═══ 1. No function uses one value as both identity classes 
   // So a high remaining count is not the same as a high remaining risk. Grep
   // for a caller first; if there is none, the entry belongs in the dead-surface
   // triage, not here.
-  const BASELINE = 23
+  const BASELINE = 21
   ok(`self-contradicting identity uses at or below the baseline of ${BASELINE} (found ${found.length})`,
     found.length <= BASELINE,
     found.length > BASELINE
@@ -409,6 +409,24 @@ console.log("\n═══ 3b. The AI ISA could not launch a campaign ═══")
     /\.from\("users"\)[\s\S]{0,120}\.eq\("id", loginId\)/.test(isa))
 }
 
+console.log("\n═══ 3c. The CMA generated, and left no trace ═══")
+{
+  // m355. cma-generator resolved brokerage_id from `users` by input.agentId —
+  // correct, that lookup needs a users id — and then wrote the same value to
+  // activities.agent_id, which FKs AGENTS. All three activity writes
+  // (started / completed / failed) were FK-rejected. The CMA itself generated
+  // and saved, so nothing looked broken: the seller got their CMA and the
+  // agent's timeline simply never mentioned it.
+  const cma = code("app/actions/cma-presentation/cma-generator.ts")
+  ok("the CMA activity writes use the RESOLVED agents id, so the timeline the\n    OS claims to keep actually receives the rows",
+    /agent_id: cmaAgentRecordId,/.test(cma) && !/agent_id: input\.agentId,/.test(cma))
+  ok("...and the failure event does the same, rather than logging a failure that\n    itself fails to record",
+    /const \{ data: failAgentRow \}/.test(cma) && /agent_id: \(failAgentRow as \{ id\?: string \} \| null\)\?\.id \?\? null,/.test(cma))
+  ok("...while the brokerage lookups keep the USERS id, which is the class that\n    query needs — the split is deliberate, not a blanket conversion",
+    /\.from\("users"\)[\s\S]{0,120}\.eq\("id", input\.agentId\)/.test(cma) &&
+    /\.eq\("id", agentId\)/.test(cma))
+}
+
 console.log("\n═══ 4. The catalogue this guard reasons from is honest ═══")
 {
   ok("the users-class table list is exactly the 20 the live schema reports",
@@ -426,5 +444,5 @@ if (fail > 0) {
   console.log("Route it through lib/kernel/agent-identity-resolver instead of guessing.")
   process.exit(1)
 }
-console.log("Verified defects fixed and locked; 23 candidates remain behind a ratchet")
+console.log("Verified defects fixed and locked; 21 candidates remain behind a ratchet")
 console.log("that may only go down. The resolver is the one place this should be decided.")
