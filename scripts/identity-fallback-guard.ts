@@ -30,12 +30,32 @@
  * and when it resolves to nothing, return null and let the caller say so. An
  * honest refusal is worth more than a plausible wrong id.
  *
- * IT IS NOW ZERO, AND THAT IS AN INVARIANT. This began as a ratchet at 20,
- * because each site needed a human to read what consumed the value before the
- * fallback could be removed — the right answer differed per site, and m341 had
- * already shown the fix sometimes belongs on one outlier caller rather than in
- * the shared code. All 20 have now been read and converted. Any new occurrence
- * fails the build.
+ * THIS GUARD ONCE REPORTED ZERO. THE ZERO WAS FALSE — READ THIS BEFORE
+ * TRUSTING ANY NUMBER IT PRINTS.
+ *
+ * m353 converted all 20 sites the detector could see and declared the class
+ * closed as a build-failing invariant. It was wrong, and wrong in the most
+ * expensive way a guard can be: the pattern has TWO SPELLINGS and the regex
+ * only knew one.
+ *
+ *     agentId ?? user.id        ← matched (the object is named "user")
+ *     agentId ?? ctx.userId     ← NOT matched (the PROPERTY is named userId)
+ *
+ * The second form is the more common one in this codebase, because that is the
+ * shape AgentContext and requireAuth return. Twenty-one further sites were
+ * sitting in plain view the whole time. The guard was not measuring the
+ * codebase; it was measuring its own vocabulary, and a green run was read as
+ * "the class is gone" when it meant "I found nothing I know how to look for".
+ *
+ * THE GENERAL LESSON, which cost nothing here and could cost a lot elsewhere:
+ * a detector that has only ever been tested against examples IT was written
+ * from will always pass. §3 now includes the spelling that was missed, and any
+ * new spelling found in the wild belongs there before the baseline moves.
+ *
+ * So this is a RATCHET, not an invariant. Each remaining site needs a human to
+ * read what consumes the value — the right answer differs per site, and m341
+ * showed the fix sometimes belongs on one outlier caller rather than the shared
+ * code. The number may only go DOWN.
  *
  * THE SHAPE THE LAST EIGHT SHARED IS WORTH REMEMBERING. Each one carried a
  * comment, written by someone who had correctly diagnosed the bug, saying in
@@ -94,7 +114,7 @@ function code(src: string): string {
  * the codebase was.
  */
 const FALLBACK_RE =
-  /(?:\w*[Aa]gent\w*\s*\??\.\s*id|\w+\s*\??\.\s*agent_id|resolveAgent(?:Id|RecordId)\s*\([^;]*?\)|\w*[Aa]gentId)[\s)]*(?:\?\?|\|\|)\s*(?:await\s+)?\w*(?:[Uu]ser|USER)\w*\s*\??\.\s*id/g
+  /(?:\w*[Aa]gent\w*\s*\??\.\s*id|\w+\s*\??\.\s*agent_id|resolveAgent(?:Id|RecordId)\s*\([^;]*?\)|\w*[Aa]gentId)[\s)]*(?:\?\?|\|\|)\s*(?:await\s+)?(?:\w*(?:[Uu]ser|USER)\w*\s*\??\.\s*id\b|\w+\s*\??\.\s*(?:userId|user_id)\b)/g
 
 interface Hit { file: string; line: number; text: string }
 
@@ -126,9 +146,9 @@ function findFallbacks(): Hit[] {
   return hits
 }
 
-// ── ZERO. This started at 20 and was burned down site by site; it is now an
-// INVARIANT, not a ratchet. Any new occurrence fails the build. ─────────────
-const BASELINE = 0
+// ── A RATCHET AGAIN, AT THE HONEST NUMBER. See the header for why the zero
+// this briefly reported was false. Lower it as sites are audited; never raise.
+const BASELINE = 20
 
 console.log("\n═══ 1. No NEW site manufactures an id of unknown class ═══")
 const hits = findFallbacks()
@@ -160,6 +180,12 @@ console.log("\n═══ 3. The detector detects, and does not cry wolf ══�
     `const agentId = roleRow?.agent_id ?? user.id`,
     `agentId: agentId ?? user.id,`,
     `const x = agent?.id || user.id`,
+    // THE SPELLING THAT WAS MISSED (m358). The property, not the object, is
+    // what says "user" — and this is the form AgentContext/requireAuth produce,
+    // so it is the COMMONER of the two in this codebase.
+    `const agentId = ctx.agentId ?? ctx.userId`,
+    `const agentId = auth.agentId ?? auth.userId`,
+    `agentId: contact.agent_id ?? session.user_id,`,
   ]
   const shouldNotCatch = [
     `setCurrentAgentId(agentRow?.id ?? "")`,              // refusing — the fix
@@ -168,6 +194,8 @@ console.log("\n═══ 3. The detector detects, and does not cry wolf ══�
     `const brokerageId = userRow?.brokerage_id ?? ""`,    // unrelated column
     `const agentId = ctx.agentId ?? fallbackAgentRecordId`, // both sides agents-class
     `: (await resolveAgentRecordToUserId(targetAgentId)) ?? user.id`, // resolved USERS id
+    `const aid = row.agent_id ?? agent?.id ?? "unknown"`,  // both sides agents-class
+    `if (!callerAgent?.id || callerAgent.id !== agentId) {`, // a comparison, not a fallback
   ]
   const hit = (s: string) => {
     FALLBACK_RE.lastIndex = 0
@@ -309,6 +337,22 @@ console.log("\n═══ 5. The last eight — where the fix and the bug were on
     /does not have an agent curriculum/.test(onb))
 }
 
+console.log("\n═══ 6. The site that exposed the false zero ═══")
+{
+  // m358. app/api/voice/initiate-call is where the missed spelling was found —
+  // `auth.agentId ?? auth.userId`. The route then used that one value as BOTH
+  // an agents id (the voice_calls.agent_id write) and a users id (an
+  // agents.user_id lookup), so the lookup matched nothing and buildCallContext
+  // received a null agent: every outbound AI call spoke with the brokerage or
+  // team identity profile instead of the agent's own.
+  const ic = code(read("app/api/voice/initiate-call/route.ts"))
+  ok("initiate-call takes auth.agentId with no fallback and REFUSES without it —\n    an outbound AI call is agent-scoped, so a users id there is wrong, not\n    degraded",
+    /const agentId = auth\.agentId\b/.test(ic) && !/auth\.agentId \?\? auth\.userId/.test(ic) &&
+    /an outbound AI call is agent-scoped/.test(read("app/api/voice/initiate-call/route.ts")))
+  ok("...and the redundant agents.user_id lookup is gone — auth.agentId already IS\n    the agents id, so that query asked the wrong column with the right value",
+    !/\.eq\("user_id", agentId\)/.test(ic) && /agentId: agentId,|agentId,\n/.test(ic))
+}
+
 console.log(`\n${"═".repeat(70)}`)
 console.log(`IDENTITY FALLBACK — ${pass} passed, ${fail} failed`)
 if (fail > 0) {
@@ -318,5 +362,5 @@ if (fail > 0) {
   console.log("row existed. Resolve it, or return null and say so. Never substitute.")
   process.exit(1)
 }
-console.log(`${hits.length} sites manufacture an id of unknown class. This started at 20;`)
-console.log("every one was read and converted. Zero is now the invariant, not a target.")
+console.log(`${hits.length} sites manufacture an id of unknown class (baseline ${BASELINE}).`)
+console.log("A review queue, not a number to drive down automatically — and NOT a zero.")

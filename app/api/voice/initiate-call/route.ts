@@ -39,8 +39,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
   }
 
-  // agentId and brokerageId always from session — never from body
-  const agentId = auth.agentId ?? auth.userId
+  // agentId and brokerageId always from session — never from body.
+  //
+  // IDENTITY CLASS (m358). This was `auth.agentId ?? auth.userId`, which made
+  // agentId an AGENTS id normally and a USERS id when the caller had no agents
+  // row — and the file then used it as BOTH: voice_calls.agent_id (FKs agents)
+  // AND an agents.user_id lookup. No fallback: an outbound AI call is
+  // agent-scoped, and a users id in either place is wrong rather than degraded.
+  const agentId = auth.agentId
+  if (!agentId) {
+    return NextResponse.json({ error: "No agent profile for this user — an outbound AI call is agent-scoped." }, { status: 409 })
+  }
   const brokerageId = auth.brokerageId
   const { phoneNumber, leadId, callPurpose = 'isa_qualification' } = body
   // contactId may be provided directly OR resolved from the lead record below
@@ -139,15 +148,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // ── 2. Build brokerage-branded call context via buildCallContext() ───────────
   // This returns the assistant name, system prompt, and first message derived
   // from ai_identity_profiles (brokerage → team → agent hierarchy).
-  const { data: agentRow } = await supabase
-    .from("agents")
-    .select("id, user_id")
-    .eq("user_id", agentId)
-    .maybeSingle()
-
+  // agentId IS the agents id (auth.agentId — see lib/kernel/api-auth), so the
+  // lookup that used to sit here asked agents.user_id for an agents id, matched
+  // nothing, and handed buildCallContext a null agent — every AI call fell back
+  // to the brokerage/team identity profile instead of the agent's own.
   const callCtx = await buildCallContext({
     brokerageId,
-    agentId: agentRow?.id ?? null,
+    agentId,
     contactId: contactId ?? null,
     leadId: leadId ?? null,
     callPurpose,

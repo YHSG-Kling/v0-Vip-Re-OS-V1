@@ -211,7 +211,7 @@ console.log("\n═══ 1. No function uses one value as both identity classes 
   // So a high remaining count is not the same as a high remaining risk. Grep
   // for a caller first; if there is none, the entry belongs in the dead-surface
   // triage, not here.
-  const BASELINE = 19
+  const BASELINE = 18
   ok(`self-contradicting identity uses at or below the baseline of ${BASELINE} (found ${found.length})`,
     found.length <= BASELINE,
     found.length > BASELINE
@@ -479,5 +479,5 @@ if (fail > 0) {
   console.log("Route it through lib/kernel/agent-identity-resolver instead of guessing.")
   process.exit(1)
 }
-console.log("Verified defects fixed and locked; 19 candidates remain behind a ratchet")
+console.log("Verified defects fixed and locked; 18 candidates remain behind a ratchet")
 console.log("that may only go down. The resolver is the one place this should be decided.")
