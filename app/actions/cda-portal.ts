@@ -118,22 +118,33 @@ async function loadCdaContractVerdict(
   supabase: SupabaseClient,
   cda: { transaction_id: string; brokerage_id: string; agent_id: string; gross_commission: number | null; agent_net: number | null },
 ): Promise<CdaContractVerdict | null> {
+  // IDENTITY CLASS (m356). cda.agent_id comes off closing_disclosure_agreement,
+  // whose agent_id FKs USERS — but agent_commission_profiles, agent_cap_tracking
+  // and agent_fee_charges all FK AGENTS. Filtering them by the users id matched
+  // nothing, so the verdict computed the agent's net from a zero split, an
+  // untouched cap and no outstanding fees. Every number on a CDA is money, and
+  // all three inputs read empty without erroring.
+  const { data: cdaAgentRow } = await supabase
+    .from("agents").select("id").eq("user_id", cda.agent_id).eq("brokerage_id", cda.brokerage_id).maybeSingle()
+  const cdaAgentRecordId = (cdaAgentRow as { id?: string } | null)?.id ?? null
+  if (!cdaAgentRecordId) return null
+
   const [{ data: txn }, { data: profile }, { data: cap }, { data: feeCharges }] = await Promise.all([
     supabase.from("transactions")
       .select("estimated_commission, purchase_price, commission_percentage")
       .eq("id", cda.transaction_id).maybeSingle(),
     supabase.from("agent_commission_profiles")
       .select("split_percent, cap_amount")
-      .eq("agent_id", cda.agent_id).eq("is_active", true)
+      .eq("agent_id", cdaAgentRecordId).eq("is_active", true)
       .order("effective_date", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("agent_cap_tracking")
       .select("cap_amount, cap_paid_to_date")
-      .eq("agent_id", cda.agent_id).eq("brokerage_id", cda.brokerage_id)
+      .eq("agent_id", cdaAgentRecordId).eq("brokerage_id", cda.brokerage_id)
       .order("cap_paid_to_date", { ascending: false }).limit(1).maybeSingle(),
     // OUTSTANDING FEES — unpaid charges the agent owes the brokerage, to be deducted in the CDA.
     supabase.from("agent_fee_charges")
       .select("amount, status, paid_at")
-      .eq("agent_id", cda.agent_id).eq("brokerage_id", cda.brokerage_id)
+      .eq("agent_id", cdaAgentRecordId).eq("brokerage_id", cda.brokerage_id)
       .in("status", ["open", "overdue"]),
   ])
 
@@ -244,7 +255,13 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
       .insert({
         transaction_id: input.transactionId,
         brokerage_id: txn.brokerage_id,
-        agent_id: txn.agent_id,
+        // IDENTITY CLASS (m356). closing_disclosure_agreement.agent_id FKs
+        // USERS; txn.agent_id is an AGENTS id, so this insert was rejected
+        // every time and the CDA row could never be created — the commission
+        // approval workflow was dead before it started. The resolved user_id
+        // was already computed twenty lines above, for the agents lookup that
+        // guards this very function, and then not used here.
+        agent_id: agent.user_id,
         status: "pending",
         preliminary_cd_uploaded_at: new Date().toISOString(),
         preliminary_cd_document_id: input.documentId,
@@ -464,7 +481,11 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
   if (!cda || cda.brokerage_id !== auth.brokerageId) {
     return { success: false as const, error: "not_found" }
   }
-  if (auth.agentId !== cda.agent_id) {
+  // IDENTITY CLASS (m356). auth.agentId is agents.id — lib/kernel/api-auth says
+  // so in capitals ("agents.id ≠ users.id") — while cda.agent_id FKs USERS. The
+  // two can never be equal, so this gate denied the assigned agent 100% of the
+  // time: nobody could submit a CDA. Compare the users id to the users id.
+  if (auth.userId !== cda.agent_id) {
     return { success: false as const, error: "only_assigned_agent_can_submit" }
   }
   if (!["pending", "drafting", "changes_requested"].includes(cda.status)) {
@@ -686,14 +707,14 @@ export async function approveCdaAction(input: { cdaId: string }) {
   })
 
   // Notify the agent that compliance cleared it — now awaiting the broker's signature.
-  const { data: agentRow } = await supabase
-    .from("agents")
-    .select("user_id")
-    .eq("id", cda.agent_id)
-    .maybeSingle()
-  if (agentRow?.user_id) {
+  // IDENTITY CLASS (m356). cda.agent_id ALREADY IS the agent's users id —
+  // closing_disclosure_agreement.agent_id FKs users — so this looked the agents
+  // table up BY id using a users id, matched nothing, and the notification was
+  // silently skipped. The agent was never told their CDA moved.
+  const notifyUserId = cda.agent_id
+  if (notifyUserId) {
     await supabase.from("notifications").insert({
-      user_id: agentRow.user_id,
+      user_id: notifyUserId,
       brokerage_id: cda.brokerage_id,
       type: "cda_approved",
       title: "CDA approved by compliance",
@@ -893,14 +914,14 @@ export async function requestCdaChangesAction(input: { cdaId: string; reason: st
   })
 
   // Notify agent.
-  const { data: agentRow } = await supabase
-    .from("agents")
-    .select("user_id")
-    .eq("id", cda.agent_id)
-    .maybeSingle()
-  if (agentRow?.user_id) {
+  // IDENTITY CLASS (m356). cda.agent_id ALREADY IS the agent's users id —
+  // closing_disclosure_agreement.agent_id FKs users — so this looked the agents
+  // table up BY id using a users id, matched nothing, and the notification was
+  // silently skipped. The agent was never told their CDA moved.
+  const notifyUserId = cda.agent_id
+  if (notifyUserId) {
     await supabase.from("notifications").insert({
-      user_id: agentRow.user_id,
+      user_id: notifyUserId,
       brokerage_id: cda.brokerage_id,
       type: "cda_changes_requested",
       title: "CDA needs changes",

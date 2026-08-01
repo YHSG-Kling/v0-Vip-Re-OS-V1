@@ -211,7 +211,7 @@ console.log("\n═══ 1. No function uses one value as both identity classes 
   // So a high remaining count is not the same as a high remaining risk. Grep
   // for a caller first; if there is none, the entry belongs in the dead-surface
   // triage, not here.
-  const BASELINE = 21
+  const BASELINE = 20
   ok(`self-contradicting identity uses at or below the baseline of ${BASELINE} (found ${found.length})`,
     found.length <= BASELINE,
     found.length > BASELINE
@@ -427,6 +427,26 @@ console.log("\n═══ 3c. The CMA generated, and left no trace ═══")
     /\.eq\("id", agentId\)/.test(cma))
 }
 
+console.log("\n═══ 3d. The CDA: four defects, one class confusion ═══")
+{
+  // m356. closing_disclosure_agreement.agent_id FKs USERS, while transactions,
+  // agent_commission_profiles, agent_cap_tracking, agent_fee_charges and
+  // auth.agentId are all AGENTS. One file held both classes under one name and
+  // got it wrong four ways — on the commission-approval workflow, which is
+  // money and compliance.
+  const cda = code("app/actions/cda-portal.ts")
+  ok("the CDA row is created with the agent's USERS id — the agents id was\n    FK-rejected, so a closing disclosure agreement could never be created at\n    all and the workflow was dead before it started",
+    /agent_id: agent\.user_id,/.test(cda))
+  ok("...the commission verdict resolves users→agents before reading split, cap\n    and outstanding fees — all three read EMPTY, so the agent's net was\n    computed from a zero split and an untouched cap",
+    /const cdaAgentRecordId = /.test(cda) &&
+    (cda.match(/\.eq\("agent_id", cdaAgentRecordId\)/g) ?? []).length === 3)
+  ok("...the submit gate compares users id to users id — it compared auth.agentId\n    (agents.id) to cda.agent_id (users), which can never be equal, so the\n    assigned agent was denied 100% of the time and nobody could submit a CDA",
+    /if \(auth\.userId !== cda\.agent_id\)/.test(cda))
+  ok("...and the two agent notifications use cda.agent_id directly — it IS the\n    users id, and the code was looking agents up BY id with it, so the agent\n    was never told their CDA had moved",
+    (cda.match(/const notifyUserId = cda\.agent_id/g) ?? []).length === 2 &&
+    !/\.eq\("id", cda\.agent_id\)/.test(cda))
+}
+
 console.log("\n═══ 4. The catalogue this guard reasons from is honest ═══")
 {
   ok("the users-class table list is exactly the 20 the live schema reports",
@@ -444,5 +464,5 @@ if (fail > 0) {
   console.log("Route it through lib/kernel/agent-identity-resolver instead of guessing.")
   process.exit(1)
 }
-console.log("Verified defects fixed and locked; 21 candidates remain behind a ratchet")
+console.log("Verified defects fixed and locked; 20 candidates remain behind a ratchet")
 console.log("that may only go down. The resolver is the one place this should be decided.")
