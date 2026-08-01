@@ -194,6 +194,23 @@ console.log("\n═══ 1. No function uses one value as both identity classes 
   // that belongs to a sibling query. Claiming they are all bugs would repeat
   // the exact mistake this guard exists to catch — asserting more than the
   // evidence supports. So: the number may only go DOWN.
+  //
+  // TRIAGE NOTE (m347) — CHECK FOR A CALLER BEFORE SPENDING TIME ON AN ENTRY.
+  // A pass through the ai-* cluster found that most of these sit in UNWIRED
+  // exports, and editing them would be changing dead code — churn that looks
+  // like progress and proves nothing:
+  //   · ai-document-intelligence — 7 exports, only aiAnalyzeContract is
+  //     imported anywhere, and it never reads agentId. The flagged
+  //     contradiction is in aiGenerateDocument, which nothing calls.
+  //   · ai-content-generation — the flagged site is generateContentPlan; no
+  //     caller. (Its live exports, e.g. generateListingDescription, are
+  //     consistently agents-class and correct.)
+  //   · ai-marketing-automation — 8 exports, ONE live caller
+  //     (generateAIDirectMail, from AgentSuperpowersPanel). That one WAS a real
+  //     defect and is fixed; the other seven are unwired.
+  // So a high remaining count is not the same as a high remaining risk. Grep
+  // for a caller first; if there is none, the entry belongs in the dead-surface
+  // triage, not here.
   const BASELINE = 25
   ok(`self-contradicting identity uses at or below the baseline of ${BASELINE} (found ${found.length})`,
     found.length <= BASELINE,

@@ -119,7 +119,7 @@ function findFallbacks(): Hit[] {
 }
 
 // ── The ratchet. Lower it as sites are audited; never raise it. ──────────────
-const BASELINE = 20
+const BASELINE = 19
 
 console.log("\n═══ 1. No NEW site manufactures an id of unknown class ═══")
 const hits = findFallbacks()
@@ -197,6 +197,16 @@ console.log("\n═══ 4. The sites fixed in this pass stay fixed ═══")
   ok("stage-progression passes the AGENTS id to aiGenerateReviewRequest — it\n    passed params.userId, so the action threw and the post-close review draft\n    was never generated for any closing",
     /aiGenerateReviewRequest\(\{[^}]*agentId: agentRecordId/.test(stage) &&
     !/aiGenerateReviewRequest\(\{[^}]*agentId: params\.userId/.test(stage))
+
+  const mail = code(read("app/actions/ai-marketing-automation.ts"))
+  ok("generateAIDirectMail reads the agent's name/phone/email THROUGH the agents\n    row — it read `users` by the agents id, matched nothing, and every piece\n    was generated from a prompt that said \"AGENT: undefined undefined\"",
+    /\.from\("agents"\)\.select\("users\(first_name, last_name, phone, email\)"\)\.eq\("id", params\.agentId\)/.test(mail))
+  ok("...while direct_mail_campaigns.agent_id keeps the agents id, which is the\n    class that column's foreign key actually points at",
+    /\.from\("direct_mail_campaigns"\)[\s\S]{0,120}agent_id: params\.agentId/.test(mail))
+
+  const cr = code(read("app/dashboard/documents/contract-review/page.tsx"))
+  ok("the contract-review page hands down an agents id or nothing, never the\n    auth user id wearing an agents id's name",
+    /agentId=\{agentRow\?\.id \?\? ""\}/.test(cr))
 
   const goals = code(read("app/actions/ai-agent-goals.ts"))
   ok("the goals sync counts review_requests by the RESOLVED users id — by the\n    agents id it counted 0 and then WROTE that 0 over the agent's real progress",

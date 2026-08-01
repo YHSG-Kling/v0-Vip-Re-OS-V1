@@ -45,9 +45,12 @@ export default async function ContractReviewPage() {
     .order("created_at", { ascending: false })
     .limit(50)
 
+  // agentId below is NOT `?? user.id` (m347) — an agents id, or nothing.
+  // Substituting the auth user id produced a value whose class nothing
+  // downstream could rely on; see lib/kernel/agent-identity.
   return (
     <ContractReviewClient
-      agentId={agentRow?.id ?? user.id}
+      agentId={agentRow?.id ?? ""}
       agentState={agentRow?.license_state ?? "CA"}
       transactions={transactions ?? []}
     />

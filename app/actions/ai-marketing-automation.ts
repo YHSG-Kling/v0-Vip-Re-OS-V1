@@ -256,16 +256,24 @@ export async function generateAIDirectMail(params: DirectMailParams): Promise<Di
 
     const supabase = await createClient()
 
-    // Get agent info and brand voice
+    // IDENTITY CLASS (m347). params.agentId is an AGENTS id — its only caller,
+    // AgentSuperpowersPanel, is handed agentRow.id by app/dashboard/agent/page.tsx
+    // — and direct_mail_campaigns.agent_id FKs agents, so the write below is
+    // right. But this lookup read `users` BY THAT ID, which matched nothing, so
+    // `agent` came back null and the prompt on the line building the piece read
+    // literally "AGENT: undefined undefined". Every AI-generated direct mail
+    // piece went out attributed to an agent with no name, phone or email.
+    // Read the users row THROUGH the agents row instead of guessing the class.
     const [agentResult, brandResult, propertyResult] = await Promise.all([
-      supabase.from("users").select("first_name, last_name, phone, email").eq("id", params.agentId).single(),
+      supabase.from("agents").select("users(first_name, last_name, phone, email)").eq("id", params.agentId).maybeSingle(),
       supabase.from("brand_voice_profile").select("*").eq("agent_id", params.agentId).maybeSingle(),
       params.propertyId
         ? supabase.from("listings").select("*").eq("id", params.propertyId).single()
         : Promise.resolve({ data: null }),
     ])
 
-    const agent = agentResult.data
+    // Unwrap the nested users row from the agents join above.
+    const agent = (agentResult.data as { users?: { first_name?: string; last_name?: string; phone?: string; email?: string } | null } | null)?.users ?? null
     const brandVoice = brandResult.data
     const property = propertyResult.data
 
