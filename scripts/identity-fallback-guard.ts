@@ -134,7 +134,15 @@ const RESOLVES_TO_A_USER_ID = /(?:ToUserId|resolveUserIdFor|UserIdFor)\w*\s*\(/
 
 function findFallbacks(): Hit[] {
   const hits: Hit[] = []
-  for (const file of [...walkDir("app"), ...walkDir("lib"), ...walkDir("components")]) {
+  // m369: `hooks`, `services` and `contexts` were NOT scanned, so a site in
+  // hooks/usePermissions.ts sat outside the count the whole time. This is the
+  // second way this guard has reported a false zero — the first was a missing
+  // spelling (m358), this one is missing COVERAGE. When it says zero, check
+  // what it walks before believing it.
+  for (const file of [
+    ...walkDir("app"), ...walkDir("lib"), ...walkDir("components"),
+    ...walkDir("hooks"), ...walkDir("services"), ...walkDir("contexts"),
+  ]) {
     const lines = code(read(file)).split("\n")
     lines.forEach((raw, i) => {
       FALLBACK_RE.lastIndex = 0
@@ -148,7 +156,14 @@ function findFallbacks(): Hit[] {
 
 // ── A RATCHET AGAIN, AT THE HONEST NUMBER. See the header for why the zero
 // this briefly reported was false. Lower it as sites are audited; never raise.
-const BASELINE = 3
+//
+// m369: the three app/lib sites are audited and fixed, and the roots widened
+// to hooks/services/contexts — which immediately surfaced a fourth. That one
+// is in hooks/usePermissions.ts, a hook with ZERO importers anywhere; it and
+// lib/hooks/usePermissions.ts are two dead hooks exporting the same name over
+// two different permission engines. Removal is its own change, so the number
+// is 1 and not 0. A dead site is still a site.
+const BASELINE = 1
 
 console.log("\n═══ 1. No NEW site manufactures an id of unknown class ═══")
 const hits = findFallbacks()
@@ -453,6 +468,71 @@ console.log("\n═══ 11. A decorative parameter is still worth getting right
     .map((n) => code(read(`lib/integrations/providers/${n}-provider.ts`)))
   ok("CreateTransactionRequest still DECLARES agentId, and zero of the four\n    providers read it — recorded so the next reader does not assume the field\n    carries meaning it has never carried",
     /agentId: string/.test(iface) && impls.every((s2) => !/request\.agentId/.test(s2)))
+}
+
+console.log("\n═══ 12. The last three sites — and the surface behind one of them ═══")
+{
+  // m369. All four live constraints were proven against the real database
+  // before and after each fix (qr_codes/notifications FK-reject the wrong
+  // class; brand_voice_profile and the signature waterfall silently return 0
+  // rows for it), then the test data was removed — residue 0.
+
+  // (a) The email signature waterfall. assembleEmail looks up `users` by this
+  // id for tiers 1 (agent) and 2 (team). It was handed an AGENTS id first, so
+  // both tiers were skipped and every such send silently used the BROKERAGE
+  // signature — the fallback-to-brokerage the owner ruled out. The third
+  // branch passed a BROKERAGES id as a users id.
+  const d = code(read("lib/providers/dispatch.ts"))
+  ok("dispatch resolves agents→users for the signature waterfall instead of\n    passing an agents id, a brokerage id, and then an empty string",
+    /const signatureUserId =\s*\n\s*params\.userId \?\?/.test(d) &&
+    /resolveUserIdForAgentRecord\(createServiceClient\(\), params\.agentId\)/.test(d) &&
+    /userId:\s+signatureUserId \?\? "",/.test(d))
+  ok("...and no branch of it can reach for a brokerage id — assembleEmail\n    already reaches the brokerage tier from its own brokerageId argument",
+    !/userId:\s+params\.\w+ \?\? params\.\w+ \?\? params\.brokerageId/.test(d))
+
+  // (b) The inverse direction, same file: params.agentId is ALREADY an agents
+  // id. Feeding it to a users→agents resolver matched nothing and returned
+  // "Voice clone not set up" for an agent whose clone existed.
+  ok("the video path treats params.agentId as the agents id it is, and resolves\n    ONLY params.userId",
+    /let agentRecordId: string \| null = params\.agentId \?\? null/.test(d) &&
+    /resolveUserIdToAgentRecord\(params\.userId, params\.brokerageId\)/.test(d))
+
+  // (c) referral_partners carries BOTH columns, in DIFFERENT classes:
+  // agent_id FKs agents(id), user_id FKs auth.users(id). The destination,
+  // notifications.user_id, FKs public.users — whose id is set to the auth uid
+  // on insert. So user_id is the usable one and the order was backwards.
+  const r = code(read("lib/referrals/referral-reciprocity-runner.ts"))
+  ok("the reciprocity nudge prefers referral_partners.user_id and resolves\n    agent_id through agents when it is absent — the order was reversed, so the\n    insert was rejected on exactly the partners that HAVE an assigned agent",
+    /notifyUserId: string \| null = \(p\.user_id as string \| null\) \?\? null/.test(r) &&
+    /resolveUserIdForAgentRecord\(svc as any, p\.agent_id as string\)/.test(r))
+  ok("...and the insert error is SURFACED, not swallowed by `.then(() => {}, () => {})`",
+    !/\}\)\.then\(\(\) => \{\}, \(\) => \{\}\)/.test(r) && /if \(nudgeErr\) console\.error/.test(r))
+  ok("...and `escalated` reflects whether the nudge actually landed, not merely\n    whether an id existed to address it to",
+    /escalated = sig\.ok \|\| nudged/.test(r) && !/escalated = sig\.ok \|\| !!args\./.test(r))
+
+  // (d) The flagged QR line was one symptom. The state it read was seeded from
+  // the users id at BOTH seed points, and seven agents-class consumers read it.
+  const p2 = code(read("app/dashboard/marketing/studio/page.tsx"))
+  const c2 = code(read("app/dashboard/marketing/studio/marketing-studio-client.tsx"))
+  ok("the studio PAGE resolves the agents id — it never passed one at all, which\n    is why the client had nothing better than the users id to seed from",
+    /\.from\("agents"\)/.test(p2) && /agentId=\{agentRow\?\.id \?\? ""\}/.test(p2))
+  ok("...and the client seeds `agentId` from that prop, not from userIdProp",
+    /useState<string>\(agentIdProp \?\? ""\)/.test(c2) &&
+    !/const \[agentId, setAgentId\] = useState<string>\(userIdProp/.test(c2))
+  ok("...and loadAdOsData no longer overwrites it with a users id on every load",
+    !/setAgentId\(resolvedUserId\)/.test(c2))
+  ok("...and email_campaigns.created_by (a users FK) gets the users id, not the\n    same value as agentId",
+    /createdBy: userIdProp \?\? "",/.test(c2))
+
+  // (e) Following the flag one hop further: the repurpose scheduler passed an
+  // empty socialAccountId, which scheduleSocialPost rejects before anything
+  // else — so that button returned "Invalid social account ID" on every click.
+  const a2 = code(read("app/dashboard/marketing/studio/components/ad-os/ad-os-actions.ts"))
+  ok("scheduleRepurposedPost resolves a CONNECTED account for the target platform\n    instead of sending socialAccountId: \"\"",
+    !/socialAccountId: "",/.test(a2) && /\.from\("social_media_accounts"\)/.test(a2) &&
+    /socialAccountId: account\.id,/.test(a2))
+  ok("...and it omits agentId so the action uses auth.agentId — it used to pass\n    userCtx.userId, which failed verifyAgentInBrokerage and returned \"Forbidden\"",
+    !/agentId: userCtx\.userId,/.test(a2))
 }
 
 console.log(`\n${"═".repeat(70)}`)

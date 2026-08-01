@@ -168,12 +168,14 @@ interface DashboardData {
 
 interface MarketingStudioClientProps {
   userId?: string
+  /** agents(id) — server-resolved. NOT interchangeable with userId. */
+  agentId?: string
   brokerageId?: string
   userRole?: string
   initialTab?: string
 }
 
-export default function MarketingStudioClient({ userId: userIdProp, brokerageId: brokerageIdProp, userRole, initialTab = "overview" }: MarketingStudioClientProps) {
+export default function MarketingStudioClient({ userId: userIdProp, agentId: agentIdProp, brokerageId: brokerageIdProp, userRole, initialTab = "overview" }: MarketingStudioClientProps) {
   const { toast } = useToast()
   const [activeTab, setActiveTab] = useState(initialTab)
   const [isLoading, setIsLoading] = useState(true)
@@ -268,7 +270,9 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
 
   // Ad OS state
   const [listings, setListings] = useState<Array<{ id: string; address: string; city: string; zip?: string; list_price?: number }>>([])
-  const [agentId, setAgentId] = useState<string>(userIdProp ?? "")
+  // agents(id), server-resolved. This was seeded from userIdProp — a users id
+  // wearing the name agentId — and every downstream consumer is agents-class.
+  const [agentId, setAgentId] = useState<string>(agentIdProp ?? "")
   const [brokerageId, setBrokerageId] = useState<string>(brokerageIdProp ?? "")
 
   // Form states
@@ -518,7 +522,11 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
         }
       }
       if (resolvedUserId && resolvedBrokerageId) {
-        setAgentId(resolvedUserId)
+        // agentId is agents-class and comes from the server prop. It is NOT
+        // recoverable from a users id on the client, so this no longer
+        // overwrites it with resolvedUserId (which it did, unconditionally,
+        // undoing the correct value on every Ad-OS load).
+        if (agentIdProp) setAgentId(agentIdProp)
         setBrokerageId(resolvedBrokerageId)
 
         // Load agent's active listings
@@ -2763,7 +2771,9 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                       campaignName: newNewsletter.campaignName.trim(),
                       subjectLine: newNewsletter.subjectLine.trim() || newNewsletter.campaignName.trim(),
                       content: newNewsletter.content.trim() || "",
-                      createdBy: resolvedAgentId,
+                      // email_campaigns.created_by FKs users — the actor, not
+                      // the agent record. It was passed the same id as agentId.
+                      createdBy: userIdProp ?? "",
                     })
                     if (result.success) {
                       setIsCreateNewsletterOpen(false)
@@ -2849,17 +2859,21 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                   setQrError(null)
                   try {
                     const { createQrCodeAction } = await import("@/app/actions/marketing-studio")
-                    // Resolve brokerageId and agentId — fall back to user context if props not available
+                    // Resolve brokerageId from user context when the prop is absent.
+                    // IDENTITY CLASS: agentId is NOT recoverable the same way.
+                    // qr_codes.agent_id FKs agents(id) and ctx.userId is a users
+                    // id, so the old `resolvedAgentId || ctx.userId` fallback sent
+                    // a users id into an agents foreign key and every QR code
+                    // created down that path was rejected. Refuse instead.
                     let resolvedBrokerageId = brokerageIdProp || brokerageId
-                    let resolvedAgentId = agentId
-                    if (!resolvedBrokerageId || !resolvedAgentId) {
+                    const resolvedAgentId = agentId
+                    if (!resolvedBrokerageId) {
                       const { getUserContextForPrediction } = await import("@/app/actions/content-prediction")
                       const ctx = await getUserContextForPrediction()
-                      if (ctx.success && ctx.brokerageId) resolvedBrokerageId = resolvedBrokerageId || ctx.brokerageId
-                      if (ctx.success && ctx.userId) resolvedAgentId = resolvedAgentId || ctx.userId
+                      if (ctx.success && ctx.brokerageId) resolvedBrokerageId = ctx.brokerageId
                     }
                     if (!resolvedBrokerageId || !resolvedAgentId) {
-                      setQrError("Could not determine your account context. Please refresh and try again.")
+                      setQrError("Could not determine your agent profile. Finish Settings → Profile, then refresh and try again.")
                       return
                     }
                     const result = await createQrCodeAction({

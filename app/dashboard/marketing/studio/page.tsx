@@ -40,10 +40,23 @@ export default async function MarketingStudioPage({
     .eq("id", user.id)
     .maybeSingle()
 
+  // IDENTITY CLASS. This page never passed an agents id, so the client seeded
+  // its `agentId` state from the USERS id. Every consumer of that state is
+  // agents-class — brand_voice_profile.agent_id, qr_codes.agent_id and the
+  // social account check all key on agents(id) — so the whole Ad-OS surface
+  // read an empty brand voice and every QR code insert was FK-rejected.
+  // Resolve it once, here, where the server client already is.
+  const { data: agentRow } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("user_id", user.id)
+    .maybeSingle()
+
   return (
     <Suspense fallback={<MarketingStudioSkeleton />}>
       <MarketingStudioClient
         userId={user.id}
+        agentId={agentRow?.id ?? ""}
         brokerageId={userRow?.brokerage_id ?? ""}
         userRole={userRow?.user_type ?? "agent"}
         initialTab={normalizeTab(params.tab)}

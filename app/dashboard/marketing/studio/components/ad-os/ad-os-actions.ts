@@ -201,15 +201,39 @@ export async function scheduleRepurposedPost(params: {
     "Direct Mail Copy": "direct_mail",
   }
 
+  const platform = platformMap[params.platform] ?? params.platform.toLowerCase().replace(/ /g, "_")
+
+  // This passed socialAccountId: "" — scheduleSocialPost rejects a non-UUID
+  // before doing anything else, so the Repurpose Engine's schedule button
+  // returned "Invalid social account ID" on every click. Resolve the agent's
+  // connected account for the target platform instead.
+  const supabase = await createClient()
+  const { data: account } = await supabase
+    .from("social_media_accounts")
+    .select("id")
+    .eq("brokerage_id", userCtx.brokerageId)
+    .eq("platform", platform)
+    .eq("is_active", true)
+    .limit(1)
+    .maybeSingle()
+
+  if (!account?.id) {
+    return {
+      success: false,
+      error: `No connected ${params.platform.split(" ")[0]} account. Connect one in Settings → Integrations, then schedule this post.`,
+    }
+  }
+
   return scheduleSocialPost({
     brokerageId: userCtx.brokerageId,
-    agentId: userCtx.userId,
-    userId: userCtx.userId,
-    platform: platformMap[params.platform] ?? params.platform.toLowerCase().replace(/ /g, "_"),
+    // agentId is OMITTED on purpose: scheduleSocialPost defaults to
+    // auth.agentId (an agents id). It used to be handed userCtx.userId, which
+    // failed verifyAgentInBrokerage and returned "Forbidden".
+    platform,
     postType: "repurposed",
     content: params.content,
     scheduledFor: new Date().toISOString(),
-    socialAccountId: "",
+    socialAccountId: account.id,
   } as any)
 }
 

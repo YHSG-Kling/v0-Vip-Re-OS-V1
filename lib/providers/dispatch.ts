@@ -36,6 +36,7 @@ import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
 import { evaluateDeconflict, type DeconflictChannel } from "@/lib/kernel/deconflict"
 import { DECONFLICT_GATE_KEY } from "@/lib/campaign-sequences/deferral-policy"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 import { needsCassCheck, interpretLobForGate, type MailingGateLead } from "@/lib/providers/mailing-cass-gate"
 import { resolveManagerAutonomy, autonomyDecision, managerForDispatch, HUMAN_APPROVED_SYSTEM_SOURCE } from "@/lib/managers/autonomy-gate"
 import { contentSafetyBackstop } from "@/lib/providers/content-safety"
@@ -390,10 +391,24 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
   // the signature/unsubscribe lookup keys off the contacts table.
   const recipientId = params.contactId ?? params.leadId ?? null
 
+  // IDENTITY CLASS. assembleEmail looks up `users` by this id to run the
+  // signature waterfall (user → team → brokerage). params.agentId is an
+  // AGENTS id, so passing it matched no users row: tiers 1 and 2 were skipped
+  // and every such send silently fell through to the BROKERAGE signature —
+  // exactly the fallback-to-brokerage the OS is not supposed to have. The
+  // third branch was worse still: a brokerages id passed as a users id.
+  // Nothing is lost by dropping it, because assembleEmail reaches the
+  // brokerage tier on its own from the brokerageId argument below.
+  const signatureUserId =
+    params.userId ??
+    (params.agentId
+      ? await resolveUserIdForAgentRecord(createServiceClient(), params.agentId)
+      : null)
+
   const assembled = await assembleEmail({
     bodyHtml:       params.html ?? "",
     bodyText:       params.text,
-    userId:         params.agentId ?? params.userId ?? params.brokerageId ?? "",
+    userId:         signatureUserId ?? "",
     brokerageId:    params.brokerageId,
     contactId:      recipientId,
     channelPurpose,
@@ -1134,13 +1149,18 @@ async function dispatchVideoViaDID({
   const { createServiceClient } = await import("@/lib/supabase/service")
   const supabase = createServiceClient()
 
-  const agentUserId = params.userId ?? params.agentId
-  if (!agentUserId) {
-    return { success: false, providerKey, error: "Cannot generate video — agent ID missing" }
+  // IDENTITY CLASS. params.agentId is ALREADY an agents id — feeding it to a
+  // users→agents resolver looked up `agents WHERE user_id = <an agents id>`,
+  // matched nothing, and returned the misleading "Voice clone not set up" for
+  // an agent whose clone existed. Only params.userId needs resolving.
+  let agentRecordId: string | null = params.agentId ?? null
+  if (!agentRecordId) {
+    if (!params.userId) {
+      return { success: false, providerKey, error: "Cannot generate video — agent ID missing" }
+    }
+    const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+    agentRecordId = await resolveUserIdToAgentRecord(params.userId, params.brokerageId)
   }
-
-  const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
-  const agentRecordId = await resolveUserIdToAgentRecord(agentUserId, params.brokerageId)
   if (!agentRecordId) {
     return { success: false, providerKey, error: "Voice clone not set up. The agent must complete Settings → Voice & Avatar before videos can be generated." }
   }
@@ -1193,7 +1213,7 @@ async function dispatchVideoViaDID({
   }
 
   // For D-ID we need a hosted audio URL — write to Supabase storage.
-  const audioPath = `isa-videos/${agentUserId}/${Date.now()}.mp3`
+  const audioPath = `isa-videos/${agentRecordId}/${Date.now()}.mp3`
   const { error: uploadError } = await supabase.storage
     .from("media")
     .upload(audioPath, new Uint8Array(ttsRes.data), { contentType: "audio/mpeg", upsert: false })
