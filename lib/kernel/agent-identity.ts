@@ -5,28 +5,29 @@
  * ALWAYS do: agentId = await resolveAgentId(supabase, user.id)
  * If null → user has no agent profile yet → handle gracefully
  *
- * CONSOLIDATED (m340). This module and lib/kernel/agent-identity-resolver.ts
- * were TWO implementations of the same users→agents lookup — 57 files import
- * this one, 27 import that one, and they did not behave the same way:
+ * TWO MODULES, AND WHY THEY BOTH EXIST (m340 corrected by m344).
  *
- *   · the resolver CACHES; this one hit the database on every call, and these
- *     are called inside per-agent loops in the rollup crons;
- *   · the resolver is BROKERAGE-SCOPED; this one was not. `.maybeSingle()` on
- *     an unscoped `user_id` match THROWS when a user has agents rows in two
- *     brokerages — a real shape in a platform that supports staff across
- *     tenants — so the more widely adopted of the two was the riskier one.
+ * This module and lib/kernel/agent-identity-resolver.ts both resolve
+ * users→agents, and m340 tried to collapse them by having this one import that
+ * one. That broke the production build: the resolver is `server-only` (it builds
+ * its own service-role client), while THIS module takes the caller's client and
+ * is imported from pages that webpack bundles outside the server graph —
+ * app/analytics/page.tsx among them. The static import dragged "server-only"
+ * into a Pages Router bundle. tsc cannot see that; only a real `next build` can.
  *
- * Rather than churn 57 call sites, the SIGNATURES stay exactly as they were and
- * the implementation now delegates. One lookup, one cache, and the brokerage
- * question is answered in one file instead of two.
+ * So they are NOT redundant, and calling them a duplicate was wrong:
+ *   · agent-identity-resolver — SERVER-ONLY, service-role, cached, both
+ *     directions. For kernel/cron/server-action code.
+ *   · this module — client-agnostic, uses the SUPABASE CLIENT YOU PASS, so it
+ *     honours RLS and is safe to import from anywhere.
  *
- * Prefer resolveAgentIdInBrokerage when you know the tenant — it is the scoped,
- * cached path. resolveAgentId remains for the callers that genuinely do not have
- * a brokerage in hand, and it is honest about what it does.
+ * What m340 got right and this keeps: `.maybeSingle()` on an unscoped `user_id`
+ * match THROWS when a user holds agents rows in two brokerages, so the unscoped
+ * path is now an ordered `limit(1)`, and a brokerage-SCOPED variant exists for
+ * callers that know their tenant. Prefer it whenever you do.
  */
 
 import { SupabaseClient } from '@supabase/supabase-js'
-import { resolveUserIdToAgentRecord } from './agent-identity-resolver'
 
 /**
  * Resolves the agent ID from a user ID, WITHOUT a brokerage scope.
@@ -54,15 +55,26 @@ export async function resolveAgentId(
 }
 
 /**
- * The SCOPED, CACHED resolution — one agents row per (user, brokerage), which
- * is the only version that can be correct for a user who belongs to more than
- * one tenant. Delegates to the single canonical implementation.
+ * The SCOPED resolution — one agents row per (user, brokerage), the only version
+ * that can be correct for a user who belongs to more than one tenant.
+ *
+ * Implemented HERE against the caller's client rather than delegating to
+ * agent-identity-resolver, and that is deliberate: see the header. Same query,
+ * one extra filter.
  */
 export async function resolveAgentIdInBrokerage(
+  supabase: SupabaseClient,
   userId: string,
   brokerageId: string
 ): Promise<string | null> {
-  return resolveUserIdToAgentRecord(userId, brokerageId)
+  if (!userId || !brokerageId) return null
+  const { data } = await supabase
+    .from('agents')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('brokerage_id', brokerageId)
+    .limit(1)
+  return (data?.[0]?.id as string | undefined) ?? null
 }
 
 /**

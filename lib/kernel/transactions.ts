@@ -17,6 +17,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { KernelEvent }         from "@/lib/kernel/events"
 import { processKernelEvent }  from "@/lib/kernel/notification-engine"
 import { isValidUUID }         from "@/lib/validations"
@@ -989,6 +990,16 @@ export async function closeTransactionCommand(params: {
 }): Promise<KernelTxResult<void>> {
   try {
     const supabase = await createServiceClient()
+
+    // IDENTITY CLASS (m343). params.agentId is a USERS id — it is passed as
+    // agentUserId/actorUserId elsewhere in this command and used to look up
+    // agents by user_id. But activities, agent_commission_profiles and
+    // commission_calculations ALL FK AGENTS, so those writes were foreign-key
+    // violations. This command already resolved the agents row further down for
+    // lifetime touchpoints and used it only there — the seventh instance in this
+    // codebase of the class being resolved correctly in one spot and ignored in
+    // the next. Resolved ONCE, at the top, for every agents-class write below.
+    const agentRecordId = await resolveUserIdToAgentRecord(params.agentId, params.brokerageId)
     const today = new Date().toISOString().slice(0, 10)
     const nowIso = new Date().toISOString()
 
@@ -1021,7 +1032,7 @@ export async function closeTransactionCommand(params: {
       activityWrites.push(
         supabase.from("activities").insert({
           brokerage_id:   params.brokerageId,
-          agent_id:       params.agentId,
+          agent_id:       agentRecordId,
           contact_id:     txBefore.buyer_contact_id,
           transaction_id: params.transactionId,
           activity_type:  "transaction_closed",
@@ -1038,7 +1049,7 @@ export async function closeTransactionCommand(params: {
       activityWrites.push(
         supabase.from("activities").insert({
           brokerage_id:   params.brokerageId,
-          agent_id:       params.agentId,
+          agent_id:       agentRecordId,
           contact_id:     txBefore.seller_contact_id,
           transaction_id: params.transactionId,
           activity_type:  "transaction_closed",
@@ -1199,7 +1210,7 @@ export async function closeTransactionCommand(params: {
       for (const contactId of lifetimeContactIds) {
         await supabase.from("activities").insert({
           brokerage_id:   params.brokerageId,
-          agent_id:       params.agentId,
+          agent_id:       agentRecordId,
           contact_id:     contactId,
           transaction_id: params.transactionId,
           activity_type:  "closing_gift_due",
@@ -1299,6 +1310,16 @@ export async function recalculateCommissionStateCommand(params: {
   try {
     const supabase = await createServiceClient()
 
+    // IDENTITY CLASS (m343). params.agentId is a USERS id — it is passed as
+    // agentUserId/actorUserId elsewhere in this command and used to look up
+    // agents by user_id. But activities, agent_commission_profiles and
+    // commission_calculations ALL FK AGENTS, so those writes were foreign-key
+    // violations. This command already resolved the agents row further down for
+    // lifetime touchpoints and used it only there — the seventh instance in this
+    // codebase of the class being resolved correctly in one spot and ignored in
+    // the next. Resolved ONCE, at the top, for every agents-class write below.
+    const agentRecordId = await resolveUserIdToAgentRecord(params.agentId, params.brokerageId)
+
     // Load transaction purchase_price + agent commission profile
     const [{ data: tx }, { data: profile }] = await Promise.all([
       supabase
@@ -1309,7 +1330,7 @@ export async function recalculateCommissionStateCommand(params: {
       supabase
         .from("agent_commission_profiles")
         .select("split_percent, cap_amount, transaction_fee, royalty_percent")
-        .eq("agent_id", params.agentId)
+        .eq("agent_id", agentRecordId)
         .eq("brokerage_id", params.brokerageId)
         .eq("is_active", true)
         .order("effective_date", { ascending: false })
@@ -1363,7 +1384,7 @@ export async function recalculateCommissionStateCommand(params: {
     await supabase.from("commission_calculations").insert({
       transaction_id:       params.transactionId,
       brokerage_id:         params.brokerageId,
-      agent_id:             params.agentId,
+      agent_id:             agentRecordId,
       total_commission:     grossCommission,
       // commission_calculations has no gross_commission/agent_commission columns —
       // fold into the existing breakdown_json.

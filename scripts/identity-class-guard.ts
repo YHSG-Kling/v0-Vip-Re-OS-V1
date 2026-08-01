@@ -194,7 +194,7 @@ console.log("\n═══ 1. No function uses one value as both identity classes 
   // that belongs to a sibling query. Claiming they are all bugs would repeat
   // the exact mistake this guard exists to catch — asserting more than the
   // evidence supports. So: the number may only go DOWN.
-  const BASELINE = 30
+  const BASELINE = 27
   ok(`self-contradicting identity uses at or below the baseline of ${BASELINE} (found ${found.length})`,
     found.length <= BASELINE,
     found.length > BASELINE
@@ -251,6 +251,32 @@ console.log("\n═══ 2. The three verified defects stay fixed ═══")
     "lib/income-forecast/forecaster.ts")
   ok("...and still writes income_forecast_snapshots with the users id",
     /agent_id:\s+input\.agentId|\.eq\("agent_id", input\.agentId\)/.test(inc))
+
+  // m343 — COPILOT and the TRANSACTIONS kernel. Both had already resolved the
+  // agents id correctly somewhere in the same function and then not used it at
+  // the next call site — the pattern that keeps recurring.
+  const cop = code("app/actions/copilot.ts")
+  ok("initiateCall writes activities with the RESOLVED agents id, the same one\n    it already computed for voice_calls three lines earlier",
+    /agent_id: agentsId,/.test(cop) && !/agent_id: agentId,/.test(cop),
+    "app/actions/copilot.ts")
+
+  const txk = code("lib/kernel/transactions.ts")
+  // COUNTED, not banned. A blanket "no params.agentId write" also forbade the
+  // review_requests write, which is genuinely users-class and correct — the same
+  // over-broad-pattern mistake as m338, caught the same way. Five agents-class
+  // writes move; exactly one users-class write stays.
+  // FOUR object-writes (three activities + commission_calculations) and ONE
+  // filter (agent_commission_profiles). Counted off the code — my first pass
+  // asserted five writes from memory and failed on correct code, which is the
+  // same over-claiming this guard exists to stop.
+  const agentsWrites  = (txk.match(/agent_id:\s+agentRecordId/g) ?? []).length
+  const agentsFilters = (txk.match(/\.eq\("agent_id", agentRecordId\)/g) ?? []).length
+  const usersWrites   = (txk.match(/agent_id:\s+params\.agentId/g) ?? []).length
+  ok("the transactions kernel writes activities / agent_commission_profiles /\n    commission_calculations with the AGENTS id — commission_calculations is\n    money, and it was a foreign-key violation",
+    agentsWrites === 4 && agentsFilters === 1,
+    `agentRecordId writes: ${agentsWrites}, filters: ${agentsFilters}`)
+  ok("...while the ONE genuinely users-class write (review_requests) keeps the\n    users id",
+    usersWrites === 1, `params.agentId writes left: ${usersWrites}`)
 
   // m342 — onboarding PROGRESS. Its two branches produced DIFFERENT classes into
   // the same variable: the self path resolved an agents id, the admin path kept
@@ -324,10 +350,19 @@ console.log("\n═══ 3. The canonical resolver is the one place this is deci
   // THROWS for a user with agents rows in two brokerages, so the more widely
   // adopted module was the riskier one. Signatures kept, implementation merged.
   const idm = code("lib/kernel/agent-identity.ts")
-  ok("agent-identity delegates to the canonical resolver instead of running a\n    second implementation of the same lookup",
-    /from ['"]\.\/agent-identity-resolver['"]/.test(idm), "lib/kernel/agent-identity.ts")
-  ok("...and offers the BROKERAGE-SCOPED variant callers should prefer",
-    /export async function resolveAgentIdInBrokerage/.test(idm))
+  // CORRECTED (m344). m340 asserted that agent-identity DELEGATES to the
+  // resolver. That shipped and BROKE THE PRODUCTION BUILD: the resolver is
+  // `server-only`, this module is imported from pages webpack bundles outside
+  // the server graph, and the static import dragged server-only into a Pages
+  // Router bundle. tsc cannot see it — only `next build` can, which is why the
+  // failure reached CI. The two modules are NOT redundant and the assertion now
+  // enforces the opposite: this one must NOT statically import the server-only
+  // module.
+  ok("agent-identity does NOT statically import the server-only resolver —\n    it is imported from client-bundled pages, and that import broke the build",
+    !/from ['"]\.\/agent-identity-resolver['"]/.test(idm), "lib/kernel/agent-identity.ts")
+  ok("...and offers the BROKERAGE-SCOPED variant callers should prefer,\n    implemented against the caller's own client",
+    /export async function resolveAgentIdInBrokerage/.test(idm) &&
+    /supabase: SupabaseClient/.test(idm))
   ok("...while the unscoped path no longer uses maybeSingle(), which threw for a\n    user carrying agents rows in more than one brokerage",
     !/\.eq\('user_id', userId\)\s*\n\s*\.maybeSingle\(\)/.test(idm) && /\.limit\(1\)/.test(idm))
 
@@ -356,5 +391,5 @@ if (fail > 0) {
   console.log("Route it through lib/kernel/agent-identity-resolver instead of guessing.")
   process.exit(1)
 }
-console.log("Eleven verified defects fixed and locked; 30 candidates remain behind a ratchet")
+console.log("Thirteen verified defects fixed and locked; 27 candidates remain behind a ratchet")
 console.log("that may only go down. The resolver is the one place this should be decided.")

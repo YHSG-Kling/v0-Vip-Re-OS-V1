@@ -461,6 +461,18 @@ export async function analyzeContactPriority(contactId: string) {
   }
 }
 
+/**
+ * NOTE (m343): this export currently has NO callers anywhere in the repo. It is
+ * fixed rather than deleted because an exported server action can be reached by
+ * a path a static search does not see, and a broken-but-unreachable action is a
+ * trap for whoever wires it up next. If it is still unused when the surface is
+ * reviewed, delete it — do not leave it half-alive.
+ *
+ * IDENTITY CLASS: the parameter is a USERS id (the brokerage lookup below reads
+ * `users` by it), but messages, showings, contacts and activities are ALL
+ * agents-class. Every one of the four queries below was keyed with the wrong
+ * class and would have returned nothing.
+ */
 export async function suggestNextActions(agentId: string) {
   const supabase = await createServerClient()
 
@@ -468,11 +480,17 @@ export async function suggestNextActions(agentId: string) {
 
   if (!profile?.brokerage_id) return { suggestions: [] }
 
+  // The agents-class id for the four queries below. Without it they filter an
+  // agents column by a users id and return nothing, which reads as "this agent
+  // has had no activity" rather than as a bug.
+  const agentsId = await agentIdForUser(supabase, agentId)
+  if (!agentsId) return { suggestions: [] }
+
   // Get agent's recent activity
   const { data: recentActivity } = await supabase
     .from("messages")
     .select("*, contacts(*)")
-    .eq("agent_id", agentId)
+    .eq("agent_id", agentsId)
     .gte("created_at", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
     .order("created_at", { ascending: false })
 
@@ -494,7 +512,7 @@ export async function suggestNextActions(agentId: string) {
   const { data: showingsNoFeedback } = await supabase
     .from("showings")
     .select("*, contacts(*)")
-    .eq("agent_id", agentId)
+    .eq("agent_id", agentsId)
     .eq("status", "completed")
     .is("feedback", null)
     .gte("scheduled_at", new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString())
@@ -512,7 +530,7 @@ export async function suggestNextActions(agentId: string) {
   const { data: staleContacts } = await supabase
     .from("contacts")
     .select("*")
-    .eq("agent_id", agentId)
+    .eq("agent_id", agentsId)
     .eq("brokerage_id", profile.brokerage_id)
     .in("status", ["active_client", "hot_lead"])
     .lt("last_contacted_at", new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString())
@@ -580,9 +598,14 @@ async function initiateCall(contactId: string, agentId: string) {
     return { success: false, error: "Failed to initiate call" }
   }
 
+  // IDENTITY CLASS (m343). activities.agent_id FKs AGENTS, exactly like
+  // voice_calls.agent_id above — which this function already resolved into
+  // `agentsId` three lines earlier, and then did not use here. The insert was a
+  // foreign-key violation, so an outbound call logged fine and never appeared on
+  // the agent's activity feed. Same function, one resolution, two call sites.
   await supabase.from("activities").insert({
     brokerage_id: agentUser?.brokerage_id ?? null,
-    agent_id: agentId,
+    agent_id: agentsId,
     contact_id: contactId,
     activity_type: "call_initiated",
     title: "Outbound call initiated",
