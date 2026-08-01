@@ -259,7 +259,12 @@ export async function markOfferExpired(
     const { data: sysUserRow } = await supabase.from("users").select("brokerage_id").eq("id", systemUserId).maybeSingle();
     const { error } = await supabase.from("activities").insert({
       brokerage_id: sysUserRow?.brokerage_id ?? null,
-      agent_id: systemUserId,
+      // IDENTITY CLASS. activities.agent_id FKs agents(id) and systemUserId is
+      // a users id — it is looked up in `users` on the line above. The three
+      // sibling writes in this file (submitted, withdrawn, response) already
+      // resolve it; this fourth one was missed, so every EXPIRED offer failed
+      // to record its lifecycle event while the other three recorded fine.
+      agent_id: await resolveAgentId(supabase as any, systemUserId),
       activity_type: "buyer.offer.expired",
       title: "Offer expired",
       description: "Offer expired: deadline passed",

@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { provisionTenantOwner } from "@/lib/kernel/users"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { stripe } from "@/lib/stripe"
 
 export interface CreateSubscriberParams {
@@ -149,15 +150,25 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
     }
 
     // Step 5: Audit log — activities has no metadata column; use notes as JSON string
+    //
+    // IDENTITY CLASS. activities.agent_id FKs agents(id); callerUser.id is a
+    // users id, so this insert was rejected by the foreign key — and the catch
+    // below discarded the rejection. The audit line for provisioning a new
+    // subscriber was never once written. The caller here is a superadmin, who
+    // legitimately may have no agents row at all, so the column (nullable) gets
+    // null in that case and the actor is recorded in the notes payload instead —
+    // an audit entry that names its actor beats one that does not exist.
+    const callerAgentId = await resolveAgentId(service as any, callerUser.id)
     try {
-      await service
+      const { error: auditErr } = await service
         .from("activities")
         .insert({
           activity_type: "superadmin.subscriber.created",
-          agent_id: callerUser.id,
+          agent_id: callerAgentId,
           brokerage_id: brokerageId,
           title: `New subscriber provisioned: ${params.brokerageName}`,
           notes: JSON.stringify({
+            actor_user_id: callerUser.id,
             admin_email: params.adminEmail,
             tier: params.tierName,
             billing_cycle: params.billingCycle,
@@ -168,6 +179,7 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         })
+      if (auditErr) console.error("[create-subscriber] audit log insert failed:", auditErr.message)
     } catch {
       // Non-fatal: audit log failures don't block subscriber creation
     }

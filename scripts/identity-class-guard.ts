@@ -230,7 +230,7 @@ console.log("\n═══ 1. No function uses one value as both identity classes 
   // So a high remaining count is not the same as a high remaining risk. Grep
   // for a caller first; if there is none, the entry belongs in the dead-surface
   // triage, not here.
-  const BASELINE = 13
+  const BASELINE = 11
   ok(`self-contradicting identity uses at or below the baseline of ${BASELINE} (found ${found.length})`,
     found.length <= BASELINE,
     found.length > BASELINE
@@ -622,6 +622,34 @@ console.log("\n═══ 5. The onboarding surface (m371) ═══")
     /\.from\('agents'\)[\s\S]{0,120}users\(first_name, last_name\)[\s\S]{0,120}\.eq\('id', onboarding\.agent_id\)/.test(health))
 }
 
+console.log("\n═══ 6. Both activities writers (m372) ═══")
+{
+  // activities.agent_id FKs agents(id). Two of the thirteen candidates wrote a
+  // users id into it. Proven live before and after; residue 0.
+
+  // (a) track-offer-lifecycle has FOUR activities inserts. Three already
+  // resolved; the expiry path was missed — the m356 shape exactly, where
+  // fixing the site a detector named left siblings broken. So every EXPIRED
+  // offer lost its lifecycle event while submitted/withdrawn/response were fine.
+  const tol = code("app/actions/buyer-offer/track-offer-lifecycle.ts")
+  ok("all FOUR activities writes in track-offer-lifecycle resolve to an agents\n    id — the expiry path wrote systemUserId raw",
+    (tol.match(/agent_id: await resolveAgentId\(/g) ?? []).length === 4 &&
+    !/agent_id: systemUserId,/.test(tol))
+
+  // (b) The superadmin audit line was FK-rejected and the catch discarded it,
+  // so provisioning a subscriber never once produced an audit row. A superadmin
+  // legitimately has no agents row, and the column is nullable — so null is the
+  // honest value, with the actor kept in the notes payload.
+  const cs = code("app/actions/admin/create-subscriber.ts")
+  ok("the subscriber-provisioning audit line resolves the caller and no longer\n    writes a users id into an agents foreign key",
+    /const callerAgentId = await resolveAgentId\(service as any, callerUser\.id\)/.test(cs) &&
+    /agent_id: callerAgentId,/.test(cs) && !/agent_id: callerUser\.id,/.test(cs))
+  ok("...and it still names its actor, via notes.actor_user_id, for the\n    superadmin case where the resolve correctly yields null",
+    /actor_user_id: callerUser\.id,/.test(cs))
+  ok("...and an audit insert that fails is now LOGGED rather than silently\n    swallowed — the discarded rejection is why nobody noticed",
+    /if \(auditErr\) console\.error/.test(cs))
+}
+
 console.log(`\n${"═".repeat(70)}`)
 console.log(`IDENTITY CLASS — ${pass} passed, ${fail} failed`)
 if (fail > 0) {
@@ -631,5 +659,5 @@ if (fail > 0) {
   console.log("Route it through lib/kernel/agent-identity-resolver instead of guessing.")
   process.exit(1)
 }
-console.log("Verified defects fixed and locked; 13 candidates remain behind a ratchet")
+console.log("Verified defects fixed and locked; 11 candidates remain behind a ratchet")
 console.log("that may only go down. The resolver is the one place this should be decided.")
