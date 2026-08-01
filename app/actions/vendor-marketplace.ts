@@ -265,7 +265,7 @@ export async function markBookingComplete(bookingId: string) {
   if (!user) throw new Error("Not authenticated")
   const { data: u } = await supabase
     .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
-  if (!u?.brokerage_id) throw new Error("Not authenticated")
+  if (!u?.brokerage_id) throw new Error("Your account is not linked to a brokerage yet — ask an admin to assign you one.")
 
   // Scope the UPDATE by brokerage_id so caller can't complete bookings
   // outside their tenant.
@@ -346,7 +346,7 @@ export async function rateVendorBooking(data: {
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
-  if (!profile?.brokerage_id) throw new Error("Not authenticated")
+  if (!profile?.brokerage_id) throw new Error("Your account is not linked to a brokerage yet — ask an admin to assign you one.")
 
   // Get booking to find vendor — scoped by caller's brokerage so an
   // attacker can't 1-star vendors in another tenant's marketplace.
@@ -567,7 +567,7 @@ export async function submitVendorReview(data: {
 
   const { data: profile } = await svc.from("users").select("brokerage_id, created_at").eq("id", user.id).maybeSingle()
   const brokerageId = (profile as any)?.brokerage_id
-  if (!brokerageId) throw new Error("Not authenticated")
+  if (!brokerageId) throw new Error("Your account is not linked to a brokerage yet — ask an admin to assign you one.")
 
   const { verificationMethod, screenReview } = await import("@/lib/kernel/vendor-review-moderation")
 
@@ -830,7 +830,7 @@ export async function assignVendorToTransaction(data: {
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
-  if (!profile?.brokerage_id) throw new Error("Not authenticated")
+  if (!profile?.brokerage_id) throw new Error("Your account is not linked to a brokerage yet — ask an admin to assign you one.")
 
   // Verify vendor + transaction belong to caller's brokerage before any
   // inserts. Without this, caller could attach any vendor to any deal +
@@ -1002,7 +1002,7 @@ export async function createVendorBookingWithKernelEvent(data: {
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
-  if (!profile?.brokerage_id) throw new Error("Not authenticated")
+  if (!profile?.brokerage_id) throw new Error("Your account is not linked to a brokerage yet — ask an admin to assign you one.")
 
   // Verify vendor + transaction belong to caller's brokerage before any
   // inserts or vendor-email fan-out.

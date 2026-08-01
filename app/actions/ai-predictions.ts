@@ -1118,7 +1118,10 @@ export async function aiPropertyMatchGenius(leadId: string) {
       .maybeSingle()
 
     if (!contact) {
-      throw new Error("Lead not found")
+      // The lookup above reads CONTACTS. "Lead not found" sent the reader to a
+      // different table and a different business object — this OS keeps leads
+      // and contacts deliberately separate.
+      throw new Error("Contact not found")
     }
   }
 
@@ -2020,7 +2023,10 @@ export async function detectClientChurn(leadId: string) {
       .maybeSingle()
 
     if (!contact) {
-      throw new Error("Lead not found")
+      // The lookup above reads CONTACTS. "Lead not found" sent the reader to a
+      // different table and a different business object — this OS keeps leads
+      // and contacts deliberately separate.
+      throw new Error("Contact not found")
     }
     resolvedLead = contact
   }

@@ -55,7 +55,11 @@ export default function NewContactPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!userContext?.agentId) {
-      setError("You must be logged in to create a contact")
+      // This tests for an AGENT PROFILE, not for a session. It used to say "You
+      // must be logged in", which is a fix the reader cannot perform: they ARE
+      // logged in, and logging in again will never produce the agents row this
+      // needs. Name the thing that is actually missing, and where to get it.
+      setError("Your account has no agent profile yet — finish setup in Settings → Profile, then create the contact.")
       return
     }
 
