@@ -230,7 +230,7 @@ console.log("\n═══ 1. No function uses one value as both identity classes 
   // So a high remaining count is not the same as a high remaining risk. Grep
   // for a caller first; if there is none, the entry belongs in the dead-surface
   // triage, not here.
-  const BASELINE = 16
+  const BASELINE = 13
   ok(`self-contradicting identity uses at or below the baseline of ${BASELINE} (found ${found.length})`,
     found.length <= BASELINE,
     found.length > BASELINE
@@ -585,6 +585,43 @@ console.log("\n═══ 4. The catalogue this guard reasons from is honest ═�
     /information_schema\.table_constraints/.test(src("scripts/identity-class-guard.ts")))
 }
 
+console.log("\n═══ 5. The onboarding surface (m371) ═══")
+{
+  // Five of the sixteen candidates sat on the agent-onboarding surface. Two —
+  // license.ts and progress.ts — were already correct: they resolve the id
+  // between the two uses the guard's window sees, which is exactly why this
+  // list is CANDIDATES and not defects. The other three were real, and all
+  // five onboarding tables agree on the class: agent_licenses, agent_onboarding,
+  // agent_step_completions, video_completion_tracking and agent_certifications
+  // all FK agents(id). Proven live before and after; residue 0.
+
+  // The roster links with agent_onboarding.agent_id — an AGENTS id.
+  const roster = code("lib/onboarding/onboarding-roster.ts")
+  ok("the onboarding roster still hands out the AGENTS id, which is what makes\n    the class of the admin route param knowable at all",
+    /agentId: o\.agent_id/.test(roster))
+
+  // (a) The admin detail page read `users` by that id, found nothing, and hit
+  // notFound() — for every agent. The page was unreachable from the only
+  // place that links to it.
+  const admin = code("app/dashboard/onboarding/admin/agents/[id]/page.tsx")
+  ok("the admin agent-detail page resolves agents→users before its two `users`\n    lookups — it 404'd on every agent in the roster",
+    /resolveUserIdForAgentRecord\(supabase, agentId\)/.test(admin) &&
+    !/\.from\('users'\)[\s\S]{0,120}\.eq\('id', agentId\)/.test(admin))
+  ok("...and it still uses the AGENTS id for agent_step_completions, which was\n    always the correct class — only the users reads were wrong",
+    /\.from\('agent_step_completions'\)[\s\S]{0,160}\.eq\('agent_id', agentId\)/.test(admin))
+
+  // (b) The certification engine updated agents by user_id using an agents id,
+  // so it matched no row: certification completed, status never moved.
+  const cert = code("lib/onboarding/certification-engine.ts")
+  ok("completing a certification updates agents by id, not by user_id — the\n    update matched zero rows, so onboarding_status never reached 'completed'",
+    /\.from\('agents'\)[\s\S]{0,220}onboarding_status: 'completed'[\s\S]{0,160}\.eq\('id', agentId\)/.test(cert))
+
+  // (c) The health cron read the agent's name from `users` by an agents id.
+  const health = code("app/api/cron/onboarding-health/route.ts")
+  ok("the stalled-agent nudge reads the name THROUGH agents — it read `users`\n    by an agents id, so every \"personalized\" nudge went out with a blank name",
+    /\.from\('agents'\)[\s\S]{0,120}users\(first_name, last_name\)[\s\S]{0,120}\.eq\('id', onboarding\.agent_id\)/.test(health))
+}
+
 console.log(`\n${"═".repeat(70)}`)
 console.log(`IDENTITY CLASS — ${pass} passed, ${fail} failed`)
 if (fail > 0) {
@@ -594,5 +631,5 @@ if (fail > 0) {
   console.log("Route it through lib/kernel/agent-identity-resolver instead of guessing.")
   process.exit(1)
 }
-console.log("Verified defects fixed and locked; 16 candidates remain behind a ratchet")
+console.log("Verified defects fixed and locked; 13 candidates remain behind a ratchet")
 console.log("that may only go down. The resolver is the one place this should be decided.")

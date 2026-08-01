@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { Button } from '@/components/ui/button'
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 import { 
   ArrowLeft,
   Check,
@@ -60,11 +61,23 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
     redirect('/dashboard/onboarding')
   }
 
+  // IDENTITY CLASS. The roster links here with agent_onboarding.agent_id
+  // (see lib/onboarding/onboarding-roster.ts), which FKs agents(id). Both
+  // lookups below read the `users` table, so they matched nothing and the
+  // `notFound()` beneath them fired for EVERY agent — this page was
+  // unreachable from the only place that links to it. The agents-class
+  // queries further down (agent_step_completions) were always correct, so the
+  // id itself is right; only these two reads need resolving.
+  const agentUserId = await resolveUserIdForAgentRecord(supabase, agentId)
+  if (!agentUserId) {
+    notFound()
+  }
+
   // Get agent details
   const { data: agentUser } = await supabase
     .from('users')
     .select('id, first_name, last_name, email, created_at')
-    .eq('id', agentId)
+    .eq('id', agentUserId)
     .single()
 
   if (!agentUser) {
@@ -75,7 +88,7 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
   const { data: agentUserBrokerage } = await supabase
     .from('users')
     .select('brokerage_id')
-    .eq('id', agentId)
+    .eq('id', agentUserId)
     .eq('brokerage_id', userData.brokerage_id)
     .single()
 

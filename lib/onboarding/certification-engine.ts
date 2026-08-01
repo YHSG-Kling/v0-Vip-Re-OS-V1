@@ -424,13 +424,18 @@ export async function completeOnboarding(
     .eq('id', onboarding.id)
 
   // 3. Update agents.onboarding_status
+  // IDENTITY CLASS. agentId is an AGENTS id everywhere else in this file —
+  // agent_certifications, agent_step_completions and video_completion_tracking
+  // all key on it, and line ~289 reads `agents WHERE id = agentId`. This one
+  // matched on user_id, so it updated no row: certification completed and the
+  // agent's onboarding_status silently stayed where it was.
   await supabase
     .from('agents')
     .update({
       onboarding_status: 'completed',
       updated_at: new Date().toISOString(),
     })
-    .eq('user_id', agentId)
+    .eq('id', agentId)
 
   // 4. Transition lifecycle (only once, check prevents duplicate)
   await transitionLifecycle({
