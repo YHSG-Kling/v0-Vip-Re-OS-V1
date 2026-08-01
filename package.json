@@ -457,6 +457,7 @@
     "test:identity-class": "tsx scripts/identity-class-guard.ts",
     "test:agent-id-repoint": "tsx scripts/agent-id-repoint-guard.ts",
     "test:error-message-honesty": "tsx scripts/error-message-honesty-guard.ts",
+    "test:discarded-outcome": "tsx scripts/discarded-outcome-guard.ts",
     "test:server-only-boundary": "tsx scripts/server-only-boundary-guard.ts",
     "test:identity-fallback": "tsx scripts/identity-fallback-guard.ts",
     "test:lifetime-ledger": "tsx scripts/lifetime-ledger-guard.ts",

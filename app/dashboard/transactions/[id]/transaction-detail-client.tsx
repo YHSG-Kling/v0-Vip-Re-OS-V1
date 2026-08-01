@@ -1012,21 +1012,27 @@ export function TransactionDetailClient({
 
   async function handleApproveQuote(activityId: string, vendorName: string, quoteType: string) {
     startTransition(async () => {
-      if (quoteType === "inspector") {
-        await approveInspectionQuoteAction({
-          activityId,
-          transactionId: transaction.id,
-          brokerageId,
-          vendorName,
-        })
-      } else {
-        await approveInsuranceQuoteAction({
-          activityId,
-          serviceId: activityId,
-          transactionId: transaction.id,
-          brokerageId,
-          vendorName,
-        })
+      // The action reports failure BY RETURN ({ success:false, error }) — it checks
+      // authorisation and that the transaction belongs to this brokerage. Discarding
+      // it meant the screen refreshed as though the quote had been approved when it
+      // had not, and the broker was never told.
+      const res = quoteType === "inspector"
+        ? await approveInspectionQuoteAction({
+            activityId,
+            transactionId: transaction.id,
+            brokerageId,
+            vendorName,
+          })
+        : await approveInsuranceQuoteAction({
+            activityId,
+            serviceId: activityId,
+            transactionId: transaction.id,
+            brokerageId,
+            vendorName,
+          })
+      if (!res?.success) {
+        toast.error((res as any)?.error ?? "The approval did not go through.")
+        return
       }
       router.refresh()
     })
@@ -1034,11 +1040,19 @@ export function TransactionDetailClient({
 
   async function handleMarkInspectionComplete(inspectionId: string) {
     startTransition(async () => {
-      await markInspectionCompleteAction({
-        inspectionId,
-        transactionId: transaction.id,
-        brokerageId,
-      })
+        // The action reports failure BY RETURN ({ success:false, error }) — it
+        // checks authorisation and that the transaction is in this brokerage.
+        // Discarding it meant the screen refreshed as though the approval had
+        // happened when it had not, with nothing shown to the broker.
+        const res = await markInspectionCompleteAction({
+          inspectionId,
+          transactionId: transaction.id,
+          brokerageId,
+        })
+        if (!res?.success) {
+          toast.error((res as any)?.error ?? "Could not mark the inspection complete.")
+          return
+        }
       router.refresh()
     })
   }
@@ -1071,13 +1085,21 @@ export function TransactionDetailClient({
     if (!insuranceQuoteAmount) return
 
     startTransition(async () => {
-      await submitInsuranceQuoteApprovalAction({
-        serviceId,
-        transactionId: transaction.id,
-        brokerageId,
-        vendorName,
-        quoteAmount: parseFloat(insuranceQuoteAmount),
-      })
+        // The action reports failure BY RETURN ({ success:false, error }) — it
+        // checks authorisation and that the transaction is in this brokerage.
+        // Discarding it meant the screen refreshed as though the approval had
+        // happened when it had not, with nothing shown to the broker.
+        const res = await submitInsuranceQuoteApprovalAction({
+          serviceId,
+          transactionId: transaction.id,
+          brokerageId,
+          vendorName,
+          quoteAmount: parseFloat(insuranceQuoteAmount),
+        })
+        if (!res?.success) {
+          toast.error((res as any)?.error ?? "The quote was not submitted.")
+          return
+        }
       setInsuranceQuoteAmount("")
       router.refresh()
     })
@@ -1087,14 +1109,22 @@ export function TransactionDetailClient({
 
   async function handleUpdateEarnestMoney() {
     startTransition(async () => {
-      await updateEarnestMoneyAction({
-        transactionId: transaction.id,
-        brokerageId,
-        titleEscrowId: titleEscrow?.id,
-        earnestMoneyAmount: emAmount ? parseFloat(emAmount) : undefined,
-        earnestMoneyHeldBy: emHeldBy || undefined,
-        earnestMoneyReceivedDate: emReceivedDate || undefined,
-      })
+        // The action reports failure BY RETURN ({ success:false, error }) — it
+        // checks authorisation and that the transaction is in this brokerage.
+        // Discarding it meant the screen refreshed as though the approval had
+        // happened when it had not, with nothing shown to the broker.
+        const res = await updateEarnestMoneyAction({
+          transactionId: transaction.id,
+          brokerageId,
+          titleEscrowId: titleEscrow?.id,
+          earnestMoneyAmount: emAmount ? parseFloat(emAmount) : undefined,
+          earnestMoneyHeldBy: emHeldBy || undefined,
+          earnestMoneyReceivedDate: emReceivedDate || undefined,
+        })
+        if (!res?.success) {
+          toast.error((res as any)?.error ?? "Earnest money was not updated.")
+          return
+        }
       router.refresh()
     })
   }
