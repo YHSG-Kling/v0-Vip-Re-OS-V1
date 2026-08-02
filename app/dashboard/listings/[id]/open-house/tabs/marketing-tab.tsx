@@ -208,8 +208,8 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
       })
       if (res.success) {
         toast({
-          title: `Invitations sent`,
-          description: `${res.invited} invitation${res.invited === 1 ? "" : "s"} queued via ${channel}.`,
+          title: `Invitations staged`,
+          description: `${res.invited} invitation${res.invited === 1 ? "" : "s"} staged for ${channel}. Nothing has been delivered yet — an invitation sender still has to pick these up.`,
         })
       } else {
         toast({ title: "Failed to send invitations", description: res.error, variant: "destructive" })

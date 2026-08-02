@@ -387,11 +387,23 @@ export async function loadMortgageBrokers(params: {
   // .agent_id FKs agents(id), "the old users.id filter always returned zero
   // partners" — and the line below said `?? ctx.userId`. m361 removes the
   // fallback. Same self-cancelling shape as the eight sites in m353.
+  // WriteContext.agentId is `string | null` — null for broker/admin/TC roles.
+  // `?? ""` turned that into a filter matching nothing, so those sessions saw
+  // "no lender recommendations" as though the brokerage had none. Refuse with
+  // a reason instead of returning a confident empty list; the sibling guard in
+  // smart-queue.ts does exactly this.
+  if (!ctx.agentId) {
+    return {
+      success: false,
+      error: "Lender referrals are kept per agent, and this account has no agent profile. Open it from an agent's login, or finish agent setup.",
+    }
+  }
+
   const { data, error } = await supabase
     .from("referral_partners")
     .select("id, partner_name, company_name, phone, email")
     .eq("brokerage_id", ctx.brokerageId)
-    .eq("agent_id", ctx.agentId ?? "")
+    .eq("agent_id", ctx.agentId)
     .eq("partner_type", "mortgage_broker")
     .eq("active", true)
     .limit(3)

@@ -210,15 +210,19 @@ export default function AgentDashboard() {
         const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1)
           .toISOString().split('T')[0]
 
-        // 5. Load action plans from activities table
-        const { data: plans } = await supabase
+        // 5. Load action plans from activities table.
+        // This sat OUTSIDE the `if (agentRow)` block above and re-reached for
+        // agentRow?.id — with no agents row the filter matched nothing and the
+        // agent's "next actions" feed rendered empty, which reads as "you are
+        // all caught up" rather than "we could not look this up".
+        const { data: plans } = agentRow?.id ? await supabase
           .from("activities")
           .select("id, title, description, priority, contact_id")
-          .eq("agent_id", agentRow?.id)
+          .eq("agent_id", agentRow.id)
           .eq("activity_type", "agent_action_plan")
           .eq("status", "pending")
           .order("created_at", { ascending: false })
-          .limit(5)
+          .limit(5) : { data: null }
 
         // 5b. Merge queued AI Autopilot next-actions (open-house follow-ups from
         // lib/kernel/open-house.ts) into the same suggestions feed — labeled by

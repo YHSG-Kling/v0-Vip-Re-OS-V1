@@ -104,7 +104,15 @@ export default function LinkToVideoGenerator() {
     if (!currentVideoId) return
 
     try {
-      await updateVideoScript(currentVideoId, script)
+      // updateVideoScript RETURNS { success:false, error } and never throws,
+      // so the catch below was dead and this claimed a COMPLIANCE RE-CHECK
+      // that had not happened. Marketing copy then proceeded on the user's
+      // belief that it had been screened.
+      const res = await updateVideoScript(currentVideoId, script)
+      if (!res?.success) {
+        toast.error(res?.error ?? "The script was not saved, so it was not re-checked")
+        return
+      }
       toast.success("Script updated and re-checked for compliance")
       loadData()
     } catch (error) {
@@ -116,7 +124,14 @@ export default function LinkToVideoGenerator() {
     if (!currentVideoId) return
 
     try {
-      await startVideoGeneration(currentVideoId)
+      // Same contract. Worse consequence: on a silent failure this cleared the
+      // script and the URL, so the user's work was unrecoverable and the queue
+      // simply never populated. Check first, and only then reset.
+      const started = await startVideoGeneration(currentVideoId)
+      if (!started?.success) {
+        toast.error(started?.error ?? "Video generation did not start — your script has been kept")
+        return
+      }
       toast.success("Video generation started! Check the queue below.")
       setScript("")
       setUrl("")

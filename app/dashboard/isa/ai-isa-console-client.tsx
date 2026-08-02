@@ -312,7 +312,18 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
     if (!record.email) { toast.error('No email address on this record'); return }
     try {
       const { initiateAIISAEngagement } = await import('@/app/actions/ai-isa/initiate-engagement')
-      await initiateAIISAEngagement(record.id, { forceChannel: 'email' })
+      // initiateAIISAEngagement RETURNS { success:false, error } — it never
+      // throws — so the catch below could never fire and this used to report
+      // EVERY refusal as a send. Its refusals include 'stop:dnc',
+      // 'stop:reengage_blocked' and 'stop:max_touches': the agent was told a
+      // do-not-call block was "queued for immediate send", believed contact
+      // was made, and stopped following up. That is the most expensive
+      // possible place in this product to discard an outcome.
+      const res = await initiateAIISAEngagement(record.id, { forceChannel: 'email' })
+      if (!res?.success) {
+        toast.error(res?.error ?? 'The email was not sent')
+        return
+      }
       toast.success('AI email queued for immediate send')
       router.refresh()
     } catch (err: any) {
@@ -328,7 +339,13 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
     }
     try {
       const { initiateAIISAEngagement } = await import('@/app/actions/ai-isa/initiate-engagement')
-      await initiateAIISAEngagement(record.id, { forceChannel: 'direct_mail' })
+      // Same contract, same consequence — a suppressed contact was reported as
+      // dispatched, and direct mail costs real money per piece.
+      const res = await initiateAIISAEngagement(record.id, { forceChannel: 'direct_mail' })
+      if (!res?.success) {
+        toast.error(res?.error ?? 'The direct mail piece was not queued')
+        return
+      }
       toast.success('Direct mail piece queued for dispatch')
       router.refresh()
     } catch (err: any) {

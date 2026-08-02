@@ -97,11 +97,18 @@ export function VideosDashboard() {
       if (inProgress) setInProgressVideos(inProgress)
       if (recent) setRecentVideos(recent)
 
-      // Real views from video_performance_tracking — no synthetic data
-      const { data: perf } = await supabase
-        .from("video_performance_tracking")
-        .select("total_views")
-        .eq("brokerage_id", user?.id ?? "")
+      // Real views from video_performance_tracking — no synthetic data.
+      // This filtered brokerage_id BY AN AUTH USER ID (and fell back to ""),
+      // so it matched nothing even on the happy path: the "real views" figure
+      // was a guaranteed 0 sitting under a comment promising it was real.
+      const { data: viewerRow } = await supabase
+        .from("users").select("brokerage_id").eq("id", user?.id ?? "").maybeSingle()
+      const { data: perf } = viewerRow?.brokerage_id
+        ? await supabase
+            .from("video_performance_tracking")
+            .select("total_views")
+            .eq("brokerage_id", viewerRow.brokerage_id)
+        : { data: null }
       const totalViews = (perf ?? []).reduce((s: number, p: { total_views?: number }) => s + (p.total_views ?? 0), 0)
       setWeeklyViews(totalViews > 0 ? Math.round(totalViews / 4) : 0)
       setLoadError(false)

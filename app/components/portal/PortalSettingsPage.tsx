@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { User, Bell, Shield, Smartphone, Mail, Save, ArrowLeft, Camera, Check, AlertCircle } from "lucide-react"
 import Link from "next/link"
-import { updateContactProfile } from "@/app/actions/portal-settings"
+import { updateContactProfile, fileDataSubjectRequestFromPortal } from "@/app/actions/portal-settings"
 
 interface Contact {
   id: string
@@ -39,6 +39,32 @@ interface PortalSettingsPageProps {
 }
 
 export default function PortalSettingsPage({ contact, contactId }: PortalSettingsPageProps) {
+  // Both privacy controls below used to render with no onClick at all. These
+  // are CCPA/CPRA and GDPR obligations with a statutory clock, so a control
+  // that silently does nothing is worse than no control — the client believes
+  // they have exercised a right.
+  const [dsarPending, setDsarPending] = useState<"export" | "delete" | null>(null)
+  const [dsarResult, setDsarResult] = useState<{ type: "export" | "delete"; dueDate?: string } | null>(null)
+  const [dsarError, setDsarError] = useState<string | null>(null)
+
+  async function fileRequest(requestType: "export" | "delete") {
+    if (requestType === "delete" && !confirm(
+      "This files a formal request to delete your account and personal data. Your brokerage must action it, and they will contact you to confirm. Continue?",
+    )) return
+    setDsarPending(requestType)
+    setDsarError(null)
+    try {
+      const res = await fileDataSubjectRequestFromPortal({ contactId, requestType })
+      if (!res.success) {
+        setDsarError(res.error ?? "We could not file that request. Please contact your agent.")
+        return
+      }
+      setDsarResult({ type: requestType, dueDate: res.dueDate })
+    } finally {
+      setDsarPending(null)
+    }
+  }
+
   const router = useRouter()
   const [isSaving, setIsSaving] = useState(false)
   const [saveSuccess, setSaveSuccess] = useState(false)
@@ -487,8 +513,17 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
                     Get a copy of all your data including documents, messages, and activity
                   </p>
                 </div>
-                <Button variant="outline" size="sm">
-                  Request Data Export
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => fileRequest("export")}
+                  disabled={dsarPending !== null || dsarResult?.type === "export"}
+                >
+                  {dsarPending === "export"
+                    ? "Filing request..."
+                    : dsarResult?.type === "export"
+                      ? "Request filed"
+                      : "Request Data Export"}
                 </Button>
               </div>
 
@@ -501,9 +536,31 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
                     Permanently delete your account and all associated data
                   </p>
                 </div>
-                <Button variant="destructive" size="sm">
-                  Delete Account
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => fileRequest("delete")}
+                  disabled={dsarPending !== null || dsarResult?.type === "delete"}
+                >
+                  {dsarPending === "delete"
+                    ? "Filing request..."
+                    : dsarResult?.type === "delete"
+                      ? "Request filed"
+                      : "Delete Account"}
                 </Button>
+
+                {/* Say what actually happens. Deletion is a governed, audited
+                    act with a human in the loop — the button files a request,
+                    it does not erase anything on the spot, and pretending
+                    otherwise would be the same lie in the other direction. */}
+                {dsarResult && (
+                  <p className="text-sm text-green-700">
+                    Your {dsarResult.type === "delete" ? "deletion" : "data export"} request has been
+                    filed{dsarResult.dueDate ? ` and is due by ${new Date(dsarResult.dueDate).toLocaleDateString()}` : ""}.
+                    Your brokerage has been notified and will contact you.
+                  </p>
+                )}
+                {dsarError && <p className="text-sm text-destructive">{dsarError}</p>}
               </div>
             </CardContent>
           </Card>

@@ -1747,7 +1747,18 @@ async function main() {
         // protected the anti-pattern it was written to remove. referral_partners
         // .agent_id FKs agents; a users id there matches nothing. Same shape as the
         // `.or(id.eq,user_id.eq)` assertion m346 had to unwind.
-        && src("app/actions/buyer-financial.ts").includes('.eq("agent_id", ctx.agentId ?? "")'))
+        //
+        // ...and then m361's replacement froze the next spelling, `?? ""`, which is
+        // the SAME class of mistake one step down: WriteContext.agentId is null for
+        // broker/admin/TC sessions, and `?? ""` turns "I have no agent" into a filter
+        // that matches nothing, so those roles read "this brokerage has no lenders".
+        // A silent zero is not better than a wrong row. So assert the CONSTRUCT this
+        // has always been about — the filter is agents-class with NO users fallback,
+        // and the absent case is REFUSED rather than coerced — never the spelling.
+        && src("app/actions/buyer-financial.ts").includes('.eq("agent_id", ctx.agentId)')
+        && !/\.eq\("agent_id", ctx\.agentId \?\?/.test(src("app/actions/buyer-financial.ts"))
+        && !src("app/actions/buyer-financial.ts").includes('.eq("agent_id", ctx.userId')
+        && /if \(!ctx\.agentId\)[\s\S]{0,400}success: false/.test(src("app/actions/buyer-financial.ts")))
 
       // ── PASS 13: GLOBAL agent_user_id CLASS AUDIT + CAP-LEDGER CONSOLIDATION + E2E-IN-GUARD ──
       {

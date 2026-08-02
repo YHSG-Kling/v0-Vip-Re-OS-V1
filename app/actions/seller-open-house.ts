@@ -197,8 +197,15 @@ export async function inviteFarmContacts(params: {
         brokerage_id: auth.brokerageId,
         channel: ch,
         invitation_type: "open_house",
-        status: "invited",
-        sent_at: new Date().toISOString(),
+        // STAGED, NOT SENT. This used to write status:"invited" and stamp
+        // sent_at with now(), for a message that was never composed and never
+        // dispatched — no cron, no dispatchEmail, no sendSMS reads this table.
+        // The count then flowed into total_invites_sent on the event analytics,
+        // so the fabrication propagated into reporting. The consent filtering
+        // above (dnc_status, tcpa_consent) is real and stays; only the claim of
+        // delivery goes.
+        status: "queued",
+        sent_at: null,
       }))
   )
 

@@ -493,7 +493,17 @@ Create a balanced follow-up schedule that:
     }
 
     revalidatePath("/calendar")
-    return { success: true, followUpPlan, scheduled: followUpPlan.scheduledFollowUps.length }
+    // DRAFTED, NOT SCHEDULED-TO-SEND. Nothing in this repo drains
+    // scheduled_touchpoints: the only reads are this action's own dedupe and
+    // the calendar display. The status CHECK (scheduled|sent|completed|
+    // skipped|failed) even anticipates a sender that was never built, so
+    // "sent" and "failed" are unreachable states. The row is genuinely
+    // SCHEDULED on the agent's calendar — that part is true and useful, and
+    // the AI-written message_template is real content they can use. What was
+    // false is returning `scheduled: N`, which the caller reads as N outbound
+    // messages that will go out on their own. They will not; a human sends
+    // them from the calendar.
+    return { success: true, followUpPlan, drafted: followUpPlan.scheduledFollowUps.length }
   } catch (error) {
     return handleError(error, "scheduleSmartFollowUps")
   }
