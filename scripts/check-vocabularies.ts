@@ -1052,7 +1052,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     outcome: ["correct", "inconclusive", "incorrect", "pending"],
   },
   phone_number_events: {
-    event_type: ["failed", "manually_added", "ported_in", "purchased", "released", "vapi_registered"],
+    event_type: ["failed", "manually_added", "ported_in", "purchased", "released", "webhooks_bound"],
   },
   photo_enhancement_jobs: {
     status: ["cancelled", "completed", "failed", "processing", "queued"],
@@ -1497,7 +1497,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     condition: ["excellent", "fair", "good", "poor"],
   },
   vapi_phone_numbers: {
-    number_source: ["byoc_twilio", "byoc_vonage", "forwarded", "ported", "vapi_native"],
+    number_source: ["byoc_twilio", "ported"],
     scope_type: ["agent", "brokerage", "platform", "team"],
   },
   vendor_assignments: {

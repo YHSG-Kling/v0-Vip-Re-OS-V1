@@ -355,9 +355,9 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
 
     if (step === "number_attached") {
       const { data: numbers } = await svc.from("vapi_phone_numbers")
-        .select("byoc_credential_id").eq("brokerage_id", brokerageId).eq("is_active", true)
-        .not("byoc_credential_id", "is", null).limit(10)
-      const sids = ((numbers ?? []) as any[]).map((n) => n.byoc_credential_id).filter(Boolean)
+        .select("twilio_number_sid").eq("brokerage_id", brokerageId).eq("is_active", true)
+        .not("twilio_number_sid", "is", null).limit(10)
+      const sids = ((numbers ?? []) as any[]).map((n) => n.twilio_number_sid).filter(Boolean)
       if (sids.length === 0) return fail("No active tenant numbers to attach — provision a number first")
       for (const phoneSid of sids) {
         const attach = await twilio({ accountSid: sub.accountSid, authToken: sub.authToken }, MESSAGING, `/v1/Services/${state.messaging_service_sid}/PhoneNumbers`, "POST", { PhoneNumberSid: phoneSid })
@@ -526,9 +526,9 @@ export async function runVoiceIntegrityRegistration(svc: any, brokerageId: strin
   const master: Creds = { accountSid: masterSid, authToken: masterToken }
 
   const { data: numbers } = await svc.from("vapi_phone_numbers")
-    .select("byoc_credential_id").eq("brokerage_id", brokerageId).eq("is_active", true)
-    .not("byoc_credential_id", "is", null).limit(10)
-  const phoneSids = ((numbers ?? []) as any[]).map((n) => n.byoc_credential_id).filter(Boolean) as string[]
+    .select("twilio_number_sid").eq("brokerage_id", brokerageId).eq("is_active", true)
+    .not("twilio_number_sid", "is", null).limit(10)
+  const phoneSids = ((numbers ?? []) as any[]).map((n) => n.twilio_number_sid).filter(Boolean) as string[]
   if (phoneSids.length === 0) return fail("No active tenant numbers to register — provision a number first")
 
   // Prerequisite: numbers must belong to the CUSTOMER PROFILE before either

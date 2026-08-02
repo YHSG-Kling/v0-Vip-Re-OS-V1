@@ -176,7 +176,7 @@ export async function getTwilioFleetPosture(svc: any): Promise<TwilioFleetPostur
     svc.from("brokerages").select("id, name").is("deleted_at", null).order("name").limit(300),
     svc.from("platform_credentials").select("brokerage_id, platform, account_id, access_token")
       .in("platform", ["twilio_byo", "twilio_subaccount"]).eq("is_active", true),
-    svc.from("vapi_phone_numbers").select("brokerage_id, phone_number, byoc_credential_id").eq("is_active", true),
+    svc.from("vapi_phone_numbers").select("brokerage_id, phone_number, twilio_number_sid").eq("is_active", true),
   ])
 
   const byoBy = new Map<string, Creds>()
@@ -190,7 +190,7 @@ export async function getTwilioFleetPosture(svc: any): Promise<TwilioFleetPostur
   const dbNumbersBy = new Map<string, Array<{ phone_number: string; sid: string | null }>>()
   for (const n of (numRows ?? []) as any[]) {
     const list = dbNumbersBy.get(n.brokerage_id) ?? []
-    list.push({ phone_number: n.phone_number, sid: n.byoc_credential_id ?? null })
+    list.push({ phone_number: n.phone_number, sid: n.twilio_number_sid ?? null })
     dbNumbersBy.set(n.brokerage_id, list)
   }
 

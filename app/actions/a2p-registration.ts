@@ -75,7 +75,7 @@ export async function runA2pRegistrationAction(): Promise<{ ok: boolean; statusL
   const r = await runA2pRegistration(svc, auth.brokerageId)
   await svc.from("phone_number_events").insert({
     brokerage_id: auth.brokerageId, phone_number: "a2p",
-    event_type: "vapi_registered", source: "a2p_registration",
+    event_type: "webhooks_bound", source: "a2p_registration",
     notes: `A2P step machine ran → ${r.advancedTo}${r.error ? ` (error: ${r.error.slice(0, 160)})` : ""}`,
   }).then(undefined, () => {})
   return { ok: r.ok, statusLine: describeA2pState(r.state), error: r.error }

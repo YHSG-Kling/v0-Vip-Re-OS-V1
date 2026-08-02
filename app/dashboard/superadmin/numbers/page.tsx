@@ -21,7 +21,7 @@ const EVENT_CLS: Record<string, string> = {
   failed: "bg-red-100 text-red-800",
   manually_added: "bg-slate-100 text-slate-700",
   ported_in: "bg-slate-100 text-slate-700",
-  vapi_registered: "bg-indigo-100 text-indigo-800",
+  webhooks_bound: "bg-indigo-100 text-indigo-800",
 }
 
 export default async function FleetNumbersPage(
@@ -37,7 +37,7 @@ export default async function FleetNumbersPage(
   const [{ data: brokerageRows, error: brkError }, { data: numberRows, error: numError }, { data: eventRows }] = await Promise.all([
     svc.from("brokerages").select("id, name").is("deleted_at", null).order("name"),
     svc.from("vapi_phone_numbers")
-      .select("id, brokerage_id, phone_number, scope_type, agent_user_id, number_source, byoc_credential_id, is_active, created_at")
+      .select("id, brokerage_id, phone_number, scope_type, agent_user_id, number_source, twilio_number_sid, is_active, created_at")
       .order("created_at", { ascending: false }).limit(500),
     svc.from("phone_number_events")
       .select("id, brokerage_id, phone_number, event_type, source, twilio_sid, cost_usd, notes, created_at")
@@ -129,7 +129,7 @@ export default async function FleetNumbersPage(
                     <td className="px-3 py-2">{tenantName.get(n.brokerage_id) ?? "(unknown tenant)"}</td>
                     <td className="px-3 py-2 text-xs">{n.scope_type}{n.agent_user_id ? " (agent line)" : ""}</td>
                     <td className="px-3 py-2 text-xs">{n.number_source ?? "—"}</td>
-                    <td className="px-3 py-2 text-xs tabular-nums">{n.byoc_credential_id ?? "—"}</td>
+                    <td className="px-3 py-2 text-xs tabular-nums">{n.twilio_number_sid ?? "—"}</td>
                     <td className="px-3 py-2">
                       <span className={"rounded px-1.5 py-0.5 text-[11px] font-medium " + (n.is_active ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600")}>
                         {n.is_active ? "active" : "inactive"}

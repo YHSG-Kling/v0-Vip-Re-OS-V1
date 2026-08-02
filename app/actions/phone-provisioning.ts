@@ -191,15 +191,15 @@ export async function manuallyAddAgentPhone(params: {
     .eq("agent_user_id", agentUserId)
     .eq("is_active", true)
 
-  // Insert the new one — number_source CHECK only allows
-  // (vapi_native|ported|byoc_twilio|byoc_vonage|forwarded), so manual = byoc_twilio
+  // Insert the new one — number_source CHECK allows (byoc_twilio|ported)
+  // only, the two sources this OS actually produces, so manual = byoc_twilio.
   const { error } = await svc.from("vapi_phone_numbers").insert({
     agent_user_id: agentUserId,
     brokerage_id: ctx.brokerageId,
     scope_type: "agent",
     phone_number: cleaned,
     phone_digits: cleaned.replace(/\D/g, ""),
-    byoc_credential_id: params.twilioSid ?? null,
+    twilio_number_sid: params.twilioSid ?? null,
     number_source: params.source === "ported_in" ? "ported" : "byoc_twilio",
     is_active: true,
   })

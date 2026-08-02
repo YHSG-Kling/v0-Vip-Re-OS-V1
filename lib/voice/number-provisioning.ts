@@ -22,7 +22,7 @@ const NOT_CONFIGURED = "Twilio not configured (missing TWILIO_ACCOUNT_SID / AUTH
 
 // ─── The ONE phone_number_events writer ──────────────────────────────────────
 
-export type PhoneNumberEventType = "purchased" | "manually_added" | "ported_in" | "released" | "failed" | "vapi_registered"
+export type PhoneNumberEventType = "purchased" | "manually_added" | "ported_in" | "released" | "failed" | "webhooks_bound"
 
 /** Insert one phone_number_events audit line (best-effort — audit never masks
  *  the underlying outcome; callers that need audit-or-fail check the return). */
@@ -191,15 +191,16 @@ export async function provisionNumber(svc: any, params: ProvisionNumberParams): 
   }
   const purchasedSid = purchaseRes.data?.sid ?? null
 
-  // 3. Persist the number row (vapi_phone_numbers is the inventory ledger;
-  //    vapi_phone_number_id stays null until an inbound binding registers it).
+  // 3. Persist the number row. twilio_number_sid is the Twilio
+  //    IncomingPhoneNumbers .sid — the handle bindNumberToTwilioLane needs to
+  //    register this number's webhooks, so it is written at purchase time.
   const { data: inserted, error: saveErr } = await svc.from("vapi_phone_numbers").insert({
     agent_user_id: params.scopeType === "agent" ? params.agentUserId ?? null : null,
     brokerage_id: params.brokerageId,
     scope_type: params.scopeType,
     phone_number: targetNumber,
     phone_digits: targetNumber.replace(/\D/g, ""),
-    byoc_credential_id: purchasedSid,
+    twilio_number_sid: purchasedSid,
     number_source: "byoc_twilio",
     is_active: true,
   }).select("id").maybeSingle()
@@ -255,7 +256,7 @@ export async function releaseNumber(
   params: { brokerageId: string; numberRowId: string; eventSource?: string | null; notes?: string | null },
 ): Promise<ReleaseNumberResult> {
   const { data: row } = await svc.from("vapi_phone_numbers")
-    .select("id, brokerage_id, phone_number, byoc_credential_id, is_active")
+    .select("id, brokerage_id, phone_number, twilio_number_sid, is_active")
     .eq("id", params.numberRowId).maybeSingle()
   const n = row as any
   if (!n) return { ok: false, error: "Number row not found" }
@@ -264,7 +265,7 @@ export async function releaseNumber(
 
   let twilioReleased = false
   let note: string | undefined
-  if (n.byoc_credential_id) {
+  if (n.twilio_number_sid) {
     const creds = await resolveCreds(svc, params.brokerageId)
     if (!creds) {
       // A Twilio-owned number cannot be honestly released without creds.
@@ -272,7 +273,7 @@ export async function releaseNumber(
     }
     const res = await callConnector({
       connector: "twilio", baseUrl: "https://api.twilio.com",
-      path: `/2010-04-01/Accounts/${creds.accountSid}/IncomingPhoneNumbers/${n.byoc_credential_id}.json`,
+      path: `/2010-04-01/Accounts/${creds.accountSid}/IncomingPhoneNumbers/${n.twilio_number_sid}.json`,
       method: "DELETE",
       auth: { style: "basic", username: creds.accountSid, password: creds.authToken },
     })
@@ -291,7 +292,7 @@ export async function releaseNumber(
   if (updErr) {
     await logPhoneNumberEvent(svc, {
       brokerageId: params.brokerageId, phoneNumber: n.phone_number,
-      eventType: "failed", source: params.eventSource, twilioSid: n.byoc_credential_id,
+      eventType: "failed", source: params.eventSource, twilioSid: n.twilio_number_sid,
       notes: `Number ${twilioReleased ? "RELEASED on Twilio" : "release attempted"} but the row deactivation failed: ${updErr.message} -- reconcile manually`,
     })
     return { ok: false, error: `Number ${twilioReleased ? "released on Twilio" : "release attempted"} but the row deactivation failed (${updErr.message}) -- reconcile manually` }
@@ -299,7 +300,7 @@ export async function releaseNumber(
 
   await logPhoneNumberEvent(svc, {
     brokerageId: params.brokerageId, phoneNumber: n.phone_number,
-    eventType: "released", source: params.eventSource, twilioSid: n.byoc_credential_id,
+    eventType: "released", source: params.eventSource, twilioSid: n.twilio_number_sid,
     notes: [params.notes, note].filter(Boolean).join(" · ") || null,
   })
   return { ok: true, phoneNumber: n.phone_number, twilioReleased, note }

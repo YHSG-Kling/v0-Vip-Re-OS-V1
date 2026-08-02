@@ -44,7 +44,7 @@ export async function registerVoiceIntegrityAction(brokerageId: string): Promise
   // silenced (the write-sentinel ratchet forbids new '.then(undefined, …)').
   const evt = await svc.from("phone_number_events").insert({
     brokerage_id: brokerageId, phone_number: "a2p",
-    event_type: "vapi_registered", source: "a2p_registration",
+    event_type: "webhooks_bound", source: "a2p_registration",
     notes: `Voice integrity (CNAM + SHAKEN/STIR) ran → ${r.advancedTo}${r.error ? ` (error: ${r.error.slice(0, 160)})` : ""}`,
   })
   if (evt.error) console.error("[voice-integrity] phone_number_events log failed:", evt.error.message)

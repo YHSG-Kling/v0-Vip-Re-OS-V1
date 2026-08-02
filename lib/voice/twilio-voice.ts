@@ -121,12 +121,12 @@ export async function bindNumberToTwilioLane(
   numberRowId: string,
 ): Promise<{ ok: true } | { ok: false; error: string; notConfigured?: boolean }> {
   const { data: row } = await svc.from("vapi_phone_numbers")
-    .select("id, brokerage_id, phone_number, byoc_credential_id, is_active")
+    .select("id, brokerage_id, phone_number, twilio_number_sid, is_active")
     .eq("id", numberRowId).maybeSingle()
   if (!row) return { ok: false, error: "Number row not found" }
   const n = row as any
   if (!n.is_active) return { ok: false, error: "Number is inactive" }
-  if (!n.byoc_credential_id) return { ok: false, error: "Number has no Twilio SID on file — re-provision it first" }
+  if (!n.twilio_number_sid) return { ok: false, error: "Number has no Twilio SID on file — re-provision it first" }
 
   const { resolveTenantTwilioCreds } = await import("@/lib/voice/twilio-tenancy")
   const creds = await resolveTenantTwilioCreds(svc, n.brokerage_id)
@@ -140,7 +140,7 @@ export async function bindNumberToTwilioLane(
   const res = await callConnector({
     connector: "twilio",
     baseUrl: "https://api.twilio.com",
-    path: `/2010-04-01/Accounts/${creds.accountSid}/IncomingPhoneNumbers/${n.byoc_credential_id}.json`,
+    path: `/2010-04-01/Accounts/${creds.accountSid}/IncomingPhoneNumbers/${n.twilio_number_sid}.json`,
     method: "POST",
     bodyType: "form",
     body: {
@@ -157,7 +157,7 @@ export async function bindNumberToTwilioLane(
 
   await svc.from("phone_number_events").insert({
     brokerage_id: n.brokerage_id, phone_number: n.phone_number,
-    event_type: "vapi_registered", source: "inbound_binding",
+    event_type: "webhooks_bound", source: "inbound_binding",
     notes: "Number bound to the Twilio-native AI lane (VoiceUrl → /api/voice/twilio/inbound; SmsUrl → /api/providers/inbound; StatusCallback → /api/voice/twilio/status)",
   }).then(undefined, () => {})
   return { ok: true }
