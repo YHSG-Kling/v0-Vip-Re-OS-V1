@@ -22,11 +22,9 @@ interface SeedResponse {
 
 export function SeedPageClient() {
   const [usersLoading, setUsersLoading] = useState(false)
-  const [contactsLoading, setContactsLoading] = useState(false)
   const [verifyLoading, setVerifyLoading] = useState(false)
   const [verifyResult, setVerifyResult] = useState<any>(null)
   const [usersResult, setUsersResult] = useState<SeedResponse | null>(null)
-  const [contactsResult, setContactsResult] = useState<SeedResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [sqlScript, setSqlScript] = useState<string | null>(null)
 
@@ -54,26 +52,8 @@ export function SeedPageClient() {
     }
   }
 
-  const seedContacts = async () => {
-    setContactsLoading(true)
-    setError(null)
-    try {
-      const response = await fetch("/api/seed/crm/contacts", { method: "POST" })
-      const data = await response.json()
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to seed contacts")
-      }
-      setContactsResult(data)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to seed contacts")
-    } finally {
-      setContactsLoading(false)
-    }
-  }
-
   const seedAll = async () => {
     await seedUsers()
-    await seedContacts()
   }
 
   const verifyMigration = async () => {
@@ -242,56 +222,15 @@ export function SeedPageClient() {
           </CardContent>
         </Card>
 
-        {/* Contacts Card */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Contact className="h-5 w-5 text-purple-600" />
-              Seed Test Contacts
-            </CardTitle>
-            <CardDescription>Create 6 test contacts for Supabase</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <Button
-              onClick={seedContacts}
-              disabled={contactsLoading}
-              className="w-full bg-purple-600 hover:bg-purple-700"
-            >
-              {contactsLoading ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Seeding Contacts...
-                </>
-              ) : (
-                <>
-                  <Database className="h-4 w-4 mr-2" />
-                  Seed Contacts
-                </>
-              )}
-            </Button>
-
-            {contactsResult && (
-              <div className="space-y-2">
-                <p className="text-sm font-medium text-gray-700">{contactsResult.message}</p>
-                <div className="max-h-48 overflow-y-auto space-y-1">
-                  {contactsResult.results.map((r, i) => (
-                    <div key={i} className="flex items-center gap-2 text-sm py-1">
-                      {r.success ? (
-                        <CheckCircle className="h-4 w-4 text-green-500" />
-                      ) : (
-                        <XCircle className="h-4 w-4 text-red-500" />
-                      )}
-                      <span className={r.success ? "text-gray-700" : "text-red-600"}>
-                        {r.name}
-                        {r.error && ` - ${r.error}`}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+        {/* The "Seed Test Contacts" card lived here. It POSTed to
+            /api/seed/crm/contacts, a route that has never existed, so the
+            button could only ever fail — and it failed with a JSON-parse error
+            from the 404's HTML body rather than anything a reader could act on.
+            Contact seeding belongs to the canonical demo-tenant lane
+            (lib/platform/demo-tenant.ts: ensureDemoTenant / seedDemoData /
+            resetDemoTenant), which tags what it creates and can undo it.
+            Building a second seeder here would have been the drift, not the
+            fix. */}
 
         {/* Seed All Button */}
         <Button
