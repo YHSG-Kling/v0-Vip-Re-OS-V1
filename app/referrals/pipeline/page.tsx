@@ -1,4 +1,6 @@
+import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
+import { sendReferralThankYou } from "@/app/actions/referrals/referral-actions"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -14,30 +16,43 @@ export default async function ReferralPipelinePage() {
   const { agentId, brokerageId, userType } = await getAgentContext()
   const supabase = await createClient()
 
+  // BOTH sides of the referral are embedded. The page rendered
+  // `referral.referring_contact?.first_name` under a "Referred By" heading, but
+  // nothing embedded a referring contact — the real FK is referrer_contact_id —
+  // so that field was blank on every card.
   const { data: referrals } = await supabase
     .from("referrals")
-    .select("*, referred_contact:contacts!referred_contact_id(first_name, last_name)")
+    // ONE literal string, not a concatenation: supabase-js infers the row type
+    // from the select text, and a `+`-joined string collapses it to
+    // GenericStringError, which then hides every real field behind a type error.
+    .select("*, referred_contact:contacts!referred_contact_id(first_name, last_name, phone, email), referrer_contact:contacts!referrer_contact_id(first_name, last_name)")
     .eq("agent_id", agentId)
     .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })
 
+  // The LIVE status vocabulary (referrals.status CHECK):
+  //   assigned | closed | contacted | lost | qualified | received | under_contract
+  // The old maps keyed on "new" and "declined", which the CHECK does not admit,
+  // and had no entry for "received" or "assigned" — the two states a brand-new
+  // referral actually lands in. So the states that exist rendered an unstyled
+  // badge while two colours were reserved for states that cannot occur.
   const statusColors = {
-    new: "bg-blue-100 text-blue-700",
+    received: "bg-blue-100 text-blue-700",
+    assigned: "bg-indigo-100 text-indigo-700",
     contacted: "bg-purple-100 text-purple-700",
     qualified: "bg-green-100 text-green-700",
     under_contract: "bg-orange-100 text-orange-700",
     closed: "bg-emerald-100 text-emerald-700",
-    declined: "bg-gray-100 text-gray-700",
     lost: "bg-red-100 text-red-700",
   }
 
   const statusIcons = {
-    new: Clock,
+    received: Clock,
+    assigned: Clock,
     contacted: Phone,
     qualified: CheckCircle,
     under_contract: CheckCircle,
     closed: CheckCircle,
-    declined: XCircle,
     lost: XCircle,
   }
 
@@ -49,7 +64,9 @@ export default async function ReferralPipelinePage() {
         brokerageId={brokerageId ?? ""}
         referrals={(referrals || []).map((r) => ({
           id: r.id,
-          referral_name: r.referred_name,
+          // referred_name is not a column — the OS panel's headings were blank
+          // for the same reason the cards below were. The column is referral_name.
+          referral_name: r.referral_name,
           status: r.status,
           source_contact_id: r.referred_contact_id,
           source_contact_name: r.referred_contact
@@ -82,12 +99,28 @@ export default async function ReferralPipelinePage() {
               <div className="flex items-start justify-between">
                 <div className="flex-1">
                   <div className="flex items-center gap-3 mb-2">
-                    <h3 className="text-lg font-semibold">{referral.referred_name}</h3>
+                    {/*
+                      referred_name / referred_phone / referred_email /
+                      potential_value / actual_value are NOT columns on
+                      `referrals` (live schema). Every one of them rendered
+                      undefined: the card's own TITLE was blank, and the three
+                      optional blocks below simply never appeared, so the page
+                      looked sparse rather than broken. The real columns are
+                      referral_name, value_estimate and commission_amount, with
+                      the contact's phone/email on the embedded contact row.
+                    */}
+                    <h3 className="text-lg font-semibold">
+                      {referral.referral_name ||
+                        (referral.referred_contact
+                          ? `${referral.referred_contact.first_name ?? ""} ${referral.referred_contact.last_name ?? ""}`.trim()
+                          : "") ||
+                        "Unnamed referral"}
+                    </h3>
                     <Badge className={statusColors[referral.status as keyof typeof statusColors]}>
                       <StatusIcon className="w-3 h-3 mr-1" />
                       {referral.status.replace("_", " ")}
                     </Badge>
-                    {!referral.thank_you_sent && referral.status !== "new" && (
+                    {!referral.thank_you_sent && referral.status !== "received" && (
                       <Badge variant="outline" className="border-yellow-500 text-yellow-700">
                         Thank you pending
                       </Badge>
@@ -95,34 +128,40 @@ export default async function ReferralPipelinePage() {
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
-                    <div>
-                      <p className="text-muted-foreground">Referred By</p>
-                      <p className="font-medium">
-                        {referral.referring_contact?.first_name} {referral.referring_contact?.last_name}
-                      </p>
-                    </div>
-                    {referral.referred_phone && (
+                    {(referral.referrer_contact || referral.referred_by || referral.source_contact_name) && (
+                      <div>
+                        <p className="text-muted-foreground">Referred By</p>
+                        <p className="font-medium">
+                          {referral.referrer_contact
+                            ? `${referral.referrer_contact.first_name ?? ""} ${referral.referrer_contact.last_name ?? ""}`.trim()
+                            : referral.source_contact_name || referral.referred_by}
+                        </p>
+                      </div>
+                    )}
+                    {referral.referred_contact?.phone && (
                       <div>
                         <p className="text-muted-foreground">Phone</p>
-                        <p className="font-medium">{referral.referred_phone}</p>
+                        <p className="font-medium">{referral.referred_contact.phone}</p>
                       </div>
                     )}
-                    {referral.referred_email && (
+                    {referral.referred_contact?.email && (
                       <div>
                         <p className="text-muted-foreground">Email</p>
-                        <p className="font-medium">{referral.referred_email}</p>
+                        <p className="font-medium">{referral.referred_contact.email}</p>
                       </div>
                     )}
-                    {referral.potential_value && (
+                    {referral.value_estimate != null && (
                       <div>
-                        <p className="text-muted-foreground">Potential Value</p>
-                        <p className="font-medium">${referral.potential_value.toLocaleString()}</p>
+                        <p className="text-muted-foreground">Estimated Value</p>
+                        <p className="font-medium">${Number(referral.value_estimate).toLocaleString()}</p>
                       </div>
                     )}
-                    {referral.actual_value && (
+                    {referral.commission_amount != null && (
                       <div>
-                        <p className="text-muted-foreground">Actual Value</p>
-                        <p className="font-medium text-green-600">${referral.actual_value.toLocaleString()}</p>
+                        <p className="text-muted-foreground">Commission</p>
+                        <p className="font-medium text-green-600">
+                          ${Number(referral.commission_amount).toLocaleString()}
+                        </p>
                       </div>
                     )}
                     <div>
@@ -145,10 +184,29 @@ export default async function ReferralPipelinePage() {
                       View Details
                     </Button>
                   </Link>
-                  {!referral.thank_you_sent && referral.status !== "new" && (
-                    <Button size="sm" variant="default">
-                      Send Thank You
-                    </Button>
+                  {/*
+                    LABELLED FOR WHAT IT DOES. This button had no handler at
+                    all, and sendReferralThankYou does not send anything — it
+                    flips thank_you_sent / thank_you_sent_at. That matches how
+                    this product actually works: the appreciation panel above
+                    configures a physical thank-you (handwritten card + gift
+                    card, "never a referral fee") that a human puts in the post,
+                    and the OS records it. So wiring it under the old label
+                    would have asserted a send that never happens; the fix is to
+                    say "mark", not to fake a dispatch.
+                  */}
+                  {!referral.thank_you_sent && referral.status !== "received" && (
+                    <form
+                      action={async () => {
+                        "use server"
+                        await sendReferralThankYou(referral.id)
+                        revalidatePath("/referrals/pipeline")
+                      }}
+                    >
+                      <Button size="sm" variant="default" type="submit" className="w-full">
+                        Mark Thank-You Sent
+                      </Button>
+                    </form>
                   )}
                 </div>
               </div>
