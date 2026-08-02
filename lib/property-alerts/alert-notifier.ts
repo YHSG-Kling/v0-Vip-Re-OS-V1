@@ -33,8 +33,21 @@ export async function deliverAlertResults(
   if (!contact) return { sent: 0, channelsUsed: [], errors: ["contact_not_found"] }
 
   const n = properties.length
-  const portalUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/portal/alerts/${alert.id}`
-  const agentScheduleUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/crm/contacts/${alert.contact_id}/tours`
+  // BOTH OF THESE LINKS WERE BROKEN FOR THE BUYER.
+  //
+  // portalUrl pointed at /portal/alerts/<id>, which has never existed — every
+  // portal route is [contactId]-scoped, because that is how portal access is
+  // gated. It is the primary CTA of the alert email AND the entire body of the
+  // alert SMS, so every buyer who tapped an alert we sent them got a 404.
+  //
+  // The second was worse: it sent the BUYER to /crm/contacts/<id>/tours, an
+  // agent-only CRM route. Now points at the buyer's own showings surface.
+  const base = process.env.NEXT_PUBLIC_APP_URL ?? ""
+  const portalUrl = `${base}/portal/${alert.contact_id}/alerts/${alert.id}`
+  const agentScheduleUrl = `${base}/portal/${alert.contact_id}/showings`
+  // Was `${portalUrl}/settings` — i.e. /portal/<id>/alerts/<id>/settings, a third
+  // route that does not exist. The buyer's real settings page is contact-scoped.
+  const settingsUrl = `${base}/portal/${alert.contact_id}/settings`
 
   // ── Email ─────────────────────────────────────────────────────────────────
   if (channels.includes("email") && contact.email) {
@@ -56,6 +69,7 @@ export async function deliverAlertResults(
           properties,
           portalUrl,
           agentScheduleUrl,
+          settingsUrl,
           n,
         })
 
@@ -163,9 +177,10 @@ function buildEmailHtml(params: {
   properties: Array<AlertProperty & { matchScore: number; matchReasons: string[] }>
   portalUrl: string
   agentScheduleUrl: string
+  settingsUrl: string
   n: number
 }): string {
-  const { contactFirstName, properties, portalUrl, agentScheduleUrl, n } = params
+  const { contactFirstName, properties, portalUrl, agentScheduleUrl, settingsUrl, n } = params
   const cards = properties.map(p => `
     <tr>
       <td style="padding:16px;border-bottom:1px solid #e5e7eb;">
@@ -190,7 +205,7 @@ function buildEmailHtml(params: {
     <tr><td style="padding:24px;text-align:center;border-top:1px solid #e5e7eb;">
       <a href="${portalUrl}" style="display:inline-block;background:#2563eb;color:#fff;padding:12px 24px;border-radius:6px;font-weight:600;text-decoration:none;margin-right:8px;">View All Matches</a>
       <a href="${agentScheduleUrl}" style="display:inline-block;border:1px solid #d1d5db;color:#374151;padding:12px 24px;border-radius:6px;font-weight:600;text-decoration:none;">Schedule a Showing</a>
-      <p style="margin:16px 0 0;font-size:12px;color:#9ca3af;"><a href="${portalUrl}/settings" style="color:#6b7280;">Adjust your alerts</a></p>
+      <p style="margin:16px 0 0;font-size:12px;color:#9ca3af;"><a href="${settingsUrl}" style="color:#6b7280;">Adjust your alerts</a></p>
     </td></tr>
   </table>
   </td></tr></table></body></html>`

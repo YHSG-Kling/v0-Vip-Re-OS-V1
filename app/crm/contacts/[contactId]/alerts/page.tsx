@@ -16,7 +16,8 @@ import {
 import {
   createPropertyAlert, updatePropertyAlert, pausePropertyAlert,
   resumePropertyAlert, deletePropertyAlert, getAlertResults,
-  getBuyerAlertSummary, runAlertNow, previewAlertCriteria, prefillFromProfile
+  getBuyerAlertSummary, runAlertNow, previewAlertCriteria, prefillFromProfile,
+  saveAlertResultForBuyer, sendAlertResultNow, markResultViewed
 } from "@/app/actions/property-alerts/alert-actions"
 
 type Filter = "all" | "new_listings" | "price_reductions" | "not_viewed"
@@ -129,6 +130,49 @@ export default function BuyerAlertsPage() {
       })
     })
   }, [brokerageId])
+
+  // Per-result action state. Keyed by `${resultId}:${action}` so the button the
+  // agent pressed is the one that shows a spinner, and two results can be acted
+  // on independently.
+  const [resultBusy, setResultBusy] = useState<string | null>(null)
+  const [resultMsg, setResultMsg] = useState<Record<string, { ok: boolean; text: string }>>({})
+
+  // These three buttons rendered on every match and NONE had an onClick. The
+  // capability behind each was complete; the wire was never built, so an agent
+  // clicked and nothing happened — and nothing said so.
+  //
+  // Every one READS its outcome. saveAlertResultForBuyer and sendAlertResultNow
+  // return { success, error } and never throw, so a refusal (no reachable
+  // channel, offer on an external property, a dismissed property) renders as a
+  // refusal instead of a silent no-op wearing a success.
+  const runResultAction = async (
+    resultId: string,
+    action: "save" | "tour" | "send",
+    fn: () => Promise<{ success: boolean; error?: string }>,
+    okText: string,
+  ) => {
+    const key = `${resultId}:${action}`
+    setResultBusy(key)
+    setResultMsg((m) => ({ ...m, [resultId]: undefined as any }))
+    const res = await fn()
+    setResultBusy(null)
+    setResultMsg((m) => ({
+      ...m,
+      [resultId]: res.success ? { ok: true, text: okText } : { ok: false, text: res.error ?? "That did not go through" },
+    }))
+    if (res.success && expandedAlertId) await loadResults(expandedAlertId, resultFilter)
+  }
+
+  // Opening a match IS the buyer-viewed signal. markResultViewed was complete and
+  // had zero callers, so `unviewed_count` and the "Not viewed" filter only ever
+  // grew — the badge could never come down.
+  const openResult = async (r: ResultRecord, contactId: string) => {
+    if (r.listing_url) window.open(r.listing_url, "_blank", "noopener,noreferrer")
+    if (!r.buyer_viewed) {
+      const res = await markResultViewed(r.id, contactId)
+      if (res.success && expandedAlertId) await loadResults(expandedAlertId, resultFilter)
+    }
+  }
 
   const loadResults = async (alertId: string, filter: Filter = "all") => {
     setResultsLoading(true)
@@ -473,14 +517,43 @@ export default function BuyerAlertsPage() {
                             )}
                             <div className="flex gap-1.5 pt-1 flex-wrap">
                               {r.listing_url && (
-                                <a href={r.listing_url} target="_blank" rel="noopener noreferrer">
-                                  <Button size="sm" variant="outline" className="text-xs h-7">View on IDX &nearr;</Button>
-                                </a>
+                                <Button
+                                  size="sm" variant="outline" className="text-xs h-7"
+                                  onClick={() => openResult(r, buyerId)}
+                                >
+                                  View on IDX &nearr;
+                                </Button>
                               )}
-                              <Button size="sm" variant="outline" className="text-xs h-7">Save for Buyer</Button>
-                              <Button size="sm" variant="outline" className="text-xs h-7">Add to Tour</Button>
-                              <Button size="sm" variant="outline" className="text-xs h-7">Send Now</Button>
+                              <Button
+                                size="sm" variant="outline" className="text-xs h-7"
+                                disabled={resultBusy !== null}
+                                onClick={() => runResultAction(r.id, "save",
+                                  () => saveAlertResultForBuyer(r.id, "saved"), "Saved to their list")}
+                              >
+                                {resultBusy === `${r.id}:save` ? "Saving…" : "Save for Buyer"}
+                              </Button>
+                              <Button
+                                size="sm" variant="outline" className="text-xs h-7"
+                                disabled={resultBusy !== null}
+                                onClick={() => runResultAction(r.id, "tour",
+                                  () => saveAlertResultForBuyer(r.id, "tour_requested"), "Added to their tour")}
+                              >
+                                {resultBusy === `${r.id}:tour` ? "Adding…" : "Add to Tour"}
+                              </Button>
+                              <Button
+                                size="sm" variant="outline" className="text-xs h-7"
+                                disabled={resultBusy !== null}
+                                onClick={() => runResultAction(r.id, "send",
+                                  () => sendAlertResultNow(r.id), "Sent to the buyer")}
+                              >
+                                {resultBusy === `${r.id}:send` ? "Sending…" : "Send Now"}
+                              </Button>
                             </div>
+                            {resultMsg[r.id] && (
+                              <p className={`text-xs ${resultMsg[r.id].ok ? "text-emerald-600" : "text-destructive"}`}>
+                                {resultMsg[r.id].text}
+                              </p>
+                            )}
                           </div>
                         </div>
                       ))}

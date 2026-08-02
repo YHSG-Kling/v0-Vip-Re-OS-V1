@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { sendPortalMessage } from "@/app/actions/portal-messages"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
@@ -58,6 +59,33 @@ export function PropertyDetailsView({
   showings,
 }: PropertyDetailsViewProps) {
   const router = useRouter()
+  const [contactingAgent, setContactingAgent] = useState(false)
+  const [contactAgentMsg, setContactAgentMsg] = useState<{ ok: boolean; text: string } | null>(null)
+
+  // Opens the buyer's real portal thread with their agent, pre-filled with which
+  // property they were looking at — that context is the whole point, and it is
+  // free here because the component already knows the address.
+  const handleContactAgent = async () => {
+    setContactingAgent(true)
+    setContactAgentMsg(null)
+    const address =
+      savedProperty?.property_address ??
+      savedProperty?.address ??
+      "the property I was viewing"
+    const res = await sendPortalMessage({
+      contactId,
+      messageBody: `Hi — I have a question about ${address}. Could you get back to me?`,
+      direction: "client_to_agent",
+    })
+    setContactingAgent(false)
+    // sendPortalMessage returns { success, error } and never throws, so a
+    // refusal must render as a refusal.
+    setContactAgentMsg(
+      res.success
+        ? { ok: true, text: "Sent — your agent will get back to you." }
+        : { ok: false, text: res.error ?? "That did not send. Try the Messages tab." },
+    )
+  }
   const [isPending, startTransition] = useTransition()
   const [isSaved, setIsSaved] = useState(!!savedProperty)
   const [showScheduleDialog, setShowScheduleDialog] = useState(false)
@@ -476,11 +504,27 @@ export function PropertyDetailsView({
                   </span>
                 </div>
               </div>
-              <Button variant="outline" className="bg-transparent">
+              {/* Had no onClick. A buyer looking at a home they like clicked
+                  "Contact Agent" and nothing happened — on the one surface where
+                  intent is highest. sendPortalMessage was complete the whole
+                  time; it now also pushes the in-app notification that rings the
+                  agent's bell, so the message is delivered to a PERSON rather
+                  than to a table. */}
+              <Button
+                variant="outline"
+                className="bg-transparent"
+                disabled={contactingAgent}
+                onClick={handleContactAgent}
+              >
                 <Phone className="w-4 h-4 mr-2" />
-                Contact Agent
+                {contactingAgent ? "Sending…" : "Contact Agent"}
               </Button>
             </div>
+            {contactAgentMsg && (
+              <p className={`text-xs mt-2 ${contactAgentMsg.ok ? "text-emerald-600" : "text-destructive"}`}>
+                {contactAgentMsg.text}
+              </p>
+            )}
           </CardContent>
         </Card>
       )}

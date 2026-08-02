@@ -442,3 +442,158 @@ export async function prefillFromProfile(contactId: string) {
     .maybeSingle()
   return { success: true, profile: data ?? null }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PER-RESULT ACTIONS — the three buttons on an alert match.
+//
+// "Save for Buyer", "Add to Tour" and "Send Now" were rendered on every alert
+// match and NONE of them had an onClick. The capability behind each one was
+// complete and had been for a long time; the wire between them was never built.
+// An agent clicked, nothing happened, and nothing said so.
+//
+// IN-HOUSE AND OUTSIDE PROPERTIES ARE BOTH HANDLED, and the branch lives HERE
+// rather than in the client. property_alert_results carries `listing_id` (a real
+// listings.id, set when the match is one of ours) OR `mls_number` (an outside
+// property from the IDX feed). recordBuyerPropertyAction already speaks both —
+// it takes a synthetic "ext_<source>_<id>" for an outside property and stores
+// only source/external_property_id/listing_url, never the MLS facts, per the
+// data-display rules.
+//
+// Deciding the identity class on the SERVER, from the row, is deliberate: a
+// client that guessed wrong would write an external id into a uuid column, or
+// worse, silently attach a buyer to the wrong property.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** PURE-ish: the property identity for a result row, in the form the kernel wants. */
+function resultPropertyId(row: { listing_id: string | null; mls_number: string | null }): string | null {
+  if (row.listing_id) return row.listing_id          // ours — a real listings.id
+  if (row.mls_number) return `ext_idx_${row.mls_number}` // outside — the IDX feed's id
+  return null
+}
+
+/**
+ * "Save for Buyer" / "Add to Tour" — one action, two interest levels.
+ * `tour_requested` is what sets saved_properties.added_to_tour, which is what the
+ * Tour Planner reads; "saved" is the plain save.
+ */
+export async function saveAlertResultForBuyer(
+  resultId: string,
+  interestLevel: "saved" | "tour_requested",
+) {
+  const svc = createServiceClient()
+  const { data: row, error: rowErr } = await svc
+    .from("property_alert_results")
+    .select("id, alert_id, contact_id, brokerage_id, listing_id, mls_number, listing_url, property_address")
+    .eq("id", resultId)
+    .maybeSingle()
+  if (rowErr) return { success: false, error: rowErr.message }
+  if (!row) return { success: false, error: "Alert result not found" }
+
+  // Authorise through the ALERT, which is the object the caller has access to.
+  const gate = await requireAlertAccess(row.alert_id as string)
+  if (!gate.ok) return { success: false, error: gate.error }
+
+  const propertyId = resultPropertyId(row as any)
+  if (!propertyId) {
+    return { success: false, error: "This match has neither a listing nor an MLS number to save" }
+  }
+
+  const { data: contact } = await svc
+    .from("contacts").select("agent_id").eq("id", row.contact_id as string).maybeSingle()
+
+  const { recordBuyerPropertyAction } = await import("@/lib/kernel/forms")
+  const result = await recordBuyerPropertyAction({
+    contact_id:     row.contact_id as string,
+    listing_id:     propertyId,
+    interest_level: interestLevel,
+    brokerage_id:   row.brokerage_id as string,
+    agent_id:       ((contact as any)?.agent_id as string) ?? "",
+  })
+  if (!result.success) return { success: false, error: result.error }
+
+  // Mirror it onto the result row so the alert list reflects what was done.
+  // Checked, not fire-and-forget: a lost mirror makes the agent click twice.
+  const { error: mirrorErr } = await svc
+    .from("property_alert_results")
+    .update({ buyer_saved: true, buyer_reaction: interestLevel })
+    .eq("id", resultId)
+  if (mirrorErr) {
+    console.error("[alerts] saved, but the result row was not updated:", mirrorErr.message)
+  }
+
+  return { success: true }
+}
+
+/**
+ * "Send Now" — push THIS match to the buyer immediately, through the same
+ * notifier the scheduled run uses, so the channel choice, the templates and the
+ * delivery record are identical to an automatic send.
+ */
+export async function sendAlertResultNow(resultId: string) {
+  const svc = createServiceClient()
+  const { data: row, error: rowErr } = await svc
+    .from("property_alert_results")
+    .select("*")
+    .eq("id", resultId)
+    .maybeSingle()
+  if (rowErr) return { success: false, error: rowErr.message }
+  if (!row) return { success: false, error: "Alert result not found" }
+
+  const gate = await requireAlertAccess(row.alert_id as string)
+  if (!gate.ok) return { success: false, error: gate.error }
+
+  const { data: alert } = await svc
+    .from("property_alerts").select("*").eq("id", row.alert_id as string).maybeSingle()
+  if (!alert) return { success: false, error: "Alert not found" }
+
+  const { deliverAlertResults } = await import("@/lib/property-alerts/alert-notifier")
+  const batchId = crypto.randomUUID()
+  const delivery = await deliverAlertResults(
+    alert,
+    [{
+      mls_number:       (row.mls_number as string) ?? "",
+      property_address: row.property_address as string,
+      city:             (row.city as string) ?? undefined,
+      state:            (row.state as string) ?? undefined,
+      zip:              (row.zip as string) ?? undefined,
+      list_price:       (row.list_price as number) ?? undefined,
+      bedrooms:         (row.bedrooms as number) ?? undefined,
+      bathrooms:        (row.bathrooms as number) ?? undefined,
+      sqft:             (row.sqft as number) ?? undefined,
+      property_type:    (row.property_type as string) ?? undefined,
+      days_on_market:   (row.days_on_market as number) ?? undefined,
+      listing_url:      (row.listing_url as string) ?? undefined,
+      primary_photo_url:(row.primary_photo_url as string) ?? undefined,
+      is_price_reduction: (row.is_price_reduction as boolean) ?? false,
+      previous_price:   (row.previous_price as number) ?? undefined,
+      listed_at:        (row.listed_at as string) ?? undefined,
+      matchScore:       (row.match_score as number) ?? 0,
+      matchReasons:     (row.match_reasons as string[]) ?? [],
+    }],
+    row.brokerage_id as string,
+    batchId,
+  )
+
+  // The notifier REPORTS its failures instead of throwing. Read them — a send
+  // that reached zero channels must never render as a send.
+  if (delivery.sent === 0) {
+    return {
+      success: false,
+      error: delivery.errors.length
+        ? `Not sent: ${delivery.errors.join(", ")}`
+        : "Not sent — the buyer has no reachable channel on this alert",
+    }
+  }
+
+  const { error: stampErr } = await svc
+    .from("property_alert_results")
+    .update({
+      delivered_at: new Date().toISOString(),
+      delivery_channel: delivery.channelsUsed.join(","),
+      delivery_batch_id: batchId,
+    })
+    .eq("id", resultId)
+  if (stampErr) console.error("[alerts] delivered, but the result row was not stamped:", stampErr.message)
+
+  return { success: true, channels: delivery.channelsUsed }
+}
