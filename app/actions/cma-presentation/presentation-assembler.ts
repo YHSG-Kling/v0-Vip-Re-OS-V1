@@ -123,6 +123,28 @@ export async function assemblePresentation(input: PresentationInput): Promise<Pr
       }
     })
 
+    // GOVERNANCE VOCABULARY. The row above says `seller.presentation.created`, but
+    // presentation-readiness (the gate on the seller's decision) reads
+    // `seller.presentation.assembled`. Nothing wrote that, so
+    // derivePresentationReadinessFromEvents always returned null and the
+    // presentation check reported "No presentation data found" for listings whose
+    // presentation had in fact just been assembled. logPresentationActivity is the
+    // canonical writer of that vocabulary. Best-effort — the presentation exists
+    // either way.
+    try {
+      const { logPresentationActivity } = await import("@/app/actions/seller-decision-governance")
+      const gov = await logPresentationActivity({
+        listing_id: input.listingId,
+        event_type: "assembled",
+        metadata: { presentation_id: presentationId, has_cma: hasCMA, has_net_sheet: hasNetSheet },
+      })
+      if (!gov.success) {
+        console.error("[presentation] governance row NOT written:", gov.error)
+      }
+    } catch (err) {
+      console.error("[presentation] governance row NOT written:", err)
+    }
+
     // Generate video if requested
     let videoProjectId: string | undefined
     if (input.includeVideo) {
@@ -350,6 +372,22 @@ async function generatePresentationVideo(params: {
           video_status: videoResult.project.status
         }
       })
+
+      // Same vocabulary gap as `assembled` above — the readiness engine reads
+      // `seller.presentation_video.ready`, not `seller.presentation.video_generated`.
+      try {
+        const { logPresentationActivity } = await import("@/app/actions/seller-decision-governance")
+        const gov = await logPresentationActivity({
+          listing_id: params.listingId,
+          event_type: "video_ready",
+          metadata: { video_project_id: videoResult.project.id, video_status: videoResult.project.status },
+        })
+        if (!gov.success) {
+          console.error("[presentation] video governance row NOT written:", gov.error)
+        }
+      } catch (err) {
+        console.error("[presentation] video governance row NOT written:", err)
+      }
 
       return { success: true, projectId: videoResult.project.id }
     }

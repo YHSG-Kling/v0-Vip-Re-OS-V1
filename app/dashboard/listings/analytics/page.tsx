@@ -6,6 +6,10 @@ import { Button } from "@/components/ui/button"
 import { ArrowLeft, TrendingUp, Eye, Clock, DollarSign, BarChart3 } from "lucide-react"
 import Link from "next/link"
 import { computeDaysOnMarket } from "@/lib/listings/compute-dom"
+import {
+  getBrokerageLifecycleStats,
+  getBrokerageStageTimings,
+} from "@/app/actions/listing-lifecycle-core"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const dynamic = "force-dynamic"
@@ -49,6 +53,31 @@ export default async function ListingsAnalyticsPage() {
     ? Math.round(activeDoms.reduce((sum, d) => sum + d, 0) / activeDoms.length)
     : 0
   const totalVolume = activeListings.reduce((sum, l) => sum + (l.list_price || 0), 0)
+
+  // ── LIFECYCLE GOVERNANCE ───────────────────────────────────────────────────
+  //
+  // Everything above is a snapshot of the listings TABLE. The lifecycle audit
+  // stream — how many stage transitions the brokerage made, how many were manual
+  // OVERRIDES, how many were refused, and how long listings sit in each stage — was
+  // computed by getBrokerageLifecycleStats / getBrokerageStageTimings and displayed
+  // nowhere. Both were complete, brokerage-scoped, and had no caller; an override
+  // rate is exactly the number a broker is supposed to be watching, and it was
+  // being written to the audit log and read by no one.
+  //
+  // Honest about its own source: these read `activities` rows of type
+  // listing_lifecycle_transition, written by executeListingTransition. A brokerage
+  // whose listings were only ever moved by another path has none, and the section
+  // says "no transitions recorded" rather than rendering zeroes as a measurement.
+  const [statsResult, timingResult] = await Promise.all([
+    getBrokerageLifecycleStats(),
+    getBrokerageStageTimings(),
+  ])
+  const lifecycleStats = statsResult.success ? statsResult.statistics : null
+  const lifecycleStatsError = statsResult.success ? null : (statsResult.error ?? "Lifecycle statistics unavailable")
+  const stageTimings = timingResult.success ? (timingResult.timings ?? {}) : {}
+  const timedStages = Object.entries(stageTimings)
+    .sort((a, b) => b[1].averageDays - a[1].averageDays)
+    .slice(0, 8)
 
   return (
     <div className="space-y-6">
@@ -123,6 +152,79 @@ export default async function ListingsAnalyticsPage() {
             </CardContent>
           </Card>
         </div>
+
+        {/* Lifecycle Governance */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Lifecycle Governance</CardTitle>
+            <CardDescription>
+              Stage transitions, manual overrides and refused transitions across the brokerage
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            {lifecycleStatsError ? (
+              <p className="text-sm text-destructive">
+                Lifecycle statistics could not be loaded — {lifecycleStatsError}
+              </p>
+            ) : !lifecycleStats || lifecycleStats.totalTransitions === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No stage transitions have been recorded in the lifecycle audit log yet.
+              </p>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                  <div className="rounded-lg border p-3">
+                    <p className="text-2xl font-bold">{lifecycleStats.totalTransitions}</p>
+                    <p className="text-xs text-muted-foreground">Stage transitions</p>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <p className="text-2xl font-bold text-amber-600">{lifecycleStats.overrideCount}</p>
+                    <p className="text-xs text-muted-foreground">Manual overrides</p>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <p className="text-2xl font-bold text-destructive">{lifecycleStats.failedTransitions}</p>
+                    <p className="text-xs text-muted-foreground">Refused transitions</p>
+                  </div>
+                </div>
+
+                {Object.keys(lifecycleStats.stageDistribution).length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+                      Transitions by stage entered
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {Object.entries(lifecycleStats.stageDistribution)
+                        .sort((a, b) => b[1] - a[1])
+                        .map(([s, n]) => (
+                          <span key={s} className="rounded-full border px-2.5 py-1 text-xs">
+                            {s.replace(/_/g, " ")} · {n}
+                          </span>
+                        ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {timedStages.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+                  Average time in stage
+                </p>
+                <div className="space-y-1.5">
+                  {timedStages.map(([s, m]) => (
+                    <div key={s} className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">{s.replace(/_/g, " ")}</span>
+                      <span className="font-medium">
+                        {m.averageDays}d <span className="text-xs text-muted-foreground">({m.count})</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Listings Performance Table */}
         <Card>

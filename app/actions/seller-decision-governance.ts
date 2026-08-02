@@ -16,11 +16,11 @@
 "use server"
 
 import { evaluateDecisionReadiness, isDecisionReady, validateDecisionReversal } from "@/lib/seller-decision-governance/decision-readiness-engine"
-import { evaluateCMAQuality, deriveCMAQualityFromEvents, isCMAReady } from "@/lib/seller-decision-governance/cma-quality-evaluator"
-import { validateNetSheetValidity, deriveNetSheetValidityFromEvents, isNetSheetValid, emitNetSheetExpirationWarning } from "@/lib/seller-decision-governance/net-sheet-validator"
-import { evaluatePresentationReadiness, derivePresentationReadinessFromEvents, isPresentationReady } from "@/lib/seller-decision-governance/presentation-readiness"
+import { evaluateCMAQuality, deriveCMAQualityFromEvents } from "@/lib/seller-decision-governance/cma-quality-evaluator"
+import { validateNetSheetValidity, deriveNetSheetValidityFromEvents, emitNetSheetExpirationWarning } from "@/lib/seller-decision-governance/net-sheet-validator"
+import { evaluatePresentationReadiness, derivePresentationReadinessFromEvents } from "@/lib/seller-decision-governance/presentation-readiness"
 import { logDecisionTransition, logCMAQualityVerified, logNetSheetEvent, logPresentationEvent, logDecisionReversal, queryDecisionHistory } from "@/lib/seller-decision-governance/decision-logger"
-import { getAllStates, getMilestoneStates, getStateDefinition, type SellerDecisionState } from "@/lib/seller-decision-governance/decision-state-definitions"
+import { type SellerDecisionState } from "@/lib/seller-decision-governance/decision-state-definitions"
 import { isValidUUID } from "@/lib/validations"
 
 /**
@@ -118,29 +118,15 @@ export async function evaluateListingCMAQuality(input: {
   }
 }
 
-/**
- * Check if CMA is ready (quick check)
- */
-export async function checkCMAReady(listingId: string) {
-  try {
-    if (!isValidUUID(listingId)) {
-      return { success: false, error: "Invalid listing ID" }
-    }
-    
-    const ready = await isCMAReady(listingId)
-    
-    return {
-      success: true,
-      data: { isReady: ready },
-    }
-  } catch (error) {
-    console.error("[v0] Error checking CMA ready:", error)
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
-    }
-  }
-}
+// CONSOLIDATED (orphan burn-down): checkCMAReady / checkNetSheetValid /
+// checkPresentationReady were boolean-only twins of the three evaluators in this
+// file — each one literally returned `evaluate*(…).isReady` and threw the reasons
+// away. The Seller Decision Readiness card used them, so it could only say "CMA
+// not ready" and then GUESS at the cause ("comparable analysis may be missing or
+// outdated"). The card now calls evaluateListingCMAQuality /
+// validateListingNetSheetValidity / evaluateListingPresentationReadiness and
+// renders the violations those actually return, so the reason shown is the reason
+// the engine computed. The boolean wrappers had no other caller and are gone.
 
 /**
  * Validate net sheet validity
@@ -187,30 +173,6 @@ export async function validateListingNetSheetValidity(input: {
 }
 
 /**
- * Check if net sheet is valid (quick check)
- */
-export async function checkNetSheetValid(listingId: string) {
-  try {
-    if (!isValidUUID(listingId)) {
-      return { success: false, error: "Invalid listing ID" }
-    }
-    
-    const valid = await isNetSheetValid(listingId)
-    
-    return {
-      success: true,
-      data: { isValid: valid },
-    }
-  } catch (error) {
-    console.error("[v0] Error checking net sheet validity:", error)
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
-    }
-  }
-}
-
-/**
  * Evaluate presentation readiness
  */
 export async function evaluateListingPresentationReadiness(listingId: string) {
@@ -235,30 +197,6 @@ export async function evaluateListingPresentationReadiness(listingId: string) {
     }
   } catch (error) {
     console.error("[v0] Error evaluating presentation readiness:", error)
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
-    }
-  }
-}
-
-/**
- * Check if presentation is ready (quick check)
- */
-export async function checkPresentationReady(listingId: string) {
-  try {
-    if (!isValidUUID(listingId)) {
-      return { success: false, error: "Invalid listing ID" }
-    }
-    
-    const ready = await isPresentationReady(listingId)
-    
-    return {
-      success: true,
-      data: { isReady: ready },
-    }
-  } catch (error) {
-    console.error("[v0] Error checking presentation ready:", error)
     return {
       success: false,
       error: error instanceof Error ? error.message : "Unknown error",
@@ -458,66 +396,10 @@ export async function getSellerDecisionHistory(listingId: string, limit = 50) {
   }
 }
 
-/**
- * Get all decision state definitions
- */
-export async function getSellerDecisionStates() {
-  try {
-    const states = getAllStates()
-    
-    return {
-      success: true,
-      data: states,
-    }
-  } catch (error) {
-    console.error("[v0] Error getting decision states:", error)
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
-    }
-  }
-}
-
-/**
- * Get milestone decision states
- */
-export async function getMilestoneDecisionStates() {
-  try {
-    const states = getMilestoneStates()
-    
-    return {
-      success: true,
-      data: states,
-    }
-  } catch (error) {
-    console.error("[v0] Error getting milestone states:", error)
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
-    }
-  }
-}
-
-/**
- * Get state definition
- */
-export async function getDecisionStateDefinition(state: SellerDecisionState) {
-  try {
-    const definition = getStateDefinition(state)
-    
-    if (!definition) {
-      return { success: false, error: "State not found" }
-    }
-    
-    return {
-      success: true,
-      data: definition,
-    }
-  } catch (error) {
-    console.error("[v0] Error getting state definition:", error)
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
-    }
-  }
-}
+// REMOVED (orphan burn-down): getSellerDecisionStates / getMilestoneDecisionStates
+// / getDecisionStateDefinition were "use server" round-trips over a STATIC,
+// in-memory table. lib/seller-decision-governance/decision-state-definitions
+// already exports getAllStates / getMilestoneStates / getStateDefinition as plain
+// synchronous functions that any server component or client bundle can import
+// directly — which is what every surface that needs the vocabulary does. Paying an
+// RPC to read a constant had no caller and should not gain one.

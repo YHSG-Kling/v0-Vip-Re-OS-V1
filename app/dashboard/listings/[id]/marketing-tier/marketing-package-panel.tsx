@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useCallback, useEffect, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -13,8 +13,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Package, CheckCircle2, Loader2, AlertCircle, Sparkles } from "lucide-react"
-import { activateMarketingPackage } from "@/app/actions/marketing-package-automation"
+import { Package, CheckCircle2, Loader2, AlertCircle, Sparkles, Globe, RefreshCw } from "lucide-react"
+import {
+  activateMarketingPackage,
+  bookMarketingService,
+  getMarketingPackageServices,
+  getSyndicationStatus,
+  syncListingToPlatforms,
+} from "@/app/actions/marketing-package-automation"
 import {
   MARKETING_PACKAGE_TYPES,
   buildPackagePreview,
@@ -48,11 +54,113 @@ const formatCurrency = (amount: number | null) => {
 const prettyService = (s: string) =>
   s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
 
+interface BookedService {
+  id: string
+  service_type: string | null
+  status: string | null
+  scheduled_date: string | null
+  estimated_cost: number | null
+  vendor: { company_name: string | null } | null
+}
+
+interface SyndicationRow {
+  id: string
+  platform_name: string | null
+  platform_category: string | null
+  syndication_status: string | null
+  listing_url: string | null
+  last_synced_at: string | null
+}
+
 export function MarketingPackagePanel({ transactionId, activePackage }: MarketingPackagePanelProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [selected, setSelected] = useState<MarketingPackageType | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  // Booked vendor services for the active package. The activation copy promises
+  // "book them individually afterward" — this is the surface that lets you.
+  const [services, setServices] = useState<BookedService[]>([])
+  const [servicesLoading, setServicesLoading] = useState(false)
+  const [bookingService, setBookingService] = useState<string | null>(null)
+  const [bookError, setBookError] = useState<string | null>(null)
+
+  // Portal syndication tracking, initialised by activation. Nothing showed it.
+  const [syndication, setSyndication] = useState<SyndicationRow[]>([])
+  const [syndicationLoading, setSyndicationLoading] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [syncMessage, setSyncMessage] = useState<string | null>(null)
+
+  const packageId = activePackage?.id ?? null
+
+  const loadServices = useCallback(async () => {
+    if (!packageId) { setServices([]); return }
+    setServicesLoading(true)
+    try {
+      const rows = await getMarketingPackageServices(packageId)
+      setServices((rows ?? []) as unknown as BookedService[])
+    } finally {
+      setServicesLoading(false)
+    }
+  }, [packageId])
+
+  const loadSyndication = useCallback(async () => {
+    if (!transactionId) { setSyndication([]); return }
+    setSyndicationLoading(true)
+    try {
+      const rows = await getSyndicationStatus(transactionId)
+      setSyndication((rows ?? []) as unknown as SyndicationRow[])
+    } finally {
+      setSyndicationLoading(false)
+    }
+  }, [transactionId])
+
+  useEffect(() => { void loadServices() }, [loadServices])
+  useEffect(() => { void loadSyndication() }, [loadSyndication])
+
+  const bookedTypes = new Set(services.map((s) => s.service_type).filter(Boolean) as string[])
+  const unbookedServices = (activePackage?.included_services ?? []).filter((s) => !bookedTypes.has(s))
+
+  const handleBook = (serviceType: string) => {
+    if (!packageId || !transactionId) return
+    setBookError(null)
+    setBookingService(serviceType)
+    startTransition(async () => {
+      const result = await bookMarketingService({
+        packageId,
+        serviceType,
+        transactionId,
+      })
+      setBookingService(null)
+      if (!result.success) {
+        // Surface the refusal — "No available vendors for this service" is the
+        // answer an agent needs, not a silently unchanged list.
+        setBookError(result.error ?? `Could not book ${serviceType}`)
+        return
+      }
+      await loadServices()
+    })
+  }
+
+  const handleSync = () => {
+    if (!transactionId) return
+    setSyncMessage(null)
+    setSyncing(true)
+    startTransition(async () => {
+      const result = await syncListingToPlatforms(transactionId)
+      setSyncing(false)
+      if (!result.success) {
+        setSyncMessage(result.error ?? "Syndication sync failed")
+        return
+      }
+      setSyncMessage(
+        typeof result.synced === "number"
+          ? `Synced ${result.synced} platform${result.synced === 1 ? "" : "s"}`
+          : (result.message ?? "No pending syndications")
+      )
+      await loadSyndication()
+    })
+  }
 
   const preview = selected ? buildPackagePreview(selected) : null
 
@@ -69,6 +177,9 @@ export function MarketingPackagePanel({ transactionId, activePackage }: Marketin
       })
       if (result.success) {
         setSelected(null)
+        // Activation seeds syndication tracking rows — pull them straight away
+        // instead of leaving the section empty until the next navigation.
+        await loadSyndication()
         router.refresh()
       } else {
         setError(result.error ?? "Failed to activate package")
@@ -133,6 +244,133 @@ export function MarketingPackagePanel({ transactionId, activePackage }: Marketin
                 Activated {new Date(activePackage.activated_at).toLocaleDateString()}
               </p>
             )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Vendor services for the active package */}
+      {activePackage && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Vendor Services</CardTitle>
+            <CardDescription>
+              Book each included service to the best-matching approved vendor in your brokerage.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {servicesLoading ? (
+              <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" /> Loading services…
+              </p>
+            ) : (
+              <>
+                {services.length > 0 && (
+                  <div className="space-y-2">
+                    {services.map((s) => (
+                      <div
+                        key={s.id}
+                        className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium">{prettyService(s.service_type ?? "Service")}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {s.vendor?.company_name ?? "Vendor pending"}
+                            {s.scheduled_date
+                              ? ` · ${new Date(s.scheduled_date).toLocaleDateString()}`
+                              : " · unscheduled"}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          {s.estimated_cost !== null && (
+                            <Badge variant="outline">{formatCurrency(s.estimated_cost)}</Badge>
+                          )}
+                          <Badge variant="secondary">{s.status ?? "scheduled"}</Badge>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {unbookedServices.length > 0 ? (
+                  <div className="space-y-2">
+                    <p className="text-xs font-medium text-muted-foreground">Not booked yet</p>
+                    <div className="flex flex-wrap gap-2">
+                      {unbookedServices.map((s) => (
+                        <Button
+                          key={s}
+                          size="sm"
+                          variant="outline"
+                          disabled={isPending && bookingService === s}
+                          onClick={() => handleBook(s)}
+                        >
+                          {isPending && bookingService === s && (
+                            <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                          )}
+                          Book {prettyService(s)}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                ) : services.length > 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    Every service in this package is booked.
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    No services booked yet.
+                  </p>
+                )}
+
+                {bookError && <p className="text-sm text-destructive">{bookError}</p>}
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Portal syndication tracking */}
+      {transactionId && (syndication.length > 0 || syndicationLoading) && (
+        <Card>
+          <CardHeader className="flex flex-row items-start justify-between gap-4 pb-2">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Globe className="h-5 w-5" />
+                Portal Syndication
+              </CardTitle>
+              <CardDescription>Where this listing is published, and what is still pending.</CardDescription>
+            </div>
+            <Button size="sm" variant="outline" className="shrink-0" disabled={syncing} onClick={handleSync}>
+              <RefreshCw className={`mr-2 h-3.5 w-3.5 ${syncing ? "animate-spin" : ""}`} />
+              Sync Pending
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {syndicationLoading ? (
+              <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" /> Loading syndication status…
+              </p>
+            ) : (
+              syndication.map((row) => (
+                <div
+                  key={row.id}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3"
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">{row.platform_name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {row.platform_category?.replace(/_/g, " ") ?? "portal"}
+                      {row.last_synced_at
+                        ? ` · last synced ${new Date(row.last_synced_at).toLocaleDateString()}`
+                        : ""}
+                    </p>
+                  </div>
+                  <Badge variant={row.syndication_status === "active" ? "default" : "secondary"}>
+                    {row.syndication_status ?? "pending"}
+                  </Badge>
+                </div>
+              ))
+            )}
+            {syncMessage && <p className="text-sm text-muted-foreground">{syncMessage}</p>}
           </CardContent>
         </Card>
       )}

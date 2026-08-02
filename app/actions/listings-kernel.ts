@@ -371,6 +371,39 @@ export async function launchListingAction(params: {
         .maybeSingle()
 
       if (listing) {
+        // THE PACKET THE WHOLE MODULE IS NAMED FOR. app/actions/ai-listing-packet.ts
+        // opens with "GENERATES COMPREHENSIVE PROPERTY PACKETS FOR DISPLAY AFTER
+        // LISTING GOES LIVE ON MLS" and ends with autoGeneratePacketOnLive — which
+        // nothing called, so the packet only ever existed if an agent found the
+        // panel on the lifecycle page and asked for it by hand. This is the "goes
+        // live" moment: launchListing has just stamped the MLS number and taken the
+        // listing to ACTIVE, which is also what generateListingPacket's own
+        // MLS-live gate requires.
+        //
+        // Guarded by an existing-job check so a re-launch does not re-spend six
+        // GPT-4o generations, and DISPATCHED rather than awaited (same pattern as
+        // the promo-video / lifecycle-mail reactors below) because the agent must
+        // not wait on document generation to learn their listing went live.
+        try {
+          const { data: existingPacket } = await svc
+            .from("listing_packet_jobs")
+            .select("id")
+            .eq("listing_id", params.listingId)
+            .eq("job_type", "full_packet")
+            .limit(1)
+            .maybeSingle()
+          if (!existingPacket) {
+            const { autoGeneratePacketOnLive } = await import("@/app/actions/ai-listing-packet")
+            void autoGeneratePacketOnLive(params.listingId, ctx.userId).then((r) => {
+              if (!r?.success) {
+                console.error("[launchListing] listing packet NOT generated:", r?.error)
+              }
+            })
+          }
+        } catch (err) {
+          console.error("[launchListing] listing packet dispatch failed:", err)
+        }
+
         // CONSENSUS MEMORY — launching a listing is a STRATEGIC play: raise a pre-launch huddle to the
         // Shopping Agent for a read on live buyer appetite at this price (listing_launch → shopping_agent).
         // The outcome resolves it later — a deal closing on this listing proves the read right, the listing

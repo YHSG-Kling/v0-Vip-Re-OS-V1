@@ -8,6 +8,10 @@ import { getBuyerCoaching } from "@/lib/intelligence/coaching-engine"
 // getLatestWeeklyReport did ({overall_score, headline, wins, gaps, ...id, created_at}).
 import { getAgentWeeklyReport } from "@/lib/kernel/agent-coaching"
 import { getSellerCoaching } from "@/lib/seller-coaching/coaching-generator"
+// Call-behaviour tips derived from the last 7 days of call_coaching_insights
+// (them-first score, talk/listen ratio). Distinct from the per-call insight list
+// on /dashboard/voice/isa: this is the aggregate pattern across the week.
+import { getCoachingTips } from "@/app/actions/assistant"
 
 export const dynamic = "force-dynamic"
 
@@ -38,6 +42,7 @@ export default async function CoachingPage() {
     activeListingsResult,
     interventionsResult,
     suggestionsResult,
+    coachingTipsResult,
   ] = await Promise.all([
     getAgentWeeklyReport(agentId),
     supabase
@@ -70,6 +75,9 @@ export default async function CoachingPage() {
       .order("priority", { ascending: false })
       .order("created_at", { ascending: false })
       .limit(5),
+    // agents.id class — call_coaching_insights.agent_id is filtered with exactly
+    // this id on /dashboard/voice/isa, and getAgentContext() is the same source.
+    getCoachingTips(agentId),
   ])
 
   const buyerContacts = buyerContactsResult.data || []
@@ -116,6 +124,7 @@ export default async function CoachingPage() {
       sellerCoaching={sellerCoachingResults}
       interventions={interventions}
       suggestions={suggestions}
+      callCoachingTips={coachingTipsResult?.tips ?? []}
     />
   )
 }

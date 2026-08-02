@@ -123,13 +123,14 @@ export async function generateAgentPerformanceReportAction(
   return generateAgentPerformanceReport({ ctx, ...opts })
 }
 
-export async function generateFinancialSummaryReportAction(
-  opts?: Pick<GenerateFinancialSummaryInput, "dateFrom" | "dateTo">
-) {
-  const ctx = await resolveActorContext()
-  if (!ctx) return { success: false as const, error: "Not authenticated" }
-  return generateFinancialSummaryReport({ ctx, ...opts })
-}
+// NO generateFinancialSummaryReportAction.
+//
+// It existed as a client-callable wrapper with nowhere to be called from:
+// /dashboard/reports deliberately excludes commission/financials (they live in
+// Financials → Commission Tracker — see the note on that page), and the three
+// export/email actions below reach generateFinancialSummaryReport (the kernel
+// function) directly. A wrapper whose only possible caller is this file is a
+// second name for one capability, so the kernel function is the single path.
 
 export async function generateReputationReportAction(
   opts?: Pick<GenerateReputationInput, "agentId">

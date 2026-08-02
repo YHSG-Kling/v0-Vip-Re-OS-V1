@@ -37,6 +37,7 @@ import { generateWeeklyCoachingReport } from "@/app/actions/coaching"
 import { createClient } from "@/lib/supabase/client"
 import { aiCoachGoalProgress } from "@/app/actions/ai-agent-goals"
 import { getAgentCoachingInsights } from "@/app/actions/ai-predictions"
+import { completeSuggestion, dismissSuggestion } from "@/app/actions/assistant"
 import { createTask } from "@/app/actions/tasks"
 
 interface WeeklyReport {
@@ -102,6 +103,13 @@ interface Suggestion {
   status: string
 }
 
+interface CallCoachingTip {
+  category: string
+  priority: string
+  tip: string
+  improvement_area: string
+}
+
 interface CoachingDashboardClientProps {
   agentId: string
   brokerageId: string
@@ -111,6 +119,7 @@ interface CoachingDashboardClientProps {
   sellerCoaching: SellerCoachingItem[]
   interventions: Intervention[]
   suggestions: Suggestion[]
+  callCoachingTips: CallCoachingTip[]
 }
 
 // Score dial SVG component
@@ -330,6 +339,7 @@ export function CoachingDashboardClient({
   sellerCoaching,
   interventions,
   suggestions,
+  callCoachingTips,
 }: CoachingDashboardClientProps) {
   const router = useRouter()
   const [isGenerating, setIsGenerating] = useState(false)
@@ -419,16 +429,27 @@ export function CoachingDashboardClient({
     }
   }
 
+  // Suggestion disposition goes through the canonical server actions
+  // (app/actions/assistant.ts). This used to be a raw client-side supabase
+  // update whose result was never read — supabase-js RESOLVES a failed query, so
+  // an RLS-blocked or missing row still fell through to
+  // toast.success("Suggestion dismissed") and the card vanished from a list it
+  // was never removed from. The actions report the affected row count; a refusal
+  // is now shown and the card stays put.
   const handleSuggestionAction = async (id: string, action: "executed" | "ignored") => {
     setExecutingId(id)
     try {
-      const supabase = createClient()
-      await supabase.from("smart_assistant_suggestions").update({ status: action }).eq("id", id)
+      const res = action === "executed"
+        ? await completeSuggestion(id)
+        : await dismissSuggestion(id)
+
+      if (!res.success) {
+        toast.error(res.error ?? "Failed to update suggestion")
+        return
+      }
 
       setLocalSuggestions((prev) => prev.filter((s) => s.id !== id))
       toast.success(action === "executed" ? "Action executed" : "Suggestion dismissed")
-    } catch (error) {
-      toast.error("Failed to update suggestion")
     } finally {
       setExecutingId(null)
     }
@@ -865,6 +886,43 @@ export function CoachingDashboardClient({
               )}
             </CardContent>
           </Card>
+
+          {/* Call behaviour — the aggregate pattern across this week's analysed
+              calls (them-first score, talk/listen ratio). Sourced from
+              getCoachingTips; the per-call insight list lives on
+              /dashboard/voice/isa and is deliberately not duplicated here. */}
+          {callCoachingTips.length > 0 && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Gauge className="h-5 w-5 text-sky-500" />
+                  Call Behaviour ({callCoachingTips.length})
+                </CardTitle>
+                <CardDescription className="text-xs">
+                  Patterns across the calls analysed in the last 7 days
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {callCoachingTips.map((tip, i) => (
+                  <div key={`${tip.category}-${i}`} className="rounded-lg border bg-card p-3">
+                    <div className="mb-1 flex items-start justify-between gap-2">
+                      <Badge variant="outline" className="capitalize">{tip.category}</Badge>
+                      <Badge
+                        variant="outline"
+                        className={tip.priority === "high"
+                          ? "border-red-200 bg-red-50 text-red-700"
+                          : "border-amber-200 bg-amber-50 text-amber-700"}
+                      >
+                        {tip.priority}
+                      </Badge>
+                    </div>
+                    <p className="text-sm font-medium text-foreground">{tip.tip}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{tip.improvement_area}</p>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
 
           {/* Smart Suggestions */}
           <Card>

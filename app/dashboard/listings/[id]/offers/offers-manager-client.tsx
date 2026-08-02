@@ -11,6 +11,7 @@ import {
   evaluateSellerDecisionReadiness,
   validateSellerDecisionReversal,
   logSellerDecisionTransition,
+  logSellerDecisionReversal,
 } from "@/app/actions/seller-decision-governance"
 import { OfferUploadZone } from "./components/offer-upload-zone"
 import { OfferComparisonMatrix } from "./components/offer-comparison-matrix"
@@ -304,14 +305,20 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
     // The toast below claims a COMPLIANCE RECORD exists. This action reports
     // failure by return, so that claim was made without ever checking that the
     // audit row was written. Never assert a record you did not confirm.
-    const r = await logSellerDecisionTransition({
+    //
+    // A REVERSAL, not a transition. This used to log a degenerate
+    // SELLER_DECISION_READY → SELLER_DECISION_READY "transition" with the real
+    // meaning buried in metadata.action, so the audit trail recorded a state change
+    // that never happened and the reversal itself had no event type of its own.
+    // logSellerDecisionReversal writes `seller.decision.reversed` with the state
+    // being reversed OUT OF and the reason as first-class fields — which is what
+    // queryDecisionHistory (and the Decision History panel) reads back.
+    const r = await logSellerDecisionReversal({
       listing_id: listing.id,
       from_state: "SELLER_DECISION_READY" as any,
-      to_state: "SELLER_DECISION_READY" as any,
+      reversal_reason: reversalReason || "No reason given",
       authority_role: "agent",
-      override_flag: isOverride,
-      override_reason: reversalReason || undefined,
-      metadata: { offerId: reversalOffer.id, action: "decision_reversal", reason: reversalReason },
+      metadata: { offerId: reversalOffer.id, override_flag: isOverride },
     })
     if (!r?.success) {
       toast({ title: "Reversal NOT logged", description: (r as any)?.error ?? "The audit trail was not written — do not treat this reversal as recorded.", variant: "destructive" })

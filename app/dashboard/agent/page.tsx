@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from "react"
 import { createClient } from "@/lib/supabase/client"
 // Actions
 import { getAgentStats } from "@/app/actions/agents"
-import { generateDailyGameplan } from "@/app/actions/copilot"
+import { generateDailyGameplan, executeCopilotTask } from "@/app/actions/copilot"
 import { getTodaysBriefing, generateBriefing, getUpcomingShowings, getActiveTransactions, getUserTypeBrief } from "@/app/actions/briefing-actions"
 import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
 import BudgetWarningBanner from "@/app/components/shell/budget-warning-banner"
@@ -17,6 +17,8 @@ import { getMotivatedSellers } from "@/app/actions/lead-intelligence"
 import { getRecentLifeChanges } from "@/app/actions/contact-enrichment"
 import { initiateWhisperBridge, triggerAiVoiceCall } from "@/app/actions/voice-call-bridge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import Link from "next/link"
 import ReactMarkdown from "react-markdown"
@@ -115,6 +117,10 @@ export default function AgentDashboard() {
   const [motivatedSellers, setMotivatedSellers] = useState<any[]>([])
   const [gameplan, setGameplan] = useState<any>(null)
   const [gameplanLoading, setGameplanLoading] = useState(false)
+  // Gameplan rows were read-only text. runCopilotTask turns each one into the
+  // action it names, through the single copilot executor (executeCopilotTask ->
+  // initiateWhisperBridge / sendPropertyMatches / checkTransactionDeadlines).
+  const [copilotTaskId, setCopilotTaskId] = useState<string | null>(null)
 
   useEffect(() => {
     const loadData = async () => {
@@ -376,6 +382,37 @@ export default function AgentDashboard() {
     loadGameplan()
   }, [])
 
+  /**
+   * ONE executor for every gameplan row. executeCopilotTask is the copilot's
+   * task dispatcher — it delegates to the canonical lanes rather than
+   * re-implementing them (call_hot_lead -> initiateWhisperBridge, the single
+   * agent->contact calling lane; check_transaction_status -> the milestone
+   * deadline reader). The result is READ, so a refusal is shown rather than
+   * reported as done.
+   *
+   * ID CLASSES, verified against generateDailyGameplan's own queries:
+   *   people_to_call rows are `contacts` rows      -> contacts.id
+   *   deals_to_protect rows are transaction_milestones -> .transaction_id
+   */
+  const runCopilotTask = useCallback(
+    async (key: string, taskType: string, params: Record<string, any>) => {
+      setCopilotTaskId(key)
+      try {
+        const res: any = await executeCopilotTask(key, taskType, params)
+        if (res?.success) {
+          toast.success(res.message ?? "Done")
+        } else {
+          toast.error(res?.error ?? "That action did not run")
+        }
+      } catch (err: any) {
+        toast.error(err?.message ?? "That action did not run")
+      } finally {
+        setCopilotTaskId(null)
+      }
+    },
+    [],
+  )
+
   const handleRefreshBriefing = useCallback(async () => {
     setRefreshing(true)
     try {
@@ -503,12 +540,48 @@ export default function AgentDashboard() {
                     <div>
                       <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Call Today</p>
                       <ul className="space-y-1">
-                        {gameplan.people_to_call.slice(0, 5).map((p: any, i: number) => (
-                          <li key={i} className="text-sm text-foreground flex items-center gap-1.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
-                            {p.name ?? p.contact_name ?? "Contact"}
-                          </li>
-                        ))}
+                        {gameplan.people_to_call.slice(0, 5).map((p: any, i: number) => {
+                          const label =
+                            p.name ??
+                            p.contact_name ??
+                            [p.first_name, p.last_name].filter(Boolean).join(" ") ??
+                            "Contact"
+                          const busy = copilotTaskId === `call-${p.id}` || copilotTaskId === `match-${p.id}`
+                          return (
+                            <li key={p.id ?? i} className="text-sm text-foreground">
+                              <div className="flex items-center gap-1.5">
+                                <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
+                                <span className="truncate">{label}</span>
+                              </div>
+                              {p.id && (
+                                <div className="flex gap-1 mt-1 ml-3">
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-6 px-2 text-xs"
+                                    disabled={busy}
+                                    onClick={() =>
+                                      runCopilotTask(`call-${p.id}`, "call_hot_lead", { contactId: p.id })
+                                    }
+                                  >
+                                    Call
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-6 px-2 text-xs"
+                                    disabled={busy}
+                                    onClick={() =>
+                                      runCopilotTask(`match-${p.id}`, "send_property_alert", { contactId: p.id })
+                                    }
+                                  >
+                                    Send matches
+                                  </Button>
+                                </div>
+                              )}
+                            </li>
+                          )
+                        })}
                       </ul>
                     </div>
                   )}
@@ -517,9 +590,28 @@ export default function AgentDashboard() {
                       <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Protect Deals</p>
                       <ul className="space-y-1">
                         {gameplan.deals_to_protect.slice(0, 5).map((d: any, i: number) => (
-                          <li key={i} className="text-sm text-foreground flex items-center gap-1.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
-                            {d.milestone_name?.replace(/_/g, " ") ?? d.description ?? "Milestone"}
+                          <li key={d.id ?? i} className="text-sm text-foreground">
+                            <div className="flex items-center gap-1.5">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+                              <span className="truncate">
+                                {d.milestone_name?.replace(/_/g, " ") ?? d.description ?? "Milestone"}
+                              </span>
+                            </div>
+                            {d.transaction_id && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-6 px-2 mt-1 ml-3 text-xs"
+                                disabled={copilotTaskId === `deadlines-${d.id}`}
+                                onClick={() =>
+                                  runCopilotTask(`deadlines-${d.id}`, "check_transaction_status", {
+                                    transactionId: d.transaction_id,
+                                  })
+                                }
+                              >
+                                Check deadlines
+                              </Button>
+                            )}
                           </li>
                         ))}
                       </ul>

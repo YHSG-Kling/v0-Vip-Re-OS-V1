@@ -92,13 +92,20 @@ export function StagePipeline({
         // When override toggled on, pass the reason through. The server
         // action validates the user_type via requireOverrideActor and writes
         // a 'listing.stage_overridden' lifecycle_event audit row.
-        await advanceListingStage(
+        const res = await advanceListingStage(
           listingId,
           selectedStage.stage,
           userId,
           notes || undefined,
           isOverride && overrideReason ? overrideReason : undefined,
         )
+        // READ THE OUTCOME. This used to `await` and discard: a service that
+        // reports a refusal by returning { success:false } (rather than throwing)
+        // closed the modal and looked exactly like a successful advance.
+        if (res && typeof res === "object" && "success" in res && (res as { success?: boolean }).success === false) {
+          setError((res as { error?: string }).error ?? "The stage was not advanced")
+          return
+        }
         setSelectedStage(null)
         // Page will revalidate via server action
       } catch (e: any) {

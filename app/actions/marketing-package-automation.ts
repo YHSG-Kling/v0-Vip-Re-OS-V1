@@ -404,6 +404,15 @@ export async function getSyndicationStatus(transactionId: string) {
     return []
   }
 
+  // This read had NO tenant guard while every sibling in this file had one —
+  // any signed-in caller could enumerate another brokerage's syndication rows
+  // (and their portal listing URLs) by transaction id. Same gate as the rest.
+  const auth = await requireBrokerage()
+  if (!auth.ok) return []
+
+  const ownsTx = await verifyTransactionInBrokerage(transactionId, auth.brokerageId)
+  if (!ownsTx) return []
+
   const supabase = await createClient()
 
   const { data } = await supabase

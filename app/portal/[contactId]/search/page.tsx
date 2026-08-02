@@ -393,7 +393,19 @@ export default async function SearchPage({
       {showCollaborativeSearch && (
         <div className="pt-4">
           <h2 className="text-xl font-semibold mb-4">Family Search</h2>
-          <CollaborativeSearchDashboard contactId={contactId} contactEmail={contact.email || ""} />
+          <CollaborativeSearchDashboard
+            contactId={contactId}
+            contactEmail={contact.email || ""}
+            savedProperties={savedProperties.map((s: any) => ({
+              listing_id: s.listing_id,
+              property_address: s.property_address ?? null,
+              city: s.city ?? null,
+              state: s.state ?? null,
+              list_price: s.list_price ?? null,
+              bedrooms: s.bedrooms ?? null,
+              bathrooms: s.bathrooms ?? null,
+            }))}
+          />
         </div>
       )}
     </div>

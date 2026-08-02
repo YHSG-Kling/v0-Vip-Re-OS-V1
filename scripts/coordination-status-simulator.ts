@@ -202,12 +202,43 @@ console.log("\n── the type guards reject the exact values that caused this �
 
 console.log("\n── every coordination surface uses the shared sets ──")
 {
+  // Assert the CONSTRUCT, not the spelling: IF a file filters milestone or
+  // deadline rows down to the OPEN ones, that filter must come from the shared
+  // set. Requiring the constant to appear unconditionally asserted a spelling —
+  // when multi-persona.ts's two orphaned coordinator dashboards were deleted
+  // (both unreachable; the real dashboard is app/dashboard/coordinator/page.tsx,
+  // which still uses the sets), the file kept only status WRITES and one
+  // client-side filter over an embedded array. It had no open-status read left
+  // to get wrong, and the check failed anyway.
+  //
+  // Chain-local: the `.in("status", …)` must belong to a chain that started at
+  // .from("<table>"), so an unrelated status filter elsewhere in the file
+  // neither satisfies nor trips this.
+  const openFilterUsesSharedSet = (text: string, table: string, constName: string): boolean => {
+    for (const m of text.matchAll(new RegExp(`\\.from\\(\\s*["']${table}["']\\s*\\)([\\s\\S]{0,600})`, "g"))) {
+      const chain = m[1]
+      const filter = chain.match(/\.in\(\s*["']status["']\s*,\s*([^)]*)\)/)
+      if (!filter) continue                       // no open-status read in this chain
+      if (!filter[1].includes(constName)) return false
+    }
+    return true
+  }
+
   for (const f of ["app/actions/multi-persona.ts", "app/dashboard/coordinator/page.tsx"]) {
     const t = src(f)
     check(`${f}: no 'in_progress' status filter remains`,
       !/\.in\("status", \["pending", "in_progress"\]\)/.test(t))
-    check(`${f}: milestones use MILESTONE_OPEN_STATUSES`, /MILESTONE_OPEN_STATUSES/.test(t))
-    check(`${f}: deadlines use DEADLINE_OPEN_STATUSES`, /DEADLINE_OPEN_STATUSES/.test(t))
+    check(`${f}: any open-milestone filter uses MILESTONE_OPEN_STATUSES`,
+      openFilterUsesSharedSet(t, "transaction_milestones", "MILESTONE_OPEN_STATUSES"))
+    check(`${f}: any open-deadline filter uses DEADLINE_OPEN_STATUSES`,
+      openFilterUsesSharedSet(t, "transaction_deadlines", "DEADLINE_OPEN_STATUSES"))
+  }
+  // The canonical coordinator surface must actually HAVE those reads — this is
+  // the half that would otherwise be satisfiable by deleting the feature.
+  {
+    const page = src("app/dashboard/coordinator/page.tsx")
+    check("the coordinator dashboard still reads open milestones AND deadlines from the shared sets",
+      /MILESTONE_OPEN_STATUSES/.test(page) && /DEADLINE_OPEN_STATUSES/.test(page))
   }
 
   const app = src("lib/application/transactions.ts")

@@ -5,6 +5,7 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { RepairCoPilotPanel } from "@/app/components/features/transactions/repair-copilot-panel"
 import { resolveInterventionAction, rescanDealHealthAction } from "@/app/actions/deal-health-actions"
+import { analyzeTransactionHealth } from "@/app/actions/ai-transaction-coordinator"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -25,6 +26,12 @@ import {
 import {
   completeMilestoneAction,
   overrideMilestoneAction,
+  markAppraisalOrderedAction,
+  markAppraisalCompleteAction,
+  scheduleFinalWalkthroughAction,
+  completeFinalWalkthroughAction,
+  requestRepairAction,
+  completeRepairAction,
 } from "@/app/actions/transaction-milestones"
 import {
   scheduleInspectionAction,
@@ -473,6 +480,7 @@ export function TransactionDetailClient({
 
   // Deal Health interactive state — rescan + intervention resolve
   const [rescanning, setRescanning] = useState(false)
+  const [aiAnalyzing, setAiAnalyzing] = useState(false)
   const [resolvingId, setResolvingId] = useState<string | null>(null)
 
   async function handleRescan() {
@@ -490,6 +498,38 @@ export function TransactionDetailClient({
       toast.error(e instanceof Error ? e.message : "Rescan failed")
     } finally {
       setRescanning(false)
+    }
+  }
+
+  // THE AI READ, alongside the deterministic rescan above.
+  //
+  // rescanDealHealthAction scores components; this runs the transaction through
+  // the model for a win probability + narrative risk read. It is also the ONLY
+  // writer of transactions.win_probability — which lib/kernel/commission-forecaster
+  // and the partners-meeting brief both READ. With nothing calling it, the
+  // forecaster fell back to its by-stage default for every deal forever, and the
+  // round-36 accuracy flywheel (captureWinProbabilitySnapshot → ai_predictions)
+  // had no claims to grade. The button is the missing producer.
+  async function handleAiAnalysis() {
+    if (aiAnalyzing) return
+    setAiAnalyzing(true)
+    try {
+      const r = await analyzeTransactionHealth({
+        transactionId: transaction.id,
+        agentId: transaction.agent_id,
+      })
+      if (r.success && r.analysis) {
+        toast.success(
+          `AI read: ${r.analysis.healthScore}/100 · ${r.analysis.winProbability}% win probability (${r.analysis.riskLevel} risk)`,
+        )
+        router.refresh()
+      } else {
+        toast.error(r.error ?? "AI analysis failed")
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "AI analysis failed")
+    } finally {
+      setAiAnalyzing(false)
     }
   }
 
@@ -659,6 +699,119 @@ export function TransactionDetailClient({
   const [newCommRate, setNewCommRate] = useState("")
 
   // Submit Repair Request form
+  // ── MILESTONES WITH A LIFECYCLE BEHIND THEM ────────────────────────────────
+  // Three milestones are not just a status flip. transaction-milestones.ts has a
+  // dedicated action for each, and every one of them was unreachable — so the
+  // generic "Complete" button below silently skipped:
+  //   appraisal_ordered   → the appraiser-packet coaching moment (be present,
+  //                         bring the packet) + the APPRAISAL_ORDERED portal card
+  //   appraisal_completed → the appraisal-GAP detector: compares the value to the
+  //                         contract price and, on a shortfall, fires
+  //                         APPRAISAL_GAP_DETECTED, convenes the deal-save huddle,
+  //                         and hands the agent the three priced negotiation plays
+  //   final_walkthrough   → schedule (sets the date + fans out) and complete
+  // A low appraisal was being recorded as a tick in a checklist.
+  const [appraisalDialogOpen, setAppraisalDialogOpen] = useState(false)
+  const [appraisalValue, setAppraisalValue] = useState("")
+  const [appraisalError, setAppraisalError] = useState<string | null>(null)
+  const [walkthroughDialogOpen, setWalkthroughDialogOpen] = useState(false)
+  const [walkthroughDate, setWalkthroughDate] = useState("")
+  const [walkthroughError, setWalkthroughError] = useState<string | null>(null)
+
+  /** Milestones whose completion runs a real lifecycle, not just a status flip. */
+  const LIFECYCLE_MILESTONES = new Set([
+    "appraisal_ordered",
+    "appraisal_completed",
+    "final_walkthrough_scheduled",
+  ])
+
+  function markMilestoneDone(m: { id: string; milestone_name: string }) {
+    startTransition(async () => {
+      let res: { success: boolean; error?: string }
+      if (m.milestone_name === "appraisal_ordered") {
+        res = await markAppraisalOrderedAction({
+          transactionId: transaction.id,
+          brokerageId,
+        })
+      } else if (m.milestone_name === "final_walkthrough_scheduled") {
+        res = await completeFinalWalkthroughAction({
+          transactionId: transaction.id,
+          brokerageId,
+        })
+      } else {
+        res = await completeMilestoneAction({
+          transactionId: transaction.id,
+          brokerageId,
+          milestoneName: m.milestone_name,
+        })
+      }
+      if (res.success) {
+        const now = new Date().toISOString()
+        setLocalMilestones((prev) =>
+          prev.map((row) => (row.id === m.id ? { ...row, status: "completed", completed_at: now } : row)),
+        )
+        toast.success("Milestone marked complete")
+        router.refresh()
+      } else {
+        toast.error(res.error ?? "Failed to update milestone")
+      }
+    })
+  }
+
+  function submitAppraisalComplete() {
+    const value = Number(appraisalValue)
+    if (!appraisalValue.trim() || !Number.isFinite(value) || value <= 0) {
+      setAppraisalError("Enter the appraised value — the gap check needs a real number to compare against the contract price.")
+      return
+    }
+    setAppraisalError(null)
+    startTransition(async () => {
+      const res = await markAppraisalCompleteAction({
+        transactionId: transaction.id,
+        brokerageId,
+        appraisalValue: value,
+      })
+      if (res.success) {
+        setAppraisalDialogOpen(false)
+        setAppraisalValue("")
+        setLocalMilestones((prev) =>
+          prev.map((row) =>
+            row.milestone_name === "appraisal_completed"
+              ? { ...row, status: "completed", completed_at: new Date().toISOString() }
+              : row,
+          ),
+        )
+        toast.success("Appraisal recorded — gap check run against the contract price")
+        router.refresh()
+      } else {
+        setAppraisalError(res.error ?? "Could not record the appraisal")
+      }
+    })
+  }
+
+  function submitWalkthroughSchedule() {
+    if (!walkthroughDate) {
+      setWalkthroughError("Pick a date for the final walkthrough.")
+      return
+    }
+    setWalkthroughError(null)
+    startTransition(async () => {
+      const res = await scheduleFinalWalkthroughAction({
+        transactionId: transaction.id,
+        brokerageId,
+        walkthroughDate,
+      })
+      if (res.success) {
+        setWalkthroughDialogOpen(false)
+        setWalkthroughDate("")
+        toast.success("Final walkthrough scheduled")
+        router.refresh()
+      } else {
+        setWalkthroughError(res.error ?? "Could not schedule the walkthrough")
+      }
+    })
+  }
+
   const [showRepairForm, setShowRepairForm] = useState(false)
   const [newRepairItem, setNewRepairItem] = useState("")
   const [newRepairCost, setNewRepairCost] = useState("")
@@ -1661,6 +1814,17 @@ export function TransactionDetailClient({
                         <RefreshCw className={cn("h-3 w-3", rescanning && "animate-spin")} />
                         Refresh
                       </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 px-2 text-[11px] gap-1"
+                        disabled={aiAnalyzing}
+                        onClick={handleAiAnalysis}
+                        title="Run the AI read: win probability, narrative risks and next best actions"
+                      >
+                        <Sparkles className={cn("h-3 w-3", aiAnalyzing && "animate-pulse")} />
+                        AI read
+                      </Button>
                       <Link
                         href={`/dashboard/transactions/${transaction.id}/health`}
                         className="inline-flex items-center gap-1 h-6 px-2 text-[11px] rounded-md hover:bg-accent"
@@ -2273,10 +2437,32 @@ export function TransactionDetailClient({
                             </Badge>
                           )}
 
-                          {/* Mark Complete — uses canonical completeMilestone
-                              so deadline mirror + fan-out to portals + audit
-                              event all fire (Gap #8 wiring). Previously
-                              raw-insert bypassed all that. */}
+                          {/* Schedule — only the final walkthrough carries a
+                              date the agent sets ahead of completing it. */}
+                          {m.milestone_name === "final_walkthrough_scheduled" &&
+                            m.status !== "completed" && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 text-xs px-2"
+                              disabled={isPending}
+                              onClick={() => {
+                                setWalkthroughDate("")
+                                setWalkthroughError(null)
+                                setWalkthroughDialogOpen(true)
+                              }}
+                            >
+                              {m.target_date ? "Reschedule" : "Schedule"}
+                            </Button>
+                          )}
+
+                          {/* Mark Complete — routes to the milestone's own
+                              lifecycle action where one exists (appraisal
+                              ordered / completed, final walkthrough), otherwise
+                              the canonical completeMilestone. The generic path
+                              alone flipped a status and skipped the appraisal
+                              gap detector, the appraiser-packet coaching and the
+                              portal fan-out those milestones own. */}
                           {m.status !== "completed" && (
                             <Button
                               size="sm"
@@ -2284,27 +2470,21 @@ export function TransactionDetailClient({
                               className="h-7 text-xs px-2"
                               disabled={isPending}
                               onClick={() => {
-                                startTransition(async () => {
-                                  const res = await completeMilestoneAction({
-                                    transactionId: transaction.id,
-                                    brokerageId,
-                                    milestoneName: m.milestone_name,
-                                  })
-                                  if (res.success) {
-                                    const now = new Date().toISOString()
-                                    setLocalMilestones((prev) =>
-                                      prev.map((row) =>
-                                        row.id === m.id
-                                          ? { ...row, status: "completed", completed_at: now }
-                                          : row,
-                                      ),
-                                    )
-                                    toast.success("Milestone marked complete")
-                                  } else {
-                                    toast.error(res.error ?? "Failed to update milestone")
-                                  }
-                                })
+                                if (m.milestone_name === "appraisal_completed") {
+                                  // Needs the appraised value — the gap check has
+                                  // nothing to compare without it.
+                                  setAppraisalValue("")
+                                  setAppraisalError(null)
+                                  setAppraisalDialogOpen(true)
+                                  return
+                                }
+                                markMilestoneDone(m)
                               }}
+                              title={
+                                LIFECYCLE_MILESTONES.has(m.milestone_name)
+                                  ? "Runs this milestone's full lifecycle, not just a status change"
+                                  : undefined
+                              }
                             >
                               Complete
                             </Button>
@@ -3856,21 +4036,30 @@ export function TransactionDetailClient({
                         onClick={() => {
                           if (!newRepairItem) return
                           startTransition(async () => {
-                            const { submitRepairRequest } = await import("@/app/actions/transactions")
-                            const result = await submitRepairRequest({
-                              transaction_id: transaction.id,
-                              requested_by: "buyer",
-                              item_description: newRepairItem,
-                              estimated_cost: newRepairCost ? Number(newRepairCost) : undefined,
+                            // requestRepairAction, NOT the application-layer
+                            // submitRepairRequest this form used to call: that one
+                            // inserts an UNTENANTED row (no brokerage_id, no scope
+                            // check) and fires no kernel event, so the other side
+                            // of the deal never learned a repair had been asked
+                            // for. This path verifies the transaction is in the
+                            // caller's brokerage, stamps brokerage_id, and emits
+                            // LISTING_REPAIR_REQUIRED so the buyer/seller portals
+                            // fan out.
+                            const result = await requestRepairAction({
+                              transactionId: transaction.id,
+                              brokerageId,
+                              requestedBy: "buyer",
+                              itemDescription: newRepairItem,
+                              estimatedCost: newRepairCost ? Number(newRepairCost) : undefined,
                             })
-                            if (result?.success) {
+                            if (result.success) {
                               toast.success("Repair request submitted")
                               setShowRepairForm(false)
                               setNewRepairItem("")
                               setNewRepairCost("")
                               router.refresh()
                             } else {
-                              toast.error("Failed to submit repair request")
+                              toast.error(result.error ?? "Failed to submit repair request")
                             }
                           })
                         }}
@@ -3907,6 +4096,36 @@ export function TransactionDetailClient({
                                 }}
                               >
                                 Accept
+                              </Button>
+                            )}
+                            {/* The end of the repair story — completeRepairAction
+                                emits LISTING_REPAIR_COMPLETED so both portals see
+                                the item close. Nothing used to call it, so an
+                                approved repair stayed "approved" forever. */}
+                            {(r.status === "approved" || r.status === "countered") && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="text-xs h-6 px-2"
+                                disabled={isPending}
+                                onClick={() => {
+                                  startTransition(async () => {
+                                    const res = await completeRepairAction({
+                                      transactionId: transaction.id,
+                                      brokerageId,
+                                      repairId: r.id,
+                                      actualCost: r.estimated_cost ?? undefined,
+                                    })
+                                    if (res.success) {
+                                      toast.success("Repair marked complete")
+                                      router.refresh()
+                                    } else {
+                                      toast.error(res.error ?? "Could not complete repair")
+                                    }
+                                  })
+                                }}
+                              >
+                                Mark Complete
                               </Button>
                             )}
                           </div>
@@ -4601,6 +4820,92 @@ export function TransactionDetailClient({
                 {isPending ? "Overriding..." : "Force Advance"}
               </Button>
             )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Appraisal completion — the value is required, because the gap detector
+          compares it to transactions.purchase_price. */}
+      <Dialog open={appraisalDialogOpen} onOpenChange={setAppraisalDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Record the appraisal</DialogTitle>
+            <DialogDescription>
+              The appraised value is compared to the contract price. If it comes in short, the
+              buyer and seller portals get the explanation, the deal team is convened, and you get
+              the three priced negotiation plays.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            {appraisalError && (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                {appraisalError}
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label htmlFor="appraisal-value">Appraised value</Label>
+              <Input
+                id="appraisal-value"
+                type="number"
+                min="0"
+                placeholder="e.g. 495000"
+                value={appraisalValue}
+                onChange={(e) => setAppraisalValue(e.target.value)}
+              />
+              {transaction.purchase_price ? (
+                <p className="text-xs text-muted-foreground">
+                  Contract price on file: ${Number(transaction.purchase_price).toLocaleString()}
+                </p>
+              ) : (
+                <p className="text-xs text-amber-600">
+                  No contract price on this transaction — the gap check has nothing to compare
+                  against and will not run.
+                </p>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAppraisalDialogOpen(false)}>Cancel</Button>
+            <Button onClick={submitAppraisalComplete} disabled={isPending}>
+              {isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Record appraisal
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Final walkthrough scheduling */}
+      <Dialog open={walkthroughDialogOpen} onOpenChange={setWalkthroughDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Schedule the final walkthrough</DialogTitle>
+            <DialogDescription>
+              Sets the milestone date and fans the walkthrough out to the buyer, seller, lender and
+              title portals.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            {walkthroughError && (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                {walkthroughError}
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label htmlFor="walkthrough-date">Walkthrough date</Label>
+              <Input
+                id="walkthrough-date"
+                type="date"
+                value={walkthroughDate}
+                onChange={(e) => setWalkthroughDate(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setWalkthroughDialogOpen(false)}>Cancel</Button>
+            <Button onClick={submitWalkthroughSchedule} disabled={isPending}>
+              {isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Schedule
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -27,7 +27,7 @@
  * portals use to find the property.
  */
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import {
   Dialog,
   DialogContent,
@@ -41,7 +41,11 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Rocket, Search, Loader2, AlertTriangle, CheckCircle2 } from "lucide-react"
-import { launchListingAction, verifyMlsSyndicationAction } from "@/app/actions/listings-kernel"
+import {
+  launchListingAction,
+  verifyMlsSyndicationAction,
+  validateLaunchReadinessAction,
+} from "@/app/actions/listings-kernel"
 import type { MlsVerification } from "@/lib/listings/mls-verification"
 
 interface LaunchListingDialogProps {
@@ -70,6 +74,46 @@ export function LaunchListingDialog({
   const [checking, setChecking] = useState(false)
   const [verification, setVerification] = useState<MlsVerification | null>(null)
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
+
+  /**
+   * THE GATE'S OWN VERDICT, BEFORE THE CLICK.
+   *
+   * `outstanding` is the LIFECYCLE PAGE's hand-rolled checklist (photo count from
+   * getListingMedia, required fields, the compliance audit). launchListing does not
+   * consult any of that — it calls validateListingLaunchReadiness, which asks four
+   * different questions against different tables (seller contact linked, list price
+   * set, MLS number present, >= 5 rows in listing_media of type photo). The two
+   * lists can and do disagree, and when they do the agent gets a green checklist
+   * and a refused launch with no explanation of which rule stopped them.
+   *
+   * validateLaunchReadinessAction IS that gate, exported and called from nowhere.
+   * Running it here shows the refusal before it happens instead of after.
+   */
+  const [gateBlockers, setGateBlockers] = useState<string[] | null>(null)
+  const [gateError, setGateError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setGateBlockers(null)
+    setGateError(null)
+    validateLaunchReadinessAction(listingId).then((res) => {
+      if (cancelled) return
+      if (!res.success) {
+        // "Could not evaluate" is not "ready" — say which one it is.
+        setGateError((res as { error?: string }).error ?? "The launch gate could not be evaluated")
+        return
+      }
+      setGateBlockers((res as { blockers?: string[] }).blockers ?? [])
+    })
+    return () => { cancelled = true }
+  }, [open, listingId])
+
+  // The gate accepts the number being launched WITH, so a stored-number blocker
+  // that the typed number satisfies is not a real blocker at launch time.
+  const liveGateBlockers = (gateBlockers ?? []).filter(
+    (b) => !(mlsNumber.trim() && b.toLowerCase().includes("mls number")),
+  )
 
   const handleCheckFeeds = async () => {
     setChecking(true)
@@ -130,6 +174,32 @@ export function LaunchListingDialog({
               </ul>
             </div>
           )}
+
+          {/* The kernel gate's own answer — the one launchListing will enforce. */}
+          {gateError ? (
+            <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2">
+              <p className="text-xs text-destructive">
+                Launch readiness could not be checked — {gateError}. Launch may still be refused.
+              </p>
+            </div>
+          ) : liveGateBlockers.length > 0 ? (
+            <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2">
+              <div className="flex items-center gap-1.5">
+                <AlertTriangle className="h-3.5 w-3.5 text-destructive" />
+                <p className="text-xs font-medium text-destructive">
+                  The launch gate will refuse this listing
+                </p>
+              </div>
+              <ul className="mt-1 text-xs text-destructive list-disc pl-4 space-y-0.5">
+                {liveGateBlockers.map((b) => <li key={b}>{b}</li>)}
+              </ul>
+            </div>
+          ) : gateBlockers !== null ? (
+            <p className="text-[11px] text-emerald-600 flex items-center gap-1.5">
+              <CheckCircle2 className="h-3 w-3" />
+              Launch gate checked — no blockers.
+            </p>
+          ) : null}
 
           <div className="space-y-1.5">
             <div className="flex items-center justify-between gap-2">

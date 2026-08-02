@@ -46,6 +46,7 @@ import {
 import { HandoffQueuePanel } from '@/app/dashboard/voice/isa/handoff-queue-panel'
 import { AIISAConsoleClient } from './ai-isa-console-client'
 import { SpeedToLeadPanel } from './components/speed-to-lead-panel'
+import { ISALeadQueuePanel } from './components/isa-lead-queue-panel'
 import { getSpeedToLeadMetrics } from '@/app/actions/ai-isa/speed-to-lead-metrics'
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
@@ -86,6 +87,14 @@ export default async function AIISAOperationsConsolePage() {
 
   // Role-based agent filter: agent sees own calls; broker/admin sees all brokerage calls
   const isAgentOnly = profile?.user_type === 'agent'
+
+  // RAW LEAD ACCESS. app/actions/leads.ts gates every export on this exact set —
+  // agents are deliberately NOT in it, because agents work CONTACTS and lead
+  // visibility is role-gated. The ISA queue tab is only mounted for a role whose
+  // calls the server will actually honour, so nobody is shown a control that can
+  // only refuse. The server-side gate remains the real one.
+  const canWorkRawLeads = ['admin', 'broker', 'broker_admin', 'superadmin', 'isa']
+    .includes(profile?.user_type ?? '')
   const { data: agentRow } = isAgentOnly
     ? await supabase.from('agents').select('id').eq('user_id', user.id).maybeSingle()
     : { data: null }
@@ -418,11 +427,17 @@ export default async function AIISAOperationsConsolePage() {
 
       {/* Main Tabs */}
       <Tabs defaultValue="handoff" className="w-full">
-        <TabsList className="grid w-full grid-cols-4 md:grid-cols-8 h-auto">
+        <TabsList className={`grid w-full grid-cols-4 ${canWorkRawLeads ? 'md:grid-cols-9' : 'md:grid-cols-8'} h-auto`}>
           <TabsTrigger value="handoff" className="flex items-center gap-1.5 text-xs py-2">
             <UserCheck className="h-3.5 w-3.5" />
             Handoff Queue
           </TabsTrigger>
+          {canWorkRawLeads && (
+            <TabsTrigger value="lead-queue" className="flex items-center gap-1.5 text-xs py-2">
+              <Users className="h-3.5 w-3.5" />
+              ISA Queue
+            </TabsTrigger>
+          )}
           <TabsTrigger value="voice-calls" className="flex items-center gap-1.5 text-xs py-2">
             <Mic className="h-3.5 w-3.5" />
             Voice Calls
@@ -466,6 +481,15 @@ export default async function AIISAOperationsConsolePage() {
             agentId={user.id}
           />
         </TabsContent>
+
+        {/* ISA Queue Tab — the raw lead queue behind everything else on this
+            console: qualify, start/pause AI outreach, hand to a human agent,
+            and read the per-lead outreach history. Broker/admin/ISA only. */}
+        {canWorkRawLeads && (
+          <TabsContent value="lead-queue" className="mt-4">
+            <ISALeadQueuePanel />
+          </TabsContent>
+        )}
 
         {/* Voice Calls Tab — transcripts, intent, suggestions */}
         <TabsContent value="voice-calls" className="mt-4">

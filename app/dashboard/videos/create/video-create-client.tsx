@@ -55,6 +55,8 @@ import {
 } from "../components/business-context"
 import type { VideoPurpose, RepurposeDestination, ListingVideoMode, SellerUpdateMode } from "../components/business-context"
 import { generateVideoScript } from "@/app/actions/video/generate-script"
+import { saveVideoScript, getAgentVideoProfile } from "@/app/actions/video-generation"
+import { toLibraryScriptType } from "@/app/types/video-generation"
 import { BrollPicker } from "../components/BrollPicker"
 import { getAgentSettings } from "@/app/actions/agent-settings"
 import { TeammateExplainerCard } from "./teammate-explainer-card"
@@ -214,6 +216,13 @@ export default function VideoCreatePage() {
   const [isAiGenerating, setIsAiGenerating] = useState(false)
   const [aiScriptError, setAiScriptError] = useState<string | null>(null)
 
+  // "Save to library" — the library's empty state sends the agent here to
+  // "create your first AI-generated script", but nothing on this page ever wrote
+  // one back to video_scripts_library.
+  const [isSavingScript, setIsSavingScript] = useState(false)
+  const [saveScriptMessage, setSaveScriptMessage] = useState<string | null>(null)
+  const [saveScriptError, setSaveScriptError] = useState<string | null>(null)
+
   // Step 2: Avatar & Voice
   const [selectedAvatar, setSelectedAvatar] = useState<string>("")
   const [selectedVoice, setSelectedVoice] = useState<string>("")
@@ -340,12 +349,14 @@ export default function VideoCreatePage() {
           clonedVoiceProfiles = voiceData || []
           setVoiceProfiles(clonedVoiceProfiles)
 
-          // Load D-ID profile for the agent (used when platform provider = "did")
-          const { data: didProfileData } = await supabase
-            .from("agent_voice_profiles")
-            .select("elevenlabs_voice_id, did_photo_url, did_video_url")
-            .eq("agent_id", agentData.id)
-            .maybeSingle()
+          // Load D-ID profile for the agent (used when platform provider = "did").
+          // Server action rather than a client select: it also scopes the row to
+          // the caller's brokerage, which the raw agent_id-only read did not.
+          const didProfileData = (await getAgentVideoProfile(agentData.id)) as {
+            elevenlabs_voice_id: string | null
+            did_photo_url: string | null
+            did_video_url: string | null
+          } | null
           setAgentDIDProfile(didProfileData ?? null)
 
           // Load avatar library for this agent
@@ -828,6 +839,35 @@ export default function VideoCreatePage() {
     }
   }
 
+  // Save the working custom script into the shared script library so it can be
+  // approved and reused. Enters as `pending_review` — the library's approval
+  // control decides whether it becomes selectable in this wizard.
+  const handleSaveScriptToLibrary = async () => {
+    if (!customScript.trim()) return
+    setIsSavingScript(true)
+    setSaveScriptError(null)
+    setSaveScriptMessage(null)
+    try {
+      await saveVideoScript({
+        // agentId is agents.id (resolved on load) — never the auth user id.
+        agentId: resolvedAgentId ?? undefined,
+        listingId: selectedContextType === "listing" && selectedContextId ? selectedContextId : undefined,
+        scriptType: toLibraryScriptType(aiScriptVideoType),
+        title: scriptTitle || `Script — ${new Date().toLocaleDateString()}`,
+        scriptContent: customScript,
+        durationTargetSeconds: aiScriptDuration,
+        brandVoiceTone: aiScriptTone,
+        approvalStatus: "pending_review",
+        aiGenerated: true,
+      })
+      setSaveScriptMessage("Saved to your script library — approve it there to reuse it.")
+    } catch (err: any) {
+      setSaveScriptError(err?.message ?? "Could not save this script to the library")
+    } finally {
+      setIsSavingScript(false)
+    }
+  }
+
   // ─── Render ─────────────────────────────────────────────────────────────────
 
   if (loading) {
@@ -1179,6 +1219,29 @@ export default function VideoCreatePage() {
                         rows={10}
                         className="font-mono text-sm"
                       />
+                    </div>
+
+                    {/* Save into the shared library so this script can be
+                        approved once and reused from the Library tab above. */}
+                    <div className="space-y-1">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={isSavingScript || customScript.trim().length < 20}
+                        onClick={handleSaveScriptToLibrary}
+                      >
+                        {isSavingScript ? (
+                          <><Loader2 className="h-3 w-3 mr-2 animate-spin" />Saving…</>
+                        ) : (
+                          <><Save className="h-3 w-3 mr-2" />Save to Script Library</>
+                        )}
+                      </Button>
+                      {saveScriptMessage && (
+                        <p className="text-xs text-muted-foreground">{saveScriptMessage}</p>
+                      )}
+                      {saveScriptError && (
+                        <p className="text-xs text-destructive">{saveScriptError}</p>
+                      )}
                     </div>
                   </TabsContent>
                 </Tabs>

@@ -7,26 +7,52 @@ import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Loader2, CheckCircle2, Clock, AlertTriangle, FileText } from "lucide-react"
 import { toast } from "sonner"
-import { getMyPendingApprovals, getApprovalHistory } from "@/app/actions/content-approval-workflow"
+import {
+  getMyPendingApprovals,
+  getApprovalHistory,
+  getApprovalStatistics,
+} from "@/app/actions/content-approval-workflow"
 import { createClient } from "@/lib/supabase/client"
+
+interface ApprovalStats {
+  total_decisions: number
+  approved_count: number
+  pending_count: number
+  rejected_count: number
+  auto_approved_count: number
+  common_blocking_reasons: Array<{ reason: string; count: number }>
+}
 
 export default function ContentApprovalsPage() {
   const [pending, setPending] = useState<any[]>([])
   const [history, setHistory] = useState<any[]>([])
+  const [stats, setStats] = useState<ApprovalStats | null>(null)
+  const [statsError, setStatsError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [isPending, startTransition] = useTransition()
 
   useEffect(() => {
     const load = async () => {
-      const [pendingRes, histRes] = await Promise.allSettled([
+      const [pendingRes, histRes, statsRes] = await Promise.allSettled([
         getMyPendingApprovals({ approver_role: "broker", limit: 50 }),
         getApprovalHistory({ limit: 20 }),
+        getApprovalStatistics({}),
       ])
       if (pendingRes.status === "fulfilled" && pendingRes.value.success) {
         setPending(pendingRes.value.pending ?? [])
       }
       if (histRes.status === "fulfilled" && (histRes.value as any).success) {
         setHistory((histRes.value as any).history ?? [])
+      }
+      // Read the outcome — a refused stats call must say so, not render zeroes.
+      if (statsRes.status === "fulfilled") {
+        if (statsRes.value.success && statsRes.value.stats) {
+          setStats(statsRes.value.stats as ApprovalStats)
+        } else {
+          setStatsError(statsRes.value.error ?? "Approval statistics unavailable")
+        }
+      } else {
+        setStatsError("Approval statistics unavailable")
       }
       setLoading(false)
     }
@@ -79,6 +105,49 @@ export default function ContentApprovalsPage() {
         </div>
         <Badge variant="secondary">{pending.length} pending</Badge>
       </div>
+
+      {/* Decision statistics — the real approval-signal ledger, not a count of
+          what happens to be on this screen. */}
+      {statsError ? (
+        <Card>
+          <CardContent className="py-3 text-xs text-destructive">{statsError}</CardContent>
+        </Card>
+      ) : stats ? (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+          {[
+            { label: "Total decisions", value: stats.total_decisions },
+            { label: "Approved", value: stats.approved_count },
+            { label: "Pending", value: stats.pending_count },
+            { label: "Rejected", value: stats.rejected_count },
+            { label: "Auto-approved", value: stats.auto_approved_count },
+          ].map((s) => (
+            <Card key={s.label}>
+              <CardContent className="p-3">
+                <p className="text-xs text-muted-foreground">{s.label}</p>
+                <p className="text-xl font-semibold">{s.value}</p>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ) : null}
+
+      {stats && stats.common_blocking_reasons.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Most common blocking reasons</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-1">
+            {stats.common_blocking_reasons.slice(0, 5).map((r) => (
+              <div key={r.reason} className="flex items-center justify-between gap-4">
+                <p className="text-xs text-muted-foreground">{r.reason}</p>
+                <Badge variant="outline" className="text-[10px] shrink-0">
+                  {r.count}
+                </Badge>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       <Tabs defaultValue="pending">
         <TabsList>

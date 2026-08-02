@@ -237,10 +237,28 @@ export async function generateListingPacket(config: ListingPacketConfig) {
 }
 
 // =====================================================
+// PACKET DOCUMENT BUILDERS — INTERNAL, NOT SERVER ACTIONS
+// =====================================================
+//
+// The six builders below (flyer, seller disclosure, utilities form, GIS, tax
+// record, appraiser report) are called from exactly two places, both in this
+// file: generateListingPacket (which the Listing Packet panel calls with the
+// agent's document selection) and regeneratePacketDocument (its per-row Regenerate
+// button). They were `export`ed, and in a "use server" module every export is a
+// PUBLIC RPC endpoint — so each one published a callable that accepts
+// `listing: any` straight from the browser and spends GPT-4o on whatever strings
+// it is handed, against a listing the caller never had to own. requireCaller only
+// proves the caller is signed in; there is no listing to scope to, because the
+// listing arrives as a parameter.
+//
+// Un-exporting them removes six unscoped inference endpoints and changes nothing
+// about the panel, which only ever used the four real actions.
+
+// =====================================================
 // AI LISTING FLYER GENERATION
 // =====================================================
 
-export async function generateListingFlyer(listing: any) {
+async function generateListingFlyer(listing: any) {
   // Auth gate — burns paid AI inference even without DB access
   const auth = await requireCaller()
   if (!auth.ok) return { type: "listing_flyer", name: "Marketing Flyer", status: "error" as const }
@@ -323,7 +341,7 @@ Return as JSON:
 // SELLER DISCLOSURE COMPILATION
 // =====================================================
 
-export async function compileSellerDisclosure(listing: any) {
+async function compileSellerDisclosure(listing: any) {
   // Auth gate — paid AI inference + reads disclosures
   const auth = await requireCaller()
   if (!auth.ok) return { type: "seller_disclosure", name: "Seller Disclosure", status: "error" as const }
@@ -391,7 +409,7 @@ Return JSON:
 // SELLER UTILITIES FORM
 // =====================================================
 
-export async function generateUtilitiesForm(listing: any) {
+async function generateUtilitiesForm(listing: any) {
   const auth = await requireCaller()
   if (!auth.ok) return { type: "utilities_form", name: "Utilities Form", status: "error" as const }
 
@@ -436,7 +454,7 @@ Return as JSON with form fields and any pre-filled information based on the loca
 // GIS MAP PROPERTY REPORT
 // =====================================================
 
-export async function fetchGISPropertyReport(listing: any) {
+async function fetchGISPropertyReport(listing: any) {
   const auth = await requireCaller()
   if (!auth.ok) return { type: "gis_report", name: "GIS Property Report", status: "error" as const }
 
@@ -489,7 +507,7 @@ Return as JSON with sections for each category.`,
 // TAX RECORD REPORT
 // =====================================================
 
-export async function fetchTaxRecordReport(listing: any) {
+async function fetchTaxRecordReport(listing: any) {
   const auth = await requireCaller()
   if (!auth.ok) return { type: "tax_record", name: "Property Tax Record", status: "error" as const }
 
@@ -541,7 +559,7 @@ Return as JSON.`,
 // APPRAISER SITE PROPERTY REPORT
 // =====================================================
 
-export async function fetchAppraiserSiteReport(listing: any) {
+async function fetchAppraiserSiteReport(listing: any) {
   const auth = await requireCaller()
   if (!auth.ok) return { type: "appraiser_report", name: "Appraiser Property Report", status: "error" as const }
 
@@ -850,6 +868,12 @@ function getStateDisclosureRequirements(state: string): string[] {
 // AUTO-GENERATE PACKET AFTER LISTING GOES LIVE
 // =====================================================
 
+/**
+ * Called by launchListingAction (app/actions/listings-kernel.ts) the moment a
+ * listing goes live on the MLS — the exact event this whole module is named for
+ * and, until now, the one thing nothing invoked. See the note at that call site
+ * for the idempotency guard and why it is dispatched rather than awaited.
+ */
 export async function autoGeneratePacketOnLive(listingId: string, agentId: string) {
   // Default configuration for auto-generation
   const defaultConfig: ListingPacketConfig = {

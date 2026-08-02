@@ -827,122 +827,29 @@ export async function scheduleShowingFromAttendee(params: {
   return { success: true, showingRequestId: showingReq?.id }
 }
 
-// ─── POST-EVENT: REQUEST FEEDBACK FROM ATTENDEE ──────────────────────────────
-
-export async function requestFeedbackFromAttendee(params: {
-  attendeeId: string
-  eventId: string
-  listingId: string
-  brokerageId?: string  // ignored — derived from session
-  agentId?: string  // ignored — derived from session
-}) {
-  if (!isValidUUID(params.attendeeId)) return { success: false, error: "Invalid attendee ID" }
-
-  const auth = await requireCaller()
-  if (!auth.ok) return { success: false, error: auth.error }
-
-  const supabase = await createClient()
-
-  // Verify attendee belongs to caller's brokerage
-  const { data: attendee } = await supabase
-    .from("open_house_attendees")
-    .select("brokerage_id")
-    .eq("id", params.attendeeId)
-    .maybeSingle()
-  if (!attendee || attendee.brokerage_id !== auth.brokerageId) {
-    return { success: false, error: "Forbidden" }
-  }
-
-  const { error } = await supabase
-    .from("open_house_attendees")
-    .update({ feedback_collected_at: new Date().toISOString() })
-    .eq("id", params.attendeeId)
-    .eq("brokerage_id", auth.brokerageId)
-    .is("feedback_collected_at", null)
-
-  if (error) return { success: false, error: error.message }
-
-  revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
-  return { success: true }
-}
-
-// ─── POST-EVENT: GENERATE AI SUMMARY ─────────────────────────────────────────
-
-export async function generateOpenHouseAISummary(params: {
-  eventId: string
-  listingId: string
-  brokerageId?: string  // ignored — derived from session
-}) {
-  const auth = await requireCaller()
-  if (!auth.ok) return { success: false, error: auth.error }
-
-  const evOwn = await verifyEventOwnership(params.eventId, auth.brokerageId)
-  if (!evOwn.ok) return { success: false, error: evOwn.error }
-
-  const supabase = await createClient()
-
-  const { data: attendees } = await supabase
-    .from("open_house_attendees")
-    .select("name, email, phone, working_with_agent, interest_level, ai_lead_score, notes")
-    .eq("event_id", params.eventId)
-    .eq("brokerage_id", auth.brokerageId)
-
-  if (!attendees?.length) {
-    return { success: true, summary: "No attendees recorded for this open house event." }
-  }
-
-  const hotProspects = attendees.filter((a) => (a.ai_lead_score ?? 0) >= 70 || a.interest_level === "hot")
-  const noAgent = attendees.filter((a) => !a.working_with_agent)
-
-  const lines: string[] = []
-  lines.push(`${attendees.length} attendee${attendees.length !== 1 ? "s" : ""} checked in.`)
-
-  if (hotProspects.length > 0) {
-    const names = hotProspects
-      .filter((a) => a.name)
-      .map((a) => a.name!)
-      .slice(0, 3)
-      .join(", ")
-    lines.push(
-      `${hotProspects.length} showed strong buyer interest${names ? ` (${names})` : ""}.`
-    )
-  }
-
-  if (noAgent.length > 0) {
-    lines.push(`${noAgent.length} attendee${noAgent.length !== 1 ? "s are" : " is"} not currently working with an agent — prime follow-up opportunity.`)
-  }
-
-  const withNotes = attendees.filter((a) => a.notes?.trim())
-  for (const a of withNotes.slice(0, 2)) {
-    if (a.name && a.notes) lines.push(`${a.name}: "${a.notes.trim()}"`)
-  }
-
-  const summary = lines.join(" ")
-  return { success: true, summary }
-}
-
-// ─── KIOSK: LOAD EVENT INFO (public — no auth) ───────────────────────────────
-
-export async function getOpenHouseEventPublic(eventId: string) {
-  if (!isValidUUID(eventId)) return null
-
-  const serviceClient = createServiceClient()
-
-  const { data: event } = await serviceClient
-    .from("open_house_events")
-    .select(`
-      id, event_date, start_time, end_time, description, status,
-      listings:listing_id (
-        address, city, state, zip, list_price,
-        brokerages:brokerage_id (name)
-      )
-    `)
-    .eq("id", eventId)
-    .eq("status", "scheduled")
-    .maybeSingle()
-
-  return event
-}
+// REMOVED (orphan burn-down) — requestFeedbackFromAttendee.
+// It stamped `feedback_collected_at = now()` and sent NOTHING. That is not a
+// request for feedback, it is a claim that feedback was already collected, and it
+// removed the attendee from every "awaiting feedback" list on the strength of it.
+// The real capability is sendFeedbackRequestToAttendee (app/actions/
+// open-house-automation.ts), which resolves the attendee's contact, refuses
+// honestly when there is nobody to send to, dispatches through sendFeedbackRequest
+// and reports a non-delivery as a failure. That is what the post-event panel
+// already calls (via /api/open-house/request-feedback), and it is what survives.
+//
+// REMOVED (orphan burn-down) — generateOpenHouseAISummary.
+// The name promised AI; the body was string concatenation over attendee counts.
+// The real post-event analysis is generatePerformanceInsights (same
+// open-house-automation module) — model-generated grade, strengths, weaknesses and
+// recommendations off the event's analytics row — and it is already wired into the
+// open-house Intelligence tab. Per the owner's rule, the AI path is the one kept.
+//
+// REMOVED (orphan burn-down) — getOpenHouseEventPublic.
+// The sign-in kiosk (app/open-house/[eventId]/signin/page.tsx) loads the event
+// itself with a richer service-client query that also resolves the hosting agent
+// and the brokerage's branding, which this could not return. It also filtered
+// `status = 'scheduled'`, so it would have returned null for an event that was
+// already underway — exactly when the kiosk is in use.
 
 // ─── INTELLIGENCE TAB: LOAD POST-EVENT DATA ──────────────────────────────────
 

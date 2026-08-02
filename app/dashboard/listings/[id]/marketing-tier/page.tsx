@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server"
 import { notFound, redirect } from "next/navigation"
 import { MarketingTierClient } from "./marketing-tier-client"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { getMarketingPackageStatus } from "@/app/actions/marketing-package-automation"
 
 interface PageProps {
   params: Promise<{ id: string }>
@@ -119,17 +120,12 @@ export default async function ListingMarketingTierPage({ params }: PageProps) {
   const transactionId = transaction?.id ?? null
 
   // Load the most recent marketing package for that transaction (if any).
-  let activePackage = null
-  if (transactionId) {
-    const { data: pkg } = await supabase
-      .from("listing_marketing_packages")
-      .select("id, package_name, package_type, status, total_estimated_cost, included_services, activated_at")
-      .eq("transaction_id", transactionId)
-      .order("activated_at", { ascending: false, nullsFirst: false })
-      .limit(1)
-      .maybeSingle()
-    activePackage = pkg
-  }
+  // Goes through the action rather than a raw select so the same tenant guard
+  // that every other package operation uses (verifyTransactionInBrokerage)
+  // applies to the read too.
+  const activePackage = transactionId
+    ? await getMarketingPackageStatus(transactionId)
+    : null
 
   const isAdmin = ["broker", "broker_owner", "admin", "superadmin"].includes(userRow.user_type ?? "")
 

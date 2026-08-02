@@ -31,7 +31,11 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
-import { getVideoPerformanceStats, getVideoPerformanceTracking } from "@/app/actions/video-generation"
+import {
+  getVideoPerformanceStats,
+  getVideoPerformanceTracking,
+  getVideoEngagementEvents,
+} from "@/app/actions/video-generation"
 
 interface PerformanceStats {
   totalViews: number
@@ -60,19 +64,35 @@ interface PerformanceStats {
   videoCount: number
 }
 
+interface EngagementEvent {
+  id: string
+  video_asset_id: string | null
+  contact_id: string | null
+  event_type: string
+  watch_duration_seconds: number | null
+  timestamp: string
+}
+
 export default function VideoAnalyticsPage() {
   const { user, userContext } = useAuth()
   const brokerageId = userContext?.brokerageId
   const [dateRange, setDateRange] = useState("30d")
   const [stats, setStats] = useState<PerformanceStats | null>(null)
+  const [recentEvents, setRecentEvents] = useState<EngagementEvent[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
 
   const loadStats = async () => {
     try {
       if (user?.id) {
-        const data = await getVideoPerformanceStats(user.id, brokerageId)
+        const [data, events] = await Promise.all([
+          getVideoPerformanceStats(user.id, brokerageId),
+          // Raw event stream behind the aggregates — the rollups alone never say
+          // WHEN anything happened, so a stale number looked identical to a live one.
+          getVideoEngagementEvents({ limit: 25 }),
+        ])
         setStats(data)
+        setRecentEvents(events as unknown as EngagementEvent[])
       }
     } catch (error) {
       console.error("[v0] Error loading video analytics:", error)
@@ -443,6 +463,49 @@ export default function VideoAnalyticsPage() {
               This platform never fabricates metrics — the card returns when the
               player actually reports device data. */}
         </div>
+
+        {/* Recent engagement — the raw event stream behind the aggregates */}
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle>Recent Engagement</CardTitle>
+            <CardDescription>
+              The most recent views, shares, clicks and completions recorded against your videos
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {recentEvents.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No engagement recorded yet. Events land here as videos are viewed, shared and clicked.
+              </p>
+            ) : (
+              <div className="divide-y">
+                {recentEvents.map((e) => {
+                  const top = stats?.topPerforming?.find(
+                    (v) => v.videoAssetId === e.video_asset_id || v.videoId === e.video_asset_id
+                  )
+                  return (
+                    <div key={e.id} className="flex items-center justify-between gap-4 py-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium capitalize">
+                          {e.event_type.replace(/_/g, " ")}
+                        </p>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {top?.title ?? "Video"}
+                          {e.watch_duration_seconds
+                            ? ` · watched ${formatWatchTime(e.watch_duration_seconds)}`
+                            : ""}
+                        </p>
+                      </div>
+                      <span className="text-xs text-muted-foreground shrink-0">
+                        {new Date(e.timestamp).toLocaleString()}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Insights */}
         <Card>

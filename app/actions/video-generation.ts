@@ -485,30 +485,13 @@ export async function createScriptVariation(data: {
 // VIDEO GENERATION QUEUE
 // ============================================
 
-export async function queueVideoGeneration(data: {
-  agentId?: string  // ignored — derived from session
-  scriptId?: string
-  templateId?: string
-  scriptContent: string
-  videoType: string
-  priority?: number
-  scheduledFor?: string
-  metadata?: any
-}) {
-  const auth = await requireCaller()
-  if (!auth.ok) throw new Error(auth.error)
-
-  // SCHEMA DRIFT: live video_generation_queue has only id, project_id,
-  // status, priority, created_at, processed_at — none of agent_id,
-  // script_id, template_id, script_content, video_type, scheduled_for,
-  // metadata, compliance_approved exist. The richer queue model lives in
-  // ai_video_projects. We refuse to insert the drift columns to surface
-  // the bug; callers should be migrated to insert into ai_video_projects
-  // directly.
-  return {
-    error: "queueVideoGeneration: schema drift — use ai_video_projects insertion path instead",
-  }
-}
+// queueVideoGeneration was DELETED (orphan burn-down). It had no caller and no
+// body left: every column it was written for (agent_id, script_id, template_id,
+// script_content, video_type, scheduled_for, metadata) is absent from the live
+// video_generation_queue, so all it did was return a hardcoded schema-drift
+// error string to nobody. The real queue model is ai_video_projects — created by
+// app/actions/video/create-video-project.ts and by /dashboard/videos/create,
+// rendered by /api/did/generate-video, and polled by the poll-did-videos cron.
 
 export async function getVideoQueue(_agentId: string) {
   // SCHEMA DRIFT: video_generation_queue has no agent_id column in live
@@ -1313,57 +1296,11 @@ export async function getEducationTemplates() {
   return getVideoTemplates({ category: "education" })
 }
 
-export async function createAvatarVideo(params: {
-  scriptId: string
-  script: string
-  avatarId?: string
-  voice?: string
-  userId?: string  // ignored — derived from session
-}) {
-  if (!isValidUUID(params.scriptId)) {
-    return { success: false, error: "Invalid script ID" }
-  }
-
-  // Auth gate — calls HeyGen API which burns paid credits under our key.
-  const auth = await requireCaller()
-  if (!auth.ok) return { success: false, error: auth.error }
-
-  const supabase = createServiceClient()
-
-  // Verify script belongs to caller's brokerage before billing HeyGen
-  const { data: scriptRow } = await supabase
-    .from("video_scripts_library")
-    .select("brokerage_id")
-    .eq("id", params.scriptId)
-    .maybeSingle()
-  if (!scriptRow) return { success: false, error: "Script not found" }
-  if (scriptRow.brokerage_id !== auth.brokerageId) {
-    return { success: false, error: "Forbidden" }
-  }
-
-  try {
-    console.log("[v0] Generating avatar video for script:", params.scriptId)
-
-    // Platform engine: D-ID + ElevenLabs (no HeyGen). Delegate to the rewired
-    // generation action (was a direct api.heygen.com call — business-rule violation).
-    const { generateAvatarVideo } = await import("@/app/actions/external-services")
-    const didRes = await generateAvatarVideo({
-      avatarId: params.avatarId || "",
-      voiceId: params.voice || "",
-      script: params.script,
-      brokerageId: auth.brokerageId ?? undefined,
-    })
-    if (!didRes.success) {
-      return { success: false, error: (didRes as { error?: string }).error || "Video provider error (D-ID + ElevenLabs)" }
-    }
-    const didVideoId = (didRes as { videoId?: string }).videoId
-    // Provider job tracking belongs on ai_video_projects (provider_job_id/_status);
-    // video_scripts_library has no place to persist it — log so it isn't lost.
-    console.log(`[video-generation] D-ID video_id=${didVideoId} for script ${params.scriptId}`)
-
-    return { success: true, videoId: didVideoId, status: "generating" }
-  } catch (error: any) {
-    console.error("[v0] Video generation error:", error)
-    return { success: false, error: error.message }
-  }
-}
+// createAvatarVideo was DELETED (orphan burn-down): the caller-less twin of
+// generateVideoFromScript directly above it. Same D-ID + ElevenLabs dispatch
+// through app/actions/external-services, but it threw the returned provider job
+// id away into a console.log — no ai_video_projects row, so nothing could ever
+// poll the render or show the agent the result. generateVideoFromScript survives
+// (VideoGenerationButtons and the content studio call it), and the full-fidelity
+// path is createVideoProject + submitAvatarVideoRender in
+// app/actions/video/create-video-project.ts, which persists provider_job_id.

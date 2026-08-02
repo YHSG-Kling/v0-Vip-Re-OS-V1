@@ -7,6 +7,11 @@ import {
   validateBrandComplianceAction,
   classifyTemplateAction,
   checkAutoApprovalEligibilityAction,
+  formatBrandRequirementsAction,
+  formatTemplateClassificationAction,
+  getBrandElementDescriptionAction,
+  getBrandComplianceHistoryAction,
+  getTemplateClassificationHistoryAction,
 } from "@/app/actions/brand-template-registry"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -183,12 +188,43 @@ export function BrandComplianceClient({
   })
   const [savingTemplate, setSavingTemplate] = useState(false)
 
-  // Per-template compliance / auto-approve state
+  // Per-template compliance / auto-approve state.
+  // `missing` carries the human descriptions of each element the content is
+  // missing (getBrandElementDescriptionAction) and `requirementsText` the
+  // formatted requirement sheet the check ran against — without them
+  // "Issues found" told an admin nothing actionable.
   const [complianceResults, setComplianceResults] = useState<
-    Record<string, { checking: boolean; result: { is_compliant: boolean; warnings: string[] } | null; error: string | null }>
+    Record<
+      string,
+      {
+        checking: boolean
+        result: {
+          is_compliant: boolean
+          warnings: string[]
+          missing: Array<{ element: string; description: string }>
+          requirementsText: string | null
+        } | null
+        error: string | null
+      }
+    >
   >({})
   const [autoApproveResults, setAutoApproveResults] = useState<
-    Record<string, { checking: boolean; eligible: boolean | null; reason: string | null }>
+    Record<string, { checking: boolean; eligible: boolean | null; reason: string | null; classificationText: string | null }>
+  >({})
+
+  // Per-template audit trail — the classification / compliance activity rows
+  // written by the two checks above (logActivity is on, keyed on template.id).
+  const [historyResults, setHistoryResults] = useState<
+    Record<
+      string,
+      {
+        loading: boolean
+        open: boolean
+        classifications: Array<{ id: string; created_at: string; metadata: any }>
+        compliance: Array<{ id: string; created_at: string; metadata: any }>
+        error: string | null
+      }
+    >
   >({})
 
   // ── Derived ────────────────────────────────────────────────────────────────
@@ -254,20 +290,39 @@ export function BrandComplianceClient({
       [template.id]: { checking: true, result: null, error: null },
     }))
     try {
-      // Step 1: get brand requirements for this template type
-      const reqResult = await getBrandRequirementsAction({
-        content_type: template.template_type as any,
-        channel_intent: "email",
-        audience_scope: "public",
-      })
+      // Step 1: get brand requirements for this template type. logActivity writes
+      // the evaluation to activities keyed on the template id — that audit row is
+      // what the History disclosure below reads back.
+      const reqResult = await getBrandRequirementsAction(
+        {
+          content_type: template.template_type as any,
+          channel_intent: "email",
+          audience_scope: "public",
+        },
+        { contentId: template.id, logActivity: true }
+      )
       if (!reqResult.success || !reqResult.data) throw new Error(reqResult.error ?? "Requirements fetch failed")
 
-      // Step 2: validate compliance
+      // Step 2: validate compliance (also logged, same content id)
       const valResult = await validateBrandComplianceAction(
         { raw_content: template.content_html ?? "" },
-        reqResult.data
+        reqResult.data,
+        { contentId: template.id, logActivity: true }
       )
       if (!valResult.success || !valResult.data) throw new Error(valResult.error ?? "Validation failed")
+
+      // Step 3: turn the missing-element codes into the descriptions an admin can
+      // act on, and render the requirement sheet the verdict was measured against.
+      const missingElements = valResult.data.missing_elements ?? []
+      const [describedResults, formattedReqs] = await Promise.all([
+        Promise.all(
+          missingElements.map(async (element) => {
+            const d = await getBrandElementDescriptionAction(element)
+            return { element: String(element), description: d.success && d.data ? d.data : String(element) }
+          })
+        ),
+        formatBrandRequirementsAction(reqResult.data),
+      ])
 
       setComplianceResults((prev) => ({
         ...prev,
@@ -276,6 +331,8 @@ export function BrandComplianceClient({
           result: {
             is_compliant: valResult.data!.is_compliant,
             warnings: valResult.data!.warnings,
+            missing: describedResults,
+            requirementsText: formattedReqs.success ? (formattedReqs.data ?? null) : null,
           },
           error: null,
         },
@@ -291,20 +348,28 @@ export function BrandComplianceClient({
   async function handleCheckAutoApprove(template: BrandTemplate) {
     setAutoApproveResults((prev) => ({
       ...prev,
-      [template.id]: { checking: true, eligible: null, reason: null },
+      [template.id]: { checking: true, eligible: null, reason: null, classificationText: null },
     }))
     try {
-      // Step 1: classify the template to get a TemplateClassification
-      const classResult = await classifyTemplateAction({
-        content_type: template.template_type as any,
-        channel_intent: "email",
-        is_from_template: true,
-        template_source: "brokerage" as const,
-      })
+      // Step 1: classify the template to get a TemplateClassification. Logged to
+      // activities so the classification shows up in the template's History.
+      const classResult = await classifyTemplateAction(
+        {
+          content_type: template.template_type as any,
+          channel_intent: "email",
+          is_from_template: true,
+          template_source: "brokerage" as const,
+        },
+        { contentId: template.id, logActivity: true }
+      )
       if (!classResult.success || !classResult.data) throw new Error(classResult.error ?? "Classification failed")
 
-      // Step 2: check auto-approval eligibility
-      const eligResult = await checkAutoApprovalEligibilityAction(classResult.data)
+      // Step 2: check auto-approval eligibility + render the classification the
+      // verdict came from (trust level, confidence, matched template).
+      const [eligResult, formattedClass] = await Promise.all([
+        checkAutoApprovalEligibilityAction(classResult.data),
+        formatTemplateClassificationAction(classResult.data),
+      ])
       if (!eligResult.success || !eligResult.data) throw new Error(eligResult.error ?? "Eligibility check failed")
 
       setAutoApproveResults((prev) => ({
@@ -313,14 +378,57 @@ export function BrandComplianceClient({
           checking: false,
           eligible: eligResult.data!.eligible,
           reason: eligResult.data!.reason,
+          classificationText: formattedClass.success ? (formattedClass.data ?? null) : null,
         },
       }))
     } catch (err: any) {
       setAutoApproveResults((prev) => ({
         ...prev,
-        [template.id]: { checking: false, eligible: null, reason: err.message },
+        [template.id]: { checking: false, eligible: null, reason: err.message, classificationText: null },
       }))
     }
+  }
+
+  async function handleToggleHistory(template: BrandTemplate) {
+    const existing = historyResults[template.id]
+    if (existing?.open) {
+      setHistoryResults((prev) => ({ ...prev, [template.id]: { ...existing, open: false } }))
+      return
+    }
+
+    setHistoryResults((prev) => ({
+      ...prev,
+      [template.id]: {
+        loading: true,
+        open: true,
+        classifications: existing?.classifications ?? [],
+        compliance: existing?.compliance ?? [],
+        error: null,
+      },
+    }))
+
+    const [classRes, compRes] = await Promise.all([
+      getTemplateClassificationHistoryAction(template.id),
+      getBrandComplianceHistoryAction(template.id),
+    ])
+
+    // Surface refusals rather than rendering an empty list as "no history".
+    const failure = !classRes.success
+      ? (classRes.error ?? "Classification history unavailable")
+      : !compRes.success
+      ? (compRes.error ?? "Compliance history unavailable")
+      : null
+
+    setHistoryResults((prev) => ({
+      ...prev,
+      [template.id]: {
+        loading: false,
+        open: true,
+        classifications: (classRes.data ?? []) as any[],
+        compliance: (compRes.data ?? []) as any[],
+        error: failure,
+      },
+    }))
   }
 
   async function handleAddTemplate() {
@@ -501,6 +609,7 @@ export function BrandComplianceClient({
                   {filteredTemplates.map((template) => {
                     const compliance = complianceResults[template.id]
                     const autoApprove = autoApproveResults[template.id]
+                    const history = historyResults[template.id]
 
                     return (
                       <div
@@ -541,6 +650,30 @@ export function BrandComplianceClient({
                               )}
                             </div>
                           )}
+                          {/* Missing brand elements, described in plain language */}
+                          {compliance?.result && compliance.result.missing.length > 0 && (
+                            <ul className="mt-1 space-y-0.5">
+                              {compliance.result.missing.map((m) => (
+                                <li key={m.element} className="text-xs text-muted-foreground">
+                                  <span className="font-medium text-foreground capitalize">
+                                    {m.element.replace(/_/g, " ")}
+                                  </span>
+                                  {" — "}
+                                  {m.description}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                          {compliance?.result?.requirementsText && (
+                            <details className="mt-1">
+                              <summary className="text-xs text-muted-foreground cursor-pointer">
+                                Requirements checked
+                              </summary>
+                              <pre className="mt-1 whitespace-pre-wrap text-[11px] text-muted-foreground overflow-x-auto">
+                                {compliance.result.requirementsText}
+                              </pre>
+                            </details>
+                          )}
                           {compliance?.error && (
                             <p className="text-xs text-destructive mt-1">{compliance.error}</p>
                           )}
@@ -554,6 +687,51 @@ export function BrandComplianceClient({
                               </span>
                               {autoApprove.reason ? ` — ${autoApprove.reason}` : ""}
                             </p>
+                          )}
+                          {autoApprove?.classificationText && (
+                            <details className="mt-1">
+                              <summary className="text-xs text-muted-foreground cursor-pointer">
+                                Classification detail
+                              </summary>
+                              <pre className="mt-1 whitespace-pre-wrap text-[11px] text-muted-foreground overflow-x-auto">
+                                {autoApprove.classificationText}
+                              </pre>
+                            </details>
+                          )}
+
+                          {/* Audit trail for this template */}
+                          {history?.open && (
+                            <div className="mt-2 rounded-md border bg-muted/40 p-2">
+                              {history.loading ? (
+                                <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                                  <Loader2 className="h-3 w-3 animate-spin" /> Loading history…
+                                </p>
+                              ) : history.error ? (
+                                <p className="text-xs text-destructive">{history.error}</p>
+                              ) : history.classifications.length === 0 && history.compliance.length === 0 ? (
+                                <p className="text-xs text-muted-foreground">
+                                  No recorded checks yet — run Check Compliance or Auto-Approve?
+                                </p>
+                              ) : (
+                                <div className="space-y-1.5">
+                                  {history.classifications.map((row) => (
+                                    <p key={row.id} className="text-xs text-muted-foreground">
+                                      <span className="font-medium text-foreground">Classified</span>{" "}
+                                      {format(new Date(row.created_at), "MMM d, yyyy p")} — trust{" "}
+                                      {row.metadata?.trust_level ?? "unknown"}, confidence{" "}
+                                      {row.metadata?.confidence_score ?? "—"}
+                                    </p>
+                                  ))}
+                                  {history.compliance.map((row) => (
+                                    <p key={row.id} className="text-xs text-muted-foreground">
+                                      <span className="font-medium text-foreground">Compliance</span>{" "}
+                                      {format(new Date(row.created_at), "MMM d, yyyy p")} —{" "}
+                                      {row.metadata?.is_compliant ? "compliant" : "issues found"}
+                                    </p>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
                           )}
                         </div>
 
@@ -596,6 +774,16 @@ export function BrandComplianceClient({
                               <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
                             ) : null}
                             Auto-Approve?
+                          </Button>
+
+                          {/* Audit trail toggle */}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="border"
+                            onClick={() => handleToggleHistory(template)}
+                          >
+                            {history?.open ? "Hide History" : "History"}
                           </Button>
                         </div>
                       </div>

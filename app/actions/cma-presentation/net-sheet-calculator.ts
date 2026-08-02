@@ -202,6 +202,29 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
       }
     })
 
+    // GOVERNANCE VOCABULARY. The row above says `seller.net_sheet.completed`, but
+    // the net-sheet validator that gates the seller's decision reads
+    // `seller.net_sheet.generated` / `.regenerated` and nothing else. Nothing wrote
+    // either one, so deriveNetSheetValidityFromEvents always came back null and
+    // every listing reported "Net sheet not yet generated" no matter how many net
+    // sheets had been produced. logNetSheetActivity is the canonical writer of that
+    // vocabulary; this is its call site. Best-effort — the net sheet is already
+    // built, and a missing governance row must not fail it.
+    try {
+      const { logNetSheetActivity } = await import("@/app/actions/seller-decision-governance")
+      const gov = await logNetSheetActivity({
+        listing_id: input.listingId,
+        event_type: "generated",
+        validity_days: NET_SHEET_VALIDITY_DAYS,
+        metadata: { net_sheet_id: netSheetId, expires_at: expiresAt.toISOString() },
+      })
+      if (!gov.success) {
+        console.error("[net-sheet] governance row NOT written:", gov.error)
+      }
+    } catch (err) {
+      console.error("[net-sheet] governance row NOT written:", err)
+    }
+
     return {
       success: true,
       netSheetId,

@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { getTransactions } from "@/app/actions/transactions"
+import { PortfolioRiskScan } from "./portfolio-risk-scan"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -134,6 +135,10 @@ export default async function TransactionsPage() {
             </div>
           )}
         </div>
+
+        {/* AI portfolio risk scan — reads the whole in-escrow book at once and
+            writes ai_risk_level / ai_primary_risk back onto each deal. */}
+        <PortfolioRiskScan agentId={agentId} />
 
         {/* Status Radar */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

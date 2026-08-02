@@ -46,6 +46,14 @@ import Link from "next/link"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
 import { createClient } from "@/lib/supabase/client"
+import {
+  getVideoScriptLibrary,
+  getVideoScriptById,
+  getScriptVariations,
+  createScriptVariation,
+  updateScriptApprovalStatus,
+  recordVideoEngagementEvent,
+} from "@/app/actions/video-generation"
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -143,6 +151,10 @@ function VideoLibraryContent() {
   const [variationIsAbTest, setVariationIsAbTest] = useState(false)
   const [creatingVariation, setCreatingVariation] = useState(false)
 
+  // Approval decision state — the library showed approval badges with no way to
+  // move a script through them.
+  const [approvingScriptId, setApprovingScriptId] = useState<string | null>(null)
+
   // ─── Load Scripts ──────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -154,12 +166,11 @@ function VideoLibraryContent() {
 
     setLoading(true)
     try {
-      const response = await fetch("/api/video-scripts")
-      const data = await response.json()
-
-      if (data.scripts) {
-        setScripts(data.scripts)
-      }
+      // Server action rather than the /api/video-scripts fetch: it derives the
+      // brokerage from the session instead of trusting the URL, and it is the
+      // same reader the rest of the video surface uses.
+      const rows = await getVideoScriptLibrary()
+      setScripts(rows as unknown as VideoScript[])
     } catch (error) {
       console.error("Error loading scripts:", error)
     } finally {
@@ -194,13 +205,15 @@ function VideoLibraryContent() {
   // ─── Open Script Detail ────────────────────────────────────────────────────
 
   async function openScriptDetail(script: VideoScript) {
-    // Fetch full details including variations
-    const response = await fetch(`/api/video-scripts?id=${script.id}`)
-    const data = await response.json()
+    // Full details including variations, brokerage-scoped from the session.
+    const full = await getVideoScriptById(script.id)
 
-    if (data.script) {
-      setSelectedScript(data.script)
+    if (full) {
+      setSelectedScript(full as unknown as VideoScript)
       setDrawerOpen(true)
+    } else {
+      const { toast } = await import("sonner")
+      toast.error("Could not load this script.")
     }
   }
 
@@ -220,28 +233,91 @@ function VideoLibraryContent() {
   async function handleCreateVariation() {
     if (!variationScript || !variationLabel || !variationContent || !brokerage?.id) return
 
+    const { toast } = await import("sonner")
     setCreatingVariation(true)
     try {
-      const { data, error } = await supabase.from("script_variations").insert({
-        script_library_id: variationScript.id,
-        brokerage_id: brokerage.id,
-        variation_label: variationLabel,
-        variation_goal: variationGoal || null,
-        script_content: variationContent,
-        call_to_action: variationCta || null,
-        audience_segment: variationAudience || null,
-        is_ab_test: variationIsAbTest,
-        created_by: user?.id,
+      // Server action, not a raw insert: it verifies the parent script belongs to
+      // the caller's brokerage and writes the lifecycle event + kernel event the
+      // client-side insert silently skipped, so a variation now actually shows up
+      // as SCRIPT_VARIATION_CREATED in the OS.
+      await createScriptVariation({
+        scriptLibraryId: variationScript.id,
+        variationLabel,
+        variationGoal: variationGoal || undefined,
+        scriptContent: variationContent,
+        callToAction: variationCta || undefined,
+        audienceSegment: variationAudience || undefined,
+        isAbTest: variationIsAbTest,
       })
 
-      if (error) throw error
-
       setVariationDialogOpen(false)
+
+      // Refresh the open drawer's variation list in place if it is the same script.
+      if (selectedScript?.id === variationScript.id) {
+        const variations = await getScriptVariations(variationScript.id)
+        setSelectedScript((prev) =>
+          prev ? { ...prev, script_variations: variations as unknown as ScriptVariation[] } : prev
+        )
+      }
+
       loadScripts()
-    } catch (error) {
+      toast.success("Variation created")
+    } catch (error: any) {
       console.error("Error creating variation:", error)
+      toast.error(error?.message ?? "Could not create variation")
     } finally {
       setCreatingVariation(false)
+    }
+  }
+
+  // ─── Approval Decision ─────────────────────────────────────────────────────
+
+  async function handleApprovalDecision(
+    script: VideoScript,
+    approvalStatus: "approved" | "rejected" | "pending_review"
+  ) {
+    const { toast } = await import("sonner")
+    setApprovingScriptId(script.id)
+    try {
+      let notes: string | undefined
+      if (approvalStatus === "rejected") {
+        const entered = window.prompt("Why is this script being rejected? (shown to the author)")
+        if (entered === null) return
+        notes = entered.trim() || undefined
+      }
+
+      const updated = await updateScriptApprovalStatus(
+        script.id,
+        brokerage?.id ?? "",
+        approvalStatus,
+        notes
+      )
+
+      setScripts((prev) =>
+        prev.map((s) =>
+          s.id === script.id
+            ? { ...s, approval_status: approvalStatus, compliance_review_notes: notes ?? null }
+            : s
+        )
+      )
+      if (selectedScript?.id === script.id) {
+        setSelectedScript((prev) =>
+          prev ? { ...prev, approval_status: approvalStatus, compliance_review_notes: notes ?? null } : prev
+        )
+      }
+      toast.success(
+        approvalStatus === "approved"
+          ? "Script approved — it can now be used to generate a video"
+          : approvalStatus === "rejected"
+          ? "Script rejected"
+          : "Script sent for review"
+      )
+      void updated
+    } catch (error: any) {
+      console.error("Error updating approval status:", error)
+      toast.error(error?.message ?? "Could not update approval status")
+    } finally {
+      setApprovingScriptId(null)
     }
   }
 
@@ -282,6 +358,25 @@ function VideoLibraryContent() {
     const distributions = result.data?.distributions ?? []
     const failed = distributions.filter(d => d.status === "failed")
     const succeeded = distributions.filter(d => d.status !== "failed")
+
+    // A successful distribution IS a share of this video project. Recording it
+    // is what feeds video_performance_tracking.share_rate — the number
+    // /dashboard/videos/analytics already renders and which, with no writer
+    // anywhere, could only ever read 0.
+    if (succeeded.length > 0) {
+      try {
+        await recordVideoEngagementEvent({
+          videoProjectId: project.id,
+          // Same id space: contact-details.ts joins video_asset_id against
+          // ai_video_projects.id, so this is the project's id in both columns.
+          videoAssetId: project.id,
+          eventType: "share",
+          metadata: { channels: succeeded.map((d) => d.channel) },
+        })
+      } catch (err) {
+        console.error("[videos/library] Could not record share engagement:", err)
+      }
+    }
 
     if (failed.length === 0) {
       toast.success("Video queued for distribution")
@@ -795,6 +890,52 @@ function VideoLibraryContent() {
                     </div>
                   </div>
                 )}
+
+                {/* Approval decision — a script must be `approved` before the
+                    create wizard will offer it, so this is the gate that was
+                    missing between the badge and the video. */}
+                <div className="space-y-2 pt-4 border-t">
+                  <Label>Approval</Label>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {selectedScript.approval_status !== "approved" && (
+                      <Button
+                        size="sm"
+                        disabled={approvingScriptId === selectedScript.id}
+                        onClick={() => handleApprovalDecision(selectedScript, "approved")}
+                      >
+                        {approvingScriptId === selectedScript.id ? (
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        ) : (
+                          <CheckCircle2 className="h-4 w-4 mr-2" />
+                        )}
+                        Approve
+                      </Button>
+                    )}
+                    {selectedScript.approval_status !== "pending_review" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={approvingScriptId === selectedScript.id}
+                        onClick={() => handleApprovalDecision(selectedScript, "pending_review")}
+                      >
+                        <Clock className="h-4 w-4 mr-2" />
+                        Send for Review
+                      </Button>
+                    )}
+                    {selectedScript.approval_status !== "rejected" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-red-600 border-red-200 hover:bg-red-50"
+                        disabled={approvingScriptId === selectedScript.id}
+                        onClick={() => handleApprovalDecision(selectedScript, "rejected")}
+                      >
+                        <XCircle className="h-4 w-4 mr-2" />
+                        Reject
+                      </Button>
+                    )}
+                  </div>
+                </div>
 
                 {/* Actions */}
                 <div className="flex items-center gap-2 pt-4 border-t">
