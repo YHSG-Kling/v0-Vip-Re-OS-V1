@@ -95,11 +95,17 @@ export default function AcademyPage() {
   async function handleGenerateLearningPath() {
     setGeneratingPath(true)
     try {
-      await generateLearningPath({
+      // Reports failure BY RETURN — the toast below claimed a path had been
+      // generated without ever checking that one was.
+      const r = await generateLearningPath({
         agentId,
         focusAreas: ["buyer_conversion", "communication"],
         experienceLevel: "intermediate",
       })
+      if (!r?.success) {
+        toast({ title: "No learning path generated", description: (r as any)?.error ?? "Nothing was created — try again.", variant: "destructive" })
+        return
+      }
       toast({
         title: "Learning Path Generated",
         description: "Check the My Path tab to see your personalized learning path.",

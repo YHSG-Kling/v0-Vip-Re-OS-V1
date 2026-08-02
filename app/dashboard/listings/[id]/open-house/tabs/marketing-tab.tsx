@@ -98,6 +98,13 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
         propertyId: listingId,
         agentId: listing.agent_id,
       })
+      // The result WAS captured — and then rendered without asking whether it
+      // was a result at all. A { success:false, error } object went into the
+      // panel as though it were timing advice.
+      if (!result?.success) {
+        toast({ title: "Could not optimize timing", description: (result as any)?.error ?? "No timing advice was produced.", variant: "destructive" })
+        return
+      }
       setTimingResult(result)
     } catch {
       toast({ title: "Failed to optimize timing", variant: "destructive" })

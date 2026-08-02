@@ -131,7 +131,12 @@ export function SocialPanel({ listingId, brokerageId, agentId, sellerContactId, 
         return
       }
       if (pushToSellerPortal && sellerContactId) {
-        await shareSocialPostWithSeller(sellerContactId).catch(() => null)
+        // The user ticked "push to seller portal", so a silent failure here means
+        // the seller never sees a post the agent believes they were sent.
+        const shared = await shareSocialPostWithSeller(sellerContactId).catch(() => null)
+        if (!shared?.success) {
+          toast({ title: "Post created, but not shared to the seller portal", description: (shared as any)?.error ?? "Share it again from the seller's portal view.", variant: "destructive" })
+        }
       }
       const updated = await import("@/app/actions/listing-media").then(m => m.getSocialPosts(listingId))
       onPostsChange(updated.data ?? [])

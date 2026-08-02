@@ -85,12 +85,17 @@ export function PortalFinancialTools({ contactId, calcHistory }: PortalFinancial
         toast({ title: "Moving cost estimate ready" })
         // contactId is the truth — passed as leadId because the action param name predates
         // the portal contact model, but the underlying column accepts any UUID identity
-        await saveCalculatorResult({
+        // The estimate above is real and already shown. This SAVE is what the
+        // contact expects to find later, and its failure was silent.
+        const saved = await saveCalculatorResult({
           leadId: contactId,
           calculatorType: "moving_cost",
           inputs: { currentCity, currentState, newCity, newState, homeSize, distanceMiles, moveDate },
           results: res,
         })
+        if (!saved?.success) {
+          toast({ title: "Estimate not saved", description: "The numbers above are correct, but they were not saved to your file.", variant: "destructive" })
+        }
       }
     } catch {
       toast({ title: "Estimate failed — please try again", variant: "destructive" })

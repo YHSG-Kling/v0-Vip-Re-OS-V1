@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { toast } from "sonner"
 import { useRouter } from "next/navigation"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -296,7 +297,7 @@ function CreateAgentSheet() {
   const handleSubmit = () => {
     startTransition(async () => {
       try {
-        await createAIAgentTemplate({
+        const res = await createAIAgentTemplate({
           agent_name: form.agent_name,
           agent_type: form.agent_type,
           system_prompt: form.system_prompt,
@@ -307,6 +308,12 @@ function CreateAgentSheet() {
             .map((s) => s.trim())
             .filter(Boolean),
         })
+        // Reports failure BY RETURN, so the catch below (which only ever logged
+        // to console anyway) never fired. The dialog closed on a refusal.
+        if (!res?.success) {
+          toast.error((res as any)?.error ?? "The agent template was not created.")
+          return
+        }
         setOpen(false)
         setForm({
           agent_name: "",
@@ -460,7 +467,11 @@ function AIAgentCard({ agent }: { agent: any }) {
   const handleToggle = (checked: boolean) => {
     startTransition(async () => {
       try {
-        await toggleAIAgentTemplate(agent.id, checked)
+        const r = await toggleAIAgentTemplate(agent.id, checked)
+        if (!r?.success) {
+          toast.error((r as any)?.error ?? "The agent was not toggled.")
+          return
+        }
         router.refresh()
       } catch (err) {
         console.error("[v0] Error toggling agent:", err)
@@ -563,7 +574,7 @@ function CreatePlaybookSheet() {
   const handleSubmit = () => {
     startTransition(async () => {
       try {
-        await createPlaybook({
+        const res = await createPlaybook({
           playbook_name: form.playbook_name,
           trigger_type: form.trigger_type,
           steps: form.steps_raw
@@ -576,6 +587,12 @@ function CreatePlaybookSheet() {
             .map((s) => s.trim())
             .filter(Boolean),
         })
+        // Reports failure BY RETURN, so the catch below (which only ever logged
+        // to console anyway) never fired. The dialog closed on a refusal.
+        if (!res?.success) {
+          toast.error((res as any)?.error ?? "The playbook was not created.")
+          return
+        }
         setOpen(false)
         setForm({
           playbook_name: "",

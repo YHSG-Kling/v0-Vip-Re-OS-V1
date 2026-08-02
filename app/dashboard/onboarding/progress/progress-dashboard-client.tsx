@@ -292,7 +292,10 @@ export function ProgressDashboardClient({
   }
 
   const handleDismissCelebration = async () => {
-    await dismissCelebration()
+    // Reports failure BY RETURN. Dismiss navigated away regardless, so a failed
+    // dismissal meant the celebration returned on the next visit with no clue why.
+    const r = await dismissCelebration()
+    if (!r?.success) return
     setShowCelebration(false)
     router.push('/dashboard')
   }

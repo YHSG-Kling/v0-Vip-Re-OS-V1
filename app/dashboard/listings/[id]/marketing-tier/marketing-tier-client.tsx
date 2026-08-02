@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { toast } from "sonner"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -204,18 +205,24 @@ export function MarketingTierClient({
     }
   }
 
+  // These three report failure BY RETURN. The create handler a few lines above
+  // already checks result.success — these siblings did not, so a refused delete
+  // or toggle just re-rendered the unchanged row.
   const handleDeleteBudget = async (budgetId: string) => {
-    await deleteTierBudget(budgetId, userId)
+    const r = await deleteTierBudget(budgetId, userId)
+    if (!r?.success) { toast.error((r as any)?.error ?? "The budget was not deleted."); return }
     router.refresh()
   }
 
   const handleDeleteDistribution = async (distributionId: string) => {
-    await deleteTierDistribution(distributionId, userId)
+    const r = await deleteTierDistribution(distributionId, userId)
+    if (!r?.success) { toast.error((r as any)?.error ?? "The distribution was not deleted."); return }
     router.refresh()
   }
 
   const handleToggleTierActive = async (tierId: string, isActive: boolean) => {
-    await updateTier({ tierId, actorUserId: userId, isActive })
+    const r = await updateTier({ tierId, actorUserId: userId, isActive })
+    if (!r?.success) { toast.error((r as any)?.error ?? "The tier was not updated."); return }
     router.refresh()
   }
 

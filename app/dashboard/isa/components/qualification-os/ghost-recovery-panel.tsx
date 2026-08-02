@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { toast } from "sonner"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -78,7 +79,14 @@ export function GhostRecoveryPanel({ ghosts, brokerageId }: GhostRecoveryPanelPr
   const handleRetry = async (contactId: string, channel: "email" | "sms" | "phone") => {
     setActioningId(contactId)
     startTransition(async () => {
-      await retryGhostContact({ brokerageId, contactId, channel })
+      // Reports failure BY RETURN. A suppressed contact that failed to suppress
+      // keeps getting chased; a retry that failed silently never went out.
+      const r = await retryGhostContact({ brokerageId, contactId, channel })
+      if (!r?.success) {
+        toast.error((r as any)?.error ?? "The retry was not sent.")
+        setActioningId(null)
+        return
+      }
       router.refresh()
       setActioningId(null)
     })
@@ -87,7 +95,12 @@ export function GhostRecoveryPanel({ ghosts, brokerageId }: GhostRecoveryPanelPr
   const handleSuppress = async (contactId: string) => {
     setActioningId(contactId)
     startTransition(async () => {
-      await suppressGhostContact({ brokerageId, contactId })
+      const r = await suppressGhostContact({ brokerageId, contactId })
+      if (!r?.success) {
+        toast.error((r as any)?.error ?? "The contact was not suppressed.")
+        setActioningId(null)
+        return
+      }
       router.refresh()
       setActioningId(null)
     })

@@ -114,7 +114,10 @@ function actionsThatReturnFailure(files: string[]): Map<string, string> {
 /** A visible claim that the thing worked. */
 const SUCCESS_SIGNAL = /toast\(\s*\{[^}]*title|setOpen\(false\)|setIsOpen\(false\)|setSuccess\(true\)|router\.(?:push|refresh)\(/
 /** Any inspection of the outcome at all. */
-const OUTCOME_READ = /\.(?:success|ok|error)\b|\bif\s*\(/
+// `"error" in rollback` is a real outcome read — the studio's rollback path uses
+// it and an earlier version of this guard flagged that correct code. Recognise
+// the `in` form as well as property access.
+const OUTCOME_READ = /\.(?:success|ok|error)\b|["'](?:error|success)["']\s+in\s+|\bif\s*\(/
 
 interface Hit { file: string; line: number; fn: string; definedIn: string }
 
@@ -151,11 +154,16 @@ function ok(label: string, cond: boolean, detail?: string) {
 const FILES = [...walk("app"), ...walk("lib"), ...walk("components")]
 const RETURNS_FAILURE = actionsThatReturnFailure(FILES)
 
-// 13 after the inspections + portal clusters were fixed AND the detector was
-// taught to resolve imports (name-matching had inflated the count with
-// same-named-but-throwing actions). Lower it as callers start reading their
-// outcomes; never raise it.
-const BASELINE = 13
+// ZERO — but read the header before trusting it. This started at 48 name-matched
+// candidates, became 27 once the throw-vs-return discriminator was applied, 13
+// once imports were resolved rather than names matched, and 0 once the real ones
+// were fixed. Two of those reductions were the DETECTOR getting more honest, not
+// the codebase getting better, which is worth remembering before treating a zero
+// as an all-clear: this guard can only see `if (!X)`-shaped client handlers that
+// call a `{success:false}`-returning action and then signal success. It cannot
+// see a handler that checks the outcome and then does the wrong thing with it,
+// and it does not look at server-to-server calls at all.
+const BASELINE = 0
 
 console.log("\n═══ 1. No UI claims success without reading the outcome ═══")
 const hits = findDiscarded(FILES, RETURNS_FAILURE)
