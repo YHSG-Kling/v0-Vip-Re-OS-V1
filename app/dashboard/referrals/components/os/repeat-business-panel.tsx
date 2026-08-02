@@ -15,6 +15,7 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { aiGenerateTouchpoint } from "@/app/actions/ai-sphere-management"
 import { sendPortalMessage } from "@/app/actions/portal-messages"
+import { sendSMS, sendEmail } from "@/app/actions/communications"
 import Link from "next/link"
 
 interface Anniversary {
@@ -49,7 +50,7 @@ export function RepeatBusinessPanel({
   const [dialogOpen, setDialogOpen] = useState(false)
 
   const [sendState, setSendState] = useState<{ ok: boolean; message: string } | null>(null)
-  const [sending, setSending] = useState(false)
+  const [sending, setSending] = useState<"sms" | "email" | "portal" | null>(null)
 
   const handleGenerateMessage = (anniversary: Anniversary) => {
     setSelectedAnniversary(anniversary)
@@ -73,33 +74,64 @@ export function RepeatBusinessPanel({
     })
   }
 
-  // sendPortalMessage RETURNS { success:false, error } on every failure path —
-  // unauthorized, empty body, over 2000 chars, no agent profile, contact not
-  // found, no access — and NEVER throws, so a try/catch here would be dead code
-  // and a success toast would fire on all seven refusals.
+  // THREE CHANNELS, THREE BUTTONS — the owner's rule. A single "Send" hid which
+  // wire the message actually went down, and they are genuinely different acts:
   //
-  // It posts to the client's PORTAL thread; it does not send email or SMS and
-  // does not pass through the outbound compliance gate. That is correct for a
-  // first-party message to a client who logs in — but it means the button must
-  // not say "send", which would imply it left the building. The label and the
-  // confirmation both say posted.
-  const handleSendDraft = async () => {
+  //   Text   → dispatchSms via sendSMS. Real egress, TCPA/DNC/quiet-hours gated.
+  //   Email  → dispatchEmail via sendEmail. Real egress, suppression gated.
+  //   Portal → sendPortalMessage. First-party in-app: writes the thread row AND
+  //            pushes the in-app notification that lights the client's bell.
+  //            Nothing leaves the building, so no consent gate applies.
+  //
+  // All three RETURN their outcome and never throw, so each is checked — a
+  // refusal from the compliance gate must never render as a send.
+  const runSend = async (
+    channel: "sms" | "email" | "portal",
+    fn: () => Promise<{ success: boolean; error?: string }>,
+    successMessage: string,
+  ) => {
     if (!selectedAnniversary || !draftMessage.trim()) return
-    setSending(true)
+    setSending(channel)
     setSendState(null)
-    const result = await sendPortalMessage({
-      contactId: selectedAnniversary.contactId, // contacts.id
-      messageBody: draftMessage,
-      direction: "agent_to_client",
-    })
-    setSending(false)
+    const result = await fn()
+    setSending(null)
     if (result.success) {
-      setSendState({ ok: true, message: "Posted to their portal" })
+      setSendState({ ok: true, message: successMessage })
       setDialogOpen(false)
     } else {
-      setSendState({ ok: false, message: result.error ?? "The message was not posted" })
+      setSendState({ ok: false, message: result.error ?? "The message was not sent" })
     }
   }
+
+  const handleSendText = () =>
+    runSend("sms", () =>
+      sendSMS({
+        contactId: selectedAnniversary!.contactId, // contacts.id
+        message: draftMessage,
+      }), "Text sent")
+
+  const handleSendEmail = () =>
+    runSend("email", () =>
+      sendEmail({
+        contactId: selectedAnniversary!.contactId,
+        subject: `Happy home anniversary, ${selectedAnniversary!.contactName?.split(" ")[0] ?? "there"}!`,
+        // The draft is plain text from the AI; wrap it so the email renders as
+        // paragraphs rather than one run-on line.
+        html: draftMessage
+          .split(/\n{2,}/)
+          .map((p) => `<p>${p.replace(/\n/g, "<br/>")}</p>`)
+          .join(""),
+        text: draftMessage,
+        channelPurpose: "conversation",
+      }), "Email sent")
+
+  const handleSendPortal = () =>
+    runSend("portal", () =>
+      sendPortalMessage({
+        contactId: selectedAnniversary!.contactId,
+        messageBody: draftMessage,
+        direction: "agent_to_client",
+      }), "Posted to their portal — they'll see it in-app")
 
   return (
     <Card>
@@ -215,10 +247,25 @@ export function RepeatBusinessPanel({
                 </Button>
                 <Button
                   size="sm"
-                  onClick={handleSendDraft}
-                  disabled={sending || !draftMessage.trim()}
+                  onClick={handleSendText}
+                  disabled={sending !== null || !draftMessage.trim()}
                 >
-                  {sending ? "Posting…" : "Post to Portal"}
+                  {sending === "sms" ? "Texting…" : "Send Text"}
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={handleSendEmail}
+                  disabled={sending !== null || !draftMessage.trim()}
+                >
+                  {sending === "email" ? "Emailing…" : "Send Email"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={handleSendPortal}
+                  disabled={sending !== null || !draftMessage.trim()}
+                >
+                  {sending === "portal" ? "Posting…" : "Send to Portal"}
                 </Button>
               </div>
               {sendState && (

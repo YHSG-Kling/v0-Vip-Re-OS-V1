@@ -126,6 +126,52 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
       return { success: false, error: "Failed to send message" }
     }
 
+    // PUSH THE IN-APP NOTIFICATION. Writing the thread row is only half of
+    // "send" — the portal's bell counts `notifications` rows by contact_id
+    // (app/portal/[contactId]/layout.tsx), and nothing here created one. So an
+    // agent posted a message, the OS reported success, and the client had no
+    // signal it existed: they would only find it by opening Messages on a hunch.
+    // A message nobody is told about is not a message.
+    //
+    // Notify the RECIPIENT, not the sender — agent_to_client lights the client's
+    // portal bell (contact_id), client_to_agent lights the agent's (user_id).
+    const notifyingClient = direction === "agent_to_client"
+    let recipientUserId: string | null = null
+    if (!notifyingClient) {
+      const { data: agentRow } = await supabase
+        .from("agents")
+        .select("user_id")
+        .eq("id", agentId)
+        .maybeSingle()
+      recipientUserId = (agentRow?.user_id as string | null) ?? null
+    }
+
+    if (notifyingClient || recipientUserId) {
+      const preview = messageBody.trim().slice(0, 140)
+      const { error: notifyError } = await supabase.from("notifications").insert({
+        brokerage_id: contact.brokerage_id,
+        // Exactly one recipient key is set: the contact for a client-bound
+        // message, the agent's users id for an agent-bound one.
+        contact_id: notifyingClient ? contactId : null,
+        user_id: notifyingClient ? null : recipientUserId,
+        type: "portal_message",
+        // "in_app" is in the live notifications.channel CHECK
+        // {email, in_app, sms} — this is the in-app lane, not an egress.
+        channel: "in_app",
+        title: notifyingClient ? "New message from your agent" : "New message from your client",
+        body: preview,
+        priority: "medium",
+        entity_type: "contact",
+        entity_id: contactId,
+        is_read: false,
+      })
+      if (notifyError) {
+        // The message IS in the thread; say the bell failed rather than
+        // claiming the whole send failed.
+        console.error("[Portal Messages] message stored but notification NOT created:", notifyError.message)
+      }
+    }
+
     // Emit kernel event (non-blocking)
     processKernelEvent({
       event: KernelEvent.CLIENT_PORTAL_MESSAGE_SENT,
