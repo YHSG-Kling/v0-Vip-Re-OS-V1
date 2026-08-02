@@ -21,6 +21,9 @@
 // Agent task (correct location, no changes) — activity_type: seller.appointment.scheduled, seller.cma.started, seller.presentation.*, seller.decision.*, and all seller lifecycle events
 
 import { createClient } from "@/lib/supabase/server"
+import { auditListingDocuments } from "@/lib/compliance/required-documents"
+import { scanListingPacketCompleteness } from "@/lib/workflow/intelligence/scan-offer-packet"
+import { notifyComplianceFlag } from "@/lib/notifications/notify-helpers"
 import { LISTING_AGREEMENT_EXECUTED_STATUS } from "@/lib/transactions/coordination-status"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { isValidUUID } from "@/lib/validations"
@@ -396,6 +399,102 @@ export async function markAgreementSigned(params: {
 
   // Credentials optional — provider may not require them (manual_upload path)
 
+  // ── 2.5 COMPLIANCE GATE (owner's ruling: the same run as the offer side) ──
+  //
+  // This function used to write `compliance_passed: true` as a LITERAL. Nothing
+  // had been checked; the column simply asserted a pass. Per the owner, a signed
+  // listing agreement is gated exactly like an accepted offer: every required
+  // brokerage / team / agent document present (required-vs-warning coming from
+  // the same settings cascade), and no missing signature, initial or field.
+  //
+  // No MLS number is read here. Per the owner's ruling the MLS number belongs to
+  // the listing-LAUNCH checkpoint, not to executing the agreement.
+  const { data: listingRow } = await supabase
+    .from("listings")
+    .select("state, agent_id, contact_id")
+    .eq("id", listingId)
+    .maybeSingle()
+
+  const { data: actingUser } = await supabase
+    .from("users").select("team_id").eq("id", userId).maybeSingle()
+
+  // The listing agent, RESOLVED agents.id → users.id (never substituted), so a
+  // TC or broker executing on their behalf still notifies them.
+  const listingAgentUserId = listingRow?.agent_id
+    ? ((await supabase.from("agents").select("user_id").eq("id", listingRow.agent_id as string).maybeSingle())
+        .data?.user_id as string | null) ?? null
+    : null
+
+  const docAudit = await auditListingDocuments(supabase as any, {
+    brokerageId,
+    sellerContactId: (listingRow?.contact_id as string | null) ?? null,
+    agentUserId:     userId,
+    teamId:          (actingUser?.team_id as string | null) ?? null,
+    stateCode:       (listingRow?.state as string | null) ?? null,
+    listingId,
+  })
+
+  const packetScan = await scanListingPacketCompleteness({
+    listingId,
+    raiserUserId: userId,
+    brokerageId,
+    alsoNotifyUserIds: [listingAgentUserId],
+  })
+
+  const blockingDocs    = docAudit.missing_blocking ?? []
+  const packetBlockers  = packetScan.blockers ?? []
+  const warningDocs     = docAudit.missing_warning ?? []
+  const packetWarnings  = packetScan.warnings ?? []
+
+  if (blockingDocs.length > 0 || packetBlockers.length > 0 || !packetScan.success) {
+    const bits: string[] = []
+    if (blockingDocs.length > 0)   bits.push(`${blockingDocs.length} required document(s) missing`)
+    if (packetBlockers.length > 0) bits.push(`${packetBlockers.length} packet blocker(s)`)
+    // A scan that could not RUN is treated as a block, never as a pass — the
+    // same rule the listing-launch gate uses.
+    if (!packetScan.success) bits.push(`packet check could not run (${packetScan.error ?? "no reason given"})`)
+
+    await notifyComplianceFlag(supabase as any, {
+      brokerageId,
+      agentUserId: userId,
+      alsoNotifyUserIds: [listingAgentUserId],
+      flag: {
+        type:       "compliance.listing_agreement_blocked",
+        severity:   "high",
+        title:      `Listing agreement blocked: ${bits.join(", ")}`,
+        body:       `Missing required: ${blockingDocs.join(", ") || "(none)"}.\nPacket blockers: ${packetBlockers.slice(0, 5).map(b => b.title).join("; ") || "(none)"}.`,
+        entityType: "document",
+        entityId:   listingId,
+      },
+    })
+
+    return {
+      success: false,
+      error: `Cannot execute the listing agreement — ${bits.join(" and ")}. Fix the listed items first.`,
+      missing_required: blockingDocs,
+      packet_blockers:  packetBlockers.map(b => ({ flagType: b.flagType, severity: b.severity, title: b.title })),
+    }
+  }
+
+  // Warnings do not block, but they are still told to somebody — otherwise the
+  // required/warning switch means "stops the deal" or "silence", with nothing
+  // in between.
+  if (warningDocs.length > 0 || packetWarnings.length > 0) {
+    await notifyComplianceFlag(supabase as any, {
+      brokerageId,
+      agentUserId: userId,
+      alsoNotifyUserIds: [listingAgentUserId],
+      flag: {
+        type:       "compliance.listing_agreement_warnings",
+        severity:   "medium",
+        title:      `Listing agreement executed with warnings: ${warningDocs.length} optional document(s), ${packetWarnings.length} packet warning(s)`,
+        body:       `Missing (warning): ${warningDocs.join(", ") || "(none)"}.`,
+        entityType: "document",
+        entityId:   listingId,
+      },
+    })
+  }
+
   // ── 3+4. INSERT listing_agreements ───────────────────────────────────────
   const hasAdjustment = !!(commissionTerms?.adjustmentType && commissionTerms?.adjustmentValue !== undefined)
 
@@ -423,6 +522,8 @@ export async function markAgreementSigned(params: {
       adjustment_value:            commissionTerms?.adjustmentValue ?? null,
       adjustment_value_type:       commissionTerms?.adjustmentValueType ?? null,
       adjustment_notes:            commissionTerms?.adjustmentNotes ?? null,
+      // Reached only after the gate above passed, so this now records a check
+      // that actually ran instead of asserting one that never did.
       compliance_passed:           true,
     })
     .select("id")

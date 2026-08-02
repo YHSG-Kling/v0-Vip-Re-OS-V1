@@ -472,6 +472,7 @@
     "test:silent-write": "tsx scripts/silent-write-guard.ts",
     "test:wired-surface": "tsx scripts/wired-surface-guard.ts",
     "test:role-vocabulary": "tsx scripts/role-vocabulary-guard.ts",
+    "test:compliance-checkpoints": "tsx scripts/compliance-checkpoints-simulator.ts",
     "test:mls-syndication": "tsx scripts/mls-syndication-simulator.ts",
     "test:vendor-placement-delivery": "tsx scripts/vendor-placement-delivery-simulator.ts",
     "test:sequence-step-ledger": "tsx scripts/sequence-step-ledger-simulator.ts",

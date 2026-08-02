@@ -191,6 +191,9 @@ console.log("\n[the sites this guard was written for]")
   check("the compliance dashboard canonicalizes the caller's role before gating",
     dash.includes("toCanonicalRole(profile.user_type") && dash.includes('"tc"'))
 
+  // The listing-agreement checkpoint and the shared packet walk are proved by
+  // test:compliance-checkpoints — one guard, one concern.
+
   const isa = src("app/dashboard/settings/isa-calling/page.tsx")
   check("the ISA duty agent resolves off user_type, not the legacy role column",
     /\.in\(\s*"user_type",\s*rawRoleVariantsFor\(/.test(isa)

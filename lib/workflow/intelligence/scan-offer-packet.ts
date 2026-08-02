@@ -36,15 +36,10 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID }          from "@/lib/validations"
 import { flagOfferCompliance }  from "@/app/actions/buyer-offer/flag-compliance"
+import { notifyComplianceFlag } from "@/lib/notifications/notify-helpers"
+import { analyzeFilledPacket, type PacketScanFinding } from "./packet-analysis"
 
-export interface PacketScanFinding {
-  flagType:    "missing_signature" | "missing_initial" | "missing_form" | "missing_field" | "expired_disclosure" | "other"
-  severity:    "low" | "medium" | "high" | "critical"
-  title:       string
-  body:        string
-  formName?:   string
-  fieldName?:  string
-}
+export type { PacketScanFinding } from "./packet-analysis"
 
 export interface PacketScanSummary {
   success:           boolean
@@ -57,16 +52,6 @@ export interface PacketScanSummary {
   warnings:          PacketScanFinding[]
   notifications_fired: number
   error?:            string
-}
-
-const SIGNATURE_HINTS = ["signature", "_sig", " sig "]
-const INITIAL_HINTS   = ["initial", "_init", " init "]
-
-function classifyMissingField(fieldName: string): "missing_signature" | "missing_initial" | "missing_field" {
-  const lower = ` ${fieldName.toLowerCase()} `
-  if (SIGNATURE_HINTS.some(h => lower.includes(h))) return "missing_signature"
-  if (INITIAL_HINTS.some(h => lower.includes(h)))   return "missing_initial"
-  return "missing_field"
 }
 
 export async function scanOfferPacketCompleteness(params: {
@@ -108,73 +93,11 @@ export async function scanOfferPacketCompleteness(params: {
   let parsed: any = {}
   try { parsed = JSON.parse((doc.content as string | null) ?? "{}") } catch { /* ignore */ }
   const filledPacket = (parsed?.filledPacket ?? {}) as Record<string, any>
-  const forms: any[] = [
-    ...(Array.isArray(filledPacket.forms)          ? filledPacket.forms          : []),
-    ...(Array.isArray(filledPacket.brokerageForms) ? filledPacket.brokerageForms : []),
-  ]
-  const agentMustComplete: string[] = Array.isArray(filledPacket.agentMustComplete)
-    ? filledPacket.agentMustComplete : []
-
-  const blockers: PacketScanFinding[] = []
-  const warnings: PacketScanFinding[] = []
-  let totalFields = 0
-  let filledHighOrMedium = 0
-
-  // ── 1) Missing forms (the form-fill engine couldn't even build them) ─────
-  for (const formName of agentMustComplete) {
-    blockers.push({
-      flagType: "missing_form",
-      severity: "high",
-      title:    `Form missing: ${formName}`,
-      body:     `${formName} couldn't be auto-filled and isn't in the packet. Open the form library and attach it before sending for signature.`,
-      formName,
-    })
-  }
-
-  // ── 2) Per-form field walk ───────────────────────────────────────────────
-  for (const form of forms) {
-    const formName = String(form.formName ?? form.formId ?? "Unknown form")
-    const filledFields: any[] = Array.isArray(form.filledFields) ? form.filledFields : []
-    const unfilled:     any[] = Array.isArray(form.unfilled)     ? form.unfilled     : []
-
-    totalFields += filledFields.length + unfilled.length
-
-    for (const ff of filledFields) {
-      const confidence = String(ff.confidence ?? "high").toLowerCase()
-      if (confidence === "high" || confidence === "medium") filledHighOrMedium++
-      if (confidence === "low") {
-        warnings.push({
-          flagType: "missing_field",
-          severity: "low",
-          title:    `Verify low-confidence field on ${formName}`,
-          body:     `Field "${ff.fieldName}" was filled with low confidence — verify the value before sending for signature.`,
-          formName,
-          fieldName: ff.fieldName,
-        })
-      }
-    }
-
-    for (const uf of unfilled) {
-      const fieldName = String(uf.fieldName ?? "unknown field")
-      const flagType  = classifyMissingField(fieldName)
-      const severity: "high" | "critical" | "medium" =
-        flagType === "missing_signature" ? "critical" :
-        flagType === "missing_initial"   ? "high" : "medium"
-      blockers.push({
-        flagType, severity,
-        title: flagType === "missing_signature" ? `Signature block missing on ${formName}`
-             : flagType === "missing_initial"   ? `Initial block missing on ${formName}`
-             :                                    `Field missing on ${formName}: ${fieldName}`,
-        body:  `Form "${formName}", field "${fieldName}" — ${uf.reason ?? "not provided in intake"}.`,
-        formName,
-        fieldName,
-      })
-    }
-  }
-
-  const completionPercent = totalFields > 0
-    ? Math.round((filledHighOrMedium / totalFields) * 100)
-    : 100
+  // The field walk is shared with the listing-agreement checkpoint — see
+  // packet-analysis.ts. One definition of "what counts as a missing signature".
+  const analysis = analyzeFilledPacket(filledPacket)
+  const { blockers, warnings, totalFields, completionPercent } = analysis
+  const filledHighOrMedium = analysis.filledFields
 
   // Fan out each finding through flagOfferCompliance so the activity row
   // gets written AND the notifications go to agent + TC + compliance_officer
@@ -214,6 +137,129 @@ export async function scanOfferPacketCompleteness(params: {
     filledFields: filledHighOrMedium,
     blockers,
     warnings,
+    notifications_fired,
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LISTING-AGREEMENT PACKET SCAN
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ListingPacketScanSummary {
+  success:             boolean
+  listingId:           string
+  documentId:          string | null
+  completionPercent:   number
+  totalFields:         number
+  filledFields:        number
+  blockers:            PacketScanFinding[]
+  warnings:            PacketScanFinding[]
+  notifications_fired: number
+  error?:              string
+}
+
+/**
+ * The same completeness scan, for the LISTING side.
+ *
+ * The owner's compliance rule applies at two checkpoints, not one: an accepted
+ * offer becoming a transaction, and a signed listing agreement becoming a live
+ * listing. Only the offer side had a scanner, so markAgreementSigned wrote
+ * `compliance_passed: true` as a literal — a compliance column that asserted a
+ * check nobody had run.
+ *
+ * Shares analyzeFilledPacket with the offer path, so a missing signature means
+ * the same thing on both. Differences are only where they must be:
+ *   · the staged document is found by document_type='listing_agreement' +
+ *     metadata.linked_listing_id
+ *   · findings dispatch through notifyComplianceFlag (which reaches the TC and
+ *     the listing agent) rather than flagOfferCompliance, which keys on an
+ *     offer id this checkpoint does not have.
+ */
+export async function scanListingPacketCompleteness(params: {
+  listingId:    string
+  raiserUserId: string
+  brokerageId:  string
+  /** users.id of the listing agent + anyone else the caller wants told. */
+  alsoNotifyUserIds?: (string | null | undefined)[]
+}): Promise<ListingPacketScanSummary> {
+  const { listingId, raiserUserId, brokerageId, alsoNotifyUserIds } = params
+
+  const empty = {
+    listingId, documentId: null, completionPercent: 0,
+    totalFields: 0, filledFields: 0,
+    blockers: [] as PacketScanFinding[], warnings: [] as PacketScanFinding[],
+    notifications_fired: 0,
+  }
+
+  if (!isValidUUID(listingId) || !isValidUUID(raiserUserId)) {
+    return { success: false, ...empty, error: "Invalid IDs" }
+  }
+
+  const supabase = createServiceClient()
+
+  const { data: doc, error: docError } = await supabase
+    .from("documents")
+    .select("id, brokerage_id, contact_id, content, metadata, status")
+    .eq("document_type", "listing_agreement")
+    .filter("metadata->>linked_listing_id", "eq", listingId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  // An unreadable documents table is NOT "no packet staged". Saying so is the
+  // difference between "attach the agreement" and "we could not look".
+  if (docError) {
+    return { success: false, ...empty, error: `Could not read the document store: ${docError.message}` }
+  }
+  if (!doc) {
+    // No staged packet is an honest, non-blocking observation: a brokerage that
+    // signs on paper and uploads the executed PDF has no filledPacket at all.
+    // The required-DOCUMENT audit is what covers that case; this scan only
+    // speaks about a packet it can actually see.
+    return { success: true, ...empty, completionPercent: 100 }
+  }
+
+  let parsed: any = {}
+  try { parsed = JSON.parse((doc.content as string | null) ?? "{}") } catch { /* ignore */ }
+  const analysis = analyzeFilledPacket((parsed?.filledPacket ?? {}) as Record<string, any>)
+
+  let notifications_fired = 0
+  const dispatch = async (f: PacketScanFinding) => {
+    const r = await notifyComplianceFlag(supabase as any, {
+      brokerageId,
+      agentUserId: raiserUserId,
+      alsoNotifyUserIds,
+      flag: {
+        type:       `listing.packet.${f.flagType}`,
+        severity:   f.severity,
+        title:      f.title,
+        body:       f.body,
+        entityType: "document",
+        entityId:   doc.id as string,
+      },
+    })
+    notifications_fired += r.notified_count
+  }
+
+  for (const f of analysis.blockers) await dispatch(f)
+  if (analysis.warnings.length > 0) {
+    await dispatch({
+      flagType: "missing_field",
+      severity: "low",
+      title:    `${analysis.warnings.length} low-confidence field${analysis.warnings.length === 1 ? "" : "s"} on the listing packet`,
+      body:     `Review fields: ${analysis.warnings.slice(0, 5).map(w => w.fieldName ?? w.formName).filter(Boolean).join(", ")}${analysis.warnings.length > 5 ? ` and ${analysis.warnings.length - 5} more` : ""}.`,
+    })
+  }
+
+  return {
+    success: true,
+    listingId,
+    documentId: doc.id as string,
+    completionPercent: analysis.completionPercent,
+    totalFields: analysis.totalFields,
+    filledFields: analysis.filledFields,
+    blockers: analysis.blockers,
+    warnings: analysis.warnings,
     notifications_fired,
   }
 }
