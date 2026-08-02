@@ -56,6 +56,16 @@ export const CONSEQUENTIAL_TABLES = [
   "platform_credentials",
   "compliance_events", "required_disclosures",
   "vendor_directory",
+  // ACTIVITIES BELONGS HERE, and its absence was the gap that let a whole class
+  // through. This set was money + compliance ledgers; activities is BOTH a
+  // compliance record and an operational one. The kernel's conversation memory
+  // reads channel/outcome/title straight into the AI's picture of a contact, so
+  // a lost row makes the assistant believe an outreach never happened — and a
+  // FABRICATED one made it believe an outreach did. It is also the row a broker
+  // would hand a regulator as evidence of what was sent. Six writes to it were
+  // dropping their result on the floor when this line was added; they are fixed,
+  // and this keeps them fixed.
+  "activities",
 ] as const
 
 /** PURE — split source into statements on depth-0 semicolons, string-aware. */
@@ -79,17 +89,36 @@ export function splitStatements(src: string): string[] {
 export function isSilentWrite(stmt: string, tables: readonly string[] = CONSEQUENTIAL_TABLES): string | null {
   const m = stmt.match(/\.from\(["'](\w+)["']\)/)
   if (!m || !tables.includes(m[1])) return null
-  if (!/\.(insert|update|upsert|delete)\s*\(/.test(stmt)) return null
+
+  // SCOPED TO THE WRITE, not to the whole chunk.
+  //
+  // splitStatements cuts on depth-0 semicolons, and much of this codebase omits
+  // them — a semicolon-free module is ONE chunk, i.e. the entire file. Judging
+  // the chunk then answers the wrong question in both directions:
+  //   · FALSE POSITIVE — one unrelated `.catch(() => {})` anywhere in the file
+  //     (e.g. on a processKernelEvent call) marked every write in it swallowed.
+  //   · FALSE NEGATIVE, the dangerous one — one `const { error } = …` anywhere
+  //     in the file marked every OTHER write in it captured, so a whole module's
+  //     silent writes hid behind a single correct one.
+  // Looking at a window around THIS write asks the question that was meant:
+  // does this write acknowledge its own failure? The lookbehind covers the
+  // `const { error } = await svc` that precedes `.from(`; the lookahead covers
+  // the rest of the chain, including a trailing `.catch`.
+  const start = Math.max(0, m.index! - 160)
+  const scope = stmt.slice(start, m.index! + 600)
+
+  if (!/\.(insert|update|upsert|delete)\s*\(/.test(scope)) return null
   // Declared as allowed-to-fail, with a reason.
-  if (/\bbestEffort\s*\(/.test(stmt)) return null
+  if (/\bbestEffort\s*\(/.test(scope)) return null
   // The result is captured somewhere the caller can inspect.
   const captured =
-    /(const|let|var)\s*\{[^}]*\berror\b/.test(stmt) ||
-    /(const|let|var)\s+\w+\s*=\s*await/.test(stmt) ||
-    /\breturn\s+await/.test(stmt) ||
-    /^\s*return\s/.test(stmt)
-  // Explicitly thrown away.
-  const swallowed = /\.catch\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)/.test(stmt) || /\bvoid\s+Promise/.test(stmt)
+    /(const|let|var)\s*\{[^}]*\berror\b/.test(scope) ||
+    /(const|let|var)\s+\w+\s*=\s*await/.test(scope) ||
+    /\breturn\s+await/.test(scope) ||
+    /^\s*return\s/.test(scope)
+  // Explicitly thrown away — only when it hangs off THIS chain.
+  const tail = stmt.slice(m.index!, m.index! + 600)
+  const swallowed = /\.catch\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)/.test(tail) || /\bvoid\s+Promise/.test(tail)
   return (!captured || swallowed) ? m[1] : null
 }
 

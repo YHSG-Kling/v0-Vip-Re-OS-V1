@@ -1,6 +1,7 @@
 "use server"
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { bestEffort } from "@/lib/db/best-effort"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel"
 import type { OptOutChannel } from "@/lib/ai-isa/opt-out-utils"
@@ -157,8 +158,16 @@ export async function processOptOut(params: OptOutParams): Promise<{
     return { success: false, channelsSuppressed: [], globalDNC: false, error: updateError.message }
   }
 
-  // Compliance audit — always write, never block on failure
-  await supabase
+  // Compliance audit — always write, never block on failure.
+  //
+  // "Never block on failure" was the intent; dropping the result was the
+  // implementation. supabase-js resolves a rejected insert, so a failed write to
+  // the OPT-OUT audit record — the row proving the OS honoured a consumer's
+  // request to be left alone — produced no error, no log, and no row. bestEffort
+  // keeps it non-blocking AND makes the failure visible, which is what
+  // "tolerated" is supposed to mean.
+  await bestEffort(
+    supabase
     .from("compliance_events")
     .insert({
       brokerage_id: brokerageId,
@@ -170,7 +179,9 @@ export async function processOptOut(params: OptOutParams): Promise<{
       entity_type: entityType,
       entity_id: entityId,
       message_type: channel,
-    })
+    }),
+    "opt-out compliance audit row",
+  )
 
   // Agent notification via activities (uses notes: text, not metadata)
   const { data: entity } = await supabase

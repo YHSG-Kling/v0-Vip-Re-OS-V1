@@ -18,7 +18,10 @@ export async function requestQuoteApproval(params: {
   const supabase = createServiceClient()
   
   // Create activity for client approval — Agent task (correct location, no changes) — activity_type: client_quote_approval_needed, schedule_vendor, get_alternative_quote
-  const { data: activity } = await supabase
+  // `error` is destructured, not just `data`. This row IS the client-approval
+  // task; if the insert fails the workflow returns an id-less activity and the
+  // approval simply never appears for anyone to action.
+  const { data: activity, error: activityError } = await supabase
     .from("activities")
     .insert({
       transaction_id: params.transactionId,
@@ -39,7 +42,11 @@ export async function requestQuoteApproval(params: {
     })
     .select()
     .single()
-  
+
+  if (activityError) {
+    console.error("[vendor-quote-workflow] client approval activity NOT created:", activityError.message)
+  }
+
   // Log event via kernel
   await transitionLifecycle({
     brokerageId: params.brokerageId,
@@ -78,15 +85,20 @@ export async function approveQuote(params: {
 }) {
   const supabase = createServiceClient()
   
-  // Mark activity complete
-  await supabase
+  // Mark activity complete. A dropped update leaves the approval task sitting
+  // open forever on the TC's list for work that IS done.
+  const { error: completeError } = await supabase
     .from("activities")
     .update({
       status: "completed",
       completed_at: new Date().toISOString()
     })
     .eq("id", params.activityId)
-  
+
+  if (completeError) {
+    console.error(`[vendor-quote-workflow] approval activity ${params.activityId} NOT closed:`, completeError.message)
+  }
+
   // Add vendor to deal team
   await supabase.from("deal_team_members").insert({
     transaction_id: params.transactionId,
@@ -122,8 +134,9 @@ export async function approveQuote(params: {
     metadata:    { quote_type: params.quoteType, vendor_name: params.vendorName, notes: params.notes ?? null },
   })
   
-  // Create TC activity for next step
-  await supabase.from("activities").insert({
+  // Create TC activity for next step — the handoff after approval. If this is
+  // lost, the quote is approved and nothing tells anyone to act on it.
+  const { error: nextStepError } = await supabase.from("activities").insert({
     transaction_id: params.transactionId,
     brokerage_id: params.brokerageId,
     agent_id: params.approvedBy,
@@ -134,7 +147,14 @@ export async function approveQuote(params: {
     status: "pending",
     created_at: new Date().toISOString()
   })
-  
+
+  if (nextStepError) {
+    console.error(
+      `[vendor-quote-workflow] follow-up "schedule ${params.quoteType}" NOT created for transaction ${params.transactionId}:`,
+      nextStepError.message,
+    )
+  }
+
   // Update transparency
   await supabase.from("transparency_updates").insert({
     transaction_id: params.transactionId,

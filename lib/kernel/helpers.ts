@@ -15,6 +15,7 @@
 // already running server-side via RSC / Route Handlers.
 
 import { createClient } from "@/lib/supabase/server"
+import { bestEffort } from "@/lib/db/best-effort"
 import { transitionLifecycle } from "./lifecycle"
 import { evaluateOutbound } from "./compliance"
 import { NAVIGATION_BY_ROLE } from "@/app/config/navigation-config"
@@ -230,8 +231,13 @@ export async function emitLifecycleEvent(params: EmitEventParams): Promise<void>
     const entityUuid = params.entityId?.trim()   || null
     const brokerUuid = params.brokerageId?.trim() || null
 
+    // Declared non-fatal — but the try/catch below could never see a rejected
+    // write (supabase-js resolves), so telemetry that silently stopped landing
+    // would look identical to telemetry that worked. bestEffort keeps it
+    // non-fatal AND logs, which is what "must never break the calling flow"
+    // was meant to buy.
     await Promise.all([
-      supabase.from("activities").insert({
+      bestEffort(supabase.from("activities").insert({
         activity_type:  params.eventType,
         entity_type:    params.entityType,
         contact_id:     params.contactId     ?? null,
@@ -242,7 +248,7 @@ export async function emitLifecycleEvent(params: EmitEventParams): Promise<void>
         description:    JSON.stringify(params.metadata ?? {}),
         status:         "completed",
         created_at:     now,
-      }),
+      }), "lifecycle activity mirror"),
       supabase.from("lifecycle_events").insert({
         event_type:    params.eventType,
         entity_type:   params.entityType,

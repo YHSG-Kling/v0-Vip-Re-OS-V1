@@ -70,7 +70,11 @@ export async function logEmailActivity(
   const supabase = createServiceClient()
   
   // Agent task (correct location, no changes) — activity_type: ai_isa_email
-  await supabase.from('activities').insert({
+  // This row is the ONLY record of whether the ISA's first-touch email went out
+  // — it is written for both the sent and the failed case. Losing it silently
+  // means the OS cannot say whether a lead was ever contacted, which is exactly
+  // the question the ISA's next-touch logic asks.
+  const { error: activityError } = await supabase.from('activities').insert({
     contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
     entity_type: 'lead',
     entity_id: leadId,
@@ -83,6 +87,10 @@ export async function logEmailActivity(
     status: emailSent ? 'completed' : 'failed',
     created_at: new Date().toISOString()
   })
+
+  if (activityError) {
+    console.error('[ai-isa/email-generator] ISA email activity NOT recorded:', activityError.message)
+  }
 
   if (!emailSent && errorMessage) {
     await collectError({

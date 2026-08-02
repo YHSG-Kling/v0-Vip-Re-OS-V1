@@ -185,16 +185,33 @@ export async function loadA2pState(svc: any, brokerageId: string): Promise<{ row
   return { rowId: (data as any)?.id ?? null, state: ((data as any)?.config ?? {}) as A2pState }
 }
 
-async function saveA2pState(svc: any, brokerageId: string, rowId: string | null, state: A2pState): Promise<void> {
+/**
+ * Persist the A2P state. NOT best-effort: this row IS the OS's memory of the
+ * brand/campaign registration with the carrier. Both writes dropped their result,
+ * and supabase-js resolves a rejected write, so a failed save left the tenant's
+ * registration progress silently un-recorded — the next read would re-derive an
+ * earlier state and the operator would be told to redo a step that had already
+ * been submitted. Returns whether it landed so callers can stop pretending.
+ */
+async function saveA2pState(svc: any, brokerageId: string, rowId: string | null, state: A2pState): Promise<boolean> {
   const config = { ...state, updated_at: new Date().toISOString() }
   if (rowId) {
-    await svc.from("platform_credentials").update({ config }).eq("id", rowId)
+    const { error } = await svc.from("platform_credentials").update({ config }).eq("id", rowId)
+    if (error) {
+      console.error(`[a2p] state NOT saved for brokerage ${brokerageId}:`, error.message)
+      return false
+    }
   } else {
-    await svc.from("platform_credentials").insert({
+    const { error } = await svc.from("platform_credentials").insert({
       brokerage_id: brokerageId, platform: "twilio_a2p",
       owner_type: "brokerage", owner_id: brokerageId, is_active: true, config,
     })
+    if (error) {
+      console.error(`[a2p] state NOT created for brokerage ${brokerageId}:`, error.message)
+      return false
+    }
   }
+  return true
 }
 
 export interface A2pRunResult {

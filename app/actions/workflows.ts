@@ -88,7 +88,9 @@ export async function checkFairHousingCompliance(
 
     // Log compliance check
     if (violations.length > 0) {
-      await supabase.from("activities").insert({
+      // A COMPLIANCE VIOLATION record. Losing it silently is losing the evidence
+      // that the violation was detected at all.
+      const { error: violationLogError } = await supabase.from("activities").insert({
         brokerage_id: brokerageId,
         entity_type: "compliance",
         activity_type: "fair_housing_violation_detected",
@@ -96,6 +98,9 @@ export async function checkFairHousingCompliance(
         description: violations.join("; "),
         status: "flagged",
       })
+      if (violationLogError) {
+        console.error("[checkFairHousingCompliance] violation NOT logged:", violationLogError.message)
+      }
     }
 
     return {

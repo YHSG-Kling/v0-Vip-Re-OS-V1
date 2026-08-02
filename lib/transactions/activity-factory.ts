@@ -14,8 +14,11 @@ export class ActivityFactory {
   }): Promise<void> {
     const activities = this.getActivitiesForStage(params.stage, params.metadata)
     
+    // Each stage activity is a task the transaction coordinator is expected to
+    // act on. A dropped insert means a step of the closing simply never appears
+    // on anyone's list, and the caller — which returns void — had no way to know.
     for (const activity of activities) {
-      await this.supabase.from("activities").insert({
+      const { error } = await this.supabase.from("activities").insert({
         transaction_id: params.transactionId,
         brokerage_id: params.brokerageId,
         agent_id: params.agentId,
@@ -28,6 +31,12 @@ export class ActivityFactory {
         metadata: { assigned_to: activity.assignedTo || params.agentId },
         created_at: new Date().toISOString()
       })
+      if (error) {
+        console.error(
+          `[activity-factory] stage activity "${activity.type}" NOT created for transaction ${params.transactionId}:`,
+          error.message,
+        )
+      }
     }
   }
 
@@ -39,8 +48,8 @@ export class ActivityFactory {
     priority?: string
   }): Promise<void> {
     const activity = this.getMilestoneActivity(params.milestoneType)
-    
-    await this.supabase.from("activities").insert({
+
+    const { error } = await this.supabase.from("activities").insert({
       transaction_id: params.transactionId,
       brokerage_id: params.brokerageId,
       agent_id: params.assignedTo,
@@ -51,6 +60,12 @@ export class ActivityFactory {
       status: "pending",
       created_at: new Date().toISOString()
     })
+    if (error) {
+      console.error(
+        `[activity-factory] milestone activity "${activity.type}" NOT created for transaction ${params.transactionId}:`,
+        error.message,
+      )
+    }
   }
 
   private getActivitiesForStage(stage: TransactionStage, metadata?: Record<string, any>): Array<{ type: string; title: string; description: string; priority?: string; dueDate?: string; assignedTo?: string }> {

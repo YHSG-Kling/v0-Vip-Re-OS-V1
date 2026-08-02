@@ -4,6 +4,7 @@
 // Every dispatch path (email, SMS, voice, DM, mail) gates through this
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { bestEffort } from "@/lib/db/best-effort"
 import { hasActiveRepresentation } from "@/lib/kernel/compliance/active-representation"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
@@ -215,7 +216,10 @@ export async function evaluateOutboundCompliance(
     // not eval decisions, and lacks columns for this shape. Non-blocking.
     void (async () => {
       try {
-        await supabase.from("compliance_events").insert({
+        // Declared non-blocking — but the try/catch around it could never see a
+        // rejected write (supabase-js resolves), so a lost suppression-gate audit
+        // row was invisible. bestEffort keeps it tolerated and logs the loss.
+        await bestEffort(supabase.from("compliance_events").insert({
           brokerage_id: actorContext.brokerageId,
           actor_user_id: actorContext.userId ?? null,
           actor_role: actorContext.actorType,
@@ -226,7 +230,7 @@ export async function evaluateOutboundCompliance(
           allowed,
           violations,
           blocked_reason: allowed ? null : primaryReason,
-        })
+        }), "outbound suppression audit row")
       } catch (err) {
         console.error("[Compliance] Failed to write audit log:", err)
       }

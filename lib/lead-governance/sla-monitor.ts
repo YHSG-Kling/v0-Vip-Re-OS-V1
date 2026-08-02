@@ -81,7 +81,11 @@ export async function logEscalation(
   slaStatus: SLAStatus,
   supabase: any
 ): Promise<void> {
-  await supabase.from('activities').insert({
+  // An SLA BREACH escalation that vanishes is the one record you cannot afford
+  // to lose — it is the evidence that the miss was noticed at all. Read the
+  // result and say so loudly; this function returns void, so a log line is the
+  // only channel it has.
+  const { error } = await supabase.from('activities').insert({
     activity_type: 'sla_escalation',
     title: 'Lead SLA Breach - Escalation Required',
     description: slaStatus.escalationReason,
@@ -94,6 +98,11 @@ export async function logEscalation(
     }),
     created_at: new Date().toISOString(),
   })
+
+  if (error) {
+    console.error(`[SLAMonitor] Escalation NOT logged for lead ${leadId}:`, error.message)
+    return
+  }
 
   console.log(`[SLAMonitor] Escalation logged for lead ${leadId}: ${slaStatus.escalationReason}`)
 }

@@ -36,6 +36,36 @@ import { KernelEvent } from "@/lib/kernel/events"
  * Schedule listing appointment and trigger CMA + presentation workflow
  * Minimum drip duration: 5 days before appointment
  */
+
+/**
+ * Write a lifecycle activity and SAY SO WHEN IT DOES NOT LAND.
+ *
+ * This file logs the entire seller listing lifecycle — appointment set, agreement
+ * signed, photography booked, live on market — as `activities` rows, and all
+ * eighteen writes were `await logLifecycleActivity(supabase, {…})` with the
+ * result dropped. supabase-js RESOLVES a rejected insert rather than throwing, so
+ * a failed write was indistinguishable from a successful one and the surrounding
+ * action returned success either way.
+ *
+ * That matters more here than almost anywhere: these rows ARE the listing's
+ * history. The kernel's conversation memory reads them into the AI's picture of
+ * the relationship, and a broker would hand them to a regulator as the record of
+ * what happened and when. One helper rather than eighteen repeated checks, so
+ * the next writer cannot forget.
+ */
+async function logLifecycleActivity(
+  supabase: any,
+  row: Record<string, unknown>,
+): Promise<void> {
+  const { error } = await supabase.from("activities").insert(row)
+  if (error) {
+    console.error(
+      `[seller-lifecycle] activity "${String(row.activity_type)}" NOT recorded:`,
+      error.message,
+    )
+  }
+}
+
 export async function scheduleListingAppointment(params: {
   listingId: string
   appointmentDate: string // ISO date
@@ -85,7 +115,7 @@ export async function scheduleListingAppointment(params: {
   }).catch(() => {})
 
   // Human-readable CRM activity (agent task log — activities is correct here)
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.appointment.scheduled",
@@ -166,7 +196,7 @@ export async function markDripCompleted(params: {
   }).catch(() => {})
 
   // CRM human task record — drip sequence completion (activities correct)
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.presentation.drip_completed",
@@ -229,7 +259,7 @@ export async function recordSellerDecision(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: activityType,
@@ -293,7 +323,7 @@ export async function initiateListingAgreement(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.listing_agreement.initiated",
@@ -583,7 +613,7 @@ export async function recordPreListingRepair(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.repair.required.pre_listing",
@@ -632,7 +662,7 @@ export async function markRepairCompleted(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.repair.completed.pre_listing",
@@ -776,7 +806,7 @@ export async function markMediaCaptured(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.media.captured",
@@ -831,7 +861,7 @@ export async function approveMedia(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.media.approved",
@@ -892,7 +922,7 @@ export async function prepareComingSoonAssets(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.coming_soon.assets_prepared",
@@ -947,7 +977,7 @@ export async function activateComingSoon(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.coming_soon.activated",
@@ -1006,7 +1036,7 @@ export async function markMLSReady(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.mls.ready",
@@ -1078,7 +1108,7 @@ export async function approveOpenHouseMarketing(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.open_house_marketing.approved",
@@ -1193,7 +1223,7 @@ export async function activateMLS(params: {
   }).catch(() => {})
 
   // CRM human task record for MLS activation (activities correct)
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.mls.activated",
@@ -1252,7 +1282,7 @@ export async function scheduleOpenHouse(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.open_house.scheduled",
@@ -1302,7 +1332,7 @@ export async function markOpenHouseCompleted(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.open_house.completed",
@@ -1401,7 +1431,7 @@ export async function markUnderContract(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.under_contract",
@@ -1459,7 +1489,7 @@ export async function cancelListing(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.listing.cancelled",
@@ -1507,7 +1537,7 @@ export async function markListingExpired(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.listing.expired",
