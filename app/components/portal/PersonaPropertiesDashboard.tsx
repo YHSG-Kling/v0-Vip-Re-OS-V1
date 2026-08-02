@@ -300,6 +300,7 @@ export default function PersonaPropertiesDashboard({
   const [searchResults, setSearchResults] = useState<any[]>([])
   const [extractedFilters, setExtractedFilters] = useState<any>(null)
   const [isSearching, setIsSearching] = useState(false)
+  const [voiceListening, setVoiceListening] = useState(false)
   
 
   
@@ -371,13 +372,17 @@ export default function PersonaPropertiesDashboard({
   const portfolioSize = customFields?.portfolio_size || 0
 
   // AI Smart Search handler
-  const handleSmartSearch = async () => {
-    if (!naturalQuery.trim()) return
-    
+  // `spokenQuery` lets the voice control run the search with the transcript it
+  // just captured — setNaturalQuery() has not flushed yet at that point, so
+  // reading state here would search the PREVIOUS query.
+  const handleSmartSearch = async (spokenQuery?: string) => {
+    const query = (spokenQuery ?? naturalQuery).trim()
+    if (!query) return
+
     setIsSearching(true)
     try {
       const result = await smartSearch({
-        naturalLanguageQuery: naturalQuery,
+        naturalLanguageQuery: query,
         contactId: contactId,
       })
       
@@ -404,6 +409,57 @@ export default function PersonaPropertiesDashboard({
     } finally {
       setIsSearching(false)
     }
+  }
+
+  // Voice search — the mic button in the search box had no handler at all, so
+  // the one control the persona dashboard advertises as "Voice search" did
+  // nothing. Uses the browser's Web Speech API (the same API the internal AI
+  // assistant already drives) and feeds the transcript straight into the same
+  // smartSearch capability the typed box uses. No new backend: the capability
+  // is the browser's, and it either exists or is reported as missing.
+  const handleVoiceSearch = () => {
+    if (typeof window === "undefined") return
+    const SR: any =
+      (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition
+    if (!SR) {
+      toast({
+        title: "Voice search is not available in this browser",
+        description: "This browser does not expose the Web Speech API. Type your search instead.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    const recognition = new SR()
+    recognition.continuous = false
+    recognition.interimResults = false
+    recognition.lang = "en-US"
+
+    setVoiceListening(true)
+    recognition.onresult = (e: any) => {
+      const transcript = Array.from(e.results ?? [])
+        .map((r: any) => r[0]?.transcript ?? "")
+        .join(" ")
+        .trim()
+      setVoiceListening(false)
+      if (!transcript) return
+      setNaturalQuery(transcript)
+      void handleSmartSearch(transcript)
+    }
+    // Report what the browser actually said went wrong — do not guess a cause
+    // (no microphone / permission denied / no speech are all possible here).
+    recognition.onerror = (e: any) => {
+      setVoiceListening(false)
+      toast({
+        title: "Voice search stopped",
+        description: e?.error
+          ? `The browser reported: ${e.error}`
+          : "The browser ended the recording before anything was captured.",
+        variant: "destructive",
+      })
+    }
+    recognition.onend = () => setVoiceListening(false)
+    recognition.start()
   }
 
   // Handle saving property
@@ -1166,16 +1222,18 @@ export default function PersonaPropertiesDashboard({
                   onKeyDown={(e) => e.key === "Enter" && handleSmartSearch()}
                   className="text-lg h-12 pr-10"
                 />
-                <Button 
-                  variant="ghost" 
-                  size="icon" 
-                  className="absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8"
-                  title="Voice search"
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className={`absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8 ${voiceListening ? "text-red-600" : ""}`}
+                  title={voiceListening ? "Listening…" : "Voice search"}
+                  onClick={handleVoiceSearch}
+                  disabled={voiceListening || isSearching}
                 >
-                  <Mic className="w-4 h-4" />
+                  <Mic className={`w-4 h-4 ${voiceListening ? "animate-pulse" : ""}`} />
                 </Button>
               </div>
-              <Button onClick={handleSmartSearch} disabled={isSearching} size="lg" className="min-w-[140px]">
+              <Button onClick={() => handleSmartSearch()} disabled={isSearching} size="lg" className="min-w-[140px]">
                 {isSearching ? (
                   <>
                     <Loader2 className="mr-2 h-5 w-5 animate-spin" />

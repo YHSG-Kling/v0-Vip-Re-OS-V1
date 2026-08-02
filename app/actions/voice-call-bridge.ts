@@ -8,7 +8,7 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 /**
- * Call Whisper Bridge & Vapi Voice Bot System
+ * Call Whisper Bridge & AI Voice Outreach (Twilio-native)
  * - Initiates agent calls with AI-powered context whispers
  * - Triggers autonomous AI voice outreach to hot leads
  *
@@ -205,7 +205,7 @@ export async function updateWhisperBridgeStatus(params: {
   }
 }
 
-// Trigger Vapi AI voice bot for hot leads
+// Trigger the AI voice call for hot leads (Twilio-native lane)
 export async function triggerAiVoiceCall(params: {
   contactId: string
   triggerEvent: string // behavioral_spike, hot_lead_score, showing_reminder, price_reduction_alert

@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { useSearchParams } from "next/navigation"
 import { searchProperties, smartSearch, saveProperty } from "@/app/actions/idx-search"
+import { requestShowing } from "@/app/actions/showings"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -11,6 +12,15 @@ import { Slider } from "@/components/ui/slider"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Search, Heart, Grid3x3, List, MapPin, Bed, Bath, Maximize } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import Link from "next/link"
@@ -34,6 +44,15 @@ export default function PropertySearchContent() {
     mlsStatus: ["Active"] as string[],
   })
   const [extractedFilters, setExtractedFilters] = useState<any>(null)
+
+  // "Schedule" on every result card had no handler. requestShowing has handled
+  // OUTSIDE properties (listingId undefined + mls/address/price fields) since
+  // it was written — these IDX results are exactly that case.
+  const [showingProperty, setShowingProperty] = useState<any | null>(null)
+  const [showingDate, setShowingDate] = useState("")
+  const [showingTime, setShowingTime] = useState("")
+  const [showingNotes, setShowingNotes] = useState("")
+  const [requestingShowing, setRequestingShowing] = useState(false)
 
   // No fallback. "demo-contact-id" is not a uuid, so every action given it
   // failed a uuid parse — including the ALREADY-WIRED heart button, which showed
@@ -128,6 +147,71 @@ export default function PropertySearchContent() {
         description: result.error,
         variant: "destructive",
       })
+    }
+  }
+
+  const handleOpenSchedule = (property: any) => {
+    if (!contactId) {
+      toast({
+        title: "No client selected",
+        description: "A showing is requested for a specific client. Open this search from a client's record.",
+        variant: "destructive",
+      })
+      return
+    }
+    setShowingProperty(property)
+    setShowingDate("")
+    setShowingTime("")
+    setShowingNotes("")
+  }
+
+  const handleRequestShowing = async () => {
+    if (!contactId || !showingProperty) return
+    if (!showingDate || !showingTime) {
+      toast({
+        title: "Pick a date and time",
+        description: "The request carries a preferred date and time to the listing side.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setRequestingShowing(true)
+    try {
+      // No listingId: an IDX result is an OUTSIDE property keyed by its MLS
+      // number, never one of our listings.id values.
+      const result = await requestShowing({
+        contactId,
+        mlsNumber:       showingProperty.mlsNumber,
+        propertyAddress: showingProperty.address,
+        propertyCity:    showingProperty.city,
+        propertyState:   showingProperty.state,
+        propertyZip:     showingProperty.zip,
+        listPrice:       showingProperty.price,
+        primaryPhotoUrl: showingProperty.photos?.[0],
+        source:          "agent_input",
+        preferredDates:  [{ date: showingDate, time: showingTime }],
+        clientNotes:     showingNotes || undefined,
+      })
+
+      // requestShowing resolves with { success:false, error } on a BBA-gate
+      // refusal or an insert failure — it does not throw, so an unread result
+      // would be a silent no-op.
+      if (result.success) {
+        toast({
+          title: "Showing requested",
+          description: `Request sent for ${showingProperty.address}.`,
+        })
+        setShowingProperty(null)
+      } else {
+        toast({
+          title: "Showing not requested",
+          description: result.error ?? "The request was refused.",
+          variant: "destructive",
+        })
+      }
+    } finally {
+      setRequestingShowing(false)
     }
   }
 
@@ -388,7 +472,9 @@ export default function PropertySearchContent() {
                         <Button asChild className="flex-1">
                           <Link href={`/properties/${property.mlsNumber}?contactId=${contactId}`}>View Details</Link>
                         </Button>
-                        <Button variant="outline">Schedule</Button>
+                        <Button variant="outline" onClick={() => handleOpenSchedule(property)}>
+                          Schedule
+                        </Button>
                       </div>
                     </CardContent>
                   </Card>
@@ -398,6 +484,61 @@ export default function PropertySearchContent() {
           </main>
         </div>
       </div>
+
+      <Dialog open={!!showingProperty} onOpenChange={(o) => !o && setShowingProperty(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Request a showing</DialogTitle>
+            <DialogDescription>
+              {showingProperty
+                ? `${showingProperty.address}${showingProperty.city ? `, ${showingProperty.city}` : ""}${
+                    showingProperty.mlsNumber ? ` · MLS #${showingProperty.mlsNumber}` : ""
+                  }`
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="showing-date">Preferred date</Label>
+                <Input
+                  id="showing-date"
+                  type="date"
+                  value={showingDate}
+                  min={new Date().toISOString().slice(0, 10)}
+                  onChange={(e) => setShowingDate(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="showing-time">Preferred time</Label>
+                <Input
+                  id="showing-time"
+                  type="time"
+                  value={showingTime}
+                  onChange={(e) => setShowingTime(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="showing-notes">Notes for the listing side (optional)</Label>
+              <Textarea
+                id="showing-notes"
+                placeholder="Access notes, alternate times, who is attending…"
+                value={showingNotes}
+                onChange={(e) => setShowingNotes(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              onClick={handleRequestShowing}
+              disabled={requestingShowing || !showingDate || !showingTime}
+            >
+              {requestingShowing ? "Sending…" : "Request showing"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

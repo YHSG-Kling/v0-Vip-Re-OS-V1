@@ -20,7 +20,8 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 /**
  * AI Inside Sales Agent (ISA) System
- * Autonomous outbound calling with Vapi.ai for lead qualification and appointment booking
+ * Autonomous outbound calling for lead qualification and appointment booking.
+ * The dialer is TWILIO + ElevenLabs. There is no Vapi in this product.
  */
 
 // Auth gate — every dashboard-facing function in this file reads/mutates

@@ -63,7 +63,9 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
       return { success: false, error: "Unauthorized" }
     }
 
-    const { contactId, messageBody, direction, channel = "portal", transactionId } = params
+    const { contactId, messageBody, direction: requestedDirection, channel = "portal", transactionId } = params
+    let direction = requestedDirection
+    let isClientSender = false
 
     // Validate message body
     if (!messageBody || messageBody.trim().length === 0) {
@@ -74,13 +76,15 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
     }
 
     // Resolve agent identity (never use user.id for agent_id column)
-    const agentId = await resolveAgentId(supabase, user.id)
-    if (!agentId) {
-      return { success: false, error: "Agent profile not found" }
-    }
+    const callerAgentId = await resolveAgentId(supabase, user.id)
 
-    // Validate access to this contact — maybeSingle() so missing rows don't throw PGRST116
-    const { data: contact, error: contactError } = await supabase
+    // Read the contact with the service client — maybeSingle() so missing rows
+    // don't throw PGRST116. Deliberately not the anon client: a portal CLIENT
+    // may not be able to read their own contacts row under RLS, and an
+    // unreadable row here would report "Contact not found" for the person the
+    // row is about. Nothing is returned to the caller from this read; the two
+    // branches below are what decide access.
+    const { data: contact, error: contactError } = await createServiceClient()
       .from("contacts")
       .select("id, agent_id, brokerage_id")
       .eq("id", contactId)
@@ -90,22 +94,62 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
       return { success: false, error: "Contact not found" }
     }
 
-    // Agent must own this contact or be in same brokerage with access
-    if (contact.agent_id !== agentId) {
-      // Check brokerage membership for brokers/admins
-      const { data: agent } = await supabase
-        .from("agents")
-        .select("brokerage_id")
-        .eq("id", agentId)
-        .maybeSingle()
+    // client_portal_messages.agent_id names the agent on the THREAD, not the
+    // sender — one column carries both directions. Which agent that is depends
+    // on who is calling.
+    let agentId: string
 
-      if (!agent || agent.brokerage_id !== contact.brokerage_id) {
+    if (callerAgentId) {
+      // ── Agent / staff lane (unchanged) ──
+      agentId = callerAgentId
+      if (contact.agent_id !== agentId) {
+        // Check brokerage membership for brokers/admins
+        const { data: agent } = await supabase
+          .from("agents")
+          .select("brokerage_id")
+          .eq("id", agentId)
+          .maybeSingle()
+
+        if (!agent || agent.brokerage_id !== contact.brokerage_id) {
+          return { success: false, error: "No access to this contact" }
+        }
+      }
+    } else {
+      // ── Buyer / seller lane ──
+      //
+      // This branch did not exist: the function resolved the caller as an agent
+      // and returned "Agent profile not found" otherwise. A client signed into
+      // the consumer portal has no `agents` row, so the ONE direction the portal
+      // exists for — client_to_agent — could never be sent. The portal's
+      // "Contact Agent" control looked wired and refused every time.
+      //
+      // The thread's agent is RESOLVED from contacts.agent_id, which is already
+      // an agents.id. It is never the caller's user id.
+      const access = await requireContactAccess(contactId)
+      if (!access.ok || !access.isContactSelf) {
         return { success: false, error: "No access to this contact" }
       }
+      if (!contact.agent_id) {
+        return { success: false, error: "No agent is assigned to this account yet" }
+      }
+      agentId = contact.agent_id
+      // A client cannot post as their agent, whatever the caller asked for.
+      direction = "client_to_agent"
+      isClientSender = true
     }
 
+    // The RLS policy on client_portal_messages checks
+    // `brokerage_id = current_user_brokerage_id()`, which reads
+    // users.brokerage_id for auth.uid(). A portal client's users row is not
+    // guaranteed to carry the brokerage, so the anon-key client would fail the
+    // WITH CHECK for a message we have ALREADY authorized. Authorization for
+    // this lane is established above by requireContactAccess against the
+    // service client, so the write goes through the service client too —
+    // deliberately, and only after that check.
+    const writeClient = isClientSender ? createServiceClient() : supabase
+
     // Insert message
-    const { data: message, error: insertError } = await supabase
+    const { data: message, error: insertError } = await writeClient
       .from("client_portal_messages")
       .insert({
         contact_id: contactId,
@@ -138,7 +182,7 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
     const notifyingClient = direction === "agent_to_client"
     let recipientUserId: string | null = null
     if (!notifyingClient) {
-      const { data: agentRow } = await supabase
+      const { data: agentRow } = await writeClient
         .from("agents")
         .select("user_id")
         .eq("id", agentId)
@@ -148,7 +192,7 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
 
     if (notifyingClient || recipientUserId) {
       const preview = messageBody.trim().slice(0, 140)
-      const { error: notifyError } = await supabase.from("notifications").insert({
+      const { error: notifyError } = await writeClient.from("notifications").insert({
         brokerage_id: contact.brokerage_id,
         // Exactly one recipient key is set: the contact for a client-bound
         // message, the agent's users id for an agent-bound one.

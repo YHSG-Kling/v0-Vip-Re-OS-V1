@@ -5,11 +5,11 @@
  *
  * Two flows:
  *   1. AUTO: brokerage flips `auto_provision_phone_numbers = true`. When an
- *      agent is added, the system auto-purchases a Twilio number, registers
- *      it with VAPI, and assigns it to the agent.
+ *      agent is added, the system auto-purchases a Twilio number and assigns
+ *      it to the agent.
  *   2. MANUAL: brokerage admin or agent clicks "Add Number" → choose
  *      between (a) purchase a new Twilio number for an area code, or
- *      (b) bring your own (BYO) — paste an existing Twilio/VAPI number SID.
+ *      (b) bring your own (BYO) — paste an existing Twilio number SID.
  *
  * Audit trail: every provisioning event logs to phone_number_events.
  */
@@ -85,7 +85,7 @@ interface ProvisionResult {
 
 /**
  * Auto-purchase a new Twilio number for an agent in the requested area code.
- * Wires it through VAPI for AI voice handling. Idempotent at the action layer
+ * AI voice handling runs on the Twilio-native lane. Idempotent at the action layer
  * (will not re-purchase if agent already has a number assigned).
  */
 export async function autoProvisionAgentPhone(params: {

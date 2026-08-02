@@ -173,6 +173,40 @@ export function PropertyDetailsView({
     })
   }
 
+  // The link a buyer can actually hand to someone: the outside listing's own
+  // page when we have it, else our public property page keyed by MLS number.
+  const shareUrl =
+    property.listingUrl ??
+    (property.mlsNumber && typeof window !== "undefined"
+      ? `${window.location.origin}/properties/${property.mlsNumber}`
+      : null)
+
+  const handleShare = async () => {
+    if (!shareUrl) return
+    const title = [property.address, property.city, property.state].filter(Boolean).join(", ")
+    // navigator.share is the native sheet on mobile — where this portal is
+    // mostly used — and clipboard is the desktop fallback. A user cancelling
+    // the share sheet throws AbortError; that is not a failure to report.
+    if (typeof navigator !== "undefined" && navigator.share) {
+      try {
+        await navigator.share({ title: title || "Property", url: shareUrl })
+        return
+      } catch (e: any) {
+        if (e?.name === "AbortError") return
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(shareUrl)
+      toast({ title: "Link copied", description: shareUrl })
+    } catch {
+      toast({
+        title: "Could not copy the link",
+        description: shareUrl,
+        variant: "destructive",
+      })
+    }
+  }
+
   // Principal & interest estimate from the real list price (20% down, 6.5%, 30y).
   // Returns null when we have no price so the UI hides the estimate rather than
   // showing a fabricated number.
@@ -203,9 +237,22 @@ export function PropertyDetailsView({
           >
             <Heart className={`w-5 h-5 ${isSaved ? "fill-red-500" : ""}`} />
           </Button>
-          <Button variant="outline" size="icon" className="bg-transparent">
-            <Share2 className="w-5 h-5" />
-          </Button>
+          {/* Share had no handler. It only appears when there is something real
+              to share: the outside listing's own URL, or — for a property we
+              hold an MLS number for — the public /properties/<mls> page that
+              PortalSocialHub already treats as this listing's shareable link.
+              With neither, there is no link to hand out, so no control. */}
+          {shareUrl && (
+            <Button
+              variant="outline"
+              size="icon"
+              className="bg-transparent"
+              onClick={handleShare}
+              title="Share this property"
+            >
+              <Share2 className="w-5 h-5" />
+            </Button>
+          )}
         </div>
       </div>
 

@@ -140,7 +140,7 @@ interface DispatchResult {
 // Mirrors the outbound-voice lane (lib/voice/twilio-outbound.ts, step 2): checkVendorBudget
 // with the estimated cost of THIS send (cost-normalizer rates, kept in lockstep with the
 // post-hoc metered figure), so Twilio SMS / SendGrid email / Lob mail get the same
-// pre-spend cap that already protects D-ID / ElevenLabs / Vapi / twilio-native voice.
+// pre-spend cap that already protects D-ID / ElevenLabs / twilio-native voice.
 //
 // GOVERNANCE ORDER (deliberate): this runs AFTER every consumer-protection gate
 // (autonomy, consent/suppression/DNC/quiet-hours, de-confliction, content safety) has

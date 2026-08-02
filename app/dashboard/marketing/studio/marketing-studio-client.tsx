@@ -207,6 +207,16 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
   const [isRegistryOpen, setIsRegistryOpen] = useState(false)
   const [isQrLinkOpen, setIsQrLinkOpen] = useState(false)
   const [selectedAssetForQr, setSelectedAssetForQr] = useState<string | null>(null)
+  const [qrLinkError, setQrLinkError] = useState<string | null>(null)
+
+  // Campaign detail (the eye control on every campaign card)
+  const [isCampaignDetailOpen, setIsCampaignDetailOpen] = useState(false)
+  const [campaignDetail, setCampaignDetail] = useState<any | null>(null)
+  const [isLoadingCampaignDetail, setIsLoadingCampaignDetail] = useState(false)
+  const [campaignDetailError, setCampaignDetailError] = useState<string | null>(null)
+
+  // Newsletter template preview (the chevron on every template row)
+  const [previewTemplate, setPreviewTemplate] = useState<any | null>(null)
 
   // Registry data
   const [registryItems, setRegistryItems] = useState<ContentSourceItem[]>([])
@@ -650,17 +660,52 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
     }
   }
 
+  /**
+   * The eye control on a campaign card. The card only carries the counts it was
+   * listed with; the full record (assets, tasks, comments, listing) comes from
+   * getCampaignById, which is brokerage-scoped server side.
+   */
+  async function handleViewCampaign(campaign: Campaign) {
+    setSelectedCampaign(campaign)
+    setCampaignDetail(null)
+    setCampaignDetailError(null)
+    setIsCampaignDetailOpen(true)
+    setIsLoadingCampaignDetail(true)
+    try {
+      const result = await getCampaignById(campaign.id)
+      if (!result.success) {
+        setCampaignDetailError((result as any).error ?? "This campaign could not be loaded.")
+        return
+      }
+      if (!result.campaign) {
+        setCampaignDetailError("This campaign is no longer available on your brokerage.")
+        return
+      }
+      setCampaignDetail(result.campaign)
+    } catch (err) {
+      setCampaignDetailError(err instanceof Error ? err.message : "This campaign could not be loaded.")
+    } finally {
+      setIsLoadingCampaignDetail(false)
+    }
+  }
+
   async function handleLinkQr(assetId: string, qrCodeId: string, placementType: string) {
+    setQrLinkError(null)
     const result = await linkQrToAsset({
       marketingAssetId: assetId,
       qrCodeId,
       placementType: placementType as any,
     })
-    if (result.success) {
-      setIsQrLinkOpen(false)
-      setSelectedAssetForQr(null)
-      loadAssets()
+    // A refusal used to fall out of this `if` and vanish: the dialog stayed
+    // open, the list did not change, and nothing said the link had not been
+    // made. Report what the action reported.
+    if (!result.success) {
+      setQrLinkError((result as any).error ?? "The QR code was not linked to this asset.")
+      return
     }
+    setIsQrLinkOpen(false)
+    setSelectedAssetForQr(null)
+    loadAssets()
   }
 
   async function handlePredictPerformance(asset: Asset) {
@@ -1383,7 +1428,16 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                             Resume
                           </Button>
                         )}
-                        <Button size="sm" variant="ghost">
+                        {/* Had no handler. getCampaignById was imported at the
+                            top of this file and called from nowhere, and the
+                            selectedCampaign state below it was never set — the
+                            join was simply missing. */}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          aria-label={`View ${campaign.campaign_name}`}
+                          onClick={() => handleViewCampaign(campaign)}
+                        >
                           <Eye className="h-4 w-4" />
                         </Button>
                       </div>
@@ -2088,7 +2142,15 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                         {newsletterTemplates.map((template) => (
                           <div key={template.id} className="flex items-center justify-between p-2 rounded-lg bg-muted/30">
                             <span className="text-sm font-medium">{template.template_name || template.name}</span>
-                            <Button variant="ghost" size="sm">
+                            {/* Had no handler — the only way into a template was
+                                a chevron that did nothing. Opens the template
+                                that was already loaded on this row. */}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              aria-label={`Preview ${template.template_name || template.name}`}
+                              onClick={() => setPreviewTemplate(template)}
+                            >
                               <ChevronRight className="h-4 w-4" />
                             </Button>
                           </div>
@@ -2908,13 +2970,21 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
         </Dialog>
 
         {/* QR Link Dialog */}
-        <Dialog open={isQrLinkOpen} onOpenChange={setIsQrLinkOpen}>
+        <Dialog
+          open={isQrLinkOpen}
+          onOpenChange={(open) => { setIsQrLinkOpen(open); if (!open) setQrLinkError(null) }}
+        >
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Link QR Code to Asset</DialogTitle>
               <DialogDescription>Select a QR code and placement type</DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
+              {availableQrCodes.length === 0 && (
+                <p className="text-sm text-muted-foreground text-center py-4">
+                  No QR codes available yet. Create one from the QR Codes tab first.
+                </p>
+              )}
               {availableQrCodes.map((qr) => (
                 <div
                   key={qr.id}
@@ -2928,12 +2998,165 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                       <p className="text-sm text-muted-foreground">{qr.scanCount} scans</p>
                     </div>
                   </div>
-                  <Button size="sm" variant="outline">
+                  {/* The row carried the only onClick; this button was decoration
+                      sitting on top of it and did nothing when it was the thing
+                      the user actually aimed at (a click on the button bubbled,
+                      but only by accident of layout). Give it the same call and
+                      stop the row handler from firing it twice. */}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (selectedAssetForQr) handleLinkQr(selectedAssetForQr, qr.id, "flyer")
+                    }}
+                  >
                     Link
                   </Button>
                 </div>
               ))}
+              {qrLinkError && (
+                <p className="text-sm text-red-600 bg-red-50 rounded-md p-2">{qrLinkError}</p>
+              )}
             </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Campaign detail — what the eye control on every campaign card opens */}
+        <Dialog
+          open={isCampaignDetailOpen}
+          onOpenChange={(open) => {
+            setIsCampaignDetailOpen(open)
+            if (!open) { setCampaignDetail(null); setCampaignDetailError(null); setSelectedCampaign(null) }
+          }}
+        >
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>
+                {campaignDetail?.campaign_name ?? selectedCampaign?.campaign_name ?? "Campaign"}
+              </DialogTitle>
+              <DialogDescription>
+                {campaignDetail?.listing
+                  ? `${campaignDetail.listing.address}, ${campaignDetail.listing.city}`
+                  : "Assets, tasks and comments on this campaign"}
+              </DialogDescription>
+            </DialogHeader>
+            {isLoadingCampaignDetail ? (
+              <div className="flex items-center justify-center py-10">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              </div>
+            ) : campaignDetailError ? (
+              <p className="text-sm text-red-600 bg-red-50 rounded-md p-3">{campaignDetailError}</p>
+            ) : campaignDetail ? (
+              <ScrollArea className="max-h-[60vh]">
+                <div className="space-y-5 pr-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge className={getStatusColor(campaignDetail.status)}>
+                      <span className="capitalize">{String(campaignDetail.status).replace("_", " ")}</span>
+                    </Badge>
+                    <Badge variant="outline" className="capitalize">{campaignDetail.campaign_type}</Badge>
+                    {Number(campaignDetail.budget_total) > 0 && (
+                      <Badge variant="outline">
+                        ${campaignDetail.budget_spent ?? 0} / ${campaignDetail.budget_total} spent
+                      </Badge>
+                    )}
+                  </div>
+
+                  <div>
+                    <p className="text-sm font-semibold mb-2">
+                      Assets ({campaignDetail.assets?.length ?? 0})
+                    </p>
+                    {(campaignDetail.assets ?? []).length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No assets on this campaign yet.</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {campaignDetail.assets.map((a: any) => (
+                          <div key={a.id} className="flex items-center justify-between text-sm rounded-md bg-muted/30 px-2 py-1.5">
+                            <span className="truncate">{a.asset_name}</span>
+                            <Badge variant="outline" className="capitalize text-xs">{a.approval_status}</Badge>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <p className="text-sm font-semibold mb-2">
+                      Tasks ({campaignDetail.tasks?.length ?? 0})
+                    </p>
+                    {(campaignDetail.tasks ?? []).length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No tasks on this campaign yet.</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {campaignDetail.tasks.map((t: any) => (
+                          <div key={t.id} className="flex items-center justify-between text-sm rounded-md bg-muted/30 px-2 py-1.5">
+                            <span className="truncate">{t.title ?? t.task_name}</span>
+                            <Badge variant="outline" className="capitalize text-xs">{t.status}</Badge>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <p className="text-sm font-semibold mb-2">
+                      Comments ({campaignDetail.comments?.length ?? 0})
+                    </p>
+                    {(campaignDetail.comments ?? []).length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No comments yet.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {campaignDetail.comments.map((c: any) => (
+                          <div key={c.id} className="rounded-md bg-muted/30 px-2 py-1.5">
+                            <p className="text-xs text-muted-foreground">
+                              {[c.author?.first_name, c.author?.last_name].filter(Boolean).join(" ") || "Team member"}
+                              {c.created_at ? ` · ${format(new Date(c.created_at), "MMM d, h:mm a")}` : ""}
+                            </p>
+                            <p className="text-sm">{c.comment_text ?? c.body ?? c.content}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </ScrollArea>
+            ) : null}
+          </DialogContent>
+        </Dialog>
+
+        {/* Newsletter template preview — what the chevron on a template row opens */}
+        <Dialog open={!!previewTemplate} onOpenChange={(open) => { if (!open) setPreviewTemplate(null) }}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>{previewTemplate?.template_name || previewTemplate?.name || "Template"}</DialogTitle>
+              <DialogDescription>
+                {previewTemplate?.template_description || "Broker newsletter template"}
+              </DialogDescription>
+            </DialogHeader>
+            {previewTemplate && (
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline" className="capitalize">
+                    {previewTemplate.approval_status ?? previewTemplate.status ?? "unknown"}
+                  </Badge>
+                  {previewTemplate.is_default && <Badge variant="outline">Default</Badge>}
+                  {previewTemplate.version_number != null && (
+                    <Badge variant="outline">v{previewTemplate.version_number}</Badge>
+                  )}
+                </div>
+                <ScrollArea className="h-[45vh] rounded-md border p-3">
+                  {previewTemplate.content ? (
+                    <pre className="text-xs whitespace-pre-wrap break-words font-sans">
+                      {previewTemplate.content}
+                    </pre>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      This template row has no saved content.
+                    </p>
+                  )}
+                </ScrollArea>
+              </div>
+            )}
           </DialogContent>
         </Dialog>
       </div>

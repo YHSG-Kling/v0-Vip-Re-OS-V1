@@ -30,6 +30,12 @@ const SCOPE_EVIDENCE = [
   '.eq("user_id"', ".eq('user_id'",
   // Unique-key lookups (globally unique — the row IS the scope):
   '.eq("slug"', '.eq("public_id"', '.eq("token"', '.eq("public_slug"', "stripe_",
+  // An MLS number is a public, globally-unique handle for ONE listing — the
+  // same class as a slug. It cannot enumerate a brokerage's book, and the
+  // surface that needs it (the shared /properties/<mls> link) is deliberately
+  // unauthenticated. EXACT-match only: `.eq("mls_number"`. A range, ilike or
+  // `.in()` over MLS numbers is NOT this and still has to scope.
+  '.eq("mls_number"',
   // Provider-generated envelope refs (unique by construction — the e-sign
   // webhook/reconciler probes match on them with no session to scope by):
   "provider_envelope_id", "signature_request_id",
@@ -131,8 +137,6 @@ console.log(" ✅ TENANT_SCOPE_PASS — no new unscoped tenant-table queries (th
 // by tenant before the user has one. Each exemption below names WHY, so a future
 // reader can challenge it rather than assume it was rubber-stamped.
 const GLOBAL_LOOKUP_EXEMPT: Record<string, string> = {
-  "app/actions/demo-login.ts":
-    "login — identity is being established, there is no caller tenant to scope by",
   "app/actions/auth/signup-brokerage.ts":
     "signup — the tenant does not exist yet",
   "app/actions/privacy/data-subject-requests.ts":

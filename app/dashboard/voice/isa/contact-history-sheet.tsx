@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
+import { toast } from "sonner"
+import { initiateWhisperBridge } from "@/app/actions/voice-call-bridge"
 import {
   Sheet,
   SheetContent,
@@ -67,6 +69,7 @@ export function ContactHistorySheet({ contactId, open, onOpenChange }: ContactHi
   const [calls, setCalls] = useState<ISACall[]>([])
   const [qualifications, setQualifications] = useState<Qualification[]>([])
   const [engagementScore, setEngagementScore] = useState<number | null>(null)
+  const [calling, setCalling] = useState(false)
 
   useEffect(() => {
     if (!contactId || !open) return
@@ -101,6 +104,11 @@ export function ContactHistorySheet({ contactId, open, onOpenChange }: ContactHi
           .limit(1),
       ])
 
+      // supabase-js RESOLVES a failed query — without reading `error` a broken
+      // read is indistinguishable from an empty contact.
+      const readError = contactRes.error ?? callsRes.error ?? qualRes.error ?? engagementRes.error
+      if (readError) toast.error(readError.message)
+
       setContact(contactRes.data)
       setCalls(callsRes.data || [])
       setQualifications(qualRes.data || [])
@@ -115,6 +123,48 @@ export function ContactHistorySheet({ contactId, open, onOpenChange }: ContactHi
 
     fetchData()
   }, [contactId, open])
+
+  // "Manual Call" — the agent takes the conversation off the AI ISA and speaks
+  // to the lead themselves. initiateWhisperBridge is the platform's manual-call
+  // path: Twilio rings the AGENT first, whispers who they are about to be
+  // connected to and why, then bridges them to the contact. The whisper text is
+  // built from the ISA history already on screen so the agent picks up informed.
+  async function handleManualCall() {
+    if (!contact) return
+    if (!contact.phone) {
+      toast.error("This contact has no phone number on file")
+      return
+    }
+
+    const lastCall = calls[0]
+    const lastQual = qualifications[0]
+    const parts: string[] = []
+    if (lastQual?.qualification_result) parts.push(`last qualified as ${lastQual.qualification_result}`)
+    if (typeof lastQual?.qualification_score === "number") parts.push(`score ${lastQual.qualification_score}`)
+    if (lastCall) {
+      parts.push(
+        lastCall.appointment_set
+          ? `an appointment was set on the ISA call of ${formatDate(lastCall.created_at)}`
+          : `last ISA call ${formatDate(lastCall.created_at)}, no appointment set`,
+      )
+    }
+    if (contact.buyer_stage) parts.push(`buyer stage ${contact.buyer_stage}`)
+    const context = parts.length ? parts.join(", ") : "no prior ISA activity on record"
+
+    setCalling(true)
+    try {
+      const res = await initiateWhisperBridge({ contactId: contact.id, context })
+      if (!res?.success) {
+        toast.error(res?.error ?? "The call was not placed")
+        return
+      }
+      toast.success("Calling you now — we'll bridge you to the contact when you answer")
+    } catch (err: any) {
+      toast.error(err?.message ?? "The call was not placed")
+    } finally {
+      setCalling(false)
+    }
+  }
 
   function formatDate(dateString: string | null): string {
     if (!dateString) return "--"
@@ -256,9 +306,14 @@ export function ContactHistorySheet({ contactId, open, onOpenChange }: ContactHi
                   <ExternalLink className="h-4 w-4 ml-2" />
                 </Link>
               </Button>
-              <Button variant="outline" className="flex-1">
+              <Button
+                variant="outline"
+                className="flex-1"
+                disabled={calling || !contact.phone}
+                onClick={handleManualCall}
+              >
                 <Phone className="h-4 w-4 mr-2" />
-                Manual Call
+                {calling ? "Ringing you…" : "Manual Call"}
               </Button>
             </div>
           </div>

@@ -7,6 +7,7 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { z } from "zod"
 import {
   canAccessFeature,
@@ -411,14 +412,34 @@ Calculate expected outcomes and ROI.`,
 // ============================================
 // 5. CREATE DIRECT MAIL CAMPAIGN
 // ============================================
-export async function getDirectMailCampaigns(agentId: string) {
+/**
+ * The caller's own direct-mail campaigns.
+ *
+ * The parameter is IGNORED and the identity comes from the session, matching
+ * getNewsletters. Two reasons, both real:
+ *   · direct_mail_campaigns.agent_id is an FK to agents(id). Every UI that
+ *     wanted this list had a users(id) in hand, so passing it through would
+ *     have matched nothing — silently, since a mismatched uuid is a valid
+ *     query that returns zero rows. Resolution belongs on the server.
+ *   · trusting a caller-supplied agent_id let any signed-in agent read another
+ *     agent's campaigns. The brokerage filter closes that even if the resolved
+ *     agent row ever spans tenants.
+ */
+export async function getDirectMailCampaigns(_agentId?: string /* ignored — derived from session */) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not signed in" }
+    if (!ctx.agentId || !ctx.brokerageId) {
+      return { success: false, error: "No agent profile is attached to this account" }
+    }
+
     const supabase = await createClient()
 
     const { data, error } = await supabase
       .from("direct_mail_campaigns")
       .select("*")
-      .eq("agent_id", agentId)
+      .eq("agent_id", ctx.agentId)
+      .eq("brokerage_id", ctx.brokerageId)
       .order("created_at", { ascending: false })
 
     if (error) throw error

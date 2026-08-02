@@ -1003,12 +1003,16 @@ function ComplianceStep({
                 >
                   {item.step_name}
                 </label>
+                {/* "Read Full Policy" was removed here. There is no policy
+                    document behind it: onboarding_steps carries step_key,
+                    step_name and instructions and no policy URL or attachment,
+                    and no table in the schema stores a per-step policy doc. The
+                    acknowledgment text the agent is agreeing to is `instructions`,
+                    which is already shown in full directly above — the link
+                    promised a longer document that does not exist. */}
                 <p className="mt-1 text-sm text-muted-foreground">
                   {item.instructions}
                 </p>
-                <Button variant="link" size="sm" className="h-auto p-0 text-primary">
-                  Read Full Policy
-                </Button>
               </div>
             </div>
           ))}

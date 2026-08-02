@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -8,6 +9,7 @@ import { Progress } from "@/components/ui/progress"
 import { FileCheck, AlertCircle, Download, Loader2, ChevronDown, ChevronUp, Upload } from "lucide-react"
 import { getTaxCategories } from "@/app/actions/accounting-sync"
 import { aiGenerateProfitLossReport } from "@/app/actions/ai-financial-management"
+import { attachExpenseReceipt } from "@/app/actions/financials"
 import { toast } from "sonner"
 
 interface Expense {
@@ -34,6 +36,10 @@ export function DeductionReadinessPanel({
   const [loading, setLoading] = useState(true)
   const [generating, setGenerating] = useState(false)
   const [showMissingReceipts, setShowMissingReceipts] = useState(false)
+  const [uploadingId, setUploadingId] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const pendingExpenseId = useRef<string | null>(null)
+  const router = useRouter()
 
   useEffect(() => {
     loadTaxCategories()
@@ -85,21 +91,75 @@ export function DeductionReadinessPanel({
       })
 
       const resultAny = result as any
-      if (resultAny.success && resultAny.report) {
-        // Copy to clipboard
-        const reportText = typeof resultAny.report === "string"
-          ? resultAny.report
-          : JSON.stringify(resultAny.report, null, 2)
-        await navigator.clipboard.writeText(reportText)
-        toast.success("P&L Report copied to clipboard", {
-          description: "Ready for your tax preparer",
-        })
+      // Read the outcome: a refused or empty report used to leave the button
+      // spinning back to idle with no message at all.
+      if (!resultAny?.success || !resultAny?.report) {
+        toast.error(resultAny?.error ?? "The P&L report was not generated")
+        return
       }
-    } catch (error) {
-      console.error("Error generating P&L:", error)
-      toast.error("Failed to generate report")
+      const reportText = typeof resultAny.report === "string"
+        ? resultAny.report
+        : JSON.stringify(resultAny.report, null, 2)
+      await navigator.clipboard.writeText(reportText)
+      toast.success("P&L Report copied to clipboard", {
+        description: "Ready for your tax preparer",
+      })
+    } catch (error: any) {
+      toast.error(error?.message ?? "The P&L report was not generated")
     } finally {
       setGenerating(false)
+    }
+  }
+
+  // ── Attach a receipt to an expense that has none ───────────────────────────
+  // One hidden <input type="file"> serves every row; the row we are filling is
+  // held in a ref so the change handler knows which expense to write to.
+  const pickReceiptFor = (expenseId: string) => {
+    pendingExpenseId.current = expenseId
+    fileInputRef.current?.click()
+  }
+
+  const fileToBase64 = (file: File) =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onerror = () => reject(new Error("The file could not be read"))
+      reader.onload = () => {
+        const result = String(reader.result ?? "")
+        const comma = result.indexOf(",")
+        resolve(comma >= 0 ? result.slice(comma + 1) : result)
+      }
+      reader.readAsDataURL(file)
+    })
+
+  const handleReceiptSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    const expenseId = pendingExpenseId.current
+    // Reset immediately so re-picking the SAME file still fires a change event.
+    e.target.value = ""
+    pendingExpenseId.current = null
+    if (!file || !expenseId) return
+
+    setUploadingId(expenseId)
+    try {
+      const base64 = await fileToBase64(file)
+      const res = await attachExpenseReceipt({
+        expenseId,
+        base64,
+        mimeType: file.type,
+        fileName: file.name,
+      })
+      if (!res.success) {
+        toast.error(res.error ?? "The receipt was not attached")
+        return
+      }
+      toast.success("Receipt attached")
+      // The expenses list is a server prop — re-fetch it so the missing-receipt
+      // count actually comes down.
+      router.refresh()
+    } catch (err: any) {
+      toast.error(err?.message ?? "The receipt was not attached")
+    } finally {
+      setUploadingId(null)
     }
   }
 
@@ -119,6 +179,13 @@ export function DeductionReadinessPanel({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-6">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"
+          className="hidden"
+          onChange={handleReceiptSelected}
+        />
         {/* Stats */}
         <div className="grid grid-cols-3 gap-3">
           <div className="p-3 rounded-lg bg-muted/50 text-center">
@@ -194,8 +261,18 @@ export function DeductionReadinessPanel({
                       <p className="text-sm font-medium">{expense.description}</p>
                       <p className="text-xs text-muted-foreground">{formatCurrency(expense.amount)}</p>
                     </div>
-                    <Button variant="ghost" size="sm">
-                      <Upload className="h-4 w-4" />
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`Attach a receipt to ${expense.description}`}
+                      disabled={uploadingId === expense.id}
+                      onClick={() => pickReceiptFor(expense.id)}
+                    >
+                      {uploadingId === expense.id ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Upload className="h-4 w-4" />
+                      )}
                     </Button>
                   </div>
                 ))}

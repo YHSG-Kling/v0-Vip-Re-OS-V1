@@ -316,5 +316,116 @@ export async function getSavedProperties(contactId: string) {
   }
 }
 
+/**
+ * The facts a PUBLIC property page is allowed to show. Deliberately a narrow,
+ * hand-picked column list rather than `select("*")` — this is read with the
+ * service client on an unauthenticated route, so anything not named here never
+ * leaves the server.
+ */
+export interface PublicPropertyFacts {
+  /** OUR listings.id — set only for an in-house listing. Never an MLS number. */
+  listingId:        string
+  mlsNumber:        string | null
+  address:          string | null
+  city:             string | null
+  state:            string | null
+  zip:              string | null
+  price:            number | null
+  beds:             number | null
+  baths:            number | null
+  sqft:             number | null
+  propertyType:     string | null
+  status:           string | null
+  description:      string | null
+  yearBuilt:        number | null
+  lotSize:          number | null
+  photos:           string[]
+  listingDate:      string | null
+  daysOnMarket:     number | null
+  listingAgentName: string | null
+  /** Present so an anonymous visitor has a real way to reach the listing side. */
+  listingAgentEmail: string | null
+}
+
+/** Statuses that mean the home is publicly marketed and may be shown to anyone. */
+const PUBLICLY_MARKETED_STATUSES = ["active", "coming_soon", "pending"] as const
+
+/**
+ * Resolve a property page from the MLS number in the URL.
+ *
+ * `/properties/<mlsNumber>` is reachable WITHOUT a session — PortalSocialHub
+ * hands that exact URL out as a listing's shareable link — so authorization
+ * here is the publication state of the row, checked BEFORE the service client
+ * returns anything: a listing that is soft-deleted or in a non-public status is
+ * reported as not found rather than rendered.
+ *
+ * Only OUR OWN `listings` rows are resolvable this way. `saved_properties` is
+ * per-contact private data and is never served from a public URL, even when it
+ * happens to carry the same MLS number.
+ */
+export async function getPublicPropertyByMlsNumber(mlsNumber: string): Promise<
+  { success: true; property: PublicPropertyFacts } | { success: false; error: string }
+> {
+  const mls = (mlsNumber ?? "").trim()
+  if (!mls) return { success: false, error: "No MLS number was supplied." }
+
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+
+  const { data, error } = await svc
+    .from("listings")
+    .select("id, mls_number, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, property_type, status, public_remarks, year_built, lot_size, primary_photo_url, photos, listing_date, listing_agent_name, listing_agent_email")
+    .eq("mls_number", mls)
+    .is("deleted_at", null)
+    .in("status", PUBLICLY_MARKETED_STATUSES as unknown as string[])
+    .order("listing_date", { ascending: false })
+    .limit(1)
+
+  if (error) return { success: false, error: error.message }
+
+  const row = data?.[0]
+  if (!row) {
+    return {
+      success: false,
+      error: `No publicly marketed listing was found for MLS #${mls}.`,
+    }
+  }
+
+  const photoList = Array.isArray(row.photos)
+    ? (row.photos as unknown[]).map((p) => (typeof p === "string" ? p : (p as any)?.url)).filter(Boolean)
+    : []
+  const photos = [row.primary_photo_url, ...photoList].filter(Boolean) as string[]
+
+  const daysOnMarket = row.listing_date
+    ? Math.max(0, Math.floor((Date.now() - new Date(row.listing_date).getTime()) / 86_400_000))
+    : null
+
+  return {
+    success: true,
+    property: {
+      listingId:         row.id,
+      mlsNumber:         row.mls_number,
+      address:           row.address,
+      city:              row.city,
+      state:             row.state,
+      zip:               row.zip,
+      price:             row.list_price == null ? null : Number(row.list_price),
+      beds:              row.bedrooms,
+      baths:             row.bathrooms == null ? null : Number(row.bathrooms),
+      sqft:              row.sqft,
+      propertyType:      row.property_type,
+      status:            row.status,
+      description:       row.public_remarks,
+      yearBuilt:         row.year_built,
+      lotSize:           row.lot_size == null ? null : Number(row.lot_size),
+      photos:            [...new Set(photos)],
+      listingDate:       row.listing_date,
+      daysOnMarket,
+      listingAgentName:  row.listing_agent_name,
+      listingAgentEmail: row.listing_agent_email,
+    },
+  }
+}
+
 // IDX API must be configured for property search
 // Set IDX_API_BASE and IDX_API_KEY environment variables to enable

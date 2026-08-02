@@ -17,7 +17,6 @@ import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
 import {
   Send,
-  MoreVertical,
   Clock,
   CheckCircle,
   AlertTriangle,
@@ -417,9 +416,13 @@ export default function AgentTransactionDetailPage() {
                 {postingUpdate ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
                 Update Client
               </Button>
-              <Button variant="outline" size="sm">
-                <MoreVertical className="w-5 h-5" />
-              </Button>
+              {/* An overflow "⋮" button used to sit here with no menu behind it —
+                  no DropdownMenu, no handler, nothing to open. There is no
+                  additional header-level capability on this page to hang off it
+                  (the real controls are Update Client above, the walkthrough /
+                  deal-shaky toggles at the top of the page, and the tabs below),
+                  so the affordance was removed rather than left promising a menu
+                  that does not exist. */}
             </div>
           </div>
 

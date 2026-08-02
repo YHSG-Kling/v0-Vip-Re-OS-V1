@@ -46,8 +46,18 @@ console.log("\n── uploads embed SYNCHRONOUSLY so the KB is immediately usabl
   const s = src("app/actions/knowledge/search.ts")
   check("createKnowledgeArticle embeds synchronously (updateArticleEmbedding) with a queue fallback",
     /updateArticleEmbedding\(data\.id\)[\s\S]*?catch[\s\S]*?queueForEmbedding\('knowledge_articles'/.test(s))
-  check("createHelpTopic embeds synchronously (updateHelpTopicEmbedding) with a queue fallback",
-    /updateHelpTopicEmbedding\(data\.id\)[\s\S]*?catch[\s\S]*?queueForEmbedding\('help_topics_kb'/.test(s))
+  // This used to require the literal `updateHelpTopicEmbedding(data.id)`. The
+  // property that matters is "the topic is embedded BEFORE the action returns,
+  // and a failure falls back to the durable queue" — not which function spells
+  // it. The help-topic path now goes through embedAndStore (same canonical
+  // embedder, plus the KB_ARTICLE_EMBEDDED kernel event the direct call
+  // skipped), so the spelling changed while the guarantee got stronger. Assert
+  // the guarantee.
+  check("createHelpTopic embeds synchronously (inline, before returning) with a queue fallback",
+    /(embedAndStore|updateHelpTopicEmbedding)\([\s\S]{0,20}?\)[\s\S]*?catch[\s\S]*?queueForEmbedding\('help_topics_kb'/.test(s)
+    // …and the create path actually invokes that inline embed rather than only
+    // defining it: embedNow is awaited on the row it just inserted.
+    && /const embedded = await embedNow\(data\.id, data\.content\)/.test(s))
 }
 
 console.log("\n── the brain's knowledge now COVERS CONTACTS (not just brokerage articles) ──")

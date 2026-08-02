@@ -377,31 +377,40 @@ export function CampaignLauncherPanel({ listings, agentId, brokerageId, onCampai
           </div>
         )}
 
-        {/* Launch button — only visible after prediction */}
-        {stage === "predicted" && (
+        {/* Launch button — only visible after prediction.
+            The in-flight state used to be a SECOND, separate <Button disabled>
+            rendered from a `stage === "launching"` branch. It carried no
+            handler, so the launcher's most prominent control was a dead button
+            for the whole duration of the launch. It is now the same button in
+            a busy state, which is also what keeps `handleLaunch` un-re-entrant. */}
+        {(stage === "predicted" || stage === "launching") && (
           <div className="flex gap-2">
             <Button
               variant="ghost"
               onClick={handleReset}
               className="flex-1"
+              disabled={stage === "launching"}
             >
               Back
             </Button>
             <Button
               onClick={handleLaunch}
+              disabled={stage === "launching"}
               className="flex-1 bg-violet-600 hover:bg-violet-700"
             >
-              <Rocket className="mr-2 h-4 w-4" />
-              Launch Campaign
+              {stage === "launching" ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Launching...
+                </>
+              ) : (
+                <>
+                  <Rocket className="mr-2 h-4 w-4" />
+                  Launch Campaign
+                </>
+              )}
             </Button>
           </div>
-        )}
-
-        {stage === "launching" && (
-          <Button disabled className="w-full bg-violet-600">
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            Launching...
-          </Button>
         )}
       </CardContent>
     </Card>

@@ -18,9 +18,15 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { DollarSign, TrendingUp, Clock, Plus } from "lucide-react"
-import { advanceCreditFlow, getCreditPipelineStats } from "@/app/actions/credit-copilot"
-import { createClient } from "@/lib/supabase/client"
+import Link from "next/link"
+import { toast } from "sonner"
+import { advanceCreditFlow, getCreditPipelineStats, createCreditAccount } from "@/app/actions/credit-copilot"
+import { getContacts } from "@/app/actions/contacts"
 
 const FLOW_STAGES = [
   { id: "flow_a", name: "Lead", color: "bg-gray-500" },
@@ -45,11 +51,21 @@ interface CreditAccount {
 }
 
 interface PipelineStats {
+  success: boolean
+  error?: string
   total_value: number
   total_accounts: number
   avg_time_to_close: number
   by_stage: Record<string, number>
   accounts: CreditAccount[]
+  /** null = no budget row for this agent this month, which is not the same as $0. */
+  budget: { used: number; limit: number } | null
+}
+
+interface PickerContact {
+  id: string
+  first_name: string | null
+  last_name: string | null
 }
 
 export default function CreditPipelinePage() {
@@ -57,6 +73,7 @@ export default function CreditPipelinePage() {
   const [stats, setStats] = useState<PipelineStats | null>(null)
   const [activeId, setActiveId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [addOpen, setAddOpen] = useState(false)
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -70,17 +87,17 @@ export default function CreditPipelinePage() {
 
   async function loadPipeline() {
     try {
-      const supabase = createClient()
-      const {
-        data: { user },
-      } = await supabase.auth.getUser()
-      if (!user) return
-
-      const pipelineStats = await getCreditPipelineStats(user.id)
+      // The agent is resolved SERVER-side (agents.id ≠ users.id) — the client
+      // never supplies the scoping id.
+      const pipelineStats = await getCreditPipelineStats()
+      if (!pipelineStats.success) {
+        toast.error(pipelineStats.error || "Could not load the credit pipeline")
+        return
+      }
       setStats(pipelineStats)
       setAccounts(pipelineStats.accounts || [])
-    } catch (error) {
-      console.error("[v0] Error loading pipeline:", error)
+    } catch (error: any) {
+      toast.error(error?.message || "Could not load the credit pipeline")
     } finally {
       setLoading(false)
     }
@@ -100,10 +117,14 @@ export default function CreditPipelinePage() {
     const newStage = over.id as string
 
     try {
-      await advanceCreditFlow(accountId, newStage)
+      const res = await advanceCreditFlow(accountId, newStage)
+      if (!res?.success) {
+        toast.error("The stage change was not saved")
+        return
+      }
       await loadPipeline()
-    } catch (error) {
-      console.error("[v0] Error moving account:", error)
+    } catch (error: any) {
+      toast.error(error?.message || "The stage change was not saved")
     }
   }
 
@@ -146,9 +167,24 @@ export default function CreditPipelinePage() {
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-sm">
                   <span>Budget Used</span>
-                  <span className="font-medium">$2,400 / $5,000</span>
+                  <span className="font-medium">
+                    {stats?.budget
+                      ? `$${stats.budget.used.toLocaleString()} / $${stats.budget.limit.toLocaleString()}`
+                      : "Not set"}
+                  </span>
                 </div>
-                <Progress value={48} />
+                <Progress
+                  value={
+                    stats?.budget && stats.budget.limit > 0
+                      ? Math.min(100, Math.round((stats.budget.used / stats.budget.limit) * 100))
+                      : 0
+                  }
+                />
+                {!stats?.budget && (
+                  <p className="text-xs text-muted-foreground">
+                    No credit budget recorded for this month yet
+                  </p>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -179,10 +215,188 @@ export default function CreditPipelinePage() {
       </DndContext>
 
       {/* Add Account Button */}
-      <Button className="fixed bottom-8 right-8 rounded-full h-14 w-14" size="icon">
+      <Button
+        className="fixed bottom-8 right-8 rounded-full h-14 w-14"
+        size="icon"
+        aria-label="Add credit account"
+        onClick={() => setAddOpen(true)}
+      >
         <Plus className="h-6 w-6" />
       </Button>
+
+      <NewCreditAccountDialog
+        open={addOpen}
+        onOpenChange={setAddOpen}
+        onCreated={loadPipeline}
+      />
     </div>
+  )
+}
+
+// Component: New Credit Account dialog — the FAB's destination.
+// Writes through createCreditAccount (credit_accounts + agent_credit_budgets usage).
+function NewCreditAccountDialog({
+  open,
+  onOpenChange,
+  onCreated,
+}: {
+  open: boolean
+  onOpenChange: (v: boolean) => void
+  onCreated: () => Promise<void> | void
+}) {
+  const [contacts, setContacts] = useState<PickerContact[]>([])
+  const [contactId, setContactId] = useState("")
+  const [partnerName, setPartnerName] = useState("")
+  const [amount, setAmount] = useState("")
+  const [stage, setStage] = useState("flow_a")
+  const [saving, setSaving] = useState(false)
+  const [loadingContacts, setLoadingContacts] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setLoadingContacts(true)
+    getContacts({ limit: 200 })
+      .then((res) => {
+        if (cancelled) return
+        if (!res.success) {
+          toast.error(res.error || "Could not load contacts")
+          return
+        }
+        setContacts((res.contacts ?? []) as PickerContact[])
+      })
+      .catch((e: any) => {
+        if (!cancelled) toast.error(e?.message || "Could not load contacts")
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingContacts(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open])
+
+  async function handleCreate() {
+    const parsedAmount = Number(amount)
+    if (!contactId) {
+      toast.error("Choose the contact this credit account belongs to")
+      return
+    }
+    if (!partnerName.trim()) {
+      toast.error("Enter the credit partner")
+      return
+    }
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      toast.error("Enter a credit amount greater than zero")
+      return
+    }
+
+    setSaving(true)
+    try {
+      const res = await createCreditAccount({
+        contact_id: contactId,
+        partner_name: partnerName.trim(),
+        credit_amount: parsedAmount,
+        initial_stage: stage,
+      })
+      if (!res?.success) {
+        toast.error("The credit account was not created")
+        return
+      }
+      toast.success("Credit account created")
+      setContactId("")
+      setPartnerName("")
+      setAmount("")
+      setStage("flow_a")
+      onOpenChange(false)
+      await onCreated()
+    } catch (error: any) {
+      toast.error(error?.message || "The credit account was not created")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>New credit account</DialogTitle>
+          <DialogDescription>
+            Put a contact into the credit pipeline. The stage you pick fires that stage&apos;s follow-up automation.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="credit-contact">Contact</Label>
+            <Select value={contactId} onValueChange={setContactId}>
+              <SelectTrigger id="credit-contact">
+                <SelectValue placeholder={loadingContacts ? "Loading contacts…" : "Select a contact"} />
+              </SelectTrigger>
+              <SelectContent>
+                {contacts.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>
+                    {[c.first_name, c.last_name].filter(Boolean).join(" ") || "Unnamed contact"}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {!loadingContacts && contacts.length === 0 && (
+              <p className="text-xs text-muted-foreground">No contacts are assigned to you yet.</p>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="credit-partner">Credit partner</Label>
+            <Input
+              id="credit-partner"
+              value={partnerName}
+              onChange={(e) => setPartnerName(e.target.value)}
+              placeholder="e.g. Summit Credit Restoration"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="credit-amount">Credit amount</Label>
+            <Input
+              id="credit-amount"
+              type="number"
+              min={0}
+              step={100}
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder="2500"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="credit-stage">Starting stage</Label>
+            <Select value={stage} onValueChange={setStage}>
+              <SelectTrigger id="credit-stage">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {FLOW_STAGES.map((s) => (
+                  <SelectItem key={s.id} value={s.id}>
+                    {s.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+            Cancel
+          </Button>
+          <Button onClick={handleCreate} disabled={saving}>
+            {saving ? "Creating…" : "Create account"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -304,8 +518,8 @@ function AccountCard({ account, isDragging = false }: { account: CreditAccount; 
           </div>
         </div>
 
-        <Button variant="outline" size="sm" className="w-full bg-transparent">
-          View Details
+        <Button asChild variant="outline" size="sm" className="w-full bg-transparent">
+          <Link href={`/crm/contacts/${account.contact_id}`}>View Details</Link>
         </Button>
       </CardContent>
     </Card>

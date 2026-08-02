@@ -37,6 +37,7 @@ import { generateWeeklyCoachingReport } from "@/app/actions/coaching"
 import { createClient } from "@/lib/supabase/client"
 import { aiCoachGoalProgress } from "@/app/actions/ai-agent-goals"
 import { getAgentCoachingInsights } from "@/app/actions/ai-predictions"
+import { createTask } from "@/app/actions/tasks"
 
 interface WeeklyReport {
   id: string
@@ -156,11 +157,14 @@ function ScoreDial({ score }: { score: number }) {
 
 // Stage coaching card component
 function StageCoachingCard({
+  entityId,
   name,
   stage,
   coaching,
   type,
 }: {
+  /** contacts.id for a buyer, listings.id for a seller — the task is filed against it. */
+  entityId: string
   name: string
   stage: string
   coaching: BuyerCoachingItem["coaching"] | SellerCoachingItem["coaching"]
@@ -168,6 +172,36 @@ function StageCoachingCard({
 }) {
   const stageBadgeColor =
     type === "buyer" ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700"
+
+  // The next action used to be rendered AS the button label with no handler —
+  // a coaching sentence dressed as a control. It is guidance, so it reads as
+  // guidance now, and the control beside it turns the guidance into a real task
+  // on the agent's task list (tasks table, filed against this contact/listing).
+  const [addingTask, setAddingTask] = useState(false)
+  const [taskAdded, setTaskAdded] = useState(false)
+
+  async function addNextActionAsTask() {
+    setAddingTask(true)
+    try {
+      const res = await createTask({
+        title: coaching.next_action_prompt,
+        description: `Coaching next action for ${name} — ${coaching.coaching_headline}`,
+        contactId: type === "buyer" ? entityId : undefined,
+        listingId: type === "seller" ? entityId : undefined,
+        priority: "high",
+      })
+      if (!res?.success) {
+        toast.error((res as any)?.error ?? "The task was not created")
+        return
+      }
+      setTaskAdded(true)
+      toast.success("Added to your tasks")
+    } catch (err: any) {
+      toast.error(err?.message ?? "The task was not created")
+    } finally {
+      setAddingTask(false)
+    }
+  }
 
   return (
     <Card className="mb-4">
@@ -241,10 +275,39 @@ function StageCoachingCard({
           )}
         </div>
 
-        {/* Next Action CTA */}
-        <Button variant="outline" size="sm" className="w-full">
-          {coaching.next_action_prompt}
-        </Button>
+        {/* Next Action */}
+        {coaching.next_action_prompt && (
+          <div className="space-y-2 rounded-lg border border-primary/20 bg-primary/5 p-3">
+            <p className="text-sm text-foreground">
+              <span className="font-medium">Next: </span>
+              {coaching.next_action_prompt}
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              onClick={addNextActionAsTask}
+              disabled={addingTask || taskAdded}
+            >
+              {taskAdded ? (
+                <>
+                  <CheckCircle2 className="mr-2 h-3.5 w-3.5" />
+                  Added to your tasks
+                </>
+              ) : addingTask ? (
+                <>
+                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                  Adding…
+                </>
+              ) : (
+                <>
+                  <Target className="mr-2 h-3.5 w-3.5" />
+                  Add as task
+                </>
+              )}
+            </Button>
+          </div>
+        )}
       </CardContent>
     </Card>
   )
@@ -533,6 +596,7 @@ export function CoachingDashboardClient({
                     buyerCoaching.map((item) => (
                       <StageCoachingCard
                         key={item.contact.id}
+                        entityId={item.contact.id}
                         name={`${item.contact.first_name} ${item.contact.last_name}`}
                         stage={item.contact.buyer_stage}
                         coaching={item.coaching}
@@ -552,6 +616,7 @@ export function CoachingDashboardClient({
                     sellerCoaching.map((item) => (
                       <StageCoachingCard
                         key={item.listing.id}
+                        entityId={item.listing.id}
                         name={item.listing.property_address}
                         stage={item.listing.lifecycle_stage || "pre_listing"}
                         coaching={item.coaching}

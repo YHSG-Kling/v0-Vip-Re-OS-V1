@@ -19,7 +19,6 @@ import {
   CheckCircle,
   Loader2,
   Play,
-  Download,
   Trash2,
   ChevronDown,
   Video,
@@ -445,11 +444,15 @@ export default function LinkToVideoGenerator() {
                     <TableCell>{new Date(video.created_at).toLocaleDateString()}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-2">
-                        {video.status === "completed" && (
-                          <Button size="sm" variant="ghost">
-                            <Download className="h-4 w-4" />
-                          </Button>
-                        )}
+                        {/* A "Download" button used to sit here, gated on
+                            status === "completed" and carrying no handler.
+                            There is nothing for it to download:
+                            video_generation_queue holds the source URL and the
+                            script and NO rendered-output column, and
+                            startVideoGeneration only sets status to
+                            "generating_audio" — no renderer advances it further.
+                            Removed rather than pointed at a field that does not
+                            exist. See the report note on the link-to-video gap. */}
                         <Button size="sm" variant="ghost" onClick={() => handleDeleteVideo(video.id)}>
                           <Trash2 className="h-4 w-4" />
                         </Button>

@@ -72,7 +72,8 @@ for (const f of all) {
 const EXEMPT = new Set<string>([
   "app/actions/index.ts", // the barrel itself, imported as @/app/actions
   // Demo-mode scaffolding — intentionally unwired; REMOVE AT GO-LIVE (owner decision).
-  "app/actions/demo-login.ts",
+  // (demo-login.ts was deleted: it was a second, uncalled implementation of the
+  // gated demoSignIn in app/actions/demo-auth.ts, and two auth paths drift.)
   "app/actions/demo-contacts.ts",
 ])
 

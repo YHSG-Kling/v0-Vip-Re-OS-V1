@@ -15,46 +15,52 @@ interface DeadlineIntelligencePanelProps {
 export function DeadlineIntelligencePanel({ brokerageId }: DeadlineIntelligencePanelProps) {
   const [deadlines, setDeadlines] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [showAll, setShowAll] = useState(false)
   const supabase = createClient()
 
   useEffect(() => {
     const fetchDeadlines = async () => {
-      try {
-        const { data } = await supabase
-          .from('transaction_deadlines')
-          .select(`
-            id,
-            transaction_id,
-            deadline_type,
-            deadline_date,
-            status,
-            created_at,
-            source_document_id,
-            source_field_key
-          `)
-          .eq('brokerage_id', brokerageId)
-          .order('deadline_date', { ascending: true })
-          .limit(20)
+      // supabase-js RESOLVES a failed query — `error` is checked so a broken
+      // read cannot render as "No deadlines found".
+      const { data, error } = await supabase
+        .from('transaction_deadlines')
+        .select(`
+          id,
+          transaction_id,
+          deadline_type,
+          deadline_date,
+          status,
+          created_at,
+          source_document_id,
+          source_field_key
+        `)
+        .eq('brokerage_id', brokerageId)
+        .order('deadline_date', { ascending: true })
+        .limit(100)
 
-        // transaction_deadlines.status is pending|completed|extended|missed|waived;
-        // derive the time-based display state the panel renders from deadline_date.
-        const now = Date.now()
-        const withDisplay = (data || []).map((d: any) => {
-          const due = d.deadline_date ? new Date(d.deadline_date).getTime() : null
-          const done = d.status === 'completed' || d.status === 'waived'
-          let display_status: 'overdue' | 'due_soon' | 'on_track' = 'on_track'
-          if (!done) {
-            if (d.status === 'missed' || (due !== null && due < now)) display_status = 'overdue'
-            else if (due !== null && due - now <= 3 * 24 * 60 * 60 * 1000) display_status = 'due_soon'
-          }
-          return { ...d, display_status }
-        })
-        setDeadlines(withDisplay)
-      } catch (error) {
-        console.error('Error fetching deadlines:', error)
-      } finally {
+      if (error) {
+        setLoadError(error.message)
         setLoading(false)
+        return
       }
+
+      // transaction_deadlines.status is pending|completed|extended|missed|waived;
+      // derive the time-based display state the panel renders from deadline_date.
+      const now = Date.now()
+      const withDisplay = (data || []).map((d: any) => {
+        const due = d.deadline_date ? new Date(d.deadline_date).getTime() : null
+        const done = d.status === 'completed' || d.status === 'waived'
+        let display_status: 'overdue' | 'due_soon' | 'on_track' = 'on_track'
+        if (!done) {
+          if (d.status === 'missed' || (due !== null && due < now)) display_status = 'overdue'
+          else if (due !== null && due - now <= 3 * 24 * 60 * 60 * 1000) display_status = 'due_soon'
+        }
+        return { ...d, display_status }
+      })
+      setLoadError(null)
+      setDeadlines(withDisplay)
+      setLoading(false)
     }
 
     fetchDeadlines()
@@ -113,10 +119,14 @@ export function DeadlineIntelligencePanel({ brokerageId }: DeadlineIntelligenceP
         <div className="space-y-2 max-h-96 overflow-y-auto">
           {loading ? (
             <div className="text-center py-8 text-muted-foreground">Loading deadlines...</div>
+          ) : loadError ? (
+            <div className="text-center py-8 text-sm text-destructive">
+              Deadlines could not be loaded: {loadError}
+            </div>
           ) : deadlines.length === 0 ? (
             <div className="text-center py-8 text-muted-foreground">No deadlines found</div>
           ) : (
-            deadlines.slice(0, 10).map(deadline => (
+            (showAll ? deadlines : deadlines.slice(0, 10)).map(deadline => (
               <div
                 key={deadline.id}
                 className="flex items-center justify-between p-3 rounded-lg border hover:bg-muted/50 transition-colors"
@@ -146,9 +156,17 @@ export function DeadlineIntelligencePanel({ brokerageId }: DeadlineIntelligenceP
           )}
         </div>
 
+        {/* The panel already holds every deadline it fetched; only the first ten
+            were ever rendered, so "View All" now actually reveals the rest
+            instead of doing nothing. */}
         {deadlines.length > 10 && (
-          <Button variant="outline" size="sm" className="w-full">
-            View All Deadlines
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full"
+            onClick={() => setShowAll(v => !v)}
+          >
+            {showAll ? 'Show Top 10' : `View All Deadlines (${deadlines.length})`}
           </Button>
         )}
       </CardContent>

@@ -82,6 +82,66 @@ export default function AnalyticsDashboard() {
     }
   }
 
+  // Export — writes the metrics THIS page is showing (the value-delivered
+  // rollup, the traditional rollup, the value-over-time series and the lead
+  // value journeys) to a CSV the agent can open in a spreadsheet. Everything in
+  // it comes from loadValueDrivenDashboard / getLeadValueJourneys; nothing is
+  // fabricated, and nothing that is not on screen is invented for the file.
+  const handleExport = () => {
+    if (!dashboardData) return
+
+    const esc = (v: unknown) => {
+      const s = v === null || v === undefined ? "" : String(v)
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+    }
+    const rows: (string | number)[][] = [
+      ["Section", "Metric", "Value"],
+      ["Period", "Range", `${dashboardData.startDate} to ${dashboardData.endDate}`],
+      ["Period", "Preset", dashboardData.period],
+      ["Value delivered", "Total value delivered ($)", dashboardData.valueMetrics?.total_value_delivered ?? 0],
+      ["Value delivered", "People helped", dashboardData.valueMetrics?.people_helped ?? 0],
+      ["Value delivered", "Free tools used", dashboardData.valueMetrics?.free_tools_used ?? 0],
+      ["Value delivered", "Guides shared", dashboardData.valueMetrics?.guides_shared ?? 0],
+      ["Value delivered", "Reciprocity rate (%)", dashboardData.valueMetrics?.reciprocity_rate ?? "0"],
+      ["Performance", "Monthly GCI ($)", dashboardData.traditionalMetrics?.monthly_gci ?? 0],
+      ["Performance", "Units closed", dashboardData.traditionalMetrics?.units_closed ?? 0],
+      ["Performance", "Active leads", dashboardData.traditionalMetrics?.active_leads ?? 0],
+      ["Performance", "Conversion rate (%)", dashboardData.traditionalMetrics?.conversion_rate ?? "0"],
+      ["Trust", "Trust capital score", dashboardData.trust_capital_score ?? 0],
+      ["Trust", "Generosity score", dashboardData.generosity_score ?? 0],
+    ]
+
+    const series: any[] = dashboardData.valueOverTime ?? []
+    if (series.length > 0) {
+      rows.push([], ["Value delivered per day"], ["Date", "Value ($)"])
+      for (const p of series) rows.push([p.date, p.value])
+    }
+
+    if (leadJourneys.length > 0) {
+      rows.push([], ["Lead value journeys"], ["Contact", "Email", "Total value received ($)", "Touchpoints"])
+      for (const j of leadJourneys) {
+        const c = j.contacts ?? {}
+        rows.push([
+          [c.first_name, c.last_name].filter(Boolean).join(" "),
+          c.email ?? "",
+          j.total_value_received ?? 0,
+          j.touchpoint_count ?? j.total_touchpoints ?? "",
+        ])
+      }
+    }
+
+    const csv = rows.map((r) => r.map(esc).join(",")).join("\n")
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `analytics-${dashboardData.startDate}-to-${dashboardData.endDate}.csv`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
   const handleAiSummary = async () => {
     setAiSummaryLoading(true)
     const context = `Trust capital score: ${dashboardData?.trust_capital_score ?? 0}. Generosity score: ${dashboardData?.generosity_score ?? 0}%. Total value delivered: $${dashboardData?.total_value_delivered ?? 0}. Converted leads: ${dashboardData?.converted_leads ?? 0}. Period: ${period}.`
@@ -159,7 +219,7 @@ export default function AnalyticsDashboard() {
                 )}
                 AI Summary
               </Button>
-              <Button variant="outline">
+              <Button variant="outline" onClick={handleExport} disabled={!dashboardData}>
                 <Download className="h-4 w-4 mr-2" />
                 Export
               </Button>

@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -88,8 +89,11 @@ export function SequenceExecutionPanel({
               <div className="text-center py-8 text-muted-foreground">
                 <Users className="h-8 w-8 mx-auto mb-2 opacity-50" />
                 <p>No active sequence enrollments.</p>
-                <Button variant="link" size="sm" className="mt-2">
-                  Browse Sequences
+                {/* Had no handler: the one control on the empty state, and the
+                    only way out of it, went nowhere. The sequences list lives at
+                    /dashboard/campaigns/sequences. */}
+                <Button variant="link" size="sm" className="mt-2" asChild>
+                  <Link href="/dashboard/campaigns/sequences">Browse Sequences</Link>
                 </Button>
               </div>
             ) : (

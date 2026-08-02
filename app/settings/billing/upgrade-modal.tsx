@@ -184,7 +184,16 @@ export function UpgradeModal({
                     )}
 
                     {isUpgrade && (
-                      <Button className="w-full mt-2" size="sm">
+                      <Button
+                        className="w-full mt-2"
+                        size="sm"
+                        onClick={(e) => {
+                          // The Card also carries this handler; stop the bubble so
+                          // the tier is selected exactly once.
+                          e.stopPropagation()
+                          handleSelectTier(tier.id)
+                        }}
+                      >
                         Select
                       </Button>
                     )}

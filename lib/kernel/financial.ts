@@ -1009,15 +1009,34 @@ export async function createExpenseRecord(
     const now = new Date().toISOString()
     const recordDate = expenseDate ?? new Date().toISOString().split("T")[0]
 
-    // Insert expense record
-    // NOTE: business_expenses has NO brokerage_id column — only agent_id
+    // business_expenses.description is NOT NULL in the live schema, so
+    // `description ?? null` did not write an anonymous expense — it made the
+    // whole insert fail, and the caller learned that only from a raw Postgres
+    // message. Ask for the description instead.
+    const expenseDescription = description?.trim()
+    if (!expenseDescription) {
+      return { success: false, error: "A description is required for an expense" }
+    }
+
+    // Insert expense record.
+    //
+    // The comment here used to read "business_expenses has NO brokerage_id
+    // column — only agent_id". That is false against the live schema: the table
+    // carries brokerage_id AND team_id. Believing it meant every expense written
+    // through the kernel was tenant-orphaned, while logScopedExpense in
+    // app/actions/financials.ts set them — two writers, two shapes, and reports
+    // that scope by brokerage silently missed the kernel's rows.
     const { data: expense, error: insertError } = await supabase
       .from("business_expenses")
       .insert({
         agent_id:     agentId,
+        brokerage_id: ctx.brokerageId,
+        // team_id is left to the DB: FinancialActorContext does not carry a
+        // team, and guessing one from the actor would mis-file an expense a
+        // broker recorded for an agent on a different team.
         category,
         amount,
-        description:  description ?? null,
+        description:  expenseDescription,
         receipt_url:  receiptUrl ?? null,
         expense_date: recordDate,
         created_at:   now,

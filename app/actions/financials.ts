@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { uploadBufferToBucket } from "@/lib/storage/buckets"
 import { generateTextRouted } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 
@@ -400,6 +401,101 @@ export async function deleteExpense(expenseId: string) {
   revalidatePath("/dashboard/financials/expenses")
   revalidatePath("/dashboard/financials/agent")
   return { success: true }
+}
+
+// ─── ATTACH A RECEIPT TO AN EXISTING EXPENSE ─────────────────────────────────
+// Deduction readiness counts "missing receipts" and the panel offers an upload
+// per row; there was no capability behind it, so the count could never come
+// down for an expense that was logged without a receipt. This is that capability.
+//
+// The file lands in the PRIVATE `receipts` bucket (a receipt is tax material —
+// it must not be world-readable), so receipt_url holds a signed URL. Storage
+// uses the service client, which is why authorization happens FIRST: the row is
+// re-read and ownership proved through the RLS-scoped client before any
+// privileged write.
+
+export async function attachExpenseReceipt(input: {
+  expenseId: string
+  /** base64 (no data: prefix) — the browser reads the File and encodes it. */
+  base64: string
+  mimeType: string
+  fileName?: string
+}): Promise<{ success: boolean; receiptUrl?: string; error?: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  if (!input.expenseId) return { success: false, error: "expense_required" }
+  if (!input.base64) return { success: false, error: "file_required" }
+
+  const ALLOWED = new Set(["image/jpeg", "image/png", "image/webp", "image/heic", "application/pdf"])
+  const mimeType = (input.mimeType || "").toLowerCase()
+  if (!ALLOWED.has(mimeType)) {
+    return { success: false, error: "A receipt must be a JPEG, PNG, WebP, HEIC or PDF" }
+  }
+
+  let buffer: Buffer
+  try {
+    buffer = Buffer.from(input.base64, "base64")
+  } catch {
+    return { success: false, error: "The file could not be decoded" }
+  }
+  if (buffer.length === 0) return { success: false, error: "The file was empty" }
+  if (buffer.length > 15 * 1024 * 1024) return { success: false, error: "A receipt must be under 15 MB" }
+
+  // AUTHORIZE FIRST, through the caller's own RLS-scoped client.
+  const supabase = await createClient()
+  const { data: expense, error: readError } = await supabase
+    .from("business_expenses")
+    .select("id, agent_id, team_id, brokerage_id")
+    .eq("id", input.expenseId)
+    .maybeSingle()
+
+  if (readError) return { success: false, error: readError.message }
+  if (!expense) return { success: false, error: "That expense is not visible in your workspace" }
+
+  // business_expenses.agent_id → agents.id. ctx.agentId is already an agents.id;
+  // it is never substituted with ctx.userId.
+  const ownsAsAgent = expense.agent_id != null && expense.agent_id === ctx.agentId
+  const sameBrokerage = expense.brokerage_id != null && expense.brokerage_id === ctx.brokerageId
+  const isAdmin = ADMIN_ROLES.has(ctx.userType)
+  if (!ownsAsAgent && !(isAdmin && sameBrokerage)) {
+    return { success: false, error: "That expense is not yours to attach a receipt to" }
+  }
+
+  const ext =
+    mimeType === "application/pdf" ? "pdf"
+      : mimeType === "image/png" ? "png"
+        : mimeType === "image/webp" ? "webp"
+          : mimeType === "image/heic" ? "heic"
+            : "jpg"
+  const path = `${ctx.brokerageId}/${expense.id}/${Date.now()}.${ext}`
+
+  const upload = await uploadBufferToBucket({
+    bucket: "receipts",
+    path,
+    buffer,
+    contentType: mimeType,
+    public: false,
+    // A receipt is referenced from the P&L export for a whole tax year.
+    signedTtlSeconds: 60 * 60 * 24 * 365,
+  })
+  if (!upload.ok) return { success: false, error: upload.error }
+
+  const svc = createServiceClient()
+  const { data: updated, error: updateError } = await svc
+    .from("business_expenses")
+    .update({ receipt_url: upload.url })
+    .eq("id", expense.id)
+    .select("id")
+
+  if (updateError) return { success: false, error: updateError.message }
+  if (!updated || updated.length === 0) {
+    return { success: false, error: "The receipt uploaded but the expense row was not updated" }
+  }
+
+  revalidatePath("/dashboard/financials/expenses")
+  revalidatePath("/dashboard/financials/agent")
+  revalidatePath("/dashboard/financials")
+  return { success: true, receiptUrl: upload.url }
 }
 
 // ─── UPDATE COMMISSION STATUS (broker only) ───────────────────────────────────

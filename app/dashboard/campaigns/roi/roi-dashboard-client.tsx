@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useMemo } from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
   Card,
@@ -89,6 +90,7 @@ export function ROIDashboardClient({
   const [dateWindow, setDateWindow] = useState<string>("this_month")
   const [sortBy, setSortBy] = useState<string>("roi_percentage")
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc")
+  const [activeTab, setActiveTab] = useState<string>("campaigns")
 
   // Filter and sort campaigns
   const filteredCampaigns = useMemo(() => {
@@ -145,7 +147,13 @@ export function ROIDashboardClient({
         <p className="text-muted-foreground text-center max-w-md">
           {accessError}
         </p>
-        <Button variant="outline">Upgrade Plan</Button>
+        {/* Had no handler. This is the ONLY control on the plan-gated dead end,
+            so an agent who hit the gate had no way to act on it. Billing and the
+            plan upgrade live at /settings/billing — the same destination the
+            admin usage page already sends people to. */}
+        <Button variant="outline" asChild>
+          <Link href="/settings/billing">Upgrade Plan</Link>
+        </Button>
       </div>
     )
   }
@@ -278,7 +286,7 @@ export function ROIDashboardClient({
       </div>
 
       {/* Tabs */}
-      <Tabs defaultValue="campaigns" className="space-y-4">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList>
           <TabsTrigger value="campaigns">Campaign ROI</TabsTrigger>
           <TabsTrigger value="channels">Channel Comparison</TabsTrigger>
@@ -647,8 +655,12 @@ export function ROIDashboardClient({
 
               {topCampaigns.length > 0 && (
                 <div className="mt-4 text-center">
-                  <Button variant="link" size="sm">
-                    View Full Dashboard
+                  {/* Had no handler, and "View Full Dashboard" was a lie — this
+                      IS the dashboard. The leaderboard is capped at the top 5
+                      campaigns; the unabridged, filterable table is the
+                      Campaign ROI tab, so that is where this goes now. */}
+                  <Button variant="link" size="sm" onClick={() => setActiveTab("campaigns")}>
+                    View all {campaigns.length} campaigns
                   </Button>
                 </div>
               )}

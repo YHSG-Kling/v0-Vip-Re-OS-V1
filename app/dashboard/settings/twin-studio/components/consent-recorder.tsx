@@ -344,10 +344,17 @@ export function ConsentRecorder({ onVerified, onSkip, maxSeconds = 20 }: Props) 
             </Button>
           </>
         )}
+        {/* Busy state, not a control — there is nothing behind it to press.
+            Rendered the same way the `loading` phase above is, so the surface
+            never shows a button that cannot do anything. */}
         {phase === "submitting" && (
-          <Button disabled>
+          <div
+            role="status"
+            aria-live="polite"
+            className="inline-flex h-9 items-center rounded-md border px-4 text-sm text-muted-foreground"
+          >
             <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Verifying…
-          </Button>
+          </div>
         )}
       </div>
     </div>

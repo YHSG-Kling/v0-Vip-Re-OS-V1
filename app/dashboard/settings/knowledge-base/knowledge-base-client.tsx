@@ -2,7 +2,6 @@
 
 import { useState, useCallback } from 'react'
 import useSWR, { mutate } from 'swr'
-import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -43,6 +42,13 @@ import {
   Edit,
 } from 'lucide-react'
 import { toast } from 'sonner'
+import {
+  createHelpTopic,
+  updateHelpTopic,
+  deleteHelpTopic,
+  getHelpTopicsAdmin,
+  backfillAllEmbeddings,
+} from '@/app/actions/knowledge/search'
 
 interface KBArticle {
   id: string
@@ -73,14 +79,13 @@ interface KnowledgeBaseClientProps {
   queueStatus?: EmbeddingQueueStatus
 }
 
-const fetcher = async (url: string) => {
-  const supabase = createClient()
-  const { data, error } = await supabase
-    .from('help_topics_kb')
-    .select('*')
-    .order('updated_at', { ascending: false })
-  if (error) throw error
-  return data
+// The browser used to read help_topics_kb directly, which relied entirely on
+// RLS for the platform-vs-brokerage split. getHelpTopicsAdmin applies the same
+// rule on the server (this brokerage's rows OR the platform's), so the scope is
+// stated once instead of assumed in two places.
+const fetcher = async () => {
+  const { topics } = await getHelpTopicsAdmin({ limit: 200 })
+  return topics
 }
 
 export function KnowledgeBaseClient({
@@ -144,64 +149,48 @@ export function KnowledgeBaseClient({
     }
 
     setIsSaving(true)
-    const supabase = createClient()
+    setIsEmbedding(true)
 
     try {
-      const articleData = {
-        title: formTitle.trim(),
-        content: formContent.trim(),
-        category: formCategory,
-        tags: formTags.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean),
-        brokerage_id: formBrokerageScope === 'brokerage' ? brokerageId : null,
-        is_active: true,
-      }
+      // These used to be raw browser writes to help_topics_kb followed by a
+      // POST to /api/intelligence/kb/embed carrying
+      // `Bearer ${NEXT_PUBLIC_INTERNAL_API_SECRET}`. Two things were wrong:
+      // the route validates INTERNAL_API_SECRET (a different, server-only
+      // variable), so the header could not match and every embed returned 401;
+      // and the response was only checked for `ok`, never for failure — so the
+      // admin was told "Article created successfully" while the article stayed
+      // unembedded and therefore invisible to the AI that is the whole point of
+      // uploading it. The server actions embed inline, need no secret in the
+      // browser, and report whether the embedding actually landed.
+      const tags = formTags.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean)
+      const scope = formBrokerageScope
 
-      let savedArticleId: string
-
-      if (editingArticle) {
-        // Update existing
-        const { error } = await supabase
-          .from('help_topics_kb')
-          .update(articleData)
-          .eq('id', editingArticle.id)
-
-        if (error) throw error
-        savedArticleId = editingArticle.id
-        toast.success('Article updated successfully')
-      } else {
-        // Insert new
-        const { data, error } = await supabase
-          .from('help_topics_kb')
-          .insert(articleData)
-          .select('id')
-          .single()
-
-        if (error) throw error
-        savedArticleId = data.id
-        toast.success('Article created successfully')
-      }
-
-      // Auto-trigger embedding if no embedding exists
-      if (!editingArticle?.content_embedding) {
-        setIsEmbedding(true)
-        try {
-          const response = await fetch('/api/intelligence/kb/embed', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${process.env.NEXT_PUBLIC_INTERNAL_API_SECRET || ''}`,
-            },
-            body: JSON.stringify({ topicId: savedArticleId }),
+      const res = editingArticle
+        ? await updateHelpTopic(editingArticle.id, {
+            title: formTitle.trim(),
+            content: formContent.trim(),
+            category: formCategory,
+            tags,
+            scope,
+          })
+        : await createHelpTopic({
+            title: formTitle.trim(),
+            content: formContent.trim(),
+            category: formCategory,
+            tags,
+            scope,
           })
 
-          if (response.ok) {
-            toast.success('Article embedded for vector search')
-          }
-        } catch (embedError) {
-          console.error('Embedding failed:', embedError)
-          // Non-fatal - article is saved even if embedding fails
-        }
-        setIsEmbedding(false)
+      if (!res.success) {
+        toast.error(res.error)
+        return
+      }
+
+      toast.success(editingArticle ? 'Article updated' : 'Article created')
+      if (res.embedded) {
+        toast.success('Article embedded for vector search')
+      } else {
+        toast.error('Saved, but the embedding failed — the AI cannot retrieve this article yet. It is queued for retry.')
       }
 
       await mutate('kb-articles')
@@ -210,6 +199,7 @@ export function KnowledgeBaseClient({
       console.error('Save error:', error)
       toast.error(error.message || 'Failed to save article')
     } finally {
+      setIsEmbedding(false)
       setIsSaving(false)
     }
   }
@@ -217,44 +207,27 @@ export function KnowledgeBaseClient({
   const handleDelete = async (articleId: string) => {
     if (!confirm('Are you sure you want to delete this article?')) return
 
-    const supabase = createClient()
-
-    try {
-      const { error } = await supabase
-        .from('help_topics_kb')
-        .delete()
-        .eq('id', articleId)
-
-      if (error) throw error
-      toast.success('Article deleted')
-      await mutate('kb-articles')
-    } catch (error: any) {
-      toast.error(error.message || 'Failed to delete article')
+    const res = await deleteHelpTopic(articleId)
+    if (!res.success) {
+      toast.error(res.error)
+      return
     }
+    toast.success('Article deleted')
+    await mutate('kb-articles')
   }
 
   const handleBulkEmbed = async () => {
     setIsBulkEmbedding(true)
     try {
-      const response = await fetch('/api/intelligence/kb/embed', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.NEXT_PUBLIC_INTERNAL_API_SECRET || ''}`,
-        },
-        body: JSON.stringify({ embedAll: true }),
-      })
-
-      const result = await response.json()
-
-      if (response.ok) {
-        toast.success(`Embedded ${result.embedded} articles (${result.errors} errors)`)
-        await mutate('kb-articles')
+      const result = await backfillAllEmbeddings()
+      if (result.failed > 0) {
+        toast.error(`Embedded ${result.processed} of ${result.total}; ${result.failed} failed`)
       } else {
-        toast.error(result.error || 'Bulk embedding failed')
+        toast.success(`Embedded ${result.processed} of ${result.total} articles`)
       }
-    } catch (error) {
-      toast.error('Failed to trigger bulk embedding')
+      await mutate('kb-articles')
+    } catch (error: any) {
+      toast.error(error?.message || 'Failed to run bulk embedding')
     } finally {
       setIsBulkEmbedding(false)
     }

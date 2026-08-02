@@ -26,7 +26,6 @@ import {
   Plus,
   Send,
   X,
-  MoreVertical,
   Save,
   Mic,
   User,
@@ -41,7 +40,8 @@ import {
   getSavedIdeas,
 } from "@/app/actions/content-studio"
 import { checkContentCompliance } from "@/app/dashboard/marketing/studio/components/ad-os/ad-os-actions"
-import { aiWriteNewsletterContent, aiGenerateSubjectLines } from "@/app/actions/ai-newsletter"
+import { aiWriteNewsletterContent, aiGenerateSubjectLines, getNewsletters } from "@/app/actions/ai-newsletter"
+import { getDirectMailCampaigns } from "@/app/actions/ai-direct-mail"
 import { createMailCampaign } from "@/app/actions/direct-mail"
 import { createClient } from "@/lib/supabase/client"
 import LinkToVideoGenerator from "@/components/content-studio/LinkToVideoGenerator"
@@ -180,22 +180,57 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
   async function loadData() {
     try {
       setIsInitializing(true)
-      const [ideasData, savedData, competitorData, calendarData, statsData] = await Promise.all([
-        generateContentIdeas(undefined, userId, userRole),
-        getSavedIdeas(userId, userRole),
-        getCompetitorContent(userId, userRole),
-        getContentCalendar(userId, userRole),
-        getPublishingStats(userId, userRole),
-      ])
+      // Newsletters / direct mail / long videos used to be set to a literal []
+      // right here, so three whole card lists — and the Send Campaign paths
+      // inside them — were unreachable no matter what the account owned. Both
+      // list actions already existed and had no callers; the long-video list is
+      // the same rows the upload on this page writes.
+      const [ideasData, savedData, competitorData, calendarData, statsData, newsletterRes, mailRes] =
+        await Promise.all([
+          generateContentIdeas(undefined, userId, userRole),
+          getSavedIdeas(userId, userRole),
+          getCompetitorContent(userId, userRole),
+          getContentCalendar(userId, userRole),
+          getPublishingStats(userId, userRole),
+          getNewsletters(),
+          getDirectMailCampaigns(),
+        ])
 
       if (ideasData.success && ideasData.ideas) setContentIdeas(ideasData.ideas)
       setSavedIdeas(savedData)
       setCompetitors(competitorData)
       setCalendar(calendarData)
       setStats(statsData)
-      setNewsletters([])
-      setDirectMail([])
-      setLongVideos([])
+
+      // A refusal is not an empty library. Say which list could not load rather
+      // than rendering "nothing here yet" over an error.
+      const refusals: string[] = []
+      if (newsletterRes?.success) setNewsletters((newsletterRes as any).newsletters ?? [])
+      else refusals.push(`newsletters (${(newsletterRes as any)?.error ?? "no reason given"})`)
+      if (mailRes?.success) setDirectMail((mailRes as any).campaigns ?? [])
+      else refusals.push(`direct mail (${(mailRes as any)?.error ?? "no reason given"})`)
+
+      const supabase = createClient()
+      const { data: videoRows, error: videoError } = await supabase
+        .from("ai_video_projects")
+        .select("id, title, duration_seconds, video_type, video_provider, video_url, status")
+        .order("created_at", { ascending: false })
+        .limit(50)
+      if (videoError) {
+        refusals.push(`videos (${videoError.message})`)
+      } else {
+        setLongVideos(
+          (videoRows ?? []).map((v: any) => ({
+            id: v.id,
+            title: v.title,
+            durationSeconds: v.duration_seconds ?? 0,
+            sourceType: v.video_type ?? v.video_provider ?? "upload",
+            videoUrl: v.video_url,
+            status: v.status,
+          })),
+        )
+      }
+      if (refusals.length > 0) toast.error(`Could not load ${refusals.join("; ")}`)
     } catch (error) {
       console.error("Failed to load Content Studio data:", error)
       setContentIdeas([])
@@ -238,22 +273,31 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
     }
   }
 
+  // executeWorkflow RESOLVES with { success: false, error } on failure — it does
+  // not throw. All three of these awaited it and then reported success
+  // unconditionally, so a send that never happened looked identical to one that
+  // did. Every result is read now, and a partial push names the channels that
+  // actually went out separately from the ones that did not.
   async function handlePushToOmniChannel(content: any, channels: string[]) {
     setIsProcessing(content.id)
     try {
-      // Push to selected channels
+      const pushed: string[] = []
+      const failed: string[] = []
       for (const channel of channels) {
-        await executeWorkflow("publish-content", {
+        const res = await executeWorkflow("publish-content", {
           contentId: content.id,
           channel,
           content: content.text || content.title,
         })
+        if (res?.success) pushed.push(channel)
+        else failed.push(`${channel} (${res?.error ?? "no reason given"})`)
       }
-      toast.success(`Pushed to ${channels.join(", ")}`)
-      setSelectedOmniChannel([])
+      if (pushed.length > 0) toast.success(`Pushed to ${pushed.join(", ")}`)
+      if (failed.length > 0) toast.error(`Not pushed — ${failed.join("; ")}`)
+      if (failed.length === 0) setSelectedOmniChannel([])
       loadData()
-    } catch (error) {
-      toast.error("Push failed")
+    } catch (error: any) {
+      toast.error(`Push failed: ${error?.message ?? "unknown error"}`)
     } finally {
       setIsProcessing(null)
     }
@@ -261,20 +305,20 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
 
   async function handleSendNewsletter(id: string) {
     setIsProcessing(id)
-    await executeWorkflow("send-newsletter", { campaignId: id })
-    setTimeout(() => {
-      loadData()
-      setIsProcessing(null)
-    }, 2000)
+    const res = await executeWorkflow("send-newsletter", { campaignId: id })
+    if (res?.success) toast.success("Newsletter send started")
+    else toast.error(`Newsletter not sent — ${res?.error ?? "no reason given"}`)
+    await loadData()
+    setIsProcessing(null)
   }
 
   async function handleSendMail(id: string) {
     setIsProcessing(id)
-    await executeWorkflow("send-direct-mail", { campaignId: id })
-    setTimeout(() => {
-      loadData()
-      setIsProcessing(null)
-    }, 2000)
+    const res = await executeWorkflow("send-direct-mail", { campaignId: id })
+    if (res?.success) toast.success("Direct mail send started")
+    else toast.error(`Direct mail not sent — ${res?.error ?? "no reason given"}`)
+    await loadData()
+    setIsProcessing(null)
   }
 
   async function handleCreateNewsletter() {
@@ -1189,9 +1233,13 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
                             >
                               {campaign.status}
                             </Badge>
-                            <Button variant="ghost" size="icon">
-                              <MoreVertical className="h-4 w-4" />
-                            </Button>
+                            {/* A kebab <Button> used to sit here with no
+                                handler and no menu attached to it — it opened
+                                nothing. There is no per-campaign action behind
+                                it in this client (the only newsletter action
+                                here is Send Campaign, already rendered below),
+                                so the affordance was removed rather than
+                                wired to an empty menu. */}
                           </div>
                           <CardTitle className="text-xl text-slate-900">{campaign.title}</CardTitle>
                         </CardHeader>

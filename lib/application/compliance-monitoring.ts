@@ -446,9 +446,15 @@ export async function exportAuditTrailService(params: {
     query = query.eq("entity_type", "transaction").eq("entity_id", params.transactionId)
   }
 
-  const { data: logs } = await query
+  const { data: logs, error } = await query
 
-  return { logs: logs || [], count: logs?.length || 0 }
+  // An audit-trail EXPORT that silently returns zero rows is worse than one
+  // that fails: the empty file is the artifact someone files as evidence.
+  if (error) {
+    return { logs: [], count: 0, error: `Audit trail could not be read: ${error.message}` }
+  }
+
+  return { logs: logs || [], count: logs?.length || 0, error: null as string | null }
 }
 
 // ============================================
@@ -878,7 +884,12 @@ export async function generateComplianceReportService(filters: {
   if (filters.agentId) logsQuery = logsQuery.eq("agent_id", filters.agentId)
   if (filters.userId)  logsQuery = logsQuery.eq("user_id", filters.userId)
 
-  const { data: logs } = await logsQuery
+  // supabase-js RESOLVES a failed query with { data: null, error }. Both reads
+  // below used to drop the error, so an unreadable communication_audit_log or
+  // compliance_flags produced "0 communications, 0 violations" — which this
+  // report then presents as a clean brokerage. A compliance report that cannot
+  // read its sources must say so; silence here is the most dangerous kind.
+  const { data: logs, error: logsError } = await logsQuery
 
   let violationsQuery = supabase
     .from("compliance_flags")
@@ -889,9 +900,19 @@ export async function generateComplianceReportService(filters: {
   if (filters.agentId) violationsQuery = violationsQuery.eq("agent_id", filters.agentId)
   if (filters.userId)  violationsQuery = violationsQuery.eq("user_id", filters.userId)
 
-  const { data: violations } = await violationsQuery
+  const { data: violations, error: violationsError } = await violationsQuery
+
+  const unreadable = [
+    logsError ? `communications (${logsError.message})` : null,
+    violationsError ? `violations (${violationsError.message})` : null,
+  ].filter(Boolean) as string[]
 
   return {
+    /**
+     * Non-empty when a source could not be read. Every count below is then a
+     * FLOOR over whatever did load, not a finding — render this before them.
+     */
+    unreadableSources: unreadable,
     totalCommunications: logs?.length || 0,
     compliantCommunications: logs?.filter((l) => l.compliance_check_passed).length || 0,
     totalViolations: violations?.length || 0,
@@ -906,9 +927,12 @@ export async function generateComplianceReportService(filters: {
         acc[l.communication_type] = (acc[l.communication_type] || 0) + 1
         return acc
       }, {} as Record<string, number>) || {},
-    coldLeadChannelCompliance:
-      logs
-        ?.filter((l) => l.lead_temperature === "cold")
-        .every((l) => ["email", "print"].includes(l.communication_type)) ?? true,
+    // `?? true` here asserted cold-lead channel compliance from a null read —
+    // an unreadable log claimed a clean record. null means "not established".
+    coldLeadChannelCompliance: logsError
+      ? null
+      : (logs
+          ?.filter((l) => l.lead_temperature === "cold")
+          .every((l) => ["email", "print"].includes(l.communication_type)) ?? true),
   }
 }

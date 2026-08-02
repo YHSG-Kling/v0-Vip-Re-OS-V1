@@ -618,7 +618,7 @@ export default function AgentDashboard() {
         <SmartQueue />
 
         {/* Hot Leads quick-call panel — kept alongside SmartQueue because it
-            has unique whisper-bridge + VAPI bot actions (one-tap call) that
+            has unique whisper-bridge + AI voice-bot actions (one-tap call) that
             SmartQueue's draft_followup doesn't. Future: fold these actions
             into SmartQueue rows and retire this panel. */}
         {(hotLeads.length > 0 || loading) && (

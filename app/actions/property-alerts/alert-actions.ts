@@ -10,8 +10,11 @@ import { IDXBrokerClient } from "@/lib/idxbroker-client"
 //
 // Property alerts have two distinct caller types:
 //   1. Agents — work inside the CRM dashboard, scoped by brokerage_id
-//   2. Buyers (contacts) — log in via /api/auth/contact-login, scoped by
-//      contacts.contact_user_id = auth.uid()
+//   2. Buyers (contacts) — log in at /portal/login (Supabase magic link),
+//      scoped by contacts.contact_user_id = auth.uid()
+//      (This used to name /api/auth/contact-login. That route was deleted: it
+//      had no callers and hand-set a `supabase-auth-token` cookie the app
+//      never reads, so it could not have established a usable session.)
 //
 // Previous version of this file: most functions had no auth, and the
 // callers that did have auth still trusted caller-supplied brokerageId /

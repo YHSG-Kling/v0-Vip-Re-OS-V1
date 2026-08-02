@@ -962,6 +962,154 @@ async function main() {
       && src("lib/kernel/manager-registry.ts").includes("esign_packet_completion:")
       && src("lib/kernel/manager-registry.ts").includes("os_self_audit:")
       && src("lib/kernel/manager-registry.ts").includes("demo_login_hard_gate:"))
+
+    // ── The hard gate is only hard if there is ONE demo-auth surface ─────────
+    //
+    // demo_login_hard_gate claims demo sign-in is hardened "at the single
+    // source (DEMO_CONFIG.ENABLED)". That claim was FALSE: three more surfaces
+    // existed and none of them consulted DEMO_CONFIG.
+    //   · app/api/auth/login/route.ts       — POST an email, no password, and it
+    //     minted a base64 (UNSIGNED) {userId, email, role} blob into an
+    //     `auth-token` cookie. `/api/auth` is a PUBLIC_ROUTES prefix, so it was
+    //     internet-reachable. Nothing read the cookie, so it was not yet an
+    //     escalation — it was one `cookies().get("auth-token")` away from one.
+    //   · app/api/auth/demo-users/route.ts  — unauthenticated GET returning the
+    //     whole 20-user roster with roles and brokerages.
+    //   · app/actions/demo-login.ts         — a second demoSignIn.
+    // All four deleted (the ungated logout too). Asserting the CONSTRUCT rather
+    // than the filenames: the demo roster lives in exactly one gated place, and
+    // nothing anywhere mints a self-signed role cookie.
+    {
+      const { readdirSync, statSync } = await import("fs")
+      const ROSTER_HOME = new Set(["app/constants/auth.ts", "app/actions/demo-auth.ts"])
+      const rosterCopies: string[] = []
+      const cookieMinters: string[] = []
+      const walkDemo = (dir: string) => {
+        for (const name of readdirSync(join(ROOT, dir))) {
+          const rel = `${dir}/${name}`
+          if (statSync(join(ROOT, rel)).isDirectory()) { if (name !== "node_modules") walkDemo(rel); continue }
+          if (!/\.(ts|tsx)$/.test(name)) continue
+          const text = readFileSync(join(ROOT, rel), "utf-8")
+          // A roster copy is what lets a surface answer "who are the demo
+          // users" without ever asking DEMO_CONFIG whether demo mode is on.
+          // Count, don't merely detect: the deleted routes carried twenty
+          // addresses each, while a doc comment naming the domain once is not
+          // a roster and must not read as one.
+          if (!ROSTER_HOME.has(rel) && (text.match(/@vipos\.com/g) ?? []).length >= 3) rosterCopies.push(rel)
+          // The role-bearing cookie the deleted route invented. Real sessions
+          // are Supabase's `sb-<ref>-auth-token`; anything hand-setting a
+          // cookie literally named auth-token is minting its own authority.
+          if (/name:\s*["']auth-token["']/.test(text)) cookieMinters.push(rel)
+        }
+      }
+      walkDemo("app"); walkDemo("lib")
+      check(`DEMO-AUTH SINGLE SURFACE (the hard gate is only hard if nothing routes around it) — the demo roster exists ONLY in the DEMO_CONFIG-gated source, no surface mints a self-signed \`auth-token\` role cookie, and the four ungated auth routes are gone. Roster copies: [${rosterCopies.join(", ") || "none"}] · cookie minters: [${cookieMinters.join(", ") || "none"}]`,
+        rosterCopies.length === 0
+        && cookieMinters.length === 0
+        && !existsSync(join(ROOT, "app/api/auth/login/route.ts"))
+        && !existsSync(join(ROOT, "app/api/auth/demo-users/route.ts"))
+        && !existsSync(join(ROOT, "app/api/auth/logout/route.ts"))
+        && !existsSync(join(ROOT, "app/actions/demo-login.ts"))
+        && src("app/actions/demo-auth.ts").includes("DEMO_CONFIG.ENABLED"))
+    }
+
+    // ── "Log Out" has to end the session, not clear two unrelated cookies ────
+    //
+    // Both logout controls in the product were inert in the way that matters.
+    // The dashboard one POSTed /api/auth/logout, which expired cookies named
+    // `auth-token` and `supabase-auth-token` — neither is the session, which
+    // Supabase SSR keeps in `sb-<ref>-auth-token`. The portal one cleared
+    // localStorage and redirected to "/". In both cases the user was told they
+    // were signed out while the session cookie survived, so navigating back in
+    // still worked — on a shared computer that is the entire point of the
+    // button. Both now call the one real signOut() and report a failure
+    // instead of redirecting on a lie.
+    check("LOGOUT ACTUALLY SIGNS OUT (dashboard + portal) — both menus call the canonical signOut() server action, read its outcome, and only navigate on success; neither pretends by clearing a cookie that was never the session",
+      src("app/components/layout/user-menu.tsx").includes("await signOut()")
+      && src("app/components/layout/user-menu.tsx").includes("if (!res.success)")
+      && !/fetch\(\s*['"]\/api\/auth\/logout/.test(src("app/components/layout/user-menu.tsx"))
+      && src("app/components/features/portal/base/PortalUserMenu.tsx").includes("await signOut()")
+      && src("app/components/features/portal/base/PortalUserMenu.tsx").includes("if (!res.success)")
+      && src("app/actions/auth.ts").includes("supabase.auth.signOut()"))
+
+    // ── Password reset was a capability with no way in and no way out ────────
+    //
+    // /api/auth/reset-password worked and sent a real Supabase recovery email,
+    // but NOTHING called it — no login page offered "Forgot password" — and the
+    // redirectTo it has always used, /auth/reset-password-confirm, was a route
+    // that did not exist, so every reset link in the product landed on a 404.
+    // Both halves are wired, and the landing route is PUBLIC because the
+    // recovery session arrives in the URL fragment the edge never sees.
+    check("PASSWORD RESET IS REACHABLE END TO END — the login page can request the reset, the route the email points at exists, it sets the password through updateUser, and the landing path is public so the edge cannot bounce a valid link",
+      src("app/login/page.tsx").includes("/api/auth/reset-password")
+      && src("app/login/page.tsx").includes("Forgot password?")
+      && existsSync(join(ROOT, "app/auth/reset-password-confirm/page.tsx"))
+      && src("app/auth/reset-password-confirm/page.tsx").includes("updateUser({ password })")
+      && src("app/api/auth/reset-password/route.ts").includes("/auth/reset-password-confirm")
+      && src("app/constants/auth.ts").includes("'/auth/reset-password-confirm'"))
+
+    // ── The KB admin wrote from the browser with a secret that never matched ──
+    //
+    // The knowledge-base admin inserted/updated/deleted help_topics_kb straight
+    // from the client, then POSTed /api/intelligence/kb/embed with
+    // `Bearer ${NEXT_PUBLIC_INTERNAL_API_SECRET}`. That route validates
+    // INTERNAL_API_SECRET — a DIFFERENT, server-only variable — so the header
+    // could not match and every embed 401'd. The client only checked
+    // `response.ok` on the way UP, so the admin read "Article created
+    // successfully" while the article stayed unembedded and therefore invisible
+    // to the brand-voice brain that is the entire reason for uploading it.
+    // Meanwhile a complete, tenant-scoped, synchronously-embedding CRUD sat in
+    // app/actions/knowledge/search.ts with no callers.
+    //
+    // Repointed at the actions. Asserting the CONSTRUCT: no NEXT_PUBLIC_ secret
+    // is used as a bearer token anywhere, and the admin reports whether the
+    // embedding actually landed instead of only its own success.
+    {
+      const { readdirSync, statSync } = await import("fs")
+      const bearerPublic: string[] = []
+      const walkSecret = (dir: string) => {
+        for (const name of readdirSync(join(ROOT, dir))) {
+          const rel = `${dir}/${name}`
+          if (statSync(join(ROOT, rel)).isDirectory()) { if (name !== "node_modules") walkSecret(rel); continue }
+          if (!/\.(ts|tsx)$/.test(name)) continue
+          const text = readFileSync(join(ROOT, rel), "utf-8")
+          if (/Bearer \$\{\s*process\.env\.NEXT_PUBLIC_/.test(text)) bearerPublic.push(rel)
+        }
+      }
+      walkSecret("app"); walkSecret("lib")
+      const kb = src("app/dashboard/settings/knowledge-base/knowledge-base-client.tsx")
+      check(`KB ADMIN GOES THROUGH THE SERVER ACTIONS (a secret shipped to the browser is not a secret, and an embed that 401s is not a save) — no NEXT_PUBLIC_ value is used as a bearer token, the admin calls createHelpTopic/updateHelpTopic/deleteHelpTopic, and it tells the admin when the embedding did NOT land. Public-secret bearers: [${bearerPublic.join(", ") || "none"}]`,
+        bearerPublic.length === 0
+        && kb.includes("await createHelpTopic(")
+        && kb.includes("await updateHelpTopic(")
+        && kb.includes("await deleteHelpTopic(")
+        && !/fetch\(\s*['"]\/api\/intelligence\/kb\/embed/.test(kb)
+        && kb.includes("res.embedded")
+        // ONE embed path: the actions go through embedAndStore, which is what
+        // emits KB_ARTICLE_EMBEDDED. Calling updateHelpTopicEmbedding directly
+        // embedded the row but skipped the kernel event.
+        && src("app/actions/knowledge/search.ts").includes("await embedAndStore(id)")
+        // Platform scope is a platform-staff decision, refused rather than
+        // silently downgraded to the caller's own tenant.
+        && src("app/actions/knowledge/search.ts").includes("Only platform staff can publish a platform-wide article"))
+    }
+
+    // ── The portal's own message could never be sent by the portal's user ────
+    //
+    // sendPortalMessage resolved the caller with resolveAgentId and returned
+    // "Agent profile not found" when that came back null. A buyer signed into
+    // the consumer portal has no agents row, so client_to_agent — the one
+    // direction the portal exists for — refused every time, while the UI showed
+    // a fully wired Contact Agent button. The client lane resolves the thread's
+    // agent from contacts.agent_id (already an agents.id — a RESOLVE, never a
+    // substitution of the caller's user id) and pins the direction so a client
+    // cannot post as their agent.
+    check("PORTAL MESSAGE HAS A CLIENT LANE (the audience it was built for could not use it) — a caller with no agents row is authorised as the contact themselves via requireContactAccess, the thread agent is resolved from contacts.agent_id, and the direction is forced to client_to_agent",
+      src("app/actions/portal-messages.ts").includes("await requireContactAccess(contactId)")
+      && src("app/actions/portal-messages.ts").includes("agentId = contact.agent_id")
+      && src("app/actions/portal-messages.ts").includes('direction = "client_to_agent"')
+      && src("app/actions/portal-messages.ts").includes("access.isContactSelf")
+      && !src("app/actions/portal-messages.ts").includes('return { success: false, error: "Agent profile not found" }'))
     const { computeDecisionVelocity, composeVelocityLine, MIN_SAMPLES } = await import("../lib/intelligence/decision-velocity")
     const velT = new Date("2026-07-14T12:00:00Z")
     const vel = computeDecisionVelocity([

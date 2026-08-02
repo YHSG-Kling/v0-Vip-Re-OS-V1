@@ -420,7 +420,15 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
 
       const result = await executeAITool(tool.id, userId, userType, params)
 
-      if (result.success && result.result) {
+      // Read the outcome — a refusal (quota, permission, provider error) used to
+      // leave the panel exactly as it was, indistinguishable from never pressing.
+      if (!result.success || !result.result) {
+        setToolResults((prev) => ({
+          ...prev,
+          [tool.id]: (result as any)?.error ?? "The tool returned no result.",
+        }))
+        setExpandedResults((prev) => ({ ...prev, [tool.id]: true }))
+      } else {
         let finalResult = result.result
 
         // Check compliance for customer-facing content
@@ -434,12 +442,12 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
         setToolResults((prev) => ({ ...prev, [tool.id]: finalResult }))
         setExpandedResults((prev) => ({ ...prev, [tool.id]: true }))
       }
-    } catch (error) {
-      console.error(`Error running tool ${tool.id}:`, error)
+    } catch (error: any) {
       setToolResults((prev) => ({
         ...prev,
-        [tool.id]: "Error running tool. Please try again.",
+        [tool.id]: error?.message ? `The tool did not run: ${error.message}` : "The tool did not run.",
       }))
+      setExpandedResults((prev) => ({ ...prev, [tool.id]: true }))
     } finally {
       setLoadingTools((prev) => ({ ...prev, [tool.id]: false }))
     }
@@ -518,7 +526,16 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
                     <div className="flex-1 min-w-0">
                       <p className="font-medium truncate">{tool.name}</p>
                     </div>
-                    <Button size="sm" variant="outline">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={(e) => {
+                        // The Card carries the same jump; stop the bubble so it
+                        // does not run twice.
+                        e.stopPropagation()
+                        document.getElementById(`tool-${tool.id}`)?.scrollIntoView({ behavior: "smooth" })
+                      }}
+                    >
                       Launch
                     </Button>
                   </CardContent>

@@ -550,10 +550,19 @@ function ScriptCard({ script, onGenerateVideo, generating }: any) {
           </div>
         )}
 
+        {/* Had no handler: the card announced "Video Ready", and the button that
+            was supposed to play it did nothing. The rendered file is on the
+            script row itself (script.video_url — the same field `hasVideo`
+            reads), so the control opens that. */}
         {hasVideo && (
-          <Button className="w-full bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-700 hover:to-blue-700">
-            <Play className="h-4 w-4 mr-2" />
-            Play Video
+          <Button
+            asChild
+            className="w-full bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-700 hover:to-blue-700"
+          >
+            <a href={script.video_url} target="_blank" rel="noopener noreferrer">
+              <Play className="h-4 w-4 mr-2" />
+              Play Video
+            </a>
           </Button>
         )}
       </CardContent>

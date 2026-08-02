@@ -23,14 +23,23 @@ export const AUTH_MESSAGES = {
 };
 
 // ============================================
-// ROUTE CONFIGURATIONS (Required by middleware.ts)
+// ROUTE CONFIGURATIONS (enforced by the edge middleware in proxy.ts)
 // ============================================
+//
+// Matching is `pathname.startsWith(route)` and PUBLIC is evaluated BEFORE
+// PROTECTED, so a public prefix wins. Two consequences worth remembering:
+//   - `/api/auth` makes every handler under it internet-reachable with no
+//     session. Anything added there authorises itself or it is open.
+//   - an entry for a path that does not exist is worse than no entry: it reads
+//     as a deliberate exemption for a page nobody can find.
 export const PUBLIC_ROUTES = [
   '/login',
   '/signup',
   '/auth/callback',
-  '/reset-password',
-  '/forgot-password',
+  // The landing page for a Supabase password-reset email. Necessarily public:
+  // the recovery session arrives in the URL fragment, which the edge never
+  // sees, so a session check here would bounce every valid reset link.
+  '/auth/reset-password-confirm',
   '/api/auth',
   '/api/public',
   '/api/open-house',

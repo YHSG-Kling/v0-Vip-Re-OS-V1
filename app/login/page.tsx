@@ -140,6 +140,42 @@ function LoginContent() {
     }
   }
 
+  // Password reset had a working endpoint (/api/auth/reset-password) and no way
+  // to reach it — no control on any login page, and the confirm page its email
+  // linked to did not exist. Both halves are wired now.
+  //
+  // The response is deliberately the same whether or not the address is
+  // registered: telling an anonymous caller "no account with that email" turns
+  // this form into an account-enumeration oracle.
+  const handleForgotPassword = async () => {
+    const address = email.trim()
+    if (!address) {
+      setError('Enter your email address first, then choose Forgot password')
+      return
+    }
+    setIsLoading(true)
+    setError(null)
+    setMessage(null)
+    try {
+      const res = await fetch('/api/auth/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: address }),
+      })
+      const body = await res.json().catch(() => null)
+      if (!res.ok || !body?.success) {
+        setError(body?.error || `Could not send the reset email (HTTP ${res.status})`)
+        setIsLoading(false)
+        return
+      }
+      setMessage(`If an account exists for ${address}, a password reset link is on its way.`)
+      setIsLoading(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An unexpected error occurred')
+      setIsLoading(false)
+    }
+  }
+
   // Show loading placeholder until client-side mounted to prevent hydration mismatch
   if (!mounted) {
     return (
@@ -212,6 +248,11 @@ function LoginContent() {
                   <p className="text-sm text-red-600">{error}</p>
                 </div>
               )}
+              {message && (
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-md">
+                  <p className="text-sm text-blue-700">{message}</p>
+                </div>
+              )}
               <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700" disabled={isLoading}>
                 {isLoading ? (
                   <>
@@ -222,6 +263,15 @@ function LoginContent() {
                   'Sign In'
                 )}
               </Button>
+
+              <button
+                type="button"
+                onClick={handleForgotPassword}
+                disabled={isLoading}
+                className="w-full text-sm text-blue-600 hover:underline disabled:opacity-50"
+              >
+                Forgot password?
+              </button>
 
               {/* Additive SSO path — appears only when the typed email's
                   domain has an active brokerage SSO connection. */}

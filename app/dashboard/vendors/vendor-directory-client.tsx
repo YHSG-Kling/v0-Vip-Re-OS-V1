@@ -904,16 +904,13 @@ export function VendorDirectoryClient({
                           {new Date(doc.created_at).toLocaleDateString()}
                         </div>
                       </div>
-                      <a
-                        href={doc.file_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="ml-4 shrink-0"
-                      >
-                        <Button size="sm" variant="outline" className="bg-transparent">
+                      {/* asChild — the anchor IS the button, so the link is on
+                          the control itself rather than on a wrapper. */}
+                      <Button asChild size="sm" variant="outline" className="ml-4 shrink-0 bg-transparent">
+                        <a href={doc.file_url} target="_blank" rel="noopener noreferrer">
                           View
-                        </Button>
-                      </a>
+                        </a>
+                      </Button>
                     </div>
                   ))}
                 </div>

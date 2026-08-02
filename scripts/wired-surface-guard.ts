@@ -129,6 +129,15 @@ export function isInertControl(src: string, i: number): boolean {
   const tag = elementTag(src, i)
   if (WIRING_ATTRS.some((a) => tag.includes(a))) return false
 
+  // A JSX spread on the control itself forwards whatever the parent passed,
+  // including onClick. This is how the shadcn/react-day-picker day button is
+  // wired — the handler never appears in this file at all. Flagging it was a
+  // GUESS, and the last one standing after this burn-down was exactly that
+  // false positive. The cost is a narrow miss (a wrapper that spreads props
+  // whose parent never supplies a handler); the alternative is a permanent
+  // untrue finding, and this guard is only useful while every finding is real.
+  if (/\{\s*\.\.\.[A-Za-z_$][\w$]*\s*\}/.test(tag)) return false
+
   const lookbehind = src.slice(Math.max(0, i - 400), i)
   // A wrapper only counts if it has not been CLOSED before our control starts.
   for (const w of WIRING_WRAPPERS) {
@@ -190,6 +199,12 @@ console.log("\n[pure — the inert-control detector]")
   const passed = `<ConfirmDialog trigger={\n  <Button>Delete</Button>\n} />`
   check("accepts a Button passed as a `trigger` prop",
     isInertControl(passed, passed.indexOf("<Button")) === false)
+  const spread = `<Button variant="ghost" ref={ref} {...props} />`
+  check("accepts a control that spreads its parent's props (the handler is not in this file)",
+    isInertControl(spread, spread.indexOf("<Button")) === false)
+  const bare = `<Button variant="ghost">Save</Button>`
+  check("…but a control with NO spread and no handler is still inert",
+    isInertControl(bare, bare.indexOf("<Button")) === true)
 
   // A CLOSED wrapper earlier in the file must NOT mask a later real defect —
   // this is the direction that would make the guard useless.
@@ -276,6 +291,14 @@ console.log("\n[ratchet — new instances fail, the baseline may only go DOWN]")
       inertFound.length <= baselineInertTotal)
     check(`orphan baseline did not grow (${orphanFound.length} ≤ ${wasOrphan.size})`,
       orphanFound.length <= wasOrphan.size)
+
+    // ZERO-BASELINE INVARIANT. The inert count reached 0 across four parallel
+    // sweeps, so it stops being a ratchet with room in it and becomes a fact:
+    // every control in app/** reaches something. A ratchet that sits at zero and
+    // is still *allowed* to be non-zero invites the next one to be "just one".
+    check(`ZERO inert controls (${inertFound.length}) — every control in app/** reaches a capability`,
+      inertFound.length === 0,
+      inertFound.slice(0, 6).join("\n      "))
 
     const fixedInert = baselineInertTotal - inertFound.length
     const fixedOrphan = [...wasOrphan].filter((x) => !orphanFound.includes(x)).length

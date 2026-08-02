@@ -225,8 +225,8 @@ export async function saveAIIdentityProfile(
 
     // THE TOGGLE MADE REAL: saving ai_answer_calls=ON now actually wires the
     // AI receptionist — assistant created/updated from this profile + the
-    // scope's numbers imported into Vapi bound to the authoritative webhook.
-    // Best-effort + honest: without VAPI creds the save succeeds and the
+    // scope's numbers bound to the authoritative Twilio voice webhook.
+    // Best-effort + honest: without voice credentials the save succeeds and the
     // binding status says exactly why nothing was wired.
     let bindingNote: string | undefined
     if (input.aiAnswerCalls === true && data?.id) {

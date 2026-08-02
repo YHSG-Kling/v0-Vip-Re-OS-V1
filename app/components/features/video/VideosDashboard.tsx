@@ -272,9 +272,25 @@ export function VideosDashboard() {
                       {new Date(video.created_at).toLocaleDateString()}
                     </p>
                   </div>
-                  <Button variant="ghost" size="icon" className="h-8 w-8">
-                    <Play className="h-4 w-4" />
-                  </Button>
+                  {/* Had no handler — the play control on a finished video did
+                      nothing, and the click fell through to the row, which
+                      navigates to the library instead of playing anything. Only
+                      render it when there is actually a rendered file to play,
+                      and stop the row navigation from swallowing it. */}
+                  {video.video_url && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      aria-label={`Play ${video.project_name}`}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        window.open(video.video_url, "_blank", "noopener,noreferrer")
+                      }}
+                    >
+                      <Play className="h-4 w-4" />
+                    </Button>
+                  )}
                 </div>
               ))}
             </div>

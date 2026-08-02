@@ -39,7 +39,12 @@ export default async function TitleDashboardPage() {
         .maybeSingle()
     : { data: null }
 
-  const titleCompanyId = vendor?.id || user.id
+  // This used to be `vendor?.id || user.id`. Those are different id spaces —
+  // every panel below passes this value as `vendor_id`, an FK to vendors(id),
+  // so an auth user id matched no rows at all. The page rendered a complete,
+  // entirely empty title dashboard and looked like a company with no work.
+  // No fallback: without a linked vendor there is nothing honest to show.
+  const titleCompanyId = vendor?.id ?? null
 
   const { data: transactions } = await supabase
     .from('transactions')
@@ -110,6 +115,23 @@ export default async function TitleDashboardPage() {
       relatedId: (d?.transaction as any)?.id,
     }))
   )
+
+  if (!titleCompanyId) {
+    return (
+      <div className="p-6">
+        <h1 className="text-2xl font-bold mb-2">Title Dashboard</h1>
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-sm text-gray-700">
+              This account is not linked to a title company yet, so there are no
+              orders or files to show. A brokerage admin links a title company to
+              your login from the vendor directory.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
 
   return (
     <div className="p-6 space-y-6">

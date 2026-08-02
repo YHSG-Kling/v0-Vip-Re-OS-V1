@@ -190,28 +190,36 @@ export function TodaysFocusCard({ brief, onRefresh, refreshing }: Props) {
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-foreground">{p.title}</p>
                       <p className="text-xs text-muted-foreground mt-0.5">{p.body}</p>
-                      {p.ctas && p.ctas.length > 0 && (
-                        <div className="flex flex-wrap gap-1.5 mt-2">
-                          {p.ctas.map((cta, ctaIdx) =>
-                            cta.href ? (
-                              <Link key={ctaIdx} href={cta.href}>
-                                <Button size="sm" variant={ctaIdx === 0 ? "default" : "outline"} className="h-6 text-[11px]">
-                                  {cta.label}
-                                </Button>
-                              </Link>
-                            ) : (
+                      {/* Only href-bearing CTAs are rendered. The href-less
+                          branch that used to sit here produced a Button with no
+                          handler — a dead control on the most prominent card in
+                          the shell. Nothing produces a CTA without an href:
+                          every builder in lib/intelligence/user-type-briefs
+                          (agent via buildAgentPriorityCtas, broker, team-lead,
+                          tc/compliance/lender/vendor) sets one, and the
+                          actionType/actionPayload fields the fallback implied
+                          have no producer and no dispatcher anywhere. If an
+                          action-dispatch CTA is ever added, it needs a real
+                          handler here — not a button that renders and waits. */}
+                      {(() => {
+                        const linkCtas = (p.ctas ?? []).filter((c) => !!c.href)
+                        if (linkCtas.length === 0) return null
+                        return (
+                          <div className="flex flex-wrap gap-1.5 mt-2">
+                            {linkCtas.map((cta, ctaIdx) => (
                               <Button
                                 key={ctaIdx}
+                                asChild
                                 size="sm"
                                 variant={ctaIdx === 0 ? "default" : "outline"}
                                 className="h-6 text-[11px]"
                               >
-                                {cta.label}
+                                <Link href={cta.href!}>{cta.label}</Link>
                               </Button>
-                            )
-                          )}
-                        </div>
-                      )}
+                            ))}
+                          </div>
+                        )
+                      })()}
                     </div>
                   </div>
                 </div>

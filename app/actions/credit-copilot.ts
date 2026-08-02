@@ -1,6 +1,7 @@
 "use server"
 
 import { createServerClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity"
 import { agentIdForUser } from "@/lib/agents/agent-for-user"
 import { logCreditStatusUpdated } from "@/lib/events"
 import { dispatchSms } from "@/lib/providers/dispatch"
@@ -213,28 +214,68 @@ export async function handlePartnerReferral(payload: any) {
   return { success: true }
 }
 
-export async function getCreditPipelineStats(agentId: string) {
+/**
+ * The agent is resolved SERVER-side. It previously took an `agentId` argument
+ * and the only caller passed `user.id` — a users.id compared against
+ * contacts.agent_id, which is an agents.id. Different id spaces, so the filter
+ * never matched. Worse, the filter sat on a NON-inner embed, which in PostgREST
+ * filters the embedded row and not the parent, so every credit_accounts row in
+ * the database came back regardless of tenant. Both are fixed here: the embed is
+ * `!inner` and the id comes from the authenticated agent context.
+ */
+export async function getCreditPipelineStats() {
   const supabase = await createServerClient()
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
+  const { agentId, brokerageId, userType, isAuthenticated } = await getAgentContext()
+  if (!isAuthenticated) throw new Error("Not authenticated")
 
-  // Get all accounts for this agent
-  const { data: accounts, error } = await supabase
+  const emptyStats = {
+    success: true as const,
+    total_value: 0,
+    total_accounts: 0,
+    avg_time_to_close: 0,
+    by_stage: { flow_a: 0, flow_b: 0, flow_c: 0, flow_d: 0, flow_e: 0 },
+    accounts: [] as any[],
+    // null, not 0 — "no budget row for this period" is a different fact from
+    // "spent nothing", and the page renders them differently.
+    budget: null as { used: number; limit: number } | null,
+  }
+
+  if (!brokerageId) return emptyStats
+
+  let query = supabase
     .from("credit_accounts")
-    .select("*, contact:contacts(*)")
-    .eq("contact.agent_id", agentId)
+    .select("*, contact:contacts!inner(*)")
+    .eq("contact.brokerage_id", brokerageId)
 
-  if (error) throw error
+  // An agent sees only their own book; broker/admin roles see the brokerage.
+  if (userType === "agent") {
+    if (!agentId) return emptyStats
+    query = query.eq("contact.agent_id", agentId)
+  }
+
+  const { data: accounts, error } = await query
+
+  if (error) {
+    return { ...emptyStats, success: false as const, error: error.message }
+  }
 
   // Calculate stats
-  const totalValue = accounts?.reduce((sum, acc) => sum + (acc.credit_amount || 0), 0) || 0
+  const totalValue = accounts?.reduce((sum, acc) => sum + (Number(acc.credit_amount) || 0), 0) || 0
   const totalAccounts = accounts?.length || 0
 
-  // Calculate average time to close (simplified - you'd calculate from stage_history)
-  const avgTimeToClose = 45 // placeholder
+  // Average days from the first stage_history entry to closed_at, over the
+  // accounts that have actually closed. No closed account → 0, not a guess.
+  const closed = (accounts ?? []).filter((a: any) => a.closed_at && a.created_at)
+  const avgTimeToClose = closed.length
+    ? Math.round(
+        closed.reduce(
+          (sum: number, a: any) =>
+            sum + (new Date(a.closed_at).getTime() - new Date(a.created_at).getTime()) / 86_400_000,
+          0,
+        ) / closed.length,
+      )
+    : 0
 
   // Count by stage
   const byStage = {
@@ -245,12 +286,42 @@ export async function getCreditPipelineStats(agentId: string) {
     flow_e: accounts?.filter((a) => a.current_stage === "flow_e").length || 0,
   }
 
+  // The Budget Used card on /credit-pipeline rendered a hardcoded
+  // "$2,400 / $5,000" with a hardcoded 48% bar — a lying number on a live page,
+  // while trackCreditUsage has been writing the real figures to
+  // agent_credit_budgets all along with nobody reading them.
+  //
+  // Budget is PER AGENT and per month, so it only means anything for an agent
+  // identity; a broker looking at the whole brokerage has no single budget and
+  // gets null rather than someone else's.
+  const now = new Date()
+  const periodStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`
+  let budget: { used: number; limit: number } | null = null
+  if (agentId) {
+    const { data: budgetRow, error: budgetError } = await supabase
+      .from("agent_credit_budgets")
+      .select("credit_budget_used, credit_budget_limit")
+      .eq("agent_id", agentId)
+      .eq("period_start", periodStart)
+      .maybeSingle()
+    if (budgetError) {
+      console.error("[credit-copilot] budget read failed:", budgetError.message)
+    } else if (budgetRow) {
+      budget = {
+        used: Number(budgetRow.credit_budget_used) || 0,
+        limit: Number(budgetRow.credit_budget_limit) || 0,
+      }
+    }
+  }
+
   return {
+    success: true as const,
     total_value: totalValue,
     total_accounts: totalAccounts,
     avg_time_to_close: avgTimeToClose,
     by_stage: byStage,
     accounts: accounts || [],
+    budget,
   }
 }
 
@@ -513,10 +584,24 @@ export async function createCreditAccount(params: {
   } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
 
+  // Authorize the contact BEFORE writing: it must be visible in the caller's
+  // tenant. contacts.agent_id is an agents.id, so it is carried through, never
+  // substituted with the users.id.
+  const { data: targetContact, error: contactError } = await supabase
+    .from("contacts")
+    .select("id, brokerage_id, agent_id")
+    .eq("id", params.contact_id)
+    .maybeSingle()
+
+  if (contactError) throw new Error(contactError.message)
+  if (!targetContact) throw new Error("That contact is not visible in your workspace")
+
   const { data, error } = await supabase
     .from("credit_accounts")
     .insert({
       contact_id: params.contact_id,
+      brokerage_id: targetContact.brokerage_id,
+      agent_id: targetContact.agent_id,
       partner_name: params.partner_name,
       credit_amount: params.credit_amount,
       current_stage: params.initial_stage || "flow_a",

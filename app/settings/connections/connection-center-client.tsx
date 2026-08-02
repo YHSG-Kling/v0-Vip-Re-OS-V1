@@ -118,21 +118,29 @@ function ProviderRow({ domain, provider, fields, owner }: { domain: Domain["doma
   // REFUSED disconnect was indistinguishable from a successful one: the row
   // re-rendered still connected with no explanation, on the surface whose whole
   // job is telling you what is and is not connected.
-  const [disconnectError, setDisconnectError] = useState<string | null>(null)
+  const [rowError, setRowError] = useState<string | null>(null)
   const onDisconnect = () =>
     startTransition(async () => {
-      setDisconnectError(null)
+      setRowError(null)
       const res = await disconnectProvider({ domain, provider: provider.provider, owner })
       if (!res?.ok) {
-        setDisconnectError(res?.error ?? "Could not disconnect")
+        setRowError(res?.error ?? "Could not disconnect")
         return
       }
       router.refresh()
     })
+  // Same "read the outcome" rule as onDisconnect: startStripeConnect RETURNS
+  // { ok: false, error } and never throws, so a refused onboarding link used to
+  // leave the button looking like nothing happened.
   const onStripeConnect = () =>
     startTransition(async () => {
+      setRowError(null)
       const res = await startStripeConnect(owner)
-      if (res.ok) window.location.href = res.url
+      if (!res?.ok) {
+        setRowError(res?.error ?? "Could not start Stripe onboarding")
+        return
+      }
+      window.location.href = res.url
     })
 
   return (
@@ -149,7 +157,11 @@ function ProviderRow({ domain, provider, fields, owner }: { domain: Domain["doma
         </div>
         <div className="flex items-center gap-2">
           {!provider.available ? (
-            <Button size="sm" variant="outline" disabled>Unavailable</Button>
+            // Not a control — there is nothing to click and no capability behind
+            // it. It was a permanently-disabled <Button>, which reads as an
+            // affordance; the reason is already spelled out to the left. Render
+            // it as the status it actually is.
+            <Badge variant="outline" className="text-xs font-normal text-muted-foreground">Unavailable</Badge>
           ) : isStripeConnect ? (
             <Button size="sm" variant={provider.connected ? "outline" : "default"} disabled={pending} onClick={onStripeConnect}>
               {provider.connected ? "Reconnect" : "Connect"}
@@ -168,8 +180,8 @@ function ProviderRow({ domain, provider, fields, owner }: { domain: Domain["doma
           )}
         </div>
       </div>
-      {disconnectError && (
-        <p className="mt-2 text-xs text-destructive">{disconnectError}</p>
+      {rowError && (
+        <p className="mt-2 text-xs text-destructive">{rowError}</p>
       )}
       {open && provider.available && provider.auth === "api_key" && (
         <ApiKeyForm domain={domain} provider={provider.provider} fields={fields} owner={owner} onDone={refresh} />
@@ -239,19 +251,30 @@ function PlatformProvidedPhonePanel({ scope }: { scope: string }) {
   // bring their own carrier; otherwise the platform provisions + bills the number.
   const isSubscriber = scope === "brokerage"
   const [allowByo, setAllowByo] = useState<boolean | null>(null)
+  const [byoError, setByoError] = useState<string | null>(null)
   const [saving, startSaving] = useTransition()
 
   useEffect(() => {
     if (!isSubscriber) return
-    getByoCarrierPolicy().then((r) => setAllowByo(r.allowUserByo)).catch(() => setAllowByo(false))
+    getByoCarrierPolicy()
+      .then((r) => setAllowByo(r.allowUserByo))
+      .catch((e: any) => setByoError(e?.message ?? "Could not read the BYO-carrier policy"))
   }, [isSubscriber])
 
   function toggleByo() {
     if (allowByo === null) return
     const next = !allowByo
+    setByoError(null)
     startSaving(async () => {
+      // setByoCarrierPolicy returns { ok:false, error } on a refusal — the old
+      // code discarded it, so a rejected policy change silently left the toggle
+      // where it was with no explanation.
       const res = await setByoCarrierPolicy(next)
-      if (res.ok) setAllowByo(next)
+      if (!res?.ok) {
+        setByoError((res as any)?.error ?? "The BYO-carrier policy was not saved")
+        return
+      }
+      setAllowByo(next)
     })
   }
 
@@ -291,6 +314,7 @@ function PlatformProvidedPhonePanel({ scope }: { scope: string }) {
           </Button>
         </div>
       )}
+      {isSubscriber && byoError && <p className="text-xs text-destructive">{byoError}</p>}
     </div>
   )
 }

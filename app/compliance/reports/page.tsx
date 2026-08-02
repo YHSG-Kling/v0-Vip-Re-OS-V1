@@ -4,8 +4,9 @@ import { generateComplianceReport } from '@/app/actions/compliance-monitoring'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { TrendingUp, ArrowLeft, Download, CheckCircle2, AlertTriangle, Eye } from 'lucide-react'
+import { TrendingUp, ArrowLeft } from 'lucide-react'
 import Link from 'next/link'
+import { ExportComplianceReportButton } from './export-report-button'
 
 export const dynamic = 'force-dynamic'
 
@@ -16,11 +17,15 @@ export default async function ComplianceReportsPage() {
 
   const today = new Date()
   const thirtyDaysAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000)
+  const startDate = thirtyDaysAgo.toISOString()
+  const endDate = today.toISOString()
 
-  const report = await generateComplianceReport({
-    startDate: thirtyDaysAgo.toISOString(),
-    endDate: today.toISOString(),
-  })
+  const report = await generateComplianceReport({ startDate, endDate })
+
+  // When a source could not be read, every number below is a floor over what
+  // did load — a 100% rate computed from an unreadable log is the one number
+  // this page must never show without saying so.
+  const unreadable: string[] = (report as any).unreadableSources ?? []
 
   const complianceRate =
     report.totalCommunications > 0
@@ -42,11 +47,24 @@ export default async function ComplianceReportsPage() {
             <p className="text-gray-500 text-sm">30-day compliance summary</p>
           </div>
         </div>
-        <Button variant="outline" size="sm">
-          <Download className="w-4 h-4 mr-2" />
-          Export Report
-        </Button>
+        {/* Downloads the SAME report object rendered below — no second
+            generation path, so the file cannot disagree with the page. */}
+        <ExportComplianceReportButton report={report} startDate={startDate} endDate={endDate} />
       </div>
+
+      {unreadable.length > 0 && (
+        <Card className="border-amber-300 bg-amber-50">
+          <CardContent className="p-4">
+            <p className="text-sm font-medium text-amber-900">
+              This report is incomplete — {unreadable.join('; ')}
+            </p>
+            <p className="text-xs text-amber-800 mt-1">
+              The figures below cover only the records that loaded. Do not treat
+              them as a compliance finding until the source above is readable.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <Card>

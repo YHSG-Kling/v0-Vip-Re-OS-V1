@@ -1027,6 +1027,20 @@ export default function CRMPage() {
       ct === "lead" ||
       ct === "both"
 
+    // Prefilled deep-link into the listing wizard for this contact. Hoisted out
+    // of the JSX: inlined, the <Link href={…}> opening tag ran past 400 chars,
+    // which pushed the wrapper out of the wired-surface guard's lookbehind
+    // window and made a correctly-wired button read as inert.
+    const createListingHref =
+      `/dashboard/listings?action=new&` +
+      new URLSearchParams({
+        contactId: selectedContactId,
+        firstName: selectedContact.first_name ?? "",
+        lastName:  selectedContact.last_name ?? "",
+        email:     selectedContact.email ?? "",
+        phone:     selectedContact.phone ?? "",
+      }).toString()
+
     const daysSinceContact = selectedContact.last_contacted_at
       ? Math.floor(
           (Date.now() - new Date(selectedContact.last_contacted_at).getTime()) /
@@ -1146,14 +1160,7 @@ export default function CRMPage() {
                 {/* Quick Actions */}
                 <div className="space-y-1.5">
                   <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Quick Actions</p>
-                  <Link href={
-                    `/dashboard/listings?action=new` +
-                    `&contactId=${encodeURIComponent(selectedContactId ?? "")}` +
-                    `&firstName=${encodeURIComponent(selectedContact?.first_name ?? "")}` +
-                    `&lastName=${encodeURIComponent(selectedContact?.last_name ?? "")}` +
-                    `&email=${encodeURIComponent(selectedContact?.email ?? "")}` +
-                    `&phone=${encodeURIComponent(selectedContact?.phone ?? "")}`
-                  }>
+                  <Link href={createListingHref}>
                     <Button size="sm" variant="outline" className="w-full gap-1.5 text-xs justify-start">
                       <Home className="h-3.5 w-3.5" />
                       Create Listing
