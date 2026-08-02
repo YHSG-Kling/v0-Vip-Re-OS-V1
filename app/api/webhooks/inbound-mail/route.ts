@@ -76,12 +76,25 @@ export async function POST(request: NextRequest) {
         credential:   resolvedCredential,
         newHistoryId: instruction.historyId,
       })
-      // Persist the new history_id so the next push starts from here
+      // Persist the new history_id so the next push starts from here.
+      //
+      // NOT optional, and the result is now read. This is Gmail's incremental
+      // sync cursor: if the write is lost the next push notification replays
+      // from the OLD history_id, so the same inbound emails are fetched and
+      // processed again. The failure mode is duplicate inbound handling, which
+      // is exactly the sort of thing that looks like a mystery rather than a
+      // bug — and supabase-js resolves a rejected update, so nothing surfaced.
       const supabase = createServiceClient()
-      await supabase
+      const { error: cursorError } = await supabase
         .from("platform_credentials")
         .update({ config: { ...resolvedCredential.config, history_id: instruction.historyId } })
         .eq("id", resolvedCredential.credential_id)
+      if (cursorError) {
+        console.error(
+          `[inbound-mail] Gmail history cursor NOT advanced for credential ${resolvedCredential.credential_id} — the next push will replay:`,
+          cursorError.message,
+        )
+      }
     } else if (provider === "outlook" && instruction.outlookResource) {
       const one = await fetchOutlookMessage({
         credential:  resolvedCredential,

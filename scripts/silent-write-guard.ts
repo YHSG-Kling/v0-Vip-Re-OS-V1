@@ -66,6 +66,11 @@ export const CONSEQUENTIAL_TABLES = [
   // dropping their result on the floor when this line was added; they are fixed,
   // and this keeps them fixed.
   "activities",
+  // CONTACTS carries the consent flags — email_unsubscribed, sms_opt_out,
+  // tcpa_consent, dnc_status, ai_autopilot_level. A silently-lost write here is
+  // a consumer's opt-out that did not take effect while the UI said it did,
+  // which is the single most expensive thing in this product to get wrong.
+  "contacts",
 ] as const
 
 /** PURE — split source into statements on depth-0 semicolons, string-aware. */
@@ -104,22 +109,57 @@ export function isSilentWrite(stmt: string, tables: readonly string[] = CONSEQUE
   // does this write acknowledge its own failure? The lookbehind covers the
   // `const { error } = await svc` that precedes `.from(`; the lookahead covers
   // the rest of the chain, including a trailing `.catch`.
-  const start = Math.max(0, m.index! - 160)
-  const scope = stmt.slice(start, m.index! + 600)
+  // The WRITE VERB must belong to THIS chain. A fixed-size lookahead is not
+  // good enough: a `.from("contacts").select(…)` READ followed a few lines later
+  // by an unrelated `.update(…)` would be read as a silent write. Walk the
+  // actual method chain — `.name( … )` runs with balanced parens — and stop at
+  // the first token that is not part of it.
+  const chain = chainFrom(stmt, m.index!)
 
-  if (!/\.(insert|update|upsert|delete)\s*\(/.test(scope)) return null
-  // Declared as allowed-to-fail, with a reason.
-  if (/\bbestEffort\s*\(/.test(scope)) return null
-  // The result is captured somewhere the caller can inspect.
+  if (!/\.(insert|update|upsert|delete)\s*\(/.test(chain)) return null
+  // Declared as allowed-to-fail, with a reason. The wrapper sits BEFORE .from(,
+  // so look at the lookbehind for it too.
+  const lookbehind = stmt.slice(Math.max(0, m.index! - 160), m.index!)
+  if (/\bbestEffort\s*\(/.test(lookbehind) || /\bbestEffort\s*\(/.test(chain)) return null
+  // The result is captured somewhere the caller can inspect — the binding is to
+  // the LEFT of `.from(`.
   const captured =
-    /(const|let|var)\s*\{[^}]*\berror\b/.test(scope) ||
-    /(const|let|var)\s+\w+\s*=\s*await/.test(scope) ||
-    /\breturn\s+await/.test(scope) ||
-    /^\s*return\s/.test(scope)
+    /(const|let|var)\s*\{[^}]*\berror\b/.test(lookbehind) ||
+    /(const|let|var)\s+\w+\s*=\s*await/.test(lookbehind) ||
+    /\breturn\s+await/.test(lookbehind) ||
+    /(^|\n)\s*return\s+[^\n]*$/.test(lookbehind)
   // Explicitly thrown away — only when it hangs off THIS chain.
-  const tail = stmt.slice(m.index!, m.index! + 600)
-  const swallowed = /\.catch\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)/.test(tail) || /\bvoid\s+Promise/.test(tail)
+  const swallowed =
+    /\.catch\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)/.test(chain) ||
+    /\bvoid\s+Promise/.test(lookbehind)
   return (!captured || swallowed) ? m[1] : null
+}
+
+/** PURE — the contiguous `.method(…)` chain starting at `.from(` at index i. */
+export function chainFrom(src: string, i: number): string {
+  let p = i
+  const end = src.length
+  while (p < end) {
+    // skip whitespace between links
+    while (p < end && /\s/.test(src[p])) p++
+    if (src[p] !== ".") break
+    let q = p + 1
+    while (q < end && /[\w$]/.test(src[q])) q++
+    if (src[q] !== "(") break
+    // consume balanced parens, string-aware
+    let depth = 0, quote: string | null = null, esc = false
+    while (q < end) {
+      const c = src[q]
+      if (esc) { esc = false; q++; continue }
+      if (quote) { if (c === "\\") esc = true; else if (c === quote) quote = null; q++; continue }
+      if (c === '"' || c === "'" || c === "`") { quote = c; q++; continue }
+      if (c === "(") depth++
+      else if (c === ")") { depth--; if (depth === 0) { q++; break } }
+      q++
+    }
+    p = q
+  }
+  return src.slice(i, p)
 }
 
 console.log("══════════════════════════════════════════════════")
