@@ -163,7 +163,7 @@ export async function grantSellerPermission(params: {
 export async function launchNeighborNotification(params: {
   campaignId: string
   brokerageId: string
-}): Promise<{ success: boolean; sent?: number; error?: string }> {
+}): Promise<{ success: boolean; staged?: number; note?: string; error?: string }> {
   const supabase = createServiceClient()
 
   const { data: campaign } = await supabase
@@ -238,12 +238,24 @@ export async function launchNeighborNotification(params: {
       await supabase.from("direct_mail_recipients").insert(dmRecipientRows)
     }
 
+    // STAGED, NOT SENT. This used to write status:"sent" and
+    // recipients_sent:N the instant the rows were inserted, and nothing had
+    // been mailed. The Lob drain (runDirectMailCampaignDrain) only picks up
+    // rows with approval_status="approved" AND a contact_id or lead_id; this
+    // campaign has neither, and the drain's own comment says audience
+    // campaigns "belong to their own dispatchers" — of which
+    // neighbors_of_new_listing has none. So the postcards sit forever while
+    // the ledger claims they went out, and recipients_sent (a DELIVERED
+    // count) is inflated for reporting and for spend reconciliation.
+    //
+    // The truthful terminal state is "sending": staged and awaiting a
+    // dispatcher. Nothing here fabricates a send, and recipients_sent stays
+    // untouched until something actually mails.
     await supabase
       .from("neighbor_notification_campaigns")
       .update({
         direct_mail_campaign_id: dmCampaign.id,
-        status: "sent",
-        recipients_sent: recipientsList.length,
+        status: "sending",
         updated_at: new Date().toISOString(),
       })
       .eq("id", params.campaignId)
@@ -256,7 +268,11 @@ export async function launchNeighborNotification(params: {
       .eq("status", "identified")
 
     revalidatePath(`/dashboard/listings`)
-    return { success: true, sent: recipientsList.length }
+    return {
+      success: true,
+      staged: recipientsList.length,
+      note: "Postcards are staged for mailing. A neighbor-mail dispatcher must approve and release them before anything is printed — nothing has been sent yet.",
+    }
   } catch (err: any) {
     await supabase
       .from("neighbor_notification_campaigns")

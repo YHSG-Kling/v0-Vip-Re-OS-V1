@@ -130,11 +130,15 @@ export function NeighborNotificationCard({
         })
         return
       }
-      setSent(res.sent ?? 0)
+      // "staged", not "sent": the rows are written but no dispatcher has
+      // released them to Lob yet, so saying sent would repeat the lie the
+      // action itself used to tell.
+      const staged = res.staged ?? 0
+      setSent(staged)
       setPhase("sent")
       toast({
-        title: "Neighbor notification launched",
-        description: `${res.sent ?? 0} recipient${(res.sent ?? 0) === 1 ? "" : "s"} pushed into the direct mail pipeline.`,
+        title: "Neighbor postcards staged",
+        description: `${staged} recipient${staged === 1 ? "" : "s"} staged for mailing. Nothing is printed until the mail run is approved and released.`,
       })
     })
   }
