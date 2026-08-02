@@ -38,6 +38,21 @@
  * field is the quiet version; the refused INSERT is the loud version that gets
  * blamed on "flakiness". Whenever this guard fires, check the vocabulary too.
  *
+ * A THIRD SHAPE, FOUND BY CONTINUING THE BURN: the panel that is mounted and
+ * fed nothing. The mobile field OS had SEVEN panels; FIVE delivered nothing.
+ * Four were rendered with a hardcoded [] — <ShowingDayPanel showings={[]} />,
+ * OpenHousePanel, MobileFollowupPanel, QuickContactPanel — so an agent standing
+ * in the field saw "nothing today" no matter what their day actually held,
+ * while the showings, open houses, tasks and contacts sat in the database. The
+ * fifth, TourDayPanel, was never mounted at all: exported from the barrel,
+ * rendered by nobody, and its Start Tour button called an OPTIONAL callback no
+ * parent passed, then claimed success anyway. Its own badge rendered "In
+ * Progress" for a status nothing in the app could produce.
+ *
+ * That is the same defect as a dropped field, one layer up: the screen is
+ * built, the data is there, and the middle never connects them. A literal []
+ * passed as a data prop is the tell, and it is cheap to ban.
+ *
  * WHY AN ALLOWLIST AND NOT A ZERO BAN. Plenty of state is legitimately local:
  * which tab is open, which mode a panel is in, a search box that filters a list
  * client-side. Those are bound to inputs and never submitted, and that is
@@ -157,7 +172,39 @@ console.log("\n═══ 3. The screen and the schema share one dictionary ═�
     /agreementType:\s*"(reciprocal|one_way|paid|informal)"/.test(cards))
 }
 
-console.log("\n═══ 4. The detector fires on the real shapes ═══")
+console.log("\n═══ 4. No panel is mounted over a hardcoded empty list ═══")
+{
+  // A literal [] passed as a data prop means the screen renders its empty state
+  // forever. Five of the seven mobile field panels were in this state.
+  const PAGES = [...walk("app")]
+  const offenders: string[] = []
+  for (const f of PAGES) {
+    const src = code(read(f))
+    for (const m of src.matchAll(/<([A-Z]\w+)\s+(\w+)=\{\[\]\}/g)) {
+      offenders.push(`${f}: <${m[1]} ${m[2]}={[]}>`)
+    }
+  }
+  for (const o of offenders) console.log(`     ${o}`)
+  ok("no component is rendered with a hardcoded empty data prop",
+    offenders.length === 0, `${offenders.length} panel(s) mounted over []`)
+
+  // Every panel the mobile OS barrel exports must actually be rendered — an
+  // exported-but-unmounted panel is a whole feature the user cannot reach.
+  const barrel = read("app/mobile/components/os/index.ts")
+  const exported = [...barrel.matchAll(/export \{ (\w+) \}/g)].map((m) => m[1])
+  const allTsx = PAGES.map((f) => read(f)).join("\n")
+  const unmounted = exported.filter((c) => !new RegExp(`<${c}[\\s/>]`).test(allTsx))
+  ok(`every mobile field panel the barrel exports is mounted (${exported.length} exported)`,
+    unmounted.length === 0, `never rendered: ${unmounted.join(", ")}`)
+
+  const tour = code(read("app/mobile/components/os/tour-day-panel.tsx"))
+  ok("Start Tour dispatches for real instead of calling an optional callback\n    nobody passes",
+    /updateTour\(/.test(tour) && !/onTourStart\?\./.test(tour))
+  ok("...and reads the outcome before claiming the tour started",
+    /if\s*\(!result\.success\)/.test(tour))
+}
+
+console.log("\n═══ 5. The detector fires on the real shapes ═══")
 {
   // Proven against synthetic components so the assertions above have teeth.
   const dropped = `

@@ -66,6 +66,36 @@ export default async function PayoutsPage() {
     return agentNameMap[c.agent_id] || `Agent ${(c.agent_id ?? '').slice(0, 8)}`
   }
 
+  // ─── PAYOUT READINESS ──────────────────────────────────────────────────────
+  // This panel was mounted with files={[]} and every count hardcoded to 0, so
+  // the broker saw an empty readiness board while the very same commission rows
+  // were rendered in the table below it. The data was already loaded on this
+  // page — only the wire was missing.
+  const payoutFiles = (commissionsData as any[]).map((c: any) => {
+    const status: "ready" | "blocked" | "pending_review" | "processing" =
+      c.status === "paid"       ? "processing"
+      : c.status === "approved" ? "ready"
+      : c.status === "disputed" ? "blocked"
+      : "pending_review"
+    return {
+      id: c.id,
+      agentId: c.agent_id,
+      agentName: agentName(c),
+      transactionId: c.transaction_id ?? undefined,
+      propertyAddress: c.property_address ?? undefined,
+      amount: c.agent_commission ?? 0,
+      status,
+      blockerReason: c.status === "disputed" ? (c.dispute_reason ?? "Disputed — awaiting broker resolution") : undefined,
+      closeDate: c.close_date ?? undefined,
+    }
+  })
+
+  const readyFiles     = payoutFiles.filter((f) => f.status === "ready")
+  const blockedFiles   = payoutFiles.filter((f) => f.status === "blocked")
+  const processingCnt  = payoutFiles.filter((f) => f.status === "processing").length
+  const pendingCnt     = payoutFiles.filter((f) => f.status === "pending_review").length
+  const sum = (rows: typeof payoutFiles) => rows.reduce((t, f) => t + (f.amount ?? 0), 0)
+
   // Build payout action stack
   const payoutActions: FinancialAction[] = []
 
@@ -152,14 +182,14 @@ export default async function PayoutsPage() {
 
       {/* Payout Readiness Panel */}
       <PayoutReadinessPanel
-        files={[]}
+        files={payoutFiles}
         summary={{
-          ready: 0,
-          blocked: 0,
-          pendingReview: pendingPayouts.length,
-          processing: 0,
-          totalReady: totalAgentPayouts,
-          totalBlocked: 0,
+          ready: readyFiles.length,
+          blocked: blockedFiles.length,
+          pendingReview: pendingCnt,
+          processing: processingCnt,
+          totalReady: sum(readyFiles),
+          totalBlocked: sum(blockedFiles),
         }}
       />
 

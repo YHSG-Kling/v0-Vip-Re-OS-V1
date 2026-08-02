@@ -30,6 +30,18 @@ export default async function MobileVoicePage() {
 
   const { agentId, brokerageId, userId } = agentContext
 
+  // QuickContactPanel sat below QuickDialSearch with a hardcoded [] — the
+  // search box worked, the recents list under it was permanently empty. They
+  // are complementary (type-to-find vs tap-the-last-few), so the fix is to feed
+  // it, not to delete it. contacts.agent_id FKs agents(id) and getAgentContext
+  // returns the agents id.
+  const { data: recentContacts } = await supabase
+    .from("contacts")
+    .select("id, first_name, last_name, phone, email, contact_type, status, last_contacted_at")
+    .eq("agent_id", agentId)
+    .order("last_contacted_at", { ascending: false, nullsFirst: false })
+    .limit(20)
+
   // Fetch voice assistant config
   const { data: voiceConfig } = await supabase
     .from("voice_assistant_config")
@@ -311,7 +323,7 @@ export default async function MobileVoicePage() {
         </section>
 
         {/* Mobile OS Quick Contact Panel */}
-        <QuickContactPanel contacts={[]} />
+        <QuickContactPanel contacts={(recentContacts ?? []) as any} />
       </main>
     </div>
   )

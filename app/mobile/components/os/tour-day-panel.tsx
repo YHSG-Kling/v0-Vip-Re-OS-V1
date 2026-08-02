@@ -7,6 +7,8 @@ import { Badge } from "@/components/ui/badge"
 import { MapPin, Clock, Navigation, Play, CheckCircle, Star, Phone, Car } from "lucide-react"
 import { format } from "date-fns"
 import { toast } from "sonner"
+import { useRouter } from "next/navigation"
+import { updateTour } from "@/app/actions/ai-showing-management"
 
 interface TourStop {
   id: string
@@ -45,19 +47,31 @@ interface Tour {
 
 interface TourDayPanelProps {
   tours: Tour[]
-  onTourStart?: (tourId: string) => void
 }
 
-export function TourDayPanel({ tours, onTourStart }: TourDayPanelProps) {
+export function TourDayPanel({ tours }: TourDayPanelProps) {
   const [isPending, startTransition] = useTransition()
+  const router = useRouter()
   const [expandedTourId, setExpandedTourId] = useState<string | null>(null)
 
   const today = new Date().toISOString().split("T")[0]
   const todaysTours = tours.filter((t) => t.tour_date === today && t.status !== "cancelled")
 
+  // This used to call an OPTIONAL callback prop and then claim success
+  // regardless. No parent ever passed one — the panel itself was never mounted
+  // — so "Tour started" was true of nothing. The badge above renders
+  // "In Progress" for status === "in_progress", a state nothing in the app
+  // could produce. It now moves the tour into that state for real.
   const handleStartTour = (tourId: string) => {
-    onTourStart?.(tourId)
-    toast.success("Tour started - navigate to first stop")
+    startTransition(async () => {
+      const result = await updateTour(tourId, { status: "in_progress" })
+      if (!result.success) {
+        toast.error(("error" in result ? result.error : null) ?? "Could not start the tour")
+        return
+      }
+      toast.success("Tour started — navigate to the first stop")
+      router.refresh()
+    })
   }
 
   const handleGetDirections = (address: string, city?: string, state?: string) => {

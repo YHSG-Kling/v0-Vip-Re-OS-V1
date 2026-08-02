@@ -17,6 +17,7 @@ import {
   FieldQuickActions,
   ShowingDayPanel,
   OpenHousePanel,
+  TourDayPanel,
   MobileFollowupPanel,
 } from "../components/os"
 
@@ -102,6 +103,74 @@ export default async function MobileAssistantPage() {
     .order("created_at", { ascending: false })
     .limit(10)
 
+  // ─── THE FIELD PANELS ──────────────────────────────────────────────────────
+  // These four panels were mounted with hardcoded []. Every one of them
+  // rendered its empty state forever while the rows sat in the database — the
+  // agent standing in the field saw "nothing today" no matter what their day
+  // actually held. All of these agent_id columns FK agents(id), and
+  // getAgentContext() returns the agents id, so agentId is the right filter.
+  const [
+    { data: todaysShowings },
+    { data: todaysOpenHouses },
+    { data: followupTasks },
+    { data: recentContacts },
+    { data: todaysTours },
+  ] = await Promise.all([
+    supabase
+      .from("showings")
+      .select(`id, listing_id, contact_id, scheduled_at, scheduled_date, scheduled_time, status,
+               buyer_agent_name, buyer_agent_phone, notes, external_address,
+               contacts(first_name, last_name, phone),
+               listings(address, city, state, list_price)`)
+      .eq("agent_id", agentId)
+      .eq("scheduled_date", today)
+      .neq("status", "cancelled")
+      .order("scheduled_time", { ascending: true }),
+    supabase
+      .from("open_house_events")
+      .select(`id, listing_id, event_date, start_time, end_time, status, description, qr_code_id,
+               listings(address, city, state, list_price)`)
+      .eq("agent_id", agentId)
+      .eq("event_date", today)
+      .neq("status", "cancelled")
+      .order("start_time", { ascending: true }),
+    supabase
+      .from("activities")
+      .select(`id, contact_id, title, description, scheduled_at, priority, status,
+               contact:contacts(first_name, last_name, phone, email)`)
+      .eq("agent_id", agentId)
+      .eq("status", "pending")
+      .order("scheduled_at", { ascending: true })
+      .limit(20),
+    supabase
+      .from("contacts")
+      .select("id, first_name, last_name, phone, email, contact_type, status, last_contacted_at")
+      .eq("agent_id", agentId)
+      .order("last_contacted_at", { ascending: false, nullsFirst: false })
+      .limit(20),
+    supabase
+      .from("tours")
+      .select(`id, contact_id, tour_date, status, notes,
+               contacts(first_name, last_name, phone),
+               tour_stops(id, tour_id, listing_id, property_address, city, state, list_price,
+                          order_index, suggested_time, confirmed_time, is_confirmed,
+                          buyer_interest_level, access_method, access_code, access_instructions,
+                          listing_agent_name, listing_agent_phone, drive_time_from_prev_minutes)`)
+      .eq("agent_id", agentId)
+      .eq("tour_date", today)
+      .neq("status", "cancelled")
+      .order("start_time", { ascending: true }),
+  ])
+
+  // The panel reads `property_address`; showings carry either a listing join or
+  // an external address for a non-MLS property, so flatten to one field here
+  // rather than teaching the panel about both shapes.
+  const showingsForPanel = (todaysShowings ?? []).map((sh: any) => ({
+    ...sh,
+    property_address:
+      sh.listings?.address ?? sh.external_address ?? undefined,
+  }))
+
   // Calculate days on market for listings
   const listingsWithDOM = (activeListings || []).map((listing) => {
     const dom = Math.floor(
@@ -159,9 +228,9 @@ export default async function MobileAssistantPage() {
           </div>
 
           {/* Mobile OS Showing & Open House Panels */}
-          <ShowingDayPanel showings={[]} />
+          <ShowingDayPanel showings={showingsForPanel} />
           <div className="mt-4">
-            <OpenHousePanel events={[]} />
+            <OpenHousePanel events={(todaysOpenHouses ?? []) as any} />
           </div>
         </section>
 
@@ -172,7 +241,9 @@ export default async function MobileAssistantPage() {
         </section>
 
         {/* Mobile OS Follow-up Panel */}
-        <MobileFollowupPanel tasks={[]} />
+        <TourDayPanel tours={(todaysTours ?? []) as any} />
+
+        <MobileFollowupPanel tasks={(followupTasks ?? []) as any} />
 
         {/* Section 5: Active Listings Strip */}
         <section>
