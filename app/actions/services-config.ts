@@ -81,7 +81,11 @@ export async function getServicesRegistry() {
       name: svc.name,
       type: svc.type,
       description: svc.description,
-      config_keys: svc.config_keys,
+      // config_keys is deliberately NOT returned. The settings card used to
+      // render a password input per key and discard whatever was typed; these
+      // are platform-held env secrets with no per-brokerage store, so nothing
+      // consumes the list. It stays on SERVICE_DEFAULTS as the ops record of
+      // which env vars each integration needs.
       status: dbRecord?.status ?? (process.env[svc.env_key] ? "connected" : "not_configured"),
       last_checked_at: dbRecord?.last_health_check_at ?? null,
       last_error: dbRecord?.last_error ?? null,
