@@ -231,7 +231,7 @@ export async function saveAIIdentityProfile(
     let bindingNote: string | undefined
     if (input.aiAnswerCalls === true && data?.id) {
       try {
-        const { applyInboundCallBinding } = await import("@/lib/voice/vapi-numbers")
+        const { applyInboundCallBinding } = await import("@/lib/voice/inbound-number-binding")
         const b = await applyInboundCallBinding(svc, data.id)
         bindingNote = b.ok
           ? (b.applied ? `AI receptionist live — ${b.numbersBound ?? 0} number(s) bound to the assistant.` : undefined)

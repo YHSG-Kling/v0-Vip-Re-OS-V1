@@ -15,7 +15,7 @@
 import { createServiceClient } from '@/lib/supabase/service'
 
 export interface VendorUsageEvent {
-  vendorName: string           // e.g., 'openai', 'zenrows', 'sendgrid', 'heygen'
+  vendorName: string           // e.g., 'openai', 'zenrows', 'sendgrid', 'did'
   usageType: string            // e.g., 'tokens', 'api_call', 'minutes', 'emails'
   unitCount: number            // Raw usage units
   estimatedCost: number        // Normalized to USD

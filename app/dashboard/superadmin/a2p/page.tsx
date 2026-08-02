@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic"
 // A2P step machine persists per-tenant state on platform_credentials
 // ('twilio_a2p', config jsonb — see lib/voice/a2p-registration), the business
 // profile lives in brokerage_settings.settings.a2p_business_profile, numbers in
-// vapi_phone_numbers, and every runner invocation logs to phone_number_events
+// tenant_phone_numbers, and every runner invocation logs to phone_number_events
 // (source 'a2p_registration'). Nothing here is fabricated: statuses are exactly
 // what the step machine last persisted from Twilio.
 
@@ -75,7 +75,7 @@ export default async function SuperadminA2pPage() {
     svc.from("brokerages").select("id, name, plan_tier").is("deleted_at", null).order("name"),
     svc.from("platform_credentials").select("brokerage_id, config, updated_at").eq("platform", "twilio_a2p").eq("is_active", true),
     svc.from("brokerage_settings").select("brokerage_id, settings"),
-    svc.from("vapi_phone_numbers").select("brokerage_id").eq("is_active", true),
+    svc.from("tenant_phone_numbers").select("brokerage_id").eq("is_active", true),
     svc.from("phone_number_events").select("brokerage_id, created_at").eq("source", "a2p_registration").order("created_at", { ascending: false }).limit(2000),
   ])
   const failed = [brk, creds, settings, numbers, events].find((r) => r.error)

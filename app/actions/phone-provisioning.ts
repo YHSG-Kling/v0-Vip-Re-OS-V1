@@ -102,7 +102,7 @@ export async function autoProvisionAgentPhone(params: {
 
   const svc = createServiceClient()
 
-  // Resolve agent's auth user_id (vapi_phone_numbers uses agent_user_id, not agent_id)
+  // Resolve agent's auth user_id (tenant_phone_numbers uses agent_user_id, not agent_id)
   const { data: agent } = await svc
     .from("agents")
     .select("user_id")
@@ -115,7 +115,7 @@ export async function autoProvisionAgentPhone(params: {
 
   // Skip if agent already has a number
   const { data: existing } = await svc
-    .from("vapi_phone_numbers")
+    .from("tenant_phone_numbers")
     .select("phone_number")
     .eq("agent_user_id", agentUserId)
     .eq("is_active", true)
@@ -186,14 +186,14 @@ export async function manuallyAddAgentPhone(params: {
 
   // Deactivate any existing active number for this agent
   await svc
-    .from("vapi_phone_numbers")
+    .from("tenant_phone_numbers")
     .update({ is_active: false })
     .eq("agent_user_id", agentUserId)
     .eq("is_active", true)
 
   // Insert the new one — number_source CHECK allows (byoc_twilio|ported)
   // only, the two sources this OS actually produces, so manual = byoc_twilio.
-  const { error } = await svc.from("vapi_phone_numbers").insert({
+  const { error } = await svc.from("tenant_phone_numbers").insert({
     agent_user_id: agentUserId,
     brokerage_id: ctx.brokerageId,
     scope_type: "agent",

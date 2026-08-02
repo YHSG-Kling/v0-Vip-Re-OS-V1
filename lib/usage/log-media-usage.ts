@@ -23,7 +23,7 @@ export type MediaMetric =
   | "tts_characters"
   | "voice_clones_created"
   | "avatars_created"
-  | "vapi_minutes"
+  | "ai_voice_minutes"
   | "video_minutes"
   | "live_assistant_minutes"
   | "live_assistant_sessions"

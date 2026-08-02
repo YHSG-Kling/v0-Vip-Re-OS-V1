@@ -146,11 +146,11 @@ export async function POST(request: NextRequest) {
       lead_id: leadId,
       agent_id: agentRowId,
       direction: "inbound",
-      call_type: "vapi_inbound", // CHECK value for AI inbound; ai_notes carries the real engine
+      call_type: "ai_inbound", // CHECK value for AI inbound; ai_notes carries the real engine
       status: "in_progress",
       phone_from: from, phone_to: to,
       started_at: new Date().toISOString(),
-      vapi_call_id: callSid, // vendor call id (Twilio CallSid here)
+      vendor_call_id: callSid, // vendor call id (Twilio CallSid here)
       transcription: appendTranscript(null, null, firstMessage),
       ai_notes: "engine:twilio",
     }), { table: "voice_calls", flow: "voice_call_ledger", brokerageId: ctx.brokerageId })
@@ -158,7 +158,7 @@ export async function POST(request: NextRequest) {
     // ai_isa_calls lifecycle: an INBOUND AI call gets its scoring row now
     // (outbound calls get theirs at placement) so the post-call brain can persist
     // appointment_set + lead_quality_score against it. Best-effort.
-    const { data: vc } = await svc.from("voice_calls").select("id").eq("vapi_call_id", callSid).maybeSingle()
+    const { data: vc } = await svc.from("voice_calls").select("id").eq("vendor_call_id", callSid).maybeSingle()
     if ((vc as any)?.id) {
       try {
         await svc.from("ai_isa_calls").insert({

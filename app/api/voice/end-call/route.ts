@@ -29,11 +29,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   // TENANT SCOPE — the call must belong to the caller's brokerage. Without this
   // an authenticated user of tenant A could terminate tenant B's live call by
-  // supplying its CallSid (vapi_call_id holds the Twilio CallSid on this lane).
+  // supplying its CallSid (vendor_call_id holds the Twilio CallSid on this lane).
   const { data: call } = await service
     .from("voice_calls")
     .select("id, brokerage_id")
-    .eq("vapi_call_id", callId)
+    .eq("vendor_call_id", callId)
     .maybeSingle()
 
   if (!call) {
@@ -66,7 +66,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       outcome: "completed",
       ended_at: new Date().toISOString(),
     })
-    .eq("vapi_call_id", callId)
+    .eq("vendor_call_id", callId)
     .eq("brokerage_id", brokerageId)
 
   if (closeErr) {

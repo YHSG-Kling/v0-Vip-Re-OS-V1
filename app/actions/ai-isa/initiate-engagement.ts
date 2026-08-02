@@ -533,7 +533,7 @@ async function dispatchToChannel(
     return {
       success:       true,
       callInitiated: true,
-      vapiCallId:    placed.callSid,
+      vendorCallId:  placed.callSid,
       channel:       'phone',
     }
   }

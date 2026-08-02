@@ -1,4 +1,4 @@
-// lib/voice/vapi-numbers.ts
+// lib/voice/inbound-number-binding.ts
 // ─────────────────────────────────────────────────────────────────────────────
 // INBOUND CALL IDENTITY + BINDING (Twilio-native lane — the single voice engine).
 // Historically this module also created Vapi assistants and imported numbers into
@@ -70,7 +70,7 @@ export async function applyInboundCallBinding(svc: any, profileId: string): Prom
   if (!p.ai_answer_calls) return { ok: true, applied: false }
 
   // Twilio-native lane: no assistant to ensure — bind the scope's numbers.
-  let nq = svc.from("vapi_phone_numbers").select("id").eq("brokerage_id", p.brokerage_id).eq("is_active", true)
+  let nq = svc.from("tenant_phone_numbers").select("id").eq("brokerage_id", p.brokerage_id).eq("is_active", true)
   if (p.scope_type === "agent") {
     const { data: agent } = await svc.from("agents").select("user_id").eq("id", p.scope_id).maybeSingle()
     const userId = (agent as any)?.user_id

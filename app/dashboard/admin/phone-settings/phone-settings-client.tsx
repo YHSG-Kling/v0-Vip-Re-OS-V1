@@ -394,7 +394,7 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
               onClick={() => handleVoiceChoice(null)}
               disabled={isPending}
             >
-              Clear (use VAPI default)
+              Clear (use the platform default)
             </Button>
           )}
 

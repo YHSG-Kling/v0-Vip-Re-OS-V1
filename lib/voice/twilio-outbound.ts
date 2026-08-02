@@ -111,7 +111,7 @@ export async function placeOutboundAiCall(svc: any, params: PlaceOutboundParams)
   // 3. FROM number: the agent's own line first (contacts recognize it), else
   //    any active brokerage line — dialing needs a real tenant number; no
   //    shared-platform fallback on this lane (caller ID honesty).
-  let numQ = svc.from("vapi_phone_numbers")
+  let numQ = svc.from("tenant_phone_numbers")
     .select("id, phone_number, agent_user_id")
     .eq("brokerage_id", params.brokerageId).eq("is_active", true)
   const { data: numbers } = await numQ
@@ -165,7 +165,7 @@ export async function placeOutboundAiCall(svc: any, params: PlaceOutboundParams)
     phone_from: fromRow.phone_number,
     phone_to: params.toNumber,
     started_at: new Date().toISOString(),
-    vapi_call_id: res.data.sid, // vendor call id (Twilio CallSid on this lane)
+    vendor_call_id: res.data.sid, // vendor call id (Twilio CallSid on this lane)
     ai_notes: encodeOutboundBrief({
       engine: "twilio",
       objective: params.objective,

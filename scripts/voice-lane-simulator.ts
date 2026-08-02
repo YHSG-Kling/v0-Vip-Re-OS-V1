@@ -208,8 +208,8 @@ console.log("\n── PURE: A2P 10DLC step machine ──")
 console.log("\n── PURE: voice-lane activity → the Monday brief ──")
 {
   const v = rollupVoiceActivity([
-    { direction: "inbound", call_type: "vapi_inbound", status: "completed", outcome: "completed" },
-    { direction: "inbound", call_type: "vapi_inbound", status: "completed", outcome: "completed" },
+    { direction: "inbound", call_type: "ai_inbound", status: "completed", outcome: "completed" },
+    { direction: "inbound", call_type: "ai_inbound", status: "completed", outcome: "completed" },
     { direction: "outbound", call_type: "ai_isa_call", status: "completed", outcome: "completed" },
     { direction: "outbound", call_type: "ai_isa_call", status: "completed", outcome: "voicemail" },
     { direction: "outbound", call_type: "ai_isa_call", status: "completed", outcome: "no_answer" },
@@ -291,7 +291,7 @@ console.log("\n── SOURCE: wiring ──")
   check("turn: book → real scheduled showing on the SAME rails (via the shared bookShowingFromCall); transfer → Dial; hangup → complete",
     turn.includes("bookShowingFromCall") && turn.includes("twimlTransfer") && turn.includes("finishCall")
     && src("lib/voice/twilio-voice.ts").includes('from("showings")'))
-  const binding = src("lib/voice/vapi-numbers.ts")
+  const binding = src("lib/voice/inbound-number-binding.ts")
   check("binding is Twilio-ONLY (VAPI retired — no VOICE_ENGINE flag, no vapi assistant/number-import)",
     binding.includes("bindNumberToTwilioLane") && !binding.includes("VOICE_ENGINE") && !binding.includes("registerNumberWithVapi"))
   const bind = src("lib/voice/twilio-voice.ts")

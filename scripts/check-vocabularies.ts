@@ -168,7 +168,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     scope_type: ["agent", "brokerage", "multi_location", "platform", "team"],
     tone: ["authoritative", "conversational", "friendly", "luxury", "professional", "warm"],
     voice_mode: ["assistant", "clone", "front_office"],
-    voice_provider: ["elevenlabs", "vapi"],
+    voice_provider: ["elevenlabs"],
   },
   ai_isa_activities: {
     activity_type: ["appointment_set", "automation_paused", "automation_resumed", "automation_started", "call", "direct_mail", "email", "follow_up", "info_guide", "open_house_invite", "outcome_recorded", "property_alert", "seller_intent_prioritized", "social", "text", "tour_plan", "video", "voicedrop"],
@@ -209,7 +209,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     audience_type: ["customer_facing", "in_house"],
     compliance_status: ["failed", "needs_review", "not_evaluated", "passed"],
     usage_intent: ["both", "mls", "public_marketing"],
-    video_provider: ["custom", "did", "google_flow", "heygen", "synthesia", "upload"],
+    video_provider: ["did", "upload"],
     video_type: ["agent_intro", "avatar_explainer", "coming_soon", "education", "just_listed", "just_sold", "listing_promo", "listing_tour", "market_update", "memory_video", "open_house_promo", "pre_appointment", "presentation_chapter", "social_reel", "testimonial", "welcome"],
   },
   appointments: {
@@ -1058,7 +1058,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["cancelled", "completed", "failed", "processing", "queued"],
   },
   plan_limits: {
-    metric: ["active_transactions", "active_users", "ai_tokens_monthly", "avatars_created", "contacts_count", "emails_sent", "live_assistant_minutes", "live_assistant_sessions", "live_avatar_minutes", "live_avatar_sessions", "llm_calls", "sms_sent", "storage_gb", "tts_characters", "vapi_minutes", "video_minutes", "voice_clones_created"],
+    metric: ["active_transactions", "active_users", "ai_tokens_monthly", "avatars_created", "contacts_count", "emails_sent", "live_assistant_minutes", "live_assistant_sessions", "live_avatar_minutes", "live_avatar_sessions", "llm_calls", "sms_sent", "storage_gb", "tts_characters", "ai_voice_minutes", "video_minutes", "voice_clones_created"],
     plan_tier: ["brokerage", "multi_location", "solo_agent", "team"],
   },
   platform_affiliates: {
@@ -1074,7 +1074,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   platform_credentials: {
     owner_type: ["agent", "brokerage", "contact", "platform", "team", "vendor"],
-    platform: ["authentisign", "bandwidth", "brokermint", "buffer", "did", "docusign", "dotloop", "facebook", "followupboss", "formsimplicity", "gmail", "gohighlevel", "google_calendar", "google_flow", "heygen", "hubspot", "idxbroker", "instagram", "linkedin", "listhub", "lob", "lofty", "mailgun", "mls", "mls_direct", "opcity", "outlook", "pexels", "plaid", "platform_quickbooks", "platform_social_facebook", "platform_social_instagram", "platform_social_linkedin", "platform_social_tiktok", "platform_social_x", "platform_social_youtube", "platform_zoom", "plivo", "postmark", "quickbooks", "realtor_com", "resend", "sendgrid", "showingtime", "sinch", "skyslope", "stripe", "telnyx", "twilio", "twilio_a2p", "twilio_byo", "twilio_subaccount", "vapi", "zillow", "zoom"],
+    platform: ["authentisign", "bandwidth", "brokermint", "buffer", "did", "docusign", "dotloop", "facebook", "followupboss", "formsimplicity", "gmail", "gohighlevel", "google_calendar", "google_flow", "hubspot", "idxbroker", "instagram", "linkedin", "listhub", "lob", "lofty", "mailgun", "mls", "mls_direct", "opcity", "outlook", "pexels", "plaid", "platform_quickbooks", "platform_social_facebook", "platform_social_instagram", "platform_social_linkedin", "platform_social_tiktok", "platform_social_x", "platform_social_youtube", "platform_zoom", "plivo", "postmark", "quickbooks", "realtor_com", "resend", "sendgrid", "showingtime", "sinch", "skyslope", "stripe", "telnyx", "twilio", "twilio_a2p", "twilio_byo", "twilio_subaccount", "zillow", "zoom"],
     scope: ["agent", "brokerage", "team"],
     test_status: ["fail", "pass", "pending"],
   },
@@ -1481,7 +1481,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     compliance_status: ["at_risk", "closed", "compliant", "in_progress", "violation"],
   },
   usage_counters: {
-    metric: ["active_transactions", "active_users", "ai_tokens_monthly", "avatars_created", "contacts_count", "emails_sent", "live_assistant_minutes", "live_assistant_sessions", "live_avatar_minutes", "live_avatar_sessions", "llm_calls", "sms_sent", "storage_gb", "tts_characters", "vapi_minutes", "video_minutes", "voice_clones_created"],
+    metric: ["active_transactions", "active_users", "ai_tokens_monthly", "avatars_created", "contacts_count", "emails_sent", "live_assistant_minutes", "live_assistant_sessions", "live_avatar_minutes", "live_avatar_sessions", "llm_calls", "sms_sent", "storage_gb", "tts_characters", "ai_voice_minutes", "video_minutes", "voice_clones_created"],
   },
   usage_logs: {
     usage_type: ["ai_call", "email", "scraper_call", "sms", "storage", "video", "voice_call"],
@@ -1496,7 +1496,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   valuation_requests: {
     condition: ["excellent", "fair", "good", "poor"],
   },
-  vapi_phone_numbers: {
+  tenant_phone_numbers: {
     number_source: ["byoc_twilio", "ported"],
     scope_type: ["agent", "brokerage", "platform", "team"],
   },
@@ -1578,7 +1578,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     stream_status: ["failed", "pending", "preview_ready", "processing", "ready"],
   },
   voice_calls: {
-    call_type: ["agent_call", "ai_isa_call", "vapi_inbound", "warm_transfer", "zoom_meeting"],
+    call_type: ["agent_call", "ai_isa_call", "ai_inbound", "warm_transfer", "zoom_meeting"],
     direction: ["inbound", "outbound"],
     outcome: ["appointment_set", "authority_blocked", "busy", "callback_requested", "canceled", "completed", "failed", "no_answer", "not_interested", "opt_out", "transferred", "voicemail", "voicemail_left", "warm_bridge_missed", "warm_bridge_ringing", "warm_transferred"],
     sentiment: ["negative", "neutral", "positive"],

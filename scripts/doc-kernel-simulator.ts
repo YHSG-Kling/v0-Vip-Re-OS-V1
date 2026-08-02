@@ -2725,7 +2725,7 @@ async function main() {
         "client_portal_messages.direction": ["agent_to_client","client_to_agent"],
         "message_provider_logs.direction": ["inbound","outbound"],
         "voice_calls.direction": ["inbound","outbound"],
-        "voice_calls.call_type": ["agent_call","ai_isa_call","vapi_inbound","warm_transfer"],
+        "voice_calls.call_type": ["agent_call","ai_isa_call","ai_inbound","warm_transfer"],
         "notifications.priority": ["low","medium","high","critical"],
         "smart_assistant_suggestions.priority": ["low","medium","high"],
         "vendor_messages.sender_type": ["vendor","contact","agent"],

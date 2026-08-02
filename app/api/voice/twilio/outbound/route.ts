@@ -35,7 +35,7 @@ export async function POST(request: NextRequest) {
   }
 
   const { data: call } = await svc.from("voice_calls").select("id, ai_notes, transcription")
-    .eq("vapi_call_id", callSid).maybeSingle()
+    .eq("vendor_call_id", callSid).maybeSingle()
   const brief = decodeOutboundBrief((call as any)?.ai_notes)
   if (!call || !brief) {
     // No session row / foreign call — never improvise an unscripted AI call.

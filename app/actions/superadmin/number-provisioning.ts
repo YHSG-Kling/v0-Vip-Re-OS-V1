@@ -123,7 +123,7 @@ export async function releaseNumberForTenant(params: {
   if (!params.brokerageId || !params.numberRowId) return { ok: false, error: "brokerageId and numberRowId are required" }
 
   const svc = createServiceClient()
-  const { data: row } = await svc.from("vapi_phone_numbers")
+  const { data: row } = await svc.from("tenant_phone_numbers")
     .select("id, brokerage_id, phone_number, is_active")
     .eq("id", params.numberRowId).maybeSingle()
   const n = row as any

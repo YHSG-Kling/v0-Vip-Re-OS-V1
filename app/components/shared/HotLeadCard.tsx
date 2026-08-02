@@ -22,7 +22,7 @@ interface HotLeadCardProps {
     } | null
   }
   onWhisperBridge: (contactId: string, context: string) => Promise<void>
-  onVapiBot: (contactId: string, triggerEvent: string) => Promise<void>
+  onAiVoiceCall: (contactId: string, triggerEvent: string) => Promise<void>
   callingId: string | null
   compact?: boolean
 }
@@ -30,7 +30,7 @@ interface HotLeadCardProps {
 export function HotLeadCard({
   lead,
   onWhisperBridge,
-  onVapiBot,
+  onAiVoiceCall,
   callingId,
   compact = false,
 }: HotLeadCardProps) {
@@ -57,17 +57,17 @@ export function HotLeadCard({
     }
   }
 
-  const handleVapiCall = async () => {
+  const handleAiVoiceCall = async () => {
     setLoading(true)
     try {
-      await onVapiBot(lead.contacts!.id, 'hot_lead_score')
+      await onAiVoiceCall(lead.contacts!.id, 'hot_lead_score')
     } finally {
       setLoading(false)
     }
   }
 
   const isWhisperCalling = callingId === `${lead.contacts.id}whisper`
-  const isVapiCalling = callingId === `${lead.contacts.id}vapi`
+  const isAiCalling = callingId === `${lead.contacts.id}ai-voice`
 
   if (compact) {
     return (
@@ -149,11 +149,11 @@ export function HotLeadCard({
           <Button
             size="sm"
             variant="outline"
-            onClick={handleVapiCall}
+            onClick={handleAiVoiceCall}
             disabled={loading}
             className="flex-1"
           >
-            {isVapiCalling ? (
+            {isAiCalling ? (
               <>
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                 Calling...

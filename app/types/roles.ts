@@ -53,7 +53,7 @@ export const ROLE_CONFIG: Record<UserRole, RoleConfig> = {
   isa: {
     role: 'isa',
     label: 'ISA',
-    description: 'Inside Sales Agent (Vapi.ai voice)',
+    description: 'Inside Sales Agent (AI voice)',
     icon: 'Headphones',
     permissions: ['view_leads', 'call_leads', 'qualify_lead', 'transfer_to_agent', 'create_notes'],
   },

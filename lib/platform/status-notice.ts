@@ -105,9 +105,8 @@ const PROVIDER_CAPABILITY: Record<string, string> = {
   supabase_db: "loading and saving your data",
   anthropic: "AI drafting and assistant features",
   sendgrid: "outbound email",
-  twilio: "text messaging and phone calls",
+  twilio: "text messaging, phone calls, and the AI phone receptionist",
   stripe: "billing and payments",
-  vapi: "the AI phone receptionist",
 }
 
 /** PURE: prefill the proposal copy for a provider that keeps failing checks. */

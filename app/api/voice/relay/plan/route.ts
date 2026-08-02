@@ -71,7 +71,7 @@ export async function POST(request: NextRequest) {
   if (!ctx) return json({ say: "Sorry, something went wrong. Goodbye.", endSession: true })
 
   const { data: call } = await svc.from("voice_calls").select("id, contact_id, agent_id, transcription, ai_notes, direction")
-    .eq("vapi_call_id", req.callSid).maybeSingle()
+    .eq("vendor_call_id", req.callSid).maybeSingle()
   const transcript = (call as any)?.transcription ?? null
   const brief = (call as any)?.direction === "outbound" ? decodeOutboundBrief((call as any)?.ai_notes) : null
 

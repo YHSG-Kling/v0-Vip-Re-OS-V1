@@ -354,7 +354,7 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
     }
 
     if (step === "number_attached") {
-      const { data: numbers } = await svc.from("vapi_phone_numbers")
+      const { data: numbers } = await svc.from("tenant_phone_numbers")
         .select("twilio_number_sid").eq("brokerage_id", brokerageId).eq("is_active", true)
         .not("twilio_number_sid", "is", null).limit(10)
       const sids = ((numbers ?? []) as any[]).map((n) => n.twilio_number_sid).filter(Boolean)
@@ -525,7 +525,7 @@ export async function runVoiceIntegrityRegistration(svc: any, brokerageId: strin
   if (!masterSid || !masterToken) return fail("Twilio master account not configured (TWILIO_ACCOUNT_SID/AUTH_TOKEN) — nothing was filed")
   const master: Creds = { accountSid: masterSid, authToken: masterToken }
 
-  const { data: numbers } = await svc.from("vapi_phone_numbers")
+  const { data: numbers } = await svc.from("tenant_phone_numbers")
     .select("twilio_number_sid").eq("brokerage_id", brokerageId).eq("is_active", true)
     .not("twilio_number_sid", "is", null).limit(10)
   const phoneSids = ((numbers ?? []) as any[]).map((n) => n.twilio_number_sid).filter(Boolean) as string[]

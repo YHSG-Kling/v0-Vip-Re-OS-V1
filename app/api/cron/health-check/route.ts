@@ -130,7 +130,6 @@ const CONSECUTIVE_DOWN_THRESHOLD = 2
 
 // Integration services that check brokerage_integrations table
 const INTEGRATION_SERVICES = [
-  "vapi",
   "dotloop",
   "docusign",
   "quickbooks",

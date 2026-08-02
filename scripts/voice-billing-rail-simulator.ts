@@ -40,7 +40,7 @@ console.log("\n── the pure rollup still folds minutes + cost correctly ─�
 {
   const u = rollupVoiceUsage("2026-07", [{ minutes_billed: 3, cost_cents: 6 }, { minutes_billed: 2, cost_cents: 4 }], [{ is_active: true }])
   check("minutes sum", u.minutes === 5)
-  check("call-cost sum", u.vapiCostCents === 10)
+  check("call-cost sum", u.callCostCents === 10)
   check("active-number cost folds in", u.numberCostCents === 115 && u.totalCostCents === 125)
 }
 
@@ -60,7 +60,7 @@ async function liveLayer() {
     const { loadVoiceUsage } = await import("../lib/voice/twilio-tenancy")
     const usage = await loadVoiceUsage(svc as any, brokerageId, month)
     check("live: the meter counts the seeded 3 minutes", usage.minutes >= 3)
-    check("live: the meter counts the seeded 6¢", usage.vapiCostCents >= 6)
+    check("live: the meter counts the seeded 6¢", usage.callCostCents >= 6)
   } finally {
     await svc.from("usage_logs").delete().eq("brokerage_id", brokerageId).eq("usage_type", "voice_call").contains("metadata", { call_sid: tag })
     const { count } = await svc.from("usage_logs").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).contains("metadata", { call_sid: tag })

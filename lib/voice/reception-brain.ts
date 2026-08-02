@@ -8,7 +8,7 @@
 // same hour-aware behavior, same capability-gated actions.
 
 import { withAiCallDisclosures } from "@/lib/communication/call-disclosures"
-import { composeBusinessHoursRule, type InboundIdentity } from "@/lib/voice/vapi-numbers"
+import { composeBusinessHoursRule, type InboundIdentity } from "@/lib/voice/inbound-number-binding"
 
 /** PURE: the reception system prompt from the tenant's AI identity — shared by
  *  every engine. Mirrors the Vapi builder's rules exactly (one brain). */

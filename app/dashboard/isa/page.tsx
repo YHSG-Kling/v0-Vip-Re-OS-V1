@@ -187,7 +187,7 @@ export default async function AIISAOperationsConsolePage() {
         .from('voice_calls')
         .select(`
           id,
-          vapi_call_id,
+          vendor_call_id,
           contact_id,
           agent_id,
           direction,

@@ -51,7 +51,7 @@ const METRIC_LABELS: Record<string, string> = {
   tts_characters: "Voice synthesis (chars)",
   voice_clones_created: "Twin voices created",
   avatars_created: "Twin avatars created",
-  vapi_minutes: "AI calling (min)",
+  ai_voice_minutes: "AI calling (min)",
 }
 
 const VIEWER_ROLES = ["broker", "admin", "superadmin", "team_lead"]
@@ -134,7 +134,7 @@ export async function loadUsageOverview(): Promise<{
     .lt("created_at", periodEnd.toISOString())
     .in("metric", [
       "live_avatar_minutes", "live_avatar_sessions", "tts_characters",
-      "voice_clones_created", "avatars_created", "vapi_minutes",
+      "voice_clones_created", "avatars_created", "ai_voice_minutes",
     ])
 
   // Aggregate per (agent_id, metric)

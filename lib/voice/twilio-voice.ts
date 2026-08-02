@@ -14,7 +14,7 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto"
 import { buildReceptionPrompt, parseTurnPlan, transcriptToMessages, TURN_INSTRUCTIONS, type VoiceTurnPlan } from "./reception-brain"
-import type { InboundIdentity } from "./vapi-numbers"
+import type { InboundIdentity } from "./inbound-number-binding"
 
 /** Twilio request signature: HMAC-SHA1(url + sorted concatenated POST params, authToken), base64. */
 export function computeTwilioSignature(authToken: string, url: string, params: Record<string, string>): string {
@@ -42,7 +42,7 @@ export interface InboundCallContext {
 /** Resolve the tenant + reception identity from the CALLED number (To). */
 export async function resolveInboundContext(svc: any, toNumber: string): Promise<InboundCallContext | null> {
   const digits = toNumber.replace(/\D/g, "")
-  const { data: num } = await svc.from("vapi_phone_numbers")
+  const { data: num } = await svc.from("tenant_phone_numbers")
     .select("id, brokerage_id, agent_user_id")
     .eq("phone_digits", digits).eq("is_active", true).maybeSingle()
   if (!num) return null
@@ -120,7 +120,7 @@ export async function bindNumberToTwilioLane(
   svc: any,
   numberRowId: string,
 ): Promise<{ ok: true } | { ok: false; error: string; notConfigured?: boolean }> {
-  const { data: row } = await svc.from("vapi_phone_numbers")
+  const { data: row } = await svc.from("tenant_phone_numbers")
     .select("id, brokerage_id, phone_number, twilio_number_sid, is_active")
     .eq("id", numberRowId).maybeSingle()
   if (!row) return { ok: false, error: "Number row not found" }

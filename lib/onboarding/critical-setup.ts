@@ -85,7 +85,7 @@ export interface CriticalSetupFacts {
   autonomyPostureReviewed: boolean   // managed_agents.config.autonomy_tier set on ≥1 manager
   // connections
   emailProviderConfigured: boolean   // global_settings.from_email/smtp_host or brokerage email cred
-  smsProviderConfigured: boolean     // platform_credentials twilio/telnyx/bandwidth/vapi
+  smsProviderConfigured: boolean     // platform_credentials twilio/telnyx/bandwidth
   zoomConnected: boolean             // platform_credentials platform='zoom' (brokerage-owned)
   accountingConnected: boolean       // brokerage_integrations accounting or quickbooks cred
   socialConnected: boolean           // social_media_accounts active rows
@@ -203,7 +203,7 @@ export const CRITICAL_SETUP_ITEMS: CriticalSetupItem[] = [
     checker: (f) => f.emailProviderConfigured },
   { key: "admin_sms_provider", role: "brokerage_admin", category: "connections",
     title: "Configure SMS / voice",
-    why: "Texting and the AI ISA's calls need a Twilio/Telnyx/Vapi credential — without one the calling and SMS rails are dead.",
+    why: "Texting and the AI ISA's calls need a Twilio or Telnyx credential — without one the calling and SMS rails are dead.",
     settingHref: "/settings/providers",
     checker: (f) => f.smsProviderConfigured },
   { key: "admin_social", role: "brokerage_admin", category: "connections",
@@ -450,7 +450,7 @@ export async function loadCriticalSetupFacts(
       .eq("scope_type", "brokerage").eq("scope_id", brokerageId).eq("active", true),
     svc.from("managed_agents").select("config").eq("brokerage_id", brokerageId).is("archived_at", null).limit(50),
     svc.from("platform_credentials").select("id").eq("brokerage_id", brokerageId).eq("is_active", true)
-      .in("platform", ["twilio", "telnyx", "bandwidth", "vapi"]).limit(1),
+      .in("platform", ["twilio", "telnyx", "bandwidth"]).limit(1),
     svc.from("platform_credentials").select("id").eq("owner_type", "brokerage").eq("owner_id", brokerageId)
       .eq("platform", "zoom").eq("is_active", true).limit(1),
     svc.from("platform_credentials").select("id").eq("owner_type", "brokerage").eq("owner_id", brokerageId)

@@ -55,7 +55,7 @@ const SYSTEM_DEFAULTS: Record<string, string> = {
   video:        "did",
   avatar:       "did",
   voice_clone:  "elevenlabs",
-  ai_voice:     "vapi",
+  ai_voice:     "twilio",
   direct_mail:  "lob",
   scraper:      "apify",       // lead-source scraping — platform-funded keys
   enrichment:   "peopledata",  // skip-trace / contact enrichment — platform-funded

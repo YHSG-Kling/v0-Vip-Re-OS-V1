@@ -94,7 +94,7 @@ export async function initiateWhisperBridge(params: {
     }
 
     // Canonical call record lives on voice_calls; call_whisper_logs only stores the whisper text
-    // (keyed by voice_call_id). The provider call sid is the voice_calls.vapi_call_id pointer.
+    // (keyed by voice_call_id). The provider call sid is the voice_calls.vendor_call_id pointer.
     const { data: voiceCall, error: vcError } = await supabase
       .from("voice_calls")
       .insert({
@@ -106,7 +106,7 @@ export async function initiateWhisperBridge(params: {
         status: "initiated",
         phone_from: agent.phone,
         phone_to: contact.phone,
-        vapi_call_id: callResult.callSid,
+        vendor_call_id: callResult.callSid,
       })
       .select("id")
       .single()
@@ -164,7 +164,7 @@ export async function updateWhisperBridgeStatus(params: {
     const { data: callRow } = await svc
       .from("voice_calls")
       .select("id, contact_id")
-      .eq("vapi_call_id", params.callSid)
+      .eq("vendor_call_id", params.callSid)
       .maybeSingle()
     if (!callRow) {
       return { success: false, error: "Call not found" }
@@ -206,7 +206,7 @@ export async function updateWhisperBridgeStatus(params: {
 }
 
 // Trigger Vapi AI voice bot for hot leads
-export async function triggerVapiVoiceBot(params: {
+export async function triggerAiVoiceCall(params: {
   contactId: string
   triggerEvent: string // behavioral_spike, hot_lead_score, showing_reminder, price_reduction_alert
   customMessage?: string

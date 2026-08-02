@@ -93,7 +93,7 @@ export function classifyError(
     workflowLower.includes("cron") ||
     workflowLower.includes("scraper") ||
     workflowLower.includes("video") ||
-    workflowLower.includes("heygen")
+    false
   ) {
     severity = "medium"
   }
@@ -111,7 +111,7 @@ export function classifyError(
     category = "lead_pipeline"
   } else if (workflowLower.includes("email") || workflowLower.includes("sms") || workflowLower.includes("message") || workflowLower.includes("notification") || workflowLower.includes("portal")) {
     category = "communication"
-  } else if (workflowLower.includes("video") || workflowLower.includes("heygen") || workflowLower.includes("content") || workflowLower.includes("blog") || workflowLower.includes("social")) {
+  } else if (workflowLower.includes("video") || workflowLower.includes("content") || workflowLower.includes("blog") || workflowLower.includes("social")) {
     category = "content"
   } else if (workflowLower.includes("commission") || workflowLower.includes("billing") || workflowLower.includes("stripe") || workflowLower.includes("payment") || workflowLower.includes("earning")) {
     category = "financial"
@@ -119,7 +119,7 @@ export function classifyError(
     category = "cron"
   } else if (workflowLower.includes("api") || workflowLower.includes("webhook") || workflowLower.includes("sync") || workflowLower.includes("oauth")) {
     category = "integration"
-  } else if (workflowLower.includes("voice") || workflowLower.includes("vapi") || workflowLower.includes("isa_call") || workflowLower.includes("call")) {
+  } else if (workflowLower.includes("voice") || workflowLower.includes("isa_call") || workflowLower.includes("call")) {
     category = "voice"
   }
 

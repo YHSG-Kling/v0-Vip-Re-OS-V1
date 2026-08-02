@@ -77,9 +77,9 @@ console.log("\n═══ 3. Readiness mirrors the gates the executor really enfo
 {
   const helper = code("lib/voice/isa-readiness.ts")
   const exec = code("lib/voice/twilio-outbound.ts")
-  ok("the helper checks for an ACTIVE tenant number…", /vapi_phone_numbers[\s\S]{0,200}is_active/.test(helper))
+  ok("the helper checks for an ACTIVE tenant number…", /tenant_phone_numbers[\s\S]{0,200}is_active/.test(helper))
   ok("…which is exactly what the executor's first hard stop is",
-    /vapi_phone_numbers[\s\S]{0,300}"is_active", true/.test(exec) || /vapi_phone_numbers[\s\S]{0,300}is_active/.test(exec))
+    /tenant_phone_numbers[\s\S]{0,300}"is_active", true/.test(exec) || /tenant_phone_numbers[\s\S]{0,300}is_active/.test(exec))
   ok("the helper resolves tenant Twilio creds through the SAME resolver the\n    executor uses, so the two can never disagree",
     helper.includes("resolveTenantTwilioCreds") && exec.includes("resolveTenantTwilioCreds"))
   ok("TCPA and vendor budget are NOT reported as readiness — they are\n    per-contact and per-moment, and a brokerage that can call is still\n    correctly refused for one person on the DNC list",

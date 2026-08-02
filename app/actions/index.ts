@@ -49,7 +49,7 @@ export {
 export {
   initiateWhisperBridge,
   updateWhisperBridgeStatus,
-  triggerVapiVoiceBot,
+  triggerAiVoiceCall,
   getWhisperBridgeCalls,
 } from "./voice-call-bridge"
 

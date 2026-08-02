@@ -80,7 +80,7 @@ import {
   deliverIntelligentValue,
 } from "@/app/actions/lead-intelligence"
 import LeadIntelligencePanel from "@/app/components/intelligence/LeadIntelligencePanel"
-import { initiateWhisperBridge, triggerVapiVoiceBot } from "@/app/actions/voice-call-bridge"
+import { initiateWhisperBridge, triggerAiVoiceCall } from "@/app/actions/voice-call-bridge"
 import { aiBatchReengagement } from "@/app/actions/ai-lead-nurturing"
 import { HotLeadCard } from "@/app/components/shared/HotLeadCard"
 import { StaleLeadQueue } from "@/app/leads/components/StaleLeadQueue"
@@ -435,10 +435,10 @@ export default function LeadsPage() {
     setCallingId(null)
   }
 
-  const handleVapiBot = async (contactId: string, triggerEvent: string) => {
-    setCallingId(contactId + 'vapi')
+  const handleAiVoiceCall = async (contactId: string, triggerEvent: string) => {
+    setCallingId(contactId + 'ai-voice')
     try {
-      await triggerVapiVoiceBot({ contactId, triggerEvent })
+      await triggerAiVoiceCall({ contactId, triggerEvent })
     } catch {}
     setCallingId(null)
   }
@@ -811,7 +811,7 @@ export default function LeadsPage() {
                     key={lead.id}
                     lead={lead}
                     onWhisperBridge={handleWhisperBridge}
-                    onVapiBot={handleVapiBot}
+                    onAiVoiceCall={handleAiVoiceCall}
                     callingId={callingId}
                     compact={false}
                   />

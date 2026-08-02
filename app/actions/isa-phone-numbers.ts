@@ -3,7 +3,7 @@
 /**
  * ISA Phone Number Management
  *
- * Server actions for the brokerage's phone inventory (vapi_phone_numbers — the
+ * Server actions for the brokerage's phone inventory (tenant_phone_numbers — the
  * ledger the Twilio voice/SMS lane routes by). Surfaces in Settings → ISA
  * Calling, and registers a number the brokerage ALREADY owns. Buying a new one
  * is the other path entirely: searchBrokerageNumbersAction →
@@ -79,7 +79,7 @@ export async function listIsaPhoneNumbers(
 
   const supabase = createServiceClient()
   const { data, error } = await supabase
-    .from("vapi_phone_numbers")
+    .from("tenant_phone_numbers")
     .select("*")
     .eq("brokerage_id", auth.brokerageId)
     .order("created_at", { ascending: false })
@@ -134,7 +134,7 @@ export async function createIsaPhoneNumber(params: {
   }
 
   const { data, error } = await supabase
-    .from("vapi_phone_numbers")
+    .from("tenant_phone_numbers")
     .insert({
       brokerage_id: auth.brokerageId,
       team_id: params.teamId ?? null,
@@ -165,7 +165,7 @@ export async function toggleIsaPhoneNumber(params: {
 
   const supabase = createServiceClient()
   const { error } = await supabase
-    .from("vapi_phone_numbers")
+    .from("tenant_phone_numbers")
     .update({ is_active: params.active })
     .eq("id", params.id)
     .eq("brokerage_id", auth.brokerageId)
@@ -184,7 +184,7 @@ export async function deleteIsaPhoneNumber(params: {
 
   const supabase = createServiceClient()
   const { error } = await supabase
-    .from("vapi_phone_numbers")
+    .from("tenant_phone_numbers")
     .delete()
     .eq("id", params.id)
     .eq("brokerage_id", auth.brokerageId)

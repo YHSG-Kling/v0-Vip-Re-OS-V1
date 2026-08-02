@@ -98,7 +98,7 @@ export interface TwilioTenantPosture {
   subaccountSid: string | null
   /** Live subaccount status from Twilio (active | suspended | closed) — null when not probed. */
   subaccountStatus: string | null
-  /** Numbers our DB says this tenant has (vapi_phone_numbers active). */
+  /** Numbers our DB says this tenant has (tenant_phone_numbers active). */
   dbNumberCount: number
   /** Numbers Twilio says the tenant's account owns — null when not probed. */
   twilioNumberCount: number | null
@@ -176,7 +176,7 @@ export async function getTwilioFleetPosture(svc: any): Promise<TwilioFleetPostur
     svc.from("brokerages").select("id, name").is("deleted_at", null).order("name").limit(300),
     svc.from("platform_credentials").select("brokerage_id, platform, account_id, access_token")
       .in("platform", ["twilio_byo", "twilio_subaccount"]).eq("is_active", true),
-    svc.from("vapi_phone_numbers").select("brokerage_id, phone_number, twilio_number_sid").eq("is_active", true),
+    svc.from("tenant_phone_numbers").select("brokerage_id, phone_number, twilio_number_sid").eq("is_active", true),
   ])
 
   const byoBy = new Map<string, Creds>()
@@ -554,7 +554,7 @@ const POSTURE_CANON: Record<string, string> = {
  *  • vapi — the third-party voice-AI vendor was RETIRED; the Twilio-native
  *    turn engine replaced it (VoiceUrl → our webhook → AI gateway → TwiML).
  *    Legacy code stays reachable only behind VOICE_ENGINE=vapi for the
- *    migration window and table names (vapi_phone_numbers) persist, but Vapi
+ *    migration window and table names (tenant_phone_numbers) persist, but Vapi
  *    is not a managed provider — nothing new binds to it.
  *  • heygen — owner: "no HeyGen". The avatar/explainer engine is D-ID-locked
  *    (resolveVideoProvider forces 'did'; the direct api.heygen.com calls were
@@ -592,7 +592,7 @@ const CATEGORY_OVERRIDES: Record<string, ProviderCategory> = {
   cma_aggregate: "enrichment",
   openai: "ai_llm", ai_gateway: "ai_llm", perplexity: "ai_llm",
   heygen: "ai_media", remotion: "ai_media", pexels: "ai_media", browser_tts: "ai_media",
-  vapi: "voice_sms",
+  twilio: "voice_sms",
   stripe: "payments", plaid: "payments",
   quickbooks: "accounting",
   lob: "mail",

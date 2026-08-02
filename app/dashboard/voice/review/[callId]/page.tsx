@@ -105,7 +105,7 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
   // Call cost — the canonical billing rail is usage_logs (the Twilio status
   // route writes one 'voice_call' row per completed call, tagged with the
   // voice_call_id). The retired vapi_voice_calls table no longer carries it.
-  const { data: vapiCall } = await supabase
+  const { data: vendorCall } = await supabase
     .from("usage_logs")
     .select("id, cost_cents")
     .eq("usage_type", "voice_call")
@@ -260,9 +260,9 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
                 </span>
               </div>
             )}
-            {vapiCall?.cost_cents && (
+            {vendorCall?.cost_cents && (
               <div className="flex items-center gap-2">
-                <span>Cost: ${(vapiCall.cost_cents / 100).toFixed(2)}</span>
+                <span>Cost: ${(vendorCall.cost_cents / 100).toFixed(2)}</span>
               </div>
             )}
           </div>

@@ -60,7 +60,7 @@ export async function POST(request: NextRequest) {
   // THIS callback actually closed the row (no double-fire with the turn-route
   // hangup path, which closes the row first on a normal goodbye).
   const { data: closed } = await svc.from("voice_calls").update(patch)
-    .eq("vapi_call_id", callSid).in("status", ["initiated", "in_progress"])
+    .eq("vendor_call_id", callSid).in("status", ["initiated", "in_progress"])
     .select("id, lead_id")
     .then((r: any) => r, () => ({ data: null }))
 
@@ -89,7 +89,7 @@ export async function POST(request: NextRequest) {
   // so a re-posted callback can never double-bill. Best-effort — never 500 Twilio.
   if (callStatus === "completed" && Number.isFinite(duration) && duration > 0) {
     try {
-      const { data: vc } = await svc.from("voice_calls").select("id, agent_id").eq("vapi_call_id", callSid).maybeSingle()
+      const { data: vc } = await svc.from("voice_calls").select("id, agent_id").eq("vendor_call_id", callSid).maybeSingle()
       if (vc) {
         const { data: already } = await svc.from("usage_logs").select("id")
           .eq("brokerage_id", ctx.brokerageId).eq("usage_type", "voice_call")

@@ -66,7 +66,7 @@ export interface PendingAssetRow {
    *  distinguishes the compliance gate level. */
   audience_type?:  "in_house" | "customer_facing" | null
   /** Only set for video kinds. 'did' is the platform primary. */
-  video_provider?: "did" | "heygen" | "upload" | null
+  video_provider?: "did" | "upload" | null
 }
 
 export async function listPendingMarketingAssetsAction(): Promise<
@@ -157,7 +157,7 @@ export async function listPendingMarketingAssetsAction(): Promise<
       created_at: r.created_at as string,
       is_ai_generated: !!r.is_ai_generated,
       audience_type:  (r.audience_type  as "in_house" | "customer_facing" | null) ?? null,
-      video_provider: (r.video_provider as "did" | "heygen" | "upload" | null) ?? null,
+      video_provider: (r.video_provider as "did" | "upload" | null) ?? null,
     })
   }
   for (const r of (vs.data ?? []) as Array<Record<string, unknown>>) {

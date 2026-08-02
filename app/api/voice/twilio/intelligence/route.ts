@@ -56,7 +56,7 @@ export async function POST(request: NextRequest) {
   if (!callSid) return NextResponse.json({ ok: true, unlinked: true })
 
   const { data: call } = await svc.from("voice_calls").select("id, summary, sentiment")
-    .eq("vapi_call_id", callSid).maybeSingle()
+    .eq("vendor_call_id", callSid).maybeSingle()
   if (!call) return NextResponse.json({ ok: true, unmatched: true })
 
   // 2. Operator results (summarization, sentiment, any custom operators).

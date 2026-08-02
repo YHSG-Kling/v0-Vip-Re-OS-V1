@@ -88,7 +88,7 @@ export async function POST(request: NextRequest) {
   }
 
   const { data: call } = await svc.from("voice_calls").select("id, contact_id, lead_id, agent_id, transcription, ai_notes, direction")
-    .eq("vapi_call_id", callSid).maybeSingle()
+    .eq("vendor_call_id", callSid).maybeSingle()
   const transcript = (call as any)?.transcription ?? null
 
   // Silence (Gather timed out with nothing) → one gentle retry then goodbye.

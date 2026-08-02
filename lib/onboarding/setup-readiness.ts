@@ -457,12 +457,12 @@ export async function loadSetupReadiness(params: {
 
     // Brokerage foundations (broker/admin).
     if (isBrokerAdmin && brokerageId) {
-      const [brk, gs, comm, sms, vapi, acct, team, locs] = await Promise.all([
+      const [brk, gs, comm, sms, isaPhone, acct, team, locs] = await Promise.all([
         svc.from("brokerages").select("license_number, recruiting_pitch, logo_url, primary_color, phone, email, website").eq("id", brokerageId).maybeSingle(),
         svc.from("global_settings").select("app_logo_url, primary_color, from_email, smtp_host").eq("brokerage_id", brokerageId).maybeSingle(),
         svc.from("commission_structures").select("id").eq("brokerage_id", brokerageId).limit(1),
-        svc.from("platform_credentials").select("id").eq("brokerage_id", brokerageId).eq("is_active", true).in("platform", ["twilio", "telnyx", "bandwidth", "vapi"]).limit(1),
-        svc.from("vapi_phone_numbers").select("id").eq("brokerage_id", brokerageId).eq("is_active", true).limit(1),
+        svc.from("platform_credentials").select("id").eq("brokerage_id", brokerageId).eq("is_active", true).in("platform", ["twilio", "telnyx", "bandwidth"]).limit(1),
+        svc.from("tenant_phone_numbers").select("id").eq("brokerage_id", brokerageId).eq("is_active", true).limit(1),
         svc.from("brokerage_integrations").select("id").eq("brokerage_id", brokerageId).eq("provider_type", "accounting").limit(1),
         svc.from("users").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).not("user_type", "in", "(contact,vendor,system,admin)"),
         svc.from("locations").select("id").eq("brokerage_id", brokerageId).limit(1),
@@ -476,7 +476,7 @@ export async function loadSetupReadiness(params: {
       snap.hasEmailProvider = !!(g.from_email || g.smtp_host)
       snap.hasCommissionStructure = has(comm)
       snap.hasSmsProvider = has(sms)
-      snap.hasIsaPhone = has(vapi)
+      snap.hasIsaPhone = has(isaPhone)
       snap.hasAccountingSync = has(acct)
       snap.hasTeamMembers = (team.count ?? 0) > 0
       snap.hasOfficeLocations = has(locs)

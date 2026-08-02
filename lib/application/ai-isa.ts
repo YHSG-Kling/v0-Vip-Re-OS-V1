@@ -178,7 +178,7 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
   const callData = { id: placed.callSid, status: "initiated", createdAt: new Date().toISOString() }
   const voiceCallRow: { id: string } | null = placed.voiceCallId ? { id: placed.voiceCallId } : null
 
-  // Write ai_isa_calls with correct build34 columns — no campaign_id/login_id/vapi_call_id/call_status/attempt_number
+  // Write ai_isa_calls with correct build34 columns — no campaign_id/login_id/vendor_call_id/call_status/attempt_number
   const { data: isaCall, error: isaCallError } = await supabase
     .from("ai_isa_calls")
     .insert({
@@ -199,7 +199,7 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
     success:      true,
     call_id:      isaCall?.id ?? null,
     voice_call_id: voiceCallRow?.id ?? null,
-    vapi_call_id: callData.id,
+    vendor_call_id: callData.id,
   }
 }
 
@@ -237,7 +237,7 @@ export async function getAIISACallsService(campaignId?: string, loginId?: string
       *,
       contact:contacts(first_name, last_name, phone),
       campaign:ai_isa_campaigns(name, campaign_type),
-      voice_call:voice_calls(vapi_call_id, status, duration_seconds)
+      voice_call:voice_calls(vendor_call_id, status, duration_seconds)
     `
     )
     .order("created_at", { ascending: false })

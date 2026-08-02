@@ -106,7 +106,7 @@ export interface VoiceUsage {
   month: string
   callCount: number
   minutes: number
-  vapiCostCents: number
+  callCostCents: number
   activeNumbers: number
   numberCostCents: number
   totalCostCents: number
@@ -121,10 +121,10 @@ export function rollupVoiceUsage(
 ): VoiceUsage {
   const callCount = calls.length
   const minutes = calls.reduce((a, c) => a + Number(c.minutes_billed ?? 0), 0)
-  const vapiCostCents = calls.reduce((a, c) => a + Number(c.cost_cents ?? 0), 0)
+  const callCostCents = calls.reduce((a, c) => a + Number(c.cost_cents ?? 0), 0)
   const activeNumbers = numbers.filter((n) => n.is_active).length
   const numberCostCents = activeNumbers * numberMonthlyCents
-  return { month, callCount, minutes, vapiCostCents, activeNumbers, numberCostCents, totalCostCents: vapiCostCents + numberCostCents }
+  return { month, callCount, minutes, callCostCents, activeNumbers, numberCostCents, totalCostCents: callCostCents + numberCostCents }
 }
 
 /** Load one tenant's voice usage for a month (YYYY-MM). */
@@ -137,7 +137,7 @@ export async function loadVoiceUsage(svc: any, brokerageId: string, month: strin
     svc.from("usage_logs").select("units_used, cost_cents")
       .eq("brokerage_id", brokerageId).eq("usage_type", "voice_call")
       .gte("recorded_at", start).lt("recorded_at", end).limit(5000),
-    svc.from("vapi_phone_numbers").select("is_active").eq("brokerage_id", brokerageId),
+    svc.from("tenant_phone_numbers").select("is_active").eq("brokerage_id", brokerageId),
   ])
   const callRows = ((calls ?? []) as any[]).map((c) => ({ minutes_billed: c.units_used, cost_cents: c.cost_cents }))
   return rollupVoiceUsage(month, callRows, (numbers ?? []) as any[])

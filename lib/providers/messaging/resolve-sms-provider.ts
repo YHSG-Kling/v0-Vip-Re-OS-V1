@@ -123,7 +123,7 @@ export async function resolveSMSProviderForActor(
   if (ctx.brokerageId) {
     const svc = createServiceClient()
     const { data: numbers } = await svc
-      .from("vapi_phone_numbers")
+      .from("tenant_phone_numbers")
       .select("phone_number, agent_user_id, scope_type")
       .eq("brokerage_id", ctx.brokerageId)
       .eq("is_active", true)

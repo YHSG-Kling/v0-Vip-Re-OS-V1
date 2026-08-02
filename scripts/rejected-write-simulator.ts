@@ -102,7 +102,7 @@ console.log("\n── m299 widened four columns, and only four ──")
   check("the pre-existing directions survive",
     ["push", "pull"].every((v) => vocab("calendar_sync_logs", "direction").includes(v)))
   check("the pre-existing call types survive",
-    ["agent_call", "ai_isa_call", "vapi_inbound", "warm_transfer"].every((v) => vocab("voice_calls", "call_type").includes(v)))
+    ["agent_call", "ai_isa_call", "ai_inbound", "warm_transfer"].every((v) => vocab("voice_calls", "call_type").includes(v)))
 }
 
 console.log("\n── every repointed write names a value its column admits ──")

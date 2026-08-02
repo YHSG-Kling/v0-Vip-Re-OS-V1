@@ -142,7 +142,7 @@ function friendlyHardCapMessage(metric: CapMetric): string {
       return "You've created the maximum twins for this month."
     case "avatars_created":
       return "You've created the maximum twins for this month."
-    case "vapi_minutes":
+    case "ai_voice_minutes":
       return "You've reached your monthly AI calling limit."
     case "llm_calls":
       return "You've reached your monthly AI request limit."
@@ -168,7 +168,7 @@ function metricLabel(metric: CapMetric): string {
     case "tts_characters": return "voice synthesis"
     case "voice_clones_created": return "twin voices"
     case "avatars_created": return "twin avatars"
-    case "vapi_minutes": return "AI calling"
+    case "ai_voice_minutes": return "AI calling"
     case "llm_calls": return "AI requests"
     case "video_minutes": return "video generation"
     case "live_assistant_minutes": return "on-the-go assistant"

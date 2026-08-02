@@ -173,7 +173,7 @@ export async function processZoomRecordingEvent(
   const { data: dupCall } = await svc
     .from("voice_calls")
     .select("id")
-    .eq("vapi_call_id", vendorCallId)
+    .eq("vendor_call_id", vendorCallId)
     .maybeSingle()
   if (dupCall) return { handled: true, attached: "contact", analyzed: false, reason: "already attached (idempotent)" }
 
@@ -197,7 +197,7 @@ export async function processZoomRecordingEvent(
       started_at: startedAt,
       ...(durationSeconds != null ? { duration_seconds: durationSeconds } : {}),
       transcription: transcript.slice(0, 60_000),
-      vapi_call_id: vendorCallId, // the ledger's vendor-call-id column (Twilio CallSid / Vapi id / zoom:<uuid>)
+      vendor_call_id: vendorCallId, // the ledger's vendor-call-id column (Twilio CallSid or zoom:<uuid>)
     })
     .select("id")
     .single()

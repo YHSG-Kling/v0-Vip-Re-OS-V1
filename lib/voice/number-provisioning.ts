@@ -5,7 +5,7 @@
 // "Add Number") and the staff-context action (app/actions/superadmin/
 // number-provisioning.ts, fleet numbers console) — run THIS pipeline:
 //
-//   search available numbers → purchase → persist vapi_phone_numbers row →
+//   search available numbers → purchase → persist tenant_phone_numbers row →
 //   phone_number_events audit line → (optionally) bind the number's webhooks
 //   to the Twilio-native AI lane (bindNumberToTwilioLane).
 //
@@ -36,7 +36,6 @@ export async function logPhoneNumberEvent(
     source?: string | null
     agentId?: string | null
     twilioSid?: string | null
-    vapiNumberId?: string | null
     costUsd?: number | null
     notes?: string | null
   },
@@ -51,7 +50,6 @@ export async function logPhoneNumberEvent(
     event_type: ev.eventType,
     source: ev.source ?? null,
     twilio_sid: ev.twilioSid ?? null,
-    vapi_number_id: ev.vapiNumberId ?? null,
     cost_usd: ev.costUsd ?? null,
     notes: ev.notes ?? null,
   }), { flow: "number_provisioning", table: "phone_number_events", brokerageId: ev.brokerageId })
@@ -194,7 +192,7 @@ export async function provisionNumber(svc: any, params: ProvisionNumberParams): 
   // 3. Persist the number row. twilio_number_sid is the Twilio
   //    IncomingPhoneNumbers .sid — the handle bindNumberToTwilioLane needs to
   //    register this number's webhooks, so it is written at purchase time.
-  const { data: inserted, error: saveErr } = await svc.from("vapi_phone_numbers").insert({
+  const { data: inserted, error: saveErr } = await svc.from("tenant_phone_numbers").insert({
     agent_user_id: params.scopeType === "agent" ? params.agentUserId ?? null : null,
     brokerage_id: params.brokerageId,
     scope_type: params.scopeType,
@@ -255,7 +253,7 @@ export async function releaseNumber(
   svc: any,
   params: { brokerageId: string; numberRowId: string; eventSource?: string | null; notes?: string | null },
 ): Promise<ReleaseNumberResult> {
-  const { data: row } = await svc.from("vapi_phone_numbers")
+  const { data: row } = await svc.from("tenant_phone_numbers")
     .select("id, brokerage_id, phone_number, twilio_number_sid, is_active")
     .eq("id", params.numberRowId).maybeSingle()
   const n = row as any
@@ -288,7 +286,7 @@ export async function releaseNumber(
     note = "No Twilio SID on file (manually added / ported number) — DB-only release"
   }
 
-  const { error: updErr } = await svc.from("vapi_phone_numbers").update({ is_active: false }).eq("id", n.id)
+  const { error: updErr } = await svc.from("tenant_phone_numbers").update({ is_active: false }).eq("id", n.id)
   if (updErr) {
     await logPhoneNumberEvent(svc, {
       brokerageId: params.brokerageId, phoneNumber: n.phone_number,

@@ -69,7 +69,7 @@ export async function evaluateTenantNumberProvisioning(
   let activeNumbers = 0
   try {
     const { count } = await svc
-      .from("vapi_phone_numbers")
+      .from("tenant_phone_numbers")
       .select("id", { count: "exact", head: true })
       .eq("brokerage_id", brokerageId)
       .eq("is_active", true)
@@ -86,7 +86,7 @@ export async function evaluateTenantNumberProvisioning(
  * included-vs-metered-overage meter — the line the finance P&L bills and the
  * tenant usage card shows. Voice minutes + active numbers come from the SAME
  * voice-usage rollup the phone-settings card already reads (usage_logs 'voice_call'
- * minutes + vapi_phone_numbers); SMS segments are counted from the unified inbox (messages
+ * minutes + tenant_phone_numbers); SMS segments are counted from the unified inbox (messages
  * type='sms'). Fails SAFE — a read error meters zero usage rather than throwing.
  *
  * @param month YYYY-MM (defaults to the current calendar month).

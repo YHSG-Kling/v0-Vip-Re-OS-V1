@@ -139,13 +139,13 @@ console.log("\n═══ 4. The dropped columns have no readers left behind ═�
   // scanning text, not by the type checker.
   for (const col of ["vapi_phone_number_id", "forwarding_target", "ivr_enabled", "ivr_menu"]) {
     const hits = SOURCES.filter((s) =>
-      new RegExp(`vapi_phone_numbers[\\s\\S]{0,400}${col}|${col}[\\s\\S]{0,200}vapi_phone_numbers`).test(s.src))
-    ok(`nothing reads vapi_phone_numbers.${col}`, hits.length === 0, hits.map((h) => h.file).join(", "))
+      new RegExp(`tenant_phone_numbers[\\s\\S]{0,400}${col}|${col}[\\s\\S]{0,200}tenant_phone_numbers`).test(s.src))
+    ok(`nothing reads tenant_phone_numbers.${col}`, hits.length === 0, hits.map((h) => h.file).join(", "))
   }
   ok("the orphan IVR action is gone with the columns it wrote",
     !/updateIsaPhoneIvr/.test(SOURCES.map((s) => s.src).join("\n")))
   const snap = read("scripts/schema-snapshot.ts")
-  const listed = snap.match(/vapi_phone_numbers: \[([^\]]*)\]/)?.[1] ?? ""
+  const listed = snap.match(/tenant_phone_numbers: \[([^\]]*)\]/)?.[1] ?? ""
   ok("the schema snapshot lists the surviving columns only",
     /twilio_number_sid/.test(listed) &&
     !/byoc_credential_id|forwarding_target|ivr_enabled|ivr_menu/.test(listed) &&
@@ -168,7 +168,7 @@ console.log("\n═══ 6. The detector fires on a reintroduction ═══")
   // A guard only tested against the tree it was written from always passes.
   // These are the exact regressions this file exists to stop, run against
   // synthetic text so the assertions above are proven to have teeth.
-  const reintroduced = `const { data } = await svc.from("vapi_phone_numbers").select("byoc_credential_id")`
+  const reintroduced = `const { data } = await svc.from("tenant_phone_numbers").select("byoc_credential_id")`
   ok("a re-added byoc_credential_id reader would be caught",
     /\bbyoc_credential_id\b/.test(reintroduced))
 

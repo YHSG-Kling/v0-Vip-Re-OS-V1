@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic"
 
 // FLEET NUMBERS CONSOLE — the staff-side provisioning surface deferred in
 // round 24 (provisioning was tenant-context only). Providers-gated. Per-tenant
-// phone inventory read straight from vapi_phone_numbers (the same ledger the
+// phone inventory read straight from tenant_phone_numbers (the same ledger the
 // voice lane routes by), provisioning + release through the ONE shared core
 // (lib/voice/number-provisioning.ts — the tenant action runs the same
 // pipeline), and the phone_number_events feed as the audit trail. Release is
@@ -36,7 +36,7 @@ export default async function FleetNumbersPage(
 
   const [{ data: brokerageRows, error: brkError }, { data: numberRows, error: numError }, { data: eventRows }] = await Promise.all([
     svc.from("brokerages").select("id, name").is("deleted_at", null).order("name"),
-    svc.from("vapi_phone_numbers")
+    svc.from("tenant_phone_numbers")
       .select("id, brokerage_id, phone_number, scope_type, agent_user_id, number_source, twilio_number_sid, is_active, created_at")
       .order("created_at", { ascending: false }).limit(500),
     svc.from("phone_number_events")
@@ -62,7 +62,7 @@ export default async function FleetNumbersPage(
         <div>
           <h1 className="text-2xl font-bold">Fleet numbers</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            Per-tenant phone inventory (vapi_phone_numbers — the ledger the voice lane routes by),
+            Per-tenant phone inventory (tenant_phone_numbers — the ledger the voice lane routes by),
             staff-side provisioning and release through the same pipeline the tenant action runs.
           </p>
         </div>

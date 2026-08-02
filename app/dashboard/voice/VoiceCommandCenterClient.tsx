@@ -6,7 +6,7 @@ import { handleVoiceCommand } from "@/app/actions/voice-assistant/handle-voice-c
 import { WakeWordCard } from "@/app/components/dashboard/voice/WakeWordCard"
 import { QuickCommandGrid } from "@/app/components/dashboard/voice/QuickCommandGrid"
 import { RecentCommandsFeed, type VoiceCommandRow } from "@/app/components/dashboard/voice/RecentCommandsFeed"
-import { VapiCallPanel } from "@/app/components/dashboard/voice/VapiCallPanel"
+import { AiOutboundCallPanel } from "@/app/components/dashboard/voice/AiOutboundCallPanel"
 import { VoiceAnalytics } from "@/app/components/dashboard/voice/VoiceAnalytics"
 import { VoiceCallHistoryTable, type VoiceCallRow } from "@/app/components/dashboard/voice/VoiceCallHistoryTable"
 import type {
@@ -103,7 +103,7 @@ export function VoiceCommandCenterClient({
 
         <RecentCommandsFeed commands={commands} />
 
-        <VapiCallPanel
+        <AiOutboundCallPanel
           contacts={contacts}
           scripts={scripts}
           agentId={userId}

@@ -15,7 +15,7 @@ import { getCommissionRecords, getExpenses } from "@/app/actions/ai-financial-ma
 import { getHotLeads } from "@/app/actions/ai-auto-response"
 import { getMotivatedSellers } from "@/app/actions/lead-intelligence"
 import { getRecentLifeChanges } from "@/app/actions/contact-enrichment"
-import { initiateWhisperBridge, triggerVapiVoiceBot } from "@/app/actions/voice-call-bridge"
+import { initiateWhisperBridge, triggerAiVoiceCall } from "@/app/actions/voice-call-bridge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import Link from "next/link"
@@ -407,12 +407,12 @@ export default function AgentDashboard() {
     setCallingId(null)
   }, [agentId])
 
-  const handleVapiBot = useCallback(async (contactId: string, triggerEvent: string) => {
-    setCallingId(contactId + 'vapi')
+  const handleAiVoiceCall = useCallback(async (contactId: string, triggerEvent: string) => {
+    setCallingId(contactId + 'ai-voice')
     try {
-      await triggerVapiVoiceBot({ contactId, triggerEvent })
+      await triggerAiVoiceCall({ contactId, triggerEvent })
     } catch (error) {
-      console.error("[v0] Error triggering VAPI bot:", error)
+      console.error("[v0] Error triggering the AI voice call:", error)
     }
     setCallingId(null)
   }, [])
@@ -622,7 +622,7 @@ export default function AgentDashboard() {
             hotLeads={hotLeads}
             agentId={agentId}
             onWhisperBridge={handleWhisperBridge}
-            onVapiBot={handleVapiBot}
+            onAiVoiceCall={handleAiVoiceCall}
             callingId={callingId}
             loading={loading}
           />

@@ -268,12 +268,12 @@ export async function GET(request: NextRequest) {
   }
 
   // 5. voice_calls (compliance sensitive) — the single voice ledger. The AI
-  // voice lane records every call here (vapi_call_id holds the vendor CallSid);
+  // voice lane records every call here (vendor_call_id holds the vendor CallSid);
   // the legacy vapi_voice_calls billing table was retired.
   if (entityType === "all" || entityType === "voice_call" || complianceOnly) {
     const { data: voiceCalls } = await supabase
       .from("voice_calls")
-      .select("id, vapi_call_id, agent_id, contact_id, direction, status, created_at")
+      .select("id, vendor_call_id, agent_id, contact_id, direction, status, created_at")
       .eq("brokerage_id", brokerageId)
       .gte("created_at", startDate.toISOString())
       .lte("created_at", endDate.toISOString())
@@ -294,7 +294,7 @@ export async function GET(request: NextRequest) {
           actor_name: actorName,
           subject_name: contactName,
           summary: `[${call.direction || "unknown"}] call with ${contactName || "unknown contact"}`,
-          metadata_json: { vendor_call_id: call.vapi_call_id, status: call.status },
+          metadata_json: { vendor_call_id: call.vendor_call_id, status: call.status },
           source_table: "voice_calls",
         })
       }

@@ -23,7 +23,7 @@ interface AgentHotLeadsPanelProps {
   hotLeads: HotLead[]
   agentId: string
   onWhisperBridge: (contactId: string, context: string) => Promise<void>
-  onVapiBot: (contactId: string, triggerEvent: string) => Promise<void>
+  onAiVoiceCall: (contactId: string, triggerEvent: string) => Promise<void>
   callingId: string | null
   loading?: boolean
 }
@@ -32,7 +32,7 @@ export function AgentHotLeadsPanel({
   hotLeads,
   agentId,
   onWhisperBridge,
-  onVapiBot,
+  onAiVoiceCall,
   callingId,
   loading
 }: AgentHotLeadsPanelProps) {
@@ -95,7 +95,7 @@ export function AgentHotLeadsPanel({
             lead={lead}
             compact={false}
             onWhisperBridge={onWhisperBridge}
-            onVapiBot={onVapiBot}
+            onAiVoiceCall={onAiVoiceCall}
             callingId={callingId}
           />
         ))}

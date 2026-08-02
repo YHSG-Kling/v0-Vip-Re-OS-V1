@@ -248,6 +248,7 @@
     "test:workflow-engine-consolidation": "tsx scripts/workflow-engine-consolidation-simulator.ts",
     "test:voice-billing-rail": "tsx scripts/voice-billing-rail-simulator.ts",
     "test:post-call-outcome": "tsx scripts/post-call-outcome-simulator.ts",
+    "test:vendor-retirement": "tsx scripts/vendor-retirement-guard.ts",
     "test:phone-inventory-vocabulary": "tsx scripts/phone-inventory-vocabulary-guard.ts",
     "test:isa-readiness": "tsx scripts/isa-readiness-guard.ts",
     "test:kb-brain-injection": "tsx scripts/kb-brain-injection-simulator.ts",

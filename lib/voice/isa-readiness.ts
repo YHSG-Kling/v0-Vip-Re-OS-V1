@@ -22,7 +22,7 @@
 // THE REAL PRECONDITIONS, taken from placeOutboundAiCall in the order IT checks
 // them, so this can never promise a call that the executor will refuse:
 //
-//   1. an ACTIVE tenant number to dial from (vapi_phone_numbers — the table
+//   1. an ACTIVE tenant number to dial from (tenant_phone_numbers — the table
 //      keeps its legacy name; it is the Twilio number registry now). The
 //      executor's own words: "No active tenant phone number to dial from —
 //      provision a number first. No call was placed." There is deliberately no
@@ -68,7 +68,7 @@ export async function resolveIsaCallingReadiness(
   try {
     // 1. An active number in the tenant's own registry — the executor's first
     //    hard stop, and the one an agent can actually fix.
-    const { data: numbers } = await svc.from("vapi_phone_numbers")
+    const { data: numbers } = await svc.from("tenant_phone_numbers")
       .select("id").eq("brokerage_id", brokerageId).eq("is_active", true).limit(1)
     if (!numbers || numbers.length === 0) return ready("no_number")
 

@@ -299,7 +299,7 @@ export function buildDealRoomStoryPlan(input: DealRoomStoryPlanInput): DealRoomS
     started_at: iso(1 * DAY),
     duration_seconds: 26 * 60,
     transcription: transcript,
-    vapi_call_id: `zoom:${DEAL_ROOM_TAG}-showcase-meeting`,
+    vendor_call_id: `zoom:${DEAL_ROOM_TAG}-showcase-meeting`,
   }
 
   const callAnalysis = {

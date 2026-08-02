@@ -154,7 +154,7 @@ export default async function IntelligencePage() {
       .gte("updated_at", thirtyDaysAgo),
 
     // 9. voice insights — is_voice_conversation = true
-    // NOTE: voice_calls FK is via vapi_call_id on conversation_insights, not a direct conversations FK.
+    // NOTE: voice_calls FK is via vendor_call_id on conversation_insights, not a direct conversations FK.
     // We fetch contact + agent from conversations, then join voice_calls separately below.
     service
       .from("conversation_insights")
@@ -301,7 +301,7 @@ export default async function IntelligencePage() {
 
   // ── Voice insights ────────────────────────────────────────────────────────
   // Fetch voice_calls separately — there is no direct FK from conversations to voice_calls.
-  // voice_calls links to conversation_insights via vapi_call_id (stored on voice_calls).
+  // voice_calls links to conversation_insights via vendor_call_id (stored on voice_calls).
   // We fetch by contact_id overlap for the same brokerage.
   const voiceInsightRows = voiceInsightsRes.data ?? []
   const voiceConversationIds = voiceInsightRows.map((r: any) => r.conversations?.id).filter(Boolean)

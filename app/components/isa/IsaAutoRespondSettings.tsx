@@ -17,7 +17,6 @@ interface IsaSettings {
   isa_auto_respond_ghost_threshold_days: number
   isa_require_admin_approval_before_send: boolean
   isa_auto_respond_hours: string
-  isa_voice_provider: "elevenlabs" | "vapi"
 }
 
 const DEFAULTS: IsaSettings = {
@@ -25,7 +24,6 @@ const DEFAULTS: IsaSettings = {
   isa_auto_respond_ghost_threshold_days: 14,
   isa_require_admin_approval_before_send: true,
   isa_auto_respond_hours: "8-20",
-  isa_voice_provider: "elevenlabs",
 }
 
 interface IsaAutoRespondSettingsProps {
@@ -54,7 +52,6 @@ export function IsaAutoRespondSettings({
         isa_auto_respond_ghost_threshold_days: settings.isa_auto_respond_ghost_threshold_days,
         isa_require_admin_approval_before_send: settings.isa_require_admin_approval_before_send,
         isa_auto_respond_hours: settings.isa_auto_respond_hours,
-        isa_voice_provider: settings.isa_voice_provider,
       }
 
       const { error } = await supabase
@@ -178,34 +175,23 @@ export function IsaAutoRespondSettings({
 
         <Separator />
 
-        {/* Voice Provider */}
+        {/* Voice — a statement, not a choice. There is one voice engine, and the
+            clone is per-agent: the owner rule is that each user sets up their
+            own, with no fallback to a brokerage voice. The control that used to
+            live here offered a retired vendor as an equal option and nothing in
+            app/ or lib/ ever read the answer to route a call. */}
         <div className="space-y-2">
           <div className="flex items-center gap-2">
             <Phone className="h-4 w-4 text-muted-foreground" />
-            <Label className="text-sm font-medium">AI Calling Voice Provider</Label>
+            <Label className="text-sm font-medium">AI Calling Voice</Label>
           </div>
-          <Select
-            value={settings.isa_voice_provider}
-            onValueChange={(v) =>
-              setSettings((s) => ({ ...s, isa_voice_provider: v as IsaSettings["isa_voice_provider"] }))
-            }
-          >
-            <SelectTrigger className="max-w-[240px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="elevenlabs">
-                ElevenLabs — uses your voice clone
-              </SelectItem>
-              <SelectItem value="vapi">
-                VAPI — programmable voice AI
-              </SelectItem>
-            </SelectContent>
-          </Select>
           <p className="text-xs text-muted-foreground">
-            {settings.isa_voice_provider === "elevenlabs"
-              ? "AI ISA calls use your ElevenLabs cloned voice. Set up your voice clone at Settings → Voice & Avatar."
-              : "AI ISA calls use VAPI. Configure your VAPI API key at Settings → Integrations."}
+            AI ISA calls speak in your own ElevenLabs voice clone. Set it up at{" "}
+            <a href="/dashboard/settings/twin-studio" className="underline underline-offset-2">
+              Settings → Voice &amp; Avatar
+            </a>
+            . Until your clone exists, the ISA will not place calls as you — there
+            is deliberately no shared brokerage voice to fall back to.
           </p>
         </div>
 

@@ -28,7 +28,7 @@ interface Script {
   title: string
 }
 
-interface VapiCallPanelProps {
+interface AiOutboundCallPanelProps {
   contacts: Contact[]
   scripts: Script[]
   agentId: string
@@ -41,7 +41,7 @@ function formatTimer(seconds: number): string {
   return `${m}:${s}`
 }
 
-export function VapiCallPanel({ contacts, scripts, agentId, brokerageId }: VapiCallPanelProps) {
+export function AiOutboundCallPanel({ contacts, scripts, agentId, brokerageId }: AiOutboundCallPanelProps) {
   const [search, setSearch] = useState("")
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null)
   const [selectedScriptId, setSelectedScriptId] = useState<string>("")
@@ -121,7 +121,7 @@ export function VapiCallPanel({ contacts, scripts, agentId, brokerageId }: VapiC
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-sm font-semibold">VAPI Outbound Call</CardTitle>
+        <CardTitle className="text-sm font-semibold">AI Outbound Call</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         {activeCallId ? (

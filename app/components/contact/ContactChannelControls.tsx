@@ -46,7 +46,7 @@ const CHANNEL_OPTIONS: {
     value: "phone",
     label: "Phone call",
     icon: <Phone size={14} />,
-    description: "AI ISA voice call via VAPI",
+    description: "AI ISA voice call",
   },
   {
     value: "direct_mail",
