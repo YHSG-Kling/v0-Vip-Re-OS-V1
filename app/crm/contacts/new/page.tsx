@@ -13,15 +13,21 @@ import { Loader2, ArrowLeft, User } from "lucide-react"
 import Link from "next/link"
 import { createContact } from "@/app/actions/contacts"
 
+// Exactly the values contacts.contact_type accepts. The form used to offer
+// "tenant", "landlord" and "referral"; the column has never accepted any of
+// them, so choosing one made the INSERT fail and the agent saw only a generic
+// create error. Tenant/landlord are deliberately NOT added to the column —
+// this OS is not a property-management product — and "referral" was simply
+// the wrong word for referral_partner.
 const CONTACT_TYPES = [
   { value: "buyer", label: "Buyer" },
   { value: "seller", label: "Seller" },
   { value: "both", label: "Buyer & Seller" },
   { value: "investor", label: "Investor" },
-  { value: "tenant", label: "Tenant" },
-  { value: "landlord", label: "Landlord" },
-  { value: "referral", label: "Referral Partner" },
+  { value: "referral_partner", label: "Referral Partner" },
   { value: "vendor", label: "Vendor" },
+  { value: "sphere", label: "Sphere" },
+  { value: "past_client", label: "Past Client" },
 ]
 
 const LEAD_SOURCES = [

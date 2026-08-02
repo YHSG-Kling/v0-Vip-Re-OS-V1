@@ -81,7 +81,10 @@ export interface CreateAssetParams {
 
 export interface CreateCalendarEventParams {
   campaignId?: string
-  eventType: "publish" | "review" | "deadline" | "meeting" | "go_live"
+  /** campaign_calendar.event_type — exactly the column's CHECK. This used to
+   *  include "meeting" and "go_live", which the column has never accepted, so
+   *  the type vouched for an INSERT that could only fail. */
+  eventType: "publish" | "send" | "launch" | "review" | "deadline" | "podcast_release" | "mail_drop"
   channel?: string
   title: string
   scheduledAt: string

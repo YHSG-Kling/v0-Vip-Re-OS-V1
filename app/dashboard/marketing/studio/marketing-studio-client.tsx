@@ -1722,10 +1722,12 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                                 </SelectTrigger>
                                 <SelectContent>
                                   <SelectItem value="publish">Publish</SelectItem>
+                                  <SelectItem value="send">Send</SelectItem>
+                                  <SelectItem value="launch">Launch</SelectItem>
                                   <SelectItem value="review">Review</SelectItem>
                                   <SelectItem value="deadline">Deadline</SelectItem>
-                                  <SelectItem value="meeting">Meeting</SelectItem>
-                                  <SelectItem value="go_live">Go Live</SelectItem>
+                                  <SelectItem value="podcast_release">Podcast Release</SelectItem>
+                                  <SelectItem value="mail_drop">Mail Drop</SelectItem>
                                 </SelectContent>
                               </Select>
                             </div>

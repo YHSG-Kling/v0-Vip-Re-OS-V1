@@ -13,14 +13,19 @@ import { getBrandVoiceProfile, updateBrandVoiceProfile } from "@/app/actions/ai-
 import { toast } from "sonner"
 import { createClient } from "@/lib/supabase/client"
 
+// brand_voice_profile.tone is an enum, not prose. Three options here were
+// written as sentences ("professional yet approachable", "warm and friendly",
+// "energetic") which the column rejects outright — and the save path throws,
+// so the page showed only "Failed to save brand voice profile". These are the
+// six values the column accepts, and they match the Marketing Studio editor
+// so the two surfaces can no longer disagree about the same row.
 const TONE_OPTIONS = [
   { value: "professional", label: "Professional" },
-  { value: "professional yet approachable", label: "Professional yet Approachable" },
-  { value: "warm and friendly", label: "Warm & Friendly" },
+  { value: "warm", label: "Warm & Approachable" },
+  { value: "friendly", label: "Friendly" },
   { value: "authoritative", label: "Authoritative" },
   { value: "conversational", label: "Conversational" },
   { value: "luxury", label: "Luxury & Sophisticated" },
-  { value: "energetic", label: "Energetic & Enthusiastic" },
 ]
 
 const STYLE_OPTIONS = [

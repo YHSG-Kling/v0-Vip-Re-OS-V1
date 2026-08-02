@@ -159,16 +159,93 @@ console.log("\n═══ 2. The three that were dropped now actually deliver ═
 console.log("\n═══ 3. The screen and the schema share one dictionary ═══")
 {
   // The louder half of the same defect: a value the UI offers that the column's
-  // CHECK refuses. This one made EVERY business-card referral fail on insert.
+  // CHECK refuses. Nine of these were live at once, and several broke the
+  // DEFAULT path — the video form defaulted to "custom", which the column has
+  // never accepted, so an untouched form could not save at all.
+  //
+  // Ground truth is scripts/check-vocabularies.ts, which tracks the live CHECKs.
+  const vocab = read("scripts/check-vocabularies.ts")
+  const allowedFor = (table: string, column: string): string[] => {
+    const tbl = vocab.match(new RegExp(`\\b${table}: \\{([\\s\\S]*?)\\n  \\}`))?.[1] ?? ""
+    const list = tbl.match(new RegExp(`${column}: \\[([^\\]]*)\\]`))?.[1] ?? ""
+    return list.split(",").map((v) => v.trim().replace(/^"|"$/g, "")).filter(Boolean)
+  }
+
+  // Each entry: the UI file, how its option values appear, and the column the
+  // value is written to. Traced to the insert/update in every case.
+  // SCOPED TO THE NAMED CONSTANT. A first cut matched every `{ value: "..." }`
+  // in the file and immediately flagged the NEIGHBOURING arrays — lead sources,
+  // formality levels, writing styles — which are correct values for different
+  // columns. Reading "the options in THIS constant" is the question that
+  // distinguishes the defect; "any option in this file" bans a shape.
+  const constBody = (src: string, name: string): string =>
+    src.match(new RegExp(`${name}\\s*(?::[^=]*)?=\\s*\\[([\\s\\S]*?)\\n\\]`))?.[1] ?? ""
+
+  const SURFACES: Array<{ file: string; konst: string; table: string; column: string }> = [
+    { file: "app/crm/contacts/new/page.tsx", konst: "CONTACT_TYPES", table: "contacts", column: "contact_type" },
+    { file: "app/dashboard/social/components/post-composer-dialog.tsx", konst: "POST_TYPES", table: "social_posts", column: "post_type" },
+    { file: "app/dashboard/marketing/studio/brand-voice/brand-voice-editor.tsx", konst: "TONE_OPTIONS", table: "brand_voice_profile", column: "tone" },
+    { file: "app/settings/brand-voice/page.tsx", konst: "TONE_OPTIONS", table: "brand_voice_profile", column: "tone" },
+    { file: "app/dashboard/videos/create/video-create-client.tsx", konst: "VIDEO_TYPES", table: "ai_video_projects", column: "video_type" },
+  ]
+
+  for (const s0 of SURFACES) {
+    const allowed = allowedFor(s0.table, s0.column)
+    const body = constBody(code(read(s0.file)), s0.konst)
+    const offered = [...body.matchAll(/value:\s*"([a-z_ ]+)"/g)].map((m) => m[1])
+    const bad = offered.filter((v) => !allowed.includes(v))
+    ok(`${s0.table}.${s0.column} — every value in ${s0.konst} is one the column accepts (${offered.length} offered)`,
+      allowed.length > 0 && offered.length > 0 && bad.length === 0,
+      bad.length ? `refused by the CHECK: ${bad.join(", ")}` : "could not read the vocabulary or the options")
+  }
+
+  {
+    const allowed = allowedFor("recruiting_costs", "cost_type")
+    const panel = code(read("app/dashboard/recruiting-roi/cost-entry-panel.tsx"))
+    const offered = [...panel.matchAll(/<option value="([a-z_]+)"/g)].map((m) => m[1])
+    ok(`recruiting_costs.cost_type — every offered cost type is writable (${offered.length})`,
+      offered.length > 0 && offered.every((v) => allowed.includes(v)),
+      offered.filter((v) => !allowed.includes(v)).join(", "))
+  }
+
+  // Values that live inline rather than in an options array.
+  const studio = code(read("app/dashboard/marketing/studio/marketing-studio-client.tsx"))
+  const calAllowed = allowedFor("campaign_calendar", "event_type")
+  const calOffered = [...studio.matchAll(/<SelectItem value="([a-z_]+)">(?:Publish|Send|Launch|Review|Deadline|Podcast Release|Mail Drop)</g)].map((m) => m[1])
+  ok(`campaign_calendar.event_type — the studio offers only accepted values (${calOffered.length})`,
+    calOffered.length > 0 && calOffered.every((v) => calAllowed.includes(v)),
+    calOffered.filter((v) => !calAllowed.includes(v)).join(", "))
+
+  const tones = code(read("app/dashboard/communications/inbox/components/AIReplyCoachPanel.tsx"))
+  const toneAllowed = allowedFor("ai_message_drafts", "suggested_tone")
+  const toneBody = tones.match(/TONE_LABELS[^=]*=\s*\{([\s\S]*?)\n\}/)?.[1] ?? ""
+  const toneOffered = [...toneBody.matchAll(/([a-z_]+):\s*"/g)].map((m) => m[1])
+  ok(`ai_message_drafts.suggested_tone — every offered tone is writable (${toneOffered.length})`,
+    toneOffered.length > 0 && toneOffered.every((v) => toneAllowed.includes(v)),
+    toneOffered.filter((v) => !toneAllowed.includes(v)).join(", "))
+
+  const video = code(read("app/dashboard/videos/create/video-create-client.tsx"))
+  ok("...and the library branch MAPS script_type instead of piping it straight in —\n    they are two different vocabularies",
+    /SCRIPT_TYPE_TO_VIDEO_TYPE/.test(video) && /toVideoType\(/.test(video))
+  ok("...and the form's default is a type the column accepts",
+    /useState<string>\("listing_tour"\)/.test(video))
+
+  // status and approval_status are two axes; conflating them broke every
+  // approval-required post.
+  const social = code(read("app/actions/social-media-automation.ts"))
+  ok("an approval-required social post is a DRAFT with approval_status pending,\n    not a status the CHECK refuses",
+    /requiresBrokerApproval \? "draft" : "scheduled"/.test(social) &&
+    !/status[^\n]*===\s*"pending_approval"/.test(social))
+
+  // The business-card scanner, the case this section started from.
   const cards = code(read("app/dashboard/agent/business-cards/page.tsx"))
   const PARTNER_TYPES = ["real_estate_agent", "mortgage_broker", "title_company", "home_inspector",
     "contractor", "insurance_agent", "attorney", "property_manager", "other"]
   const offered = [...cards.matchAll(/<option value="([a-z_]+)"/g)].map((m) => m[1])
-  const partnerOffered = offered.filter((v) => !["referral_fee", "informal", "one_way", "reciprocal", "paid"].includes(v))
-  ok(`every partner_type the card scanner offers is one the column accepts (${partnerOffered.length} offered)`,
-    partnerOffered.length > 0 && partnerOffered.every((v) => PARTNER_TYPES.includes(v)),
-    partnerOffered.filter((v) => !PARTNER_TYPES.includes(v)).join(", "))
-  ok("the agreement_type it sends is in the CHECK — 'referral_fee' never was,\n    so every scanned card failed on insert",
+  ok(`referral_partners.partner_type — the card scanner offers only accepted values (${offered.length})`,
+    offered.length > 0 && offered.every((v) => PARTNER_TYPES.includes(v)),
+    offered.filter((v) => !PARTNER_TYPES.includes(v)).join(", "))
+  ok("...and its agreement_type is in the CHECK — 'referral_fee' never was,\n    so every scanned card failed on insert",
     /agreementType:\s*"(reciprocal|one_way|paid|informal)"/.test(cards))
 }
 

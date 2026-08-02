@@ -86,11 +86,10 @@ export function CostEntryPanel({ brokerageId }: Props) {
                 onChange={(e) => setFormData({ ...formData, cost_type: e.target.value })}
                 className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
+                <option value="recruiting_fee">Recruiting Fee</option>
+                <option value="signing_bonus">Signing Bonus</option>
                 <option value="training">Training</option>
-                <option value="marketing">Marketing</option>
-                <option value="technology">Technology</option>
-                <option value="bonus">Sign-on Bonus</option>
-                <option value="commission_guarantee">Commission Guarantee</option>
+                <option value="onboarding">Onboarding</option>
                 <option value="other">Other</option>
               </select>
             </div>

@@ -61,6 +61,26 @@ import { TeammateExplainerCard } from "./teammate-explainer-card"
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
+/** ai_video_projects.video_type — exactly the column's CHECK. */
+const VIDEO_TYPES = [
+  { value: "listing_tour",         label: "Listing Tour" },
+  { value: "listing_promo",        label: "Listing Promo" },
+  { value: "just_listed",          label: "Just Listed" },
+  { value: "coming_soon",          label: "Coming Soon" },
+  { value: "just_sold",            label: "Just Sold" },
+  { value: "open_house_promo",     label: "Open House Promo" },
+  { value: "market_update",        label: "Market Update" },
+  { value: "agent_intro",          label: "Agent Intro" },
+  { value: "education",            label: "Education" },
+  { value: "avatar_explainer",     label: "Avatar Explainer" },
+  { value: "social_reel",          label: "Social Reel" },
+  { value: "testimonial",          label: "Testimonial" },
+  { value: "welcome",              label: "Welcome" },
+  { value: "pre_appointment",      label: "Pre-Appointment" },
+  { value: "presentation_chapter", label: "Presentation Chapter" },
+  { value: "memory_video",         label: "Memory Video" },
+] as const
+
 const SCRIPT_TYPES = [
   {
     id: "property_tour",
@@ -173,7 +193,22 @@ export default function VideoCreatePage() {
 
   // AI Script generation (Step 1 custom tab)
   const [aiScriptDescription, setAiScriptDescription] = useState<string>("")
-  const [aiScriptVideoType, setAiScriptVideoType] = useState<string>("custom")
+  // ai_video_projects.video_type and video_scripts_library.script_type are TWO
+  // DIFFERENT vocabularies, and the library branch used to pipe one straight
+  // into the other — wrong for three of its five values. "custom" and "tips"
+  // were offered here too and the column accepts neither, so the form's own
+  // DEFAULT ("custom") made every AI-script video fail to insert.
+  const SCRIPT_TYPE_TO_VIDEO_TYPE: Record<string, string> = {
+    property_tour:        "listing_tour",
+    buyer_education:      "education",
+    market_update:        "market_update",
+    agent_intro:          "agent_intro",
+    listing_presentation: "presentation_chapter",
+  }
+  const toVideoType = (v: string | null | undefined): string =>
+    (v && SCRIPT_TYPE_TO_VIDEO_TYPE[v]) || (v && VIDEO_TYPES.some((t) => t.value === v) ? v : "listing_tour")
+
+  const [aiScriptVideoType, setAiScriptVideoType] = useState<string>("listing_tour")
   const [aiScriptTone, setAiScriptTone] = useState<"professional" | "friendly" | "luxury" | "educational">("professional")
   const [aiScriptDuration, setAiScriptDuration] = useState<number>(60)
   const [isAiGenerating, setIsAiGenerating] = useState(false)
@@ -429,9 +464,11 @@ export default function VideoCreatePage() {
           brokerage_id: brokerage.id,
           title: scriptTitle || `Video — ${new Date().toLocaleDateString()}`,
           script_content: script,
-          video_type: scriptSource === "library"
-            ? scripts.find((s: any) => s.id === selectedScript)?.script_type ?? "custom"
-            : aiScriptVideoType ?? "custom",
+          video_type: toVideoType(
+            scriptSource === "library"
+              ? scripts.find((s: any) => s.id === selectedScript)?.script_type
+              : aiScriptVideoType,
+          ),
           status: "pending",
           provider_status: "pending",
           provider_avatar_id: null,
@@ -1053,12 +1090,9 @@ export default function VideoCreatePage() {
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
-                                {SCRIPT_TYPES.map(t => (
-                                  <SelectItem key={t.id} value={t.id} className="text-xs">{t.label}</SelectItem>
+                                {VIDEO_TYPES.map(t => (
+                                  <SelectItem key={t.value} value={t.value} className="text-xs">{t.label}</SelectItem>
                                 ))}
-                                <SelectItem value="tips" className="text-xs">Tips</SelectItem>
-                                <SelectItem value="testimonial" className="text-xs">Testimonial</SelectItem>
-                                <SelectItem value="custom" className="text-xs">Custom</SelectItem>
                               </SelectContent>
                             </Select>
                           </div>

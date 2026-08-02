@@ -232,7 +232,8 @@ export async function scheduleSocialPost(params: {
   socialAccountId: string
   listingId?: string
   campaignId?: string
-  /** Pass true when the brokerage requires broker approval — sets status to pending_approval */
+  /** Pass true when the brokerage requires broker approval — the post is
+   *  created as a DRAFT with approval_status "pending" (two separate axes). */
   requiresBrokerApproval?: boolean
 }) {
   // Auth gate — derive brokerage/user from session
@@ -327,8 +328,14 @@ export async function scheduleSocialPost(params: {
       // Continue if compliance service is temporarily unavailable
     }
 
-    // Determine initial status: broker-approval required → pending_approval, otherwise → scheduled
-    const initialStatus = params.requiresBrokerApproval ? "pending_approval" : "scheduled"
+    // status and approval_status are two AXES, not one. status is the
+    // publishing lifecycle (draft|scheduled|publishing|published|failed|
+    // cancelled); approval_status is the broker gate (pending|approved|
+    // rejected). This used to set status:"pending_approval", which the CHECK
+    // has never accepted, so EVERY post from a brokerage that requires broker
+    // approval failed to insert. A post awaiting approval is not scheduled —
+    // it is a draft until the broker releases it.
+    const initialStatus = params.requiresBrokerApproval ? "draft" : "scheduled"
 
     // INSERT social_posts — tenant fields are session-derived
     const { data: post, error: insertError } = await supabase
@@ -462,7 +469,9 @@ export async function approveSocialPost(postId: string, _approverUserId?: string
       .eq("id", postId)
       .eq("brokerage_id", auth.brokerageId)
       .maybeSingle()
-    const needsScheduling = current?.status === "draft" || current?.status === "pending_approval"
+    // "pending_approval" was never a valid status, so this arm could never
+    // match. Approval-pending posts are drafts; the gate is approval_status.
+    const needsScheduling = current?.status === "draft"
 
     const { data: post, error } = await supabase
       .from("social_posts")

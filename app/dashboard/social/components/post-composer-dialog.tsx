@@ -78,9 +78,11 @@ const POST_TYPES = [
   { value: "price_reduction", label: "Price Reduction" },
   { value: "just_sold", label: "Just Sold" },
   { value: "market_update", label: "Market Update" },
-  { value: "tips", label: "Tips & Advice" },
-  { value: "community", label: "Community Spotlight" },
-  { value: "testimonial", label: "Client Testimonial" },
+  { value: "open_house_recap", label: "Open House Recap" },
+  { value: "carousel", label: "Carousel" },
+  // "tips", "community" and "testimonial" were offered here and the column has
+  // never accepted them. Anything that is not one of the named campaign kinds
+  // is a Custom post, which the column does accept.
   { value: "custom", label: "Custom" },
 ]
 

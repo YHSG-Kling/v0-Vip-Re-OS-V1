@@ -67,10 +67,10 @@ function confidenceBadge(score: number | null) {
 }
 
 const TONE_LABELS: Record<string, string> = {
-  professional: "Professional",
-  friendly:     "Friendly",
-  empathetic:   "Empathetic",
-  assertive:    "Assertive",
+  professional:  "Professional",
+  warm:          "Warm",
+  urgent:        "Urgent",
+  informational: "Informational",
 }
 
 // ─── COMPONENT ───────────────────────────────────────────────────────────────
