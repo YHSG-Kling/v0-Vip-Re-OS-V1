@@ -278,6 +278,8 @@ export function RepurposeDashboardClient({
       brokerageId: brokerageId,
       agentUserId: userId,
       teamId: teamId || undefined,
+      // The switch on this dialog was set and then not sent — it governed nothing.
+      autoApprove: newPipeline.autoApprove,
     })
 
     if (result.success) {
@@ -329,9 +331,14 @@ export function RepurposeDashboardClient({
     setIsLoading(true)
     setExecutionResult(null)
 
+    // The selection the button already required is now actually sent. It gated
+    // the click and was rendered in the run summary, but never left the client,
+    // so the run generated from the source TYPE alone.
     const result = await executePipeline({
       pipelineId: selectedPipeline.id,
       brokerageId,
+      sourceType: selectedSource.type,
+      sourceId: selectedSource.id,
     })
 
     setExecutionResult(result)

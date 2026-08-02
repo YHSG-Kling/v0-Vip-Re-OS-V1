@@ -51,24 +51,82 @@ async function loadAgentBranding(
   return { agentName, brokerageName: brokerage?.name ?? "", publicSlug: agent?.public_slug ?? null }
 }
 
+/**
+ * Load the content the user actually picked on the Execute tab.
+ *
+ * WHY THIS EXISTS. The dashboard requires a source selection — the Execute
+ * button is disabled without one, and the run summary shows its title — and then
+ * never sent it to the server. executePipeline fell back to
+ * pipeline.output_config.sourceId, which the Create-Pipeline dialog stores as ""
+ * because that dialog collects a source TYPE and has no item picker. So every
+ * run built its prompt from the phrase "this podcast episode" and nothing else:
+ * the model was asked to repurpose a piece of content it had never been shown.
+ * The outputs then went out through scheduleSocialPost to real connected
+ * accounts, and the log recorded the PIPELINE id as source_id, so history could
+ * not say what had been repurposed either.
+ *
+ * Every table and column below is confirmed against the live schema; these are
+ * the same four source tables the Execute tab lists.
+ */
+async function loadRepurposeSource(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  brokerageId: string,
+  sourceType: SourceType,
+  sourceId: string,
+): Promise<{ title: string | null; mediaUrl: string | null; body: string | null } | null> {
+  const one = (table: string, cols: string) =>
+    supabase.from(table).select(cols).eq("id", sourceId).eq("brokerage_id", brokerageId).maybeSingle()
+
+  if (sourceType === "video_project") {
+    const { data } = await one("ai_video_projects", "title, video_url, script_content")
+    const r = data as any
+    return r ? { title: r.title, mediaUrl: r.video_url, body: r.script_content } : null
+  }
+  if (sourceType === "podcast_episode") {
+    const { data } = await one("podcast_episodes", "title, audio_url, script, description")
+    const r = data as any
+    return r ? { title: r.title, mediaUrl: r.audio_url, body: r.script ?? r.description } : null
+  }
+  if (sourceType === "blog_post") {
+    const { data } = await one("blog_posts", "title, content, excerpt")
+    const r = data as any
+    return r ? { title: r.title, mediaUrl: null, body: r.content ?? r.excerpt } : null
+  }
+  if (sourceType === "script") {
+    const { data } = await one("video_scripts_library", "title, script_content")
+    const r = data as any
+    return r ? { title: r.title, mediaUrl: null, body: r.script_content } : null
+  }
+  // newsletter / social_post / video_url have no picker on the Execute tab.
+  return null
+}
+
 function buildRepurposePrompt(args: {
   format: OutputFormat
   sourceUrl: string | null
   sourceLabel: string
+  /** The real words of the source. Without it the model is guessing. */
+  sourceText?: string | null
   branding: AgentBranding
 }): string {
   const cfg = OUTPUT_FORMAT_CONFIG[args.format]
   const limit = cfg.maxLength ? `Keep it under ${cfg.maxLength} characters.` : "Keep it concise and platform-native."
   const aspect = cfg.aspectRatio ? ` The source video is intended for a ${cfg.aspectRatio} ${cfg.displayName} format.` : ""
   const source = args.sourceUrl ? `the video at ${args.sourceUrl}` : args.sourceLabel
+  // Cap the excerpt: a long blog post would otherwise dominate the prompt and
+  // push the format instructions out of the model's attention.
+  const excerpt = args.sourceText?.trim()
+    ? `Here is the source content to work from — base the caption on what it actually says, not on the topic in general:\n"""\n${args.sourceText.trim().slice(0, 6000)}\n"""`
+    : ""
   return [
     `You are writing a ${cfg.displayName} caption for real estate agent ${args.branding.agentName}` +
       (args.branding.brokerageName ? ` of ${args.branding.brokerageName}` : "") + ".",
     `Repurpose ${source} into a platform-native ${cfg.displayName} caption.${aspect}`,
+    excerpt,
     `Write in the agent's first-person voice, add a clear call to action, and include a few relevant, non-discriminatory hashtags.`,
     `Do NOT make claims about specific properties, prices, or guarantees. Follow fair-housing rules.`,
     limit,
-  ].join(" ")
+  ].filter(Boolean).join(" ")
 }
 
 async function logRepurpose(
@@ -116,6 +174,15 @@ export async function createRepurposePipeline(params: {
   teamId?: string
   /** External source video URL (used by the video_url source type). */
   sourceUrl?: string
+  /**
+   * "Skip manual review for generated content" — the switch on the Create
+   * Pipeline dialog. It was collected and never sent: repurpose_pipelines has
+   * no such column (verified live), and the client did not pass it either, so
+   * the toggle governed nothing and every output landed in pending_review
+   * regardless. Carried in output_config, which already holds the pipeline's
+   * other settings, rather than growing the table for one boolean.
+   */
+  autoApprove?: boolean
 }): Promise<SavePipelineResult> {
   try {
     const agentContext = await getAgentContext()
@@ -141,6 +208,7 @@ export async function createRepurposePipeline(params: {
         output_config: {
           formats: params.outputFormats,
           sourceId: params.sourceId,
+          autoApprove: params.autoApprove === true,
           ...(params.sourceUrl ? { sourceUrl: params.sourceUrl } : {}),
         },
         is_active: true,
@@ -170,6 +238,10 @@ export async function createRepurposePipeline(params: {
 export async function executePipeline(params: {
   pipelineId: string
   brokerageId: string
+  /** The content the user picked on the Execute tab. Optional so a programmatic
+   *  run can still fall back to the pipeline's stored source. */
+  sourceType?: SourceType
+  sourceId?: string
 }): Promise<ExecutePipelineResult> {
   try {
     const agentContext = await getAgentContext()
@@ -214,12 +286,34 @@ export async function executePipeline(params: {
       entityId: params.pipelineId,
     }).catch(err => console.error("[Pipeline] Event failed:", err))
 
-    const sourceUrl: string | null = pipeline.output_config?.sourceUrl ?? null
-    const rawSourceId: string = pipeline.output_config?.sourceId ?? ""
+    // The user's selection wins; the pipeline's stored source is the fallback
+    // for a programmatic run.
+    const runSourceType: SourceType = (params.sourceType ?? pipeline.source_type) as SourceType
+    const storedUrl: string | null = pipeline.output_config?.sourceUrl ?? null
+    const rawSourceId: string = params.sourceId ?? pipeline.output_config?.sourceId ?? ""
+
+    // REFUSE rather than generate type-only filler. A run with no resolvable
+    // source used to produce captions about nothing and schedule them to real
+    // social accounts, reporting "Pipeline executed successfully!".
+    if (!isValidUUID(rawSourceId) && !storedUrl) {
+      return { success: false, error: "Pick the content to repurpose — this run had no source." }
+    }
+
+    const source = isValidUUID(rawSourceId)
+      ? await loadRepurposeSource(supabase, brokerageId, runSourceType, rawSourceId)
+      : null
+    if (isValidUUID(rawSourceId) && !source) {
+      return { success: false, error: "That source content was not found in your brokerage." }
+    }
+
+    const sourceUrl: string | null = source?.mediaUrl ?? storedUrl
+    const sourceText: string | null = source?.body ?? null
     // repurposed_content_log.source_id is NOT NULL. Use the original content row
     // id when present, otherwise the pipeline id (links the log back to this run).
     const sourceId: string = isValidUUID(rawSourceId) ? rawSourceId : params.pipelineId
-    const sourceLabel = `this ${pipeline.source_type.replace(/_/g, " ")}`
+    const sourceLabel = source?.title
+      ? `"${source.title}"`
+      : `this ${runSourceType.replace(/_/g, " ")}`
 
     // Load the agent's branding so the AI rewrites copy in their voice, and the
     // set of connected social accounts so each platform routes to a real channel.
@@ -246,7 +340,7 @@ export async function executePipeline(params: {
         if (!config) continue
 
         const aiResponse = await generateAIResponse({
-          prompt: buildRepurposePrompt({ format: format as OutputFormat, sourceUrl, sourceLabel, branding }),
+          prompt: buildRepurposePrompt({ format: format as OutputFormat, sourceUrl, sourceLabel, sourceText, branding }),
           maxTokens: 500,
           metadata: { userId, brokerageId, feature: "video_script_generation" },
         })
@@ -264,7 +358,7 @@ export async function executePipeline(params: {
           const accountId = accountByPlatform.get(config.platform)
           if (!accountId) {
             outputs.push({ outputType: format, outputRefTable: "social_posts", outputRefId: "", platform: config.platform, contentPreview: `No connected ${config.platform} account`, status: "skipped" })
-            await logRepurpose(supabase, { brokerageId, sourceType: pipeline.source_type, sourceId, outputType: format, outputRefTable: null, outputRefId: null, platformTarget: config.platform, status: "generated", approvalStatus: "draft", notes: `Generated but not distributed — no connected ${config.platform} account`, createdBy: userId })
+            await logRepurpose(supabase, { brokerageId, sourceType: runSourceType, sourceId, outputType: format, outputRefTable: null, outputRefId: null, platformTarget: config.platform, status: "generated", approvalStatus: "draft", notes: `Generated but not distributed — no connected ${config.platform} account`, createdBy: userId })
             continue
           }
 
@@ -280,11 +374,11 @@ export async function executePipeline(params: {
 
           if (!scheduled.success || !scheduled.data?.id) {
             outputs.push({ outputType: format, outputRefTable: "social_posts", outputRefId: "", platform: config.platform, contentPreview: scheduled.error ?? "Failed to schedule", status: "failed" })
-            await logRepurpose(supabase, { brokerageId, sourceType: pipeline.source_type, sourceId, outputType: format, outputRefTable: null, outputRefId: null, platformTarget: config.platform, status: "failed", approvalStatus: "rejected", notes: scheduled.error ?? "Failed to schedule", createdBy: userId })
+            await logRepurpose(supabase, { brokerageId, sourceType: runSourceType, sourceId, outputType: format, outputRefTable: null, outputRefId: null, platformTarget: config.platform, status: "failed", approvalStatus: "rejected", notes: scheduled.error ?? "Failed to schedule", createdBy: userId })
             continue
           }
 
-          await logRepurpose(supabase, { brokerageId, sourceType: pipeline.source_type, sourceId, outputType: format, outputRefTable: "social_posts", outputRefId: scheduled.data.id, platformTarget: config.platform, status: "scheduled", approvalStatus: "approved", notes: generatedContent, createdBy: userId })
+          await logRepurpose(supabase, { brokerageId, sourceType: runSourceType, sourceId, outputType: format, outputRefTable: "social_posts", outputRefId: scheduled.data.id, platformTarget: config.platform, status: "scheduled", approvalStatus: "approved", notes: generatedContent, createdBy: userId })
           outputs.push({ outputType: format, outputRefTable: "social_posts", outputRefId: scheduled.data.id, platform: config.platform, contentPreview: generatedContent.substring(0, 100), status: "scheduled" })
           continue
         }
@@ -308,8 +402,13 @@ export async function executePipeline(params: {
           outputs.push({ outputType: format, outputRefTable: config.outputTable, outputRefId: "", platform: config.platform, contentPreview: "Compliance violation", status: "rejected" })
           continue
         }
-        await logRepurpose(supabase, { brokerageId, sourceType: pipeline.source_type, sourceId, outputType: format, outputRefTable: config.outputTable, outputRefId: null, platformTarget: config.platform, status: "generated", approvalStatus: "pending_review", notes: generatedContent, createdBy: userId })
-        outputs.push({ outputType: format, outputRefTable: config.outputTable, outputRefId: "", platform: config.platform, contentPreview: generatedContent.substring(0, 100), status: "pending" })
+        // THE READ SIDE OF THE AUTO-APPROVE SWITCH. Both literals are in the
+        // live approval_status CHECK — nothing is widened. Compliance still
+        // gates above: auto-approve skips the human review queue, never the
+        // compliance evaluation.
+        const autoApprove = pipeline.output_config?.autoApprove === true
+        await logRepurpose(supabase, { brokerageId, sourceType: runSourceType, sourceId, outputType: format, outputRefTable: config.outputTable, outputRefId: null, platformTarget: config.platform, status: "generated", approvalStatus: autoApprove ? "approved" : "pending_review", notes: generatedContent, createdBy: userId })
+        outputs.push({ outputType: format, outputRefTable: config.outputTable, outputRefId: "", platform: config.platform, contentPreview: generatedContent.substring(0, 100), status: autoApprove ? "approved" : "pending" })
       } catch (err) {
         console.error(`[Pipeline] Error generating ${format}:`, err)
       }
