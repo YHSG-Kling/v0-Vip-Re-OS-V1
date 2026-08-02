@@ -27,7 +27,16 @@ import {
 } from "@/app/actions/vendor-premium-placement"
 
 export interface DirectoryEntry {
-  id: string
+  /**
+   * The vendor_directory.id — NULL until this vendor has been curated. It is
+   * created on the first sale (ensureDirectoryEntryForVendor), because nothing
+   * in the product ever inserted a vendor_directory row: the table was empty in
+   * every tenancy, so a panel that listed only curated rows listed nothing and
+   * returned null forever.
+   */
+  id: string | null
+  /** The vendors.id — always present; this is what the offer is placed against. */
+  vendorId: string
   name: string | null
   category: string | null
   preferred: boolean | null
@@ -93,14 +102,19 @@ export function PremiumPlacementPanel({
     (inv) => inv.status !== "paid" && inv.status !== "cancelled"
   )
 
-  const handleOffer = (directoryId: string) => {
+  const handleOffer = (entry: DirectoryEntry) => {
     setMessage(null)
     setError(null)
     const monthsNum = parseInt(months, 10)
     const priceCents = Math.round(parseFloat(price) * 100)
     startTransition(async () => {
+      // Send the bench vendor id; the action curates on first sale. The
+      // directory id is sent too when the vendor has already been curated, so
+      // a second placement reuses the existing row rather than racing the
+      // partial unique index.
       const result = await offerPremiumPlacementAction({
-        vendorDirectoryId: directoryId,
+        vendorId: entry.vendorId,
+        vendorDirectoryId: entry.id ?? undefined,
         months: monthsNum,
         priceCents,
       })
@@ -161,9 +175,9 @@ export function PremiumPlacementPanel({
         {/* Directory entries — offer placement per row */}
         <div className="space-y-3">
           {directoryEntries.map((entry) => {
-            const until = activeUntil.get(entry.id)
+            const until = entry.id ? activeUntil.get(entry.id) : undefined
             return (
-              <div key={entry.id} className="p-4 border rounded-lg hover:bg-muted/50 transition-colors">
+              <div key={entry.vendorId} className="p-4 border rounded-lg hover:bg-muted/50 transition-colors">
                 <div className="flex items-center justify-between gap-4">
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
@@ -186,7 +200,7 @@ export function PremiumPlacementPanel({
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => setOfferFor(offerFor === entry.id ? null : entry.id)}
+                      onClick={() => setOfferFor(offerFor === entry.vendorId ? null : entry.vendorId)}
                       disabled={isPending}
                     >
                       Offer premium placement
@@ -194,12 +208,12 @@ export function PremiumPlacementPanel({
                   )}
                 </div>
 
-                {canManage && offerFor === entry.id && (
+                {canManage && offerFor === entry.vendorId && (
                   <div className="mt-3 flex flex-wrap items-end gap-3 border-t pt-3">
                     <div className="space-y-1">
-                      <Label htmlFor={`pp-months-${entry.id}`} className="text-xs">Months</Label>
+                      <Label htmlFor={`pp-months-${entry.vendorId}`} className="text-xs">Months</Label>
                       <Input
-                        id={`pp-months-${entry.id}`}
+                        id={`pp-months-${entry.vendorId}`}
                         type="number"
                         min={1}
                         max={60}
@@ -209,9 +223,9 @@ export function PremiumPlacementPanel({
                       />
                     </div>
                     <div className="space-y-1">
-                      <Label htmlFor={`pp-price-${entry.id}`} className="text-xs">Price ($)</Label>
+                      <Label htmlFor={`pp-price-${entry.vendorId}`} className="text-xs">Price ($)</Label>
                       <Input
-                        id={`pp-price-${entry.id}`}
+                        id={`pp-price-${entry.vendorId}`}
                         type="number"
                         min={1}
                         step="0.01"
@@ -220,7 +234,7 @@ export function PremiumPlacementPanel({
                         className="w-28 h-9"
                       />
                     </div>
-                    <Button size="sm" onClick={() => handleOffer(entry.id)} disabled={isPending}>
+                    <Button size="sm" onClick={() => handleOffer(entry)} disabled={isPending}>
                       {isPending ? "Creating..." : "Create placement invoice"}
                     </Button>
                   </div>

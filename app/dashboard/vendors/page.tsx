@@ -106,12 +106,19 @@ export default async function VendorsPage() {
     // ledger holds the placement charges. See lib/vendors/premium-placement.ts.
     supabase
       .from("vendor_directory")
-      .select("id, name, category, preferred, display_priority")
+      .select("id, vendor_id, name, category, preferred, display_priority")
       .eq("brokerage_id", profile.brokerage_id)
       .order("display_priority", { ascending: false })
       .order("name", { ascending: true })
       .limit(100)
-      .then(r => (r.data || []) as DirectoryEntry[]),
+      .then(r => (r.data || []) as Array<{
+        id: string
+        vendor_id: string | null
+        name: string | null
+        category: string | null
+        preferred: boolean | null
+        display_priority: number | null
+      }>),
     supabase
       .from("vendor_invoices")
       .select("id, invoice_number, status, total_amount, due_date, paid_at, line_items")
@@ -380,8 +387,26 @@ export default async function VendorsPage() {
           </Card>
 
           {/* Premium placement — subscribers charge vendors to be featured here */}
+          {/*
+            EVERY BENCH VENDOR IS SELLABLE, curated or not. This used to be fed
+            vendor_directory rows only — and nothing in the repo ever inserted
+            one (live count: 0 in every tenancy), so the list was always empty,
+            the panel's own `length === 0` early-return fired, and the premium
+            placement surface never rendered at all. The curation row is created
+            on the first sale; until then a vendor simply has no directory id.
+          */}
           <PremiumPlacementPanel
-            directoryEntries={directoryEntries}
+            directoryEntries={(preferredVendors ?? []).map((v: any) => {
+              const curated = directoryEntries.find((d) => d.vendor_id === v.id)
+              return {
+                id: curated?.id ?? null,
+                vendorId: v.id as string,
+                name: curated?.name ?? v.name ?? null,
+                category: curated?.category ?? v.category ?? null,
+                preferred: curated?.preferred ?? false,
+                display_priority: curated?.display_priority ?? 0,
+              }
+            })}
             placementInvoices={placementInvoices}
             userRole={profile.user_type ?? "agent"}
           />

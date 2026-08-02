@@ -55,6 +55,107 @@ function generatePlacementInvoiceNumber(): string {
   return `PP-${ts}-${rand}`
 }
 
+/**
+ * Resolve — creating if needed — the CURATION row for a bench vendor.
+ *
+ * THE MISSING ENTRY POINT. Everything downstream of this function worked: offer
+ * → invoice → mark paid → flip {preferred, display_priority, visible_in_portal}
+ * → nightly expiry sweep. An earlier pass repointed the READERS back onto
+ * vendor_directory and restored that chain. What nobody noticed is that no code
+ * path anywhere in the repo ever INSERTS a vendor_directory row — the only SQL
+ * that ever wrote one was a one-time backfill UPDATE in m303. Live count: 0.
+ *
+ * So offerPremiumPlacement needed a vendorDirectoryId the product could not
+ * mint, the panel's `directoryEntries.length === 0 && placementInvoices.length
+ * === 0 → return null` early-return meant the monetization card NEVER rendered,
+ * and resolve-contact-vendors always fell through to its uncurated `vendors`
+ * fallback — which is why audience/stage targeting and visible_in_portal did
+ * nothing and every portal contact saw every approved vendor.
+ *
+ * TWO TABLES, TWO JOBS — this is not a duplicate to consolidate away. `vendors`
+ * is the operational bench (bookings, assignments, verification, access level);
+ * `vendor_directory` is the curated, sellable listing (preferred, priority,
+ * portal visibility, audience/stage tags). m303 gave the second a real FK to
+ * the first. This function is the bridge that was specified and never built.
+ *
+ * IDENTITY: vendorId is a `vendors.id` — the FK target of
+ * vendor_directory.vendor_id. The returned id is a `vendor_directory.id`, which
+ * is what the placement line item and the invoice's vendor_id anchor on.
+ *
+ * SELECT-THEN-INSERT, deliberately, not upsert: the uniqueness guarantee is a
+ * PARTIAL index (ux_vendor_directory_brokerage_vendor ... WHERE vendor_id IS
+ * NOT NULL), and PostgREST's on_conflict cannot infer a partial index without
+ * emitting its predicate. An upsert here would fail at runtime, not compile.
+ */
+export async function ensureDirectoryEntryForVendor(input: {
+  brokerageId: string
+  /** A vendors.id — never a vendor_directory.id. */
+  vendorId: string
+}): Promise<
+  | { directoryId: string; created: boolean; error: null }
+  | { directoryId: null; created: false; error: string }
+> {
+  const { brokerageId, vendorId } = input
+  if (!brokerageId || !vendorId) {
+    return { directoryId: null, created: false, error: "Missing brokerage or vendor" }
+  }
+
+  const supabase = createServiceClient()
+
+  const { data: existing, error: findError } = await supabase
+    .from("vendor_directory")
+    .select("id")
+    .eq("brokerage_id", brokerageId)
+    .eq("vendor_id", vendorId)
+    .maybeSingle()
+
+  if (findError) return { directoryId: null, created: false, error: findError.message }
+  if (existing) return { directoryId: existing.id as string, created: false, error: null }
+
+  // The bench row is the source of identity; the directory row adds curation.
+  // Tenant-anchored, so a vendor id from another brokerage resolves to nothing.
+  const { data: bench, error: benchError } = await supabase
+    .from("vendors")
+    .select("id, name, category, phone, email, website, rating")
+    .eq("id", vendorId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+
+  if (benchError) return { directoryId: null, created: false, error: benchError.message }
+  if (!bench) return { directoryId: null, created: false, error: "Vendor not found in your brokerage" }
+
+  const { data: created, error: insertError } = await supabase
+    .from("vendor_directory")
+    .insert({
+      brokerage_id: brokerageId,
+      vendor_id: bench.id,
+      name: bench.name,
+      // vendor_directory.category is NOT NULL while vendors.category is
+      // nullable. Both carry the SAME 38-value CHECK (verified live), so the
+      // value copies across unchanged; 'other' is the vocabulary's own escape
+      // hatch for a bench row that never got one.
+      category: bench.category ?? "other",
+      phone: bench.phone,
+      email: bench.email,
+      website: bench.website,
+      rating: bench.rating,
+      // Curated, NOT yet sold. preferred/display_priority are the PAID flags and
+      // only markPlacementPaid may set them — curating a vendor must never look
+      // like a vendor who paid, or the Preferred tab stops meaning anything.
+      preferred: false,
+      display_priority: 0,
+      visible_in_portal: true,
+    })
+    .select("id")
+    .single()
+
+  if (insertError || !created) {
+    return { directoryId: null, created: false, error: insertError?.message ?? "Could not curate this vendor" }
+  }
+
+  return { directoryId: created.id as string, created: true, error: null }
+}
+
 function findPlacementItem(
   lineItems: unknown
 ): PremiumPlacementLineItem | null {
