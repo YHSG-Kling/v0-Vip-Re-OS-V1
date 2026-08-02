@@ -177,13 +177,21 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
         contactIds: farmContacts.map((c: any) => c.id),
       })
 
+      // Report the DELIVERED count, not the size of the list we walked. The old
+      // copy said "Invitations sent to N contacts" using farmContacts.length —
+      // the number of people considered — for a code path that sent nothing at
+      // all. Now that every send passes the consent gate, a refused contact is
+      // a normal outcome and the agent needs to see it.
       if (res.success) {
+        const refused = (res.attempted ?? 0) - (res.delivered ?? 0)
         toast({
           title: "Invitations sent",
-          description: `Invitations sent to ${farmContacts.length} contacts in ${listing.zip}.`,
+          description:
+            `${res.delivered} of ${res.attempted} contacts in ${listing.zip} were invited.` +
+            (refused > 0 ? ` ${refused} could not be contacted — check the contact timeline for the reason.` : ""),
         })
       } else {
-        toast({ title: "Failed to send invitations", description: res.error, variant: "destructive" })
+        toast({ title: "No invitations were delivered", description: res.error, variant: "destructive" })
       }
     } catch {
       toast({ title: "Failed to send invitations", variant: "destructive" })

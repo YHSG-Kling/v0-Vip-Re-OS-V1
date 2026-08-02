@@ -245,16 +245,27 @@ export async function unsaveProperty(data: {
   contactId: string
   mlsNumber: string
 }) {
-  try {
-    const supabase = await createClient()
+  const supabase = await createClient()
 
-    await supabase.from("saved_properties").delete().eq("contact_id", data.contactId).eq("mls_number", data.mlsNumber)
+  // The result of this delete used to be discarded entirely, inside a try/catch
+  // that could never fire: supabase-js RESOLVES a rejected write rather than
+  // throwing, so an RLS refusal returned normally and the action reported
+  // "Property removed from saved" for a row that was still there. The caller
+  // dropped the card from local state, and the property reappeared on refresh.
+  const { data: removed, error } = await supabase
+    .from("saved_properties")
+    .delete()
+    .eq("contact_id", data.contactId)
+    .eq("mls_number", data.mlsNumber)
+    .select("id")
 
-    revalidatePath("/properties/saved")
-    return { success: true, message: "Property removed from saved" }
-  } catch (error: any) {
-    return { success: false, error: error.message }
+  if (error) return { success: false, error: error.message }
+  if (!removed?.length) {
+    return { success: false, error: "That property is not in your saved list" }
   }
+
+  revalidatePath("/properties/saved")
+  return { success: true, message: "Property removed from saved" }
 }
 
 // Track property view for engagement scoring

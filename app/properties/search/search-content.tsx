@@ -35,10 +35,26 @@ export default function PropertySearchContent() {
   })
   const [extractedFilters, setExtractedFilters] = useState<any>(null)
 
-  const contactId = searchParams.get("contactId") || "demo-contact-id"
+  // No fallback. "demo-contact-id" is not a uuid, so every action given it
+  // failed a uuid parse — including the ALREADY-WIRED heart button, which showed
+  // a destructive "Error" toast on a page that otherwise looked healthy. A
+  // placeholder id does not make a feature work without a contact; it makes the
+  // failure look like a bug in the save.
+  const contactId = searchParams.get("contactId")
 
   const handleSmartSearch = async () => {
     if (!naturalQuery.trim()) return
+    // smartSearch personalises against the contact's budget, persona, timeline
+    // and search history, and throws outright when the contact row is missing —
+    // which is what the old "demo-contact-id" fallback guaranteed.
+    if (!contactId) {
+      toast({
+        title: "No client selected",
+        description: "Smart search reads the client's budget and history. Open it from a client's record.",
+        variant: "destructive",
+      })
+      return
+    }
 
     setLoading(true)
     try {
@@ -87,6 +103,14 @@ export default function PropertySearchContent() {
   }
 
   const handleSaveProperty = async (property: any) => {
+    if (!contactId) {
+      toast({
+        title: "No client selected",
+        description: "Open this search from a client's record to save properties for them.",
+        variant: "destructive",
+      })
+      return
+    }
     const result = await saveProperty({
       contactId: contactId,
       mlsNumber: property.mlsNumber,

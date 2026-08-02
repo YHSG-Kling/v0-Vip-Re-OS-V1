@@ -37,7 +37,8 @@ import {
   Gift,
   ShieldCheck,
 } from "lucide-react"
-import { loadClientDashboard } from "@/app/actions/transactions"
+import { toast } from "sonner"
+import { loadClientDashboard, emitClientFriendlyUpdate } from "@/app/actions/transactions"
 import { createClient } from "@/lib/supabase/client"
 
 export default function AgentTransactionDetailPage() {
@@ -46,6 +47,7 @@ export default function AgentTransactionDetailPage() {
   const transactionId = params.transactionId as string
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const [postingUpdate, setPostingUpdate] = useState(false)
   const [activeTab, setActiveTab] = useState("overview")
 
   // Documents tab state
@@ -302,7 +304,43 @@ export default function AgentTransactionDetailPage() {
     return "bg-red-500 animate-pulse"
   }
 
-  const healthScore = data.team?.[0]?.transactions?.health_score || 75
+  // emitClientFriendlyUpdate RETURNS { success, error } on every path and never
+  // throws, so a try/catch would be dead code and an unconditional toast would
+  // announce a portal update that was refused.
+  const handleUpdateClient = async () => {
+    if (!data?.contact_id || !data?.brokerage_id || !data?.agent_id) return
+    const text = window.prompt("Plain-language update for the client (appears in their portal):")
+    if (!text?.trim()) return
+    setPostingUpdate(true)
+    const result = await emitClientFriendlyUpdate({
+      transactionId,
+      brokerageId: data.brokerage_id,
+      agentId: data.agent_id, // agents.id — transactions.agent_id FKs agents
+      contactId: data.contact_id, // contacts.id
+      updateType: "general",
+      updateText: text.trim(),
+      sendVia: "portal",
+    })
+    setPostingUpdate(false)
+    if (result.success) {
+      toast.success("Posted to the client's portal")
+      // Pull the dashboard again so the new entry shows in Updates without a
+      // full reload.
+      try {
+        setData(await loadClientDashboard(transactionId))
+      } catch {
+        /* the update landed; a stale panel is not worth an error toast */
+      }
+    } else {
+      toast.error(result.error ?? "The update was not posted")
+    }
+  }
+
+  // data.team is transaction_participants — {id, role, name, company, email,
+  // phone}. It has no `.transactions`, so this read was always undefined and the
+  // literal 75 was rendered three times as though it had been measured. The
+  // dashboard now returns the real score.
+  const healthScore = data.health_score ?? 75
 
   // Distil the scored factors into a verdict + the single weakest link + the one
   // protective action. Reuses the persisted scores; never recomputes them.
@@ -370,8 +408,13 @@ export default function AgentTransactionDetailPage() {
 
             {/* Quick Actions */}
             <div className="flex gap-2">
-              <Button variant="default" size="sm">
-                <Send className="w-4 h-4 mr-2" />
+              <Button
+                variant="default"
+                size="sm"
+                disabled={!data.contact_id || !data.brokerage_id || !data.agent_id || postingUpdate}
+                onClick={handleUpdateClient}
+              >
+                {postingUpdate ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
                 Update Client
               </Button>
               <Button variant="outline" size="sm">
@@ -412,32 +455,115 @@ export default function AgentTransactionDetailPage() {
               <CardHeader>
                 <CardTitle className="text-lg flex items-center gap-2">
                   <Users className="h-5 w-5" />
-                  Client Information
+                  Client &amp; Deal Team
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                {data.team.map((member: any, idx: number) => (
-                  <div key={idx} className="space-y-2">
-                    <p className="font-medium">{member.agents?.name || "Client Name"}</p>
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Phone className="h-4 w-4" />
-                      <span>{member.agents?.phone || "No phone"}</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Mail className="h-4 w-4" />
-                      <span>{member.agents?.email || "No email"}</span>
-                    </div>
+                {/*
+                  THE CLIENT IS NOT IN data.team. team is transaction_participants
+                  — the lender, title company, inspector — queried flat, with no
+                  embed at all. The old markup read member.agents?.name off those
+                  rows, which is undefined on every one of them, so the card
+                  rendered the literal fallbacks "Client Name" / "No phone" /
+                  "No email" once per vendor under a heading that said Client
+                  Information. Two separate mistakes stacked: the wrong field
+                  path, and the wrong table for the question being asked.
+                */}
+                {data.client ? (
+                  <div className="space-y-2">
+                    <p className="font-medium">{data.client.name ?? "—"}</p>
+                    {data.client.phone && (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Phone className="h-4 w-4" />
+                        <span>{data.client.phone}</span>
+                      </div>
+                    )}
+                    {data.client.email && (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Mail className="h-4 w-4" />
+                        <span>{data.client.email}</span>
+                      </div>
+                    )}
                   </div>
-                ))}
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    No client contact is linked to this transaction yet.
+                  </p>
+                )}
+
+                {data.team.length > 0 && (
+                  <>
+                    <Separator />
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Deal Team</p>
+                    {data.team.map((member: any) => (
+                      <div key={member.id} className="space-y-1">
+                        <p className="font-medium text-sm">{member.name}</p>
+                        {(member.role || member.company) && (
+                          <p className="text-xs text-muted-foreground capitalize">
+                            {String(member.role ?? "").replace(/_/g, " ")}
+                            {member.company ? ` · ${member.company}` : ""}
+                          </p>
+                        )}
+                        {member.phone && (
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <Phone className="h-4 w-4" />
+                            <span>{member.phone}</span>
+                          </div>
+                        )}
+                        {member.email && (
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <Mail className="h-4 w-4" />
+                            <span>{member.email}</span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </>
+                )}
                 <Separator />
                 <div className="space-y-2">
-                  <Button variant="outline" size="sm" className="w-full justify-start bg-transparent">
-                    <Phone className="h-4 w-4 mr-2" />
-                    Call Client
+                  {/* tel:/mailto: rather than a server round-trip — the dominant
+                      pattern in this repo, and it needs no action at all once the
+                      client's real details are in scope. Rendered only when the
+                      detail exists, so nothing offers to dial a number we do not
+                      have. */}
+                  <Button
+                    asChild={!!data.client?.phone}
+                    variant="outline"
+                    size="sm"
+                    className="w-full justify-start bg-transparent"
+                    disabled={!data.client?.phone}
+                  >
+                    {data.client?.phone ? (
+                      <a href={`tel:${data.client.phone}`}>
+                        <Phone className="h-4 w-4 mr-2" />
+                        Call Client
+                      </a>
+                    ) : (
+                      <span>
+                        <Phone className="h-4 w-4 mr-2" />
+                        No client phone on file
+                      </span>
+                    )}
                   </Button>
-                  <Button variant="outline" size="sm" className="w-full justify-start bg-transparent">
-                    <Mail className="h-4 w-4 mr-2" />
-                    Send Email
+                  <Button
+                    asChild={!!data.client?.email}
+                    variant="outline"
+                    size="sm"
+                    className="w-full justify-start bg-transparent"
+                    disabled={!data.client?.email}
+                  >
+                    {data.client?.email ? (
+                      <a href={`mailto:${data.client.email}`}>
+                        <Mail className="h-4 w-4 mr-2" />
+                        Send Email
+                      </a>
+                    ) : (
+                      <span>
+                        <Mail className="h-4 w-4 mr-2" />
+                        No client email on file
+                      </span>
+                    )}
                   </Button>
                 </div>
               </CardContent>

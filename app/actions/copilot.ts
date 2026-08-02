@@ -120,26 +120,49 @@ export async function generate7DayPlan(payload: any) {
   if (!nurtureAgent?.id || !nurtureAgent?.brokerage_id) {
     return { success: false, error: "No agent profile for this user — nurture plan not created" }
   }
-  for (const task of tasks) {
-    await supabase.from("tasks").insert({
-      brokerage_id: nurtureAgent.brokerage_id,
-      contact_id,
-      assigned_to_agent_id: nurtureAgent.id,
-      title: task.title,
-      due_date: new Date(Date.now() + task.day * 24 * 60 * 60 * 1000).toISOString(),
-      priority: task.priority,
-      auto_generated: true,
-      source: "lead_nurture",
-    })
+  // ONE INSERT, AND THE RESULT IS READ. Both writes below used to be awaited
+  // with the result thrown away, and the function then returned
+  // `tasksCreated: tasks.length` — the length of the hardcoded template array
+  // above. That is 7 whether seven rows landed or zero did. It matters here
+  // more than most: the orchestrator fires this on lead.created, and a leads.id
+  // is not a contacts.id — tasks.contact_id FKs contacts, so a lead id makes
+  // every insert FK-reject and the contacts update match nothing, while the
+  // caller is told a seven-touch nurture plan is running.
+  const { data: created, error: taskErr } = await supabase
+    .from("tasks")
+    .insert(
+      tasks.map((task) => ({
+        brokerage_id: nurtureAgent.brokerage_id,
+        contact_id,
+        assigned_to_agent_id: nurtureAgent.id, // agents.id — tasks.assigned_to_agent_id FKs agents
+        title: task.title,
+        due_date: new Date(Date.now() + task.day * 24 * 60 * 60 * 1000).toISOString(),
+        priority: task.priority,
+        auto_generated: true,
+        source: "lead_nurture",
+      })),
+    )
+    .select("id")
+
+  if (taskErr) {
+    return { success: false, error: `Nurture plan not created: ${taskErr.message}` }
   }
 
-  // Update contact with nurture status
-  await supabase
+  const { data: marked, error: statusErr } = await supabase
     .from("contacts")
     .update({ nurture_status: "7_day_plan_active" })
     .eq("id", contact_id)
+    .select("id")
 
-  return { success: true, tasksCreated: tasks.length }
+  if (statusErr) {
+    return { success: false, error: `Tasks created, but the contact was not marked: ${statusErr.message}` }
+  }
+  if (!marked?.length) {
+    return { success: false, error: "No contact matched that id — the nurture plan has no owner" }
+  }
+
+  // The number of rows that actually landed.
+  return { success: true, tasksCreated: created?.length ?? 0 }
 }
 
 // =====================================================
@@ -372,7 +395,9 @@ export async function executeCopilotTask(taskId: string, taskType: string, param
 
   switch (taskType) {
     case "call_hot_lead":
-      return await initiateCall(params.contactId, user.id)
+      // No agent id passed: the canonical calling lane derives the agent from
+      // the session, which is where user.id came from anyway.
+      return await initiateCall(params.contactId)
 
     case "send_property_alert":
       return await sendPropertyMatches(params.contactId)
@@ -549,72 +574,37 @@ export async function suggestNextActions(agentId: string) {
 }
 
 // Helper functions for task execution
-async function initiateCall(contactId: string, agentId: string) {
-  const supabase = await createClient()
-
-  // voice_calls requires brokerage_id + phone_to (NOT NULL) and agent_id is a FK
-  // to agents(id) — but `agentId` here is a users.id, so resolve the agents row.
-  const { data: agentUser } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", agentId)
-    .maybeSingle()
-  const agentsId = await agentIdForUser(supabase, agentId)
-  const { data: contactRow } = await supabase
-    .from("contacts")
-    .select("phone")
-    .eq("id", contactId)
-    .maybeSingle()
-
-  if (!agentUser?.brokerage_id) {
-    return { success: false, error: "Agent has no brokerage scope" }
-  }
-  if (!agentsId) {
-    return { success: false, error: "No agent profile for current user" }
-  }
-  if (!contactRow?.phone) {
-    return { success: false, error: "Contact has no phone number on file" }
-  }
-
-  // Create call log entry (real columns: direction='outbound', call_type='agent_call',
-  // started_at; phone_to + brokerage_id are NOT NULL)
-  const { data: callLog, error } = await supabase
-    .from("voice_calls")
-    .insert({
-      contact_id: contactId,
-      agent_id: agentsId,
-      brokerage_id: agentUser.brokerage_id,
-      phone_to: contactRow.phone,
-      direction: "outbound",
-      call_type: "agent_call",
-      status: "initiated",
-      started_at: new Date().toISOString(),
-    })
-    .select()
-    .single()
-
-  if (error) {
-    console.error("[copilot] Failed to create call log:", error)
-    return { success: false, error: "Failed to initiate call" }
-  }
-
-  // IDENTITY CLASS (m343). activities.agent_id FKs AGENTS, exactly like
-  // voice_calls.agent_id above — which this function already resolved into
-  // `agentsId` three lines earlier, and then did not use here. The insert was a
-  // foreign-key violation, so an outbound call logged fine and never appeared on
-  // the agent's activity feed. Same function, one resolution, two call sites.
-  await supabase.from("activities").insert({
-    brokerage_id: agentUser?.brokerage_id ?? null,
-    agent_id: agentsId,
-    contact_id: contactId,
-    activity_type: "call_initiated",
-    title: "Outbound call initiated",
-    description: "Outbound call initiated via copilot",
-    status: "completed",
-    entity_type: "contact",
+async function initiateCall(contactId: string) {
+  // NOTHING HERE EVER DIALLED A PHONE. This function used to insert a
+  // voice_calls row with status "initiated" and started_at = now(), plus an
+  // activities row titled "Outbound call initiated" with status "completed",
+  // and return { success: true, message: "Call initiated" } — with no provider
+  // call anywhere in it. The agent was told the call was placed, the contact's
+  // timeline said they had been rung, and the kernel's conversation memory read
+  // that activities row as fact and suppressed the real follow-up.
+  //
+  // The OS already has exactly one agent→contact calling lane that works:
+  // initiateWhisperBridge places the call through Twilio, checks the provider
+  // result, and only then writes voice_calls with the real vendor_call_id.
+  // Delegating rather than re-implementing also satisfies the standing rule
+  // that a provider gets one caller, not two. It derives the agent from the
+  // session, which is the same actor `agentId` came from (executeCopilotTask
+  // passes the authenticated user's own id).
+  const { initiateWhisperBridge } = await import("@/app/actions/voice-call-bridge")
+  const bridge = await initiateWhisperBridge({
+    contactId,
+    context: "call requested from the copilot",
   })
-  
-  return { success: true, message: "Call initiated", callLogId: callLog?.id }
+
+  if (!bridge.success) {
+    return { success: false, error: bridge.error ?? "The call was not placed" }
+  }
+
+  return {
+    success: true,
+    message: "Calling you now — we'll connect the contact when you pick up",
+    callSid: bridge.callSid,
+  }
 }
 
 async function sendPropertyMatches(contactId: string) {

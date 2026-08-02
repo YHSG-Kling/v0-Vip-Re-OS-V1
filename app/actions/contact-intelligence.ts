@@ -152,7 +152,14 @@ export async function setContactAIPilot(params: {
 
   const enabled = params.level !== "off"
   const supabase = createServiceClient()
-  const { error } = await supabase
+  // .select() so a ZERO-ROW update is distinguishable from a successful one.
+  // The brokerage_id filter is a real tenant boundary: a contact from another
+  // tenancy (or a deleted one) matches nothing, and an update that matches
+  // nothing returns error: null. The CRM then toasted "AI Pilot: Aggressive"
+  // for a contact whose autonomy setting had not moved — which, on the control
+  // that governs whether an AI messages a client unattended, is the worst
+  // possible thing to be wrong about.
+  const { data: updated, error } = await supabase
     .from("contacts")
     .update({
       ai_autopilot_level: params.level,
@@ -160,8 +167,10 @@ export async function setContactAIPilot(params: {
     })
     .eq("id", params.contactId)
     .eq("brokerage_id", brokerageId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if (!updated?.length) return { success: false, error: "Contact not found in your brokerage" }
 
   // Activity log for audit trail
   await supabase.from("activities").insert({

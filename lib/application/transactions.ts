@@ -1895,10 +1895,19 @@ export async function celebrateMilestone(transactionId: string, milestone: strin
 export async function loadClientDashboard(transactionId: string, contactId?: string) {
   const supabase = await createClient()
   
-  // Fetch transaction with full relationships - specify which foreign key to use
+  // Fetch transaction with full relationships - specify which foreign key to use.
+  //
+  // BOTH embeds must name their FK. The contacts one always did; agents(*) did
+  // not, and transactions has THREE foreign keys into agents (agent_id,
+  // buyer_agent_id, seller_agent_id — verified live). PostgREST cannot choose
+  // between them and answers an ambiguous many-to-one embed with an error
+  // rather than a row, which lands on the `!transaction` throw below and shows
+  // the client "Transaction not found" for a transaction that exists. The
+  // half-disambiguated select is the tell: whoever hit the contacts ambiguity
+  // fixed the one they were looking at.
   const { data: transaction } = await supabase
     .from("transactions")
-    .select(`*, contacts!transactions_contact_id_fkey(*), agents(*)`)
+    .select(`*, contacts!transactions_contact_id_fkey(*), agents!transactions_agent_id_fkey(*)`)
     .eq("id", transactionId)
     .single()
   
@@ -2114,6 +2123,34 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
       email: p.email,
       phone: p.phone,
     })),
+    // The ids the page's own controls need. All three are already on the row
+    // above (the select is `*`), so this costs no extra query — their absence
+    // from the returned shape is the only reason "Update Client", "Call Client"
+    // and "Send Email" had nothing to call.
+    //
+    // Classes, verified against the live FKs:
+    //   contact_id   → contacts(id)
+    //   agent_id     → agents(id)     — an agents id, never a session users id
+    //   brokerage_id → brokerages(id)
+    contact_id: (transaction.contact_id as string | null) ?? null,
+    agent_id: (transaction.agent_id as string | null) ?? null,
+    brokerage_id: (transaction.brokerage_id as string | null) ?? null,
+    // The page read this off data.team[0].transactions.health_score — a path
+    // that does not exist on a participant row — so it always fell through to
+    // the literal 75 and rendered it three times as though measured.
+    health_score: (transaction.health_score as number | null) ?? health.overall_health,
+    client: transaction.contacts
+      ? {
+          id: transaction.contacts.id as string,
+          // contacts has no `name` column; compose it.
+          name:
+            [transaction.contacts.first_name, transaction.contacts.last_name]
+              .filter(Boolean)
+              .join(" ") || null,
+          email: (transaction.contacts.email as string | null) ?? null,
+          phone: (transaction.contacts.phone as string | null) ?? null,
+        }
+      : null,
     educationalContent: educationalMoments.length > 0
       ? (() => {
           // Supabase join returns module as an array; pick the first row.

@@ -8,7 +8,6 @@ import { handleError } from "@/lib/errors"
 import { ContentGenerationResult } from "@/lib/services"
 import {
   sendOpenHouseInvitation,
-  sendOpenHouseReminder,
   sendWeatherAlertToAgent,
   sendFeedbackRequest,
 } from "@/lib/communications"
@@ -495,45 +494,97 @@ export async function sendOpenHouseInvitations(params: { eventId: string; contac
 
       const matchScore = await calculateMatchScore(contactId, event?.listing_id)
 
-      // Create invitation record
+      // STAGED, THEN PROMOTED ON A REAL DISPATCH. This row used to be written
+      // with sent_at = now() BEFORE the send was attempted, by code whose send
+      // was an empty comment — and then results.push said "sent" regardless of
+      // what happened. Every count downstream (total_invites_sent on the event
+      // analytics reads this table) inherited the fabrication. The sibling
+      // writer in seller-open-house.ts was already corrected this way; this one
+      // was missed.
+      //
+      // contacts.preferred_contact_method has NO check constraint, but
+      // open_house_invitations.channel does — {both, email, in_app, sms}. A
+      // contact whose preference is "phone" or "text" silently FAILED the
+      // insert. Normalise to the vocabulary the column actually accepts.
+      const preference = String(contact?.preferred_contact_method ?? "").toLowerCase()
+      const channel: "email" | "sms" | "both" =
+        preference === "sms" || preference === "text" || preference === "phone"
+          ? "sms"
+          : preference === "both"
+            ? "both"
+            : "email"
+
       const { data: invitation } = await supabase
         .from("open_house_invitations")
         .insert({
           event_id: params.eventId,
           contact_id: contactId,
-          channel: contact?.preferred_contact_method || "email",
+          brokerage_id: contact?.brokerage_id ?? null,
+          channel,
           personalized_message: inviteResult.data.email_body,
           match_score: matchScore,
           match_reasoning: inviteResult.data.reasoning,
-          sent_at: new Date().toISOString(),
+          status: "queued",
+          sent_at: null,
         })
         .select()
         .maybeSingle()
 
-      // Send via email using the AI-generated content
-      if (invitation?.id) {
-        await sendOpenHouseInvitation({
-          contactId,
-          eventId: params.eventId,
-          method: contact?.preferred_contact_method ?? "email",
-          personalizedMessage: inviteResult.data.email_body,
-        })
+      if (!invitation?.id) {
+        results.push({ contactId, status: "failed", error: "Could not stage the invitation" })
+        continue
       }
 
-      results.push({ contactId, status: "sent", invitationId: invitation?.id })
+      // sendOpenHouseInvitation RETURNS { success:false, error } for a refusal
+      // (DNC, suppression, quiet hours, no address on file) — it does not throw,
+      // so the catch below would never see one. Read the result.
+      const sendRes = await sendOpenHouseInvitation({
+        contactId,
+        eventId: params.eventId,
+        method: channel,
+        personalizedMessage: inviteResult.data.email_body,
+        // generatePersonalizedInvite writes an sms_message per contact and this
+        // was the only place that could carry it to the send.
+        personalizedSms: inviteResult.data.sms_message,
+      })
+
+      if (sendRes.success) {
+        await supabase
+          .from("open_house_invitations")
+          .update({ status: "sent", sent_at: new Date().toISOString() })
+          .eq("id", invitation.id)
+      }
+
+      results.push({
+        contactId,
+        status: sendRes.success ? "sent" : "failed",
+        error: sendRes.success ? undefined : sendRes.error,
+        invitationId: invitation.id,
+      })
     } catch (error) {
       results.push({ contactId, status: "failed", error: String(error) })
     }
   }
 
-  // Update marketing reach
+  // MARKETING REACH IS WHO WAS REACHED, not who was considered. This used to be
+  // params.contactIds.length — the size of the input list — so a run in which
+  // every single send was refused still reported full reach.
+  const delivered = results.filter((r) => r.status === "sent").length
   await supabase
     .from("open_house_events")
-    .update({ marketing_reach: params.contactIds.length })
+    .update({ marketing_reach: delivered })
     .eq("id", params.eventId)
 
   revalidatePath("/dashboard/open-house")
-  return { success: true, results }
+  // success means at least one invitation actually left the building. A run
+  // where every contact was suppressed is not a success with a nice list.
+  return {
+    success: delivered > 0,
+    delivered,
+    attempted: results.length,
+    error: delivered > 0 ? undefined : (results.find((r) => r.error)?.error ?? "No invitation was delivered"),
+    results,
+  }
 }
 
 // ============================================
@@ -997,11 +1048,18 @@ export async function fetchWeatherForEvent(eventId: string) {
     if (weather.quality_score < 50) {
       console.log(`[v0] Weather warning for event ${eventId}: score ${weather.quality_score}`)
       if (event.agent_id) {
-        await sendWeatherAlertToAgent({
+        // event.agent_id is an agents.id; the alert resolves it to the agent's
+        // users row for a mailbox. Non-fatal, but no longer silent — the result
+        // used to be discarded entirely, so a failed alert looked identical to
+        // a delivered one from here.
+        const alert = await sendWeatherAlertToAgent({
           eventId,
           agentId: event.agent_id,
-          weatherData: weather
+          weatherData: weather,
         })
+        if (!alert.success) {
+          console.error(`[open-house] Weather alert not delivered for event ${eventId}: ${alert.error}`)
+        }
       }
     }
 
@@ -1137,16 +1195,27 @@ export async function sendFeedbackRequestToAttendee(attendeeId: string) {
       .maybeSingle()
 
     const feedbackUrl = `${process.env.NEXT_PUBLIC_APP_URL || ""}/open-house/feedback/${attendeeId}`
-  
-    // Send feedback request via email and SMS
-    if (attendee.contact_id) {
-      await sendFeedbackRequest({
-        contactId: attendee.contact_id,
-        eventId: attendee.event_id,
-        feedbackUrl
-      })
+
+    // An attendee with no linked contact has nowhere to send to. Saying so beats
+    // returning success for a request that was never addressed to anyone — the
+    // analytics tab marks the attendee "sent" and stops offering the button.
+    if (!attendee.contact_id) {
+      return { success: false, error: "This attendee has no linked contact record to reach" }
     }
-  
+
+    // sendFeedbackRequest RETURNS { success:false, error } on a refusal and does
+    // not throw. This used to return { success: true } unconditionally, so the
+    // tab reported "Feedback request sent" for a function that sent nothing.
+    const res = await sendFeedbackRequest({
+      contactId: attendee.contact_id,
+      eventId: attendee.event_id,
+      feedbackUrl,
+    })
+
+    if (!res.success) {
+      return { success: false, error: res.error ?? "The feedback request was not delivered" }
+    }
+
     return { success: true, feedbackUrl }
   } catch (error) {
     console.error("Send feedback request error:", error)

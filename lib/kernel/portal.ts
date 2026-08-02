@@ -304,11 +304,25 @@ export async function determinePortalModules(
       documents: true,
       buyer_smart_search: view === 'buyer',
       seller_listing_actions: view === 'seller',
-      offers: view === 'buyer' || view === 'lifetime',
+      // A SELLER HAS OFFERS. Gating these two to buyer/lifetime stripped both
+      // items straight out of the seller nav — and the seller nav is the one
+      // place a seller would go to read the offers on their own house. Both
+      // routes exist on disk, and nothing could turn them back on: the only
+      // writer to contact_portal_modules stamps a module_key ("sold_listing")
+      // that buildPortalNav never consults. The ERROR fallback below has always
+      // had these as `true`, so the two maps disagreed about the same product
+      // question and only the failure path got it right.
+      offers: true,
       showings: view === 'buyer' || view === 'lifetime',
       properties: view === 'buyer',
-      calendar: view === 'buyer' || view === 'lifetime',
-      education: view === 'buyer',
+      calendar: true,
+      // All three navs list "Learn", and /portal/[contactId]/learn is a real
+      // route for all three. Buyer-only here would hide an item every view
+      // currently shows — because the old label-derived filter looked up
+      // `learn`, a key that does not exist, and so never hid anything. Keeping
+      // this true preserves what clients see today while making the toggle mean
+      // something for the first time.
+      education: true,
     }
 
     // Merge database overrides if available
@@ -345,7 +359,7 @@ export async function determinePortalModules(
         showings: true,
         properties: input.view === 'buyer',
         calendar: true,
-        education: input.view === 'buyer',
+        education: true,
       },
       journey: true,
       messages: true,
@@ -412,55 +426,68 @@ export function buildPortalNav(
 
   const basePath = `/portal/${contactId}`
 
+  // EACH ITEM NAMES ITS OWN MODULE KEY. The filter used to derive the key from
+  // the LABEL — item.label.toLowerCase().replace(/ /g, '_') — which silently
+  // works only where the label happens to equal the key. It did not for four
+  // items: "My Journey" → my_journey (key is `journey`), "Smart Search" →
+  // smart_search (`buyer_smart_search`), "My Listing" → my_listing
+  // (`seller_listing_actions`), "Learn" → learn (`education`). Those four
+  // toggles could be set to false in contact_portal_modules and the nav item
+  // would still render, because nothing was looking under that name. An item
+  // with no moduleKey is unconditional — Home, Help and My Team are not gated.
+  type GatedNavItem = NavItem & { moduleKey?: string }
+
+  const render = (items: GatedNavItem[]): NavItem[] =>
+    items
+      .filter((item) => !item.moduleKey || isEnabled(item.moduleKey))
+      .map(({ moduleKey: _moduleKey, ...item }) => item)
+
   if (view === 'buyer') {
-    const items: NavItem[] = [
+    return render([
       { label: "Home", href: basePath, icon: "home" },
-      { label: "My Journey", href: `${basePath}/journey`, icon: "route" },
-      { label: "Messages", href: `${basePath}/messages`, icon: "message-square" },
-      { label: "Calendar", href: `${basePath}/calendar`, icon: "calendar" },
-      { label: "Documents", href: `${basePath}/documents`, icon: "file-text" },
-      { label: "Properties", href: `${basePath}/properties`, icon: "building" },
-      { label: "Smart Search", href: `${basePath}/search`, icon: "search" },
-      { label: "Showings", href: `${basePath}/showings`, icon: "eye" },
-      { label: "Offers", href: `${basePath}/offers`, icon: "dollar-sign" },
-      { label: "Learn", href: `${basePath}/learn`, icon: "graduation-cap" },
+      { label: "My Journey", href: `${basePath}/journey`, icon: "route", moduleKey: "journey" },
+      { label: "Messages", href: `${basePath}/messages`, icon: "message-square", moduleKey: "messages" },
+      { label: "Calendar", href: `${basePath}/calendar`, icon: "calendar", moduleKey: "calendar" },
+      { label: "Documents", href: `${basePath}/documents`, icon: "file-text", moduleKey: "documents" },
+      { label: "Properties", href: `${basePath}/properties`, icon: "building", moduleKey: "properties" },
+      { label: "Smart Search", href: `${basePath}/search`, icon: "search", moduleKey: "buyer_smart_search" },
+      { label: "Showings", href: `${basePath}/showings`, icon: "eye", moduleKey: "showings" },
+      { label: "Offers", href: `${basePath}/offers`, icon: "dollar-sign", moduleKey: "offers" },
+      { label: "Learn", href: `${basePath}/learn`, icon: "graduation-cap", moduleKey: "education" },
       { label: "My Team", href: `${basePath}/team`, icon: "users" },
       { label: "Vendors", href: `${basePath}/vendors`, icon: "briefcase" },
       { label: "Help", href: `${basePath}/help`, icon: "help-circle" },
-    ]
-    return items.filter(item => isEnabled(item.label.toLowerCase().replace(/ /g, '_')))
+    ])
   }
 
   if (view === 'seller') {
-    const items: NavItem[] = [
+    return render([
       { label: "Home", href: basePath, icon: "home" },
-      { label: "My Journey", href: `${basePath}/journey`, icon: "route" },
-      { label: "Messages", href: `${basePath}/messages`, icon: "message-square" },
-      { label: "Calendar", href: `${basePath}/calendar`, icon: "calendar" },
-      { label: "Documents", href: `${basePath}/documents`, icon: "file-text" },
-      { label: "My Listing", href: `${basePath}/listing`, icon: "home" },
-      { label: "Offers", href: `${basePath}/offers`, icon: "dollar-sign" },
+      { label: "My Journey", href: `${basePath}/journey`, icon: "route", moduleKey: "journey" },
+      { label: "Messages", href: `${basePath}/messages`, icon: "message-square", moduleKey: "messages" },
+      { label: "Calendar", href: `${basePath}/calendar`, icon: "calendar", moduleKey: "calendar" },
+      { label: "Documents", href: `${basePath}/documents`, icon: "file-text", moduleKey: "documents" },
+      { label: "My Listing", href: `${basePath}/listing`, icon: "home", moduleKey: "seller_listing_actions" },
+      { label: "Offers", href: `${basePath}/offers`, icon: "dollar-sign", moduleKey: "offers" },
       { label: "Insights", href: `${basePath}/insights`, icon: "bar-chart" },
-      { label: "Learn", href: `${basePath}/learn`, icon: "graduation-cap" },
+      { label: "Learn", href: `${basePath}/learn`, icon: "graduation-cap", moduleKey: "education" },
       { label: "My Team", href: `${basePath}/team`, icon: "users" },
       { label: "Vendors", href: `${basePath}/vendors`, icon: "briefcase" },
       { label: "Help", href: `${basePath}/help`, icon: "help-circle" },
-    ]
-    return items.filter(item => isEnabled(item.label.toLowerCase().replace(/ /g, '_')))
+    ])
   }
 
   // Lifetime view
-  const items: NavItem[] = [
+  return render([
     { label: "Home", href: basePath, icon: "home" },
     { label: "My History", href: `${basePath}/history`, icon: "clock" },
     { label: "Market Updates", href: `${basePath}/market-updates`, icon: "trending-up" },
     { label: "Resources", href: `${basePath}/resources`, icon: "book-open" },
     { label: "Referrals", href: `${basePath}/referrals`, icon: "share-2" },
-    { label: "Documents", href: `${basePath}/documents`, icon: "file-text" },
-    { label: "Learn", href: `${basePath}/learn`, icon: "graduation-cap" },
+    { label: "Documents", href: `${basePath}/documents`, icon: "file-text", moduleKey: "documents" },
+    { label: "Learn", href: `${basePath}/learn`, icon: "graduation-cap", moduleKey: "education" },
     { label: "Help", href: `${basePath}/help`, icon: "help-circle" },
-  ]
-  return items.filter(item => isEnabled(item.label.toLowerCase().replace(/ /g, '_')))
+  ])
 }
 
 // ─── PORTAL MILESTONE ─────────────────────────────────────────────────────────

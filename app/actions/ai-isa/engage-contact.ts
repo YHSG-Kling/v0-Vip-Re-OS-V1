@@ -616,7 +616,11 @@ async function dispatchContactChannel(
   // ── PHONE (outbound AI call) — the ISA uses its full toolbox on a CONSENTED contact.
   //    Situation-aware (buildCallContext reads the contact's stage/persona). Escalation
   //    ladder on any block/failure: voice drop (ringless voicemail) → email, so the touch
-  //    still lands. VAPI's initiateCall runs its own mandatory TCPA gate and throws on block. ──
+  //    still lands. The TCPA gate is the explicit guard on the next line — consent,
+  //    opt-out and stop-flag are checked HERE, in this repo, before any dial. (This note
+  //    used to credit the retired vendor's own gate for that, which would have been a
+  //    dangerous thing to believe once the vendor was gone: it named a safeguard that no
+  //    longer existed for the one channel where consent is a federal matter.) ──
   if (channel === 'phone') {
     if (!contact.phone || !contact.tcpa_consent || contact.phone_opt_out || contact.call_stop_flag) {
       return (await tryVoiceDrop(contact, brokerageId, reason, supabase))

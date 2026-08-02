@@ -732,18 +732,35 @@ export async function saveProperty(data: {
   })
 }
 
-export async function unsaveProperty(contactId: string, propertyId: string) {
+/**
+ * Remove a saved property.
+ *
+ * savedPropertyId is a `saved_properties.id` — NOT a `listings.id`. Both callers
+ * are the portal detail route, which resolves its row with `.eq("id", propertyId)`
+ * and then passed the very same value into a `listing_id` filter. listing_id FKs
+ * listings(id) (verified live) and is NULL for every IDX/RentCast save, so the
+ * delete matched nothing, `error` was null, and the caller was told "Removed from
+ * saved" while the property stayed put. Two ids of different classes, one
+ * variable name.
+ */
+export async function unsaveProperty(contactId: string, savedPropertyId: string) {
   const supabase = await createClient()
 
-  const { error } = await supabase
+  // .select() so the delete reports what it actually removed. Without it a
+  // no-match and a success are the same value.
+  const { data: removed, error } = await supabase
     .from("saved_properties")
     .delete()
     .eq("contact_id", contactId)
-    .eq("listing_id", propertyId)
+    .eq("id", savedPropertyId)
+    .select("id")
 
   if (error) {
-    console.error("[v0] Error unsaving property:", error)
+    console.error("[saved-properties] Error unsaving property:", error)
     return { success: false, error: error.message }
+  }
+  if (!removed?.length) {
+    return { success: false, error: "That property is not in your saved list" }
   }
 
   return { success: true }
@@ -766,14 +783,18 @@ export async function getSavedProperties(contactId: string) {
   return data || []
 }
 
-export async function isPropertySaved(contactId: string, propertyId: string) {
+/** Same class correction as unsaveProperty: the caller holds a saved_properties.id.
+ *  Filtering listing_id with it always returned false, so the heart rendered
+ *  UNSAVED on a property the client had opened from their own saved list — and
+ *  the toggle then took the save branch, which FK-threw. Dead in both directions. */
+export async function isPropertySaved(contactId: string, savedPropertyId: string) {
   const supabase = await createClient()
 
   const { data } = await supabase
     .from("saved_properties")
     .select("id")
     .eq("contact_id", contactId)
-    .eq("listing_id", propertyId)
+    .eq("id", savedPropertyId)
     .maybeSingle()
 
   return !!data

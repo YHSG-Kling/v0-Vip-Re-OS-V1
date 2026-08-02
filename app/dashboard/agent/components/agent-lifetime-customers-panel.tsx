@@ -1,10 +1,12 @@
 "use client"
 
 import Link from "next/link"
+import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Heart, Home } from "lucide-react"
+import { Heart, Home, Loader2 } from "lucide-react"
 import { LifeSignalBadge } from "@/app/components/shared/LifeSignalBadge"
+import { sendAnniversaryMessage } from "@/app/actions/lifetime-customer-touchpoints"
 
 interface Anniversary {
   id: string
@@ -32,6 +34,11 @@ export function AgentLifetimeCustomersPanel({
   lifeChanges,
   loading
 }: AgentLifetimeCustomersPanelProps) {
+  // Above the loading early-return on purpose: hooks cannot be called
+  // conditionally, and this component returns a skeleton before this point.
+  const [sendingId, setSendingId] = useState<string | null>(null)
+  const [sendResult, setSendResult] = useState<{ id: string; ok: boolean; message: string } | null>(null)
+
   if (loading) {
     return (
       <Card>
@@ -54,10 +61,33 @@ export function AgentLifetimeCustomersPanel({
   const hasLifeChanges = lifeChanges.length > 0
   const isEmpty = !hasAnniversaries && !hasLifeChanges
 
-  const getYearsCount = (dateStr: string) => {
-    const closeDate = new Date(dateStr)
-    const now = new Date()
-    return Math.floor((now.getTime() - closeDate.getTime()) / (1000 * 60 * 60 * 24 * 365))
+  // Which anniversary this is. Deliberately the CALENDAR-YEAR difference, the
+  // same arithmetic the touchpoint cron uses, because this number is spoken to
+  // the client ("it's been N years"). Elapsed-days/365 floors an anniversary
+  // that is a few days away down to N-1, so the card and the message the button
+  // sends would disagree about how long they have owned the house.
+  const getYearsCount = (dateStr: string) =>
+    new Date().getFullYear() - new Date(dateStr).getFullYear()
+
+  // sendAnniversaryMessage has BOTH failure modes: it RETURNS {success:false}
+  // when the contact has no email or the compliance gate refuses, and it THROWS
+  // when the session or the contact row is missing. Checking only one of those
+  // reports a refusal as a send.
+  const handleSendAnniversary = async (ann: Anniversary) => {
+    setSendingId(ann.id)
+    setSendResult(null)
+    try {
+      const res = await sendAnniversaryMessage(ann.contacts.id, getYearsCount(ann.actual_close_date))
+      setSendResult(
+        res.success
+          ? { id: ann.id, ok: true, message: "Anniversary message sent" }
+          : { id: ann.id, ok: false, message: res.error ?? "The message was not sent" },
+      )
+    } catch (err: any) {
+      setSendResult({ id: ann.id, ok: false, message: err?.message ?? "The message was not sent" })
+    } finally {
+      setSendingId(null)
+    }
   }
 
   return (
@@ -93,8 +123,15 @@ export function AgentLifetimeCustomersPanel({
                           {getYearsCount(ann.actual_close_date)} years · {ann.property_address}
                         </p>
                         <div className="flex gap-2 mt-2">
-                          <Button variant="outline" size="sm" className="h-7 text-xs">
-                            Send AI Message
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 text-xs"
+                            disabled={sendingId === ann.id}
+                            onClick={() => handleSendAnniversary(ann)}
+                          >
+                            {sendingId === ann.id && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
+                            {sendingId === ann.id ? "Sending…" : "Send AI Message"}
                           </Button>
                           <Link href={`/portal/${ann.contacts.id}`}>
                             <Button variant="ghost" size="sm" className="h-7 text-xs">
@@ -102,6 +139,13 @@ export function AgentLifetimeCustomersPanel({
                             </Button>
                           </Link>
                         </div>
+                        {sendResult?.id === ann.id && (
+                          <p
+                            className={`text-xs mt-1 ${sendResult.ok ? "text-emerald-600" : "text-destructive"}`}
+                          >
+                            {sendResult.message}
+                          </p>
+                        )}
                       </div>
                     </div>
                   </div>

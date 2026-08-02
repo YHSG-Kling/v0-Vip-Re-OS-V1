@@ -318,8 +318,25 @@ console.log("\n═══ 2. The three verified defects stay fixed ═══")
   // agents id correctly somewhere in the same function and then not used it at
   // the next call site — the pattern that keeps recurring.
   const cop = code("app/actions/copilot.ts")
-  ok("initiateCall writes activities with the RESOLVED agents id, the same one\n    it already computed for voice_calls three lines earlier",
-    /agent_id: agentsId,/.test(cop) && !/agent_id: agentId,/.test(cop),
+  // This assertion used to require that initiateCall's activities insert carried
+  // `agent_id: agentsId` — correct at the time, but it froze the EXISTENCE of a
+  // hand-rolled call record. That record was the real defect: initiateCall wrote
+  // voice_calls("initiated") + activities("Outbound call initiated", completed)
+  // and returned success WITHOUT EVER DIALLING, so the guard was protecting the
+  // identity class of a row that should never have been written. initiateCall now
+  // delegates to initiateWhisperBridge, the one lane that actually places the
+  // call and only records it after the provider accepts.
+  //
+  // So assert the two things that are actually true and worth holding: copilot
+  // writes no users id into an agent_id anywhere, and it does not re-implement
+  // the call record it used to fabricate.
+  ok("copilot never stamps a users id into an agents-class agent_id",
+    !/agent_id: agentId,/.test(cop),
+    "app/actions/copilot.ts")
+  ok("...and initiateCall does not hand-roll a call record — it delegates to the\n    lane that dials, so a claim of 'called' requires a provider to have accepted",
+    /initiateWhisperBridge/.test(cop) &&
+    !/from\("voice_calls"\)[\s\S]{0,200}\.insert/.test(cop) &&
+    !/"call_initiated"/.test(cop),
     "app/actions/copilot.ts")
 
   const txk = code("lib/kernel/transactions.ts")
