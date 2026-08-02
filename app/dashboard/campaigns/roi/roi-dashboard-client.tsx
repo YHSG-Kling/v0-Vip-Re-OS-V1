@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useMemo } from "react"
+import { useRouter } from "next/navigation"
 import {
   Card,
   CardContent,
@@ -80,6 +81,8 @@ export function ROIDashboardClient({
   agents,
   accessError,
 }: ROIDashboardClientProps) {
+  const router = useRouter()
+  const [refreshing, setRefreshing] = useState(false)
   const [selectedCampaignType, setSelectedCampaignType] = useState<string>("all")
   const [selectedStatus, setSelectedStatus] = useState<string>("all")
   const [selectedAgent, setSelectedAgent] = useState<string>("all")
@@ -157,9 +160,23 @@ export function ROIDashboardClient({
             Track and analyze your marketing campaign performance
           </p>
         </div>
-        <Button variant="outline" size="sm">
-          <RefreshCw className="mr-2 h-4 w-4" />
-          Refresh Data
+        {/* Had no onClick — the ROI numbers went stale and the refresh button
+            was decoration. The data comes from the server page's own loader, so
+            router.refresh() re-runs it; there is no second fetch path to drift. */}
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={refreshing}
+          onClick={() => {
+            setRefreshing(true)
+            router.refresh()
+            // router.refresh() resolves before React has re-rendered with the
+            // new payload, so hold the spinner briefly rather than flashing it.
+            setTimeout(() => setRefreshing(false), 800)
+          }}
+        >
+          <RefreshCw className={`mr-2 h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+          {refreshing ? "Refreshing…" : "Refresh Data"}
         </Button>
       </div>
 

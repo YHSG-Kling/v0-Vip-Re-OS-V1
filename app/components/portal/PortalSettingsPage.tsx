@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { User, Bell, Shield, Smartphone, Mail, Save, ArrowLeft, Camera, Check, AlertCircle } from "lucide-react"
 import Link from "next/link"
-import { updateContactProfile, fileDataSubjectRequestFromPortal } from "@/app/actions/portal-settings"
+import { uploadProfilePhoto, updateContactProfile, fileDataSubjectRequestFromPortal } from "@/app/actions/portal-settings"
 
 interface Contact {
   id: string
@@ -66,6 +66,32 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
   }
 
   const router = useRouter()
+  const [uploadingPhoto, setUploadingPhoto] = useState(false)
+  const [photoMsg, setPhotoMsg] = useState<{ ok: boolean; text: string } | null>(null)
+
+  // The 2MB limit is enforced HERE as well as advertised below the button.
+  // Without it the file goes to storage, Supabase rejects it, and the client
+  // sees a raw provider error for a rule we already told them about.
+  const MAX_AVATAR_BYTES = 2 * 1024 * 1024
+
+  const handlePhotoUpload = async (file: File) => {
+    setPhotoMsg(null)
+    if (file.size > MAX_AVATAR_BYTES) {
+      setPhotoMsg({ ok: false, text: "That image is over 2MB. Pick a smaller one." })
+      return
+    }
+    setUploadingPhoto(true)
+    const res = await uploadProfilePhoto(contact.id, file)
+    setUploadingPhoto(false)
+    // Returns { success, url, error } and never throws — read it.
+    if (res.success) {
+      setPhotoMsg({ ok: true, text: "Photo updated." })
+      router.refresh()
+    } else {
+      setPhotoMsg({ ok: false, text: res.error ?? "That photo could not be uploaded." })
+    }
+  }
+
   const [isSaving, setIsSaving] = useState(false)
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -234,12 +260,36 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
                 <AvatarImage src={contact.avatar_url || "/placeholder.svg"} alt={displayName} />
                 <AvatarFallback className="bg-primary text-primary-foreground text-2xl">{initials}</AvatarFallback>
               </Avatar>
+              {/* Had no onClick, no file input, nothing. uploadProfilePhoto was
+                  complete — storage upload, signed URL for the private bucket,
+                  contact row update — with ZERO callers, and this file already
+                  imported two of its siblings from the same module. */}
               <div className="space-y-2">
-                <Button variant="outline" size="sm">
-                  <Camera className="h-4 w-4 mr-2" />
-                  Upload Photo
-                </Button>
+                <label htmlFor="portal-avatar-input">
+                  <Button variant="outline" size="sm" asChild>
+                    <span className="cursor-pointer">
+                      <Camera className="h-4 w-4 mr-2" />
+                      {uploadingPhoto ? "Uploading…" : "Upload Photo"}
+                    </span>
+                  </Button>
+                </label>
+                <input
+                  id="portal-avatar-input"
+                  type="file"
+                  accept="image/jpeg,image/png,image/gif,image/webp"
+                  className="hidden"
+                  disabled={uploadingPhoto}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0]
+                    if (f) handlePhotoUpload(f)
+                  }}
+                />
                 <p className="text-xs text-muted-foreground">JPG, PNG or GIF. Max size 2MB.</p>
+                {photoMsg && (
+                  <p className={`text-xs ${photoMsg.ok ? "text-emerald-600" : "text-destructive"}`}>
+                    {photoMsg.text}
+                  </p>
+                )}
               </div>
             </CardContent>
           </Card>

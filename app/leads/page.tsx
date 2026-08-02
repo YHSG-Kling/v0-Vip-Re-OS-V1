@@ -61,6 +61,7 @@ import {
   rejectLead,
 } from "@/app/actions/lead-management"
 import { convertLeadToContact, listUnassignedLeads } from "@/app/actions/lead-lifecycle"
+import { importLeads } from "@/app/actions/lead-management"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -96,6 +97,120 @@ export default function LeadsPage() {
   // Role resolution state
   const [isAdminOrBroker, setIsAdminOrBroker] = useState(false)
   const [roleResolved, setRoleResolved] = useState(false)
+
+  // ── CSV IMPORT ──────────────────────────────────────────────────────────────
+  // The dialog above used to be a picture of a dropzone over an importLeads
+  // action with zero callers. These carry the real thing.
+  const [importRows, setImportRows] = useState<Array<Record<string, string>>>([])
+  const [importFileName, setImportFileName] = useState<string | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [importMsg, setImportMsg] = useState<{ ok: boolean; text: string } | null>(null)
+
+  /**
+   * Minimal RFC-4180-ish CSV parse: quoted fields, escaped quotes, commas and
+   * newlines inside quotes. Deliberately small — a dependency is not warranted
+   * for a four-column contact list — but NOT naive `split(",")`, because a lead
+   * named "Smith, Jr." would silently shift every column after it and import
+   * garbage under a real person's name.
+   */
+  const parseCsv = (text: string): Array<Record<string, string>> => {
+    const rows: string[][] = []
+    let row: string[] = [], field = "", inQuotes = false
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i]
+      if (inQuotes) {
+        if (c === '"') {
+          if (text[i + 1] === '"') { field += '"'; i++ } else inQuotes = false
+        } else field += c
+        continue
+      }
+      if (c === '"') { inQuotes = true; continue }
+      if (c === ",") { row.push(field); field = ""; continue }
+      if (c === "\n" || c === "\r") {
+        if (c === "\r" && text[i + 1] === "\n") i++
+        row.push(field); field = ""
+        if (row.some((v) => v.trim() !== "")) rows.push(row)
+        row = []
+        continue
+      }
+      field += c
+    }
+    row.push(field)
+    if (row.some((v) => v.trim() !== "")) rows.push(row)
+    if (rows.length < 2) return []
+
+    const headers = rows[0].map((h) => h.trim().toLowerCase())
+    return rows.slice(1).map((r) => {
+      const o: Record<string, string> = {}
+      headers.forEach((h, i) => { o[h] = (r[i] ?? "").trim() })
+      return o
+    })
+  }
+
+  const handleCsvFile = async (file: File) => {
+    setImportMsg(null)
+    setImportFileName(file.name)
+    try {
+      const parsed = parseCsv(await file.text())
+      setImportRows(parsed)
+      if (parsed.length === 0) {
+        setImportMsg({ ok: false, text: "No data rows found. The first line must be a header." })
+      }
+    } catch {
+      setImportRows([])
+      setImportMsg({ ok: false, text: "That file could not be read as CSV." })
+    }
+  }
+
+  const handleImport = async () => {
+    if (importRows.length === 0) return
+    setImporting(true)
+    setImportMsg(null)
+
+    // Map the documented header set onto the Lead shape, tolerating the common
+    // spellings. A row with neither an email nor a phone is DROPPED rather than
+    // imported: it is unreachable, and importing it would inflate the count with
+    // records no one can act on.
+    const leads = importRows
+      .map((r) => {
+        const full = r["name"] ?? `${r["first_name"] ?? ""} ${r["last_name"] ?? ""}`.trim()
+        const [first, ...rest] = full.split(/\s+/)
+        return {
+          first_name: r["first_name"] || first || "",
+          last_name:  r["last_name"] || rest.join(" ") || "",
+          email:      r["email"] || null,
+          phone:      r["phone"] || r["phone_number"] || null,
+          source:     r["source"] || "csv_import",
+        }
+      })
+      .filter((l) => l.email || l.phone)
+
+    const skipped = importRows.length - leads.length
+    if (leads.length === 0) {
+      setImporting(false)
+      setImportMsg({ ok: false, text: "No row had an email or a phone number, so nothing could be imported." })
+      return
+    }
+
+    const res = await importLeads(leads as any)
+    setImporting(false)
+    // importLeads returns { success, error, imported, deduped, unassigned } and
+    // never throws — read it, so a refusal is not a silent no-op.
+    if (!res.success) {
+      setImportMsg({ ok: false, text: res.error ?? "Import failed" })
+      return
+    }
+    setImportMsg({
+      ok: true,
+      text: `Imported ${res.imported}` +
+        (res.deduped ? ` · ${res.deduped} already existed` : "") +
+        (res.unassigned ? ` · ${res.unassigned} unassigned` : "") +
+        (skipped ? ` · ${skipped} skipped (no email or phone)` : ""),
+    })
+    setImportRows([])
+    setImportFileName(null)
+    router.refresh()
+  }
 
   // Available leads sheet (agents)
   const [availableSheetOpen, setAvailableSheetOpen] = useState(false)
@@ -557,14 +672,63 @@ export default function LeadsPage() {
                 <DialogContent>
                   <DialogHeader>
                     <DialogTitle>Import Leads</DialogTitle>
-                    <DialogDescription>Upload a CSV file or paste lead data to import</DialogDescription>
+                    <DialogDescription>Upload a CSV file to import</DialogDescription>
                   </DialogHeader>
+                  {/* THIS DIALOG WAS A PICTURE OF A DROPZONE. A dashed border, an
+                      upload icon and the words "Drop CSV file here or click to
+                      browse" — with no <input type="file">, no onClick, no onDrop
+                      and no submit button. Nothing could be dropped, nothing
+                      opened when clicked, and there was no way to commit. Behind
+                      it, importLeads was complete (dedupe, assignment, tenant
+                      gate) with ZERO callers anywhere in the repo. */}
                   <div className="space-y-4 py-4">
-                    <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
+                    <label
+                      htmlFor="lead-csv-input"
+                      className="border-2 border-dashed border-border rounded-lg p-8 text-center block cursor-pointer hover:border-primary/50 transition-colors"
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => {
+                        e.preventDefault()
+                        const f = e.dataTransfer.files?.[0]
+                        if (f) handleCsvFile(f)
+                      }}
+                    >
                       <Upload className="h-12 w-12 text-muted-foreground mx-auto mb-3" />
-                      <p className="text-sm text-foreground font-medium">Drop CSV file here or click to browse</p>
+                      <p className="text-sm text-foreground font-medium">
+                        {importFileName ?? "Drop CSV file here or click to browse"}
+                      </p>
                       <p className="text-xs text-muted-foreground mt-1">CSV format: name, email, phone, source</p>
-                    </div>
+                      <input
+                        id="lead-csv-input"
+                        type="file"
+                        accept=".csv,text/csv"
+                        className="hidden"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0]
+                          if (f) handleCsvFile(f)
+                        }}
+                      />
+                    </label>
+
+                    {importRows.length > 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        {importRows.length} row{importRows.length === 1 ? "" : "s"} parsed and ready to import.
+                      </p>
+                    )}
+                    {importMsg && (
+                      <p className={`text-xs ${importMsg.ok ? "text-emerald-600" : "text-destructive"}`}>
+                        {importMsg.text}
+                      </p>
+                    )}
+
+                    <Button
+                      className="w-full"
+                      disabled={importing || importRows.length === 0}
+                      onClick={handleImport}
+                    >
+                      {importing
+                        ? "Importing…"
+                        : `Import ${importRows.length || ""} lead${importRows.length === 1 ? "" : "s"}`.trim()}
+                    </Button>
                   </div>
                 </DialogContent>
               </Dialog>

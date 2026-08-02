@@ -9,6 +9,10 @@ import { StrategySessionCard }      from "@/components/contact/StrategySessionCa
 import { LastPromiseCard }          from "@/components/contact/LastPromiseCard"
 import { InvestorDealsPanel }        from "@/components/contact/investor-deals-panel"
 import { assertCanActOnContact }    from "@/lib/auth/contact-access"
+import { getBuyerTours }             from "@/app/actions/tour-planner"
+import { getBuyerJourney }           from "@/app/actions/buyer-execution"
+import { getCollaborativeSearches, getConsensus } from "@/app/actions/collaborative-search"
+import { loadConversationDrafts }    from "@/app/actions/ai-reply-coach"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge }                    from "@/components/ui/badge"
 import { Route, PanelsTopLeft }     from "lucide-react"
@@ -107,6 +111,79 @@ export default async function ContactDetailPage({ params }: PageProps) {
   const contactSegments = segmentsResult.error
     ? []
     : ((segmentsResult.data ?? []) as Array<{ id: string; segment_id: string; added_at: string }>)
+
+  // ── BUYER OVERVIEW DATA ────────────────────────────────────────────────────
+  //
+  // NINE PROPS WERE HARDCODED [] / null AT THE ONLY MOUNT OF BuyerOverviewClient.
+  // Every one of them had a real loader sitting unused, and the component reads
+  // them all: the Tours tab said "0 tours on file / No upcoming tours scheduled"
+  // for a buyer with tours, while the sibling route /crm/contacts/[id]/tours
+  // rendered those same rows correctly. Same data, same page, two answers.
+  //
+  // Loaded AFTER contact resolves and only when buyer_stage is set — the same
+  // condition that mounts the component — so a seller or a sphere contact does
+  // not pay for six queries it will never render.
+  let buyerTours: any[] = []
+  let buyerNextTour: any = null
+  let buyerJourney: any = null
+  let buyerProfile: any = null
+  let buyerDrafts: any[] = []
+  let collabSearches: any[] = []
+  let activeCollabSearch: any = null
+  let collabConsensus: any = null
+
+  if (contact.buyer_stage) {
+    const [toursRes, journeyRes, finProfileRes, searchesRes, convRes] = await Promise.all([
+      getBuyerTours(contactId),
+      getBuyerJourney({ contactId, userId: user.id, source: "agent_action" }),
+      supabase
+        .from("buyer_financial_profiles")
+        .select("id, contact_id, verified, is_cash_buyer, finance_type, pre_approval_amount, updated_at")
+        .eq("contact_id", contactId)
+        .maybeSingle(),
+      getCollaborativeSearches(contactId),
+      // The coaching panel drafts hang off a CONVERSATION, not the contact, so
+      // resolve the contact's most recent thread first.
+      supabase
+        .from("conversations")
+        .select("id")
+        .eq("contact_id", contactId)
+        .order("last_message_at", { ascending: false, nullsFirst: false })
+        .limit(1)
+        .maybeSingle(),
+    ])
+
+    buyerTours = toursRes.success ? (toursRes.tours ?? []) : []
+
+    // NEXT TOUR is derived, not separately queried — one source, so the count and
+    // the "next tour" line can never disagree. Soonest tour still ahead of today
+    // that has not been cancelled.
+    const today = new Date().toISOString().slice(0, 10)
+    buyerNextTour =
+      buyerTours
+        .filter((t: any) => t?.tour_date && t.tour_date >= today && t.status !== "cancelled")
+        .sort((a: any, b: any) => String(a.tour_date).localeCompare(String(b.tour_date)))[0] ?? null
+
+    // Pass the STATUS object, not the wrapper: the component reads
+    // journey.nextSteps, and BuyerJourneyStatus is what carries it.
+    buyerJourney = (journeyRes as any)?.success ? (journeyRes as any).journey : null
+    buyerProfile = finProfileRes.data ?? null
+
+    // getCollaborativeSearches returns [] when COLLABORATIVE_SEARCH_ENABLED is
+    // off, so an unavailable feature reads as "no searches" rather than an error.
+    collabSearches = Array.isArray(searchesRes) ? searchesRes : []
+    activeCollabSearch = collabSearches[0] ?? null
+    if (activeCollabSearch?.id) {
+      const c = await getConsensus(activeCollabSearch.id)
+      collabConsensus = Array.isArray(c) && c.length > 0 ? c : null
+    }
+
+    const conversationId = (convRes.data as { id: string } | null)?.id
+    if (conversationId) {
+      const draftsRes = await loadConversationDrafts(conversationId)
+      buyerDrafts = draftsRes.success ? (draftsRes.drafts ?? []) : []
+    }
+  }
 
   // Latest AI showing plan (smart_showing_recommendations). The writer keys on
   // lead_id (leads class) with contact_id optional, so match either the contact
@@ -281,19 +358,19 @@ export default async function ContactDetailPage({ params }: PageProps) {
         <BuyerOverviewClient
           buyerId={contactId}
           contact={contact}
-          journey={null}
-          profile={null}
+          journey={buyerJourney}
+          profile={buyerProfile}
           partners={[]}
-          drafts={[]}
+          drafts={buyerDrafts}
           propertyInterests={interestsResult.data ?? null}
           brokerageId={brokerageId}
           agentUserId={user.id}
           agentName={agentName}
-          collaborativeSearches={[]}
-          activeSearch={null}
-          consensus={null}
-          tours={[]}
-          nextTour={null}
+          collaborativeSearches={collabSearches}
+          activeSearch={activeCollabSearch}
+          consensus={collabConsensus}
+          tours={buyerTours}
+          nextTour={buyerNextTour}
           dualAgencyListings={[]}
           enabledGates={enabledGates}
         />

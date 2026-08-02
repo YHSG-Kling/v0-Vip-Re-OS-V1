@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
+import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { AlertTriangle, AlertCircle, Cpu, Phone, HardDrive, Video, DollarSign, Download, TrendingUp } from "lucide-react"
 import { UsageByTypeChart } from "./usage-by-type-chart"
@@ -301,9 +302,14 @@ export default async function UsageMeteringDashboard() {
                   <p className="text-sm mt-1">Consider upgrading your plan to avoid service interruptions.</p>
                 )}
               </div>
+              {/* Had no onClick. A brokerage admin hits a usage cap, the OS tells
+                  them to upgrade, and the button that would let them did nothing.
+                  Routes to the Stripe billing portal, where a plan change is the
+                  first thing on the page — that is the existing, gated path, so
+                  no new checkout surface is invented here. */}
               {alert.severity === "red" && (
-                <Button variant="outline" size="sm">
-                  Upgrade Plan
+                <Button variant="outline" size="sm" asChild>
+                  <Link href="/settings/billing">Upgrade Plan</Link>
                 </Button>
               )}
             </div>

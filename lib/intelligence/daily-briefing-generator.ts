@@ -44,6 +44,20 @@ export interface HotLead {
   name: string
   status: string
   suggested_action: string
+  /**
+   * The contact this lead IS, so the UI can act on it.
+   *
+   * Without this the "Draft Message" button on the Hot Leads card was
+   * unwireable by construction — the card knew a NAME and nothing addressable,
+   * so there was no contact to draft for. The data snapshot the model reads
+   * already carries the ids (top_priority_actions is instructed to populate
+   * entity_id from exactly that), so this costs nothing to fill.
+   *
+   * NULLABLE and treated as untrusted: it comes back from a model, so the UI
+   * only offers the action when it is a well-formed id, and draftSmartEmail
+   * re-checks the contact belongs to the caller's brokerage regardless.
+   */
+  contact_id?: string | null
 }
 
 export interface DealAtRisk {
@@ -679,7 +693,7 @@ Output ONLY valid JSON matching this exact schema (no markdown, no extra text):
   ],
   "market_pulse": "1 sentence market observation based on the data",
   "hot_leads": [
-    {"name": "lead name", "status": "current status", "suggested_action": "recommended next step"}
+    {"name": "lead name", "status": "current status", "suggested_action": "recommended next step", "contact_id": "uuid or null"}
   ],
   "deals_at_risk": [
     {"transaction_id": "uuid", "address": "property address", "reason": "why it's at risk"}
@@ -695,7 +709,9 @@ Rules:
 - Pick action_type based on what the agent should DO: 'draft_followup' if
   they should reply to a contact; 'view_transaction' if they should review
   a deal; 'complete_task' if they should mark a task done; etc.
-- hot_leads: max 3 items
+- hot_leads: max 3 items. Populate contact_id from the matching contact row in
+  the data snapshot so the agent can act on it; use null if the lead has no
+  contact row. NEVER invent an id.
 - deals_at_risk: only include transactions with health issues
 - Be specific and actionable
 - Focus on what needs attention TODAY`

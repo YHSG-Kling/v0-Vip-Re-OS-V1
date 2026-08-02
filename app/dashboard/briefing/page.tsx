@@ -37,12 +37,14 @@ import {
   getBuyerMatchCount,
   getChurnRiskContacts,
 } from "@/app/actions/briefing-actions"
-import { generateContactInsights } from "@/app/actions/ai-insights"
+import { generateContactInsights, draftSmartEmail } from "@/app/actions/ai-insights"
 import type { ContactInsight } from "@/app/actions/ai-insights"
 import type { DailyBriefing, PriorityAction, HotLead, DealAtRisk } from "@/lib/intelligence/daily-briefing-generator"
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 import { createClient } from "@/lib/supabase/client"
 import Link from "next/link"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
+import { Textarea } from "@/components/ui/textarea"
 import { MarketInsightWidget } from "@/app/components/dashboard/market-insight-widget"
 import { SteerMyDayCard } from "@/app/components/dashboard/steer-my-day-card"
 
@@ -242,6 +244,38 @@ function EmptyState({ icon: Icon, message }: { icon: React.ElementType; message:
 
 export default function BriefingPage() {
   const [briefing, setBriefing] = useState<DailyBriefing | null>(null)
+
+  // ── DRAFT ───────────────────────────────────────────────────────────────────
+  // The briefing's whole job is "here is what to do today", and the buttons that
+  // let the agent DO it were inert.
+  const [draftingFor, setDraftingFor] = useState<string | null>(null)
+  const [draft, setDraft] = useState<{ contactId: string; text: string } | null>(null)
+  const [draftError, setDraftError] = useState<string | null>(null)
+
+  const handleDraft = async (contactId: string, context: string) => {
+    setDraftingFor(contactId)
+    setDraftError(null)
+    setDraft(null)
+    const draftText = await draftSmartEmail(contactId, context)
+    setDraftingFor(null)
+    // draftSmartEmail returns a PLAIN STRING and gives back "" for FOUR
+    // different reasons — auth failure, missing contact, contact outside the
+    // caller's brokerage, or the model returning nothing. An empty string is
+    // therefore a REFUSAL, not an empty draft; a blank compose box would read as
+    // "the AI had nothing to say".
+    //
+    // The message says only what we actually know — no draft came back. Naming
+    // one of the four causes would be a guess, and a plausible wrong cause is
+    // worse than a vague one: the reader goes and investigates the thing it
+    // accused. (The real fix is upstream: draftSmartEmail should return a
+    // discriminated result instead of collapsing four failures into "". Left
+    // alone here because it has two other callers and that is its own change.)
+    if (!draftText) {
+      setDraftError("No draft was returned. Try again.")
+      return
+    }
+    setDraft({ contactId, text: draftText })
+  }
   const [agentName, setAgentName] = useState<string>("Agent")
   const [showings, setShowings] = useState<Showing[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
@@ -461,10 +495,24 @@ export default function BriefingPage() {
                           <p className="font-medium text-foreground">{action.action}</p>
                           <p className="text-sm text-muted-foreground mt-1">{action.context}</p>
                         </div>
-                        <Button variant="ghost" size="sm" className="shrink-0">
-                          <MessageSquare className="h-4 w-4 mr-1" />
-                          Draft
-                        </Button>
+                        {/* Had no onClick. draftSmartEmail was already proven from
+                            two other surfaces and this file already imported from
+                            its module. Only offered when the action names a
+                            CONTACT — a priority action about a transaction or a
+                            listing has nobody to write to, and a button that
+                            cannot work should not be shown. */}
+                        {action.entity_type === "contact" && action.entity_id && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="shrink-0"
+                            disabled={draftingFor !== null}
+                            onClick={() => handleDraft(action.entity_id!, action.context ?? action.action)}
+                          >
+                            <MessageSquare className="h-4 w-4 mr-1" />
+                            {draftingFor === action.entity_id ? "Drafting…" : "Draft"}
+                          </Button>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -746,10 +794,18 @@ export default function BriefingPage() {
                         <p className="text-sm text-muted-foreground mb-3">
                           {lead.suggested_action}
                         </p>
-                        <Button variant="outline" size="sm" className="w-full">
-                          <MessageSquare className="h-4 w-4 mr-2" />
-                          Draft Message
-                        </Button>
+                        {lead.contact_id && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="w-full"
+                            disabled={draftingFor !== null}
+                            onClick={() => handleDraft(lead.contact_id!, lead.suggested_action)}
+                          >
+                            <MessageSquare className="h-4 w-4 mr-2" />
+                            {draftingFor === lead.contact_id ? "Drafting…" : "Draft Message"}
+                          </Button>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -938,6 +994,44 @@ export default function BriefingPage() {
           </Card>
         </div>
       </div>
+
+      {/* The draft, and — just as important — the refusal. A blank compose box
+          would read as "the AI had nothing to say" rather than "that did not
+          run". */}
+      <Dialog
+        open={draft !== null || draftError !== null}
+        onOpenChange={(o) => { if (!o) { setDraft(null); setDraftError(null) } }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{draftError ? "Could not draft" : "Suggested message"}</DialogTitle>
+          </DialogHeader>
+          {draftError ? (
+            <p className="text-sm text-destructive">{draftError}</p>
+          ) : (
+            <>
+              <Textarea
+                value={draft?.text ?? ""}
+                onChange={(e) => setDraft((d) => (d ? { ...d, text: e.target.value } : d))}
+                rows={10}
+                className="text-sm"
+              />
+              <DialogFooter className="gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => navigator.clipboard.writeText(draft?.text ?? "")}
+                >
+                  Copy
+                </Button>
+                <Button size="sm" asChild>
+                  <Link href={`/crm?contact=${draft?.contactId ?? ""}`}>Open contact</Link>
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
