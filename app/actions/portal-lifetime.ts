@@ -803,7 +803,15 @@ export async function requestValueUpdate(contactId: string) {
     .eq("brokerage_id", access.brokerageId)
     .single()
 
-  if (!contact?.agent_id) throw new Error("Contact not found")
+  // Two distinct failures wore one message. `!contact` means the row is absent
+  // (or belongs to another brokerage) — "not found" is true. `!contact.agent_id`
+  // means the row IS here and simply has nobody assigned to receive the request,
+  // and telling that client "not found" sends them looking for a record that is
+  // sitting right in front of them. Separate the checks; name the real gap.
+  if (!contact) throw new Error("Contact not found")
+  if (!contact.agent_id) {
+    throw new Error("This contact has no assigned agent yet, so there is nobody to send the request to.")
+  }
 
   // Send message to agent
   await supabase.from("client_portal_messages").insert({

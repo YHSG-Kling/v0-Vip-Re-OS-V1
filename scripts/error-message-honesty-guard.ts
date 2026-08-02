@@ -56,6 +56,33 @@
  * shape above AND stays quiet on eleven honest forms it must not flag. A
  * detector only ever tested against the examples it was written from always
  * passes — this repo has been burned by that twice.
+ *
+ * THE QUEUE HAS BEEN READ END TO END. All 78 were opened and triaged one by one.
+ * TWO were defects and are fixed, and both were the same shape — a null check on
+ * a FIELD wearing a message about the ROW:
+ *
+ *   portal-lifetime.ts   !contact?.agent_id  → "Contact not found"
+ *   multi-persona.ts     !loanRow?.transaction_id → "Loan record not found"
+ *
+ * In both, the record was sitting right there; only its link was missing. The
+ * `?.` is what fuses the two causes: it lets one `if` stand for "no row" and
+ * "row without the link", and only the first gets a sentence. Each is now split
+ * into two checks with two messages, which is the general repair for this shape.
+ *
+ * THE OTHER 76 ARE HONEST, and that is a finding rather than a to-do. They are
+ * consequence-descriptions ("Negotiation analysis failed" for `!strategy.data`),
+ * checks whose message already names both causes ("Contact not found or access
+ * denied"), or generic wrapper names the word-overlap test cannot see through
+ * (`!auth.ok` guarding a message about the agent profile — correct code). Two
+ * that read like the fixed pair were traced and are NOT: video-generation.ts
+ * proves `!parent` is really an absent row, and kernel/video.ts's "already in
+ * progress" is preceded, twenty lines up, by the existence check that rules the
+ * other cause out.
+ *
+ * SO DO NOT GRIND THIS NUMBER DOWN. 76 is a saturated queue, not a backlog, and
+ * further reduction means bending honest sentences to satisfy a word-overlap
+ * heuristic — the exact inversion this file warns about above. Its remaining job
+ * is the ratchet: it fails when a NEW misdirecting message appears.
  */
 import { readFileSync, existsSync, readdirSync } from "node:fs"
 
@@ -210,7 +237,7 @@ function ok(label: string, cond: boolean, detail?: string) {
 // ── A REVIEW QUEUE, NOT A BUG COUNT. Lower it as messages are corrected; never
 // raise it. Each entry needs a human to decide whether the sentence describes a
 // CONSEQUENCE (fine) or a DIFFERENT CAUSE (the defect).
-const BASELINE = 78
+const BASELINE = 76
 
 console.log("\n═══ 1. No NEW guard blames something it did not test ═══")
 const hits = findMismatches()

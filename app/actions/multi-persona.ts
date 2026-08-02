@@ -460,7 +460,14 @@ export async function submitLoanConditions(data: {
     .select("id, transaction_id, lender_name, notes")
     .eq("id", data.loanId)
     .maybeSingle()
-  if (!loanRow?.transaction_id) throw new Error("Loan record not found")
+  // Same split as elsewhere: a missing ROW and a missing LINK are different
+  // repairs. An unlinked loan row exists and is editable — saying "not found"
+  // points the lender at re-creating a record that is already there, when the
+  // actual fix is attaching it to its deal.
+  if (!loanRow) throw new Error("Loan record not found")
+  if (!loanRow.transaction_id) {
+    throw new Error("This loan record is not linked to a transaction yet — attach it to the deal first.")
+  }
 
   const { requireLenderVendorActor } = await import("@/lib/kernel/portal-auth")
   const actor = await requireLenderVendorActor(loanRow.transaction_id as string)
