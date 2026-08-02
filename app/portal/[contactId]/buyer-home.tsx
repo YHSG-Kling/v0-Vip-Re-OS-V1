@@ -21,6 +21,7 @@ import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorT
 import { FinancialMeaningCard } from "@/app/components/shared/FinancialMeaningCard"
 import { BuyerFinancialUploadCard } from "@/app/components/portal/BuyerFinancialUploadCard"
 import { BuyerPulseCard } from "@/app/components/portal/BuyerPulseCard"
+import { BuyerBrokerAgreementSignCard } from "@/app/components/portal/BuyerBrokerAgreementSignCard"
 import { Badge } from "@/app/components/ui/badge"
 import { Button } from "@/app/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
@@ -207,6 +208,21 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
     .limit(1)
     .maybeSingle()
   const buyerPulse = (pulseRow?.insights as Record<string, unknown> | null) ?? null
+
+  // Buyer broker agreement awaiting THIS buyer's signature. NAR 2024 blocks
+  // showings and offers until one is active (lib/buyer-broker/gate.ts fails
+  // closed), and the click-through path is the one most buyers take.
+  const { data: unsignedAgreement, error: unsignedAgreementError } = await supabase
+    .from("buyer_broker_agreements")
+    .select("id, agreement_type, commission_percentage, commission_flat_amount, commission_payer, expiration_date")
+    .eq("buyer_contact_id", contactId)
+    .in("status", ["draft", "pending_signature"])
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (unsignedAgreementError) {
+    console.error("[buyer-home] unsigned BBA lookup failed:", unsignedAgreementError.message)
+  }
 
   // Post-1043: completion is on learning_assignments (status='completed').
   // The variable name "completedLessonKeys" is kept for downstream stability
@@ -457,6 +473,23 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
         {/* Buyer self-serve financial upload — pre-approval / POF / lender connect.
             Auto-renders for buyer view; auth-gated to the contact's own portal user. */}
         <BuyerFinancialUploadCard contactId={contactId} />
+
+        {/* Buyer representation agreement awaiting signature — click-through e-sign. */}
+        {unsignedAgreement && (
+          <BuyerBrokerAgreementSignCard
+            agreementId={unsignedAgreement.id}
+            agreementType={unsignedAgreement.agreement_type ?? null}
+            commissionLine={
+              unsignedAgreement.commission_percentage != null
+                ? `Compensation: ${unsignedAgreement.commission_percentage}% paid by ${unsignedAgreement.commission_payer ?? "the party named in the document"}.`
+                : unsignedAgreement.commission_flat_amount != null
+                  ? `Compensation: $${Number(unsignedAgreement.commission_flat_amount).toLocaleString()} paid by ${unsignedAgreement.commission_payer ?? "the party named in the document"}.`
+                  : "Compensation terms are set out in the document."
+            }
+            expirationDate={unsignedAgreement.expiration_date ?? null}
+            agentName={primaryAgent?.full_name ?? null}
+          />
+        )}
 
         {/* Immediate needs */}
         {(upcomingShowings.length > 0 || offers.filter((o:any) => ['pending','countered'].includes(o.status)).length > 0) && (

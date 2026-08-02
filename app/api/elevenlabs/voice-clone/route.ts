@@ -167,10 +167,26 @@ export async function POST(request: NextRequest) {
     }
 
     // Legacy path: per-agent default profile (kept for callers not yet on Twin Studio).
-    await supabase
+    //
+    // training_status MUST move to 'ready' in this same update. ElevenLabs
+    // Instant Voice Clone is SYNCHRONOUS — /voices/add returned the voice_id
+    // above — so the moment the id is saved the clone IS usable, and there is no
+    // later job to promote it. The row is created with 'not_started' and every
+    // reader gates on `.eq("training_status", "ready")`, so writing the id alone
+    // left a working clone permanently invisible to the video wizard.
+    const { error: profileError } = await supabase
       .from("agent_voice_profiles")
-      .update({ elevenlabs_voice_id })
+      .update({ elevenlabs_voice_id, training_status: "ready" })
       .eq("id", profile_id!)
+    if (profileError) {
+      // The clone exists at ElevenLabs but we could not record it. Say so —
+      // reporting success here would strand a voice nothing can find.
+      console.error("[voice-clone] profile update failed:", profileError.message)
+      return NextResponse.json(
+        { error: `Voice was cloned but could not be saved: ${profileError.message}` },
+        { status: 500 },
+      )
+    }
 
     try {
       const { data: profile } = await supabase

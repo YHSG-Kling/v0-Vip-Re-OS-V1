@@ -8,6 +8,8 @@ import { AddressingCard }           from "@/components/contact/AddressingCard"
 import { StrategySessionCard }      from "@/components/contact/StrategySessionCard"
 import { LastPromiseCard }          from "@/components/contact/LastPromiseCard"
 import { InvestorDealsPanel }        from "@/components/contact/investor-deals-panel"
+import { BuyerBrokerAgreementPanel } from "@/components/contact/buyer-broker-agreement-panel"
+import { WorkflowRunsPanel }         from "./components/workflow-runs-panel"
 import { assertCanActOnContact }    from "@/lib/auth/contact-access"
 import { getBuyerTours }             from "@/app/actions/tour-planner"
 import { getBuyerJourney }           from "@/app/actions/buyer-execution"
@@ -281,6 +283,22 @@ export default async function ContactDetailPage({ params }: PageProps) {
           initialPromiseAt={contact.last_promise_at ?? null}
         />
       </div>
+
+      {/* Chain runs against this contact — the orchestrator's contact-card surface.
+          Without it a run paused on an approval gate had no way to be approved,
+          and a failed run no way to be resumed or cancelled. */}
+      <div className="px-4 pt-3">
+        <WorkflowRunsPanel contactId={contactId} />
+      </div>
+
+      {/* Buyer broker agreement — the NAR 2024 gate that blocks showings and offers
+          until an agreement is signed. Draft → send for e-signature → record signature
+          → cancel all live here; without it a drafted BBA could never reach `active`. */}
+      {contact.buyer_stage && (
+        <div className="px-4 pt-3">
+          <BuyerBrokerAgreementPanel contactId={contactId} />
+        </div>
+      )}
 
       {/* Investor off-market deal finder — buyer-side match against our scraped off-market inventory.
           Regular buyers get MLS matches; investors get off-market. Shown only for investor contacts. */}

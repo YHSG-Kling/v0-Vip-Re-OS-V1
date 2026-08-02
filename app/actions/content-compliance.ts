@@ -6,7 +6,6 @@ import {
   type ComplianceVerdict,
   evaluateContentCompliance,
   evaluateSpecificCategory,
-  quickComplianceCheck,
   batchEvaluateCompliance,
   formatComplianceVerdict,
   logComplianceEvaluation,
@@ -164,38 +163,15 @@ export async function evaluateCategory(
   }
 }
 
-/**
- * Quick check for critical compliance issues only
- */
-export async function quickCheck(
-  input: ComplianceContentInput
-): Promise<{ success: boolean; has_critical_issues?: boolean; critical_violations?: any[]; error?: string }> {
-  try {
-    const auth = await getSessionAgentId()
-    if (!auth.ok) return { success: false, error: auth.error }
-
-    if (!input.raw_content || input.raw_content.trim().length === 0) {
-      return {
-        success: false,
-        error: "Content is required",
-      }
-    }
-
-    const result = await quickComplianceCheck(input)
-
-    return {
-      success: true,
-      has_critical_issues: result.has_critical_issues,
-      critical_violations: result.critical_violations,
-    }
-  } catch (error) {
-    console.error("[System 4.2] Error in quick check:", error)
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
-    }
-  }
-}
+// `quickCheck` (critical-violations-only wrapper over quickComplianceCheck) was
+// deleted here. It was the SIMPLER TWIN of evaluateCompliance: same auth gate,
+// same input, but it discarded the score, the recommendations and every
+// non-critical violation, and — unlike evaluateCompliance — it could never feed
+// the approval router, because approval routing needs the full verdict. Keeping
+// two entry points where one returns a strictly poorer answer invites a caller
+// to pick the poor one and ship content that "passed". evaluateCompliance
+// survives; a caller that only cares about criticals filters
+// verdict.violations by severity.
 
 /**
  * Batch evaluate multiple content pieces
@@ -360,36 +336,10 @@ export async function getComplianceStatistics(params: {
   }
 }
 
-/**
- * Validate content input structure (pre-evaluation validation)
- */
-export async function validateContentInput(
-  input: Partial<ComplianceContentInput>
-): Promise<{ valid: boolean; errors: string[] }> {
-  const errors: string[] = []
-
-  if (!input.raw_content || input.raw_content.trim().length === 0) {
-    errors.push("raw_content is required")
-  }
-
-  if (!input.content_type) {
-    errors.push("content_type is required")
-  }
-
-  if (!input.channel_intent) {
-    errors.push("channel_intent is required")
-  }
-
-  if (input.context?.listing_id && !isValidUUID(input.context.listing_id)) {
-    errors.push("Invalid listing_id format")
-  }
-
-  if (input.context?.transaction_id && !isValidUUID(input.context.transaction_id)) {
-    errors.push("Invalid transaction_id format")
-  }
-
-  return {
-    valid: errors.length === 0,
-    errors,
-  }
-}
+// `validateContentInput` was deleted here. It was a second, drifting copy of the
+// field checks evaluateCompliance already performs inline (raw_content present,
+// content_type present, listing_id / transaction_id well-formed UUIDs) — an
+// unauthenticated "use server" boundary whose only value was telling a caller
+// what evaluateCompliance was about to tell it anyway. Two copies of a
+// validation rule is one copy that will silently stop matching the other.
+// evaluateCompliance's inline validation survives and is the only gate.

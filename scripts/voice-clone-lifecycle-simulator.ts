@@ -71,12 +71,13 @@ console.log("\n── the whole clone ladder uses admitted values ──")
   check(`every literal written is admitted (${written.join(", ")})`,
     written.length > 0 && written.every((w) => live.includes(w)))
   check("the progress save no longer writes 'pending'", !/training_status:\s*"pending"/.test(v))
-  check("progress is recorded as collecting_samples once a phrase exists",
-    /recordedCount > 0 \? "collecting_samples" : "not_started"/.test(v))
+  // 'collecting_samples' stays a STORABLE value (the CHECK admits it) but
+  // nothing writes it any more: the phrase-by-phrase sample manifest belonged to
+  // an asynchronous training pipeline this product never had. See below.
 
   const read = [...v.matchAll(/\.eq\("training_status", "(\w+)"\)/g)].map((m) => m[1])
   check(`every literal read is admitted (${read.join(", ")})`,
-    read.length === 2 && read.every((r) => live.includes(r)))
+    read.length > 0 && read.every((r) => live.includes(r)))
   check("readers look for 'ready', not 'completed'", read.every((r) => r === "ready"))
 
   const client = src("app/dashboard/videos/create/video-create-client.tsx")
@@ -85,21 +86,35 @@ console.log("\n── the whole clone ladder uses admitted values ──")
     !/\.eq\("training_status", "completed"\)/.test(client))
 }
 
-console.log("\n── the job vocabulary is MAPPED onto the profile, not copied ──")
+console.log("\n── the clone is SYNCHRONOUS: there is no job to map ──")
 {
   const v = src("app/actions/video-voice.ts")
+  const route = src("app/api/elevenlabs/voice-clone/route.ts")
   const live = CHECK_VOCABULARIES.agent_voice_profiles?.training_status ?? []
-  check("a mapping table exists", /PROFILE_STATUS_FOR_JOB/.test(v))
-  check("the job status is no longer assigned straight across",
-    !/training_status:\s*status,/.test(v))
-  for (const [job, profile] of [["processing", "training"], ["completed", "ready"], ["failed", "failed"]]) {
-    check(`job '${job}' → profile '${profile}'`,
-      new RegExp(`${job}:\\s*"${profile}"`).test(v) && live.includes(profile))
-  }
-  check("an unmapped job status falls back to a REAL value, never undefined",
-    /\?\?\s*"training"/.test(v))
-  check("the clone id is still written in that same update — the point of the fix",
-    /elevenlabs_voice_id/.test(v))
+
+  // This block used to assert a PROFILE_STATUS_FOR_JOB mapping table, an
+  // async voice_clone_training job, and a phrase-by-phrase sample manifest.
+  // None of it was ever reachable: ElevenLabs Instant Voice Clone returns the
+  // voice_id on the SAME request (/voices/add below), so there is no job to
+  // open, poll or complete — and voice_clone_training had no writer and no
+  // reader outside the four functions that have now been removed. The guard was
+  // describing a pipeline the product does not have, which is why deleting the
+  // dead limb "broke" it.
+  check("the clone call is synchronous — the voice id comes back in the same request",
+    /\/voices\/add/.test(route) && /elData\.voice_id/.test(route))
+  check("no asynchronous training job is opened any more",
+    !/PROFILE_STATUS_FOR_JOB/.test(v) && !/voice_clone_training\b/.test(v.replace(/voice_clone_training\(/g, "")))
+
+  // THE POINT OF THIS BLOCK. The row is created 'not_started' and every reader
+  // gates on 'ready', so saving the id without promoting the status left a
+  // working clone permanently invisible. Both must happen in one update.
+  check("the clone id and 'ready' are written TOGETHER when the clone succeeds",
+    /\.update\(\{ elevenlabs_voice_id, training_status: "ready" \}\)/.test(route))
+  check("…'ready' is a value the CHECK admits", live.includes("ready"))
+  check("…and a failed save is reported, not swallowed into a false success",
+    /Voice was cloned but could not be saved/.test(route))
+  check("the reader gate and the writer agree on 'ready'",
+    /\.eq\("training_status", "ready"\)/.test(v))
 }
 
 console.log("\n── the unanswered-call retry lists read OUTCOME, not status ──")

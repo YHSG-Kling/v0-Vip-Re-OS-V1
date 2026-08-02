@@ -2,10 +2,19 @@
 
 /**
  * app/actions/open-house-kernel.ts
- * Server action wrapper for canonical open house kernel commands
- * 
- * Delegates to lib/kernel/open-house.ts
- * All business logic is in the kernel module, this just provides async boundary.
+ * Server action boundary for the canonical open house check-in flow.
+ *
+ * Delegates to lib/kernel/open-house.ts — all business logic lives in the
+ * kernel module, this only provides the async server boundary.
+ *
+ * The five single-command pass-through wrappers that used to sit here
+ * (resolveOrCreateOpenHouseContactAction, createOpenHouseAttendeeFromContactAction,
+ * attachOpenHouseSourceAttributionAction, notifyAssignedAgentForOpenHouseLeadAction,
+ * generateOpenHouseFollowupNextActionAction) added nothing over the kernel
+ * commands and had no caller anywhere. Every real caller — the QR/tablet
+ * check-in route (app/api/open-house/convert-attendee) and
+ * app/actions/open-house-automation.ts — goes through the orchestrated
+ * check-in below, which calls the kernel commands directly and in order.
  */
 
 import {
@@ -15,26 +24,6 @@ import {
   notifyAssignedAgentForOpenHouseLead,
   generateOpenHouseFollowupNextAction,
 } from "@/lib/kernel/open-house"
-
-export async function resolveOrCreateOpenHouseContactAction(input: Parameters<typeof resolveOrCreateOpenHouseContact>[0]) {
-  return resolveOrCreateOpenHouseContact(input)
-}
-
-export async function createOpenHouseAttendeeFromContactAction(input: Parameters<typeof createOpenHouseAttendeeFromContact>[0]) {
-  return createOpenHouseAttendeeFromContact(input)
-}
-
-export async function attachOpenHouseSourceAttributionAction(input: Parameters<typeof attachOpenHouseSourceAttribution>[0]) {
-  return attachOpenHouseSourceAttribution(input)
-}
-
-export async function notifyAssignedAgentForOpenHouseLeadAction(input: Parameters<typeof notifyAssignedAgentForOpenHouseLead>[0]) {
-  return notifyAssignedAgentForOpenHouseLead(input)
-}
-
-export async function generateOpenHouseFollowupNextActionAction(input: Parameters<typeof generateOpenHouseFollowupNextAction>[0]) {
-  return generateOpenHouseFollowupNextAction(input)
-}
 
 /**
  * Convenience wrapper: complete end-to-end open house check-in flow

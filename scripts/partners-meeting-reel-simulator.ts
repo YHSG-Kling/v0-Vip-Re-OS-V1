@@ -70,9 +70,38 @@ check("carries the earned reel props as inputProps (cards + one ask)",
   req.inputProps.cards.length === full.cards.length && req.inputProps.oneAsk === full.oneAsk)
 
 console.log("\n[5 · LIVE WIRING — the show actually runs (composition was orphaned before)]")
-import { readFileSync, existsSync } from "node:fs"
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
-const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
+// Tolerate a missing file — every other simulator in this repo does. A file
+// that no longer EXISTS trivially satisfies an absence assertion, and throwing
+// ENOENT instead turns a legitimate deletion into a crashed sweep.
+const src = (p: string) =>
+  existsSync(join(process.cwd(), p)) ? readFileSync(join(process.cwd(), p), "utf8") : ""
+/** Every file under app/ or lib/ that still mentions the dropped HeyGen column. */
+function heygenCloneColumnSites(): string[] {
+  const hits: string[] = []
+  const walk = (dir: string) => {
+    for (const name of readdirSync(join(process.cwd(), dir))) {
+      if (name === "node_modules" || name.startsWith(".")) continue
+      const rel = `${dir}/${name}`
+      if (statSync(join(process.cwd(), rel)).isDirectory()) { walk(rel); continue }
+      if (!/\.(ts|tsx)$/.test(name)) continue
+      // USE, not mention. The manager-registry entry that DOCUMENTS the purge
+      // necessarily names the dropped column in its prose, and a doc string is
+      // not a read or a write. Match the column only where it is actually used:
+      // selected, filtered on, or assigned in an object literal.
+      const text = readFileSync(join(process.cwd(), rel), "utf8")
+      const used =
+        /heygen_voice_clone_id\s*:/.test(text) ||                    // object-literal write
+        /\.eq\(\s*["']heygen_voice_clone_id["']/.test(text) ||        // filter
+        /select\([^)]*heygen_voice_clone_id/.test(text)              // projection
+      if (used) hits.push(rel)
+    }
+  }
+  walk("app"); walk("lib")
+  return hits
+}
+
 const pm = src("lib/intelligence/partners-meeting.ts")
 check("the weekly producer QUEUES the reel (one per brokerage per week) with the D-ID clip as the avatar PIP",
   pm.includes("queuePartnersMeetingReel") && pm.includes("avatarVideoUrl: avatarClipUrl")
@@ -321,8 +350,13 @@ console.log("\n[16 · NO HEYGEN + THE ASSISTANT'S WARDROBE (real options for fac
 import { ASSISTANT_VOICE_OPTIONS, ASSISTANT_FACE_BRIEFS, assistantVoiceLabel } from "../lib/video/assistant-options"
 {
   check("D-ID + ElevenLabs ONLY: no live HeyGen network path; voice clones read/write the CANONICAL elevenlabs_voice_id (heygen column dropped live, l38-s01)",
-    !src("app/actions/video-voice.ts").includes("heygen_voice_clone_id")
-    && !src("app/actions/video-voice.types.ts").includes("heygen_voice_clone_id")
+    // Was a per-FILE absence check naming video-voice.types.ts. That file has
+    // since been deleted (its SampleManifest/VoiceTrainingJob types described an
+    // asynchronous voice-training pipeline this product never had — the
+    // ElevenLabs clone is synchronous), and an absence assertion against a
+    // deleted file proves nothing. Asserting the CONSTRUCT instead: the column
+    // appears NOWHERE under app/ or lib/.
+    heygenCloneColumnSites().length === 0
     && existsSync(join(process.cwd(), "scripts/l38-s01-heygen-purge.sql")))
   check("the dead HeyGen-era branding presets + zero-caller updateAgentVideoProfile are GONE (keep-one: resolveReelBrand is the brand source)",
     !src("app/actions/video-generation.ts").includes('.from("video_branding_presets")')

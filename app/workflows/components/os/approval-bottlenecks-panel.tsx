@@ -59,9 +59,11 @@ export function ApprovalBottlenecksPanel({
       <CardContent className="space-y-3">
         {pendingApprovals.map((execution) => {
           const waitTime = formatDistanceToNow(new Date(execution.started_at), { addSuffix: false })
-          // Only show Approve & Continue if status is explicitly awaiting_approval
-          // For paused workflows, only show View Details
-          const canApprove = execution.status === "awaiting_approval"
+          // `paused` IS the engine's awaiting-approval state (engine.ts parks the run
+          // at `paused` with its step at `needs_approval`). Gating the button on
+          // "awaiting_approval" — a status the engine never writes — meant the
+          // Approve control never rendered for a single real run.
+          const canApprove = execution.status === "paused" || execution.status === "awaiting_approval"
 
           return (
             <div
