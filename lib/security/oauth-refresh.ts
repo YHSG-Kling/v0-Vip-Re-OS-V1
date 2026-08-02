@@ -85,12 +85,28 @@ export async function runCredentialRefresh(client?: Svc, now: Date = new Date())
   const horizon = new Date(now.getTime() + 7 * 86_400_000).toISOString()
   const outcomes: RefreshOutcome[] = []
 
-  for (const table of ["platform_credentials", "agent_api_credentials", "social_media_accounts", "calendar_provider_accounts"]) {
-    const providerCol = table === "agent_api_credentials" ? "service_type" : table === "calendar_provider_accounts" ? "provider" : "platform"
-    const { data } = await svc.from(table)
+  // calendar_provider_accounts is DELIBERATELY ABSENT. It has no refresh_token
+  // and no access_token column (verified live) — it stamps an expiry for a
+  // connection whose OAuth material lives in platform_credentials /
+  // agent_api_credentials. There is nothing here to exchange.
+  //
+  // It used to be in this list, keyed on a `provider` column it also does not
+  // have, so every sweep issued a query naming three non-existent columns. The
+  // result was destructured as `{ data }` with the error dropped, so it failed
+  // silently on every run and simply refreshed nothing from that table. The
+  // rotation MONITOR still watches it for staleness — see credential-rotation —
+  // because a stale calendar connection needs a human to reconnect, which is a
+  // different answer from "we refreshed it for you".
+  for (const table of ["platform_credentials", "agent_api_credentials", "social_media_accounts"]) {
+    const providerCol = table === "agent_api_credentials" ? "service_type" : "platform"
+    const { data, error } = await svc.from(table)
       .select(`id, refresh_token, token_expires_at, ${providerCol}`)
       .not("token_expires_at", "is", null).not("refresh_token", "is", null)
       .lte("token_expires_at", horizon).limit(500)
+    if (error) {
+      console.error(`[oauth-refresh] scan of ${table} FAILED (not refreshed):`, error.message)
+      continue
+    }
     for (const r of (data ?? []) as any[]) {
       if (!shouldAttemptRefresh({ tokenExpiresAt: r.token_expires_at, hasRefreshToken: !!r.refresh_token }, now)) continue
       outcomes.push(await refreshCredential(svc, { table, id: r.id, provider: r[providerCol] ?? null, refresh_token: r.refresh_token }))
