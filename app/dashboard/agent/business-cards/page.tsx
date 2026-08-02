@@ -71,7 +71,13 @@ export default function BusinessCardsPage() {
 
   // Option 1 — Referral partner form state
   const [showReferralForm, setShowReferralForm] = useState(false)
-  const [referralPartnerType, setReferralPartnerType] = useState<"agent_to_agent" | "vendor" | "lender" | "title" | "other">("agent_to_agent")
+  // referral_partners.partner_type CHECK — the UI used to offer agent_to_agent /
+  // vendor / lender / title, NONE of which the column accepts, so every scanned
+  // card failed on insert and the agent just saw "Please try again" forever.
+  const [referralPartnerType, setReferralPartnerType] = useState<
+    "real_estate_agent" | "mortgage_broker" | "title_company" | "home_inspector"
+    | "contractor" | "insurance_agent" | "attorney" | "property_manager" | "other"
+  >("real_estate_agent")
   const [referralNotes, setReferralNotes] = useState("")
   const [referralSubmitting, setReferralSubmitting] = useState(false)
   const [referralDone, setReferralDone] = useState(false)
@@ -194,7 +200,8 @@ export default function BusinessCardsPage() {
       const partnerResult = await createPartner({
         partnerName: postScanContact.name,
         partnerType: referralPartnerType,
-        agreementType: "referral_fee",
+        agreementType: "informal",
+        notes: referralNotes.trim() || undefined,
       })
 
       // Step 2: log the referral, linking the scanned contact as the referred person
@@ -539,10 +546,14 @@ export default function BusinessCardsPage() {
                       onChange={(e) => setReferralPartnerType(e.target.value as typeof referralPartnerType)}
                       className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
                     >
-                      <option value="agent_to_agent">Agent to Agent</option>
-                      <option value="vendor">Vendor</option>
-                      <option value="lender">Lender</option>
-                      <option value="title">Title</option>
+                      <option value="real_estate_agent">Real estate agent</option>
+                      <option value="mortgage_broker">Lender / mortgage broker</option>
+                      <option value="title_company">Title company</option>
+                      <option value="home_inspector">Home inspector</option>
+                      <option value="contractor">Contractor</option>
+                      <option value="insurance_agent">Insurance agent</option>
+                      <option value="attorney">Attorney</option>
+                      <option value="property_manager">Property manager</option>
                       <option value="other">Other</option>
                     </select>
                   </div>

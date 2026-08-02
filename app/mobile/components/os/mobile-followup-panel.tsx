@@ -55,7 +55,9 @@ export function MobileFollowupPanel({ tasks, onTaskComplete }: MobileFollowupPan
 
   const handleCompleteTask = (taskId: string) => {
     startTransition(async () => {
-      const result = await completeActivity(taskId)
+      // The note is the whole point of this sheet: it is what the agent heard
+      // at the door, captured while it is freshest. It used to be dropped.
+      const result = await completeActivity(taskId, noteContent)
       if (result.success) {
         toast.success("Follow-up completed")
         setNoteContent("")

@@ -855,3 +855,50 @@ export async function getVendorResources(contactId: string) {
   })
   return curated
 }
+
+// ─── PROPERTY FEEDBACK (portal) ──────────────────────────────────────────────
+/**
+ * The buyer's own verdict on a property, from the persona portal.
+ *
+ * THIS EXISTED AS A LIE. The rating dialog collected a vote AND a comment, then
+ * handleRateProperty toasted "Your feedback has been recorded" and closed —
+ * calling nothing. Both values were dropped on the floor. That is the most
+ * expensive possible place to lose data: a buyer telling their agent, in their
+ * own words, why a house does or does not work is the highest-signal input in
+ * the whole buyer journey, and the OS threw it away while thanking them for it.
+ *
+ * The sibling surface (CollaborativeSearchDashboard) already did this properly
+ * via rateProperty(), but that lane writes property_family_ratings and needs a
+ * collaborative_search_id, which the persona portal has no concept of. The
+ * right home is property_feedback, keyed by contact — which is exactly what the
+ * agent-side matcher already reads to learn preferences, so a portal rating now
+ * feeds the same brain.
+ */
+export async function submitPropertyFeedback(params: {
+  contactId: string
+  propertyId: string
+  vote: "love" | "like" | "neutral" | "dislike" | "pass"
+  comments?: string
+}): Promise<{ success: boolean; error?: string }> {
+  const access = await requireContactAccess(params.contactId)
+  if (!access.ok) return { success: false, error: "Forbidden" }
+
+  // A 1-5 scale so the agent-side preference learner can rank, alongside the
+  // word the buyer actually chose.
+  const INTEREST: Record<string, number> = { love: 5, like: 4, neutral: 3, dislike: 2, pass: 1 }
+
+  const supabase = createServiceClient()
+  const { error } = await supabase.from("property_feedback").insert({
+    contact_id: params.contactId,
+    property_id: params.propertyId,
+    brokerage_id: access.brokerageId,
+    feedback_type: params.vote,
+    interest_level: INTEREST[params.vote] ?? 3,
+    notes: params.comments?.trim() || null,
+    source: "portal",
+    created_at: new Date().toISOString(),
+  })
+
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}

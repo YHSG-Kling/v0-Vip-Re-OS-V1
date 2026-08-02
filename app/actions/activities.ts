@@ -61,16 +61,23 @@ export async function logActivity(data: {
 
 // ─── Complete Activity ───────────────────────────────────────────────────────
 export async function completeActivity(
-  activityId: string
+  activityId: string,
+  /** What the agent heard, captured at the moment of completion. The mobile
+   *  sheet has always shown an "Add notes" box; until now the text was dropped
+   *  on submit, so the most perishable intelligence in the business — what the
+   *  seller actually said at the door — was collected and destroyed. */
+  notes?: string,
 ): Promise<{ success: boolean; error?: string }> {
   try {
     const supabase = await createClient()
 
+    const trimmed = notes?.trim()
     const { error } = await supabase
       .from("activities")
       .update({
         status: "completed",
         completed_at: new Date().toISOString(),
+        ...(trimmed ? { notes: trimmed } : {}),
       })
       .eq("id", activityId)
 

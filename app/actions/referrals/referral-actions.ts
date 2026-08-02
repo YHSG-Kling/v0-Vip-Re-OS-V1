@@ -56,6 +56,11 @@ export type CreatePartnerParams = {
   agreementType: string
   commissionSplitPercentage?: number
   referralFeeFlat?: number
+  /** How the agent knows this partner. The business-card scan flow has always
+   *  collected it ("Met at open house, strong referral network...") and it was
+   *  dropped at submit — so the one piece of context that makes a partner row
+   *  worth anything six months later never arrived. */
+  notes?: string
 }
 
 // ─── ACTIONS ─────────────────────────────────────────────────────────────────
@@ -257,6 +262,7 @@ export async function createPartner(params: CreatePartnerParams): Promise<{ id: 
       agreement_type: params.agreementType,
       commission_split_percentage: params.commissionSplitPercentage ?? null,
       referral_fee_flat: params.referralFeeFlat ?? null,
+      notes: params.notes?.trim() || null,
       total_referrals_sent: 0,
       total_referrals_received: 0,
       total_value_generated: 0,

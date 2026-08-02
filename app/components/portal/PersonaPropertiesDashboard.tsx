@@ -23,6 +23,7 @@ import { FitBadge } from "@/app/components/portal/FitBadge"
 import { smartSearch, saveProperty } from "@/app/actions/idx-search"
 import { requestShowing } from "@/app/actions/showings"
 import { updatePropertyAlert } from "@/app/actions/property-alerts/alert-actions"
+import { submitPropertyFeedback } from "@/app/actions/portal-lifetime"
 import Link from "next/link"
 
 interface PersonaPropertiesDashboardProps {
@@ -452,12 +453,32 @@ export default function PersonaPropertiesDashboard({
   // Handle property rating (placeholder - functionality to be implemented)
   const handleRateProperty = async () => {
     if (!selectedProperty) return
-    
-    toast({
-      title: "Rating Saved",
-      description: "Your feedback has been recorded.",
+
+    // This used to toast "Your feedback has been recorded" and close, calling
+    // nothing at all — the buyer's vote AND their comment were both discarded.
+    // It now writes property_feedback, which is the same table the agent-side
+    // preference learner reads, so a portal rating actually teaches the match
+    // engine instead of evaporating.
+    startTransition(async () => {
+      const result = await submitPropertyFeedback({
+        contactId,
+        propertyId: selectedProperty.id,
+        vote: propertyVote as "love" | "like" | "neutral" | "dislike" | "pass",
+        comments: ratingComments,
+      })
+      if (!result.success) {
+        toast({
+          title: "Rating not saved",
+          description: result.error ?? "Please try again.",
+          variant: "destructive",
+        })
+        return
+      }
+      toast({ title: "Rating saved", description: "Your agent can see this now." })
+      setRatingComments("")
+      setPropertyVote("neutral")
+      setShowRatingDialog(false)
     })
-    setShowRatingDialog(false)
   }
 
   // Calculate investment metrics for a property

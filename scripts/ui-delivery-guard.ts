@@ -1,0 +1,195 @@
+/**
+ * scripts/ui-delivery-guard.ts
+ *
+ * test:ui-delivery — WHAT THE USER TYPES MUST LEAVE THE COMPONENT.
+ *
+ * THE OWNER NAMED THIS DEFECT EXACTLY: "the UI and the business process backend
+ * know what to do, but the middle has no direction." This is its purest form —
+ * a field the user fills in whose value is declared, bound to an input, and
+ * then referenced nowhere else. It renders, it accepts keystrokes, it is styled
+ * like every working field on the page, and on submit it is dropped.
+ *
+ * WHAT WAS ACTUALLY FOUND, and why this is not a tidiness check:
+ *
+ *   · PersonaPropertiesDashboard — the buyer's property rating dialog collected
+ *     a VOTE and a COMMENT ("What do you think about this property?") and
+ *     handleRateProperty called NOTHING. It toasted "Your feedback has been
+ *     recorded" and closed. The single highest-signal input in the buyer
+ *     journey — the client saying in their own words why a house does or does
+ *     not work — was destroyed while thanking them for it. A sibling surface,
+ *     CollaborativeSearchDashboard, had been doing it correctly all along.
+ *
+ *   · mobile-followup-panel — the agent taps Done at the door, types what the
+ *     seller said into "Add notes", taps Mark as Complete, and
+ *     completeActivity(taskId) was called with no notes. The handler even
+ *     cleared the box on success, so the author believed it was saving. The
+ *     most perishable intelligence in the business, captured at the one moment
+ *     it is freshest, deleted.
+ *
+ *   · business-cards — referral partner notes dropped. Investigating THAT
+ *     uncovered worse: partner_type offered agent_to_agent / vendor / lender /
+ *     title, and agreement_type sent "referral_fee". The column's CHECK admits
+ *     none of them. Every scanned card failed on insert, forever, and the agent
+ *     saw only "Failed to create referral partner. Please try again."
+ *
+ * THE SECOND LESSON IS THE MORE GENERAL ONE. A dropped field and a UI
+ * vocabulary the column refuses are the same defect wearing different clothes:
+ * the screen and the schema were built from different dictionaries. The dropped
+ * field is the quiet version; the refused INSERT is the loud version that gets
+ * blamed on "flakiness". Whenever this guard fires, check the vocabulary too.
+ *
+ * WHY AN ALLOWLIST AND NOT A ZERO BAN. Plenty of state is legitimately local:
+ * which tab is open, which mode a panel is in, a search box that filters a list
+ * client-side. Those are bound to inputs and never submitted, and that is
+ * correct. Banning the shape would force pointless plumbing; the honest
+ * invariant is "every LOCAL-ONLY field is a deliberate, named decision."
+ */
+import { readFileSync, existsSync, readdirSync, writeFileSync, unlinkSync } from "node:fs"
+
+const read = (p: string) => { try { return readFileSync(p, "utf8") } catch { return "" } }
+function walk(dir: string, out: string[] = []): string[] {
+  if (!existsSync(dir)) return out
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const f = `${dir}/${e.name}`
+    if (e.isDirectory()) { if (["node_modules", ".next"].includes(e.name)) continue; walk(f, out) }
+    else if (/\.tsx$/.test(e.name)) out.push(f)
+  }
+  return out
+}
+const code = (s: string) =>
+  s.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+
+/**
+ * State that is bound to an input and deliberately never submitted. Each entry
+ * is a decision, not an exemption: this value steers the SCREEN, not a record.
+ */
+const LOCAL_ONLY = new Set([
+  "app/crm/components/os/relationship-ai-chat-panel.tsx#mode",            // which chat mode is displayed
+  "app/dashboard/campaigns/repurpose/repurpose-dashboard-client.tsx#activeTab",
+  "app/dashboard/social/components/post-composer-dialog.tsx#tab",
+  "app/dashboard/admin/users/[userId]/user-edit-form.tsx#agentField",     // drives which sub-form renders
+  "app/crm/contacts/[contactId]/tours/components/tour-plan-tab.tsx#duration",
+  "app/dashboard/referrals/components/os/referral-ai-drafting-panel.tsx#context",
+  "app/dashboard/videos/components/business-context/video-context-picker.tsx#marketArea",
+])
+
+interface Hit { file: string; state: string }
+
+/** A field the user TYPES INTO whose value is never mentioned outside its own wiring. */
+export function findDroppedFields(files: string[]): Hit[] {
+  const hits: Hit[] = []
+  for (const file of files) {
+    const src = code(read(file))
+    if (!/useState/.test(src)) continue
+
+    const typed = new Set<string>()
+    for (const m of src.matchAll(/set([A-Z]\w*)\s*\(\s*e\.target\.value/g)) typed.add(m[1])
+    for (const m of src.matchAll(/onValueChange=\{\s*\(?(\w+)\)?\s*=>\s*set([A-Z]\w*)\s*\(/g)) typed.add(m[2])
+
+    for (const cap of typed) {
+      const name = cap[0].toLowerCase() + cap.slice(1)
+      const total = [...src.matchAll(new RegExp(`(?<![A-Za-z0-9_$])${name}(?![A-Za-z0-9_$])`, "g"))].length
+      // Mentions that are pure wiring: the declaration and the value/checked binding.
+      const declared = new RegExp(`\\[\\s*${name}\\s*,\\s*set${cap}\\s*\\]`).test(src) ? 1 : 0
+      const bound = [...src.matchAll(new RegExp(`value=\\{\\s*${name}\\s*\\}`, "g"))].length
+      const checked = [...src.matchAll(new RegExp(`checked=\\{\\s*${name}`, "g"))].length
+      if (total - (declared + bound + checked) <= 0) hits.push({ file, state: name })
+    }
+  }
+  return hits
+}
+
+let pass = 0, fail = 0
+const failures: string[] = []
+function ok(label: string, cond: boolean, detail?: string) {
+  if (cond) { pass++; console.log(`  ✓ ${label}`) }
+  else { fail++; failures.push(label); console.log(`  ✗ ${label}${detail ? ` — ${detail}` : ""}`) }
+}
+
+console.log("\n═══ 1. No user-entered field is silently dropped ═══")
+{
+  const hits = findDroppedFields([...walk("app"), ...walk("components")])
+  const undeclared = hits.filter((h) => !LOCAL_ONLY.has(`${h.file}#${h.state}`))
+  for (const h of undeclared) console.log(`     ${h.file}  →  ${h.state}`)
+  ok("every field the user types into either reaches a payload or is declared\n    local-only on purpose",
+    undeclared.length === 0,
+    `${undeclared.length} collected-and-dropped — wire it, or add it to LOCAL_ONLY with a reason`)
+}
+
+console.log("\n═══ 2. The three that were dropped now actually deliver ═══")
+{
+  const portal = code(read("app/components/portal/PersonaPropertiesDashboard.tsx"))
+  ok("the buyer's property rating calls a real action instead of toasting a lie",
+    /submitPropertyFeedback\s*\(/.test(portal) && !/title:\s*"Rating Saved"/.test(portal))
+  ok("...and sends BOTH the vote and the comment",
+    /vote:\s*propertyVote/.test(portal) && /comments:\s*ratingComments/.test(portal))
+  ok("...and reports a refusal instead of claiming success regardless",
+    /if\s*\(!result\.success\)/.test(portal))
+
+  const mobile = code(read("app/mobile/components/os/mobile-followup-panel.tsx"))
+  ok("the follow-up note typed at the door is passed to completeActivity",
+    /completeActivity\(taskId,\s*noteContent\)/.test(mobile))
+  const activities = code(read("app/actions/activities.ts"))
+  ok("...and completeActivity persists it rather than accepting and ignoring it",
+    /notes\?:\s*string/.test(activities) && /notes:\s*trimmed/.test(activities))
+
+  const cards = code(read("app/dashboard/agent/business-cards/page.tsx"))
+  ok("the referral partner's notes reach createPartner",
+    /notes:\s*referralNotes/.test(cards))
+  const referrals = code(read("app/actions/referrals/referral-actions.ts"))
+  ok("...and createPartner writes them",
+    /notes\?:\s*string/.test(referrals) && /notes:\s*params\.notes/.test(referrals))
+}
+
+console.log("\n═══ 3. The screen and the schema share one dictionary ═══")
+{
+  // The louder half of the same defect: a value the UI offers that the column's
+  // CHECK refuses. This one made EVERY business-card referral fail on insert.
+  const cards = code(read("app/dashboard/agent/business-cards/page.tsx"))
+  const PARTNER_TYPES = ["real_estate_agent", "mortgage_broker", "title_company", "home_inspector",
+    "contractor", "insurance_agent", "attorney", "property_manager", "other"]
+  const offered = [...cards.matchAll(/<option value="([a-z_]+)"/g)].map((m) => m[1])
+  const partnerOffered = offered.filter((v) => !["referral_fee", "informal", "one_way", "reciprocal", "paid"].includes(v))
+  ok(`every partner_type the card scanner offers is one the column accepts (${partnerOffered.length} offered)`,
+    partnerOffered.length > 0 && partnerOffered.every((v) => PARTNER_TYPES.includes(v)),
+    partnerOffered.filter((v) => !PARTNER_TYPES.includes(v)).join(", "))
+  ok("the agreement_type it sends is in the CHECK — 'referral_fee' never was,\n    so every scanned card failed on insert",
+    /agreementType:\s*"(reciprocal|one_way|paid|informal)"/.test(cards))
+}
+
+console.log("\n═══ 4. The detector fires on the real shapes ═══")
+{
+  // Proven against synthetic components so the assertions above have teeth.
+  const dropped = `
+    export function X() {
+      const [note, setNote] = useState("")
+      return <Textarea value={note} onChange={(e) => setNote(e.target.value)} />
+    }`
+  const wired = `
+    export function Y() {
+      const [note, setNote] = useState("")
+      const go = async () => { await save({ note }) }
+      return <Textarea value={note} onChange={(e) => setNote(e.target.value)} />
+    }`
+  const tmp = "/tmp/__ui_delivery_probe.tsx"
+
+  writeFileSync(tmp, dropped)
+  ok("a field bound to an input and never submitted IS caught",
+    findDroppedFields([tmp]).some((h) => h.state === "note"))
+
+  writeFileSync(tmp, wired)
+  ok("...and the same field IS NOT caught once it reaches a payload",
+    findDroppedFields([tmp]).length === 0)
+  unlinkSync(tmp)
+}
+
+console.log(`\n${"═".repeat(70)}`)
+console.log(`UI DELIVERY — ${pass} passed, ${fail} failed`)
+if (fail > 0) {
+  console.log("\nFailures:")
+  for (const f of failures) console.log(`  · ${f}`)
+  console.log("\nWhat the user types must leave the component. A field that renders,")
+  console.log("accepts keystrokes and is then dropped is worse than no field at all.")
+  process.exit(1)
+}
+console.log("Every user-entered field either delivers or is local-only by decision.")
