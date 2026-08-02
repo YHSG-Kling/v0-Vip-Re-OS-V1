@@ -62,7 +62,7 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   // Default to the restrictive ("agent") path when user_type is absent.
   let listingQuery = supabase
     .from("listings")
-    .select("id, address, city, state, zip, lifecycle_stage, go_live_date, open_house_marketing_date, open_house_event_date, agent_id, brokerage_id, list_price, seller_contact_id, marketing_tier_id, status")
+    .select("id, address, city, state, zip, lifecycle_stage, go_live_date, open_house_marketing_date, open_house_event_date, agent_id, brokerage_id, list_price, seller_contact_id, marketing_tier_id, status, mls_number, mls_link")
     .eq("id", listingId)
     .eq("brokerage_id", userRow.brokerage_id)
 
@@ -272,10 +272,25 @@ const { data: listingVendorBookings } = await supabase
   const canOverride = ["broker", "broker_owner", "admin", "team_lead", "superadmin"].includes(userRow.user_type ?? "")
   const isSuperAdmin = userRow.user_type === "superadmin"
 
+  // MLS NUMBER — the kernel's launch gate blocks on it (validateListingLaunchReadiness),
+  // but this page never read the column, so the checklist showed "ready to launch"
+  // while the kernel refused. The blocker the agent hits was invisible until they
+  // hit it. It is readable from three places, in this order of authority:
+  //   1. listings.mls_number — entered by the agent or stamped by launchListing.
+  //   2. a RentCast property search that matched this address (mlsNumber/mlsName).
+  //   3. an IDX feed the brokerage connected (raw field mlsID).
+  // Only (1) is stored. (2) and (3) are SUGGESTIONS surfaced at launch time —
+  // never auto-written, because matching an address to a feed row is a fuzzy
+  // key and syndicating the wrong MLS number is not a recoverable mistake.
+  const mlsNumber = ((listing as any).mls_number as string | null)?.trim() || null
+  const mlsLink = ((listing as any).mls_link as string | null)?.trim() || null
+  const hasMlsNumber = !!mlsNumber
+
   // Blockers
   const blockers: string[] = []
   if (!mediaReady) blockers.push(`Need at least 5 photos (${photoCount} uploaded)`)
   if (!publishReady) blockers.push("Missing required listing fields")
+  if (!hasMlsNumber) blockers.push("No MLS number entered")
   // Marketing tier is superadmin-controlled — only surface the blocker to superadmins
   if (!marketingReady && isSuperAdmin) blockers.push("No marketing tier selected")
 
@@ -399,6 +414,9 @@ const { data: listingVendorBookings } = await supabase
             pricingNarrativeReady={pricingNarrativeReady}
             hasListingAgreement={!!listingAgreement}
             agreementFullyExecuted={!!listingAgreement?.fully_executed_at}
+            mlsNumber={mlsNumber}
+            mlsLink={mlsLink}
+            listingAddress={`${listing.address}${listing.city ? `, ${listing.city}` : ""}`}
             mediaReady={mediaReady}
             publishReady={publishReady}
             marketingReady={marketingReady}
@@ -505,7 +523,7 @@ const { data: listingVendorBookings } = await supabase
           listingId={listingId}
           agentId={user.id}
           brokerageId={userRow.brokerage_id}
-          canLaunch={mediaReady && publishReady && marketingReady}
+          canLaunch={mediaReady && publishReady && marketingReady && hasMlsNumber}
           blockers={blockers}
           isSuperAdmin={isSuperAdmin}
         />

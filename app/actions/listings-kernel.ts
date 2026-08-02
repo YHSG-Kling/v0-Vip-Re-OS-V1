@@ -192,6 +192,143 @@ export async function validateLaunchReadinessAction(listingId: string) {
   return validateListingLaunchReadiness({ listingId })
 }
 
+// ─── Action: suggestMlsNumberAction ──────────────────────────────────────────
+
+export interface MlsSuggestion {
+  mlsNumber: string
+  /** Which MLS reported it, when the source names one (RentCast's mlsName). */
+  mlsName: string | null
+  /** The address the source has, so the agent can see WHAT they are confirming. */
+  address: string
+  source: "rentcast" | "idx"
+}
+
+/**
+ * OWNER RULING: "mls can be pulled from rentcast property search and if the user
+ * adds a mls connection through idx, those searches will have the mls number."
+ *
+ * Both sources are searched, in that order of preference, and BOTH ARE ONLY EVER
+ * SUGGESTIONS. Nothing here writes listings.mls_number.
+ *
+ * The reason is the join. Neither RentCast nor an IDX feed can be queried by
+ * "the id of our listing" — there is no shared key. The only thing linking a
+ * feed row to one of our listings is the street address, and address matching is
+ * fuzzy in both directions (unit numbers, "St" vs "Street", a duplex, a
+ * new-construction address the county has not split yet). An MLS number is the
+ * industry identity of a specific property: stamp the wrong one and the listing
+ * syndicates as a different home, on a field that a consumer, a portal, and a
+ * compliance officer all treat as authoritative. That is not a mistake worth
+ * automating away a single click for.
+ *
+ * So: we find the candidates, we show the address each one came from, and a
+ * human confirms. Returning zero candidates is a normal, honest outcome — the
+ * agent types the number in.
+ */
+export async function suggestMlsNumberAction(listingId: string): Promise<{
+  success: boolean
+  suggestions: MlsSuggestion[]
+  /** Present when a source could not be consulted, so "no matches" is never confused with "not connected". */
+  notes: string[]
+  error?: string
+}> {
+  const ctx = await resolveCallerContext()
+  if ("error" in ctx) return { success: false, suggestions: [], notes: [], error: ctx.error }
+
+  const supabase = await createClient()
+  const { data: listing, error: listingError } = await supabase
+    .from("listings")
+    .select("id, address, city, state, zip, brokerage_id")
+    .eq("id", listingId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
+
+  if (listingError) return { success: false, suggestions: [], notes: [], error: listingError.message }
+  if (!listing) return { success: false, suggestions: [], notes: [], error: "Listing not found in your brokerage" }
+
+  const target = normalizeStreet(listing.address as string | null)
+  if (!target) {
+    return { success: false, suggestions: [], notes: [], error: "This listing has no street address to match on" }
+  }
+
+  const suggestions: MlsSuggestion[] = []
+  const notes: string[] = []
+  const seen = new Set<string>()
+
+  // ── Source 1: RentCast for-sale search, narrowed to this listing's zip/city.
+  const { searchRentcastSaleListings } = await import("@/lib/property/rentcast")
+  const rc = await searchRentcastSaleListings({
+    brokerageId: ctx.brokerageId,
+    filters: {
+      zipCode: (listing.zip as string | null) ?? undefined,
+      city: (listing.zip ? undefined : (listing.city as string | null)) ?? undefined,
+      state: (listing.state as string | null) ?? undefined,
+      limit: 50,
+    },
+  })
+  if (!rc.success) {
+    notes.push(`RentCast: ${rc.error ?? "search failed"}`)
+  } else {
+    for (const l of rc.listings) {
+      if (!l.mlsNumber || seen.has(l.mlsNumber)) continue
+      if (normalizeStreet(l.address) !== target) continue
+      seen.add(l.mlsNumber)
+      suggestions.push({ mlsNumber: l.mlsNumber, mlsName: l.mlsName, address: l.address, source: "rentcast" })
+    }
+  }
+
+  // ── Source 2: the brokerage's own IDX feed, when one is connected.
+  try {
+    const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
+    const idx = await IDXBrokerClient.forBrokerage(ctx.brokerageId, { agentUserId: ctx.userId })
+    if (!idx.isConfigured()) {
+      notes.push("IDX: no MLS connection on this brokerage")
+    } else {
+      const rows = await idx.searchActiveListings({
+        city: (listing.city as string | null) ?? undefined,
+        state: (listing.state as string | null) ?? undefined,
+        zipCode: (listing.zip as string | null) ?? undefined,
+      })
+      for (const l of rows) {
+        if (!l.mlsNumber || seen.has(l.mlsNumber)) continue
+        if (normalizeStreet(l.address) !== target) continue
+        seen.add(l.mlsNumber)
+        suggestions.push({ mlsNumber: l.mlsNumber, mlsName: null, address: l.address, source: "idx" })
+      }
+    }
+  } catch (err) {
+    notes.push(`IDX: ${err instanceof Error ? err.message : "lookup failed"}`)
+  }
+
+  return { success: true, suggestions, notes }
+}
+
+/**
+ * Street-line comparison key. Deliberately CONSERVATIVE: it only strips the
+ * things that are pure formatting (case, punctuation, whitespace runs) and
+ * normalises the handful of suffixes that every feed spells differently. It does
+ * NOT try to be clever about unit numbers or directionals — a near-match that
+ * this returns as "different" costs the agent one manual entry, while a
+ * near-match it wrongly returns as "same" offers them the wrong MLS number.
+ */
+function normalizeStreet(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  const first = raw.split(",")[0] ?? raw
+  const s = first
+    .toLowerCase()
+    .replace(/[.,#]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+  if (!s) return null
+  const SUFFIX: Record<string, string> = {
+    street: "st", avenue: "ave", av: "ave", boulevard: "blvd", drive: "dr",
+    road: "rd", lane: "ln", court: "ct", circle: "cir", place: "pl",
+    terrace: "ter", parkway: "pkwy", highway: "hwy", trail: "trl", way: "way",
+    north: "n", south: "s", east: "e", west: "w",
+    northeast: "ne", northwest: "nw", southeast: "se", southwest: "sw",
+  }
+  return s.split(" ").map((w) => SUFFIX[w] ?? w).join(" ")
+}
+
 // ─── Action: launchListingAction ─────────────────────────────────────────────
 
 export async function launchListingAction(params: {

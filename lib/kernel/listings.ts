@@ -385,14 +385,29 @@ export async function saveListingDraft(input: {
 
 /**
  * Check whether the listing meets the minimum requirements to launch.
- * Input: { listingId }
+ * Input: { listingId, suppliedMlsNumber? }
  * Output: { ready: boolean, blockers: string[] }
  * Reads: listings, listing_media
- * Blockers: no seller contact, no list price, fewer than 5 photos
+ * Blockers: no seller contact, no list price, no MLS number, fewer than 5 photos
  * NOTE: public_remarks exists (m194); this check is intentionally omitted here.
+ *
+ * suppliedMlsNumber closes a DEADLOCK. launchListing is the only writer of
+ * listings.mls_number on the launch path — it takes the number as input and
+ * stamps it on the row. But it calls this gate FIRST, and the gate read the
+ * STORED mls_number. A listing that had never been launched had no stored
+ * number, so the gate blocked, so the write never ran, so the number never got
+ * stored. The one function that fills the field could never get past the check
+ * for the field being empty.
+ *
+ * The number the caller is launching WITH satisfies the requirement just as
+ * well as one already on the row — it is about to become the stored one. So the
+ * gate accepts either. Callers that are only *reporting* readiness (the
+ * lifecycle page) pass nothing and keep the strict stored-value semantics,
+ * which is what a checklist should show.
  */
 export async function validateListingLaunchReadiness(input: {
   listingId: string
+  suppliedMlsNumber?: string
 }): Promise<KernelResult<{ ready: boolean; blockers: string[] }>> {
   if (!isValidUUID(input.listingId)) return { success: false, error: "Invalid listing ID" }
 
@@ -419,7 +434,8 @@ export async function validateListingLaunchReadiness(input: {
 
     if (!listing.seller_contact_id) blockers.push("No seller contact linked")
     if (!listing.list_price)        blockers.push("No list price set")
-    if (!listing.mls_number)        blockers.push("No MLS number entered")
+    if (!(listing.mls_number?.trim() || input.suppliedMlsNumber?.trim()))
+      blockers.push("No MLS number entered")
 
     const photoCount = mediaCountResult.count ?? 0
     if (photoCount < 5) blockers.push(`Photos: need at least 5 (${photoCount} uploaded)`)
@@ -450,7 +466,12 @@ export async function launchListing(input: {
   if (!input.mlsNumber?.trim())        return { success: false, error: "MLS number is required" }
 
   // Gate: validate launch readiness first
-  const readiness = await validateListingLaunchReadiness({ listingId: input.listingId })
+  // Pass the number we are launching WITH — see the note on the gate. Without
+  // this, the only writer of mls_number can never satisfy the mls_number check.
+  const readiness = await validateListingLaunchReadiness({
+    listingId: input.listingId,
+    suppliedMlsNumber: input.mlsNumber,
+  })
   if (!readiness.success) return { success: false, error: readiness.error }
   if (!readiness.ready)   return { success: false, error: readiness.blockers[0] ?? "Launch blockers present" }
 

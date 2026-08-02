@@ -86,25 +86,23 @@ function layer1() {
   const fb = composeQuoteRequestFallback({ vendorName: "Acme", gap, propertyAddress: "1 St", dealName: "Deal X" })
   check("fallback quote copy mentions vendor + service", fb.body.includes("Acme") && fb.body.includes(gap.label))
 
-  // ── PREFERENCE SOURCE-OF-TRUTH — resolvePreferredVendorIds bridges vendor_directory → the bench. ──
-  console.log("\n── Layer 1b: preference resolved from vendor_directory (drift fix) ──")
+  // ── PREFERENCE SOURCE-OF-TRUTH — one table, one read (m355). ──
+  console.log("\n── Layer 1b: preference resolved from vendors.preferred (m355) ──")
   const bench: BenchVendor[] = [
     { id: "v1", name: "Ace Inspections", category: "inspector", email: null, rating: 3 },
     { id: "v2", name: "Budget Home Inspect", category: "inspector", email: null, rating: 5 },
     { id: "v3", name: "Summit Title", category: "title", email: null, rating: 4 },
   ]
-  // PREFERENCE NO LONGER COMES FROM vendor_directory.
-  // These assertions used to drive resolvePreferredVendorIds, the bridge that
-  // matched a broker's vendor_directory `preferred` flag onto the `vendors`
-  // bench by (name, category) because the two tables have no FK. The round-4
-  // burn-down found vendor_directory to be a writer-less legacy twin FOR THIS
-  // PURPOSE and repointed the orchestrator onto `vendors`, where explicit broker
-  // approval — status='active', set only by approveVendor — is the real
-  // preference signal. The bridge then sat with ZERO production callers, kept
-  // alive solely by this simulator; it is deleted, and these now assert the
-  // mechanism that actually runs. (vendor_directory itself is still live for
-  // lib/vendors/premium-placement.ts — only the bridge was dead.)
-  const prefIds = new Set(["v1"])   // as runVendorOrchestration builds it: the approved ids
+  // PREFERENCE IS A COLUMN ON THE RANKED ROW NOW (m355).
+  // Three generations of this: (1) resolvePreferredVendorIds, a bridge matching
+  // the broker's `preferred` flag from a separate vendor_directory table onto the
+  // bench by (name, category), because the two tables had no FK; (2) after that
+  // bridge was retired, a stand-in that read `vendors` a SECOND time and treated
+  // broker approval (status='active') as preference — which made EVERY approved
+  // vendor preferred, so preference-first ranking sorted nothing at all;
+  // (3) m355 merged the tables, so `preferred` comes back on the same read as the
+  // bench and the promise in the orchestrator's docstring is finally kept.
+  const prefIds = new Set(["v1"])   // as runVendorOrchestration builds it: rows with preferred = true
   const pickInspector: any = { category: "inspector", serviceType: "home_inspection", label: "home inspection" }
   check("preference beats rating — the preferred v1 wins over higher-rated v2",
     pickVendorForGap(bench, pickInspector, { preferredVendorIds: prefIds })?.id === "v1")
@@ -114,10 +112,13 @@ function layer1() {
   const orchRaw = readFileSync(join(process.cwd(), "lib/kernel/vendor-orchestration.ts"), "utf8")
   // Comments stripped: this file legitimately DOCUMENTS the retired bridge.
   const orchSrc = orchRaw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
-  check("the retired bridge is gone — no resolvePreferredVendorIds, no vendor_directory read",
-    !/resolvePreferredVendorIds/.test(orchSrc) && !/from\("vendor_directory"\)/.test(orchSrc))
-  check("preference is read from the vendors bench: broker-approved status='active'",
-    /from\("vendors"\)[\s\S]*?\.eq\("status", "active"\)[\s\S]*?preferredVendorIds/.test(orchSrc))
+  check("the retired bridge is gone — no resolvePreferredVendorIds, no second vendor table",
+    !/resolvePreferredVendorIds/.test(orchSrc) && !/vendor_directory/.test(orchSrc))
+  check("preference is the broker's actual `preferred` flag, not approval standing in for it",
+    /\.select\("id, name, category, email, rating, estimated_turnaround_days, preferred"\)/.test(orchSrc)
+    && /\.filter\(\(r\) => r\.preferred === true\)/.test(orchSrc))
+  check("…and it comes from the SAME read as the bench — no second query to drift",
+    (orchSrc.match(/from\("vendors"\)/g) ?? []).length === 1)
   check("the resolved preferred set is passed into the pick", /pickVendorForGap\(eligibleBench, gap, \{ preferredVendorIds, slaByVendor \}\)/.test(orchSrc))
   check("a rating-suppressed vendor is filtered out of the eligible bench before the pick", /loadSuppressedVendorIds\(supabase, brokerageId\)[\s\S]*?eligibleBench =/.test(orchSrc))
   check("runVendorOrchestration computes SLA (incl. no-shows) + passes it so proven breachers demote", /computeVendorSla\(\(slaBookings/.test(orchSrc) && /status\.eq\.no_show/.test(orchSrc))

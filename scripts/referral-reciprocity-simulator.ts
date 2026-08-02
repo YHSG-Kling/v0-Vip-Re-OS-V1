@@ -95,7 +95,7 @@ async function main() {
   try {
     // vendors.category and referral_partners.partner_type are DIFFERENT
     // vocabularies for the same trade: the bench says 'inspector' (the 38-value
-    // CHECK it shares with vendor_directory), the partner table says
+    // CHECK it shares with vendors.category), the partner table says
     // 'home_inspector'. lib/compliance/vendor-respa.ts normalises across both —
     // which is exactly why this row must use the bench's spelling here.
     await svc.from("vendors").insert({ id: vendorId, brokerage_id: brokerageId, name: vendorName, category: "inspector" })

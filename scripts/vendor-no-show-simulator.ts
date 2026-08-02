@@ -89,13 +89,19 @@ function sourceLayer() {
   const auto = src("lib/kernel/vendor-no-show-autopilot.ts")
   check("autopilot marks the ghosted booking no_show (the missing writer)", /updateVendorBookingStatus\(\{[\s\S]*?toStatus: "no_show"/.test(auto))
   check("autopilot proposes a GATED backup (agent-audience, nothing auto-books)", /proposeClientMessage\(\{[\s\S]*?agentKind: "deal_coordinator"[\s\S]*?audience: "agent"/.test(auto))
-  // Was: /resolvePreferredVendorIds\(bench/ — the vendor_directory bridge, deleted
-  // as dead after the round-4 repoint moved preference onto the `vendors` bench
-  // itself (broker approval, status='active'). The promise is unchanged — the
-  // backup is ranked preference-first — only its source moved.
-  check("backup ranking is preference-first from the vendors bench (broker-approved)",
-    /from\("vendors"\)[\s\S]*?\.eq\("status", "active"\)[\s\S]*?preferredVendorIds/.test(auto)
+  // The promise has always been "the backup is ranked preference-first"; the
+  // SOURCE of preference has moved twice. It was a bridge onto a separate
+  // vendor_directory table; then, after that bridge died, broker approval
+  // (status='active') standing in for it — which made EVERY approved vendor
+  // preferred, so the ranking was preference-first over a set containing the
+  // whole eligible pool, i.e. it ranked nothing. m355 put the broker's real
+  // `preferred` flag on the vendor row, so this now asserts the flag itself.
+  check("backup ranking is preference-first from the broker's actual preferred flag",
+    /\.select\("id, name, category, email, rating, preferred"\)/.test(auto)
+    && /\.filter\(\(r\) => r\.preferred === true\)/.test(auto)
     && /rankVendors\(pool, \{ preferredVendorIds \}\)/.test(auto))
+  check("…from ONE read — no second query on the same table to drift from it",
+    (auto.match(/from\("vendors"\)/g) ?? []).length === 1)
   const cron = src("app/api/cron/vendor-orchestration/route.ts")
   check("the daily vendor-orchestration cron runs the autopilot", /runVendorNoShowAutopilotAll/.test(cron))
   const reg = src("lib/kernel/manager-registry.ts")

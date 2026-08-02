@@ -93,6 +93,17 @@ export interface RentcastListing {
   status: string | null
   /** Display-only photo URL — do NOT store; re-fetch */
   photoUrl: string | null
+  /**
+   * MLS listing number as reported by the originating MLS, and the MLS's own
+   * name. Both are on the /listings/sale response contract (mlsNumber, mlsName)
+   * and were being dropped by this mapper — which meant a for-sale search could
+   * see the MLS number for a home and the OS still had no way to show it.
+   * NEVER auto-written onto listings.mls_number: the join back to one of our own
+   * listings is an ADDRESS match, which is fuzzy, and a wrong MLS number
+   * syndicates the wrong home. Surfaced as a confirmable suggestion only.
+   */
+  mlsNumber: string | null
+  mlsName: string | null
   source: "rentcast"
 }
 
@@ -187,6 +198,8 @@ export async function searchRentcastSaleListings(params: {
       daysOnMarket: r?.daysOnMarket ?? null,
       status: r?.status ?? "Active",
       photoUrl: r?.photos?.[0] ?? null,
+      mlsNumber: r?.mlsNumber != null && r.mlsNumber !== "" ? String(r.mlsNumber) : null,
+      mlsName: r?.mlsName != null && r.mlsName !== "" ? String(r.mlsName) : null,
       source: "rentcast",
     }))
 
@@ -292,6 +305,8 @@ export async function searchRentcastRentalListings(params: {
       daysOnMarket: r?.daysOnMarket ?? null,
       status: r?.status ?? "Active",
       photoUrl: r?.photos?.[0] ?? null,
+      mlsNumber: r?.mlsNumber != null && r.mlsNumber !== "" ? String(r.mlsNumber) : null,
+      mlsName: r?.mlsName != null && r.mlsName !== "" ? String(r.mlsName) : null,
       source: "rentcast",
     }))
     return { success: true, listings }

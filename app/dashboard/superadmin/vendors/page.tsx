@@ -19,19 +19,18 @@ export const dynamic = "force-dynamic"
 //                              user_id column — the assignment row IS the link.
 //   • vendor_invitations     — status 'pending'|'accepted'|'expired'|'revoked'
 //                              (writers in vendor-invite.ts).
-//   • vendor_directory       — the curated list carrying the premium-placement
-//                              flags {preferred, display_priority}. There is NO
-//                              FK between vendors and vendor_directory; the only
-//                              association is nominal (same brokerage + name),
-//                              so the match below is by-name and labeled as such.
-//   • vendor_invoices        — the billing ledger. Premium-placement charges
-//                              (lib/vendors/premium-placement.ts) store
-//                              vendor_id = vendor_directory.id and a
-//                              line_items[] entry {type:'premium_placement',
-//                              directory_id, placement_until}; ordinary vendor
-//                              invoices store vendor_id = vendors.id. Per-vendor
-//                              totals therefore aggregate on vendors.id, and
-//                              placement terms resolve through directory_id.
+//   • vendors.{preferred, display_priority} — the premium-placement flags. They
+//                              were on a separate vendor_directory table until
+//                              m355 collapsed the two systems into one row.
+//   • vendor_invoices        — the billing ledger. EVERY invoice, placement or
+//                              ordinary, stores vendor_id = vendors.id, and
+//                              placement invoices carry a line_items[] entry
+//                              {type:'premium_placement', vendor_id,
+//                              placement_until}. Placement charges used to store
+//                              a vendor_directory.id there, which meant they
+//                              could not join and placement revenue was missing
+//                              from every tenant's billed total on this page.
+//                              m355 remapped them and added the FK.
 // Nothing here is fabricated: every badge is exactly what those tables hold.
 
 function fmtAgo(iso: string | null) {
@@ -53,7 +52,7 @@ const OUTSTANDING_STATUSES = ["submitted", "viewed", "overdue"]
 
 interface PlacementItem {
   type: string
-  directory_id?: string
+  vendor_id?: string
   placement_until?: string
   months?: number
 }
@@ -61,7 +60,7 @@ interface PlacementItem {
 function placementItemOf(lineItems: unknown): PlacementItem | null {
   if (!Array.isArray(lineItems)) return null
   const item = lineItems.find(
-    (li: any) => li && typeof li === "object" && li.type === "premium_placement" && typeof li.directory_id === "string"
+    (li: any) => li && typeof li === "object" && li.type === "premium_placement" && typeof li.vendor_id === "string"
   )
   return (item as PlacementItem) ?? null
 }
@@ -73,16 +72,15 @@ export default async function SuperadminVendorsPage() {
 
   const svc = createServiceClient()
 
-  const [brk, vend, dir, invites, links, vendorUsers, invoices] = await Promise.all([
+  const [brk, vend, invites, links, vendorUsers, invoices] = await Promise.all([
     svc.from("brokerages").select("id, name").is("deleted_at", null),
-    svc.from("vendors").select("id, brokerage_id, name, category, status, email, created_at").order("created_at", { ascending: false }).limit(5000),
-    svc.from("vendor_directory").select("id, brokerage_id, vendor_id, name, preferred, display_priority"),
+    svc.from("vendors").select("id, brokerage_id, name, category, status, email, created_at, preferred, display_priority").order("created_at", { ascending: false }).limit(5000),
     svc.from("vendor_invitations").select("vendor_id, brokerage_id, status, created_at").order("created_at", { ascending: false }).limit(5000),
     svc.from("user_role_assignments").select("user_id, vendor_id, brokerage_id").not("vendor_id", "is", null),
     svc.from("users").select("id, email").eq("user_type", "vendor"),
     svc.from("vendor_invoices").select("id, vendor_id, brokerage_id, status, total_amount, paid_at, line_items").order("created_at", { ascending: false }).limit(5000),
   ])
-  const failed = [brk, vend, dir, invites, links, vendorUsers, invoices].find((r) => r.error)
+  const failed = [brk, vend, invites, links, vendorUsers, invoices].find((r) => r.error)
   if (failed?.error) return <div className="p-6 text-red-600">Failed to load vendor board: {failed.error.message}</div>
 
   const brokerageName = new Map<string, string>()
@@ -104,24 +102,11 @@ export default async function SuperadminVendorsPage() {
     }
   }
 
-  // Directory placement flags, keyed on the REAL foreign key.
-  //
-  // This used to join on a lowercased `brokerage_id::name` string, under page
-  // copy asserting "the two tables share no foreign key". That stopped being
-  // true when m303 added vendor_directory.vendor_id REFERENCES vendors(id) —
-  // it is in the schema snapshot. Matching on a name means a vendor whose
-  // directory row drifts by so much as a trailing "LLC" reports placement:
-  // none, forever, on the console a platform admin uses to see who is paying.
-  const dirRows = (dir.data ?? []) as any[]
-  const dirByVendorId = new Map<string, { id: string; preferred: boolean }>()
-  for (const d of dirRows) {
-    if (!d.vendor_id) continue
-    if (!dirByVendorId.has(d.vendor_id)) dirByVendorId.set(d.vendor_id, { id: d.id, preferred: d.preferred === true })
-  }
-
-  // Latest PAID premium-placement term per directory row (line_items.placement_until,
+  // Latest PAID premium-placement term per VENDOR (line_items.placement_until,
   // written by markPlacementPaid; latest paid_at wins — a renewal supersedes).
-  const paidTermByDirectory = new Map<string, { paidAt: string; until: string | null }>()
+  // This resolved through a directory id until m355; the placement flags and the
+  // invoice now key on the same vendors.id, so there is no join to get wrong.
+  const paidTermByVendor = new Map<string, { paidAt: string; until: string | null }>()
   let outstandingCount = 0
   let outstandingTotal = 0
   const invoiceAgg = new Map<string, { billed: number; outstanding: number; paid: number }>()
@@ -131,8 +116,9 @@ export default async function SuperadminVendorsPage() {
       outstandingCount += 1
       outstandingTotal += amount
     }
-    // Per-vendor totals aggregate on vendor_id — matches vendors.id for ordinary
-    // invoices; placement invoices (vendor_id = directory id) simply won't join.
+    // Per-vendor totals aggregate on vendor_id — a vendors.id for EVERY invoice
+    // since m355, so placement revenue now lands in these totals for the first
+    // time. It was silently excluded before.
     if (inv.vendor_id) {
       const agg = invoiceAgg.get(inv.vendor_id) ?? { billed: 0, outstanding: 0, paid: 0 }
       agg.billed += amount
@@ -142,18 +128,17 @@ export default async function SuperadminVendorsPage() {
     }
     if (inv.status === "paid" && inv.paid_at) {
       const item = placementItemOf(inv.line_items)
-      if (item?.directory_id) {
-        const prev = paidTermByDirectory.get(item.directory_id)
+      if (item?.vendor_id) {
+        const prev = paidTermByVendor.get(item.vendor_id)
         if (!prev || inv.paid_at > prev.paidAt) {
-          paidTermByDirectory.set(item.directory_id, { paidAt: inv.paid_at, until: item.placement_until ?? null })
+          paidTermByVendor.set(item.vendor_id, { paidAt: inv.paid_at, until: item.placement_until ?? null })
         }
       }
     }
   }
 
   const rows = ((vend.data ?? []) as any[]).map((v) => {
-    const dirMatch = dirByVendorId.get(v.id)
-    const term = dirMatch ? paidTermByDirectory.get(dirMatch.id) : undefined
+    const term = paidTermByVendor.get(v.id)
     const linkedEmail = linkedUserByVendor.get(v.id) ?? null
     return {
       id: v.id as string,
@@ -164,14 +149,13 @@ export default async function SuperadminVendorsPage() {
       status: (v.status as string) ?? "—",
       inviteStatus: latestInviteByVendor.get(v.id) ?? null,
       linkedEmail,
-      // Placement is resolved through the by-name directory match (no FK exists).
-      placement: dirMatch
-        ? {
-            preferred: dirMatch.preferred,
-            until: term?.until ?? null,
-            paidTerm: !!term,
-          }
-        : null,
+      // Placement is a property of the vendor row. Every vendor has one — the
+      // "not in the directory" state ceased to exist with the second table.
+      placement: {
+        preferred: v.preferred === true,
+        until: term?.until ?? null,
+        paidTerm: !!term,
+      },
       invoices: invoiceAgg.get(v.id) ?? null,
       createdAt: (v.created_at as string) ?? null,
     }
@@ -179,10 +163,10 @@ export default async function SuperadminVendorsPage() {
   rows.sort((a, b) => a.tenant.localeCompare(b.tenant) || a.name.localeCompare(b.name))
 
   const totalVendors = rows.length
-  const preferredNow = dirRows.filter((d) => d.preferred === true).length
-  const preferredPaidUnexpired = dirRows.filter((d) => {
-    if (d.preferred !== true) return false
-    const term = paidTermByDirectory.get(d.id)
+  const preferredNow = ((vend.data ?? []) as any[]).filter((v) => v.preferred === true).length
+  const preferredPaidUnexpired = ((vend.data ?? []) as any[]).filter((v) => {
+    if (v.preferred !== true) return false
+    const term = paidTermByVendor.get(v.id)
     return !!term?.until && new Date(term.until).getTime() >= Date.now()
   }).length
   const linkedCount = rows.filter((r) => r.linkedEmail).length
@@ -194,8 +178,8 @@ export default async function SuperadminVendorsPage() {
           <h1 className="text-2xl font-bold">Vendors — every tenant</h1>
           <p className="text-muted-foreground text-sm mt-1">
             Cross-tenant vendor network posture: record status, invitation/portal linkage, premium-placement
-            monetization state, and the invoice ledger. Placement is joined on
-            vendor_directory.vendor_id, the real foreign key to vendors.
+            monetization state, and the invoice ledger. Placement lives on the
+            vendor row itself — one vendor system, one id (m355).
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -283,9 +267,7 @@ export default async function SuperadminVendorsPage() {
                       )}
                     </td>
                     <td className="p-2 text-xs">
-                      {r.placement === null ? (
-                        <span className="text-muted-foreground">not in directory</span>
-                      ) : r.placement.preferred ? (
+                      {r.placement.preferred ? (
                         <span className="rounded px-1.5 py-0.5 text-[11px] font-medium bg-amber-100 text-amber-800">
                           featured
                           {r.placement.until

@@ -13,6 +13,7 @@
  * deep-link, blockers shown inline, and one launch CTA gated on completeness.
  */
 
+import { useState } from "react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
@@ -31,7 +32,9 @@ import {
   ArrowRight,
   Rocket,
   AlertTriangle,
+  Hash,
 } from "lucide-react"
+import { LaunchListingDialog } from "./launch-listing-dialog"
 import { cn } from "@/lib/utils"
 import type { ListingStage } from "@/lib/listing-lifecycle/lifecycle-definitions"
 
@@ -70,6 +73,11 @@ interface LaunchReadinessChecklistProps {
   // Listing agreement
   hasListingAgreement: boolean
   agreementFullyExecuted: boolean
+  // MLS — the kernel's launch gate blocks on mls_number, so it belongs on the
+  // checklist that claims to say whether the listing can launch.
+  mlsNumber: string | null
+  mlsLink: string | null
+  listingAddress: string
   // Aggregate flags from parent
   mediaReady: boolean
   publishReady: boolean
@@ -83,7 +91,10 @@ interface ChecklistRow {
   icon: React.ComponentType<any>
   status: "complete" | "in_progress" | "pending"
   detail: string
-  href: string
+  /** Rows that navigate somewhere. Mutually exclusive with onClick. */
+  href?: string
+  /** Rows resolved in place (MLS number is entered in the launch dialog, not on a page). */
+  onClick?: () => void
   cta?: string
   /** Hide row entirely when not applicable */
   hidden?: boolean
@@ -112,8 +123,13 @@ export function LaunchReadinessChecklist(props: LaunchReadinessChecklistProps) {
     pricingNarrativeReady,
     hasListingAgreement,
     agreementFullyExecuted,
+    mlsNumber,
+    mlsLink,
+    listingAddress,
     blockers,
   } = props
+
+  const [launchOpen, setLaunchOpen] = useState(false)
 
   const fieldsMissing = requiredFields.filter(f => !f.complete)
   const fieldsComplete = requiredFields.length - fieldsMissing.length
@@ -173,7 +189,22 @@ export function LaunchReadinessChecklist(props: LaunchReadinessChecklistProps) {
       href: `/dashboard/listings/${listingId}/edit`,
       cta: fieldsMissing.length > 0 ? "Complete fields" : undefined,
     },
-    // 4. Marketing tier (super-admin only)
+    // 4. MLS number — the kernel refuses to launch without one
+    //    (validateListingLaunchReadiness). This row existed as a hard blocker
+    //    inside the kernel and nowhere on the surface, so the checklist could
+    //    read 7-of-7 ready while Launch failed with "No MLS number entered".
+    {
+      key: "mls",
+      label: "MLS Number",
+      icon: Hash,
+      status: mlsNumber ? "complete" : "pending",
+      detail: mlsNumber
+        ? `MLS# ${mlsNumber}${mlsLink ? " · linked" : ""}`
+        : "Required to go live — enter it or pull it from RentCast/IDX",
+      onClick: () => setLaunchOpen(true),
+      cta: mlsNumber ? undefined : "Add MLS number",
+    },
+    // 5. Marketing tier (super-admin only)
     {
       key: "marketing",
       label: "Marketing Tier",
@@ -267,8 +298,18 @@ export function LaunchReadinessChecklist(props: LaunchReadinessChecklistProps) {
             </div>
           </div>
 
-          {canLaunch && allComplete ? (
-            <Button size="sm" className="bg-green-600 hover:bg-green-700 gap-1.5">
+          {/* This button had NO onClick. The single most prominent control on
+              the lifecycle page — the one the whole checklist counts down to —
+              did nothing when pressed. It now opens the launch dialog, which is
+              where the MLS number is confirmed and launchListingAction runs. */}
+          {canLaunch ? (
+            <Button
+              size="sm"
+              className="bg-green-600 hover:bg-green-700 gap-1.5"
+              onClick={() => setLaunchOpen(true)}
+              disabled={!allComplete}
+              title={allComplete ? undefined : "Clear the remaining items first"}
+            >
               <Rocket className="h-3.5 w-3.5" />
               Launch Listing
             </Button>
@@ -298,12 +339,22 @@ export function LaunchReadinessChecklist(props: LaunchReadinessChecklistProps) {
               row.status === "complete" ? CheckCircle2 :
               row.status === "in_progress" ? Circle :
               Circle
+            const RowShell = ({ children }: { children: React.ReactNode }) =>
+              row.href ? (
+                <Link href={row.href} className="flex items-center gap-3 px-3 py-2.5 hover:bg-muted/40 transition-colors">
+                  {children}
+                </Link>
+              ) : (
+                <button
+                  type="button"
+                  onClick={row.onClick}
+                  className="w-full text-left flex items-center gap-3 px-3 py-2.5 hover:bg-muted/40 transition-colors"
+                >
+                  {children}
+                </button>
+              )
             return (
-              <Link
-                key={row.key}
-                href={row.href}
-                className="flex items-center gap-3 px-3 py-2.5 hover:bg-muted/40 transition-colors"
-              >
+              <RowShell key={row.key}>
                 <StatusIcon
                   className={cn(
                     "h-4 w-4 shrink-0",
@@ -329,11 +380,21 @@ export function LaunchReadinessChecklist(props: LaunchReadinessChecklistProps) {
                     <ArrowRight className="h-2.5 w-2.5" />
                   </Badge>
                 )}
-              </Link>
+              </RowShell>
             )
           })}
         </div>
       </CardContent>
+
+      <LaunchListingDialog
+        open={launchOpen}
+        onOpenChange={setLaunchOpen}
+        listingId={listingId}
+        listingAddress={listingAddress}
+        initialMlsNumber={mlsNumber}
+        initialMlsLink={mlsLink}
+        outstanding={rows.filter(r => r.key !== "mls" && r.status !== "complete").map(r => r.label)}
+      />
     </Card>
   )
 }

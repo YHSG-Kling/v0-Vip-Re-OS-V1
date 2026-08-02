@@ -666,7 +666,8 @@ export type {
 // Canonical Vendor kernel commands — all record creation, assignment, status
 // transitions, and deliverable attachment flow through these commands.
 // Business rules:
-//   • vendors (marketplace) and vendor_directory (curated) are SEPARATE tables
+//   • vendors is the ONE vendor table — marketplace bench AND curation/placement
+//     flags (m355 merged the formerly separate vendor_directory into it)
 //   • vendor_bookings.listing_id = listing-level assignments
 //   • vendor_assignments + vendor_jobs = transaction-level assignments
 //   • Status transitions enforced: booked→confirmed→completed | any→cancelled|no_show

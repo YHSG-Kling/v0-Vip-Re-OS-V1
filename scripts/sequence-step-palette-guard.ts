@@ -129,8 +129,22 @@ console.log("\n[the same class, elsewhere: the vendor category picker]")
   check("the vocabulary module matches the column exactly",
     VENDOR_CATEGORIES.length === live.length &&
     VENDOR_CATEGORIES.every((c) => live.includes(c)))
-  check("…and it is the SAME taxonomy vendor_directory uses (m304)",
-    (CHECK_VOCABULARIES.vendor_directory?.category ?? []).length === live.length)
+  // There used to be a second vendor table with its own copy of this CHECK, and
+  // this asserted the two agreed. m355 merged them, so the assertion that
+  // matters now is that there is only ONE — a reappearing second vocabulary is
+  // the drift this was ever guarding against.
+  // NOT "exactly one vendor category vocabulary" — vendor_marketplace_profiles
+  // has a `category` too and it is a genuinely different taxonomy (api |
+  // integration | service | tool — SaaS listings, not trades). The construct
+  // that matters is that the REAL-ESTATE TRADE taxonomy lives in exactly one
+  // place, so no second table can drift from it.
+  const tradeTokens = ["inspector", "stager", "photographer"]
+  const tradeVocabs = Object.keys(CHECK_VOCABULARIES).filter((t) => {
+    const cat = (CHECK_VOCABULARIES as any)[t]?.category
+    return Array.isArray(cat) && tradeTokens.every((tok) => cat.includes(tok))
+  })
+  check(`the vendor TRADE taxonomy lives in exactly one table (${tradeVocabs.join(", ") || "none"})`,
+    tradeVocabs.length === 1 && tradeVocabs[0] === "vendors")
 
   // The groups are what the picker renders. If they drifted from the vocabulary a
   // category would either never appear in the UI or appear twice — so they are

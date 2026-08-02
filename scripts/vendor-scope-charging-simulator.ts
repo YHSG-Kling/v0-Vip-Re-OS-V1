@@ -245,12 +245,26 @@ check("panel shows an honest empty state when the agent has no attributed vendor
 section("Layer 3d — premium placement: documented brokerage-level verdict (not faked team scope)")
 
 check("verdict constant: placement scope is 'brokerage'", PREMIUM_PLACEMENT_SCOPE === "brokerage")
-check("verdict documents WHY (brokerage-wide directory flags, no team-scoped surface)",
-  /brokerage-wide vendor_directory flags/.test(PREMIUM_PLACEMENT_SCOPE_VERDICT)
+check("verdict documents WHY (brokerage-wide placement flags, no team-scoped surface)",
+  /brokerage-wide vendor placement flags/.test(PREMIUM_PLACEMENT_SCOPE_VERDICT)
   && /no team- or agent-scoped directory/.test(PREMIUM_PLACEMENT_SCOPE_VERDICT))
+// COMMENT-STRIPPED on purpose. `src` reads raw, and this asserts what the module
+// DOES, not what it says. The header legitimately narrates the m355 merge (and so
+// names the dropped table); reading prose as code made a truthful comment fail a
+// check about queries.
 const placementSrc = src("lib/vendors/premium-placement.ts")
-check("premium-placement internals untouched: still flips brokerage-anchored vendor_directory flags",
-  placementSrc.includes('.from("vendor_directory")')
+  .replace(/\/\*[\s\S]*?\*\//g, "")
+  .replace(/^[ \t]*\/\/.*$/gm, "")
+// The flags moved onto `vendors` in m355; the SCOPE claim is unchanged, and that
+// is what this asserts — a brokerage-anchored flip of the placement flags.
+//
+// The `team_id` clause is the load-bearing half: `vendors` now HAS a team_id
+// column, so this proves premium-placement never reads or writes it. A placement
+// that quietly narrowed to one team would contradict the verdict above while the
+// scope constant still said "brokerage".
+check("premium-placement flips brokerage-anchored placement flags, and nothing team-scoped",
+  placementSrc.includes('.from("vendors")')
+  && !placementSrc.includes("vendor_directory")
   && placementSrc.includes("preferred: true")
   && placementSrc.includes('.eq("brokerage_id", brokerageId)')
   && !placementSrc.includes("team_id"))

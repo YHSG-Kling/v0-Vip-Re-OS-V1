@@ -13,7 +13,6 @@ import { getAgentContext } from "@/lib/identity"
 import {
   offerPremiumPlacement,
   markPlacementPaid,
-  ensureDirectoryEntryForVendor,
 } from "@/lib/vendors/premium-placement"
 
 const PLACEMENT_ADMIN_ROLES = new Set([
@@ -40,16 +39,12 @@ async function requirePlacementAdmin(): Promise<
 
 export async function offerPremiumPlacementAction(params: {
   /**
-   * A vendors.id — the row the Vendors page actually renders. The action used
-   * to demand a vendorDirectoryId, and nothing in the product could produce
-   * one: vendor_directory had no INSERT path anywhere in the repo (live count
-   * 0), so this entry point was unreachable and the placement feature could
-   * never be sold. Callers now pass the bench vendor and the curation row is
-   * resolved (created on first sale) here.
+   * A vendors.id — the row the Vendors page actually renders, and now the only
+   * id in play. This used to take an optional vendorDirectoryId as well, and
+   * resolve-or-create a second row when it was absent. That second row was the
+   * drift (m355); there is one vendor row and one id.
    */
-  vendorId?: string
-  /** Kept for a caller that already holds a curated row. */
-  vendorDirectoryId?: string
+  vendorId: string
   months: number
   priceCents: number
   notes?: string
@@ -57,26 +52,13 @@ export async function offerPremiumPlacementAction(params: {
   const gate = await requirePlacementAdmin()
   if (!gate.ok) return { success: false, error: gate.error }
 
-  let directoryId: string | null = params.vendorDirectoryId ?? null
-  if (!directoryId) {
-    if (!params.vendorId) {
-      return { success: false, error: "Pick the vendor this placement is for" }
-    }
-    const curated = await ensureDirectoryEntryForVendor({
-      brokerageId: gate.brokerageId,
-      vendorId: params.vendorId,
-    })
-    // Narrow on the id, not on `error` — the union is discriminated by which
-    // field is null, and a check on `error` alone leaves directoryId nullable.
-    if (!curated.directoryId) {
-      return { success: false, error: curated.error ?? "Could not curate this vendor" }
-    }
-    directoryId = curated.directoryId
+  if (!params.vendorId) {
+    return { success: false, error: "Pick the vendor this placement is for" }
   }
 
   const result = await offerPremiumPlacement({
     brokerageId: gate.brokerageId,
-    vendorDirectoryId: directoryId,
+    vendorId: params.vendorId,
     months: params.months,
     priceCents: params.priceCents,
     notes: params.notes,

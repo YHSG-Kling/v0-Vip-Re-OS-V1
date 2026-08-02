@@ -2,7 +2,8 @@
  * Resolve the curated vendor list a specific contact should see in their
  * portal — persona-aware, lifecycle-aware, team-aware.
  *
- * The vendor_directory table holds entries scoped by:
+ * The vendors table carries the curation columns (m355 — they used to live on a
+ * separate vendor_directory table) and entries are scoped by:
  *   • brokerage_id (always set)
  *   • team_id (optional — when set, the entry is a team-curated pick)
  *   • audience_tags text[] (intersects contact persona / contact_type)
@@ -57,7 +58,7 @@ export interface ContactVendorContext {
   /** Lifecycle tag derived from contact + transaction state (one of
    *  pre_listing | under_contract | closing_prep | closed | forever). */
   stage:           string | null
-  /** Tags we'll OR-match against vendor_directory.audience_tags. */
+  /** Tags we'll OR-match against vendors.audience_tags. */
   audienceTags:    string[]
 }
 
@@ -69,79 +70,48 @@ export async function resolveContactVendors(
 ): Promise<VendorDirectoryEntry[]> {
   if (!ctx.brokerageId) return []
 
-  // CURATION LIVES IN vendor_directory; IDENTITY LIVES IN vendors.
-  // This used to read `vendors` and hardcode preferred/audience_tags/stage_tags/
-  // display_priority/visible_in_portal to null-or-empty, while the docstring
-  // above kept describing the vendor_directory model in full. Everything that
-  // docstring promises was therefore off: every contact saw every vendor
-  // (empty tag arrays match all), nothing could be hidden from the portal, paid
-  // placement never surfaced, and resolveVendorDisclosure() — which decides the
-  // RESPA notice from `preferred` — could never reach its preferred_general
-  // branch. m303 added vendor_directory.vendor_id so the two can be joined for
-  // real instead of guessed at by name.
+  // ONE VENDOR SYSTEM (m355). This used to fork: a "curated" branch reading
+  // vendor_directory with a vendors!inner embed, and an "uncurated" fallback
+  // reading vendors and hardcoding the five curation fields. Both branches
+  // collapse into this single query, because placement now lives on the vendor
+  // row — there is no second table to have or not have an entry in.
   //
-  // The returned `id` is deliberately the VENDORS id, not the directory row id:
-  // portal bookings FK to vendors(id) and the AfBA config matches on it, so a
-  // directory id here would break booking. The directory supplies curation only.
-  const { data: curated, error: curatedErr } = await supabase
-    .from("vendor_directory")
-    .select("id, vendor_id, name, category, phone, email, website, rating, notes, brokerage_id, team_id, preferred, audience_tags, stage_tags, display_priority, visible_in_portal, vendors!inner(id, name, category, phone, email, website, rating, notes, status)")
+  // BEHAVIOURAL DELTA, stated rather than buried: the old fallback branch
+  // ignored visible_in_portal (it had no row to read it from, so it hardcoded
+  // `true`). There is no fork now, so a vendor hidden from the portal is hidden
+  // — always, for every brokerage. That is the intended semantics and the point
+  // of the fix, but it IS a change: a brokerage that had never curated used to
+  // show every approved vendor to every contact regardless of the flag.
+  //
+  // The returned `id` is a vendors.id — which is now the only vendor id there
+  // is. Portal bookings FK to vendors(id) and the AfBA config matches on it.
+  const { data, error } = await supabase
+    .from("vendors")
+    .select("id, name, category, phone, email, website, rating, notes, brokerage_id, team_id, preferred, audience_tags, stage_tags, display_priority, visible_in_portal")
     .eq("brokerage_id", ctx.brokerageId)
-    .not("vendor_id", "is", null)
+    .eq("status", "active")
     .neq("visible_in_portal", false)
-    .eq("vendors.status", "active")
 
-  let rows: VendorDirectoryEntry[]
+  if (error || !data) return []
 
-  if (!curatedErr && curated && curated.length > 0) {
-    rows = (curated as Array<Record<string, any>>).map((d): VendorDirectoryEntry => {
-      const v = d.vendors as Record<string, any>
-      return {
-        // vendors is canonical for identity + contact; the directory may carry
-        // its own copies, so prefer the bench and fall back to the curated row.
-        id:       v.id as string,
-        name:     (v.name ?? d.name) as string | null,
-        category: (v.category ?? d.category) as string | null,
-        phone:    (v.phone ?? d.phone) as string | null,
-        email:    (v.email ?? d.email) as string | null,
-        website:  (v.website ?? d.website) as string | null,
-        rating:   (v.rating ?? d.rating) as number | null,
-        notes:    (d.notes ?? v.notes) as string | null,
-        brokerage_id: d.brokerage_id as string | null,
-        // curation — the whole reason this table exists
-        team_id:           d.team_id as string | null,
-        preferred:         d.preferred as boolean | null,
-        audience_tags:     Array.isArray(d.audience_tags) ? d.audience_tags : [],
-        stage_tags:        Array.isArray(d.stage_tags) ? d.stage_tags : [],
-        display_priority:  d.display_priority as number | null,
-        visible_in_portal: d.visible_in_portal as boolean | null,
-      }
-    })
-  } else {
-    // UNCURATED BROKERAGE — an honest fallback, not a silent equivalence.
-    // A tenant that has never curated its directory still gets a working portal
-    // from the approved bench. The curation fields are null/empty because they
-    // genuinely are not set, NOT because the columns were unreachable: with no
-    // directory row there is no `preferred` to surface, so resolveVendorDisclosure
-    // correctly returns no preferred_general notice. Broker approval
-    // (status='active') is the only gate that exists in this state.
-    const { data, error } = await supabase
-      .from("vendors")
-      .select("id, name, category, phone, email, website, rating, notes, brokerage_id")
-      .eq("status", "active")
-      .eq("brokerage_id", ctx.brokerageId)
-    if (error || !data) return []
-    rows = (data as Array<Record<string, any>>).map((r): VendorDirectoryEntry => ({
-      id: r.id, name: r.name, category: r.category, phone: r.phone, email: r.email,
-      website: r.website, rating: r.rating, notes: r.notes, brokerage_id: r.brokerage_id,
-      team_id: null,
-      preferred: null,
-      audience_tags: [],
-      stage_tags: [],
-      display_priority: null,
-      visible_in_portal: true,
-    }))
-  }
+  const rows: VendorDirectoryEntry[] = (data as Array<Record<string, any>>).map((r): VendorDirectoryEntry => ({
+    id:       r.id as string,
+    name:     r.name as string | null,
+    category: r.category as string | null,
+    phone:    r.phone as string | null,
+    email:    r.email as string | null,
+    website:  r.website as string | null,
+    rating:   r.rating as number | null,
+    notes:    r.notes as string | null,
+    brokerage_id: r.brokerage_id as string | null,
+    // curation — columns on the vendor row since m355
+    team_id:           r.team_id as string | null,
+    preferred:         r.preferred as boolean | null,
+    audience_tags:     Array.isArray(r.audience_tags) ? r.audience_tags : [],
+    stage_tags:        Array.isArray(r.stage_tags) ? r.stage_tags : [],
+    display_priority:  r.display_priority as number | null,
+    visible_in_portal: r.visible_in_portal as boolean | null,
+  }))
 
   const audienceSet = new Set(ctx.audienceTags.filter(Boolean))
   const stageTag    = ctx.stage ?? null

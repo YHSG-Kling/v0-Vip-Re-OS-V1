@@ -56,14 +56,17 @@ const src = (p: string) =>
 console.log("\n── the module matches the live CHECK, exactly ──")
 {
   const live = CHECK_VOCABULARIES.vendors?.category ?? []
-  const dir  = CHECK_VOCABULARIES.vendor_directory?.category ?? []
   check(`the snapshot carries the widened taxonomy (${live.length})`, live.length === 38)
   check("every category the module declares is admitted",
     VENDOR_CATEGORIES.every((c) => live.includes(c)))
   check("every category the CHECK admits is declared",
     live.every((c) => (VENDOR_CATEGORIES as readonly string[]).includes(c)))
-  check("bench and directory now share ONE taxonomy (m304)",
-    live.length === dir.length && live.every((c) => dir.includes(c)))
+  // m304 made the bench and directory taxonomies equal; m355 removed the second
+  // table entirely, so the property to prove is that no second one came back.
+  // `?? []` would have made the old equality check pass VACUOUSLY once the
+  // directory key disappeared — a false green — so this asserts absence directly.
+  check("there is no second vendor category vocabulary to drift from (m355)",
+    (CHECK_VOCABULARIES as any).vendor_directory === undefined)
   check("the title category is the single token 'title'",
     VENDOR_CATEGORY_TITLE === "title" && live.includes("title"))
   check("the lender category is 'lender'",

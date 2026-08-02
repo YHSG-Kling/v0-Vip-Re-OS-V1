@@ -153,7 +153,7 @@ export function canManageVendorCharge(args: {
 // ─── Premium placement — documented scope verdict ────────────────────────────
 
 /** Premium placement stays BROKERAGE-level. This is a verdict, not a gap:
- *  markPlacementPaid flips vendor_directory.{preferred, display_priority,
+ *  markPlacementPaid flips vendors.{preferred, display_priority,
  *  visible_in_portal} — brokerage-wide flags every member of the brokerage
  *  (and the contact portal) sees. There is no team- or agent-scoped directory
  *  row to feature, so a "team placement" would fake a scope the directory
@@ -161,7 +161,7 @@ export function canManageVendorCharge(args: {
  *  charge lane (issueVendorCharge) instead. */
 export const PREMIUM_PLACEMENT_SCOPE = "brokerage" as const
 export const PREMIUM_PLACEMENT_SCOPE_VERDICT =
-  "Premium placement remains brokerage-level: it flips brokerage-wide vendor_directory flags (preferred / display_priority / visible_in_portal) that the whole brokerage and the contact portal read — there is no team- or agent-scoped directory surface to feature into. Agents and teams charge their vendors through the general vendor-charge lane instead."
+  "Premium placement remains brokerage-level: it flips brokerage-wide vendor placement flags (preferred / display_priority / visible_in_portal) that the whole brokerage and the contact portal read — there is no team- or agent-scoped directory surface to feature into. Agents and teams charge their vendors through the general vendor-charge lane instead."
 
 // ─── Live: resolve the caller's vendor actor scope ───────────────────────────
 

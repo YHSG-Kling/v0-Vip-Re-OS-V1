@@ -7,7 +7,6 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { VendorDirectoryClient } from "./vendor-directory-client"
 import {
   PremiumPlacementPanel,
-  type DirectoryEntry,
   type PlacementInvoice,
 } from "./premium-placement-panel"
 import {
@@ -70,7 +69,6 @@ export default async function VendorsPage() {
     assignedVendors,
     preferredVendors,
     deliverables,
-    directoryEntries,
     placementInvoices,
   ] = await Promise.all([
     searchVendors({ limit: 100 }),
@@ -85,11 +83,16 @@ export default async function VendorsPage() {
       .limit(50)
       .then(r => r.data || []),
     getAgentAssignedVendors(50),
-    // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint)
+    // ONE VENDOR SYSTEM (m355): the placement flags are columns on the vendor
+    // row, so the Preferred tab reads them here instead of joining a second
+    // table. display_priority leads the sort — that is what a brokerage's
+    // vendor actually paid for, and ordering by rating alone meant a paid
+    // placement changed nothing about where the vendor appeared.
     supabase
       .from("vendors")
-      .select("id, name, phone, email, website, category, notes, rating, brokerage_id")
+      .select("id, name, phone, email, website, category, notes, rating, brokerage_id, preferred, display_priority, visible_in_portal")
       .eq("brokerage_id", profile.brokerage_id)
+      .order("display_priority", { ascending: false })
       .order("rating", { ascending: false, nullsFirst: false })
       .then(r => r.data || []),
     // Vendor deliverables — client_documents with doc_type = 'vendor_deliverable'
@@ -101,24 +104,9 @@ export default async function VendorsPage() {
       .order("created_at", { ascending: false })
       .limit(100)
       .then(r => r.data || []),
-    // Premium placement (monetization): curated vendor_directory rows carry the
-    // paid placement flags {preferred, display_priority}; the vendor_invoices
-    // ledger holds the placement charges. See lib/vendors/premium-placement.ts.
-    supabase
-      .from("vendor_directory")
-      .select("id, vendor_id, name, category, preferred, display_priority")
-      .eq("brokerage_id", profile.brokerage_id)
-      .order("display_priority", { ascending: false })
-      .order("name", { ascending: true })
-      .limit(100)
-      .then(r => (r.data || []) as Array<{
-        id: string
-        vendor_id: string | null
-        name: string | null
-        category: string | null
-        preferred: boolean | null
-        display_priority: number | null
-      }>),
+    // Premium placement charges live in the vendor_invoices ledger; the paid
+    // flags themselves are on the vendor row read above.
+    // See lib/vendors/premium-placement.ts.
     supabase
       .from("vendor_invoices")
       .select("id, invoice_number, status, total_amount, due_date, paid_at, line_items")
@@ -387,32 +375,22 @@ export default async function VendorsPage() {
           </Card>
 
           {/* Premium placement — subscribers charge vendors to be featured here */}
-          {/*
-            EVERY BENCH VENDOR IS SELLABLE, curated or not. This used to be fed
-            vendor_directory rows only — and nothing in the repo ever inserted
-            one (live count: 0 in every tenancy), so the list was always empty,
-            the panel's own `length === 0` early-return fired, and the premium
-            placement surface never rendered at all. The curation row is created
-            on the first sale; until then a vendor simply has no directory id.
-          */}
+          {/* Every vendor on the brokerage's bench is sellable — placement is a
+              flag on the row, so there is no second list to be curated into. */}
           <PremiumPlacementPanel
-            directoryEntries={(preferredVendors ?? []).map((v: any) => {
-              const curated = directoryEntries.find((d) => d.vendor_id === v.id)
-              return {
-                id: curated?.id ?? null,
-                vendorId: v.id as string,
-                name: curated?.name ?? v.name ?? null,
-                category: curated?.category ?? v.category ?? null,
-                preferred: curated?.preferred ?? false,
-                display_priority: curated?.display_priority ?? 0,
-              }
-            })}
+            vendors={(preferredVendors ?? []).map((v: any) => ({
+              vendorId: v.id as string,
+              name: v.name ?? null,
+              category: v.category ?? null,
+              preferred: v.preferred ?? false,
+              display_priority: v.display_priority ?? 0,
+            }))}
             placementInvoices={placementInvoices}
             userRole={profile.user_type ?? "agent"}
           />
 
           {/* General tenant→vendor charges (beyond placement). Premium placement
-              above stays brokerage-level (brokerage-wide directory flags); agents
+              above stays brokerage-level (brokerage-wide vendor placement flags); agents
               and team leads monetize THEIR vendors through this lane instead. */}
           <VendorChargesPanel
             vendors={(preferredVendors ?? []).map((v: any) => ({

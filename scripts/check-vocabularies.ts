@@ -1512,9 +1512,6 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     scope: ["financial", "pii_basic", "pii_full", "transaction_docs"],
     status: ["active", "expired", "revoked"],
   },
-  vendor_directory: {
-    category: ["3d_tour", "appliance_repair", "attorney", "cleaner", "contractor", "drone_pilot", "electrician", "estate_sale", "financial_advisor", "flooring", "garage_door", "handyman", "home_warranty", "hvac", "inspector", "insurance", "interior_design", "landscaping", "lender", "mover", "organizer", "other", "painter", "pest_control", "photographer", "plumber", "pool_service", "property_management", "refinance_lender", "roofer", "security", "smart_home", "solar", "stager", "tax_pro", "title", "videographer", "window_treatment"],
-  },
   vendor_earnings: {
     status: ["available", "on_hold", "paid_out", "pending"],
   },

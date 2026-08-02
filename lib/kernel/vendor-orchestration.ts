@@ -247,18 +247,23 @@ export async function runVendorOrchestration(
   // (awaiting or denied verification) is never put in front of an agent. Legacy null-status rows are
   // treated as active for backward-compatibility (they predate the verification gate).
   const { data: benchRows } = await supabase.from("vendors")
-    .select("id, name, category, email, rating, estimated_turnaround_days")
+    .select("id, name, category, email, rating, estimated_turnaround_days, preferred")
     .eq("brokerage_id", brokerageId)
     .not("status", "in", "(pending,inactive,archived)").limit(500)
   const bench: BenchVendor[] = (benchRows ?? []) as BenchVendor[]
 
-  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint).
-  // vendors has no `preferred` flag; explicit broker approval (status='active', set only by approveVendor) is the
-  // closest real flag, so explicitly-approved vendors rank ahead of legacy null-status bench rows.
-  const { data: dirRows } = await supabase.from("vendors")
-    .select("id")
-    .eq("brokerage_id", brokerageId).eq("status", "active").limit(500)
-  const preferredVendorIds = new Set<string>(((dirRows ?? []) as Array<{ id: string }>).map((r) => r.id))
+  // PREFERENCE IS REAL AGAIN. This used to be a SECOND query against `vendors`
+  // standing in for a `preferred` flag the bench did not have — approval status
+  // ("has this vendor been approved at all") wearing preference's name. Every
+  // approved vendor was therefore "preferred", so preference-first ranking sorted
+  // nothing. m355 moved the broker's actual preferred flag onto the vendor row,
+  // so the one read above carries it and the promise the orchestrator has always
+  // made in its docstring is now kept.
+  const preferredVendorIds = new Set<string>(
+    ((benchRows ?? []) as Array<{ id: string; preferred?: boolean | null }>)
+      .filter((r) => r.preferred === true)
+      .map((r) => r.id),
+  )
 
   // OUTCOME AWARENESS — a proven SLA breacher (repeatedly late or a no-show) is auto-demoted so the
   // orchestrator stops auto-picking someone who keeps failing. Reliability = on-time completions +

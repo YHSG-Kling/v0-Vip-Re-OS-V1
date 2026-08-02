@@ -18,6 +18,22 @@ export interface NormalizedIdxListing {
   propertyType: string | null
   daysOnMarket: number | null
   photoUrl: string | null
+  /**
+   * The MLS listing number from the connected IDX feed. IDX Broker's raw field
+   * is `mlsID` — the alert engine already keys on that spelling
+   * (lib/property-alerts/idx-alert-search.ts), so it is confirmed, not guessed.
+   *
+   * It was previously only ever read as one of four fallbacks for `externalId`,
+   * which meant that whenever `listingID` was present — the normal case — the
+   * MLS number was silently discarded. A brokerage that connected IDX
+   * specifically to get MLS numbers got none.
+   *
+   * Kept SEPARATE from externalId on purpose: externalId is a feed-local
+   * identity used for dedupe, the MLS number is the industry identity a
+   * consumer and a compliance officer both recognise. Collapsing them loses
+   * the second.
+   */
+  mlsNumber: string | null
 }
 
 export class IDXBrokerClient {
@@ -184,6 +200,7 @@ export class IDXBrokerClient {
       propertyType: str(r.idxPropType ?? r.propType ?? r.propStatus),
       daysOnMarket: num(r.daysOnMarket ?? r.dom),
       photoUrl:   str(r.image?.["0"]?.url ?? r.image?.[0]?.url ?? r.thumbnail ?? r.photoURL),
+      mlsNumber:  str(r.mlsID ?? r.mlsNumber ?? r.listingID),
     }))
 
     // Client-side narrowing.

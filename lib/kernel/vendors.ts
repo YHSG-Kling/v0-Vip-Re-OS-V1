@@ -6,7 +6,10 @@
 //
 // Kernel Ownership Rules:
 //   - `vendors`         = marketplace table (global + brokerage-specific)
-//   - `vendor_directory`= brokerage curated preferred list (separate table)
+//   - curation/placement (preferred, display_priority, visible_in_portal,
+//     audience_tags, stage_tags, team_id) are COLUMNS on `vendors` since m355.
+//     They were a separate `vendor_directory` table; two rows per vendor is
+//     what the drift was.
 //   - `vendor_bookings` = listing-level and contact-level assignments
 //   - `vendor_assignments` + `vendor_jobs` = transaction-level assignments
 //   - Every state transition emits a KernelEvent via lifecycle_events
@@ -24,7 +27,8 @@
 //
 // Explicit Rules:
 //   - vendor_bookings.status transitions: booked→confirmed→completed | any→cancelled|no_show
-//   - vendor_directory is READ-ONLY from this kernel (managed via settings)
+//   - the placement flags are written ONLY by lib/vendors/premium-placement.ts
+//     (sold + paid) — never as a side effect of ordinary vendor edits here
 //   - vendor_assignments.assigned_by_agent_id is FK to agents.id (not users.id)
 //   - attachVendorDeliverable requires the booking to exist and belong to the brokerage
 //   - createVendorRecord enforces case-insensitive name uniqueness per brokerage
@@ -34,7 +38,7 @@
 //   client_documents, lifecycle_events
 //
 // Tables read (read-only):
-//   vendors, vendor_directory, vendor_bookings, vendor_assignments,
+//   vendors, vendor_bookings, vendor_assignments,
 //   vendor_ratings, referral_partners, listings, transactions
 
 import { createServiceClient } from "@/lib/supabase/service"
@@ -324,7 +328,7 @@ export async function loadVendorWorkspace(
       .eq("brokerage_id", brokerageId)
       .order("booked_at", { ascending: false })
       .limit(50),
-    // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint)
+    // ONE vendor table since m355 — curation lives on these rows.
     supabase
       .from("vendors")
       .select("id, name, category, phone, email, website, notes, rating, brokerage_id")
@@ -905,7 +909,7 @@ export async function loadPartnerDirectory(
   const supabase = createServiceClient()
 
   const [directoryRes, preferredRes, referralRes] = await Promise.all([
-    // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint)
+    // ONE vendor table since m355 — curation lives on these rows.
     supabase
       .from("vendors")
       .select("id, name, category, phone, email, website, notes, rating, brokerage_id")

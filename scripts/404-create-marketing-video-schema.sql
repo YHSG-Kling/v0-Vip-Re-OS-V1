@@ -1,3 +1,12 @@
+-- ╔══════════════════════════════════════════════════════════════════════════╗
+-- ║ DEAD — DO NOT RE-RUN. The `vendor_directory` table this file touches no   ║
+-- ║ longer exists: m355 folded its curation columns onto `vendors` and        ║
+-- ║ dropped it (one vendor system, per the owner's ruling on drift).          ║
+-- ║ Re-running would CREATE a different vendor_directory (vendor_name/       ║
+-- ║ vendor_type columns that never existed live) and a permissive RLS policy.║
+-- ║ Kept only as the historical record of how the schema got here.           ║
+-- ╚══════════════════════════════════════════════════════════════════════════╝
+
 -- Marketing, Video Generation, and Content Creation Schema
 -- Version: 1.0
 -- This script creates tables for video generation, content creation, open houses,

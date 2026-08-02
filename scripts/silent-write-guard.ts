@@ -55,7 +55,13 @@ export const CONSEQUENTIAL_TABLES = [
   "commissions", "commission_distributions", "agent_commissions", "transaction_commissions",
   "platform_credentials",
   "compliance_events", "required_disclosures",
-  "vendor_directory",
+  // VENDORS carries the premium-placement flags since m355 (they were on
+  // vendor_directory, which was in this list). markPlacementPaid flipping
+  // `preferred` is the DELIVERY of something a vendor paid for — a lost write
+  // there is a paid placement that silently never happens. It also carries
+  // `status`, which is the broker approval gate deciding whether a vendor may be
+  // booked or shown to a client at all.
+  "vendors",
   // ACTIVITIES BELONGS HERE, and its absence was the gap that let a whole class
   // through. This set was money + compliance ledgers; activities is BOTH a
   // compliance record and an operational one. The kernel's conversation memory

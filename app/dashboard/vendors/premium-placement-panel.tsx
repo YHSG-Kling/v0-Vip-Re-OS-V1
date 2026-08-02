@@ -1,10 +1,14 @@
 "use client"
 
 // Premium Placement panel — the monetization surface on the Preferred tab.
-// Brokerage leadership charges vendors for featured placement in the curated
-// directory (vendor_directory): offer → placement invoice (awaiting payment)
-// → "Mark paid & feature" once funds are collected (check / ACH / external
-// Stripe invoice — collection is manual in v1; see lib/vendors/premium-placement).
+// Brokerage leadership charges vendors for featured placement: offer →
+// placement invoice (awaiting payment) → "Mark paid & feature" once funds are
+// collected (check / ACH / external Stripe invoice — collection is manual in v1;
+// see lib/vendors/premium-placement).
+//
+// ONE VENDOR SYSTEM (m355): placement is a set of columns on the vendor row, not
+// a second `vendor_directory` row keyed separately. There is one id — vendorId —
+// and the panel no longer has to reconcile two.
 
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
@@ -26,16 +30,8 @@ import {
   markPlacementPaidAction,
 } from "@/app/actions/vendor-premium-placement"
 
-export interface DirectoryEntry {
-  /**
-   * The vendor_directory.id — NULL until this vendor has been curated. It is
-   * created on the first sale (ensureDirectoryEntryForVendor), because nothing
-   * in the product ever inserted a vendor_directory row: the table was empty in
-   * every tenancy, so a panel that listed only curated rows listed nothing and
-   * returned null forever.
-   */
-  id: string | null
-  /** The vendors.id — always present; this is what the offer is placed against. */
+export interface PlaceableVendor {
+  /** The vendors.id — the one identity. This is what the offer is placed against. */
   vendorId: string
   name: string | null
   category: string | null
@@ -54,7 +50,7 @@ export interface PlacementInvoice {
     type?: string
     months?: number
     price_cents?: number
-    directory_id?: string
+    vendor_id?: string
     placement_until?: string
   }> | null
 }
@@ -67,11 +63,11 @@ function placementItem(inv: PlacementInvoice) {
 }
 
 export function PremiumPlacementPanel({
-  directoryEntries,
+  vendors,
   placementInvoices,
   userRole,
 }: {
-  directoryEntries: DirectoryEntry[]
+  vendors: PlaceableVendor[]
   placementInvoices: PlacementInvoice[]
   userRole: string
 }) {
@@ -86,15 +82,15 @@ export function PremiumPlacementPanel({
 
   const canManage = MANAGER_ROLES.includes(userRole)
 
-  // Latest paid placement term per directory row → "active until" line.
+  // Latest paid placement term per vendor → "active until" line.
   const activeUntil = new Map<string, string>()
   for (const inv of placementInvoices) {
     if (inv.status !== "paid") continue
     const item = placementItem(inv)
-    if (!item?.directory_id || !item.placement_until) continue
-    const existing = activeUntil.get(item.directory_id)
+    if (!item?.vendor_id || !item.placement_until) continue
+    const existing = activeUntil.get(item.vendor_id)
     if (!existing || item.placement_until > existing) {
-      activeUntil.set(item.directory_id, item.placement_until)
+      activeUntil.set(item.vendor_id, item.placement_until)
     }
   }
 
@@ -102,19 +98,14 @@ export function PremiumPlacementPanel({
     (inv) => inv.status !== "paid" && inv.status !== "cancelled"
   )
 
-  const handleOffer = (entry: DirectoryEntry) => {
+  const handleOffer = (entry: PlaceableVendor) => {
     setMessage(null)
     setError(null)
     const monthsNum = parseInt(months, 10)
     const priceCents = Math.round(parseFloat(price) * 100)
     startTransition(async () => {
-      // Send the bench vendor id; the action curates on first sale. The
-      // directory id is sent too when the vendor has already been curated, so
-      // a second placement reuses the existing row rather than racing the
-      // partial unique index.
       const result = await offerPremiumPlacementAction({
         vendorId: entry.vendorId,
-        vendorDirectoryId: entry.id ?? undefined,
         months: monthsNum,
         priceCents,
       })
@@ -145,7 +136,7 @@ export function PremiumPlacementPanel({
     })
   }
 
-  if (directoryEntries.length === 0 && placementInvoices.length === 0) return null
+  if (vendors.length === 0 && placementInvoices.length === 0) return null
 
   return (
     <Card>
@@ -174,8 +165,8 @@ export function PremiumPlacementPanel({
 
         {/* Directory entries — offer placement per row */}
         <div className="space-y-3">
-          {directoryEntries.map((entry) => {
-            const until = entry.id ? activeUntil.get(entry.id) : undefined
+          {vendors.map((entry) => {
+            const until = activeUntil.get(entry.vendorId)
             return (
               <div key={entry.vendorId} className="p-4 border rounded-lg hover:bg-muted/50 transition-colors">
                 <div className="flex items-center justify-between gap-4">
@@ -250,7 +241,7 @@ export function PremiumPlacementPanel({
             <p className="text-sm font-medium">Placement invoices awaiting payment</p>
             {openInvoices.map((inv) => {
               const item = placementItem(inv)
-              const entry = directoryEntries.find((d) => d.id === item?.directory_id)
+              const entry = vendors.find((v) => v.vendorId === item?.vendor_id)
               return (
                 <div
                   key={inv.id}
