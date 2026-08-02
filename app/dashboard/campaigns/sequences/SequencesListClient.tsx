@@ -166,15 +166,69 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
     return { active, enrolled, avgCompletion, converted }
   }, [sequences])
 
+  const [batchNote, setBatchNote] = useState<string | null>(null)
+
+  /**
+   * BATCH ACTIVATE BYPASSED THE COMPLIANCE GATE.
+   *
+   * handleToggleActive runs precheckSequenceCompliance before it will activate a
+   * single sequence — the brand-voice / compliance gate that decides whether a
+   * sequence may start sending. This batch path called updateCampaignSequence
+   * directly, so selecting ten sequences and pressing Activate started all ten
+   * WITHOUT the gate the per-row button enforces. The bulk path was the
+   * permissive one, which is exactly backwards: bulk is where a mistake is
+   * multiplied.
+   *
+   * It also discarded every result and then optimistically marked all of them
+   * active, so a refused update still rendered as activated.
+   *
+   * Now: deactivation stays immediate (no gate needed to STOP sending), and
+   * activation runs the same precheck per sequence. Anything the gate blocks is
+   * left OFF and named, so the agent knows which ones need review rather than
+   * believing all ten went live.
+   */
   const handleBatchToggle = useCallback(async (active: boolean) => {
-    for (const id of selectedIds) {
+    setBusy(true)
+    setBatchNote(null)
+    const ids = Array.from(selectedIds)
+    const changedIds: string[] = []
+    const blocked: string[] = []
+    const failed: string[] = []
+
+    for (const id of ids) {
       const seq = sequences.find(s => s.id === id)
-      if (seq) {
-        await updateCampaignSequence(id, { is_active: active })
+      if (!seq) continue
+
+      if (active) {
+        const pre = await precheckSequenceCompliance(id)
+        // A precheck that could not RUN is not a pass. Treat it like a block —
+        // silence is not consent when the next step is sending to real people.
+        if (!pre.success || pre.blocked) {
+          blocked.push(seq.name)
+          continue
+        }
       }
+
+      const res = await updateCampaignSequence(id, { is_active: active })
+      // updateCampaignSequence returns {success, error} and does not throw — a
+      // refused write must not join the "changed" set.
+      if ((res as any)?.success === false) failed.push(seq.name)
+      else changedIds.push(id)
     }
-    setSequences(prev => prev.map(s => selectedIds.has(s.id) ? { ...s, is_active: active } : s))
+
+    // Only move the rows that actually changed. Tracked by ID, not by name —
+    // two sequences can share a name and a name-based filter would move the
+    // wrong row.
+    const changed = new Set(changedIds)
+    setSequences(prev => prev.map(s => changed.has(s.id) ? { ...s, is_active: active } : s))
     setSelectedIds(new Set())
+    setBusy(false)
+
+    const parts: string[] = []
+    if (changed.size) parts.push(`${changed.size} ${active ? "activated" : "paused"}`)
+    if (blocked.length) parts.push(`${blocked.length} held for compliance review: ${blocked.join(", ")}`)
+    if (failed.length) parts.push(`${failed.length} failed: ${failed.join(", ")}`)
+    setBatchNote(parts.join(" · ") || null)
   }, [selectedIds, sequences])
 
   const toggleSequenceSelection = useCallback((id: string) => {
@@ -330,6 +384,9 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
                 <CheckCircle2 className="h-4 w-4 mr-1" />
                 Activate
               </Button>
+              {batchNote && (
+                <span className="text-xs text-muted-foreground ml-2">{batchNote}</span>
+              )}
               <Button size="sm" variant="outline" onClick={() => handleBatchToggle(false)} disabled={busy}>
                 <Lock className="h-4 w-4 mr-1" />
                 Pause

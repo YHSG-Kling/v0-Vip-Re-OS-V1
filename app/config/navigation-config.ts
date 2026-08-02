@@ -439,6 +439,12 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'leads', label: 'Lead Intelligence', href: '/leads', icon: 'Brain' },
       { id: 'portal-clients', label: 'Portal Clients', href: '/crm/portal-clients', icon: 'DoorOpen' },
       { id: 'onboarding', label: 'Agent Onboarding', href: '/dashboard/admin/onboarding', icon: 'UserPlus' },
+      // Orphan-route sweep: the agent roster's ONLY link lived in RootRoleShortcuts,
+      // a component that was never rendered — so the page was already unreachable
+      // and the dead file was merely hiding it from the orphan-route guard. The
+      // per-agent detail route IS linked (revenue-protection-rollup-widget), so
+      // the index was the one surface with no way in.
+      { id: 'agent-roster', label: 'Agent Roster', href: '/dashboard/admin/agents', icon: 'Users' },
       // Orphan-route sweep: onboarding-step editor was unreachable from any nav.
       { id: 'onboarding-steps', label: 'Onboarding Steps', href: '/dashboard/admin/onboarding-steps', icon: 'ListChecks' },
       { id: 'education', label: 'Education Content', href: '/dashboard/admin/education', icon: 'GraduationCap' },

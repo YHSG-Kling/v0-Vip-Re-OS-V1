@@ -33,15 +33,6 @@ import {
   Gauge,
 } from "lucide-react"
 import { toast } from "sonner"
-import {
-  CoachingCommandStrip,
-  ConversionCoachingPanel,
-  ResponseQualityPanel,
-  CallReviewPanel,
-  HandoffCoachingPanel,
-  AppointmentCoachingPanel,
-  WeeklyImprovementPanel,
-} from "./components/os"
 import { generateWeeklyCoachingReport } from "@/app/actions/coaching"
 import { createClient } from "@/lib/supabase/client"
 import { aiCoachGoalProgress } from "@/app/actions/ai-agent-goals"
@@ -313,11 +304,18 @@ export function CoachingDashboardClient({
     })
   }
 
-  function loadAiInsights() {
-    if (aiInsightsLoaded) return
+  // Same `force` escape hatch as loadGoalCoaching — the Refresh button below sets
+  // aiInsightsLoaded=false and calls straight back in, but this closure still sees the
+  // PREVIOUS render's `true` and would return on the guard, so the button did nothing.
+  function loadAiInsights(force = false) {
+    if (aiInsightsLoaded && !force) return
     setAiInsightsLoading(true)
     getAgentCoachingInsights(agentId).then((res) => {
-      setAiInsights(res ?? null)
+      // getAgentCoachingInsights returns a bare [] on a query error and the rollup object
+      // on success. `[]` is truthy, so `res ?? null` rendered the populated branch with an
+      // undefined score and zero conversations — a failure dressed up as "0 out of 0".
+      const rollup = res && !Array.isArray(res) ? res : null
+      setAiInsights(rollup)
       setAiInsightsLoaded(true)
       setAiInsightsLoading(false)
     })
@@ -382,24 +380,17 @@ export function CoachingDashboardClient({
         </p>
       </div>
 
-      {/* OS Command Strip */}
-      <div className="mb-6">
-        <CoachingCommandStrip opportunity={null} />
-      </div>
-
-      {/* OS Panels Grid */}
-      <div className="mb-8 grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <ConversionCoachingPanel agentId={agentId} brokerageId={brokerageId} metrics={[]} issues={[]} topImprovement={null} />
-        <ResponseQualityPanel agentId={agentId} brokerageId={brokerageId} metrics={[]} objectionOpportunities={[]} suggestions={[]} />
-        <CallReviewPanel agentId={agentId} brokerageId={brokerageId} insights={[]} summary={null} />
-      </div>
-
-      {/* Second Row of OS Panels */}
-      <div className="mb-8 grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <HandoffCoachingPanel agentId={agentId} brokerageId={brokerageId} metrics={[]} issues={[]} totalHandoffs={0} successRate={0} />
-        <AppointmentCoachingPanel agentId={agentId} brokerageId={brokerageId} metrics={[]} showRateIssues={[]} overallShowRate={0} appointmentsSet={0} appointmentsKept={0} />
-        <WeeklyImprovementPanel agentId={agentId} brokerageId={brokerageId} focusAreas={[]} weeklyProgress={null} lastReportDate={null} onGenerateReport={handleGenerateReport} />
-      </div>
+      {/* The seven ./components/os panels that used to sit here were mounted with every
+          prop hardcoded ([] / null / 0) — six permanently blank cards plus a command strip
+          that asserted "All systems performing well" without measuring anything. No loader
+          in app/actions or lib produces the shapes they read (ConversionMetric,
+          ObjectionOpportunity, CallCoachingInsight, HandoffIssue, ShowRateIssue, FocusArea
+          exist nowhere else in the codebase), and every job they claimed is already done
+          live: the outcome-based Weekly Report below carries the no-show rate, tour→offer
+          conversion, cold book and deal-health leaks (lib/kernel/agent-coaching); AI ISA
+          handoffs and per-call coaching insights render on /dashboard/voice/isa; call
+          performance renders on /dashboard/voice-intelligence. Deleted rather than left
+          blank — see the report; do not re-add without a loader. */}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
         {/* LEFT — Weekly Report Card (1/4 width) */}
@@ -524,7 +515,9 @@ export function CoachingDashboardClient({
                     <TrendingUp className="h-3.5 w-3.5" />
                     Goal Coaching
                   </TabsTrigger>
-                  <TabsTrigger value="insights" className="text-xs gap-1" onClick={loadAiInsights}>
+                  {/* Arrow, not a bare reference — a bare handler passes the MouseEvent as
+                      `force` (truthy) and refetches on every tab click. */}
+                  <TabsTrigger value="insights" className="text-xs gap-1" onClick={() => loadAiInsights()}>
                     <Brain className="h-3.5 w-3.5" />
                     AI Insights
                   </TabsTrigger>
@@ -667,7 +660,9 @@ export function CoachingDashboardClient({
                         </div>
                       )}
 
-                      <Button size="sm" variant="ghost" className="w-full text-xs" onClick={() => { setGoalCoachingLoaded(false); loadGoalCoaching() }}>
+                      {/* force, not setLoaded(false)+call — the state update isn't visible to
+                          this closure, so the un-forced call bailed on the guard. */}
+                      <Button size="sm" variant="ghost" className="w-full text-xs" onClick={() => loadGoalCoaching(true)}>
                         <RefreshCw className="h-3 w-3 mr-1.5" />
                         Refresh
                       </Button>
@@ -739,7 +734,7 @@ export function CoachingDashboardClient({
                         </div>
                       )}
 
-                      <Button size="sm" variant="ghost" className="w-full text-xs" onClick={() => { setAiInsightsLoaded(false); loadAiInsights() }}>
+                      <Button size="sm" variant="ghost" className="w-full text-xs" onClick={() => loadAiInsights(true)}>
                         <RefreshCw className="h-3 w-3 mr-1.5" />
                         Refresh
                       </Button>

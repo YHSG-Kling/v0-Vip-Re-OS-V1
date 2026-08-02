@@ -28,6 +28,8 @@ import {
 import { AlertCircle, AlertTriangle, UserCog, ClipboardList, Clock, CheckCircle2, Calendar, ChevronDown } from "lucide-react"
 import Link from "next/link"
 import { TcFastActionPanel } from "./components/tc-fast-action-panel"
+import { ClosingReadinessGate } from "./components/closing-readiness-gate"
+import { TRANSACTION_STAGES } from "@/lib/transactions/transaction-stages"
 import { predictDeadlineRisks } from "@/app/actions/multi-persona"
 import { LearnThisWeekCard } from "@/app/components/learning/learn-this-week-card"
 
@@ -215,6 +217,18 @@ export default async function CoordinatorDashboard({
 
   const brokerageId = userData?.brokerage_id
 
+  // CLOSING_PREP is reachable from exactly ONE stage — FINANCING_PENDING
+  // (see ALLOWED_TRANSITIONS in lib/transactions/transaction-stages). Those are
+  // the deals about to attempt the transition, and canProceedToClosingPrep is
+  // the same compliance gate that transition runs server-side
+  // (lib/transactions/stage-progression). Until now that gate had no UI: the TC
+  // could only discover a blocking compliance check by attempting the advance
+  // and having it refused. Scoping the list to FINANCING_PENDING keeps the
+  // check meaningful — asking it of an UNDER_CONTRACT deal is premature noise.
+  const awaitingClosingPrep = transactions.filter(
+    (t: any) => t.stage === TRANSACTION_STAGES.FINANCING_PENDING
+  )
+
   // Deadline risk prediction — scoped to the same transaction IDs the dashboard
   // already fetched via transaction_assignments (not transactions.coordinator_id)
   const { atRiskTransactions, atRiskCount } = await predictDeadlineRisks(coordinatorId, transactionIds)
@@ -339,9 +353,60 @@ export default async function CoordinatorDashboard({
         <ExtractedFactsPanel />
       </div>
 
-      {/* OS Closing Prep */}
+      {/* OS Closing Prep.
+          ClosingPrepPanel lists deals ALREADY in CLOSING_PREP. The readiness
+          card beside it answers the upstream question for deals one step away:
+          will the compliance gate let this deal in, and if not, which checks are
+          failing/pending/needs-review. Different question, different data source
+          (transaction_compliance_log blocking checks vs. the transactions.status
+          string), so this is a companion — not a second copy of the panel. */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <ClosingPrepPanel brokerageId={brokerageId || ""} />
+
+        {awaitingClosingPrep.length > 0 && (
+          <Card className="border-l-4 border-l-sky-500">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-lg">Closing Readiness</CardTitle>
+                  <CardDescription>
+                    Financing-pending deals — check compliance before advancing to closing prep
+                  </CardDescription>
+                </div>
+                <ClipboardList className="h-5 w-5 text-muted-foreground" />
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-2 max-h-80 overflow-y-auto">
+              {awaitingClosingPrep.map((txn: any) => (
+                <div key={txn.id} className="rounded-lg border p-3 space-y-2">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <Link
+                        href={`/dashboard/transactions/${txn.id}`}
+                        className="font-medium text-sm truncate hover:underline block"
+                      >
+                        {txn.property_address || "Unknown address"}
+                      </Link>
+                      <p className="text-xs text-muted-foreground">
+                        {txn.close_date
+                          ? `Closes ${new Date(txn.close_date).toLocaleDateString()}`
+                          : "No close date set"}
+                      </p>
+                    </div>
+                    {/* Runs canProceedToClosingPrep on demand — the check hits
+                        transaction_compliance_log, so it is deliberately
+                        click-triggered rather than fired for every row on load. */}
+                    <ClosingReadinessGate
+                      transactionId={txn.id}
+                      transactionStage={txn.stage ?? TRANSACTION_STAGES.FINANCING_PENDING}
+                      brokerageId={brokerageId || ""}
+                    />
+                  </div>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       {/* TC Fast Actions Panel */}

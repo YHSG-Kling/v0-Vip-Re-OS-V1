@@ -15,6 +15,8 @@ import {
   ExternalNextActionsPanel,
   ExternalBillingEarningsPanel,
 } from '../../(external-portal)/components/os'
+import { getVendorJobs } from '@/app/actions/vendor-portal'
+import { getVendorEarningsSummary } from '@/app/actions/vendor-payments'
 
 export const dynamic = 'force-dynamic'
 
@@ -42,6 +44,81 @@ export default async function VendorDashboardPage() {
   const active = bookings.filter((b: any) => b.status === 'active' || b.status === 'scheduled')
   const completed = bookings.filter((b: any) => b.status === 'completed')
   const pending = bookings.filter((b: any) => b.status === 'pending')
+
+  // The next-actions and earnings panels below were mounted on hardcoded [] while
+  // both loaders already existed and are gated on the SAME vendorId resolved above
+  // (user_role_assignments.vendor_id).
+  let vendorJobs: any[] = []
+  try {
+    vendorJobs = await getVendorJobs(vendorId)
+  } catch {
+    // getVendorJobs throws on a query error and returns [] when the auth gate fails.
+    vendorJobs = []
+  }
+
+  // An open job IS the vendor's next action; 'update_status' is the only action type
+  // the panel defines that a job maps onto without inventing a document or milestone.
+  const vendorNextActions = vendorJobs
+    .filter((j: any) => !['completed', 'cancelled'].includes(j.status))
+    .map((j: any) => {
+      const assignment = Array.isArray(j.vendor_assignments) ? j.vendor_assignments[0] : j.vendor_assignments
+      const txn = Array.isArray(assignment?.transactions) ? assignment.transactions[0] : assignment?.transactions
+      const scheduled = assignment?.scheduled_date ?? null
+      return {
+        id: j.id,
+        type: 'update_status' as const,
+        title: j.job_title,
+        description: txn?.property_address ?? undefined,
+        dueDate: scheduled ?? undefined,
+        // Derived from the real scheduled date only — on or past the scheduled day
+        // is urgent, everything else is medium. No priority column exists.
+        priority: (scheduled && new Date(scheduled) <= new Date() ? 'high' : 'medium') as 'high' | 'medium',
+      }
+    })
+
+  // getVendorEarningsSummary returns this vendor's invoices plus the vendor_earnings
+  // roll-ups behind the Earnings panel. It already returns all-zero on an auth miss.
+  let earningsSummary: Awaited<ReturnType<typeof getVendorEarningsSummary>> | null = null
+  try {
+    earningsSummary = await getVendorEarningsSummary(vendorId)
+  } catch {
+    earningsSummary = null
+  }
+
+  // vendor_invoices.status vocabulary is draft/submitted/viewed/paid/overdue/cancelled/
+  // disputed; the panel's is pending/approved/paid/processing. Map rather than pass a
+  // status it does not render, and drop cancelled invoices instead of showing them as
+  // pending money.
+  const vendorEarnings = (earningsSummary?.invoices ?? [])
+    .filter((i) => i.status !== 'cancelled')
+    .map((i) => ({
+      id: i.id,
+      description: i.invoiceNumber ? `Invoice ${i.invoiceNumber}` : 'Invoice',
+      amount: i.total ?? 0,
+      status: (i.status === 'paid'
+        ? 'paid'
+        : i.status === 'submitted' || i.status === 'viewed'
+          ? 'processing'
+          : 'pending') as 'paid' | 'processing' | 'pending',
+      paidDate: i.paidAt ?? undefined,
+    }))
+
+  const paidInvoices = (earningsSummary?.invoices ?? []).filter((i) => i.paidAt)
+  const paidSince = (since: Date) =>
+    paidInvoices
+      .filter((i) => new Date(i.paidAt as string) >= since)
+      .reduce((sum, i) => sum + (i.total ?? 0), 0)
+  const now = new Date()
+  const vendorTotals = {
+    paid: earningsSummary?.paidOutAmount ?? 0,
+    // Everything earned but not yet paid out — vendor_earnings moves pending → available
+    // → paid_out, so both pre-payout states are "pending" to the vendor.
+    pending: (earningsSummary?.pendingAmount ?? 0) + (earningsSummary?.availableAmount ?? 0),
+    // The summary exposes no period breakdown, so MTD/YTD are summed from the paid
+    // invoices it does return rather than left at a false zero.
+    mtd: paidSince(new Date(now.getFullYear(), now.getMonth(), 1)),
+    ytd: paidSince(new Date(now.getFullYear(), 0, 1)),
+  }
 
   // Today's AI brief — open jobs, due-soon deliverables, overdue
   const { data: vendorRow } = await supabase
@@ -159,7 +236,7 @@ export default async function VendorDashboardPage() {
         <ExternalNextActionsPanel
           partnerType="vendor"
           partnerId={vendorId}
-          actions={[]}
+          actions={vendorNextActions}
           onCompleteAction={async (actionId: string, context: { partnerId: string; partnerType: string }) => {
             const res = await fetch("/api/external-portal/actions/complete", {
               method: "POST",
@@ -174,8 +251,8 @@ export default async function VendorDashboardPage() {
       <ExternalBillingEarningsPanel
         partnerType="vendor"
         partnerId={vendorId}
-        earnings={[]}
-        totals={{ pending: 0, paid: 0, mtd: 0, ytd: 0 }}
+        earnings={vendorEarnings}
+        totals={vendorTotals}
       />
     </div>
   )

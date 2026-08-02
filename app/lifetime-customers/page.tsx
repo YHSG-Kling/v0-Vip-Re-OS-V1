@@ -69,7 +69,7 @@ import {
   findReferralOpportunities,
 } from "@/app/actions/lifetime-customers"
 import { generateReferralRequest, nurturePendingReferral, recommendReferralReward } from "@/app/actions/ai-referral-management"
-import { loadReferralPipelineAction } from "@/app/actions/reputation-kernel"
+import { loadReferralPipelineAction, loadReputationWorkspaceAction } from "@/app/actions/reputation-kernel"
 import { LifeSignalBadge } from "@/app/components/shared/LifeSignalBadge"
 import { ReputationPanel } from "@/app/components/reputation/ReputationPanel"
 import { CampaignsGiftingPanel } from "./components/campaigns-gifting-panel"
@@ -274,6 +274,10 @@ export default function LifetimeCustomersPage() {
   const [lifeSignals, setLifeSignals] = useState<any[]>([])
   const [referralOpportunities, setReferralOpportunities] = useState<any[]>([])
   const [referralPipeline, setReferralPipeline] = useState<any[]>([])
+  // ReputationPanel's `reviews` prop was hardcoded [] — its Recent Reviews list and
+  // Total Reviews / Avg Rating tiles were permanently empty even though
+  // loadReputationWorkspaceAction already reads agent_reviews for this agent.
+  const [reviews, setReviews] = useState<any[]>([])
   const [nurtureResults, setNurtureResults] = useState<Record<string, any>>({})
   const [rewardResults, setRewardResults] = useState<Record<string, any>>({})
 
@@ -337,6 +341,24 @@ export default function LifetimeCustomersPage() {
     }
     loadData()
   }, [search, engagementFilter])
+
+  // Load this agent's reviews for the Reputation tab. The action resolves the actor
+  // (agents.id + brokerage) itself, so it needs no id from this page — and it returns
+  // rows whose fields ReputationPanel already reads (rating, review_text, platform,
+  // created_at). Runs once; reviews don't change with the client search filters.
+  useEffect(() => {
+    async function loadReviews() {
+      try {
+        const result = await loadReputationWorkspaceAction()
+        if (result.success && (result as any).data?.reviews) {
+          setReviews((result as any).data.reviews)
+        }
+      } catch (e) {
+        console.error("Error loading reviews:", e)
+      }
+    }
+    loadReviews()
+  }, [])
 
   // Load timeline when client selected
   useEffect(() => {
@@ -1758,7 +1780,7 @@ export default function LifetimeCustomersPage() {
             <ReputationPanel
               agentId={currentAgentId}
               clients={clients}
-              reviews={[]}
+              reviews={reviews}
               recentClosings={clients.filter(c => c.transactions?.[0]?.actual_close_date).map(c => ({
                 id: c.id,
                 actual_close_date: c.transactions[0].actual_close_date,

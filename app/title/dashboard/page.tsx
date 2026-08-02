@@ -13,6 +13,7 @@ import {
   ExternalBatchActionsPanel,
 } from '../../(external-portal)/components/os'
 import { VENDOR_CATEGORY_TITLE } from "@/lib/kernel/vendor-categories"
+import { getTitleTransactionDetail } from '@/app/actions/title-portal'
 
 export const dynamic = 'force-dynamic'
 
@@ -53,6 +54,62 @@ export default async function TitleDashboardPage() {
     const diff = (closeDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)
     return diff >= 0 && diff <= 14
   })
+
+  // The doc-status and batch panels at the bottom of this page were mounted on
+  // hardcoded [] — they rendered forever-empty while getTitleTransactionDetail
+  // already returned this title company's documents and title-visible milestones.
+  // The loader's identity rail is title_company_users (that is the row
+  // requireTitleActor checks); the `vendors` row resolved above is the marketplace
+  // profile, not a title-portal identity, so it cannot be passed here. Each
+  // title_company_users row is scoped to one transaction.
+  const { data: titleUserRows } = await supabase
+    .from('title_company_users')
+    .select('id, transaction_id')
+    .eq('user_id', user.id)
+    .not('transaction_id', 'is', null)
+    .limit(10)
+
+  const titleDetails = await Promise.all(
+    ((titleUserRows || []) as any[]).map(async (row) => {
+      try {
+        return await getTitleTransactionDetail(row.transaction_id, row.id)
+      } catch {
+        // Throws when the title company is not assigned to that transaction (or the
+        // user has no brokerage). One unassigned deal contributes nothing instead of
+        // failing the whole dashboard.
+        return null
+      }
+    })
+  )
+
+  // Documents come back already aliased by the loader (file_name ← doc_label,
+  // file_url ← storage_url). Every row is a document that exists in storage, so
+  // 'uploaded' is the honest status — the loader does not select
+  // transaction_documents.status, and nothing models per-doc requiredness, so
+  // `required` stays false rather than inventing a checklist.
+  const titleDocuments = titleDetails.flatMap((d) =>
+    ((d?.documents || []) as any[]).map((doc) => ({
+      id: doc.id,
+      name: doc.file_name || doc.document_type,
+      type: doc.document_type,
+      status: 'uploaded' as const,
+      required: false,
+      uploadedAt: doc.created_at,
+      fileUrl: doc.file_url || undefined,
+    }))
+  )
+
+  // Batch items are the same loader's title-visible milestones. transaction_milestones
+  // has no "ready" state, so a milestone is either completed or still pending.
+  const titleBatchItems = titleDetails.flatMap((d) =>
+    ((d?.milestones || []) as any[]).map((m) => ({
+      id: m.id,
+      label: m.milestone_name,
+      type: 'milestone' as const,
+      status: (m.status === 'completed' ? 'completed' : 'pending') as 'completed' | 'pending',
+      relatedId: (d?.transaction as any)?.id,
+    }))
+  )
 
   return (
     <div className="p-6 space-y-6">
@@ -131,10 +188,10 @@ export default async function TitleDashboardPage() {
           urgency: 'high',
           actionRequired: t.status === 'pending',
         }))} />
-        <ExternalDocStatusPanel partnerType="title" partnerId={titleCompanyId} documents={[]} />
+        <ExternalDocStatusPanel partnerType="title" partnerId={titleCompanyId} documents={titleDocuments} />
       </div>
 
-      <ExternalBatchActionsPanel partnerType="title" items={[]} />
+      <ExternalBatchActionsPanel partnerType="title" items={titleBatchItems} />
 
       <div className="grid grid-cols-3 gap-3">
         {[

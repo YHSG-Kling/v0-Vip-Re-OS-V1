@@ -175,6 +175,20 @@ console.log("\n[source — the surface is wired end to end]")
     /mls_number, mls_link/.test(page) && /hasMlsNumber/.test(page))
   check("…and blocks launch on it", /blockers\.push\("No MLS number entered"\)/.test(page)
     && /marketingReady && hasMlsNumber/.test(page))
+  // THE COMPLIANCE GATE COULD NEVER FIRE. complianceBlockers was a hardcoded
+  // empty array at the only mount, so the checklist always reported "0
+  // compliance issues" — the one gate that exists to STOP a launch was
+  // structurally incapable of stopping one.
+  check("the launch page runs the real required-document audit",
+    /auditListingDocuments\(supabase, \{/.test(page))
+  check("…and only BLOCKING misses become blockers — a warning is the broker's choice, not ours",
+    /audit\.missing_blocking\.map/.test(page) && !/missing_warning/.test(page))
+  check("…they reach the page blockers AND the launch gate",
+    /blockers\.push\(\.\.\.complianceBlockers\)/.test(page)
+    && /complianceBlockers\.length === 0/.test(page))
+  check("a FAILED audit holds the launch instead of reading as compliant",
+    /Compliance check could not run/.test(page))
+
   check("the checklist can verify a stored number against the feeds",
     /verifyMlsSyndicationAction/.test(list))
   check("…and renders 'unverifiable' as its own state, not as a failure",

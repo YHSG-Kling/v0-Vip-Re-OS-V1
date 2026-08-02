@@ -729,7 +729,7 @@ export default function AgentDashboard() {
                 at_risk segment which now includes the same
                 contacts.last_contacted_at >= 21d signal as a fallback when
                 sphere_engagement_scores is sparse. Component file kept for
-                back-compat in case any other surface mounts it. */}
+                superseded by SmartQueue at_risk; component deleted. */}
 
             {/* My Source Performance */}
             <Card className="hover:shadow-md transition-shadow">

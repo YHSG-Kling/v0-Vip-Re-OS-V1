@@ -286,11 +286,49 @@ const { data: listingVendorBookings } = await supabase
   const mlsLink = ((listing as any).mls_link as string | null)?.trim() || null
   const hasMlsNumber = !!mlsNumber
 
+  // ── COMPLIANCE BLOCKERS ────────────────────────────────────────────────────
+  //
+  // This was `complianceBlockers={[]}` — a hardcoded empty array — so the launch
+  // checklist ALWAYS reported "0 compliance issues" and the compliance gate could
+  // never block a launch. The capability was already there: auditListingDocuments
+  // resolves the seller-side required-document checklist for the brokerage/team/
+  // state and reports what is missing, splitting BLOCKING from warning.
+  //
+  // Only `missing_blocking` becomes a launch blocker. A `missing_warning` is a
+  // document the brokerage wants but has explicitly not made a stop condition —
+  // promoting it to a blocker here would be the OS inventing a rule the broker
+  // did not set.
+  //
+  // A brokerage with no required-document config produces zero required docs and
+  // therefore zero blockers, which is correct rather than a silent pass: it means
+  // nothing has been declared required, not that everything is present.
+  let complianceBlockers: string[] = []
+  try {
+    const { auditListingDocuments } = await import("@/lib/compliance/required-documents")
+    const audit = await auditListingDocuments(supabase, {
+      brokerageId:     userRow.brokerage_id,
+      sellerContactId: listing.seller_contact_id ?? null,
+      agentUserId:     user.id,
+      stateCode:       listing.state ?? null,
+      listingId:       listingId,
+    })
+    complianceBlockers = audit.missing_blocking.map(
+      (c) => `Missing required document: ${String(c).replace(/_/g, " ")}`,
+    )
+  } catch (err) {
+    // A failed audit must NOT read as "compliant". Surface it as a blocker so a
+    // launch is held rather than waved through on an error — the whole point of
+    // the gate is that silence is not consent.
+    console.error("[listing lifecycle] compliance audit failed:", err)
+    complianceBlockers = ["Compliance check could not run — resolve before launching"]
+  }
+
   // Blockers
   const blockers: string[] = []
   if (!mediaReady) blockers.push(`Need at least 5 photos (${photoCount} uploaded)`)
   if (!publishReady) blockers.push("Missing required listing fields")
   if (!hasMlsNumber) blockers.push("No MLS number entered")
+  blockers.push(...complianceBlockers)
   // Marketing tier is superadmin-controlled — only surface the blocker to superadmins
   if (!marketingReady && isSuperAdmin) blockers.push("No marketing tier selected")
 
@@ -401,7 +439,7 @@ const { data: listingVendorBookings } = await supabase
             hasBranded={media.some((m: any) => m.is_branded)}
             hasUnbranded={media.some((m: any) => !m.is_branded)}
             requiredFields={requiredFields}
-            complianceBlockers={[]}
+            complianceBlockers={complianceBlockers}
             packetReady={packetReady}
             currentTier={currentTier}
             isSuperAdmin={isSuperAdmin}
@@ -523,7 +561,7 @@ const { data: listingVendorBookings } = await supabase
           listingId={listingId}
           agentId={user.id}
           brokerageId={userRow.brokerage_id}
-          canLaunch={mediaReady && publishReady && marketingReady && hasMlsNumber}
+          canLaunch={mediaReady && publishReady && marketingReady && hasMlsNumber && complianceBlockers.length === 0}
           blockers={blockers}
           isSuperAdmin={isSuperAdmin}
         />

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useTransition } from "react"
+import { useEffect, useMemo, useState, useTransition } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -17,6 +17,7 @@ import { OfferComparisonMatrix } from "./components/offer-comparison-matrix"
 import { OfferCard } from "./components/offer-card"
 import { ComplianceBridgePanel } from "./components/compliance-bridge-panel"
 import { CounterOfferSlideOver } from "./components/counter-offer-slide-over"
+import CounterOfferDiffModal from "./components/counter-offer-diff-modal"
 import { AIRecommendationBanner } from "./components/ai-recommendation-banner"
 import {
   SellerMeaningCard,
@@ -172,6 +173,27 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
 
   const activeOffers = offers.filter((o) => o.status !== "rejected")
   const canApprove = ["admin", "broker", "owner"].includes(userRole)
+
+  // A counter is PERSISTED as its own offers row pointing back at the original
+  // (offers.parent_offer_id). That means the "what did they send back" side of a
+  // diff is real stored data — the agent never re-keys the counter terms. Index
+  // the newest counter per parent so each original offer can offer a diff.
+  const counterByParent = useMemo(() => {
+    const map = new Map<string, Offer>()
+    for (const o of offers) {
+      if (!o.parent_offer_id) continue
+      const prev = map.get(o.parent_offer_id)
+      // Latest negotiation round wins; submitted_at breaks ties when a
+      // brokerage never populated current_round.
+      const isNewer =
+        !prev ||
+        (o.current_round ?? 0) > (prev.current_round ?? 0) ||
+        ((o.current_round ?? 0) === (prev.current_round ?? 0) &&
+          (o.submitted_at ?? "") > (prev.submitted_at ?? ""))
+      if (isNewer) map.set(o.parent_offer_id, o)
+    }
+    return map
+  }, [offers])
 
   function handleUploadComplete(newOffer: Offer) {
     setOffers((prev) => [newOffer, ...prev])
@@ -494,6 +516,25 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                   />
                   {/* Source badge + buyer's agent — cross-side routing metadata */}
                   <div className="flex items-center gap-2 flex-wrap px-1">
+                    {/* Diff & advise — only for an offer that actually HAS a
+                        counter on file. The slide-over above CREATES a counter;
+                        this ANALYZES the one that came back, so the agent reads
+                        the changed terms instead of the whole contract. */}
+                    {(() => {
+                      const counter = counterByParent.get(offer.id)
+                      if (!counter) return null
+                      return (
+                        <CounterOfferDiffModal
+                          offerId={offer.id}
+                          counterPayload={counterPayloadOf(counter)}
+                          buttonLabel={
+                            counter.current_round
+                              ? `Diff round ${counter.current_round}`
+                              : "Diff & advise"
+                          }
+                        />
+                      )
+                    })()}
                     {offer.form_source === "in_app" && (
                       <Badge className="bg-blue-100 text-blue-800 border-blue-200 text-xs font-normal">
                         Via Buyer Portal
@@ -1223,6 +1264,28 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
       )}
     </div>
   )
+}
+
+// ── Counter payload for the diff ──────────────────────────────────────────────
+//
+// buildCounterOfferDiff compares EXACTLY these eight keys against the original
+// offer row, and treats an UNDEFINED key as "unchanged". So a column the counter
+// never set must be omitted, not passed as null — passing null would render as
+// "Price 450,000 → —" and read as a concession the buyer never made.
+function counterPayloadOf(counter: Offer): Record<string, unknown> {
+  const payload: Record<string, unknown> = {}
+  const put = (key: string, value: unknown) => {
+    if (value !== null && value !== undefined) payload[key] = value
+  }
+  put("offer_price", counter.offer_price)
+  put("earnest_money", counter.earnest_money)
+  put("closing_date", counter.closing_date)
+  put("closing_cost_contribution", counter.closing_cost_contribution)
+  put("down_payment_percent", counter.down_payment_percent)
+  put("financing_type", counter.financing_type)
+  put("contingencies", counter.contingencies)
+  put("escalation_cap", counter.escalation_cap)
+  return payload
 }
 
 // ── Shared result renderer for both negotiation advisor scenarios ─────────────

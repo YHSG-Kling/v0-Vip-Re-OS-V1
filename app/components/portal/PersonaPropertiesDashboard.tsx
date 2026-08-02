@@ -24,6 +24,7 @@ import { smartSearch, saveProperty } from "@/app/actions/idx-search"
 import { requestShowing } from "@/app/actions/showings"
 import { updatePropertyAlert } from "@/app/actions/property-alerts/alert-actions"
 import { submitPropertyFeedback } from "@/app/actions/portal-lifetime"
+import { analyzeInvestmentProperty, compareMortgageScenarios } from "@/app/actions/calculators"
 import Link from "next/link"
 
 interface PersonaPropertiesDashboardProps {
@@ -322,6 +323,47 @@ export default function PersonaPropertiesDashboard({
   }>({ min_price: "", max_price: "", bedrooms_min: "", bathrooms_min: "", cities: "" })
   const [savingAlert, setSavingAlert] = useState(false)
 
+  // Refine state — "Refine" beside the result count had no handler at all, so
+  // the only way to narrow a result set was to retype the whole sentence.
+  // smartSearch takes one natural-language string, so a refinement is expressed
+  // the way the interpreter actually accepts it: appended to the query and
+  // re-run. The AI-interpreted filter chips below then show the REAL filters
+  // the action extracted.
+  const [showRefine, setShowRefine] = useState(false)
+  const [refineForm, setRefineForm] = useState({ maxPrice: "", minBeds: "", mustHave: "" })
+  const [isRefining, setIsRefining] = useState(false)
+
+  // Investment analysis state — both calculators below printed HARDCODED
+  // percentages ("5.04%", "6.72%") beside UNCONTROLLED inputs. Nothing the
+  // investor typed reached anything, and the number on screen was invented
+  // financial advice. One analysis now feeds both cards, because
+  // analyzeInvestmentProperty returns cap rate AND cash-on-cash from the same
+  // inputs — they are two views of one deal, not two calculators.
+  const [dealForm, setDealForm] = useState({
+    purchasePrice: "",
+    monthlyRent: "",
+    monthlyExpenses: "",
+    downPaymentPercent: "",
+    interestRate: "",
+  })
+  const [dealMetrics, setDealMetrics] = useState<any>(null)
+  const [dealAnalysis, setDealAnalysis] = useState<any>(null)
+  const [dealError, setDealError] = useState<string | null>(null)
+  const [capPending, setCapPending] = useState(false)
+  const [cocPending, setCocPending] = useState(false)
+
+  // Affordability/payment state — "Calculate Monthly Payment" had no handler
+  // and the four inputs were uncontrolled, so the form collected nothing.
+  const [mortgageForm, setMortgageForm] = useState({
+    homePrice: "",
+    downPaymentPercent: "",
+    interestRate: "",
+    termYears: "",
+  })
+  const [mortgageResult, setMortgageResult] = useState<any>(null)
+  const [mortgageError, setMortgageError] = useState<string | null>(null)
+  const [mortgagePending, setMortgagePending] = useState(false)
+
   // Investor-specific: investment criteria
   // Investor persona settings — sourced from contacts.metadata (passed in as customFields).
   const targetCapRate = customFields?.target_cap_rate || 7
@@ -450,6 +492,161 @@ export default function PersonaPropertiesDashboard({
     }
   }
 
+  // Open the criteria editor on the buyer's saved search. The investor tab set
+  // has no "matches" tab, so "Adjust Criteria" on the Deal Flow header was the
+  // ONLY route an investor had to this editor — and it was wired to nothing.
+  const openAlertEditor = (alert: any) => {
+    setEditingAlertId(editingAlertId === alert.id ? null : alert.id)
+    setEditAlertForm({
+      min_price: alert.min_price ? String(alert.min_price) : "",
+      max_price: alert.max_price ? String(alert.max_price) : "",
+      bedrooms_min: alert.bedrooms_min ? String(alert.bedrooms_min) : "",
+      bathrooms_min: alert.bathrooms_min ? String(alert.bathrooms_min) : "",
+      cities: (alert.cities ?? []).join(", "),
+    })
+  }
+
+  // The investor's saved search — prefer an active one, else the most recent.
+  const investorAlert =
+    propertyAlerts.find((a: any) => a.is_active) ?? propertyAlerts[0] ?? null
+
+  // Re-run the search with the refinement appended to the buyer's own words.
+  const handleRefineSearch = async () => {
+    const clauses: string[] = []
+    const maxPrice = Number(refineForm.maxPrice.replace(/[^0-9.]/g, ""))
+    const minBeds = Number(refineForm.minBeds)
+    if (Number.isFinite(maxPrice) && maxPrice > 0) clauses.push(`under $${Math.round(maxPrice).toLocaleString()}`)
+    if (Number.isFinite(minBeds) && minBeds > 0) clauses.push(`at least ${minBeds} bedrooms`)
+    if (refineForm.mustHave.trim()) clauses.push(`must have ${refineForm.mustHave.trim()}`)
+
+    if (clauses.length === 0) {
+      toast({
+        title: "Nothing to refine",
+        description: "Add a price cap, a bedroom minimum, or a must-have first.",
+      })
+      return
+    }
+
+    const refinedQuery = [naturalQuery.trim(), clauses.join(", ")].filter(Boolean).join(", ")
+    setIsRefining(true)
+    try {
+      const result = await smartSearch({
+        naturalLanguageQuery: refinedQuery,
+        contactId: contactId,
+      })
+      if (result.success) {
+        setNaturalQuery(refinedQuery)
+        setSearchResults(result.properties || [])
+        setExtractedFilters(result.filters)
+        setShowRefine(false)
+        toast({
+          title: "Search Refined",
+          description: `${result.properties?.length || 0} properties match the narrowed criteria`,
+        })
+      } else {
+        toast({ title: "Refine Failed", description: result.error, variant: "destructive" })
+      }
+    } catch {
+      toast({ title: "Error", description: "Failed to refine your search", variant: "destructive" })
+    } finally {
+      setIsRefining(false)
+    }
+  }
+
+  // Run the real investment analysis. Both Calculate buttons call this — the
+  // flag argument only decides which button shows the spinner.
+  const runInvestmentAnalysis = async (setPending: (v: boolean) => void) => {
+    const purchasePrice = Number(dealForm.purchasePrice.replace(/[^0-9.]/g, ""))
+    const monthlyRent = Number(dealForm.monthlyRent.replace(/[^0-9.]/g, ""))
+    const monthlyExpenses = Number(dealForm.monthlyExpenses.replace(/[^0-9.]/g, ""))
+    const downPaymentPercent = Number(dealForm.downPaymentPercent)
+    const interestRate = Number(dealForm.interestRate)
+
+    if (!(purchasePrice > 0) || !(monthlyRent > 0) || !(monthlyExpenses >= 0)) {
+      setDealError("Enter a purchase price, gross monthly rent, and monthly expenses.")
+      return
+    }
+    if (!(downPaymentPercent > 0) || !(interestRate > 0)) {
+      setDealError("Enter your down payment percentage and interest rate — both drive the return.")
+      return
+    }
+
+    setPending(true)
+    setDealError(null)
+    try {
+      const result = await analyzeInvestmentProperty({
+        purchasePrice,
+        downPaymentPercent,
+        interestRate,
+        estimatedRent: monthlyRent,
+        // The form collects ONE monthly operating-expense figure. hoaFees is the
+        // analyzer's only monthly-denominated expense slot, so the figure goes
+        // there whole and the itemized slots stay at zero — nothing is split,
+        // guessed, or padded on the investor's behalf.
+        propertyTaxes: 0,
+        insurance: 0,
+        hoaFees: monthlyExpenses,
+        maintenanceReserve: 0,
+        vacancyRate: 0,
+      })
+      if (!result.success || !result.financial_metrics) {
+        setDealError("The analysis could not be completed. Please try again.")
+        return
+      }
+      setDealMetrics(result.financial_metrics)
+      setDealAnalysis((result as any).analysis ?? null)
+    } catch {
+      setDealError("The analysis could not be completed. Please try again.")
+    } finally {
+      setPending(false)
+    }
+  }
+
+  // Monthly payment on the terms the buyer actually entered. compareMortgageScenarios
+  // is the action whose inputs match this form (price, down payment, rate, term);
+  // calculateAffordability works backwards from income, which this form never asks for.
+  const handleCalculateMonthlyPayment = async () => {
+    const homePrice = Number(mortgageForm.homePrice.replace(/[^0-9.]/g, ""))
+    const downPaymentPercent = Number(mortgageForm.downPaymentPercent)
+    const interestRate = Number(mortgageForm.interestRate)
+    const termYears = Number(mortgageForm.termYears)
+
+    if (!(homePrice > 0) || !(downPaymentPercent >= 0) || !(interestRate > 0) || !(termYears > 0)) {
+      setMortgageError("Enter a home price, down payment %, interest rate, and loan term.")
+      return
+    }
+    if (downPaymentPercent >= 100) {
+      setMortgageError("A 100% down payment leaves no loan to calculate.")
+      return
+    }
+
+    setMortgagePending(true)
+    setMortgageError(null)
+    try {
+      const result = await compareMortgageScenarios({
+        loanAmount: homePrice,
+        scenarios: [
+          {
+            name: `${termYears}-year fixed`,
+            term: termYears,
+            interestRate,
+            downPayment: homePrice * (downPaymentPercent / 100),
+            loanType: "fixed",
+          },
+        ],
+      })
+      if (!result.success || !result.comparisons?.length) {
+        setMortgageError("The payment could not be calculated. Please try again.")
+        return
+      }
+      setMortgageResult(result.comparisons[0])
+    } catch {
+      setMortgageError("The payment could not be calculated. Please try again.")
+    } finally {
+      setMortgagePending(false)
+    }
+  }
+
   // Handle property rating (placeholder - functionality to be implemented)
   const handleRateProperty = async () => {
     if (!selectedProperty) return
@@ -547,6 +744,73 @@ export default function PersonaPropertiesDashboard({
         ]
     }
   }
+
+  // The saved-search criteria editor. Extracted so the investor Deal Flow
+  // header can open the SAME editor the matches tab uses — both write through
+  // updatePropertyAlert.
+  const renderAlertCriteriaEditor = () => (
+    <div className="border rounded-lg p-3 space-y-2 bg-muted/30">
+      <p className="text-xs font-medium text-muted-foreground">Edit Search Criteria</p>
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <Label className="text-xs">Min Price</Label>
+          <Input
+            className="h-7 text-xs"
+            value={editAlertForm.min_price}
+            onChange={(e) => setEditAlertForm(f => ({ ...f, min_price: e.target.value }))}
+            placeholder="$400,000"
+          />
+        </div>
+        <div>
+          <Label className="text-xs">Max Price</Label>
+          <Input
+            className="h-7 text-xs"
+            value={editAlertForm.max_price}
+            onChange={(e) => setEditAlertForm(f => ({ ...f, max_price: e.target.value }))}
+            placeholder="$600,000"
+          />
+        </div>
+        <div>
+          <Label className="text-xs">Min Beds</Label>
+          <Input
+            className="h-7 text-xs"
+            type="number"
+            min={0}
+            value={editAlertForm.bedrooms_min}
+            onChange={(e) => setEditAlertForm(f => ({ ...f, bedrooms_min: e.target.value }))}
+          />
+        </div>
+        <div>
+          <Label className="text-xs">Min Baths</Label>
+          <Input
+            className="h-7 text-xs"
+            type="number"
+            min={0}
+            value={editAlertForm.bathrooms_min}
+            onChange={(e) => setEditAlertForm(f => ({ ...f, bathrooms_min: e.target.value }))}
+          />
+        </div>
+      </div>
+      <div>
+        <Label className="text-xs">Cities (comma-separated)</Label>
+        <Input
+          className="h-7 text-xs"
+          value={editAlertForm.cities}
+          onChange={(e) => setEditAlertForm(f => ({ ...f, cities: e.target.value }))}
+          placeholder="Austin, Cedar Park"
+        />
+      </div>
+      <div className="flex gap-2 pt-1">
+        <Button size="sm" className="h-7 text-xs" onClick={handleSaveAlertCriteria} disabled={savingAlert}>
+          {savingAlert ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Save className="h-3 w-3 mr-1" />}
+          Save
+        </Button>
+        <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditingAlertId(null)}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  )
 
   // Render property card based on persona
   const renderPropertyCard = (property: any, showInvestmentMetrics = false) => {
@@ -978,10 +1242,74 @@ export default function PersonaPropertiesDashboard({
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-xl font-semibold">{searchResults.length} Properties Found</h2>
-            <Button variant="outline" size="sm" className="bg-transparent">
+            <Button
+              variant="outline"
+              size="sm"
+              className="bg-transparent"
+              onClick={() => setShowRefine((v) => !v)}
+            >
               <Filter className="w-4 h-4 mr-2" /> Refine
             </Button>
           </div>
+
+          {/* Refinement narrows the SAME search: the clauses are appended to the
+              buyer's own sentence and re-interpreted, so the filter chips above
+              keep showing what the AI actually extracted. */}
+          {showRefine && (
+            <Card className="border-primary/20">
+              <CardContent className="p-4 space-y-3">
+                <p className="text-sm font-medium">Narrow these results</p>
+                <div className="grid sm:grid-cols-3 gap-3">
+                  <div className="space-y-1">
+                    <Label className="text-xs">Max Price</Label>
+                    <Input
+                      className="h-8"
+                      value={refineForm.maxPrice}
+                      onChange={(e) => setRefineForm((f) => ({ ...f, maxPrice: e.target.value }))}
+                      placeholder="$600,000"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Min Beds</Label>
+                    <Input
+                      className="h-8"
+                      type="number"
+                      min={0}
+                      value={refineForm.minBeds}
+                      onChange={(e) => setRefineForm((f) => ({ ...f, minBeds: e.target.value }))}
+                      placeholder="3"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Must Have</Label>
+                    <Input
+                      className="h-8"
+                      value={refineForm.mustHave}
+                      onChange={(e) => setRefineForm((f) => ({ ...f, mustHave: e.target.value }))}
+                      placeholder="garage, big yard"
+                    />
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button size="sm" onClick={handleRefineSearch} disabled={isRefining}>
+                    {isRefining ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Refining...
+                      </>
+                    ) : (
+                      <>
+                        <Search className="w-4 h-4 mr-2" /> Apply Refinement
+                      </>
+                    )}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setShowRefine(false)}>
+                    Cancel
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
             {searchResults.map((property) => renderPropertyCard(property, persona === "investor"))}
           </div>
@@ -1003,7 +1331,7 @@ export default function PersonaPropertiesDashboard({
           <TabsContent value="deals" className="space-y-6">
             {/* Investment Criteria Summary */}
             <Card className="bg-gradient-to-r from-green-50 to-emerald-50 border-green-200">
-              <CardContent className="p-4">
+              <CardContent className="p-4 space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-4">
                     <div className="p-3 rounded-xl bg-white shadow-md">
@@ -1014,12 +1342,34 @@ export default function PersonaPropertiesDashboard({
                       <p className="text-sm text-muted-foreground">
                         Strategy: {investmentStrategy} | Target Cap Rate: {targetCapRate}% | Portfolio: {portfolioSize} properties
                       </p>
+                      {investorAlert && (
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Deal alerts: {investorAlert.alert_name || "Saved search"}
+                        </p>
+                      )}
                     </div>
                   </div>
-                  <Button variant="outline" size="sm" className="bg-transparent">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="bg-transparent"
+                    onClick={() => {
+                      // No saved search means there is nothing to adjust — say so
+                      // rather than opening an editor that would write nowhere.
+                      if (!investorAlert) {
+                        toast({
+                          title: "No saved search yet",
+                          description: "Your agent sets up deal alerts — ask them to add one and it will be editable here.",
+                        })
+                        return
+                      }
+                      openAlertEditor(investorAlert)
+                    }}
+                  >
                     <Filter className="w-4 h-4 mr-2" /> Adjust Criteria
                   </Button>
                 </div>
+                {investorAlert && editingAlertId === investorAlert.id && renderAlertCriteriaEditor()}
               </CardContent>
             </Card>
 
@@ -1060,21 +1410,62 @@ export default function PersonaPropertiesDashboard({
                 <CardContent className="space-y-4">
                   <div className="space-y-2">
                     <Label>Purchase Price</Label>
-                    <Input type="number" placeholder="500000" />
+                    <Input
+                      type="number"
+                      placeholder="500000"
+                      value={dealForm.purchasePrice}
+                      onChange={(e) => setDealForm((f) => ({ ...f, purchasePrice: e.target.value }))}
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label>Gross Monthly Rent</Label>
-                    <Input type="number" placeholder="3500" />
+                    <Input
+                      type="number"
+                      placeholder="3500"
+                      value={dealForm.monthlyRent}
+                      onChange={(e) => setDealForm((f) => ({ ...f, monthlyRent: e.target.value }))}
+                    />
                   </div>
                   <div className="space-y-2">
-                    <Label>Monthly Expenses</Label>
-                    <Input type="number" placeholder="1400" />
+                    <Label>Monthly Expenses (taxes, insurance, HOA, upkeep)</Label>
+                    <Input
+                      type="number"
+                      placeholder="1400"
+                      value={dealForm.monthlyExpenses}
+                      onChange={(e) => setDealForm((f) => ({ ...f, monthlyExpenses: e.target.value }))}
+                    />
                   </div>
                   <div className="p-4 bg-green-50 rounded-lg">
                     <p className="text-sm text-green-700">Calculated Cap Rate</p>
-                    <p className="text-3xl font-bold text-green-700">5.04%</p>
+                    <p className="text-3xl font-bold text-green-700">
+                      {dealMetrics?.cap_rate != null ? `${dealMetrics.cap_rate}%` : "—"}
+                    </p>
+                    {dealMetrics?.cap_rate != null ? (
+                      <p className="text-xs text-green-700 mt-1">
+                        {Number(dealMetrics.cap_rate) >= Number(targetCapRate)
+                          ? `At or above your ${targetCapRate}% target.`
+                          : `Below your ${targetCapRate}% target.`}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-green-700/80 mt-1">
+                        Enter your numbers below and press Calculate.
+                      </p>
+                    )}
                   </div>
-                  <Button className="w-full">Calculate</Button>
+                  <Button
+                    className="w-full"
+                    onClick={() => runInvestmentAnalysis(setCapPending)}
+                    disabled={capPending || cocPending}
+                  >
+                    {capPending ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Calculating...
+                      </>
+                    ) : (
+                      "Calculate"
+                    )}
+                  </Button>
+                  {dealError && <p className="text-sm text-red-600">{dealError}</p>}
                 </CardContent>
               </Card>
 
@@ -1086,20 +1477,78 @@ export default function PersonaPropertiesDashboard({
                     Cash-on-Cash Return
                   </CardTitle>
                 </CardHeader>
+                {/* The down payment and the annual cash flow used to be typed in
+                    and thrown away. They are OUTPUTS of the analysis, not inputs —
+                    what the analyzer needs is the financing terms, so that is what
+                    this card now asks for. It shares the deal above; both cards
+                    read one analysis. */}
                 <CardContent className="space-y-4">
                   <div className="space-y-2">
-                    <Label>Down Payment (25%)</Label>
-                    <Input type="number" placeholder="125000" />
+                    <Label>Down Payment (%)</Label>
+                    <Input
+                      type="number"
+                      placeholder="25"
+                      value={dealForm.downPaymentPercent}
+                      onChange={(e) => setDealForm((f) => ({ ...f, downPaymentPercent: e.target.value }))}
+                    />
                   </div>
                   <div className="space-y-2">
-                    <Label>Annual Cash Flow</Label>
-                    <Input type="number" placeholder="8400" />
+                    <Label>Interest Rate (%)</Label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      placeholder="6.5"
+                      value={dealForm.interestRate}
+                      onChange={(e) => setDealForm((f) => ({ ...f, interestRate: e.target.value }))}
+                    />
                   </div>
                   <div className="p-4 bg-blue-50 rounded-lg">
                     <p className="text-sm text-blue-700">Cash-on-Cash Return</p>
-                    <p className="text-3xl font-bold text-blue-700">6.72%</p>
+                    <p className="text-3xl font-bold text-blue-700">
+                      {dealMetrics?.cash_on_cash_return != null ? `${dealMetrics.cash_on_cash_return}%` : "—"}
+                    </p>
+                    {dealMetrics && (
+                      <div className="mt-2 space-y-0.5 text-xs text-blue-800">
+                        {dealMetrics.down_payment != null && (
+                          <p>Down payment: ${Math.round(dealMetrics.down_payment).toLocaleString()}</p>
+                        )}
+                        {dealMetrics.monthly_mortgage != null && (
+                          <p>Monthly mortgage: ${Math.round(dealMetrics.monthly_mortgage).toLocaleString()}</p>
+                        )}
+                        {dealMetrics.annual_cash_flow != null && (
+                          <p>Annual cash flow: ${Math.round(dealMetrics.annual_cash_flow).toLocaleString()}</p>
+                        )}
+                        {dealMetrics.monthly_cash_flow != null && (
+                          <p>Monthly cash flow: ${Math.round(dealMetrics.monthly_cash_flow).toLocaleString()}</p>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <Button className="w-full">Calculate</Button>
+                  <Button
+                    className="w-full"
+                    onClick={() => runInvestmentAnalysis(setCocPending)}
+                    disabled={capPending || cocPending}
+                  >
+                    {cocPending ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Calculating...
+                      </>
+                    ) : (
+                      "Calculate"
+                    )}
+                  </Button>
+                  {/* One analysis, one error — shown on whichever card the
+                      investor is looking at. */}
+                  {dealError && <p className="text-sm text-red-600">{dealError}</p>}
+                  {typeof dealAnalysis?.recommendation === "string" && (
+                    <div className="p-3 rounded-lg border bg-muted/30">
+                      <p className="text-xs font-medium mb-1 flex items-center gap-1">
+                        <Lightbulb className="w-3 h-3 text-amber-500" />
+                        Analyst note
+                      </p>
+                      <p className="text-xs text-muted-foreground">{dealAnalysis.recommendation}</p>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </div>
@@ -1141,84 +1590,13 @@ export default function PersonaPropertiesDashboard({
                             size="icon"
                             variant="ghost"
                             className="h-6 w-6"
-                            onClick={() => {
-                              setEditingAlertId(editingAlertId === search.id ? null : search.id)
-                              setEditAlertForm({
-                                min_price: search.min_price ? String(search.min_price) : "",
-                                max_price: search.max_price ? String(search.max_price) : "",
-                                bedrooms_min: search.bedrooms_min ? String(search.bedrooms_min) : "",
-                                bathrooms_min: search.bathrooms_min ? String(search.bathrooms_min) : "",
-                                cities: (search.cities ?? []).join(", "),
-                              })
-                            }}
+                            onClick={() => openAlertEditor(search)}
                           >
                             <Pencil className="h-3 w-3" />
                           </Button>
                         </div>
                       </div>
-                      {editingAlertId === search.id && (
-                        <div className="border rounded-lg p-3 space-y-2 bg-muted/30">
-                          <p className="text-xs font-medium text-muted-foreground">Edit Search Criteria</p>
-                          <div className="grid grid-cols-2 gap-2">
-                            <div>
-                              <Label className="text-xs">Min Price</Label>
-                              <Input
-                                className="h-7 text-xs"
-                                value={editAlertForm.min_price}
-                                onChange={(e) => setEditAlertForm(f => ({ ...f, min_price: e.target.value }))}
-                                placeholder="$400,000"
-                              />
-                            </div>
-                            <div>
-                              <Label className="text-xs">Max Price</Label>
-                              <Input
-                                className="h-7 text-xs"
-                                value={editAlertForm.max_price}
-                                onChange={(e) => setEditAlertForm(f => ({ ...f, max_price: e.target.value }))}
-                                placeholder="$600,000"
-                              />
-                            </div>
-                            <div>
-                              <Label className="text-xs">Min Beds</Label>
-                              <Input
-                                className="h-7 text-xs"
-                                type="number"
-                                min={0}
-                                value={editAlertForm.bedrooms_min}
-                                onChange={(e) => setEditAlertForm(f => ({ ...f, bedrooms_min: e.target.value }))}
-                              />
-                            </div>
-                            <div>
-                              <Label className="text-xs">Min Baths</Label>
-                              <Input
-                                className="h-7 text-xs"
-                                type="number"
-                                min={0}
-                                value={editAlertForm.bathrooms_min}
-                                onChange={(e) => setEditAlertForm(f => ({ ...f, bathrooms_min: e.target.value }))}
-                              />
-                            </div>
-                          </div>
-                          <div>
-                            <Label className="text-xs">Cities (comma-separated)</Label>
-                            <Input
-                              className="h-7 text-xs"
-                              value={editAlertForm.cities}
-                              onChange={(e) => setEditAlertForm(f => ({ ...f, cities: e.target.value }))}
-                              placeholder="Austin, Cedar Park"
-                            />
-                          </div>
-                          <div className="flex gap-2 pt-1">
-                            <Button size="sm" className="h-7 text-xs" onClick={handleSaveAlertCriteria} disabled={savingAlert}>
-                              {savingAlert ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Save className="h-3 w-3 mr-1" />}
-                              Save
-                            </Button>
-                            <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditingAlertId(null)}>
-                              Cancel
-                            </Button>
-                          </div>
-                        </div>
-                      )}
+                      {editingAlertId === search.id && renderAlertCriteriaEditor()}
                       <div className="flex flex-wrap gap-2">
                         {search.min_price && (
                           <Badge variant="outline" className="text-xs">
@@ -1498,22 +1876,74 @@ export default function PersonaPropertiesDashboard({
                 <div className="grid md:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label>Home Price</Label>
-                    <Input type="number" placeholder="$400,000" />
+                    <Input
+                      type="number"
+                      placeholder="400000"
+                      value={mortgageForm.homePrice}
+                      onChange={(e) => setMortgageForm((f) => ({ ...f, homePrice: e.target.value }))}
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label>Down Payment (%)</Label>
-                    <Input type="number" placeholder="20" />
+                    <Input
+                      type="number"
+                      placeholder="20"
+                      value={mortgageForm.downPaymentPercent}
+                      onChange={(e) => setMortgageForm((f) => ({ ...f, downPaymentPercent: e.target.value }))}
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label>Interest Rate (%)</Label>
-                    <Input type="number" placeholder="6.5" />
+                    <Input
+                      type="number"
+                      step="0.01"
+                      placeholder="6.5"
+                      value={mortgageForm.interestRate}
+                      onChange={(e) => setMortgageForm((f) => ({ ...f, interestRate: e.target.value }))}
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label>Loan Term (years)</Label>
-                    <Input type="number" placeholder="30" />
+                    <Input
+                      type="number"
+                      placeholder="30"
+                      value={mortgageForm.termYears}
+                      onChange={(e) => setMortgageForm((f) => ({ ...f, termYears: e.target.value }))}
+                    />
                   </div>
                 </div>
-                <Button className="w-full">Calculate Monthly Payment</Button>
+
+                {/* Real figures off compareMortgageScenarios — principal and
+                    interest only, which is exactly what the action returns. */}
+                {mortgageResult && (
+                  <div className="p-4 bg-blue-50 rounded-lg space-y-1">
+                    <p className="text-sm text-blue-700">Monthly Principal &amp; Interest</p>
+                    <p className="text-3xl font-bold text-blue-700">
+                      ${Number(mortgageResult.monthly_payment).toLocaleString()}
+                    </p>
+                    <div className="text-xs text-blue-800 pt-1 space-y-0.5">
+                      <p>Loan amount: ${Number(mortgageResult.loan_amount).toLocaleString()}</p>
+                      <p>Down payment: ${Number(mortgageResult.down_payment).toLocaleString()}</p>
+                      <p>Total interest over {mortgageResult.term_years} years: ${Number(mortgageResult.total_interest).toLocaleString()}</p>
+                      <p>Total paid: ${Number(mortgageResult.total_paid).toLocaleString()}</p>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground pt-1">
+                      Property taxes, insurance, HOA dues and PMI are not included — your lender's
+                      estimate is the authority.
+                    </p>
+                  </div>
+                )}
+
+                <Button className="w-full" onClick={handleCalculateMonthlyPayment} disabled={mortgagePending}>
+                  {mortgagePending ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Calculating...
+                    </>
+                  ) : (
+                    "Calculate Monthly Payment"
+                  )}
+                </Button>
+                {mortgageError && <p className="text-sm text-red-600">{mortgageError}</p>}
               </CardContent>
             </Card>
           </TabsContent>

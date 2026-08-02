@@ -22,7 +22,15 @@ export const ROLE_DASHBOARD_ROUTES: Record<string, string> = {
   lender:             "/lender/dashboard", // legacy: lenders are vendors now; kept as a harmless fallback
   title:              "/title/dashboard",
   title_agent:        "/title/dashboard",
-  system:             "/dashboard/admin",
+  // `system` is DELIBERATELY ABSENT. It is a real users.user_type (the live CHECK
+  // admits it) but it belongs to non-interactive AI-ISA service identities
+  // (ai-isa+…@vipreos.internal) that have never signed in and never will. It used
+  // to land on /dashboard/admin, which ROUTE_ROLE_REQUIREMENTS does not admit —
+  // so the one thing the entry could do was send a service account into a
+  // redirect loop. Granting it admin access to fix that would be widening a
+  // route for a non-human identity, which is the opposite of the right answer.
+  // Absent here, it falls through to DEFAULT_DASHBOARD_ROUTE like any unknown
+  // role. ROLE_LABELS still names it, because it is displayed in audit surfaces.
 }
 
 export const DEFAULT_DASHBOARD_ROUTE = "/dashboard/agent"
