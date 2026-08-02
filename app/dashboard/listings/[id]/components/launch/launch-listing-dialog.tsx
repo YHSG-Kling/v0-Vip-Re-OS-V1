@@ -9,15 +9,22 @@
  * it to. This is that missing half.
  *
  * It also carries the MLS number, because launching IS the moment the number
- * becomes real:
+ * becomes real: listings.mls_number is written by exactly one function —
+ * launchListing — and this dialog is the only thing that calls it.
  *
- *   · listings.mls_number is written by exactly one function — launchListing.
- *   · The agent can type it (they have it from their MLS), or pull a candidate
- *     from RentCast / their connected IDX feed.
- *   · A pulled candidate is NEVER auto-applied. The match is on street address,
- *     which is fuzzy, and a wrong MLS number syndicates the wrong home. The
- *     agent sees the address each candidate came from and clicks the one that
- *     is theirs.
+ * THE NUMBER IS TYPED, NOT FETCHED. Owner ruling: the admin enters the listing
+ * into the MLS (or state MLS) by hand, so they already hold the number. RentCast
+ * and IDX are not a source for it.
+ *
+ * What they ARE for is the opposite direction — VERIFYING the listing actually
+ * went live. That check belongs after launch, not before it (before launch there
+ * is nothing on the MLS to find), so it lives on the lifecycle page's MLS row
+ * rather than here. See lib/listings/mls-verification.ts.
+ *
+ * The one pre-launch use of the feeds is a MISMATCH warning: if a feed already
+ * shows this address under a different MLS number, the agent should see that
+ * before publishing ours, because the number we publish is the one buyers and
+ * portals use to find the property.
  */
 
 import { useState } from "react"
@@ -34,7 +41,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Rocket, Search, Loader2, AlertTriangle, CheckCircle2 } from "lucide-react"
-import { launchListingAction, suggestMlsNumberAction, type MlsSuggestion } from "@/app/actions/listings-kernel"
+import { launchListingAction, verifyMlsSyndicationAction } from "@/app/actions/listings-kernel"
+import type { MlsVerification } from "@/lib/listings/mls-verification"
 
 interface LaunchListingDialogProps {
   open: boolean
@@ -59,24 +67,21 @@ export function LaunchListingDialog({
   const [mlsNumber, setMlsNumber] = useState(initialMlsNumber ?? "")
   const [mlsLink, setMlsLink] = useState(initialMlsLink ?? "")
   const [launching, setLaunching] = useState(false)
-  const [looking, setLooking] = useState(false)
-  const [suggestions, setSuggestions] = useState<MlsSuggestion[] | null>(null)
-  const [lookupNotes, setLookupNotes] = useState<string[]>([])
+  const [checking, setChecking] = useState(false)
+  const [verification, setVerification] = useState<MlsVerification | null>(null)
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
 
-  const handleLookup = async () => {
-    setLooking(true)
+  const handleCheckFeeds = async () => {
+    setChecking(true)
     setResult(null)
-    const res = await suggestMlsNumberAction(listingId)
-    setLooking(false)
-    if (!res.success) {
-      setSuggestions([])
-      setLookupNotes([])
-      setResult({ ok: false, message: res.error ?? "Lookup failed" })
+    const res = await verifyMlsSyndicationAction(listingId)
+    setChecking(false)
+    if (!res.success || !res.verification) {
+      setVerification(null)
+      setResult({ ok: false, message: res.error ?? "Feed check failed" })
       return
     }
-    setSuggestions(res.suggestions)
-    setLookupNotes(res.notes)
+    setVerification(res.verification)
   }
 
   const handleLaunch = async () => {
@@ -134,12 +139,12 @@ export function LaunchListingDialog({
                 size="sm"
                 variant="ghost"
                 className="h-7 gap-1 text-xs"
-                onClick={handleLookup}
-                disabled={looking}
+                onClick={handleCheckFeeds}
+                disabled={checking}
               >
-                {looking
-                  ? <><Loader2 className="h-3 w-3 animate-spin" /> Looking up…</>
-                  : <><Search className="h-3 w-3" /> Pull from RentCast / IDX</>}
+                {checking
+                  ? <><Loader2 className="h-3 w-3 animate-spin" /> Checking feeds…</>
+                  : <><Search className="h-3 w-3" /> Check RentCast / IDX</>}
               </Button>
             </div>
             <Input
@@ -149,48 +154,53 @@ export function LaunchListingDialog({
               placeholder="e.g. 24-118372"
               autoComplete="off"
             />
+            <p className="text-[11px] text-muted-foreground">
+              Enter the number from your MLS. The feed check looks for this address to
+              confirm it went live — run it again after launch.
+            </p>
           </div>
 
-          {suggestions !== null && (
-            <div className="space-y-1.5">
-              {suggestions.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  No MLS number found for this address in the sources we could reach. Enter it manually.
+          {verification && (
+            <div
+              className={`rounded-md border px-3 py-2 space-y-1 ${
+                verification.verdict === "confirmed"
+                  ? "border-emerald-200 bg-emerald-50/60"
+                  : verification.verdict === "contradicted"
+                  ? "border-destructive/40 bg-destructive/5"
+                  : "border-muted bg-muted/30"
+              }`}
+            >
+              <div className="flex items-center gap-1.5">
+                {verification.verdict === "confirmed" ? (
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                ) : verification.verdict === "contradicted" ? (
+                  <AlertTriangle className="h-3.5 w-3.5 text-destructive" />
+                ) : (
+                  <Search className="h-3.5 w-3.5 text-muted-foreground" />
+                )}
+                <p className="text-xs font-medium capitalize">
+                  {verification.verdict === "pending" ? "Not seen yet" : verification.verdict}
                 </p>
-              ) : (
-                <>
-                  <p className="text-xs text-muted-foreground">
-                    Confirm the one that matches this property — the match is on street address, so check it.
-                  </p>
-                  <div className="divide-y rounded-md border">
-                    {suggestions.map((s) => (
-                      <button
-                        key={`${s.source}:${s.mlsNumber}`}
-                        type="button"
-                        onClick={() => setMlsNumber(s.mlsNumber)}
-                        className="w-full text-left flex items-center gap-2 px-3 py-2 hover:bg-muted/40"
-                      >
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium">MLS# {s.mlsNumber}</p>
-                          <p className="text-xs text-muted-foreground truncate">
-                            {s.address}{s.mlsName ? ` · ${s.mlsName}` : ""}
-                          </p>
-                        </div>
-                        <Badge variant="outline" className="text-[10px] shrink-0">
-                          {s.source === "rentcast" ? "RentCast" : "IDX"}
-                        </Badge>
-                        {mlsNumber === s.mlsNumber && (
-                          <CheckCircle2 className="h-3.5 w-3.5 text-green-600 shrink-0" />
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-              {lookupNotes.length > 0 && (
-                <ul className="text-[11px] text-muted-foreground list-disc pl-4 space-y-0.5">
-                  {lookupNotes.map((n) => <li key={n}>{n}</li>)}
-                </ul>
+                {verification.consulted.map((c) => (
+                  <Badge key={c} variant="outline" className="text-[10px]">
+                    {c === "rentcast" ? "RentCast" : "IDX"}
+                  </Badge>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">{verification.explanation}</p>
+              {/* A feed showing this address under a DIFFERENT number is the one
+                  case worth acting on before publishing — offer the swap, never
+                  apply it silently. */}
+              {verification.verdict === "contradicted" && verification.evidence?.mlsNumber && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={() => setMlsNumber(verification.evidence!.mlsNumber!)}
+                >
+                  Use MLS# {verification.evidence.mlsNumber} instead
+                </Button>
               )}
             </div>
           )}

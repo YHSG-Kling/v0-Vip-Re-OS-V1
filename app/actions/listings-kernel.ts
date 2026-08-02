@@ -14,6 +14,12 @@
  */
 
 import { revalidatePath } from "next/cache"
+import {
+  verifyMlsSyndication,
+  type MlsVerification,
+  type MlsFeedObservation,
+  type MlsFeedSource,
+} from "@/lib/listings/mls-verification"
 import { createClient } from "@/lib/supabase/server"
 import { LISTING_STATUSES, isListingStatus } from "@/lib/constants"
 import {
@@ -192,69 +198,49 @@ export async function validateLaunchReadinessAction(listingId: string) {
   return validateListingLaunchReadiness({ listingId })
 }
 
-// ─── Action: suggestMlsNumberAction ──────────────────────────────────────────
-
-export interface MlsSuggestion {
-  mlsNumber: string
-  /** Which MLS reported it, when the source names one (RentCast's mlsName). */
-  mlsName: string | null
-  /** The address the source has, so the agent can see WHAT they are confirming. */
-  address: string
-  source: "rentcast" | "idx"
-}
+// ─── Action: verifyMlsSyndicationAction ──────────────────────────────────────
 
 /**
- * OWNER RULING: "mls can be pulled from rentcast property search and if the user
- * adds a mls connection through idx, those searches will have the mls number."
+ * OWNER RULING: "the admin needs to add the actual listing that is in house
+ * manually to the mls or state mls but verification that it is actually live on
+ * the mls can be checked in rentcast or the tenants(subscriber) idxbroker."
  *
- * Both sources are searched, in that order of preference, and BOTH ARE ONLY EVER
- * SUGGESTIONS. Nothing here writes listings.mls_number.
+ * So this does NOT fetch a number for the agent to paste. The agent already has
+ * the number — they typed it into the MLS themselves. This asks the opposite
+ * question, which nothing in the OS ever asked before:
  *
- * The reason is the join. Neither RentCast nor an IDX feed can be queried by
- * "the id of our listing" — there is no shared key. The only thing linking a
- * feed row to one of our listings is the street address, and address matching is
- * fuzzy in both directions (unit numbers, "St" vs "Street", a duplex, a
- * new-construction address the county has not split yet). An MLS number is the
- * industry identity of a specific property: stamp the wrong one and the listing
- * syndicates as a different home, on a field that a consumer, a portal, and a
- * compliance officer all treat as authoritative. That is not a mistake worth
- * automating away a single click for.
+ *   The OS says this listing is live on the MLS. Is it?
  *
- * So: we find the candidates, we show the address each one came from, and a
- * human confirms. Returning zero candidates is a normal, honest outcome — the
- * agent types the number in.
+ * The feeds the brokerage already pays for are the only outside parties that can
+ * answer. See lib/listings/mls-verification.ts for the four honest verdicts and
+ * why "no feed connected" must never render as "not on the MLS".
  */
-export async function suggestMlsNumberAction(listingId: string): Promise<{
+export async function verifyMlsSyndicationAction(listingId: string): Promise<{
   success: boolean
-  suggestions: MlsSuggestion[]
-  /** Present when a source could not be consulted, so "no matches" is never confused with "not connected". */
-  notes: string[]
+  verification?: MlsVerification
   error?: string
 }> {
   const ctx = await resolveCallerContext()
-  if ("error" in ctx) return { success: false, suggestions: [], notes: [], error: ctx.error }
+  if ("error" in ctx) return { success: false, error: ctx.error }
 
   const supabase = await createClient()
   const { data: listing, error: listingError } = await supabase
     .from("listings")
-    .select("id, address, city, state, zip, brokerage_id")
+    .select("id, address, city, state, zip, brokerage_id, mls_number, listing_date, updated_at")
     .eq("id", listingId)
     .eq("brokerage_id", ctx.brokerageId)
     .maybeSingle()
 
-  if (listingError) return { success: false, suggestions: [], notes: [], error: listingError.message }
-  if (!listing) return { success: false, suggestions: [], notes: [], error: "Listing not found in your brokerage" }
+  if (listingError) return { success: false, error: listingError.message }
+  if (!listing) return { success: false, error: "Listing not found in your brokerage" }
 
   const target = normalizeStreet(listing.address as string | null)
-  if (!target) {
-    return { success: false, suggestions: [], notes: [], error: "This listing has no street address to match on" }
-  }
+  if (!target) return { success: false, error: "This listing has no street address to match on" }
 
-  const suggestions: MlsSuggestion[] = []
-  const notes: string[] = []
-  const seen = new Set<string>()
+  const observations: MlsFeedObservation[] = []
+  const consulted: MlsFeedSource[] = []
 
-  // ── Source 1: RentCast for-sale search, narrowed to this listing's zip/city.
+  // ── Feed 1: RentCast's for-sale index, narrowed to this listing's zip/city.
   const { searchRentcastSaleListings } = await import("@/lib/property/rentcast")
   const rc = await searchRentcastSaleListings({
     brokerageId: ctx.brokerageId,
@@ -265,50 +251,73 @@ export async function suggestMlsNumberAction(listingId: string): Promise<{
       limit: 50,
     },
   })
-  if (!rc.success) {
-    notes.push(`RentCast: ${rc.error ?? "search failed"}`)
-  } else {
+  // A FAILED search is NOT an empty search. Only a feed we actually reached
+  // counts as consulted — otherwise a 401 from RentCast would silently become
+  // "your listing is not on the MLS", which is the worst possible lie here.
+  if (rc.success) {
+    consulted.push("rentcast")
     for (const l of rc.listings) {
-      if (!l.mlsNumber || seen.has(l.mlsNumber)) continue
       if (normalizeStreet(l.address) !== target) continue
-      seen.add(l.mlsNumber)
-      suggestions.push({ mlsNumber: l.mlsNumber, mlsName: l.mlsName, address: l.address, source: "rentcast" })
+      observations.push({
+        source: "rentcast",
+        mlsNumber: l.mlsNumber,
+        mlsName: l.mlsName,
+        address: l.address,
+        status: l.status,
+      })
     }
   }
 
-  // ── Source 2: the brokerage's own IDX feed, when one is connected.
+  // ── Feed 2: the brokerage's own IDX connection, when they have one.
   try {
     const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
     const idx = await IDXBrokerClient.forBrokerage(ctx.brokerageId, { agentUserId: ctx.userId })
-    if (!idx.isConfigured()) {
-      notes.push("IDX: no MLS connection on this brokerage")
-    } else {
+    if (idx.isConfigured()) {
+      consulted.push("idx")
       const rows = await idx.searchActiveListings({
         city: (listing.city as string | null) ?? undefined,
         state: (listing.state as string | null) ?? undefined,
         zipCode: (listing.zip as string | null) ?? undefined,
       })
       for (const l of rows) {
-        if (!l.mlsNumber || seen.has(l.mlsNumber)) continue
         if (normalizeStreet(l.address) !== target) continue
-        seen.add(l.mlsNumber)
-        suggestions.push({ mlsNumber: l.mlsNumber, mlsName: null, address: l.address, source: "idx" })
+        observations.push({
+          source: "idx",
+          mlsNumber: l.mlsNumber,
+          mlsName: null,
+          // searchActiveListings only ever returns ACTIVE rows — that is the
+          // method's contract and its name. Saying so beats leaving status null,
+          // which isActiveOnFeed would (correctly) refuse to treat as live.
+          address: l.address,
+          status: "active",
+        })
       }
     }
-  } catch (err) {
-    notes.push(`IDX: ${err instanceof Error ? err.message : "lookup failed"}`)
+  } catch {
+    // Unreachable IDX is not a finding about the listing. It stays out of
+    // `consulted`, so the verdict degrades to unverifiable rather than lying.
   }
 
-  return { success: true, suggestions, notes }
+  const verification = verifyMlsSyndication(
+    {
+      storedMlsNumber: (listing.mls_number as string | null) ?? null,
+      liveSince: ((listing.listing_date as string | null) ?? (listing.updated_at as string | null)) ?? null,
+    },
+    observations,
+    consulted,
+  )
+
+  return { success: true, verification }
 }
 
 /**
  * Street-line comparison key. Deliberately CONSERVATIVE: it only strips the
  * things that are pure formatting (case, punctuation, whitespace runs) and
  * normalises the handful of suffixes that every feed spells differently. It does
- * NOT try to be clever about unit numbers or directionals — a near-match that
- * this returns as "different" costs the agent one manual entry, while a
- * near-match it wrongly returns as "same" offers them the wrong MLS number.
+ * NOT try to be clever about unit numbers or directionals — a near-match this
+ * calls "different" costs a `pending` verdict the agent can dismiss, while a
+ * near-match it wrongly calls "same" would compare our listing against SOMEONE
+ * ELSE'S MLS number and could raise a false contradiction against a correct row.
  */
 function normalizeStreet(raw: string | null | undefined): string | null {
   if (!raw) return null

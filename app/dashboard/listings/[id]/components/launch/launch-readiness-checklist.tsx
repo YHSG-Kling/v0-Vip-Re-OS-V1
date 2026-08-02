@@ -35,6 +35,8 @@ import {
   Hash,
 } from "lucide-react"
 import { LaunchListingDialog } from "./launch-listing-dialog"
+import { verifyMlsSyndicationAction } from "@/app/actions/listings-kernel"
+import type { MlsVerification } from "@/lib/listings/mls-verification"
 import { cn } from "@/lib/utils"
 import type { ListingStage } from "@/lib/listing-lifecycle/lifecycle-definitions"
 
@@ -130,6 +132,19 @@ export function LaunchReadinessChecklist(props: LaunchReadinessChecklistProps) {
   } = props
 
   const [launchOpen, setLaunchOpen] = useState(false)
+  const [mlsCheck, setMlsCheck] = useState<MlsVerification | null>(null)
+  const [mlsChecking, setMlsChecking] = useState(false)
+
+  // The claim "live on the MLS" verified against the feeds the brokerage already
+  // pays for. Reads the outcome and shows it — including "unverifiable", which is
+  // the honest answer for a tenant with no feed connected and must never be
+  // allowed to render as "not on the MLS".
+  const runMlsCheck = async () => {
+    setMlsChecking(true)
+    const res = await verifyMlsSyndicationAction(listingId)
+    setMlsChecking(false)
+    setMlsCheck(res.success && res.verification ? res.verification : null)
+  }
 
   const fieldsMissing = requiredFields.filter(f => !f.complete)
   const fieldsComplete = requiredFields.length - fieldsMissing.length
@@ -193,16 +208,24 @@ export function LaunchReadinessChecklist(props: LaunchReadinessChecklistProps) {
     //    (validateListingLaunchReadiness). This row existed as a hard blocker
     //    inside the kernel and nowhere on the surface, so the checklist could
     //    read 7-of-7 ready while Launch failed with "No MLS number entered".
+    //
+    //    Once a number IS stored, the row stops being a to-do and becomes a
+    //    CLAIM — "this listing is live on the MLS" — which nothing ever
+    //    verified. Clicking it then runs the feed check instead of reopening
+    //    the launch dialog. Storing a number and being live are different
+    //    facts, and only one of them was ever visible here.
     {
       key: "mls",
       label: "MLS Number",
       icon: Hash,
       status: mlsNumber ? "complete" : "pending",
       detail: mlsNumber
-        ? `MLS# ${mlsNumber}${mlsLink ? " · linked" : ""}`
-        : "Required to go live — enter it or pull it from RentCast/IDX",
-      onClick: () => setLaunchOpen(true),
-      cta: mlsNumber ? undefined : "Add MLS number",
+        ? `MLS# ${mlsNumber}${mlsLink ? " · linked" : ""}${
+            mlsCheck ? ` · ${mlsCheck.verdict === "pending" ? "not seen on feeds yet" : mlsCheck.verdict}` : ""
+          }`
+        : "Required to go live — enter the number from your MLS",
+      onClick: mlsNumber ? runMlsCheck : () => setLaunchOpen(true),
+      cta: mlsNumber ? (mlsChecking ? "Checking…" : "Verify it's live") : "Add MLS number",
     },
     // 5. Marketing tier (super-admin only)
     {
@@ -317,6 +340,28 @@ export function LaunchReadinessChecklist(props: LaunchReadinessChecklistProps) {
         </div>
 
         <Progress value={progress} className="h-1.5" />
+
+        {/* The MLS claim, checked. `contradicted` is the one that needs a human:
+            a feed showing this address under a different number means we are
+            publishing someone else's identifier for the property. */}
+        {mlsCheck && (
+          <div
+            className={cn(
+              "rounded-md border px-3 py-2",
+              mlsCheck.verdict === "confirmed" && "border-emerald-200 bg-emerald-50/50",
+              mlsCheck.verdict === "contradicted" && "border-destructive/40 bg-destructive/5",
+              (mlsCheck.verdict === "pending" || mlsCheck.verdict === "unverifiable") && "border-muted bg-muted/30",
+            )}
+          >
+            <p className="text-xs font-medium mb-0.5">
+              {mlsCheck.verdict === "confirmed" ? "MLS syndication confirmed"
+                : mlsCheck.verdict === "contradicted" ? "MLS number disputed by a feed"
+                : mlsCheck.verdict === "unverifiable" ? "No feed connected to verify with"
+                : "Not on the feeds yet"}
+            </p>
+            <p className="text-xs text-muted-foreground">{mlsCheck.explanation}</p>
+          </div>
+        )}
 
         {/* Blockers (compliance/missing) */}
         {blockers.length > 0 && (
