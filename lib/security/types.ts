@@ -117,6 +117,36 @@ export function toCanonicalRoleOrDefault(
 }
 
 /**
+ * Every RAW string that resolves to `canonical` — the canonical value itself
+ * plus every legacy alias that maps to it.
+ *
+ * This exists because a Postgres filter cannot call toCanonicalRole(). A query
+ * like `.in("user_type", ["TC"])` is an exact, CASE-SENSITIVE comparison, and
+ * live rows store 'tc'. That filter matched nothing and — since a query with no
+ * matches is a perfectly successful query — it failed silently: notifyComplianceFlag
+ * had never once reached a transaction coordinator, on any flag, while its own
+ * comment said the TC would see it.
+ *
+ * So: canonicalize on the way IN (toCanonicalRole), and expand on the way OUT
+ * (this). Both derive from the same table, so a new alias is picked up by both
+ * without anyone remembering to update a hand-typed list.
+ *
+ * @example rawRoleVariants('tc') // → ['tc', 'transaction_coordinator', 'TC']
+ */
+export function rawRoleVariants(canonical: CanonicalRole): string[] {
+  const out = [canonical as string]
+  for (const [raw, mapped] of Object.entries(LEGACY_ROLE_MAP)) {
+    if (mapped === canonical) out.push(raw)
+  }
+  return out
+}
+
+/** rawRoleVariants for several canonical roles at once, de-duplicated. */
+export function rawRoleVariantsFor(canonicals: CanonicalRole[]): string[] {
+  return Array.from(new Set(canonicals.flatMap(rawRoleVariants)))
+}
+
+/**
  * Convert an array of raw role strings to canonical roles, dropping any that
  * cannot be resolved.
  */

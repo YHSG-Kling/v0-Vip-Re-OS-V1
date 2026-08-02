@@ -25,6 +25,10 @@ export {
   toCanonicalRoleOrDefault,
   toCanonicalRoles,
   isCanonicalRole,
+  // Expansion for DB filters — a Postgres .in() cannot canonicalize, so it has
+  // to be handed every raw spelling that means the role.
+  rawRoleVariants,
+  rawRoleVariantsFor,
   CANONICAL_ROLE_CONFIG,
 } from './types'
 

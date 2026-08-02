@@ -27,6 +27,7 @@
 
 import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { rawRoleVariantsFor, type CanonicalRole } from "@/lib/security/types"
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -64,6 +65,13 @@ export interface NotifyComplianceFlagInput {
   agentUserId?:  string | null
   /** Optional transaction id used to widen the recipient set to the tx's TCs. */
   transactionId?: string | null
+  /**
+   * Extra users.id recipients the CALLER resolved — typically the offer's own
+   * agent and the listing agent. This helper cannot work those out: it does not
+   * know which offer or listing the flag came from, and guessing from the
+   * acting user would notify the wrong side of an in-house deal.
+   */
+  alsoNotifyUserIds?: (string | null | undefined)[]
   flag:          ComplianceFlag
 }
 
@@ -115,27 +123,42 @@ export async function notifyEsignSigned(
 
 /**
  * Fan out a compliance flag to every relevant recipient:
- *   - the acting agent (when known)
- *   - every TC in the brokerage (users.user_type = 'TC')
+ *   - the acting user (when known)
+ *   - anyone the CALLER names in `alsoNotifyUserIds` — the offer's own agent
+ *     and the listing agent, which only the caller can resolve
+ *   - every TC in the brokerage
  *   - every compliance_officer in the brokerage
  *
- * Critical flags additionally fan to broker + broker_admin so the broker
+ * Critical flags additionally fan to broker + admin + superadmin so the broker
  * sees show-stopping issues without having to dig.
  *
  * Returns the count of notifications inserted (one row per recipient).
  *
- * Note on user_type values: the live CHECK constraint allows
- *   {broker, admin, agent, vendor, lender, TC, compliance_officer, contact,
- *    team_lead}.
- * We use the exact-case values 'TC' and 'compliance_officer' — earlier code
- * sites queried 'tc' / 'transaction_coordinator', which never matched the
- * constraint. The fix lives here as the canonical fan-out path.
+ * ── THE BUG THIS COMMENT USED TO DOCUMENT BACKWARDS ─────────────────────────
+ * The previous note asserted the live CHECK allowed 'TC' and that querying
+ * 'tc' "never matched the constraint". The live constraint is the opposite:
+ *
+ *   users_user_type_check CHECK (user_type = ANY (ARRAY[
+ *     'admin','agent','broker','broker_owner','compliance_officer','contact',
+ *     'isa','lender','superadmin','support','system','tc','team_lead','vendor']))
+ *
+ * 'TC' is not a legal value at all, and every live row stores 'tc'. So
+ * `.in("user_type", ["TC", ...])` matched ZERO rows — and a query that matches
+ * nothing is a successful query, so it failed in total silence. The
+ * transaction coordinator, the single most important recipient of a missing
+ * signature or document, had never received one of these notifications.
+ *
+ * Roles are now expanded through rawRoleVariants() off the same table
+ * toCanonicalRole() maps in, so the filter cannot drift from the vocabulary
+ * again. 'compliance_manager' and 'broker_admin' were also in the old list and
+ * are not legal user_type values either; they survive only as legacy aliases
+ * inside that table, which is where they belong.
  */
 export async function notifyComplianceFlag(
   supabase: SupabaseClient,
   input: NotifyComplianceFlagInput,
 ): Promise<{ notified_count: number; recipient_user_ids: string[] }> {
-  const { brokerageId, agentUserId, transactionId, flag } = input
+  const { brokerageId, agentUserId, transactionId, flag, alsoNotifyUserIds } = input
 
   const priority: NotificationPriority =
     flag.severity === "critical" ? "critical"
@@ -146,17 +169,28 @@ export async function notifyComplianceFlag(
   // Resolve recipients
   const recipientSet = new Set<string>()
   if (agentUserId) recipientSet.add(agentUserId)
+  // The deal's own people, resolved by the caller: the offer's agent (who may
+  // not be whoever clicked) and the LISTING agent (the other side of an
+  // in-house deal). Owner's rule: a missing signature, initial or document
+  // notifies the TC and/or the listing agent.
+  for (const uid of alsoNotifyUserIds ?? []) if (uid) recipientSet.add(uid)
 
   const widenForCritical = flag.severity === "critical"
-  const targetRoles = widenForCritical
-    ? ["TC", "compliance_officer", "compliance_manager", "broker", "broker_admin", "admin"]
-    : ["TC", "compliance_officer", "compliance_manager"]
+  const targetRoles: CanonicalRole[] = widenForCritical
+    ? ["tc", "compliance_officer", "broker", "admin", "superadmin"]
+    : ["tc", "compliance_officer"]
 
-  const { data: staff } = await supabase
+  const { data: staff, error: staffError } = await supabase
     .from("users")
     .select("id, user_type")
     .eq("brokerage_id", brokerageId)
-    .in("user_type", targetRoles)
+    .in("user_type", rawRoleVariantsFor(targetRoles))
+
+  // A failed staff lookup is not "no staff". Say so — silently notifying only
+  // the acting agent is how the TC stopped being told in the first place.
+  if (staffError) {
+    console.error("[notify-helpers] compliance-flag staff lookup failed:", staffError.message)
+  }
 
   for (const u of staff ?? []) {
     if (u.id) recipientSet.add(u.id as string)

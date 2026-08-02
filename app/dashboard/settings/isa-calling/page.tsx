@@ -1,4 +1,5 @@
 import { Suspense } from "react"
+import { rawRoleVariantsFor } from "@/lib/security/types"
 import { redirect } from "next/navigation"
 import { Loader2 } from "lucide-react"
 import { createClient } from "@/lib/supabase/server"
@@ -64,14 +65,24 @@ async function IsaCallingContent() {
     getAIISASettings(profile.brokerage_id),
   ])
 
-  // Resolve duty agent — the brokerage Admin user (defaults to first Admin)
-  const { data: dutyAgent } = await supabase
+  // Resolve duty agent — the brokerage's admin (first one).
+  //
+  // This used to filter `.eq("role", "Admin")`. users.role is a legacy column:
+  // live it is NULL on 19 of 23 rows and holds mixed case ('Admin', 'agent',
+  // 'Lender') where it is set at all, with no CHECK to keep it honest. So the
+  // duty agent resolved by luck or not at all, and the read dropped its error
+  // besides. user_type is the disciplined column (CHECK-constrained, lowercase,
+  // populated), expanded through the same alias table the canonicalizer uses.
+  const { data: dutyAgent, error: dutyAgentError } = await supabase
     .from("users")
     .select("id, first_name, last_name, email")
     .eq("brokerage_id", profile.brokerage_id)
-    .eq("role", "Admin")
+    .in("user_type", rawRoleVariantsFor(["admin", "broker", "superadmin"]))
     .limit(1)
     .maybeSingle()
+  if (dutyAgentError) {
+    console.error("[isa-calling] duty-agent lookup failed:", dutyAgentError.message)
+  }
 
   const enabledCapabilities = isaSettings.enabled_capabilities ?? defaultEnabledCapabilities()
 

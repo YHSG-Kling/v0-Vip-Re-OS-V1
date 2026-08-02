@@ -140,6 +140,37 @@ export async function submitOfferToCompliance(
   const hasBlockingMissing = audit.missing_blocking.length > 0
   const hasPacketBlockers  = packetScan.blockers && packetScan.blockers.length > 0
 
+  // Owner's rule: any missing item — document, signature or initial — notifies
+  // the TC AND/OR the listing agent. The TC comes from the brokerage roster
+  // inside notifyComplianceFlag; the two deal-specific people have to be
+  // resolved here, because only this function knows the offer and its listing.
+  //
+  //   · the OFFER's agent — offers.agent_id is an agents.id, so it is RESOLVED
+  //     to a users.id, never substituted. It differs from `userId` whenever a
+  //     TC or broker submits on the agent's behalf, and in that case the agent
+  //     was previously told nothing at all.
+  //   · the LISTING agent — the other side of an in-house deal, who has just as
+  //     much at stake in a missing seller signature.
+  //
+  // NOTE: no MLS number is read or required anywhere on this path. Per the
+  // owner's ruling the MLS number belongs to the listing-launch checkpoint, not
+  // to accepting an offer, and nothing here consults it.
+  const dealRecipients: (string | null)[] = []
+  if (offer.agent_id) {
+    const { data: offerAgent } = await supabase
+      .from("agents").select("user_id").eq("id", offer.agent_id as string).maybeSingle()
+    dealRecipients.push((offerAgent?.user_id as string | null) ?? null)
+  }
+  if (offer.listing_id) {
+    const { data: listingRow } = await supabase
+      .from("listings").select("agent_id").eq("id", offer.listing_id as string).maybeSingle()
+    if (listingRow?.agent_id) {
+      const { data: listingAgent } = await supabase
+        .from("agents").select("user_id").eq("id", listingRow.agent_id as string).maybeSingle()
+      dealRecipients.push((listingAgent?.user_id as string | null) ?? null)
+    }
+  }
+
   if (hasBlockingMissing || hasPacketBlockers) {
     // Fan out a critical compliance flag so the agent + TC + compliance_officer
     // all see the unblock work clearly in their bells (high/critical severity
@@ -150,6 +181,7 @@ export async function submitOfferToCompliance(
     await notifyComplianceFlag(supabase as any, {
       brokerageId: offer.brokerage_id as string,
       agentUserId: userId,
+      alsoNotifyUserIds: dealRecipients,
       flag: {
         type:        "compliance.submit_blocked",
         severity:    "high",
@@ -169,6 +201,37 @@ export async function submitOfferToCompliance(
         flagType: b.flagType, severity: b.severity, title: b.title,
       })),
     }
+  }
+
+  // 1.6 — WARNING-level misses still get told to somebody.
+  //
+  // Owner's rule is "whether or not a doc is required or a warning, any missing
+  // item … needs to be a notification to the TC and/or the listing agent". Only
+  // the BLOCKING path notified anyone; a settings-marked warning passed through
+  // in total silence, which made the required/warning switch a choice between
+  // "stops the deal" and "nobody ever hears about it".
+  const warningDocs  = audit.missing_warning ?? []
+  const packetWarns  = packetScan.warnings ?? []
+  if (warningDocs.length > 0 || packetWarns.length > 0) {
+    const warnBits: string[] = []
+    if (warningDocs.length > 0) warnBits.push(`${warningDocs.length} optional document(s) missing`)
+    if (packetWarns.length > 0) warnBits.push(`${packetWarns.length} packet warning(s)`)
+    await notifyComplianceFlag(supabase as any, {
+      brokerageId: offer.brokerage_id as string,
+      agentUserId: userId,
+      alsoNotifyUserIds: dealRecipients,
+      flag: {
+        // medium → in-app bell only. A warning must be visible without
+        // becoming an email + SMS on every deal.
+        type:       "compliance.submit_warnings",
+        severity:   "medium",
+        title:      `Submitted with warnings: ${warnBits.join(", ")}`,
+        body:       `Missing (warning): ${warningDocs.join(", ") || "(none)"}.\nPacket warnings: ${packetWarns.slice(0, 5).map(w => w.title).join("; ") || "(none)"}.`,
+        entityType: "offer",
+        entityId:   offerId,
+        offerId,
+      },
+    })
   }
 
   // 2. Stamp readiness + compliance pass on the offer.

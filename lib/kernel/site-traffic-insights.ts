@@ -15,6 +15,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { rawRoleVariantsFor } from "@/lib/security/types"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -108,7 +109,9 @@ export async function runSiteTrafficInsights(svc: Svc, now = new Date()): Promis
 
     let { data: principals } = await svc.from("users")
       .select("id").eq("brokerage_id", brokerageId)
-      .in("role", ["broker", "admin", "super_admin", "broker_owner"]).limit(2)
+      // broker_owner is a legal user_type but not a canonical role, so the
+      // expansion cannot carry it — it is appended rather than dropped.
+      .in("user_type", [...rawRoleVariantsFor(["broker", "admin", "superadmin"]), "broker_owner"]).limit(2)
     if (!principals || principals.length === 0) {
       const { data: anyUser } = await svc.from("users")
         .select("id").eq("brokerage_id", brokerageId).order("created_at", { ascending: true }).limit(1)

@@ -1,5 +1,5 @@
-import {
-type NextRequest, NextResponse } from "next/server"
+import { type NextRequest, NextResponse } from "next/server"
+import { rawRoleVariantsFor } from "@/lib/security/types"
 import { createServiceClient } from "@/lib/supabase/service"
 import { trackCertificationExpirationService, monitorTRIDComplianceService } from "@/lib/application"
 import {
@@ -69,8 +69,13 @@ export async function GET(request: NextRequest) {
       console.error("[ComplianceMonitoring] retention radar:", e)
     }
 
-    // Check all agent certifications
-    const { data: agents } = await supabase.from("users").select("id").eq("role", "agent")
+    // Check all agent certifications.
+    // This filtered users.role, which is NULL on almost every live row — so the
+    // certification sweep silently examined a handful of accounts (or none) and
+    // reported a clean run. user_type is the CHECK-constrained column.
+    const { data: agents, error: agentsError } = await supabase
+      .from("users").select("id").in("user_type", rawRoleVariantsFor(["agent"]))
+    if (agentsError) console.error("[ComplianceMonitoring] agent roster read failed:", agentsError.message)
 
     for (const agent of agents || []) {
       const status = await trackCertificationExpirationService(agent.id, supabase)

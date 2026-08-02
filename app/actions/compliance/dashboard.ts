@@ -11,11 +11,14 @@
  *     but compliance_passed_at IS NULL — agent has submitted, awaiting TC review)
  *   - Recent EM-receipt + deadline issues
  *
- * Access: caller must be one of {broker, broker_admin, admin, superadmin,
- * compliance_manager, compliance_officer, TC} in the brokerage.
+ * Access: caller's CANONICAL role must be one of {broker, admin, superadmin,
+ * compliance_officer, tc} in the brokerage. Legacy spellings (broker_admin,
+ * compliance_manager, TC, transaction_coordinator) resolve through
+ * toCanonicalRole rather than being listed here.
  */
 
 import { createClient } from "@/lib/supabase/server"
+import { toCanonicalRole, type CanonicalRole } from "@/lib/security/types"
 
 export interface DashboardItem {
   kind:           "flag" | "missing_required" | "packet_blocker" | "awaiting_review" | "em_receipt"
@@ -40,7 +43,15 @@ export interface ComplianceDashboard {
   error?: string
 }
 
-const ACCESS_ROLES = ["broker","broker_admin","admin","superadmin","compliance_manager","compliance_officer","TC"]
+// CANONICAL roles. The raw user_type is canonicalized before the check rather
+// than this list being widened to every spelling — the previous list carried
+// "TC", and live rows store 'tc' (the CHECK does not even permit 'TC'), so a
+// transaction coordinator was refused their own compliance dashboard. It also
+// listed broker_admin and compliance_manager, which are legacy aliases, not
+// legal user_type values; toCanonicalRole maps both.
+const ACCESS_ROLES: CanonicalRole[] = [
+  "broker", "admin", "superadmin", "compliance_officer", "tc",
+]
 
 export async function getComplianceDashboard(): Promise<ComplianceDashboard> {
   const supabase = await createClient()
@@ -58,7 +69,8 @@ export async function getComplianceDashboard(): Promise<ComplianceDashboard> {
   if (!profile?.brokerage_id) {
     return { brokerage_id: "", generated_at: new Date().toISOString(), totals: { open_flags: 0, awaiting_review: 0, missing_required: 0 }, items: [], error: "No brokerage" }
   }
-  if (!ACCESS_ROLES.includes(profile.user_type as string)) {
+  const callerRole = toCanonicalRole(profile.user_type as string | null)
+  if (!callerRole || !ACCESS_ROLES.includes(callerRole)) {
     return { brokerage_id: profile.brokerage_id as string, generated_at: new Date().toISOString(), totals: { open_flags: 0, awaiting_review: 0, missing_required: 0 }, items: [], error: "Not authorized for compliance dashboard" }
   }
 
