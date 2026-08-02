@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog"
 import { Textarea } from "@/components/ui/textarea"
 import { aiGenerateTouchpoint } from "@/app/actions/ai-sphere-management"
+import { sendPortalMessage } from "@/app/actions/portal-messages"
 import Link from "next/link"
 
 interface Anniversary {
@@ -47,9 +48,13 @@ export function RepeatBusinessPanel({
   const [draftMessage, setDraftMessage] = useState<string>("")
   const [dialogOpen, setDialogOpen] = useState(false)
 
+  const [sendState, setSendState] = useState<{ ok: boolean; message: string } | null>(null)
+  const [sending, setSending] = useState(false)
+
   const handleGenerateMessage = (anniversary: Anniversary) => {
     setSelectedAnniversary(anniversary)
     setDraftMessage("")
+    setSendState(null)
     setDialogOpen(true)
 
     startTransition(async () => {
@@ -60,8 +65,40 @@ export function RepeatBusinessPanel({
       })
       if (result.success && (result as any).data?.message) {
         setDraftMessage((result as any).data?.message ?? "")
+      } else {
+        // A refusal used to leave the textarea silently empty, which reads as
+        // "the AI had nothing to say" rather than "generation failed".
+        setSendState({ ok: false, message: (result as any)?.error ?? "Could not draft a message" })
       }
     })
+  }
+
+  // sendPortalMessage RETURNS { success:false, error } on every failure path —
+  // unauthorized, empty body, over 2000 chars, no agent profile, contact not
+  // found, no access — and NEVER throws, so a try/catch here would be dead code
+  // and a success toast would fire on all seven refusals.
+  //
+  // It posts to the client's PORTAL thread; it does not send email or SMS and
+  // does not pass through the outbound compliance gate. That is correct for a
+  // first-party message to a client who logs in — but it means the button must
+  // not say "send", which would imply it left the building. The label and the
+  // confirmation both say posted.
+  const handleSendDraft = async () => {
+    if (!selectedAnniversary || !draftMessage.trim()) return
+    setSending(true)
+    setSendState(null)
+    const result = await sendPortalMessage({
+      contactId: selectedAnniversary.contactId, // contacts.id
+      messageBody: draftMessage,
+      direction: "agent_to_client",
+    })
+    setSending(false)
+    if (result.success) {
+      setSendState({ ok: true, message: "Posted to their portal" })
+      setDialogOpen(false)
+    } else {
+      setSendState({ ok: false, message: result.error ?? "The message was not posted" })
+    }
   }
 
   return (
@@ -176,8 +213,19 @@ export function RepeatBusinessPanel({
                 >
                   Copy
                 </Button>
-                <Button size="sm">Send</Button>
+                <Button
+                  size="sm"
+                  onClick={handleSendDraft}
+                  disabled={sending || !draftMessage.trim()}
+                >
+                  {sending ? "Posting…" : "Post to Portal"}
+                </Button>
               </div>
+              {sendState && (
+                <p className={`text-xs ${sendState.ok ? "text-emerald-600" : "text-destructive"}`}>
+                  {sendState.message}
+                </p>
+              )}
             </div>
           )}
         </DialogContent>

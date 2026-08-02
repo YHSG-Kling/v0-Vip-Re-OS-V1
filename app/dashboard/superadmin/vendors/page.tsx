@@ -76,7 +76,7 @@ export default async function SuperadminVendorsPage() {
   const [brk, vend, dir, invites, links, vendorUsers, invoices] = await Promise.all([
     svc.from("brokerages").select("id, name").is("deleted_at", null),
     svc.from("vendors").select("id, brokerage_id, name, category, status, email, created_at").order("created_at", { ascending: false }).limit(5000),
-    svc.from("vendor_directory").select("id, brokerage_id, name, preferred, display_priority"),
+    svc.from("vendor_directory").select("id, brokerage_id, vendor_id, name, preferred, display_priority"),
     svc.from("vendor_invitations").select("vendor_id, brokerage_id, status, created_at").order("created_at", { ascending: false }).limit(5000),
     svc.from("user_role_assignments").select("user_id, vendor_id, brokerage_id").not("vendor_id", "is", null),
     svc.from("users").select("id, email").eq("user_type", "vendor"),
@@ -104,12 +104,19 @@ export default async function SuperadminVendorsPage() {
     }
   }
 
-  // Directory placement flags, keyed for the nominal (brokerage + name) match.
+  // Directory placement flags, keyed on the REAL foreign key.
+  //
+  // This used to join on a lowercased `brokerage_id::name` string, under page
+  // copy asserting "the two tables share no foreign key". That stopped being
+  // true when m303 added vendor_directory.vendor_id REFERENCES vendors(id) —
+  // it is in the schema snapshot. Matching on a name means a vendor whose
+  // directory row drifts by so much as a trailing "LLC" reports placement:
+  // none, forever, on the console a platform admin uses to see who is paying.
   const dirRows = (dir.data ?? []) as any[]
-  const dirByKey = new Map<string, { id: string; preferred: boolean }>()
+  const dirByVendorId = new Map<string, { id: string; preferred: boolean }>()
   for (const d of dirRows) {
-    const key = `${d.brokerage_id}::${(d.name ?? "").trim().toLowerCase()}`
-    if (!dirByKey.has(key)) dirByKey.set(key, { id: d.id, preferred: d.preferred === true })
+    if (!d.vendor_id) continue
+    if (!dirByVendorId.has(d.vendor_id)) dirByVendorId.set(d.vendor_id, { id: d.id, preferred: d.preferred === true })
   }
 
   // Latest PAID premium-placement term per directory row (line_items.placement_until,
@@ -145,7 +152,7 @@ export default async function SuperadminVendorsPage() {
   }
 
   const rows = ((vend.data ?? []) as any[]).map((v) => {
-    const dirMatch = dirByKey.get(`${v.brokerage_id}::${(v.name ?? "").trim().toLowerCase()}`)
+    const dirMatch = dirByVendorId.get(v.id)
     const term = dirMatch ? paidTermByDirectory.get(dirMatch.id) : undefined
     const linkedEmail = linkedUserByVendor.get(v.id) ?? null
     return {
@@ -187,8 +194,8 @@ export default async function SuperadminVendorsPage() {
           <h1 className="text-2xl font-bold">Vendors — every tenant</h1>
           <p className="text-muted-foreground text-sm mt-1">
             Cross-tenant vendor network posture: record status, invitation/portal linkage, premium-placement
-            monetization state, and the invoice ledger. Placement matches vendor_directory by name — the two
-            tables share no foreign key.
+            monetization state, and the invoice ledger. Placement is joined on
+            vendor_directory.vendor_id, the real foreign key to vendors.
           </p>
         </div>
         <div className="flex items-center gap-2">

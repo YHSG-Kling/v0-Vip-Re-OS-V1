@@ -112,8 +112,23 @@ function ProviderRow({ domain, provider, fields, owner }: { domain: Domain["doma
 
   const isStripeConnect = domain === "financial" && provider.provider === "stripe"
   const refresh = () => { setOpen(false); router.refresh() }
+  // disconnectProvider RETURNS { ok: false, error } — "Not authorized", "Not
+  // available for your account type", or the update's own error — and never
+  // throws. The result was discarded and the page refreshed regardless, so a
+  // REFUSED disconnect was indistinguishable from a successful one: the row
+  // re-rendered still connected with no explanation, on the surface whose whole
+  // job is telling you what is and is not connected.
+  const [disconnectError, setDisconnectError] = useState<string | null>(null)
   const onDisconnect = () =>
-    startTransition(async () => { await disconnectProvider({ domain, provider: provider.provider, owner }); router.refresh() })
+    startTransition(async () => {
+      setDisconnectError(null)
+      const res = await disconnectProvider({ domain, provider: provider.provider, owner })
+      if (!res?.ok) {
+        setDisconnectError(res?.error ?? "Could not disconnect")
+        return
+      }
+      router.refresh()
+    })
   const onStripeConnect = () =>
     startTransition(async () => {
       const res = await startStripeConnect(owner)
@@ -153,6 +168,9 @@ function ProviderRow({ domain, provider, fields, owner }: { domain: Domain["doma
           )}
         </div>
       </div>
+      {disconnectError && (
+        <p className="mt-2 text-xs text-destructive">{disconnectError}</p>
+      )}
       {open && provider.available && provider.auth === "api_key" && (
         <ApiKeyForm domain={domain} provider={provider.provider} fields={fields} owner={owner} onDone={refresh} />
       )}

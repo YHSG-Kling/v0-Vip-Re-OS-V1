@@ -684,7 +684,16 @@ export default function PersonaPropertiesDashboard({
               {persona === "investor" ? "Analyze Deal" : "Schedule Tour"}
             </Button>
             <Button variant="outline" size="sm" asChild className="bg-transparent">
-              <Link href={`/portal/${contactId}/properties/${property.mlsNumber || property.id}`}>
+              {/*
+                The detail route resolves its row with .eq("id", propertyId)
+                against a uuid column. `property.mlsNumber ||` put an MLS number
+                there first whenever one existed — which fails the uuid cast, so
+                the page found nothing and rendered with the MLS number printed
+                where the address belongs and an otherwise empty property. The
+                sibling link further down this same file already uses the id;
+                this one just had a fallback in the wrong order.
+              */}
+              <Link href={`/portal/${contactId}/properties/${property.id}`}>
                 View Details
               </Link>
             </Button>
