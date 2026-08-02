@@ -14,19 +14,35 @@ export async function handleSuggestionAccepted(payload: any) {
   const supabase = await createServerClient()
   const { suggestion_id, user_id, action_type } = payload
 
-  // Mark suggestion as accepted
-  await supabase
+  // ONE write, not two, and the result is read.
+  //
+  // The pair of updates below used to be separate — and the second REPLACED
+  // metadata wholesale rather than merging, so whatever else the suggestion
+  // carried was destroyed on acceptance. Both were awaited with the result
+  // thrown away, then `{ success: true }` was returned unconditionally: an id
+  // that does not exist, or a row RLS hides, reported as accepted.
+  const { data: current } = await supabase
     .from("smart_assistant_suggestions")
-    .update({ status: "accepted" })
+    .select("metadata")
     .eq("id", suggestion_id)
+    .maybeSingle()
 
-  // pass 14: suggestion_outcomes was a PHANTOM table — the acceptance already
-  // lands on the canonical smart_assistant_suggestions row above (status +
-  // metadata carry the outcome); the dead second write is removed.
-  await supabase
+  const { data: updated, error } = await supabase
     .from("smart_assistant_suggestions")
-    .update({ metadata: { outcome: "accepted", action_taken: action_type, acted_by: user_id } })
+    .update({
+      status: "accepted",
+      metadata: {
+        ...((current?.metadata as Record<string, unknown> | null) ?? {}),
+        outcome: "accepted",
+        action_taken: action_type,
+        acted_by: user_id,
+      },
+    })
     .eq("id", suggestion_id)
+    .select("id")
+
+  if (error) return { success: false, error: error.message }
+  if (!updated?.length) return { success: false, error: "Suggestion not found" }
 
   return { success: true }
 }
@@ -47,8 +63,12 @@ export async function handleCoachingSessionBooked(payload: any) {
     return { success: false, error: "No agent profile for this user — cannot book the session" }
   }
 
-  // Create calendar event
-  await supabase.from("calendar_events").insert({
+  // Both writes are CHECKED. The file's own note above records that this insert
+  // "ALWAYS failed" before brokerage_id was added — and nobody noticed for
+  // exactly this reason: the error was discarded and the function returned
+  // success regardless, so a coaching session that was never booked looked
+  // booked.
+  const { error: eventError } = await supabase.from("calendar_events").insert({
     brokerage_id: agentRow.brokerage_id,
     entity_type: "agent",
     entity_id: agentRow.id,
@@ -59,15 +79,23 @@ export async function handleCoachingSessionBooked(payload: any) {
     event_type: "coaching",
     attendees: [coach_id],
   })
+  if (eventError) {
+    return { success: false, error: `Coaching session not booked: ${eventError.message}` }
+  }
 
   // Create reminder task (assignment keys on agents.id, payload carries users.id)
-  await supabase.from("tasks").insert({
+  const { error: taskError } = await supabase.from("tasks").insert({
     brokerage_id: agentRow.brokerage_id,
     assigned_to_agent_id: agentRow.id,
     title: `Prepare for coaching session: ${topic}`,
     due_date: new Date(new Date(session_date).getTime() - 24 * 60 * 60 * 1000).toISOString(),
     priority: "medium",
   })
+  // The session IS on the calendar at this point — report the missing reminder
+  // rather than implying the booking failed.
+  if (taskError) {
+    return { success: true, warning: `Session booked, but the prep reminder was not created: ${taskError.message}` }
+  }
 
   return { success: true }
 }
@@ -88,13 +116,20 @@ export async function handleMorningKickoff(payload: any) {
   // Create daily summary notification
   // notifications' real shape is user_id/type/body (the phantom recipient_id/
   // notification_type/message insert failed silently — no kickoff ever delivered).
-  await supabase.from("notifications").insert({
+  // Checked, for the reason the comment above already records: the previous
+  // shape failed silently and "no kickoff ever delivered" — which stayed
+  // invisible because the insert's error was discarded and success was returned
+  // either way. A briefing nobody received must not report as sent.
+  const { error: notifyError } = await supabase.from("notifications").insert({
     user_id: user_id,
     type: "morning_kickoff",
     title: "Good Morning! Here's Your Day",
     body: `You have ${todayTasks?.length || 0} tasks today. Let's make it productive!`,
     priority: "medium",
   })
+  if (notifyError) {
+    return { success: false, error: `Kickoff not delivered: ${notifyError.message}` }
+  }
 
   return { success: true, taskCount: todayTasks?.length || 0 }
 }
