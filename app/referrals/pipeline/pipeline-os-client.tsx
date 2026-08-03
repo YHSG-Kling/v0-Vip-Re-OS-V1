@@ -1,5 +1,6 @@
 "use client"
 
+import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { ReferralPipelinePanel } from "@/app/dashboard/referrals/components/os"
 import { updateReferralStatus, sendReferralThankYou } from "@/app/actions/referrals/referral-actions"
@@ -27,9 +28,14 @@ export function PipelineOsClient({
   referrals,
 }: PipelineOsClientProps) {
   const router = useRouter()
+  const [createOpen, setCreateOpen] = useState(false)
 
+  // This used to push "/referrals?action=create". /referrals was a bare redirect
+  // to the lifetime-customers radar tab and nothing anywhere read `action`, so
+  // the click threw the agent off this page and never opened a create form. The
+  // dialog lives in the panel; own its state and open it where they clicked.
   const handleCreateReferral = () => {
-    router.push("/referrals?action=create")
+    setCreateOpen(true)
   }
 
   const handleUpdateStatus = async (referralId: string, status: ReferralStatus) => {
@@ -50,6 +56,9 @@ export function PipelineOsClient({
       onCreateReferral={handleCreateReferral}
       agentId={agentId}
       brokerageId={brokerageId}
+      createOpen={createOpen}
+      onCreateOpenChange={setCreateOpen}
+      onCreated={() => router.refresh()}
     />
   )
 }

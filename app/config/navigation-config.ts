@@ -113,7 +113,11 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'sphere-all', label: 'All Sphere Contacts', href: '/lifetime-customers' },
           { id: 'sphere-resonance', label: 'Resonance — Life Events', href: '/dashboard/sphere' },
           { id: 'sphere-wealth', label: 'Wealth Opportunities', href: '/dashboard/wealth' },
-          { id: 'sphere-referrals', label: 'Referrals', href: '/lifetime-customers?tab=referrals' },
+          // The Referral & Advocacy Engine (/referrals) was the target here all along.
+          // This pointed at the lifetime-customers `radar` tab, which carries none of
+          // the ROI rollup, referrer leaderboard, review-request, gifting or anniversary
+          // flows — so the whole engine was unreachable from every nav in the product.
+          { id: 'sphere-referrals', label: 'Referrals', href: '/referrals' },
           { id: 'sphere-reviews', label: 'Reviews & Reputation', href: '/lifetime-customers?tab=reviews' },
           { id: 'sphere-gifting', label: 'Gifting & Milestones', href: '/lifetime-customers?tab=gifting' },
           // Orphan-route sweep: the Gift Studio command center had no inbound nav link.
@@ -335,7 +339,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'sphere-all', label: 'All Sphere Contacts', href: '/lifetime-customers' },
           { id: 'sphere-resonance', label: 'Resonance — Life Events', href: '/dashboard/sphere' },
           { id: 'sphere-wealth', label: 'Wealth Opportunities', href: '/dashboard/wealth' },
-          { id: 'sphere-referrals', label: 'Referrals', href: '/lifetime-customers?tab=referrals' },
+          { id: 'sphere-referrals', label: 'Referrals', href: '/referrals' },
           { id: 'sphere-reviews', label: 'Reviews & Reputation', href: '/lifetime-customers?tab=reviews' },
           { id: 'sphere-gifting', label: 'Gifting & Milestones', href: '/lifetime-customers?tab=gifting' },
           // Orphan-route sweep: the Gift Studio command center had no inbound nav link.
@@ -921,7 +925,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'sphere-all', label: 'All Sphere Contacts', href: '/lifetime-customers' },
           { id: 'sphere-resonance', label: 'Resonance — Life Events', href: '/dashboard/sphere' },
           { id: 'sphere-wealth', label: 'Wealth Opportunities', href: '/dashboard/wealth' },
-          { id: 'sphere-referrals', label: 'Referrals', href: '/lifetime-customers?tab=referrals' },
+          { id: 'sphere-referrals', label: 'Referrals', href: '/referrals' },
           { id: 'sphere-reviews', label: 'Reviews & Reputation', href: '/lifetime-customers?tab=reviews' },
           { id: 'sphere-gifting', label: 'Gifting & Milestones', href: '/lifetime-customers?tab=gifting' },
           // Orphan-route sweep: the Gift Studio command center had no inbound nav link.

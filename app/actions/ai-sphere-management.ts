@@ -111,6 +111,14 @@ export async function aiGenerateTouchpoint(params: {
   /** ISO date or datetime. Defaults to today — a touchpoint with no date is a
    *  touchpoint nothing can ever show; see the note on the insert below. */
   scheduledFor?: string
+  /**
+   * What the agent typed about WHY this person would act — the referral drafter
+   * collected exactly this ("Why would {name} refer you?") and had nowhere to
+   * send it, so the box was decoration. Optional: existing callers are unchanged.
+   */
+  additionalContext?: string
+  /** friend | family | lifetime-customer | colleague — steers register. */
+  relationshipType?: string
 }) {
   if (!isValidUUID(params.agentId) || !isValidUUID(params.contactId)) {
     return { success: false, error: "Invalid IDs" }
@@ -165,6 +173,9 @@ Last property: ${lastTransaction?.property_address || "Unknown"}
 Close date: ${lastTransaction?.close_date || "Unknown"}
 Interests/Notes: ${contact.notes || "None recorded"}
 Recent interactions: ${JSON.stringify(contact.interactions?.slice(0, 3) || [])}
+
+Relationship to agent: ${params.relationshipType || contact.contact_type || "Past client"}
+What the agent says matters most right now: ${params.additionalContext?.trim() || "Not specified"}
 
 Brand voice: ${brandVoice?.tone || "Professional yet warm"}
 Agent specialty: ${brandVoice?.specialties || "Residential real estate"}
@@ -231,6 +242,10 @@ Generate:
 export async function aiOptimizeReferralAsk(params: {
   agentId: string
   contactId: string
+  /** The agent's own words on why this person would refer them. Optional. */
+  additionalContext?: string
+  /** friend | family | lifetime-customer | colleague. Optional. */
+  relationshipType?: string
 }) {
   if (!isValidUUID(params.agentId) || !isValidUUID(params.contactId)) {
     return { success: false, error: "Invalid IDs" }
@@ -286,7 +301,9 @@ Client: ${contact.first_name} ${contact.last_name}
 Transaction value: $${transactionValue.toLocaleString()}
 Time since close: ${contact.transactions?.[0]?.close_date ? Math.floor((Date.now() - new Date(contact.transactions[0].close_date).getTime()) / (1000 * 60 * 60 * 24)) : "Unknown"} days
 Past referrals given: ${pastReferrals}
+Relationship to agent: ${params.relationshipType || contact.contact_type || "Past client"}
 Satisfaction indicators: ${contact.notes || "Not recorded"}
+Agent's own read on why they would refer: ${params.additionalContext?.trim() || "Not specified"}
 
 Generate:
 1. Referral readiness score (0-100)

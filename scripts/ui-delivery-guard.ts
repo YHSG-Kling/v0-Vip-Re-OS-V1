@@ -84,7 +84,6 @@ const LOCAL_ONLY = new Set([
   "app/dashboard/social/components/post-composer-dialog.tsx#tab",
   "app/dashboard/admin/users/[userId]/user-edit-form.tsx#agentField",     // drives which sub-form renders
   "app/crm/contacts/[contactId]/tours/components/tour-plan-tab.tsx#duration",
-  "app/dashboard/referrals/components/os/referral-ai-drafting-panel.tsx#context",
   "app/dashboard/videos/components/business-context/video-context-picker.tsx#marketArea",
 ])
 

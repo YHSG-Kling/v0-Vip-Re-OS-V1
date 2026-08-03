@@ -46,6 +46,19 @@ interface ReferralPipelinePanelProps {
   onCreateReferral: () => void
   agentId: string
   brokerageId: string
+  /**
+   * The create dialog lives HERE, but "Create Referral" also exists on the
+   * command strip and the quick-action grid, and those two called
+   * `router.push("/referrals?action=create")` — a URL nothing read. The
+   * parameter was dropped and the dialog never opened, so two of the three
+   * create buttons in the OS did nothing at all. Pass these to let the parent
+   * open the same dialog those buttons already promise.
+   * Uncontrolled (both omitted) keeps the panel's own local behaviour.
+   */
+  createOpen?: boolean
+  onCreateOpenChange?: (open: boolean) => void
+  /** Fired after a referral is actually stored, so the board can re-read. */
+  onCreated?: () => void
 }
 
 // This board used to define its own five stages: "new", "contacted",
@@ -62,9 +75,14 @@ export function ReferralPipelinePanel({
   onCreateReferral,
   agentId,
   brokerageId,
+  createOpen: controlledCreateOpen,
+  onCreateOpenChange,
+  onCreated,
 }: ReferralPipelinePanelProps) {
   const [isPending, startTransition] = useTransition()
-  const [createOpen, setCreateOpen] = useState(false)
+  const [uncontrolledCreateOpen, setUncontrolledCreateOpen] = useState(false)
+  const createOpen = controlledCreateOpen ?? uncontrolledCreateOpen
+  const setCreateOpen = onCreateOpenChange ?? setUncontrolledCreateOpen
   // The create flow used to swallow every failure in a bare `catch {}` — the
   // dialog just sat there and the agent had no idea the referral was not saved.
   const [error, setError] = useState<string | null>(null)
@@ -126,6 +144,9 @@ export function ReferralPipelinePanel({
       })
       setCreateOpen(false)
       setFormData({ referred_name: "", referred_email: "", referred_phone: "", notes: "", potential_value: "" })
+      // The row was written and the board kept showing the pre-create list until
+      // the agent reloaded by hand, which reads as "it didn't save".
+      onCreated?.()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to create referral")
     }
@@ -138,7 +159,11 @@ export function ReferralPipelinePanel({
           <GitBranch className="h-5 w-5" />
           Referral Pipeline
         </CardTitle>
-        <Button size="sm" onClick={() => setCreateOpen(true)} className="gap-1">
+        {/* onCreateReferral was destructured and never called — the panel opened
+            its own local dialog and the parent's handler was dead. Both callers
+            now own the dialog state (see createOpen), so the one handler serves
+            this button and the parent's own Create Referral buttons alike. */}
+        <Button size="sm" onClick={onCreateReferral} className="gap-1">
           <PlusCircle className="h-4 w-4" />
           Create Referral
         </Button>

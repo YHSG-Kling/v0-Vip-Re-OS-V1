@@ -180,7 +180,6 @@
     "app/dashboard/settings/branding/agent-branding-client.tsx": 1,
     "app/dashboard/videos/components/BackgroundPicker.tsx": 1,
     "app/newsletters/components/newsletter-ai-panel.tsx": 1,
-    "app/referrals/referrals-os-client.tsx": 1,
     "app/routes-compatibility.ts": 1,
     "app/settings/email-templates/template-preview.tsx": 1,
     "lib/ads/ad-creative-engine.ts": 3,

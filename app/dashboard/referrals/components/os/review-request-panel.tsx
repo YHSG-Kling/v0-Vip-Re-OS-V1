@@ -85,9 +85,13 @@ export function ReviewRequestPanel({
       if (result.success && result.message) {
         setDraft(result.message)
         awardPointsForAction(agentId, "review_received").catch(() => {})
-        // Check compliance
+        // checkThemFirstCompliance returns { score, themFirstCount,
+        // agentFirstCount, feedback } — never an `isCompliant` flag. Reading one
+        // yielded undefined, and `complianceOk !== null` is TRUE for undefined,
+        // so the badge rendered on every draft and always said "Review Needed".
+        // Same threshold as the gifting and drafting panels.
         const compliance = await checkThemFirstCompliance(result.message)
-        setComplianceOk(compliance.isCompliant)
+        setComplianceOk(((compliance as any)?.score ?? 0) >= 50)
       }
     })
   }
