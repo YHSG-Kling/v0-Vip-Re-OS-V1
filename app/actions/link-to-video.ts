@@ -298,25 +298,30 @@ export async function startVideoGeneration(videoQueueId: string) {
     // Adopt an existing project on a re-run rather than creating a second one.
     let projectId = queued.project_id as string | null
     if (!projectId) {
-      const { data: project, error: projectError } = await supabase
-        .from("ai_video_projects")
-        .insert({
-          // ai_video_projects.agent_id is the agent's USER id (FK users).
-          agent_id:      queued.user_id ?? auth.userId,
-          brokerage_id:  auth.brokerageId,
-          title:         `Link-to-video: ${queued.source_url ?? "untitled"}`.slice(0, 200),
-          video_type:    "avatar_explainer",
-          audience_type: "customer_facing",
-          status:        "draft",
-        })
-        .select("id")
-        .single()
+      // Through the CANONICAL creator, not a hand-rolled insert — it resolves
+      // the video provider and stamps the provider columns too, and it keeps
+      // ai_video_projects.agent_id written from one place. That column is
+      // mid-migration (FK users(id) today, scheduled to re-point to agents(id);
+      // see scripts/agent-id-repoint-guard.ts), so a second writer passing a
+      // users id would have grown a backlog that may only shrink.
+      const { createVideoProject } = await import("@/app/actions/video/create-video-project")
+      const created = await createVideoProject({
+        brokerageId:     auth.brokerageId ?? "",
+        agentId:         queued.user_id ?? auth.userId,
+        title:           `Link-to-video: ${queued.source_url ?? "untitled"}`.slice(0, 200),
+        script,
+        videoType:       "avatar_explainer",
+        backgroundType:  "solid",
+        format:          "vertical",
+        durationSeconds: 60,
+        captionsEnabled: true,
+      })
 
-      if (projectError || !project) {
-        console.error("[link-to-video] Project create error:", projectError)
-        return { success: false, error: "Could not start the render" }
+      if (!created.success || !created.project) {
+        console.error("[link-to-video] Project create error:", created.error)
+        return { success: false, error: created.error ?? "Could not start the render" }
       }
-      projectId = project.id
+      projectId = created.project.id
 
       const { error: linkError } = await supabase
         .from("video_generation_queue")

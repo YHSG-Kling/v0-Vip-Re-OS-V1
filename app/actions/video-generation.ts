@@ -1191,27 +1191,35 @@ export async function generateVideoFromScript(params: {
     // Creating the project restores the dropped metadata to columns that exist
     // AND puts the job on the rail that reaches a terminal state — the m365
     // trigger then mirrors that outcome back onto the queue row.
-    const { data: project, error: projectError } = await supabase
-      .from("ai_video_projects")
-      .insert({
-        // ai_video_projects.agent_id is the agent's USER id (FK users) — see
-        // lib/video/video-pipeline-reaper.ts, which notifies on this column.
-        agent_id:      auth.userId,
-        brokerage_id:  auth.brokerageId,
-        title:         params.title,
-        // Mirrors ai_video_projects_video_type — an avatar talking head from a
-        // supplied script is the explainer lane.
-        video_type:    "avatar_explainer",
-        audience_type: "customer_facing",
-        status:        "draft",
-      })
-      .select("id")
-      .single()
+    // Through the CANONICAL creator, not a hand-rolled insert. createVideoProject
+    // also resolves the video provider and stamps the provider columns, which a
+    // bare insert here would skip — and it keeps ai_video_projects.agent_id
+    // written from exactly one place. That column is mid-migration (it FKs
+    // users(id) today and is scheduled to re-point to agents(id); see
+    // scripts/agent-id-repoint-guard.ts), so adding a second writer that passes
+    // a users id would have grown a backlog that is only allowed to shrink.
+    const { createVideoProject } = await import("@/app/actions/video/create-video-project")
+    const created = await createVideoProject({
+      brokerageId:      auth.brokerageId ?? "",
+      agentId:          auth.userId,
+      title:            params.title,
+      script:           params.script,
+      // Mirrors ai_video_projects_video_type — an avatar talking head from a
+      // supplied script is the explainer lane.
+      videoType:        "avatar_explainer",
+      avatarId:         params.avatarId,
+      voiceId:          params.voiceId,
+      backgroundType:   "solid",
+      format:           "vertical",
+      durationSeconds:  60,
+      captionsEnabled:  true,
+    })
 
-    if (projectError || !project) {
-      console.error("[v0] Video project error:", projectError)
-      throw projectError ?? new Error("Failed to create video project")
+    if (!created.success || !created.project) {
+      console.error("[v0] Video project error:", created.error)
+      throw new Error(created.error ?? "Failed to create video project")
     }
+    const project = created.project
 
     const { data: queueRecord, error: queueError } = await supabase
       .from("video_generation_queue")

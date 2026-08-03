@@ -113,8 +113,13 @@ console.log("\n── the mapping matches the two vocabularies it joins ──")
 
 console.log("\n── generateVideoFromScript puts its job on the rail that finishes ──")
 {
+  // Asserts the CONSTRUCT (a project exists before the queue row), not the
+  // spelling of the insert — the project is created through the canonical
+  // createVideoProject rather than a hand-rolled insert, so that
+  // ai_video_projects.agent_id keeps exactly one writer while that column is
+  // mid-migration (scripts/agent-id-repoint-guard.ts).
   check("it creates a project before the queue row",
-    /from\("ai_video_projects"\)[\s\S]{0,700}?from\("video_generation_queue"\)/.test(GENVIDEO))
+    /createVideoProject\(\{[\s\S]{0,900}?from\("video_generation_queue"\)/.test(GENVIDEO))
   check("…and the queue row points at it",
     /project_id: project\.id/.test(GENVIDEO))
   check("the D-ID job id is stamped on the PROJECT, not logged and lost",
@@ -140,7 +145,7 @@ console.log("\n── startVideoGeneration actually starts a generation ──")
   check("…and refuses an empty script rather than paying for a render of nothing",
     /if \(!script\)/.test(LINKVIDEO))
   check("it creates a project and links the queue row to it",
-    /from\("ai_video_projects"\)[\s\S]{0,900}?\.update\(\{ project_id: projectId \}\)/.test(LINKVIDEO))
+    /createVideoProject\(\{[\s\S]{0,900}?\.update\(\{ project_id: projectId \}\)/.test(LINKVIDEO))
   check("…adopting an existing project on a re-run instead of making a second one",
     /let projectId = queued\.project_id/.test(LINKVIDEO))
   check("it submits a real job through the D-ID gateway",
