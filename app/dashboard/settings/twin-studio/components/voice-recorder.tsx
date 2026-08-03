@@ -10,11 +10,25 @@ interface Props {
   onSampleReady: (blob: Blob, mimeType: string) => void
   /** Recommended duration — recorder caps at this many seconds. */
   maxSeconds?: number
+  /** What to read aloud. Defaults to the single-take twin script; the guided
+   *  phrase-by-phrase capture passes one VOICE_CLONE_SAMPLE_PHRASES line at a
+   *  time (remount with key={phraseId} to reset between phrases). */
+  script?: string
+  /** Label above the script block. */
+  scriptLabel?: string
+  /** Confirm-button copy. */
+  confirmLabel?: string
 }
 
 const SCRIPT = `Hi, I'm a real estate agent and I love helping families find their next home. Buying or selling is one of the biggest decisions you'll make — I'm here to make it feel simple, clear, and even a little fun. Let me know what you're working on and we'll figure it out together.`
 
-export function VoiceRecorder({ onSampleReady, maxSeconds = 60 }: Props) {
+export function VoiceRecorder({
+  onSampleReady,
+  maxSeconds = 60,
+  script = SCRIPT,
+  scriptLabel = "Read this aloud",
+  confirmLabel = "Use this voice",
+}: Props) {
   const [phase, setPhase] = useState<"idle" | "recording" | "review">("idle")
   const [seconds, setSeconds] = useState(0)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
@@ -116,9 +130,9 @@ export function VoiceRecorder({ onSampleReady, maxSeconds = 60 }: Props) {
     <div className="space-y-4">
       <div className="rounded-lg border bg-muted/30 p-4">
         <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
-          Read this aloud
+          {scriptLabel}
         </p>
-        <p className="text-sm leading-relaxed">{SCRIPT}</p>
+        <p className="text-sm leading-relaxed">{script}</p>
       </div>
 
       {phase === "idle" && (
@@ -175,7 +189,7 @@ export function VoiceRecorder({ onSampleReady, maxSeconds = 60 }: Props) {
               <RotateCcw className="h-4 w-4" /> Re-record
             </Button>
             <Button onClick={useThis} className="flex-1">
-              Use this voice
+              {confirmLabel}
             </Button>
           </div>
         </div>

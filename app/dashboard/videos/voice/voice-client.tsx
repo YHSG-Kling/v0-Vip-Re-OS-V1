@@ -1,9 +1,10 @@
 "use client"
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
   Mic,
@@ -14,8 +15,21 @@ import {
   Loader2,
   LayoutGrid,
   Shield,
+  Star,
+  AlertTriangle,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { VoiceRecorder } from "@/app/dashboard/settings/twin-studio/components/voice-recorder"
+import { uploadTwinVoiceSample } from "@/app/actions/twin-studio-upload"
+import {
+  createVoiceProfile,
+  updateVoiceProfileSamples,
+  startVoiceCloneTraining,
+  setDefaultVoiceProfile,
+  getVoiceProfiles,
+} from "@/app/actions/video-voice"
+import { VOICE_CLONE_SAMPLE_PHRASES } from "@/app/actions/video-voice.constants"
+import type { SamplePhrase, SampleManifest } from "@/app/actions/video-voice.types"
 
 // ─── PROPS ───────────────────────────────────────────────────────────────────
 
@@ -26,14 +40,6 @@ interface VoiceCloneClientProps {
   initialProfiles: any[]
   videoConfigured: boolean
 }
-
-// ─── EXAMPLE VOICE PROMPTS ───────────────────────────────────────────────────
-
-const VOICE_PROMPTS = [
-  `"Hi, I'm [your name] with [brokerage name]. Whether you're buying or selling, I'm here to make the process smooth and stress-free."`,
-  `"The market is moving fast. Let me help you find the right home before it's gone — or get top dollar for yours."`,
-  `"Real estate is one of the biggest decisions you'll make. I'll be with you every step of the way, from first showing to closing day."`,
-]
 
 // ─── STEP INDICATOR ──────────────────────────────────────────────────────────
 
@@ -78,24 +84,90 @@ function StepIndicator({ current }: { current: WizardStep }) {
   )
 }
 
+// ─── PROFILE STATUS ──────────────────────────────────────────────────────────
+
+const PROFILE_STATUS_COPY: Record<string, { label: string; tone: "ready" | "busy" | "idle" | "bad" }> = {
+  not_started:       { label: "Not started",        tone: "idle" },
+  collecting_samples:{ label: "Recording in progress", tone: "busy" },
+  training:          { label: "Cloning…",           tone: "busy" },
+  ready:             { label: "Ready",              tone: "ready" },
+  failed:            { label: "Failed",             tone: "bad" },
+}
+
+/** The recorded phrases of an in-flight capture, read back off the draft job.
+ *  Keyed off the DRAFT, not off the profile's status: a re-record deliberately
+ *  leaves the profile at 'ready' so the agent's existing voice keeps working
+ *  until the replacement lands. */
+function resumePhrases(profile: any): SamplePhrase[] | null {
+  const jobs: any[] = Array.isArray(profile?.voice_clone_training)
+    ? profile.voice_clone_training
+    : profile?.voice_clone_training
+      ? [profile.voice_clone_training]
+      : []
+  const draft = jobs.find((j) => j?.status === "queued")
+  const phrases: SamplePhrase[] | undefined = draft?.sample_manifest?.phrases
+  if (!Array.isArray(phrases)) return null
+  const recorded = phrases.filter((p) => p?.status === "recorded" || p?.status === "validated")
+  return recorded.length > 0 ? phrases : null
+}
+
+/** The most recent finished job, for reporting why a clone failed. */
+function lastJobError(profile: any): string | null {
+  const jobs: any[] = Array.isArray(profile?.voice_clone_training) ? profile.voice_clone_training : []
+  const failed = jobs.filter((j) => j?.status === "failed" && j?.error_message)
+  if (failed.length === 0) return null
+  return failed.sort((a, b) => String(b.completed_at ?? "").localeCompare(String(a.completed_at ?? "")))[0].error_message
+}
+
+function freshPhrases(): SamplePhrase[] {
+  return VOICE_CLONE_SAMPLE_PHRASES.map((p) => ({
+    phrase_id: p.phrase_id,
+    phrase_text: p.phrase_text,
+    status: "pending" as const,
+  }))
+}
+
+/** Browser Blob → base64 for the server-action upload (no extra HTTP hop). */
+async function blobToBase64(blob: Blob): Promise<string> {
+  const buffer = await blob.arrayBuffer()
+  const bytes = new Uint8Array(buffer)
+  let binary = ""
+  const CHUNK = 0x8000
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
+  }
+  return btoa(binary)
+}
+
 // ─── MAIN COMPONENT ──────────────────────────────────────────────────────────
 
 export function VoiceCloneClient({
-  agentId: _agentId,
-  brokerageId: _brokerageId,
-  userId: _userId,
-  initialProfiles: _initialProfiles,
-  videoConfigured: _videoConfigured,
+  agentId,
+  brokerageId,
+  userId,
+  initialProfiles,
+  videoConfigured,
 }: VoiceCloneClientProps) {
   const router = useRouter()
   const [step, setStep] = useState<WizardStep>("intro")
 
-  // Voice upload state
-  const [audioFile, setAudioFile] = useState<File | null>(null)
-  const [isUploadingVoice, setIsUploadingVoice] = useState(false)
+  // Voice profiles — the agent's real library, not a write-only wizard.
+  const [profiles, setProfiles] = useState<any[]>(initialProfiles ?? [])
+
+  // Guided capture state
+  const resumable = useMemo(() => (profiles ?? []).find((p) => resumePhrases(p)), [profiles])
+  const [captureProfileId, setCaptureProfileId] = useState<string | null>(null)
+  const [phrases, setPhrases] = useState<SamplePhrase[]>(freshPhrases())
+  const [busyPhrase, setBusyPhrase] = useState(false)
+  const [isCloning, setIsCloning] = useState(false)
   const [voiceStatus, setVoiceStatus] = useState<"idle" | "success" | "error">("idle")
   const [voiceMessage, setVoiceMessage] = useState<string | null>(null)
   const [voiceDone, setVoiceDone] = useState(false)
+
+  const recordedCount = phrases.filter((p) => p.status === "recorded" || p.status === "validated").length
+  const activePhraseIndex = phrases.findIndex((p) => p.status === "pending" || p.status === "rejected")
+  const activePhrase = activePhraseIndex >= 0 ? phrases[activePhraseIndex] : null
+  const allRecorded = recordedCount >= VOICE_CLONE_SAMPLE_PHRASES.length
 
   // Avatar upload state
   const [avatarFile, setAvatarFile] = useState<File | null>(null)
@@ -105,48 +177,137 @@ export function VoiceCloneClient({
   const [avatarMessage, setAvatarMessage] = useState<string | null>(null)
   const [avatarDone, setAvatarDone] = useState(false)
 
-  // ─── Voice Upload ──────────────────────────────────────────────────────────
+  async function refreshProfiles() {
+    try {
+      setProfiles(await getVoiceProfiles(agentId))
+    } catch (err) {
+      console.error("[voice-client] Could not refresh voice profiles:", err)
+    }
+  }
 
-  async function handleVoiceUpload() {
-    if (!audioFile) return
-    setIsUploadingVoice(true)
+  // ─── Guided capture ────────────────────────────────────────────────────────
+
+  /** Ensure there is a profile row to attach samples to, and return its id. */
+  async function ensureCaptureProfile(): Promise<string> {
+    if (captureProfileId) return captureProfileId
+
+    if (resumable) {
+      setCaptureProfileId(resumable.id)
+      setPhrases(resumePhrases(resumable) ?? freshPhrases())
+      return resumable.id
+    }
+
+    const profile = await createVoiceProfile({
+      brokerageId,
+      agentId,
+      profileName: `My Voice — ${new Date().toLocaleDateString()}`,
+      actorUserId: userId,
+    })
+    setCaptureProfileId(profile.id)
+    await refreshProfiles()
+    return profile.id
+  }
+
+  function resumeCapture(profile: any) {
+    setCaptureProfileId(profile.id)
+    setPhrases(resumePhrases(profile) ?? freshPhrases())
+    setVoiceStatus("idle")
+    setVoiceMessage(null)
+    setStep("voice")
+  }
+
+  /** One recorded phrase → storage → persisted manifest. Resumable from here. */
+  async function handlePhraseRecorded(blob: Blob, mimeType: string) {
+    if (!activePhrase) return
+    setBusyPhrase(true)
     setVoiceStatus("idle")
     setVoiceMessage(null)
 
     try {
-      const form = new FormData()
-      form.append("file", audioFile)
-      const uploadRes = await fetch("/api/storage/upload-temp", { method: "POST", body: form })
-      const uploadData = uploadRes.ok ? await uploadRes.json() : null
-      const audioUrl = uploadData?.url
+      const profileId = await ensureCaptureProfile()
 
-      if (!audioUrl) {
-        setVoiceStatus("error")
-        setVoiceMessage("Upload failed — please try again.")
-        return
+      const base64 = await blobToBase64(blob)
+      const upload = await uploadTwinVoiceSample({ base64, mimeType })
+      if (!upload.ok || !upload.url) {
+        throw new Error(upload.error ?? "Could not save that recording — please try again.")
       }
 
-      const voiceName = `Agent Voice — ${new Date().toLocaleDateString()}`
+      const next: SamplePhrase[] = phrases.map((p) =>
+        p.phrase_id === activePhrase.phrase_id
+          ? { ...p, audio_url: upload.url, recorded_at: new Date().toISOString(), status: "recorded" as const }
+          : p,
+      )
+
+      // Persist before advancing: the phrase is only really captured once the
+      // manifest holding its url is written.
+      await updateVoiceProfileSamples(profileId, brokerageId, { phrases: next }, userId)
+      setPhrases(next)
+      await refreshProfiles()
+    } catch (err: any) {
+      setVoiceStatus("error")
+      setVoiceMessage(err?.message ?? "Could not save that recording.")
+    } finally {
+      setBusyPhrase(false)
+    }
+  }
+
+  function rerecordPhrase(phraseId: string) {
+    setPhrases((prev) =>
+      prev.map((p) => (p.phrase_id === phraseId ? { ...p, status: "pending", audio_url: undefined } : p)),
+    )
+  }
+
+  /** All phrases captured → open the training job → clone at ElevenLabs. */
+  async function handleCreateClone() {
+    if (!captureProfileId || !allRecorded) return
+    setIsCloning(true)
+    setVoiceStatus("idle")
+    setVoiceMessage(null)
+
+    try {
+      const manifest: SampleManifest = { phrases }
+
+      // Opens (or promotes) the voice_clone_training row and moves the profile
+      // to 'training'. The route below reconciles the outcome onto THIS job.
+      const job = await startVoiceCloneTraining(captureProfileId, brokerageId, manifest, userId)
+
+      const sampleUrls = phrases.map((p) => p.audio_url).filter((u): u is string => !!u)
+
       const res = await fetch("/api/elevenlabs/voice-clone", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: voiceName, sample_audio_urls: [audioUrl] }),
+        body: JSON.stringify({
+          name: `Agent Voice — ${new Date().toLocaleDateString()}`,
+          sample_audio_urls: sampleUrls,
+          profile_id: captureProfileId,
+          training_id: job.id,
+        }),
       })
       const data = await res.json()
 
-      if (res.ok) {
-        setVoiceStatus("success")
-        setVoiceMessage("Your voice has been cloned and is ready to use in videos.")
-        setVoiceDone(true)
-      } else {
-        setVoiceStatus("error")
-        setVoiceMessage(data.error ?? "Voice cloning failed — please try again.")
+      if (!res.ok) {
+        throw new Error(data.error ?? "Voice cloning failed — please try again.")
       }
+
+      // First clone becomes the default so video generation can pick it up
+      // without another trip through settings.
+      const hasExistingDefault = profiles.some((p) => p.is_default && p.id !== captureProfileId)
+      if (!hasExistingDefault) {
+        await setDefaultVoiceProfile(captureProfileId, agentId, brokerageId, userId).catch((err) =>
+          console.error("[voice-client] Could not set the new clone as default:", err),
+        )
+      }
+
+      setVoiceStatus("success")
+      setVoiceMessage("Your voice has been cloned and is ready to use in videos.")
+      setVoiceDone(true)
+      await refreshProfiles()
     } catch (err: any) {
       setVoiceStatus("error")
-      setVoiceMessage(err.message ?? "An error occurred.")
+      setVoiceMessage(err?.message ?? "An error occurred.")
+      await refreshProfiles()
     } finally {
-      setIsUploadingVoice(false)
+      setIsCloning(false)
     }
   }
 
@@ -225,6 +386,8 @@ export function VoiceCloneClient({
 
   // ─── Render ─────────────────────────────────────────────────────────────────
 
+  const readyProfiles = profiles.filter((p) => p.training_status === "ready" && p.elevenlabs_voice_id)
+
   return (
     <div className="min-h-screen bg-background">
       <div className="container mx-auto py-8 px-4 max-w-2xl">
@@ -234,6 +397,18 @@ export function VoiceCloneClient({
             Personalize your AI videos and Live Agent sessions with your own face and voice.
           </p>
         </div>
+
+        {!videoConfigured && (
+          <Alert variant="destructive" className="mb-6">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Voice and avatar providers aren't configured</AlertTitle>
+            <AlertDescription>
+              ElevenLabs and D-ID credentials aren't set up on this deployment, so a recording
+              can't be turned into a clone yet. You can still record your phrases — they're saved
+              and you can finish once the providers are live.
+            </AlertDescription>
+          </Alert>
+        )}
 
         <StepIndicator current={step} />
 
@@ -247,6 +422,62 @@ export function VoiceCloneClient({
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
+              {/* Existing voice library — a returning agent sees what they have */}
+              {profiles.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">Your voice</p>
+                  {profiles.map((profile) => {
+                    const status = PROFILE_STATUS_COPY[profile.training_status] ?? {
+                      label: profile.training_status,
+                      tone: "idle" as const,
+                    }
+                    const failure = lastJobError(profile)
+                    return (
+                      <div key={profile.id} className="flex items-center gap-3 p-3 rounded-lg border">
+                        <div className="p-2 bg-muted rounded-md">
+                          <Mic className="h-4 w-4 text-muted-foreground" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">{profile.profile_name}</p>
+                          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                            <Badge
+                              variant={status.tone === "ready" ? "default" : status.tone === "bad" ? "destructive" : "secondary"}
+                              className="text-xs"
+                            >
+                              {status.label}
+                            </Badge>
+                            {profile.is_default && (
+                              <Badge variant="outline" className="text-xs gap-1">
+                                <Star className="h-3 w-3" /> In use
+                              </Badge>
+                            )}
+                            {resumePhrases(profile) && (
+                              <span className="text-xs text-muted-foreground">
+                                {resumePhrases(profile)!.filter((p) => p.status === "recorded" || p.status === "validated").length}
+                                {" of "}{VOICE_CLONE_SAMPLE_PHRASES.length} phrases recorded
+                              </span>
+                            )}
+                            {profile.quality_score != null && (
+                              <span className="text-xs text-muted-foreground">
+                                Quality: {Number(profile.quality_score).toFixed(0)}%
+                              </span>
+                            )}
+                          </div>
+                          {failure && (
+                            <p className="text-xs text-destructive mt-1">Last attempt failed: {failure}</p>
+                          )}
+                        </div>
+                        {resumePhrases(profile) && (
+                          <Button size="sm" variant="outline" onClick={() => resumeCapture(profile)}>
+                            Resume
+                          </Button>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+
               <div className="space-y-3">
                 <div className="flex items-start gap-3 p-3 bg-muted rounded-lg">
                   <div className="p-2 bg-background rounded-md">
@@ -254,7 +485,9 @@ export function VoiceCloneClient({
                   </div>
                   <div>
                     <p className="font-medium text-sm">Step 2 — Record your voice</p>
-                    <p className="text-sm text-muted-foreground">Upload a 30–90 second audio recording. We'll clone your voice automatically.</p>
+                    <p className="text-sm text-muted-foreground">
+                      Read {VOICE_CLONE_SAMPLE_PHRASES.length} short phrases aloud. We'll clone your voice from them.
+                    </p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3 p-3 bg-muted rounded-lg">
@@ -274,10 +507,19 @@ export function VoiceCloneClient({
                   Your voice and image are only used to generate your videos. They are never shared.
                 </AlertDescription>
               </Alert>
+              {/* One profile per agent (agent_voice_profiles is unique on
+                  agent_id) — recording again REPLACES the voice, it does not
+                  add a second one. Several distinct presenter voices are what
+                  the Twin Studio is for. */}
               <Button className="w-full" onClick={() => setStep("voice")}>
-                Get Started
+                {readyProfiles.length > 0 ? "Re-record my voice" : "Get Started"}
                 <ArrowRight className="h-4 w-4 ml-2" />
               </Button>
+              {readyProfiles.length > 0 && (
+                <p className="text-xs text-muted-foreground text-center">
+                  Re-recording replaces your current voice. It keeps working until the new one is ready.
+                </p>
+              )}
             </CardContent>
           </Card>
         )}
@@ -291,36 +533,74 @@ export function VoiceCloneClient({
                 Record Your Voice
               </CardTitle>
               <CardDescription>
-                Upload a short, clear audio recording (30–90 seconds). Read naturally — this powers your voice in videos.
+                Read each phrase aloud in your natural speaking voice. Several short phrases
+                give the clone more range than one long take.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
-              {/* Example prompts */}
+              {/* Progress across the phrase set */}
               <div className="space-y-2">
-                <p className="text-sm font-medium">Example prompts to read aloud (pick 1–2):</p>
-                <div className="space-y-2">
-                  {VOICE_PROMPTS.map((prompt, i) => (
-                    <div key={i} className="p-3 bg-muted rounded-lg text-sm italic text-muted-foreground">
-                      {prompt}
-                    </div>
-                  ))}
+                <div className="flex items-center justify-between text-sm">
+                  <span className="font-medium">
+                    {recordedCount} of {VOICE_CLONE_SAMPLE_PHRASES.length} phrases recorded
+                  </span>
+                  {recordedCount > 0 && !allRecorded && (
+                    <span className="text-xs text-muted-foreground">Saved — you can finish this later</span>
+                  )}
+                </div>
+                <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-primary transition-all"
+                    style={{ width: `${(recordedCount / VOICE_CLONE_SAMPLE_PHRASES.length) * 100}%` }}
+                  />
                 </div>
               </div>
 
-              {/* File upload */}
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Upload Audio File</label>
-                <div className="border-2 border-dashed rounded-lg p-6 text-center">
-                  <Mic className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
-                  <input
-                    type="file"
-                    accept="audio/mp3,audio/wav,audio/m4a,audio/*"
-                    onChange={(e) => setAudioFile(e.target.files?.[0] ?? null)}
-                    className="block mx-auto text-sm"
-                  />
-                  <p className="text-xs text-muted-foreground mt-2">MP3, WAV, or M4A — 30 to 90 seconds</p>
+              {/* Recorded phrases — re-record any of them */}
+              {phrases.some((p) => p.status === "recorded" || p.status === "validated") && (
+                <div className="space-y-2">
+                  {phrases
+                    .filter((p) => p.status === "recorded" || p.status === "validated")
+                    .map((p) => (
+                      <div key={p.phrase_id} className="flex items-center gap-3 p-3 rounded-lg border bg-muted/30">
+                        <CheckCircle2 className="h-4 w-4 text-green-600 shrink-0" />
+                        <p className="flex-1 text-xs text-muted-foreground line-clamp-1">{p.phrase_text}</p>
+                        {p.audio_url && (
+                          <audio src={p.audio_url} controls className="h-8 max-w-[9rem]" />
+                        )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={busyPhrase || isCloning}
+                          onClick={() => rerecordPhrase(p.phrase_id)}
+                        >
+                          Redo
+                        </Button>
+                      </div>
+                    ))}
                 </div>
-              </div>
+              )}
+
+              {/* The phrase being recorded now */}
+              {activePhrase && (
+                <div className="space-y-3">
+                  {busyPhrase ? (
+                    <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Saving your recording…
+                    </div>
+                  ) : (
+                    <VoiceRecorder
+                      key={activePhrase.phrase_id}
+                      script={activePhrase.phrase_text}
+                      scriptLabel={`Phrase ${activePhraseIndex + 1} of ${VOICE_CLONE_SAMPLE_PHRASES.length}`}
+                      maxSeconds={30}
+                      confirmLabel="Save this phrase"
+                      onSampleReady={handlePhraseRecorded}
+                    />
+                  )}
+                </div>
+              )}
 
               {/* Status */}
               {voiceStatus === "success" && (
@@ -342,11 +622,15 @@ export function VoiceCloneClient({
                 {!voiceDone ? (
                   <Button
                     className="flex-1"
-                    disabled={!audioFile || isUploadingVoice}
-                    onClick={handleVoiceUpload}
+                    disabled={!allRecorded || isCloning || busyPhrase || !videoConfigured}
+                    onClick={handleCreateClone}
                   >
-                    {isUploadingVoice ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
-                    {isUploadingVoice ? "Cloning your voice…" : "Upload & Clone Voice"}
+                    {isCloning ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+                    {isCloning
+                      ? "Cloning your voice…"
+                      : allRecorded
+                        ? "Create My Voice Clone"
+                        : `Record all ${VOICE_CLONE_SAMPLE_PHRASES.length} phrases to continue`}
                   </Button>
                 ) : (
                   <Button className="flex-1" onClick={() => setStep("avatar")}>

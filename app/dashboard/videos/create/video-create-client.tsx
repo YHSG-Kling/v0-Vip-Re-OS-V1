@@ -56,6 +56,8 @@ import {
 import type { VideoPurpose, RepurposeDestination, ListingVideoMode, SellerUpdateMode } from "../components/business-context"
 import { generateVideoScript } from "@/app/actions/video/generate-script"
 import { saveVideoScript, getAgentVideoProfile } from "@/app/actions/video-generation"
+import { getVoiceOptionsForGeneration } from "@/app/actions/video-voice"
+import type { GenerationVoiceOption } from "@/app/actions/video-voice.types"
 import { toLibraryScriptType } from "@/app/types/video-generation"
 import { BrollPicker } from "../components/BrollPicker"
 import { getAgentSettings } from "@/app/actions/agent-settings"
@@ -281,7 +283,14 @@ export default function VideoCreatePage() {
   // Data from DB
   const [scripts, setScripts] = useState<any[]>([])
   const [avatars, setAvatars] = useState<any[]>([])
-  const [voiceProfiles, setVoiceProfiles] = useState<any[]>([])
+  // Every voice the agent can present with — their own clones AND the curated
+  // ElevenLabs assistant voices. Both are real ElevenLabs voice ids down the
+  // same TTS path, so having no clone yet is not a reason to be locked out.
+  const [voiceOptions, setVoiceOptions] = useState<{
+    standardVoices: GenerationVoiceOption[]
+    voiceClones: GenerationVoiceOption[]
+    defaultVoiceClone: GenerationVoiceOption | null
+  }>({ standardVoices: [], voiceClones: [], defaultVoiceClone: null })
   const [brandingPresets, setBrandingPresets] = useState<any[]>([])
   const [connectedPlatforms, setConnectedPlatforms] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
@@ -335,19 +344,17 @@ export default function VideoCreatePage() {
           .eq("user_id", user?.id)
           .maybeSingle()
 
-        let clonedVoiceProfiles: any[] = []
+        let clonedVoiceProfiles: GenerationVoiceOption[] = []
         if (agentData?.id) {
           setResolvedAgentId(agentData.id)
 
-          const { data: voiceData } = await supabase
-            .from("agent_voice_profiles")
-            .select("*")
-            .eq("agent_id", agentData.id)
-            .eq("training_status", "ready")
-            .order("is_default", { ascending: false })
-
-          clonedVoiceProfiles = voiceData || []
-          setVoiceProfiles(clonedVoiceProfiles)
+          // ONE source for what this agent can speak with: their ready clones
+          // plus the curated ElevenLabs assistant voices. The raw select this
+          // replaced knew only about clones, which is why an agent without one
+          // could not reach step 3 at all.
+          const options = await getVoiceOptionsForGeneration(agentData.id)
+          setVoiceOptions(options)
+          clonedVoiceProfiles = options.voiceClones
 
           // Load D-ID profile for the agent (used when platform provider = "did").
           // Server action rather than a client select: it also scopes the row to
@@ -371,11 +378,12 @@ export default function VideoCreatePage() {
           setDidAvatarAssets(assets)
 
           // Auto-select defaults for D-ID path
-          // Voice: pick the default profile's elevenlabs_voice_id
-          const defaultVoice = (voiceData ?? []).find((v: any) => v.is_default && v.elevenlabs_voice_id)
-            ?? (voiceData ?? []).find((v: any) => v.elevenlabs_voice_id)
-          if (defaultVoice?.elevenlabs_voice_id) {
-            setSelectedElevenLabsVoiceId(defaultVoice.elevenlabs_voice_id)
+          // Voice: the agent's default clone, else any clone. No clone yet ->
+          // left unset so the assistant-voice picker below is a real choice
+          // rather than a silent substitution of someone else's voice.
+          const defaultVoice = options.defaultVoiceClone ?? options.voiceClones[0] ?? null
+          if (defaultVoice) {
+            setSelectedElevenLabsVoiceId(defaultVoice.id)
           }
 
           // Avatar: prefer default ready video avatar from library, then photo fallback
@@ -453,7 +461,7 @@ export default function VideoCreatePage() {
       if (platformProvider === "did") {
         if (!selectedElevenLabsVoiceId) {
           throw new Error(
-            "Voice clone not set up. Visit Settings → Voice & Avatar to record your voice before generating videos."
+            "No voice selected. Pick an assistant voice in step 2, or record your own under Avatar & Voice Setup."
           )
         }
         const selectedAsset = didAvatarAssets.find((a) => a.id === selectedDidAssetId)
@@ -1255,14 +1263,15 @@ export default function VideoCreatePage() {
                   <h2 className="text-xl font-semibold mb-2">Choose Avatar & Voice</h2>
                   <p className="text-muted-foreground">
                     {platformProvider === "did"
-                      ? "Your video uses your own face and cloned voice"
+                      ? "Your video uses your own face, and your own voice or an assistant voice"
                       : "Select who will present your video and which voice to use"}
                   </p>
                 </div>
 
                 {/* D-ID: Voice clone + avatar gallery */}
                 {platformProvider === "did" && (() => {
-                  const elVoiceProfiles = voiceProfiles.filter((v: any) => v.elevenlabs_voice_id)
+                  const elVoiceProfiles = voiceOptions.voiceClones
+                  const assistantVoices = voiceOptions.standardVoices
                   const hasPhoto = !!agentDIDProfile?.did_photo_url
                   const readyAssets = didAvatarAssets.filter((a) => a.status === "ready")
                   const pendingAssets = didAvatarAssets.filter((a) => a.status === "pending" || a.status === "processing")
@@ -1313,23 +1322,27 @@ export default function VideoCreatePage() {
 
                   return (
                     <div className="space-y-6">
-                      {/* Voice Clone Selection */}
+                      {/* Voice Selection — the agent's own clone, or an assistant voice */}
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
-                          <Label>Voice Clone</Label>
+                          <Label>Voice</Label>
                           <a href="/dashboard/videos/voice" className="text-xs text-muted-foreground underline hover:text-foreground">
                             Manage voice setup
                           </a>
                         </div>
-                        {hasAnyVoice ? (
+
+                        {hasAnyVoice && (
                           <div className="space-y-2">
-                            {elVoiceProfiles.map((voice: any) => (
+                            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                              Your voice
+                            </p>
+                            {elVoiceProfiles.map((voice) => (
                               <div
-                                key={voice.id}
-                                onClick={() => setSelectedElevenLabsVoiceId(voice.elevenlabs_voice_id)}
+                                key={voice.profileId ?? voice.id}
+                                onClick={() => setSelectedElevenLabsVoiceId(voice.id)}
                                 className={cn(
                                   "p-4 rounded-lg border-2 cursor-pointer transition-all flex items-center gap-4",
-                                  selectedElevenLabsVoiceId === voice.elevenlabs_voice_id
+                                  selectedElevenLabsVoiceId === voice.id
                                     ? "border-primary bg-primary/5"
                                     : "border-border hover:border-primary/50"
                                 )}
@@ -1338,32 +1351,69 @@ export default function VideoCreatePage() {
                                   <Mic className="h-5 w-5 text-muted-foreground" />
                                 </div>
                                 <div className="flex-1 min-w-0">
-                                  <p className="font-medium">{voice.profile_name}</p>
+                                  <p className="font-medium">{voice.name}</p>
                                   <div className="flex items-center gap-2 mt-0.5">
-                                    {voice.is_default && (
+                                    {voice.isDefault && (
                                       <Badge variant="secondary" className="text-xs">Default</Badge>
                                     )}
-                                    {voice.quality_score && (
+                                    {voice.qualityScore != null && (
                                       <span className="text-xs text-muted-foreground">
-                                        Quality: {(voice.quality_score * 100).toFixed(0)}%
+                                        Quality: {Number(voice.qualityScore).toFixed(0)}%
                                       </span>
                                     )}
                                   </div>
                                 </div>
-                                {selectedElevenLabsVoiceId === voice.elevenlabs_voice_id && (
+                                {selectedElevenLabsVoiceId === voice.id && (
                                   <CheckCircle2 className="h-5 w-5 text-primary shrink-0" />
                                 )}
                               </div>
                             ))}
                           </div>
-                        ) : (
-                          <Alert variant="destructive">
-                            <AlertTriangle className="h-4 w-4" />
-                            <AlertTitle>No voice clone set up</AlertTitle>
+                        )}
+
+                        {/* Assistant voices — always offered. An agent who has not
+                            recorded a clone still gets to publish video today. */}
+                        <div className="space-y-2">
+                          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                            {hasAnyVoice ? "Or use an assistant voice" : "Assistant voices"}
+                          </p>
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            {assistantVoices.map((voice) => (
+                              <div
+                                key={voice.id}
+                                onClick={() => setSelectedElevenLabsVoiceId(voice.id)}
+                                className={cn(
+                                  "p-3 rounded-lg border-2 cursor-pointer transition-all flex items-start gap-3",
+                                  selectedElevenLabsVoiceId === voice.id
+                                    ? "border-primary bg-primary/5"
+                                    : "border-border hover:border-primary/50"
+                                )}
+                              >
+                                <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center shrink-0">
+                                  <Sparkles className="h-4 w-4 text-muted-foreground" />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm font-medium">{voice.name}</p>
+                                  {voice.style && (
+                                    <p className="text-xs text-muted-foreground">{voice.style}</p>
+                                  )}
+                                </div>
+                                {selectedElevenLabsVoiceId === voice.id && (
+                                  <CheckCircle2 className="h-4 w-4 text-primary shrink-0" />
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {!hasAnyVoice && (
+                          <Alert>
+                            <Mic className="h-4 w-4" />
+                            <AlertTitle>Want the video in your own voice?</AlertTitle>
                             <AlertDescription className="flex items-center justify-between gap-4 flex-wrap">
-                              <span>Upload a voice recording in Avatar & Voice Setup to clone your voice.</span>
+                              <span>Record a few short phrases and we'll clone your voice — it takes a couple of minutes.</span>
                               <Button size="sm" variant="outline" className="shrink-0" onClick={() => router.push("/dashboard/videos/voice")}>
-                                Set Up Voice
+                                Set Up My Voice
                               </Button>
                             </AlertDescription>
                           </Alert>
@@ -1785,7 +1835,12 @@ export default function VideoCreatePage() {
                       </p>
                       <p className="text-sm">
                         <strong>Voice:</strong>{" "}
-                        {voiceProfiles.find(v => v.elevenlabs_voice_id === selectedElevenLabsVoiceId)?.profile_name || "ElevenLabs voice"}
+                        {(() => {
+                          const chosen = [...voiceOptions.voiceClones, ...voiceOptions.standardVoices]
+                            .find(v => v.id === selectedElevenLabsVoiceId)
+                          if (!chosen) return "No voice selected"
+                          return chosen.type === "clone" ? `${chosen.name} (your voice)` : `${chosen.name} (assistant voice)`
+                        })()}
                       </p>
                     </CardContent>
                   </Card>

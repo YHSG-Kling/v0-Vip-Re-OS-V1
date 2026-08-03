@@ -11,8 +11,58 @@ import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
-import type { VoiceTrainingStatus, VoiceProfile, VoiceTrainingJob, SampleManifest, UploadedSample } from "./video-voice.types"
+import type {
+  VoiceTrainingJobStatus,
+  VoiceProfileTrainingStatus,
+  VoiceProfile,
+  VoiceTrainingJob,
+  SampleManifest,
+  UploadedSample,
+  GenerationVoiceOption,
+} from "./video-voice.types"
 import { VOICE_CLONE_SAMPLE_PHRASES } from "./video-voice.constants"
+
+type ServerSupabase = Awaited<ReturnType<typeof createClient>>
+
+/** The in-progress capture for a profile: 'queued' = recorded, not yet submitted. */
+async function findDraftJob(supabase: ServerSupabase, profileId: string) {
+  const { data } = await supabase
+    .from("voice_clone_training")
+    .select("id, sample_manifest")
+    .eq("voice_profile_id", profileId)
+    .eq("status", "queued")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  return data
+}
+
+/** Write the capture-in-progress manifest onto the draft job, creating it once. */
+async function upsertDraftManifest(
+  supabase: ServerSupabase,
+  profileId: string,
+  brokerageId: string,
+  sampleManifest: SampleManifest,
+) {
+  const draft = await findDraftJob(supabase, profileId)
+
+  if (draft) {
+    const { error } = await supabase
+      .from("voice_clone_training")
+      .update({ sample_manifest: sampleManifest })
+      .eq("id", draft.id)
+    return error
+  }
+
+  const { error } = await supabase.from("voice_clone_training").insert({
+    voice_profile_id: profileId,
+    brokerage_id: brokerageId,
+    provider: "elevenlabs",
+    status: "queued",
+    sample_manifest: sampleManifest,
+  })
+  return error
+}
 
 // ============================================
 // VOICE PROFILE CRUD
@@ -31,7 +81,7 @@ export async function getVoiceProfiles(agentId: string) {
     .from("agent_voice_profiles")
     .select(`
       *,
-      voice_clone_training(id, status, started_at, completed_at, error_message)
+      voice_clone_training(id, status, sample_manifest, started_at, completed_at, error_message)
     `)
     .eq("agent_id", agentId)
     .order("is_default", { ascending: false })
@@ -71,7 +121,18 @@ export async function getVoiceProfileById(profileId: string) {
 }
 
 /**
- * Create a new voice profile
+ * Open the agent's voice profile for a fresh capture.
+ *
+ * THE PROFILE IS A SINGLETON: agent_voice_profiles carries a UNIQUE index on
+ * agent_id, so an agent has exactly one. A plain insert therefore threw a
+ * duplicate-key error the second time an agent re-recorded — which is the
+ * normal case, not an edge case. An agent who wants SEVERAL distinct
+ * presenter voices uses the Twin Studio (agent_avatar_assets), which is the
+ * surface that models more than one.
+ *
+ * So this is idempotent: it creates the row the first time and resets it for a
+ * new capture afterwards.
+ *
  * CRITICAL IDENTITY RULE: Must pass agents.id NOT users.id
  */
 export async function createVoiceProfile(data: {
@@ -86,23 +147,52 @@ export async function createVoiceProfile(data: {
 
   const supabase = await createClient()
 
-  // Create the voice profile
-  const { data: profile, error } = await supabase
+  const { data: existing } = await supabase
     .from("agent_voice_profiles")
-    .insert({
-      brokerage_id: data.brokerageId,
-      agent_id: data.agentId,
-      profile_name: data.profileName,
-      training_status: "not_started",
-      sample_count: 0,
-      is_default: false,
-    })
-    .select()
-    .single()
+    .select("id, training_status, elevenlabs_voice_id")
+    .eq("agent_id", data.agentId)
+    .maybeSingle()
 
-  if (error) {
-    console.error("[video-voice] Error creating voice profile:", error)
-    throw error
+  // A working clone stays usable while its replacement is being recorded.
+  // Resetting the singleton to 'not_started' here would hide the agent's live
+  // voice from every reader the moment they started a re-record — and if they
+  // then abandoned the capture, it would stay hidden. The in-progress capture
+  // lives on the draft training job, not on this row.
+  const hasLiveClone = existing?.training_status === "ready" && !!existing?.elevenlabs_voice_id
+
+  const { data: profile, error } = existing
+    ? await supabase
+        .from("agent_voice_profiles")
+        .update(
+          hasLiveClone
+            ? { profile_name: data.profileName, updated_at: new Date().toISOString() }
+            : {
+                brokerage_id: data.brokerageId,
+                profile_name: data.profileName,
+                training_status: "not_started" satisfies VoiceProfileTrainingStatus,
+                sample_count: 0,
+                updated_at: new Date().toISOString(),
+              },
+        )
+        .eq("id", existing.id)
+        .select()
+        .single()
+    : await supabase
+        .from("agent_voice_profiles")
+        .insert({
+          brokerage_id: data.brokerageId,
+          agent_id: data.agentId,
+          profile_name: data.profileName,
+          training_status: "not_started" satisfies VoiceProfileTrainingStatus,
+          sample_count: 0,
+          is_default: false,
+        })
+        .select()
+        .single()
+
+  if (error || !profile) {
+    console.error("[video-voice] Error opening voice profile:", error)
+    throw error ?? new Error("Could not open the voice profile")
   }
 
   // Write lifecycle event — kernel-visible
@@ -148,6 +238,17 @@ export async function updateVoiceProfileSamples(
   // Count recorded samples
   const recordedCount = (sampleManifest.phrases ?? []).filter(p => p.status === "recorded" || p.status === "validated").length
 
+  // Never downgrade a live clone. The profile is a singleton, so an agent
+  // re-recording would otherwise knock their own working voice out of every
+  // reader (all of which gate on 'ready') for the whole capture — and for good
+  // if they abandoned it. The replacement lands via reconciliation, not here.
+  const { data: current } = await supabase
+    .from("agent_voice_profiles")
+    .select("training_status, elevenlabs_voice_id")
+    .eq("id", profileId)
+    .maybeSingle()
+  const hasLiveClone = current?.training_status === "ready" && !!current?.elevenlabs_voice_id
+
   // Update the profile
   const { data: profile, error } = await supabase
     .from("agent_voice_profiles")
@@ -157,7 +258,11 @@ export async function updateVoiceProfileSamples(
       // training, ready, failed). This wrote "pending", which the CHECK rejects —
       // so every mid-recording save was refused and sample_count never advanced
       // past its first value. Any recording in progress IS collecting_samples.
-      training_status: recordedCount > 0 ? "collecting_samples" : "not_started",
+      training_status: (hasLiveClone
+        ? "ready"
+        : recordedCount > 0
+          ? "collecting_samples"
+          : "not_started") satisfies VoiceProfileTrainingStatus,
       updated_at: new Date().toISOString(),
     })
     .eq("id", profileId)
@@ -168,6 +273,20 @@ export async function updateVoiceProfileSamples(
   if (error) {
     console.error("[video-voice] Error updating voice profile samples:", error)
     throw error
+  }
+
+  // PERSIST THE MANIFEST, not just the count. Storing sample_count alone means
+  // an interrupted capture (refresh, tab close, a call coming in) comes back
+  // reading "3 of 5 recorded" with the three recordings unreachable — there is
+  // nowhere else the phrase urls are written. The draft lives on
+  // voice_clone_training at status 'queued', which is exactly what queued
+  // means here: captured, not yet submitted to the provider.
+  // startVoiceCloneTraining promotes THIS row rather than opening a second one,
+  // so one attempt is one row from the first phrase to the final outcome.
+  const draftError = await upsertDraftManifest(supabase, profileId, brokerageId, sampleManifest)
+  if (draftError) {
+    console.error("[video-voice] Error persisting sample manifest:", draftError)
+    throw draftError
   }
 
   // Write lifecycle event
@@ -297,32 +416,53 @@ export async function startVoiceCloneTraining(
     throw new Error(`Not enough samples. Required: ${VOICE_CLONE_SAMPLE_PHRASES.length}, Recorded: ${recordedCount}`)
   }
 
-  // Create training job record
-  const { data: trainingJob, error: trainingError } = await supabase
-    .from("voice_clone_training")
-    .insert({
-      voice_profile_id: profileId,
-      brokerage_id: brokerageId,
-      provider: "elevenlabs",
-      status: "queued",
-      sample_manifest: sampleManifest,
-    })
-    .select()
-    .single()
-
-  if (trainingError) {
-    console.error("[video-voice] Error creating training job:", trainingError)
-    throw trainingError
+  // Submit the DRAFT this capture has been accumulating into, rather than
+  // opening a second row — one attempt is one row. (A profile whose capture
+  // never went through updateVoiceProfileSamples still gets a row created here.)
+  const draft = await findDraftJob(supabase, profileId)
+  const submission = {
+    sample_manifest: sampleManifest,
+    started_at: new Date().toISOString(),
   }
 
-  // Update profile status
-  await supabase
+  const { data: trainingJob, error: trainingError } = draft
+    ? await supabase
+        .from("voice_clone_training")
+        .update(submission)
+        .eq("id", draft.id)
+        .select()
+        .single()
+    : await supabase
+        .from("voice_clone_training")
+        .insert({
+          voice_profile_id: profileId,
+          brokerage_id: brokerageId,
+          provider: "elevenlabs",
+          status: "queued",
+          ...submission,
+        })
+        .select()
+        .single()
+
+  if (trainingError || !trainingJob) {
+    console.error("[video-voice] Error opening training job:", trainingError)
+    throw trainingError ?? new Error("Could not open the voice training job")
+  }
+
+  // Update profile status. Checked: an unchecked write here would leave the
+  // profile advertising "collecting_samples" while a job runs against it.
+  const { error: profileError } = await supabase
     .from("agent_voice_profiles")
     .update({
-      training_status: "training",
+      training_status: "training" satisfies VoiceProfileTrainingStatus,
       updated_at: new Date().toISOString(),
     })
     .eq("id", profileId)
+
+  if (profileError) {
+    console.error("[video-voice] Error moving profile into training:", profileError)
+    throw profileError
+  }
 
   // Write lifecycle event — KERNEL-VISIBLE
   await supabase.from("lifecycle_events").insert({
@@ -354,10 +494,10 @@ export async function startVoiceCloneTraining(
  */
 export async function updateTrainingJobStatus(
   trainingId: string,
-  status: VoiceTrainingStatus,
+  status: VoiceTrainingJobStatus,
   providerResponse?: Record<string, any>,
   errorMessage?: string
-) {
+): Promise<{ voiceProfileId: string; brokerageId: string | null }> {
   if (!isValidUUID(trainingId)) {
     throw new Error("Invalid training ID")
   }
@@ -374,6 +514,12 @@ export async function updateTrainingJobStatus(
   if (!job) {
     throw new Error("Training job not found")
   }
+
+  const { data: currentProfile } = await supabase
+    .from("agent_voice_profiles")
+    .select("elevenlabs_voice_id")
+    .eq("id", job.voice_profile_id)
+    .maybeSingle()
 
   const updateData: Record<string, any> = {
     status,
@@ -412,17 +558,29 @@ export async function updateTrainingJobStatus(
   // rejects — and elevenlabs_voice_id is set in this SAME update, so the clone id
   // returned by ElevenLabs was never saved. The voice was cloned and the pointer
   // to it thrown away.
-  const PROFILE_STATUS_FOR_JOB: Record<string, string> = {
+  // Exhaustive by type: adding a job status without deciding what it means for
+  // the profile is now a compile error, not a silently-rejected write.
+  const PROFILE_STATUS_FOR_JOB: Record<VoiceTrainingJobStatus, VoiceProfileTrainingStatus> = {
+    queued:     "training",
     processing: "training",
     completed:  "ready",
     failed:     "failed",
   }
+  // A FAILED RE-CLONE MUST NOT DESTROY THE VOICE THE AGENT ALREADY HAD. The
+  // profile column answers "does a usable voice exist here", and if the previous
+  // elevenlabs_voice_id survives, one does. The failure itself is recorded on
+  // the job row (status + error_message), which is what the setup page reads —
+  // so this is not hiding anything, it is keeping the two facts in their own
+  // places. Only a first-ever clone leaves the profile at 'failed'.
+  const keepsPriorClone = status === "failed" && !!currentProfile?.elevenlabs_voice_id
   const profileUpdate: Record<string, any> = {
-    training_status: PROFILE_STATUS_FOR_JOB[status] ?? "training",
+    training_status: keepsPriorClone ? "ready" : PROFILE_STATUS_FOR_JOB[status],
     updated_at: new Date().toISOString(),
   }
 
-  // If completed successfully, save the voice clone ID and quality score
+  // If completed successfully, save the voice clone ID and quality score.
+  // QUALITY SCORE IS ON A 0–100 SCALE throughout (column is numeric, the
+  // threshold below reads 0–100, and every renderer must too).
   if (status === "completed" && providerResponse?.voice_id) {
     profileUpdate.elevenlabs_voice_id = providerResponse.voice_id
 
@@ -430,7 +588,7 @@ export async function updateTrainingJobStatus(
     const qualityScore = providerResponse.quality_score ?? providerResponse.score ?? null
     if (qualityScore !== null) {
       profileUpdate.quality_score = qualityScore
-      
+
       // If quality is below 70%, keep status as "completed" but log warning
       if (qualityScore < 70) {
         console.warn(`[video-voice] Voice clone quality below threshold: ${qualityScore}%`)
@@ -438,10 +596,18 @@ export async function updateTrainingJobStatus(
     }
   }
 
-  await supabase
+  const { error: profileError } = await supabase
     .from("agent_voice_profiles")
     .update(profileUpdate)
     .eq("id", job.voice_profile_id)
+
+  // This update carries elevenlabs_voice_id. Losing it silently is exactly how
+  // a paid-for, working clone becomes invisible to every reader (they all gate
+  // on training_status = 'ready'), so it must surface as a failure.
+  if (profileError) {
+    console.error("[video-voice] Error applying training outcome to profile:", profileError)
+    throw profileError
+  }
 
   // Write lifecycle event
   const eventType = status === "completed" 
@@ -489,6 +655,9 @@ export async function updateTrainingJobStatus(
   }
 
   revalidatePath("/dashboard/videos/voice")
+  revalidatePath("/dashboard/videos/create")
+
+  return { voiceProfileId: job.voice_profile_id, brokerageId: job.brokerage_id ?? null }
 }
 
 /**
@@ -574,13 +743,27 @@ export async function getAgentContext(userId: string): Promise<{
 
 /**
  * Get all voice options for video generation UI
- * Returns both standard voices and completed voice clones
+ * Returns both standard (assistant) voices and completed voice clones.
+ *
+ * BOTH are usable: a premade ElevenLabs voice id and a cloned voice id go down
+ * the identical TTS path, so an agent who has not recorded a clone yet is not
+ * locked out of video — they present with an assistant voice and swap to their
+ * own the moment the clone is ready.
  */
-export async function getVoiceOptionsForGeneration(agentId: string) {
+export async function getVoiceOptionsForGeneration(agentId: string): Promise<{
+  standardVoices: GenerationVoiceOption[]
+  voiceClones: GenerationVoiceOption[]
+  defaultVoiceClone: GenerationVoiceOption | null
+}> {
   // ElevenLabs premade voices ONLY (the platform's single TTS vendor — the
   // old list here was Azure Neural ids that no renderer could speak).
   const { ASSISTANT_VOICE_OPTIONS } = await import("@/lib/video/assistant-options")
-  const standardVoices = ASSISTANT_VOICE_OPTIONS.map((v) => ({ id: v.voiceId, name: v.label, type: "standard", language: "English" }))
+  const standardVoices: GenerationVoiceOption[] = ASSISTANT_VOICE_OPTIONS.map((v) => ({
+    id: v.voiceId,
+    name: v.label,
+    type: "standard",
+    style: v.style,
+  }))
 
   if (!isValidUUID(agentId)) {
     return { standardVoices, voiceClones: [], defaultVoiceClone: null }
@@ -588,7 +771,7 @@ export async function getVoiceOptionsForGeneration(agentId: string) {
 
   const supabase = await createClient()
 
-  const { data: voiceClones } = await supabase
+  const { data: voiceClones, error: clonesError } = await supabase
     .from("agent_voice_profiles")
     .select("id, profile_name, elevenlabs_voice_id, is_default, quality_score")
     .eq("agent_id", agentId)
@@ -596,12 +779,18 @@ export async function getVoiceOptionsForGeneration(agentId: string) {
     .not("elevenlabs_voice_id", "is", null)
     .order("is_default", { ascending: false })
 
-  const mappedClones = (voiceClones || []).map(vc => ({
+  if (clonesError) {
+    // Say nothing rather than pretend the agent has no clones — the caller
+    // renders "record your voice" on an empty list, which would be a lie.
+    console.error("[video-voice] Error loading voice clones for generation:", clonesError)
+  }
+
+  const mappedClones: GenerationVoiceOption[] = (voiceClones || []).map(vc => ({
     id: vc.elevenlabs_voice_id!,
     name: vc.profile_name,
     type: "clone" as const,
     profileId: vc.id,
-    isDefault: vc.is_default,
+    isDefault: vc.is_default ?? false,
     qualityScore: vc.quality_score,
   }))
 
