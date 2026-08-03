@@ -73,6 +73,9 @@ export default function ReferralsPage() {
   const [pName, setPName]               = useState("")
   const [pType, setPType]               = useState(PARTNER_TYPES[0].value)
   const [pAgreement, setPAgreement]     = useState(AGREEMENT_TYPES[0].value)
+  const [pEmail, setPEmail]             = useState("")
+  const [pPhone, setPPhone]             = useState("")
+  const [pAgreementDate, setPAgreementDate] = useState("")
   const [pSplit, setPSplit]             = useState<string>("")
   const [pFlat, setPFlat]               = useState<string>("")
 
@@ -158,13 +161,19 @@ export default function ReferralsPage() {
         partnerName: pName,
         partnerType: pType,
         agreementType: pAgreement,
+        // These three used to be dropped on the floor: the only code that wrote
+        // them lived in an orphaned function nothing called. A partner you cannot
+        // email or phone is a name in a list.
+        email: pEmail.trim() || undefined,
+        phone: pPhone.trim() || undefined,
+        agreementDate: pAgreementDate || undefined,
         commissionSplitPercentage: pSplit ? parseFloat(pSplit) : undefined,
         referralFeeFlat: pFlat ? parseFloat(pFlat) : undefined,
       })
         .then(() => {
           setShowAddPartner(false)
           setPName(""); setPType(PARTNER_TYPES[0].value); setPAgreement(AGREEMENT_TYPES[0].value)
-          setPSplit(""); setPFlat("")
+          setPSplit(""); setPFlat(""); setPEmail(""); setPPhone(""); setPAgreementDate("")
           reload()
         })
         .catch((e: unknown) => setError(e instanceof Error ? e.message : "Failed to add partner"))
@@ -455,6 +464,37 @@ export default function ReferralsPage() {
                     {AGREEMENT_TYPES.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
                   </select>
                 </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-muted-foreground">Email</label>
+                  <input
+                    type="email"
+                    value={pEmail}
+                    onChange={(e) => setPEmail(e.target.value)}
+                    placeholder="partner@example.com"
+                    className="w-full mt-1 px-2 py-2 text-sm border border-border rounded-md bg-background"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground">Phone</label>
+                  <input
+                    type="tel"
+                    value={pPhone}
+                    onChange={(e) => setPPhone(e.target.value)}
+                    placeholder="(512) 555-0134"
+                    className="w-full mt-1 px-2 py-2 text-sm border border-border rounded-md bg-background"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground">Agreement signed</label>
+                <input
+                  type="date"
+                  value={pAgreementDate}
+                  onChange={(e) => setPAgreementDate(e.target.value)}
+                  className="w-full mt-1 px-2 py-2 text-sm border border-border rounded-md bg-background"
+                />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>

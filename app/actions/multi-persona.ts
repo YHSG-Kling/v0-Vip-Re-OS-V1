@@ -1016,45 +1016,15 @@ export async function trackLicenseExpirations(_brokerageId?: string) {
 // REFERRAL PARTNER FUNCTIONS
 // ============================================
 
-export async function createReferralPartner(data: {
-  partnerName: string
-  partnerType: "real_estate_agent" | "mortgage_broker" | "title_company" | "home_inspector" | "contractor" | "insurance_agent" | "attorney" | "property_manager" | "other"
-  contactEmail: string
-  contactPhone?: string
-  commissionSplit: number
-  agreementSignedDate?: string
-  notes?: string
-  agentId: string
-  brokerageId?: string
-}) {
-  const supabase = await createClient()
-
-  // referral_partners schema: id, agent_id, brokerage_id, partner_name, partner_type,
-  // company_name, email, phone, address, agreement_type, commission_split_percentage,
-  // referral_fee_flat, agreement_date, agreement_end_date, total_referrals_sent,
-  // total_referrals_received, total_value_generated, notes, active, created_at, updated_at
-  const { data: partner, error } = await supabase
-    .from("referral_partners")
-    .insert({
-      agent_id: data.agentId,
-      brokerage_id: data.brokerageId,
-      partner_name: data.partnerName,
-      partner_type: data.partnerType,
-      email: data.contactEmail,
-      phone: data.contactPhone,
-      commission_split_percentage: data.commissionSplit,
-      agreement_date: data.agreementSignedDate,
-      notes: data.notes,
-      active: true,
-    })
-    .select()
-    .single()
-
-  if (error) throw error
-
-  return partner
-}
-
+// CONSOLIDATED AWAY — createReferralPartner
+//
+// Its ONLY advantage over the wired path was that it captured the partner's
+// email, phone and agreement_date. That is no longer true: those three now live
+// on app/actions/referrals/referral-actions.ts:createPartner, which additionally
+// enforces the RESPA kickback gate and derives agentId/brokerageId from the
+// session instead of taking them as spoofable parameters, and the agent referrals
+// form now collects all three. Nothing is lost by its removal — which is exactly
+// the bar it had to clear.
 export async function trackReferral(data: {
   referralPartnerId?: string
   agentId: string

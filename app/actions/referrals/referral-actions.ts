@@ -61,6 +61,17 @@ export type CreatePartnerParams = {
    *  dropped at submit — so the one piece of context that makes a partner row
    *  worth anything six months later never arrived. */
   notes?: string
+  /** The partner's contact details and the date the arrangement was signed.
+   *
+   *  These three were the ONLY thing the orphaned multi-persona.ts:
+   *  createReferralPartner captured that this function did not — which made it
+   *  impossible to retire without losing them. A referral partner you cannot
+   *  email or phone is a name in a list, and agreement_date is what says the
+   *  arrangement is real and when it started. They belong on the wired path. */
+  email?: string
+  phone?: string
+  /** ISO date (YYYY-MM-DD) — referral_partners.agreement_date is a DATE column. */
+  agreementDate?: string
 }
 
 // ─── ACTIONS ─────────────────────────────────────────────────────────────────
@@ -260,6 +271,9 @@ export async function createPartner(params: CreatePartnerParams): Promise<{ id: 
       partner_name: params.partnerName,
       partner_type: params.partnerType,
       agreement_type: params.agreementType,
+      email: params.email?.trim() || null,
+      phone: params.phone?.trim() || null,
+      agreement_date: params.agreementDate || null,
       commission_split_percentage: params.commissionSplitPercentage ?? null,
       referral_fee_flat: params.referralFeeFlat ?? null,
       notes: params.notes?.trim() || null,
