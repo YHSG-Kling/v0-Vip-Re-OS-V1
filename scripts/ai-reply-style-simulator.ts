@@ -190,6 +190,35 @@ console.log("\n── the stale warning that invited deletion is corrected ─�
     /character varying\[\]/.test(a) && /42804/.test(a))
 }
 
+console.log("\n── no read embeds a relationship PostgREST cannot resolve ──")
+{
+  // Verified live against pg_constraint: ai_suggestions has NO foreign key to
+  // conversations, and lead_intelligence / lead_behavioral_data are keyed on
+  // lead_id with no foreign key to contacts. PostgREST embeds on DECLARED
+  // relationships only, so each of these made the whole request fail PGRST200.
+  // getChatSession threw on every call for every session id; createChatSession
+  // swallowed it into a null and stored an empty context_data on every session.
+  const a = readFileSync("app/actions/ai-chat.ts", "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^[ \t]*\/\/.*$/gm, "")
+
+  check("nothing embeds lead_intelligence under contacts any more",
+    !/contacts[\s\S]{0,80}?lead_intelligence \(\*\)/.test(a))
+  check("nothing embeds lead_behavioral_data under contacts any more",
+    !/lead_behavioral_data \(\*\)/.test(a))
+  check("nothing embeds ai_suggestions under conversations any more",
+    !/from\("conversations"\)[\s\S]{0,400}?ai_suggestions \(\*\)/.test(a))
+  // The DATA link is real (ai_suggestions.session_id) — only the FK is missing.
+  check("…the suggestions are fetched by the link that does exist",
+    /from\("ai_suggestions"\)[\s\S]{0,200}?\.eq\("session_id", sessionId\)/.test(a))
+  check("getChatSession is tenant-scoped on both reads",
+    (a.match(/\.eq\("brokerage_id", brokerageId\)/g) ?? []).length >= 2)
+  check("…and refuses a caller with no tenant rather than reading across brokerages",
+    /const \{ brokerageId \} = await getAgentContext\(\)[\s\S]{0,120}?if \(!brokerageId\) return null/.test(a))
+  check("the contact read that fed context_data now reports its error",
+    /Chat session contact load failed/.test(a))
+}
+
 console.log("\n──────────────────────────────────────────────────")
 if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
 console.log(` RESULT: ${pass} passed, ${fail} failed`)

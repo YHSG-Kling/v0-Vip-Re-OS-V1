@@ -64,6 +64,7 @@ import { requirePermission } from "@/lib/security"
 import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
+import { getAgentContext } from "@/lib/identity"
 import {
   resolveReplyStyle,
   isReplyModel,
@@ -114,21 +115,30 @@ export async function createChatSession(data: {
   // Get lead context if provided
   let contextData: any = {}
   if (data.leadId && isValidUUID(data.leadId)) {
-    const { data: lead } = await supabase
+    // The same unresolvable embed getChatSession carried: lead_intelligence and
+    // lead_behavioral_data are keyed on lead_id and have NO foreign key to
+    // contacts, so PostgREST refused the whole request (PGRST200) and `lead`
+    // came back null — which the `?.` chain below then read as "no context",
+    // silently. Every session created here started with an EMPTY context_data
+    // even when the contact was rich. Fixing one sibling and not the other is
+    // how a defect class survives being found, so both are corrected together.
+    const { data: lead, error: leadError } = await supabase
       .from("contacts")
-      .select(`
-        *,
-        lead_intelligence (*),
-        lead_behavioral_data (*)
-      `)
+      .select("*")
       .eq("id", data.leadId)
-      .single()
+      .maybeSingle()
+
+    if (leadError) {
+      console.error("[v0] Chat session contact load failed:", leadError)
+    }
 
     contextData = {
       lead: lead,
       temperature: lead?.lead_temperature,
       lastContact: lead?.last_contact_date,
-      interests: lead?.lead_intelligence?.[0]?.identified_interests,
+      // `interests` used to come from the embed that could never resolve.
+      // contacts has no route to lead_intelligence — there is no contact->lead
+      // column at all — so this is omitted rather than reported as empty.
     }
   }
 
@@ -399,18 +409,30 @@ async function checkMessageCompliance(message: string, sessionId: string): Promi
 async function generateAiResponse(sessionId: string, userMessage: string): Promise<any> {
   const supabase = await createClient()
 
-  // Get session context
-  const { data: session } = await supabase
+  // Get session context.
+  //
+  // THIS IS WHERE THE BAD EMBED COST THE MOST. lead_intelligence and
+  // lead_behavioral_data are keyed on lead_id and have NO foreign key to
+  // contacts, so PostgREST refused the entire request (PGRST200). The error was
+  // never destructured, `session` came back null, and `leadContext` below fell
+  // to its "No lead selected" branch — EVERY TIME. The AI answered every message
+  // knowing nothing about the contact, while the contact row sat one valid join
+  // away. conversations.contact_id -> contacts is a real foreign key and always
+  // was; it was the two unresolvable siblings that took the whole query down.
+  const { data: session, error: sessionError } = await supabase
     .from("conversations")
     .select(`
       *,
-      contacts (*,
-        lead_intelligence (*),
-        lead_behavioral_data (*)
-      )
+      contacts (*)
     `)
     .eq("id", sessionId)
-    .single()
+    .maybeSingle()
+
+  if (sessionError) {
+    // Silence here is what let the defect live. A context the AI cannot load is
+    // worth saying out loud, because the reply it writes without it looks fine.
+    console.error("[v0] AI response context load failed:", sessionError)
+  }
 
   // Get conversation history
   const { data: messages } = await supabase
@@ -426,7 +448,7 @@ async function generateAiResponse(sessionId: string, userMessage: string): Promi
 Lead Information:
 - Name: ${session.contacts.first_name} ${session.contacts.last_name}
 - Temperature: ${session.contacts.lead_temperature}
-- Interests: ${session.contacts.lead_intelligence?.[0]?.identified_interests?.join(", ") || "Not identified"}
+- Interests: ${session.contacts.notes?.trim() || "Not identified"}
 - Last Contact: ${session.contacts.last_contact_date || "Never"}
 - Source: ${session.contacts.lead_source}
 `
@@ -679,25 +701,71 @@ export async function acceptAiSuggestion(suggestionId: string) {
   return { success: true }
 }
 
+/**
+ * One chat session with its contact, its messages, and the AI suggestions
+ * raised against it.
+ *
+ * THIS COULD NEVER RETURN. Three of the five embeds named a relationship
+ * PostgREST cannot resolve, so the request failed as PGRST200 and the `throw`
+ * below fired every single time — for any session id, always.
+ *
+ *   ai_suggestions   — embedded under conversations with NO foreign key to it.
+ *                      The DATA link is real (ai_suggestions.session_id), it
+ *                      just isn't declared, and PostgREST embeds on declared
+ *                      relationships only. Fetched explicitly below instead.
+ *   lead_intelligence
+ *   lead_behavioral_data
+ *                    — embedded under `contacts`, but both are keyed on
+ *                      lead_id, not contact_id. Wrong on two counts: no FK, and
+ *                      the wrong id space entirely (contacts and leads are
+ *                      distinct id spaces here). There is no contact->lead
+ *                      column on contacts, so a conversation's contact cannot
+ *                      reach lead intelligence at all. Dropped rather than
+ *                      pointed at a join that does not exist.
+ *
+ * The two embeds that remain are backed by real foreign keys —
+ * conversations.contact_id -> contacts and messages.conversation_id ->
+ * conversations.
+ *
+ * It also had NO auth gate and no tenant scope: a raw session id read any
+ * brokerage's conversation, contact and message history. It has no callers
+ * today, so nothing exploited it — but wiring it up in that state is how a
+ * cross-tenant read ships.
+ */
 export async function getChatSession(sessionId: string) {
+  if (!isValidUUID(sessionId)) return null
+
+  const { brokerageId } = await getAgentContext()
+  if (!brokerageId) return null
+
   const supabase = await createClient()
 
   const { data: session, error } = await supabase
     .from("conversations")
     .select(`
       *,
-      contacts (*,
-        lead_intelligence (*),
-        lead_behavioral_data (*)
-      ),
-      messages (*, message_content:body, message_type:type),
-      ai_suggestions (*)
+      contacts (*),
+      messages (*, message_content:body, message_type:type)
     `)
     .eq("id", sessionId)
-    .single()
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
 
   if (error) throw error
-  return session
+  if (!session) return null
+
+  // The link PostgREST could not see. Scoped by the same tenant anchor, so a
+  // suggestion from another brokerage cannot ride in on a shared session id.
+  const { data: suggestions, error: suggestionError } = await supabase
+    .from("ai_suggestions")
+    .select("*")
+    .eq("session_id", sessionId)
+    .eq("brokerage_id", brokerageId)
+    .order("created_at", { ascending: false })
+
+  if (suggestionError) throw suggestionError
+
+  return { ...session, ai_suggestions: suggestions ?? [] }
 }
 
 export async function getAgentChatSessions(agentId: string) {
