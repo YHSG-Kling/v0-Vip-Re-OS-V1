@@ -161,7 +161,6 @@
     "app/actions/cda-portal.ts:notifyAgentOfPreliminaryCdAction",
     "app/actions/cda-portal.ts:recordNonCdaPayoutPreferenceAction",
     "app/actions/cda-portal.ts:runSignatureCheckForCdaAction",
-    "app/actions/cda-portal.ts:sendCdaToTitleAction",
     "app/actions/cda-portal.ts:submitCdaForApprovalAction",
     "app/actions/cda-portal.ts:uploadCdaCheckCopyAction",
     "app/actions/cda-portal.ts:uploadFinalCdAction",
