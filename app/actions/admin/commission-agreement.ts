@@ -198,7 +198,16 @@ export async function sendCommissionAgreementAction(input: {
   formId: string
   fieldValues: Record<string, unknown>
 }): Promise<
-  | { ok: true; dispatched: boolean; provider: string | null; esignStatus: string }
+  | {
+      ok: true
+      dispatched: boolean
+      provider: string | null
+      esignStatus: string
+      /** Present when the send completed but something needs a human — e.g. the
+       *  envelope went out yet its id could not be stamped, so finalize-packet
+       *  can never auto-complete this agreement. */
+      warning?: string
+    }
   | { ok: false; error: string }
 > {
   const auth = await requireAdmin()
@@ -278,6 +287,7 @@ export async function sendCommissionAgreementAction(input: {
   // so finalize-packet can auto-complete). No provider → an in-app notification
   // that the agreement is ready, and the row stays 'awaiting_provider'.
   let dispatched = false
+  let warning: string | undefined
   const signerName =
     [(signer as any)?.first_name, (signer as any)?.last_name].filter(Boolean).join(" ").trim() || signerEmail || "the agent"
 
@@ -324,10 +334,40 @@ export async function sendCommissionAgreementAction(input: {
             signers: [{ email: signerEmail!, name: signerName, role: "agent" }],
             message: "Please sign your brokerage commission agreement.",
           })
-          await svc.from("contract_signatures").update({ provider_envelope_id: tx.externalTransactionId }).eq("id", rowId)
+          // provider_envelope_id is the ONLY join key finalize-packet uses to
+          // match the signed envelope back to this row. This sat inside a catch
+          // that CANNOT fire for it — supabase-js resolves a rejected update
+          // rather than throwing — so a lost stamp was invisible and the row
+          // would sit at 'sent' forever while the agent had already signed.
+          // Read the error, ledger it, and tell the admin.
+          const { error: stampErr } = await svc
+            .from("contract_signatures")
+            .update({ provider_envelope_id: tx.externalTransactionId })
+            .eq("id", rowId)
+
+          // The envelope IS out at the provider — that fact is true regardless of
+          // whether we managed to record its id, so `dispatched` stays honest.
           dispatched = true
+
+          if (stampErr) {
+            const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+            await sentinelWrite(svc, Promise.resolve({ error: stampErr }), {
+              flow: "commission_agreement_envelope_stamp",
+              table: "contract_signatures",
+              brokerageId: auth.brokerageId,
+            })
+            warning =
+              `Sent via ${providerName}, but the envelope reference (${tx.externalTransactionId}) could not be saved ` +
+              `(${stampErr.message}). This agreement will NOT auto-complete when the agent signs — it needs manual reconciliation.`
+          }
         }
-      } catch { /* staging notification already sent; inline send is best-effort */ }
+      } catch (err) {
+        // Reachable for real: the Dotloop HTTP calls above can throw. Previously
+        // the admin saw dispatched=false with no reason at all.
+        warning =
+          `Could not reach ${providerName} to send the agreement (` +
+          `${err instanceof Error ? err.message : String(err)}). The record was saved and the agent was notified; retry the send.`
+      }
     } else {
       // Provider configured but no inline integration — the staged notification is
       // the honest hand-off; the envelope is created in the provider by the broker.
@@ -335,5 +375,5 @@ export async function sendCommissionAgreementAction(input: {
     }
   }
 
-  return { ok: true, dispatched, provider: providerName, esignStatus }
+  return { ok: true, dispatched, provider: providerName, esignStatus, warning }
 }

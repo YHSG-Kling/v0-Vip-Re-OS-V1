@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { revalidatePath } from "next/cache"
 import {
   addParticipant,
@@ -78,11 +79,19 @@ export async function syncDotloopDocuments(data: DotloopSyncData) {
     }
 
     if (data.transactionId) {
-      await supabase
-        .from("transactions")
-        .update({ last_provider_sync_at: new Date().toISOString() })
-        .eq("id", data.transactionId)
-        .eq("brokerage_id", ctx.brokerageId)
+      // Freshness stamp only — the documents themselves are already written above,
+      // so losing this never loses data; the worst case is the transaction looking
+      // stale and the next cron pass re-syncing. Ledgered rather than silenced so a
+      // permanently-failing stamp (column drift, RLS) shows up in the repair digest.
+      await sentinelWrite(
+        svc,
+        supabase
+          .from("transactions")
+          .update({ last_provider_sync_at: new Date().toISOString() })
+          .eq("id", data.transactionId)
+          .eq("brokerage_id", ctx.brokerageId),
+        { table: "transactions", flow: "dotloop_document_sync", brokerageId: ctx.brokerageId },
+      )
     }
 
     revalidatePath(`/transactions/${data.transactionId}`)
@@ -199,18 +208,28 @@ export async function sendForDotloopSignature(data: {
       })
 
       if (uploadResult.success && uploadResult.dotloopDocumentId) {
-        await supabase
+        // supabase-js RESOLVES a rejected write — read { error } or this reports
+        // success while the provider linkage is lost. dotloop_document_id is what
+        // every later status pull and re-send hangs off, so a loss is fatal here.
+        const { error: linkError } = await supabase
           .from("client_documents")
           .update({
             dotloop_document_id: uploadResult.dotloopDocumentId,
             dotloop_loop_id: data.loopId,
           })
           .eq("id", data.documentId)
+
+        if (linkError) {
+          return {
+            success: false,
+            error: `Document uploaded to Dotloop but the provider linkage could not be saved (${linkError.message}). Retry the send — the loop already has the file.`,
+          }
+        }
       }
     }
 
     // Update document status
-    await supabase
+    const { error: statusError } = await supabase
       .from("client_documents")
       .update({
         signature_status: "pending_signature",
@@ -218,9 +237,32 @@ export async function sendForDotloopSignature(data: {
       })
       .eq("id", data.documentId)
 
-    // Create signature request record — provider_envelope_id (l54-s02) lets the
-    // provider webhook COMPLETE this packet the moment the envelope is signed.
-    await supabase.from("signature_requests").insert({
+    if (statusError) {
+      return {
+        success: false,
+        error: `Could not mark the document as pending signature (${statusError.message}). The Dotloop loop is prepared but the document record is out of sync — retry.`,
+      }
+    }
+
+    // PACKET OF RECORD — the client portal's Sign button only renders when an
+    // ACTIVE row exists here (loadActiveSignaturePacket), and the provider webhook
+    // COMPLETES the packet by matching provider_envelope_id (l54-s02). Losing this
+    // row means the agent sees "sent" while the client has no Sign button and a
+    // signature made in Dotloop can never be finalized — so it is a HARD failure,
+    // never a swallowed best-effort.
+    //
+    // Written with the SERVICE client on purpose. The live signature_requests
+    // INSERT policy is `is_platform_admin() OR is_lead_visible_role()`, and
+    // is_lead_visible_role() is false for an ordinary user_type='agent' — a
+    // request-scoped insert here is silently rejected by RLS for exactly the users
+    // who send documents. The caller's identity and the document/contact tenancy
+    // were both verified above, so the service client is the correct authority.
+    //
+    // brokerage_id MUST be stamped: the SELECT policy is
+    // has_brokerage_access(brokerage_id), which returns FALSE for NULL, so an
+    // unstamped packet is invisible to every non-superadmin reader.
+    const { error: packetError } = await svc.from("signature_requests").insert({
+      brokerage_id: ctx.brokerageId,
       document_id: data.documentId,
       contact_id: data.contactId,
       signing_order: data.signers,
@@ -231,15 +273,32 @@ export async function sendForDotloopSignature(data: {
       provider_envelope_id: data.loopId,
     })
 
-    // Log audit trail — caller identity comes from session, not input
-    await supabase.from("document_audit_trail").insert({
-      document_id: data.documentId,
-      document_source: "client_documents",
-      action: "sent_for_signature",
-      performed_by: ctx.userId,
-      performed_by_type: "agent",
-      notes: `Sent to ${data.signers.length} signer(s) via Dotloop`,
-    })
+    if (packetError) {
+      return {
+        success: false,
+        error: `Dotloop has the document, but the signature packet could not be recorded (${packetError.message}). The client will NOT see a Sign button and a signature cannot be finalized — retry the send.`,
+      }
+    }
+
+    // Log audit trail — caller identity comes from session, not input.
+    // Best-effort BY DESIGN: at this point the provider has the document AND the
+    // packet of record is durable, so failing the action here would report a
+    // completed send as a failure and invite the agent to create a duplicate
+    // envelope. It is NOT silenced — sentinelWrite ledgers every loss to
+    // self_heal_events so a missing compliance entry surfaces in the repair digest
+    // instead of leaving compliance blind with no signal at all.
+    await sentinelWrite(
+      svc,
+      supabase.from("document_audit_trail").insert({
+        document_id: data.documentId,
+        document_source: "client_documents",
+        action: "sent_for_signature",
+        performed_by: ctx.userId,
+        performed_by_type: "agent",
+        notes: `Sent to ${data.signers.length} signer(s) via Dotloop`,
+      }),
+      { table: "document_audit_trail", flow: "dotloop_send_for_signature", brokerageId: ctx.brokerageId },
+    )
 
     revalidatePath(`/transactions`)
     return { success: true, loopId: data.loopId }

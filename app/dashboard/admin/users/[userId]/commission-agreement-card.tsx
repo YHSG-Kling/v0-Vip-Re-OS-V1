@@ -66,6 +66,9 @@ export function CommissionAgreementCard({ targetUserId }: { targetUserId: string
     try {
       const res = await sendCommissionAgreementAction({ targetUserId, formId, fieldValues: values })
       if (!res.ok) { setError(res.error); return }
+      // A send can succeed and still need a human (envelope id unsaved, provider
+      // unreachable) — show that instead of a flat "Sent".
+      if (res.warning) { setError(res.warning) }
       setOkNote(
         res.dispatched
           ? `Sent for signature via ${res.provider}.`

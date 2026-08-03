@@ -157,6 +157,8 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
 
   // Track the envelope id we end up with so we can stamp it on the offer.
   let envelopeId: string | null = offer.provider_envelope_id ?? null
+  // Provider faults were console-only; carry the reason out to the caller too.
+  let providerError: string | null = null
 
   if (credential) {
     try {
@@ -200,14 +202,39 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
         description:   `Offer ${offerId} sent to ${credential.platform} for signature`,
       })
     } catch (error: any) {
-      // Provider call failed — log and continue; offer status reflects intent
-      console.error("[submit-for-signature] Provider call failed:", error?.message ?? error)
+      // Provider call failed — the offer still records the agent's intent, but the
+      // agent must be TOLD, not just console.error'd: without an envelope nothing
+      // was actually sent and the webhook has nothing to finalize against.
+      providerError = String(error?.message ?? error)
+      console.error("[submit-for-signature] Provider call failed:", providerError)
+
+      // Put the fault on the agent's activity feed — a human-visible record, the
+      // same lane the compliance/commission blocks above already use. Best-effort
+      // (the offer update below is the load-bearing write) but sentinel-ledgered
+      // rather than swallowed, so a feed that never records faults is detectable.
+      const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+      await sentinelWrite(supabase, supabase.from("activities").insert({
+        activity_type: "buyer.offer.provider.signature.failed",
+        agent_id:      await resolveAgentId(supabase as any, userId),
+        entity_type:   "offer",
+        entity_id:     offerId,
+        brokerage_id:  offer.brokerage_id,
+        title:         `Provider signature request FAILED via ${credential.platform}`,
+        description:   `Offer ${offerId} could not be dispatched to ${credential.platform}: ${providerError}`,
+        priority:      "high",
+      }), { table: "activities", flow: "buyer_offer_submit_for_signature", brokerageId: offer.brokerage_id })
     }
   }
 
   // Mark offer esign_status as sent + stamp the canonical envelope reference
   // on provider_envelope_id (not on esign_provider — that's the platform name).
-  await supabase
+  //
+  // CHECKED, not fire-and-forget: supabase-js resolves a rejected update, so an
+  // unread { error } here returned success while provider_envelope_id — the ONLY
+  // key finalize-packet matches a signed envelope on — was never stamped. The
+  // offer would then sit at its old status forever and never convert. Same file,
+  // same rule as the eventError check above.
+  const { error: offerUpdateError } = await supabase
     .from("offers")
     .update({
       esign_status:         "sent",
@@ -216,6 +243,15 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
       provider_envelope_id: envelopeId ?? offer.provider_envelope_id ?? null,
     })
     .eq("id", offerId)
+
+  if (offerUpdateError) {
+    return {
+      success: false,
+      error: `Signature request dispatched but the offer record could not be updated (${offerUpdateError.message}). The envelope reference is unsaved, so a completed signature cannot be matched back — resolve this before the buyer signs.`,
+      blockerType: "offer_update_failed",
+      providerError,
+    }
+  }
 
   // Sync status
   await syncOfferStatus(offerId)
@@ -239,6 +275,11 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
 
   return {
     success: true,
-    message: "Offer submitted for signature"
+    message: providerError
+      ? "Offer marked as sent, but the e-sign provider rejected the request — see providerError"
+      : "Offer submitted for signature",
+    // Non-null ⇒ nothing actually reached the provider. Surfaced instead of being
+    // buried in server logs so the UI can tell the agent to retry.
+    providerError,
   }
 }

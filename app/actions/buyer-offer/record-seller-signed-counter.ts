@@ -110,8 +110,13 @@ export async function recordSellerSignedCounter(
   // Stamp the seller-signed fields on the new counter row. The webhook
   // (finalizeMatchingOffer) reads seller_signed_at to detect "both sides
   // signed" the moment the buyer's signature lands.
+  // CHECKED, not fire-and-forget: supabase-js RESOLVES a rejected update, so an
+  // unread { error } here silently drops the record of a LEGALLY EXECUTED seller
+  // signature. Without seller_signed_at the webhook's "both sides signed" test
+  // (finalizeMatchingOffer) never fires when the buyer signs, so a fully executed
+  // counter never converts to a transaction. This is reported, never swallowed.
   const now = sellerSignedAt ?? new Date().toISOString()
-  await supabase
+  const { error: stampError } = await supabase
     .from("offers")
     .update({
       seller_signed_at:            now,
@@ -121,6 +126,17 @@ export async function recordSellerSignedCounter(
       esign_status:                "partially_signed",
     })
     .eq("id", counterId)
+
+  if (stampError) {
+    return {
+      success: false,
+      // The counter row DOES exist — hand its id back so the agent/support can
+      // finish the stamp rather than re-issuing a duplicate counter.
+      counterOfferId: counterId,
+      round,
+      error: `Counter ${counterId} (round ${round}) was created, but the seller's signature could not be recorded on it (${stampError.message}). Do NOT send it to the buyer — the executed counter would not be detected. Re-record the seller signature.`,
+    }
+  }
 
   // Route the seller-signed PDF through the universal uploader so it lands
   // as a documents row with the classifier kicked off (counter_offer
@@ -147,8 +163,16 @@ export async function recordSellerSignedCounter(
     }
   }
 
-  // Activity for the buyer-side agent's queue
-  await supabase.from("activities").insert({
+  // Activity for the buyer-side agent's queue.
+  // Best-effort BY DESIGN and safe to lose: this is a FEED entry, a duplicate
+  // view of state already durable on the counter offer row (seller_signed_at,
+  // seller_signed_document_url, esign_status) — and the load-bearing human alert
+  // is the notifyComplianceFlag fan-out immediately below, which is checked via
+  // its returned notified_count. Losing the feed row degrades the timeline, not
+  // the deal. NOT silenced: sentinelWrite ledgers the loss to self_heal_events so
+  // a feed that has quietly stopped recording counters shows up in the digest.
+  const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+  await sentinelWrite(supabase, supabase.from("activities").insert({
     brokerage_id:   brokerageId,
     agent_user_id:  raiserUserId,
     agent_id:       parentOffer.agent_id,
@@ -175,7 +199,7 @@ export async function recordSellerSignedCounter(
     },
     status:    "completed",
     priority:  "high",
-  })
+  }), { table: "activities", flow: "record_seller_signed_counter", brokerageId })
 
   // Notification fan-out (medium severity → in-app bell only; deal is moving,
   // not a compliance issue, so no email/SMS noise).
