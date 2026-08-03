@@ -251,16 +251,22 @@ export async function sendForDotloopSignature(data: {
     // signature made in Dotloop can never be finalized — so it is a HARD failure,
     // never a swallowed best-effort.
     //
-    // Written with the SERVICE client on purpose. The live signature_requests
-    // INSERT policy is `is_platform_admin() OR is_lead_visible_role()`, and
-    // is_lead_visible_role() is false for an ordinary user_type='agent' — a
-    // request-scoped insert here is silently rejected by RLS for exactly the users
-    // who send documents. The caller's identity and the document/contact tenancy
-    // were both verified above, so the service client is the correct authority.
+    // brokerage_id MUST be stamped. Every RLS verb on this table now keys on
+    // has_brokerage_access(brokerage_id), and that returns FALSE for NULL — so an
+    // unstamped packet is both refused on write and invisible on read.
     //
-    // brokerage_id MUST be stamped: the SELECT policy is
-    // has_brokerage_access(brokerage_id), which returns FALSE for NULL, so an
-    // unstamped packet is invisible to every non-superadmin reader.
+    // HISTORY, because the shape of this call still reflects it: the INSERT policy
+    // used to be `is_platform_admin() OR is_lead_visible_role()`, which excludes
+    // an ordinary user_type='agent' — the very person who sends documents. Every
+    // agent's packet was silently rejected by RLS, and the unchecked write hid it;
+    // the table had zero rows. m363 replaced that predicate with
+    // has_brokerage_access(brokerage_id) so an agent can create a packet for their
+    // own brokerage and no other.
+    //
+    // The service client is kept because this write is a system-of-record step the
+    // caller has already been authorised for (identity and document/contact tenancy
+    // are both verified above) and it must not depend on policy nuance to land.
+    // RLS is now correct either way; this is belt and braces, not a workaround.
     const { error: packetError } = await svc.from("signature_requests").insert({
       brokerage_id: ctx.brokerageId,
       document_id: data.documentId,
