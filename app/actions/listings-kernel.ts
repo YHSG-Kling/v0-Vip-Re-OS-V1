@@ -75,11 +75,51 @@ async function resolveCallerContext() {
   }
 }
 
+// ─── Action: resolveListingIdByMls ───────────────────────────────────────────
+
+/**
+ * Resolve an MLS number typed by an agent to one of THIS brokerage's listing ids.
+ *
+ * The offer wizard collects an MLS number and used to drop that string straight
+ * into `offers.listing_id`, which is a uuid FK — so any agent who actually filled
+ * the field in got a failed insert, and any agent who left it blank got an offer
+ * with no listing attached. This is the missing translation step.
+ *
+ * Returns `{ listingId: null }` when nothing matches: an offer on a property this
+ * brokerage does not list is completely normal, and it must not block the offer.
+ */
+export async function resolveListingIdByMlsAction(mlsNumber: string): Promise<{
+  success: boolean
+  listingId: string | null
+  error?: string
+}> {
+  const ctx = await resolveCallerContext()
+  if ("error" in ctx) return { success: false, listingId: null, error: ctx.error }
+
+  const trimmed = mlsNumber?.trim()
+  if (!trimmed) return { success: true, listingId: null }
+
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from("listings")
+    .select("id")
+    .eq("brokerage_id", ctx.brokerageId)
+    .eq("mls_number", trimmed)
+    .maybeSingle()
+
+  if (error) return { success: false, listingId: null, error: error.message }
+  return { success: true, listingId: data?.id ?? null }
+}
+
 // ─── Action: createListingWithSellerContact ───────────────────────────────────
 
 /**
- * Called from ListingCreateSheet.
+ * Called from ListingCreateSheet and from the New Listing wizard (FormWizard,
+ * mode="listing").
+ *
  * Creates a seller contact (or attaches existing) then creates the listing record.
+ * The listing lands as a DRAFT — see createListingRecord for the rule. It becomes
+ * a real listing only when the signed agreement clears the compliance check.
  */
 export async function createListingWithSellerContact(params: {
   sellerFirstName: string

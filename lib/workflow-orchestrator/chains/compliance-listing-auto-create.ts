@@ -56,6 +56,107 @@ export const complianceListingAutoCreateChain: WorkflowChain = {
           .maybeSingle()
         if (!agent) return { success: false, error: "Agent profile not found" }
 
+        // ── ADOPT THE DRAFT BEFORE CREATING ANYTHING ──────────────────────────
+        // Two doors open a listing and BOTH are legitimate:
+        //   · the agent runs the New Listing wizard first, which parks a DRAFT row
+        //     (createListingRecord → status='draft', LISTING_AGREEMENT_INITIATED)
+        //     so the agreement and its forms have something to hang off;
+        //   · the signed agreement simply arrives, with no draft ahead of it —
+        //     the "agent never manually clicks Create Listing" path.
+        //
+        // A bare INSERT serves only the second door. Once the wizard parks a draft,
+        // the same property would end up with TWO listing rows — the draft the agent
+        // has been working in, and a second one the seller's portal, the media
+        // pipeline and the MLS-readiness gate would each pick differently. So look
+        // for this seller's draft at THIS brokerage first and promote it in place.
+        const draftAddress = String(data.propertyAddress ?? "").trim().toLowerCase()
+        const { data: draftCandidates } = await svc
+          .from("listings")
+          .select("id, address")
+          .eq("brokerage_id", ctx.brokerageId)
+          .eq("seller_contact_id", ctx.contactId)
+          .eq("status", "draft")
+          .order("created_at", { ascending: false })
+
+        const existingDraft = (draftCandidates ?? []).find(
+          (l) => String(l.address ?? "").trim().toLowerCase() === draftAddress,
+        )
+
+        if (existingDraft) {
+          // Payload hoisted so the WHERE clause sits directly against .from() —
+          // the tenant filters below are the point of this write, not a footnote
+          // buried under twenty lines of column assignments.
+          const promotion = {
+            list_price:      data.listPrice,
+            listing_date:    data.listDate ?? null,
+            expiration_date: data.expirationDate ?? null,
+            commission_rate: data.commissionRate ?? null,
+            city:            data.city ?? null,
+            state:           data.state ?? null,
+            zip:             data.zipCode ?? null,
+            status:          "coming_soon",
+            lifecycle_stage: "LISTING_AGREEMENT_SIGNED",
+            metadata: {
+              source_document_id: ctx.metadata.document_id,
+              extracted_terms: data,
+              workflow_run_id: ctx.runId,
+              promoted_from_draft: true,
+            },
+            updated_at: new Date().toISOString(),
+          }
+
+          const { data: promoted, error: promoteErr } = await svc
+            .from("listings")
+            .update(promotion)
+            .eq("id", existingDraft.id)
+            // The id came from a brokerage-scoped read, but the WRITE carries the
+            // tenant anchor too — a promotion must never be able to reach across
+            // brokerages even if the lookup above is one day loosened.
+            .eq("brokerage_id", ctx.brokerageId)
+            // Re-assert the draft state in the WHERE clause: if a concurrent run
+            // already promoted this row, 0 rows come back and we do not double-fire.
+            .eq("status", "draft")
+            .select("id")
+            .maybeSingle()
+
+          if (promoteErr) {
+            return { success: false, error: `Draft promotion failed: ${promoteErr.message}` }
+          }
+          if (!promoted) {
+            // Already promoted by another run — the listing exists and is signed.
+            // Not an error; hand the id downstream so notify_agent still resolves.
+            return { success: true, output: { listingId: existingDraft.id, adopted: true, alreadyPromoted: true } }
+          }
+
+          const { KernelEvent } = await import("@/lib/kernel/events")
+          await svc.from("lifecycle_events").insert({
+            entity_type: "listing",
+            entity_id: existingDraft.id,
+            event_type: KernelEvent.LISTING_CREATED ?? "listing_created",
+            brokerage_id: ctx.brokerageId,
+            metadata: { stage: "LISTING_AGREEMENT_SIGNED", agent_id: agent.id, promoted_from_draft: true },
+            created_at: new Date().toISOString(),
+          }).then(() => {})
+
+          try {
+            const { fanOutKernelEvent } = await import("@/lib/kernel/event-fanout")
+            await fanOutKernelEvent({
+              event: KernelEvent.LISTING_CREATED,
+              brokerageId: ctx.brokerageId,
+              entityType: "listing",
+              entityId: existingDraft.id,
+              sellerContactId: ctx.contactId,
+              listingId: existingDraft.id,
+              agentUserId: ctx.agentUserId,
+              metadata: { stage: "LISTING_AGREEMENT_SIGNED", promoted_from_draft: true },
+            })
+          } catch (err: any) {
+            console.error("[compliance-listing-auto-create] LISTING_CREATED fan-out failed (non-fatal):", err?.message ?? err)
+          }
+
+          return { success: true, output: { listingId: existingDraft.id, adopted: true } }
+        }
+
         const { data: listing, error } = await svc
           .from("listings")
           .insert({

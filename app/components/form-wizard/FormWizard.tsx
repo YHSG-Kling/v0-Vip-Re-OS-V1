@@ -40,6 +40,7 @@ import { Loader2, ChevronLeft, ChevronRight, Check, Building2, Users, User, Aler
 import type { Contact } from "@/lib/domain/types"
 import { createClient } from "@/lib/supabase/client"
 import { createOffer } from "@/app/actions/buyer-offers"
+import { createListingWithSellerContact, resolveListingIdByMlsAction } from "@/app/actions/listings-kernel"
 import { submitForSignature } from "@/app/actions/buyer-offer/submit-for-signature"
 import { prefillStorageFormAction } from "@/app/actions/buyer-offer/prefill-storage-form"
 import { buildEsignAnchorPlanAction } from "@/app/actions/buyer-offer/esign-anchor-plan"
@@ -84,7 +85,15 @@ interface WizardState {
   propertyCity: string
   propertyState: string
   propertyZip: string
+  /**
+   * A REAL listings.id (uuid). In offer mode it is resolved from the MLS number
+   * the agent typed; in listing mode it is the draft this wizard just created.
+   * It used to be bound directly to the "MLS #" text input, which meant an agent
+   * who filled that field in sent "MLS-12345" into the uuid FK `offers.listing_id`.
+   */
   listingId?: string
+  /** The free-text MLS number the agent typed — NOT a uuid, never an FK. */
+  mlsNumber?: string
   listPrice?: number
   sellerName?: string
   propertyType?: string
@@ -345,12 +354,21 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
     setBusy(true)
     setError(null)
     try {
+      // offers.listing_id is a uuid FK. Translate the MLS number the agent typed
+      // into one of this brokerage's listing ids; no match is normal (the offer is
+      // on someone else's listing) and must not block the offer.
+      let resolvedListingId = state.listingId ?? null
+      if (!resolvedListingId && state.mlsNumber?.trim()) {
+        const lookup = await resolveListingIdByMlsAction(state.mlsNumber)
+        resolvedListingId = lookup.listingId
+      }
+
       const result = await createOffer(contact.id, brokerageId, agentUserId, {
         property_address: state.propertyAddress,
         property_city: state.propertyCity,
         property_state: state.propertyState,
         property_zip: state.propertyZip,
-        listing_id: state.listingId ?? null,
+        listing_id: resolvedListingId,
         offer_price: 0,
         earnest_money: 0,
         financing_type: "conventional",
@@ -384,6 +402,70 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
       setBusy(false)
     }
   }, [contact, brokerageId, agentUserId, state, esignProvider])
+
+  /**
+   * THE LISTING LANE.
+   *
+   * Both submit controls used to read `mode === "offer" ? handleSubmitOffer :
+   * handleSubmitOffer` — the same handler on both branches — so "New Listing"
+   * created an OFFER row against the seller: offer_price 0, buyer contingency
+   * defaults, and no listing anywhere.
+   *
+   * What it creates now is a DRAFT. The owner's rule: a listing is taken on only
+   * once the listing agreement is SIGNED and the compliance check has reviewed all
+   * required documents, initials and signatures. So this parks the draft the
+   * agreement hangs off, and the promotion to a real (coming_soon /
+   * LISTING_AGREEMENT_SIGNED) listing happens in exactly one place — the
+   * compliance-listing-auto-create chain, once documents.ts has verified the
+   * agent's AND the seller's signatures and initials and auditListingDocuments
+   * reports no blocking gaps.
+   */
+  const handleSubmitListing = useCallback(async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      // The seller is whoever this listing is FOR. Contact-scoped entry
+      // (/crm/contacts/[id]/listings/new) passes the seller contact directly; the
+      // dashboard entry has no contact, so fall back to the seller signer the agent
+      // named in step 4. If neither names a seller we stop — a listing with an
+      // invented seller is worse than one the agent has to finish naming.
+      const sellerSigner = state.signers.find(s => s.role === "seller" && (s.name.trim() || s.email.trim()))
+      const sellerName = contact
+        ? `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim()
+        : (sellerSigner?.name ?? "").trim()
+      if (!sellerName) {
+        setError("Add the seller in the Signers step before creating the listing.")
+        return
+      }
+      const [firstName, ...restName] = sellerName.split(/\s+/)
+
+      const result = await createListingWithSellerContact({
+        sellerFirstName: firstName,
+        sellerLastName:  restName.join(" "),
+        sellerEmail:     contact?.email ?? sellerSigner?.email ?? undefined,
+        sellerPhone:     contact?.phone ?? sellerSigner?.phone ?? undefined,
+        address:         state.propertyAddress,
+        city:            state.propertyCity,
+        state:           state.propertyState,
+        zip:             state.propertyZip,
+        listPrice:       state.listPrice,
+        propertyType:    state.propertyType,
+        // The formRefs the agent selected, so the draft carries its packet.
+        selectedFormIds: state.selectedForms.map(f => f.formRef),
+      })
+
+      if (!result.success || !result.listingId) {
+        setError(result.error ?? "Failed to create listing")
+        return
+      }
+      setState(prev => ({ ...prev, listingId: result.listingId }))
+      setStep(6)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Unknown error")
+    } finally {
+      setBusy(false)
+    }
+  }, [contact, state])
 
   const labels = stepLabels(mode)
 
@@ -447,8 +529,26 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
           )}
           {step === 3 && <Step3Fill state={state} providerInfo={providerInfo} update={update} />}
           {step === 4 && <Step4Signers state={state} update={update} mode={mode} />}
-          {step === 5 && <Step5ESign state={state} mode={mode} esignProvider={esignProvider} busy={busy} onSubmit={mode === "offer" ? handleSubmitOffer : handleSubmitOffer} />}
-          {step === 6 && state.offerId && (
+          {step === 5 && <Step5ESign state={state} mode={mode} esignProvider={esignProvider} busy={busy} onSubmit={mode === "offer" ? handleSubmitOffer : handleSubmitListing} />}
+          {step === 6 && mode === "listing" && state.listingId && (
+            <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+              <Check className="h-10 w-10 text-emerald-600" />
+              <h3 className="text-lg font-semibold">Draft listing created</h3>
+              <p className="text-sm text-muted-foreground max-w-sm">
+                This listing is a <span className="font-medium">draft</span> — it is not live, not
+                searchable and not on the MLS. It becomes a real listing once the listing agreement
+                is signed and the compliance check clears every required document, initial and
+                signature. Upload the signed agreement to the listing and that happens automatically.
+              </p>
+              <Button asChild className="mt-2">
+                <Link href={`/dashboard/listings/${state.listingId}`}>
+                  Open Listing
+                  <ExternalLink className="h-4 w-4 ml-1" />
+                </Link>
+              </Button>
+            </div>
+          )}
+          {step === 6 && mode === "offer" && state.offerId && (
             <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
               <Check className="h-10 w-10 text-emerald-600" />
               <h3 className="text-lg font-semibold">Offer submitted</h3>
@@ -489,9 +589,11 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
             </Button>
           )}
           {step === 5 && (
-            <Button onClick={mode === "offer" ? handleSubmitOffer : handleSubmitOffer} disabled={busy}>
+            <Button onClick={mode === "offer" ? handleSubmitOffer : handleSubmitListing} disabled={busy}>
               {busy && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              Send for E-Sign
+              {/* The listing lane does not dispatch an envelope, so it must not say
+                  it does. It creates the draft the signed agreement attaches to. */}
+              {mode === "offer" ? "Send for E-Sign" : "Create Draft Listing"}
             </Button>
           )}
           {step === 6 && (
@@ -603,10 +705,19 @@ function Step1Context({ mode, state, update }: { mode: "offer" | "listing"; stat
           <Input placeholder="78701" value={state.propertyZip} onChange={e => update("propertyZip", e.target.value)} />
         </div>
       </div>
-      <div className="space-y-1">
-        <Label>MLS # (optional)</Label>
-        <Input placeholder="MLS-12345" value={state.listingId ?? ""} onChange={e => update("listingId", e.target.value)} />
-      </div>
+      {/* MLS # belongs to the OFFER side only. On the listing side a property has
+          no MLS number yet — the number is issued at LAUNCH, and an admin enters it
+          there — so asking for it at agreement-initiation could only ever collect a
+          number for a property this brokerage has not listed yet. */}
+      {mode === "offer" && (
+        <div className="space-y-1">
+          <Label>MLS # (optional)</Label>
+          <Input placeholder="MLS-12345" value={state.mlsNumber ?? ""} onChange={e => update("mlsNumber", e.target.value)} />
+          <p className="text-xs text-muted-foreground">
+            If this property is one of your brokerage&apos;s listings, the offer is linked to it automatically.
+          </p>
+        </div>
+      )}
     </div>
   )
 }
@@ -1050,7 +1161,15 @@ function Step5ESign({ state, mode, esignProvider, busy, onSubmit }: {
 
   return (
     <div className="space-y-4">
-      <h3 className="font-semibold">Review & Send for E-Sign</h3>
+      <h3 className="font-semibold">
+        {mode === "offer" ? "Review & Send for E-Sign" : "Review & Create Draft Listing"}
+      </h3>
+      {mode === "listing" && (
+        <p className="text-xs text-muted-foreground">
+          Creates the draft this listing agreement attaches to. The listing goes live only after the
+          signed agreement clears the compliance review of required documents, initials and signatures.
+        </p>
+      )}
 
       {planEntries.length > 0 && (
         <div className="rounded-lg border p-4 space-y-2">

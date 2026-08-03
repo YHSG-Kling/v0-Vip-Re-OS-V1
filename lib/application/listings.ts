@@ -69,7 +69,12 @@ export async function createListingService(params: {
         sqft:               params.sqft,              // correct column (not square_footage)
         property_type:      params.propertyType || "residential",
         lifecycle_stage:    "LISTING_AGREEMENT_INITIATED",
-        status:             "active",
+        // DRAFT, not active — same rule as the kernel's createListingRecord, which
+        // carries the full note. A listing is only taken on once the agreement is
+        // SIGNED and compliance has cleared every required document, initial and
+        // signature; the compliance-listing-auto-create chain does the promotion.
+        // Opening this row `active` published an unsigned listing to buyer search.
+        status:             "draft",
       })
       .select()
       .single()

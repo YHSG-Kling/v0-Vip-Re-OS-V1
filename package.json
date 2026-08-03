@@ -633,6 +633,7 @@
     "test:cda-process-chain": "tsx scripts/cda-process-chain-simulator.ts",
     "test:lifecycle-recording": "tsx scripts/lifecycle-recording-simulator.ts",
     "test:topic-claim-scope": "tsx scripts/topic-claim-office-scope-simulator.ts",
+    "test:listing-draft-gate": "tsx scripts/listing-draft-gate-simulator.ts",
     "test:deal-room-demo": "tsx scripts/deal-room-demo-simulator.ts",
     "test:child-tenant-scope": "tsx scripts/child-tenant-scope-simulator.ts",
     "test:agent-id-class": "tsx scripts/agent-id-class-guard.ts"

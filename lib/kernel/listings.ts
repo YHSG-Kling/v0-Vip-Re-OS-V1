@@ -150,7 +150,21 @@ export async function createListingRecord(
         // A listing is created from a seller contact by an assigned agent who is
         // about to run the listing agreement — so it starts at agreement-initiation,
         // not LEAD (LEAD is the pre-assignment lead-pipeline stage on `leads`).
-        status:            "active",
+        //
+        // AND IT IS A DRAFT. A listing is not taken on until the listing agreement
+        // is SIGNED and the compliance check has reviewed every required document,
+        // initial and signature. This row exists so the agreement has something to
+        // hang off — it is NOT a live listing, and `draft` is what keeps it out of
+        // buyer search, the public pages and the MLS-ready surfaces.
+        //
+        // Promotion out of draft is NOT this function's job and must never be done
+        // by hand here: app/actions/documents.ts verifies agent+seller signatures
+        // AND initials on the listing agreement, then requires auditListingDocuments
+        // to report zero blocking gaps, and only then emits
+        // `compliance.listing_agreement_passed`. The chain
+        // lib/workflow-orchestrator/chains/compliance-listing-auto-create.ts adopts
+        // this draft and moves it to coming_soon / LISTING_AGREEMENT_SIGNED.
+        status:            "draft",
         lifecycle_stage:   "LISTING_AGREEMENT_INITIATED",
       })
       .select()
