@@ -55,17 +55,147 @@ export interface VideoProject {
   listing_id: string | null
 }
 
-// generateAIScript + improveScript were REMOVED (zero callers, and both were
-// live "use server" endpoints). app/actions/video/generate-script.ts →
-// generateVideoScript is the surviving script path and is the more advanced
-// one by a wide margin: it loads the brokerage's brand_voice_profile from the
-// database, injects the ThemFirst philosophy and the Fair Housing directive
-// into the system prompt, and runs evaluateOutbound BOTH before generation
-// (on the brief) and after (on the script). generateAIScript ran a single
-// prompt with one post-hoc compliance check; improveScript ran a bare rewrite
-// with NO compliance gate at all, which is the one thing a script path may
-// not do. The video wizard (app/dashboard/videos/create) already calls the
-// survivor.
+// ─── AI SCRIPT GENERATION ──────────────────────────────────────────────────
+
+export async function generateAIScript(params: {
+  description: string
+  videoType: "listing_tour" | "market_update" | "agent_intro" | "tips" | "testimonial"
+  tone: "professional" | "friendly" | "luxury" | "educational"
+  durationSeconds: number
+  brokerageId: string
+  agentId: string
+  listingAddress?: string
+  listingPrice?: number
+  listingFeatures?: string[]
+}) {
+  // Word count target: ~150 words per 60s
+  const targetWords = Math.round((params.durationSeconds / 60) * 150)
+
+  const typeContext: Record<string, string> = {
+    listing_tour: "a property tour walkthrough highlighting the home's best features",
+    market_update: "a local real estate market update with current statistics and insights",
+    agent_intro: "an agent introduction presenting their expertise and value proposition",
+    tips: "actionable real estate tips or advice for buyers and sellers",
+    testimonial: "a client success story or testimonial about a positive real estate experience",
+  }
+
+  const toneContext: Record<string, string> = {
+    professional: "authoritative, polished, and data-driven",
+    friendly: "warm, conversational, and approachable",
+    luxury: "sophisticated, refined, and aspirational",
+    educational: "clear, informative, and helpful",
+  }
+
+  let listingContext = ""
+  if (params.listingAddress && params.videoType === "listing_tour") {
+    listingContext = `
+Property details:
+- Address: ${params.listingAddress}
+- Price: ${params.listingPrice ? `$${params.listingPrice.toLocaleString()}` : "Contact for price"}
+- Key features: ${params.listingFeatures?.join(", ") || "available upon request"}
+`
+  }
+
+  const prompt = `Write a ${params.durationSeconds}-second video script (~${targetWords} words) for ${typeContext[params.videoType]}.
+
+Tone: ${toneContext[params.tone]}
+${listingContext}
+Topic: ${params.description}
+
+Requirements:
+- Open with a strong hook in the first 5 seconds
+- Be natural and conversational — this will be spoken by an AI avatar
+- Include a clear call-to-action at the end
+- NO stage directions, NO camera instructions, NO [PAUSE] markers
+- Just the spoken words, ready to be read aloud
+- Target exactly ${targetWords} words
+
+Return only the script text.`
+
+  const raw = await generateText({
+    prompt,
+    feature: "video_script_generation",
+    agentId: params.agentId,
+    brokerageId: params.brokerageId,
+  })
+
+  // Apply brand voice
+  const withVoice = await applyBrandVoice({
+    content: raw.text,
+    brokerageId: params.brokerageId,
+    actorUserId: params.agentId,
+    actorRole: "agent",
+    journeyType: "seller",
+    persona: "seller",
+    messageType: "social",
+  }).then((r) => r.content, () => raw.text)
+
+  // Compliance check
+  const scriptContent = typeof withVoice === "string" ? withVoice : raw.text
+  const compliance = await evaluateOutbound({
+    actorContext: {
+      userId: params.agentId,
+      role: "agent",
+      brokerageId: params.brokerageId,
+    },
+    journeyType: "buyer",
+    persona: "first_time",
+    messageType: "social",
+    content: scriptContent,
+    contact: {
+      id: "broadcast",
+      first_name: "Broadcast",
+      last_name: "Audience",
+      contact_type: "buyer",
+      tcpa_consent: true,
+      isa_reengage_allowed: false,
+      dnc_status: false,
+    },
+  }).catch(() => ({ allowed: true, violations: [] as string[] }))
+
+  return {
+    script: scriptContent,
+    wordCount: scriptContent.split(/\s+/).filter(Boolean).length,
+    complianceAllowed: compliance.allowed,
+    complianceViolations: compliance.allowed ? [] : (compliance.violations ?? []),
+  }
+}
+
+// ─── IMPROVE EXISTING SCRIPT ────────────────────────────────────────────────
+
+export async function improveScript(params: {
+  currentScript: string
+  improvement: "flow" | "shorter" | "more_engaging" | "luxury" | "friendly"
+  brokerageId: string
+  agentId: string
+}) {
+  const improvementPrompts: Record<string, string> = {
+    flow: "Rewrite this script for better flow and pacing. Make transitions smoother.",
+    shorter: "Condense this script by 30%. Keep only the most impactful points.",
+    more_engaging: "Make this script more engaging and dynamic. Add energy and personality.",
+    luxury: "Rewrite in a sophisticated, luxury tone. Elevate the language.",
+    friendly: "Make this friendlier and more conversational, like talking to a friend.",
+  }
+
+  const prompt = `${improvementPrompts[params.improvement]}
+
+Original script:
+${params.currentScript}
+
+Return only the improved script text, no explanations.`
+
+  const result = await generateText({
+    prompt,
+    feature: "video_script_generation",
+    agentId: params.agentId,
+    brokerageId: params.brokerageId,
+  })
+
+  return {
+    script: result.text,
+    wordCount: result.text.split(/\s+/).filter(Boolean).length,
+  }
+}
 
 // ─── CREATE VIDEO PROJECT ────────────────────────────────────────────────────
 
@@ -233,14 +363,120 @@ export async function submitAvatarVideoRender(
   return { success: true, providerVideoId: result.videoId }
 }
 
-// pollVideoStatus was REMOVED (zero callers). Render finalization is owned by
-// the poll-did-videos cron, which walks provider_job_id / provider_status and
-// writes video_url + the VIDEO_PREVIEW_READY lifecycle event; the board at
-// /dashboard/videos/board then polls the ai_video_projects ROW, not the vendor.
-// This inline per-request vendor poll was the drifted twin of that cron.
+// ─── POLL VIDEO STATUS ────────────────────────────────────────────────────────
 
-// getVideoProject (singular) was REMOVED (zero callers) — a plain single-row
-// read of ai_video_projects that getVideoProjects below already covers.
+export async function pollVideoStatus(
+  projectId: string,
+  brokerageId: string
+): Promise<{
+  status: "generating" | "ready" | "failed"
+  videoUrl?: string
+  thumbnailUrl?: string
+  error?: string
+}> {
+  if (!isValidUUID(projectId)) return { status: "failed", error: "Invalid project ID" }
+
+  const supabase = await createClient()
+
+  const { data: project } = await supabase
+    .from("ai_video_projects")
+    .select("provider_job_id, status, video_url, thumbnail_url, error_message")
+    .eq("id", projectId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+
+  if (!project) return { status: "failed", error: "Project not found" }
+
+  // Already resolved
+  if (project.status === "ready" && project.video_url) {
+    return { status: "ready", videoUrl: project.video_url, thumbnailUrl: project.thumbnail_url ?? undefined }
+  }
+  if (project.status === "failed") {
+    return { status: "failed", error: project.error_message ?? "Generation failed" }
+  }
+
+  if (!project.provider_job_id) {
+    return { status: "generating" }
+  }
+
+  // Poll the D-ID render
+  const providerResult = await getAvatarVideoStatus(project.provider_job_id)
+
+  if (!providerResult.success) {
+    return { status: "generating" }
+  }
+
+  const providerStatus: string = providerResult.status ?? "processing"
+
+  if (providerStatus === "completed" && providerResult.videoUrl) {
+    // Update project to ready
+    await supabase
+      .from("ai_video_projects")
+      .update({
+        status: "ready",
+        provider_status: "completed",
+        video_url: providerResult.videoUrl,
+        completed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", projectId)
+
+    // Emit kernel event
+    await supabase.from("lifecycle_events").insert({
+      entity_type: "video_project",
+      entity_id: projectId,
+      brokerage_id: brokerageId,
+      event_type: KernelEvent.VIDEO_PREVIEW_READY,
+      metadata: { video_url: providerResult.videoUrl },
+    })
+
+    await processKernelEvent({
+      event: KernelEvent.VIDEO_PREVIEW_READY,
+      brokerageId,
+      entityType: "video_project",
+      entityId: projectId,
+    }).catch(() => {})
+
+    revalidatePath("/dashboard/videos")
+
+    return { status: "ready", videoUrl: providerResult.videoUrl }
+  }
+
+  if (providerStatus === "failed") {
+    await supabase
+      .from("ai_video_projects")
+      .update({
+        status: "failed",
+        provider_status: "failed",
+        error_message: "Avatar video generation failed (D-ID)",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", projectId)
+
+    return { status: "failed", error: "Avatar video generation failed (D-ID)" }
+  }
+
+  // Still processing
+  return { status: "generating" }
+}
+
+// ─── GET VIDEO PROJECT ────────────────────────────────────────────────────────
+
+export async function getVideoProject(projectId: string, brokerageId: string): Promise<VideoProject | null> {
+  if (!isValidUUID(projectId)) return null
+
+  const supabase = await createClient()
+
+  const { data, error } = await supabase
+    .from("ai_video_projects")
+    .select("*")
+    .eq("id", projectId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+
+  if (error || !data) return null
+  return data as VideoProject
+}
 
 // ─── GET VIDEO PROJECTS (LIBRARY) ─────────────────────────────────────────────
 
@@ -265,15 +501,53 @@ export async function getVideoProjects(brokerageId: string, agentId?: string): P
   return (data ?? []) as VideoProject[]
 }
 
-// retryVideoGeneration was REMOVED (zero callers) — and it could not have
-// worked for a video made by the live wizard. It routed through
-// submitAvatarVideoRender, which refuses unless provider_avatar_id AND
-// provider_voice_id are set on the project; app/dashboard/videos/create
-// explicitly inserts BOTH as null, so every retry would have returned
-// "Avatar and voice must be configured before generating". The surviving retry
-// is handleRetry() in app/dashboard/videos/board/page.tsx, which resolves the
-// agent's ElevenLabs voice clone and D-ID photo/video from agent_voice_profiles
-// and re-submits to /api/did/generate-video.
+// ─── RETRY VIDEO GENERATION ─���───────────────────────────────────────────────
+
+export async function retryVideoGeneration(
+  projectId: string,
+  brokerageId: string
+): Promise<{ success: boolean; error?: string }> {
+  if (!isValidUUID(projectId)) return { success: false, error: "Invalid project ID" }
+
+  const supabase = await createClient()
+
+  const { data: project } = await supabase
+    .from("ai_video_projects")
+    .select("retry_count, status")
+    .eq("id", projectId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+
+  if (!project) return { success: false, error: "Project not found" }
+
+  const retryCount = (project.retry_count ?? 0) + 1
+  if (retryCount > 3) {
+    return { success: false, error: "Maximum retry attempts reached. Please contact support." }
+  }
+
+  // Reset status
+  await supabase
+    .from("ai_video_projects")
+    .update({
+      status: "draft",
+      provider_status: null,
+      provider_job_id: null,
+      video_url: null,
+      error_message: null,
+      retry_count: retryCount,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", projectId)
+
+  // Resubmit
+  const submitResult = await submitAvatarVideoRender(projectId, brokerageId)
+
+  if (!submitResult.success) {
+    return { success: false, error: submitResult.error }
+  }
+
+  return { success: true }
+}
 
 // getUserAvatarConfig was REMOVED. It had zero callers while sitting in a
 // "use server" module, so it was a live RPC endpoint nobody used — and it was
@@ -283,8 +557,20 @@ export async function getVideoProjects(brokerageId: string, agentId?: string): P
 // canonical resolver — right id class, and the full agent → team → brokerage
 // cascade with honest fallbacks.
 
-// getSocialAccountsForDistribution was REMOVED (zero callers). The video board's
-// distribution dialog (app/dashboard/videos/board/page.tsx) loads the same
-// social_media_accounts rows itself, scoped by brokerage_id + is_active. This
-// twin additionally narrowed by agent_id, which would have hidden every
-// brokerage-owned account from the agent trying to post to it.
+// ─── GET SOCIAL ACCOUNTS ─────────────────────────────────────────────────────
+
+export async function getSocialAccountsForDistribution(brokerageId: string, agentId: string) {
+  if (!isValidUUID(brokerageId)) return []
+
+  const supabase = await createClient()
+
+  const { data } = await supabase
+    .from("social_media_accounts")
+    .select("id, platform, account_name, is_active")
+    .eq("brokerage_id", brokerageId)
+    .eq("agent_id", agentId)
+    .eq("is_active", true)
+    .order("platform")
+
+  return data ?? []
+}

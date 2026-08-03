@@ -1,37 +1,104 @@
 "use server"
 
-// ============================================================================
-// VIDEO KERNEL — SERVER ACTION SURFACE
-//
-// This file is deliberately ONE action wide. It used to export a 4-line
-// try/catch wrapper for all nine lib/kernel/video commands. Eight of those
-// nine had no caller anywhere in app/, lib/ or hooks/ — and each one was a
-// live, UNAUTHENTICATED RPC endpoint (a "use server" export is callable by
-// anyone with a session; none of them checked who was asking, so a caller
-// could pass an arbitrary agentId/brokerageId straight into the kernel).
-//
-// The kernel commands themselves are NOT dead — they are reached through the
-// authorized route handlers, which run requireAuth() before dispatching:
-//   createVideoProject          → POST   /api/video/projects
-//   generateVideoScript         → POST   /api/video/projects/[projectId]/script
-//   submitVideoGenerationJob    → POST   /api/video/projects/[projectId]/generate
-//   loadVideoGenerationState    → GET    /api/video/projects/[projectId]/generate
-//   previewVideoProject         → GET    /api/video/projects/[projectId]/preview
-//   distributeVideoProject      → POST   /api/video/projects/[projectId]/publish
-//   repurposeVideoOutput        → POST   /api/video/projects/[projectId]/publish
-// The wrappers were a second, weaker door onto the same rooms, so they went.
-// ============================================================================
-
-import { distributeVideoProject } from "@/lib/kernel/video"
+import { createServerClient } from "@/lib/supabase/server"
+import {
+  createVideoProject,
+  generateVideoScript,
+  updateVideoGenerationSettings,
+  submitVideoGenerationJob,
+  loadVideoGenerationState,
+  previewVideoProject,
+  distributeVideoProject,
+  repurposeVideoOutput,
+  loadVideoPerformance,
+} from "@/lib/kernel/video"
 import type {
+  CreateVideoProjectInput,
+  CreateVideoProjectOutput,
+  GenerateVideoScriptInput,
+  GenerateVideoScriptOutput,
+  UpdateVideoGenerationSettingsInput,
+  UpdateVideoGenerationSettingsOutput,
+  SubmitVideoGenerationJobInput,
+  SubmitVideoGenerationJobOutput,
+  LoadVideoGenerationStateInput,
+  LoadVideoGenerationStateOutput,
+  PreviewVideoProjectInput,
+  PreviewVideoProjectOutput,
   DistributeVideoProjectInput,
   DistributeVideoProjectOutput,
+  RepurposeVideoOutputInput,
+  RepurposeVideoOutputOutput,
+  LoadVideoPerformanceInput,
+  LoadVideoPerformanceOutput,
 } from "@/lib/kernel/video"
 
-/**
- * Distribute a finished video project to social channels.
- * Caller: app/dashboard/videos/library/page.tsx → handleDistribute()
- */
+export async function createVideoProjectAction(
+  input: CreateVideoProjectInput
+): Promise<{ success: boolean; data?: CreateVideoProjectOutput; error?: string }> {
+  try {
+    const data = await createVideoProject(input)
+    return { success: true, data }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Failed to create project" }
+  }
+}
+
+export async function generateVideoScriptAction(
+  input: GenerateVideoScriptInput
+): Promise<{ success: boolean; data?: GenerateVideoScriptOutput; error?: string }> {
+  try {
+    const data = await generateVideoScript(input)
+    return { success: true, data }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Failed to generate script" }
+  }
+}
+
+export async function updateVideoGenerationSettingsAction(
+  input: UpdateVideoGenerationSettingsInput
+): Promise<{ success: boolean; data?: UpdateVideoGenerationSettingsOutput; error?: string }> {
+  try {
+    const data = await updateVideoGenerationSettings(input)
+    return { success: true, data }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Failed to update settings" }
+  }
+}
+
+export async function submitVideoGenerationJobAction(
+  input: SubmitVideoGenerationJobInput
+): Promise<{ success: boolean; data?: SubmitVideoGenerationJobOutput; error?: string }> {
+  try {
+    const data = await submitVideoGenerationJob(input)
+    return { success: true, data }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Failed to submit job" }
+  }
+}
+
+export async function loadVideoGenerationStateAction(
+  input: LoadVideoGenerationStateInput
+): Promise<{ success: boolean; data?: LoadVideoGenerationStateOutput; error?: string }> {
+  try {
+    const data = await loadVideoGenerationState(input)
+    return { success: true, data }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Failed to load state" }
+  }
+}
+
+export async function previewVideoProjectAction(
+  input: PreviewVideoProjectInput
+): Promise<{ success: boolean; data?: PreviewVideoProjectOutput; error?: string }> {
+  try {
+    const data = await previewVideoProject(input)
+    return { success: true, data }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Failed to load preview" }
+  }
+}
+
 export async function distributeVideoProjectAction(
   input: DistributeVideoProjectInput
 ): Promise<{ success: boolean; data?: DistributeVideoProjectOutput; error?: string }> {
@@ -40,5 +107,27 @@ export async function distributeVideoProjectAction(
     return { success: true, data }
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Failed to distribute" }
+  }
+}
+
+export async function repurposeVideoOutputAction(
+  input: RepurposeVideoOutputInput
+): Promise<{ success: boolean; data?: RepurposeVideoOutputOutput; error?: string }> {
+  try {
+    const data = await repurposeVideoOutput(input)
+    return { success: true, data }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Failed to repurpose" }
+  }
+}
+
+export async function loadVideoPerformanceAction(
+  input: LoadVideoPerformanceInput
+): Promise<{ success: boolean; data?: LoadVideoPerformanceOutput; error?: string }> {
+  try {
+    const data = await loadVideoPerformance(input)
+    return { success: true, data }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Failed to load performance" }
   }
 }

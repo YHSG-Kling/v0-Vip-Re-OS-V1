@@ -6,7 +6,11 @@ import {
   determineApprovalDecision,
   determineRequiredApprovers,
   hasApprovalAuthority,
+  batchDetermineApprovalDecisions,
+  previewApprovalDecision,
+  formatApprovalDecision,
   logApprovalDecision,
+  logBatchApprovalDecisions,
   getApprovalDecisionHistory,
   getApprovalStats,
   getPendingApprovals,
@@ -108,11 +112,55 @@ export async function evaluateContentApproval(params: {
   }
 }
 
-// batchEvaluateContentApproval was DELETED (orphan burn-down): the batch twin of
-// evaluateContentApproval. Same engine, no caller, and nothing in the product
-// submits content for approval in batches — every producer routes one draft at a
-// time. evaluateContentApproval survives and is what the compliance review panel
-// calls after a verdict.
+/**
+ * Batch evaluate approval decisions
+ */
+export async function batchEvaluateContentApproval(params: {
+  inputs: Array<{
+    draft: ContentGenerationOutput
+    complianceVerdict: ComplianceVerdict
+    context: ApprovalContext
+  }>
+  log_signals?: boolean
+  agent_id?: string // ignored — derived from session
+}): Promise<{
+  success: boolean
+  decisions?: ApprovalDecision[]
+  error?: string
+}> {
+  try {
+    const auth = await getSessionAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+
+    // Validate inputs
+    if (!params.inputs || params.inputs.length === 0) {
+      return { success: false, error: "No inputs provided" }
+    }
+
+    // Determine approval decisions
+    const decisions = batchDetermineApprovalDecisions(params.inputs)
+
+    // Optionally log signals — attribute to authenticated agent
+    if (params.log_signals) {
+      const loggingData = decisions.map((decision, index) => ({
+        agent_id: auth.agentId,
+        decision,
+        requester_role: params.inputs[index].context.requester_role,
+        content_preview: params.inputs[index].draft.raw_content.substring(0, 200),
+      }))
+
+      await logBatchApprovalDecisions(loggingData)
+    }
+
+    return { success: true, decisions }
+  } catch (error) {
+    console.error("[System 4.3] Error batch evaluating approvals:", error)
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    }
+  }
+}
 
 /**
  * Check if user has authority to approve
@@ -157,17 +205,75 @@ export async function checkApprovalAuthority(params: {
   }
 }
 
-// previewContentApproval was DELETED (orphan burn-down): the guess-only twin of
-// evaluateContentApproval. previewApprovalDecision infers a likely route from four
-// strings, while determineApprovalDecision routes off the real draft and the real
-// compliance verdict — and only the real one writes the approval_required signal
-// the /dashboard/content/approvals queue reads. Keeping the guess alongside the
-// evaluator gave two answers to the same question.
+/**
+ * Preview approval decision (without executing)
+ */
+export async function previewContentApproval(params: {
+  content_type: string
+  channel_intent: string
+  compliance_status: "pass" | "fail" | "review_required"
+  context: ApprovalContext
+}): Promise<{
+  success: boolean
+  preview?: {
+    likely_status: "approved" | "pending" | "rejected"
+    likely_approvers: ApproverRole[]
+    reasoning: string[]
+  }
+  error?: string
+}> {
+  try {
+    const auth = await getSessionAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
 
-// formatApprovalDecisionForDisplay was DELETED (orphan burn-down): a pure string
-// formatter exposed as an RPC endpoint with no caller. The approval decision is
-// rendered from its structured fields (status / required_approvers /
-// blocking_reason / approval_notes) wherever it is shown.
+    // Validate inputs
+    if (!params.content_type || !params.channel_intent || !params.compliance_status || !params.context) {
+      return { success: false, error: "Missing required inputs" }
+    }
+
+    // Preview approval decision
+    const preview = previewApprovalDecision(
+      params.content_type,
+      params.channel_intent,
+      params.compliance_status,
+      params.context
+    )
+
+    return { success: true, preview }
+  } catch (error) {
+    console.error("[System 4.3] Error previewing approval:", error)
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    }
+  }
+}
+
+/**
+ * Format approval decision for display
+ */
+export async function formatApprovalDecisionForDisplay(
+  decision: ApprovalDecision
+): Promise<{
+  success: boolean
+  formatted?: string
+  error?: string
+}> {
+  try {
+    if (!decision) {
+      return { success: false, error: "No decision provided" }
+    }
+
+    const formatted = formatApprovalDecision(decision)
+    return { success: true, formatted }
+  } catch (error) {
+    console.error("[System 4.3] Error formatting approval decision:", error)
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    }
+  }
+}
 
 /**
  * Get approval decision history
@@ -296,8 +402,67 @@ export async function getMyPendingApprovals(params: {
   }
 }
 
-// evaluateContentWorkflow was DELETED (orphan burn-down): a pass-through wrapper
-// around evaluateContentApproval that added a second auth round-trip and echoed
-// its own inputs back. It made a single decision look like two entry points.
-// Callers use evaluateContentApproval directly — they already hold the draft and
-// the verdict they passed in.
+/**
+ * Complete workflow: Generate → Evaluate Compliance → Evaluate Approval
+ * Returns decision only (does not execute approval)
+ */
+export async function evaluateContentWorkflow(params: {
+  draft: ContentGenerationOutput
+  complianceVerdict: ComplianceVerdict
+  context: ApprovalContext
+  log_signals?: boolean
+  agent_id?: string // ignored — derived from session
+  content_id?: string
+}): Promise<{
+  success: boolean
+  workflow_result?: {
+    draft: ContentGenerationOutput
+    compliance: ComplianceVerdict
+    approval: ApprovalDecision
+  }
+  error?: string
+}> {
+  try {
+    const auth = await getSessionAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+
+    // Validate inputs
+    if (!params.draft || !params.complianceVerdict || !params.context) {
+      return {
+        success: false,
+        error: "Missing required inputs: draft, complianceVerdict, or context",
+      }
+    }
+
+    // Evaluate approval decision — agent_id is session-derived inside the callee
+    const approvalResult = await evaluateContentApproval({
+      draft: params.draft,
+      complianceVerdict: params.complianceVerdict,
+      context: params.context,
+      log_signal: params.log_signals,
+      content_id: params.content_id,
+    })
+
+    if (!approvalResult.success || !approvalResult.decision) {
+      return {
+        success: false,
+        error: approvalResult.error || "Failed to evaluate approval",
+      }
+    }
+
+    return {
+      success: true,
+      workflow_result: {
+        draft: params.draft,
+        compliance: params.complianceVerdict,
+        approval: approvalResult.decision,
+      },
+    }
+  } catch (error) {
+    console.error("[System 4.3] Error in content workflow:", error)
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    }
+  }
+}

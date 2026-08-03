@@ -8,9 +8,11 @@
 import { isValidUUID } from "@/lib/validations"
 import {
   classifyTemplate,
+  batchClassifyTemplates,
   isAutoApprovalEligible,
   formatTemplateClassification,
   getBrandRequirements,
+  batchGetBrandRequirements,
   validateBrandCompliance,
   formatBrandRequirements,
   getBrandElementDescription,
@@ -79,10 +81,32 @@ export async function classifyTemplateAction(
   }
 }
 
-// batchClassifyTemplatesAction was DELETED (orphan burn-down). It was the batch
-// twin of classifyTemplateAction — same classifier, no logging, no caller, and no
-// batch surface anywhere in the product. classifyTemplateAction survives and is
-// what /dashboard/admin/brand calls per template.
+/**
+ * Batch classify multiple templates
+ */
+export async function batchClassifyTemplatesAction(
+  metadataList: TemplateMetadata[]
+): Promise<{
+  success: boolean
+  data?: TemplateClassification[]
+  error?: string
+}> {
+  try {
+    if (!Array.isArray(metadataList) || metadataList.length === 0) {
+      return { success: false, error: "metadataList must be a non-empty array" }
+    }
+
+    const classifications = batchClassifyTemplates(metadataList)
+
+    return { success: true, data: classifications }
+  } catch (err) {
+    console.error("[v0] Batch template classification error:", err)
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : "Batch classification failed",
+    }
+  }
+}
 
 /**
  * Check if template classification is eligible for auto-approval
@@ -176,9 +200,32 @@ export async function getBrandRequirementsAction(
   }
 }
 
-// batchGetBrandRequirementsAction was DELETED (orphan burn-down) for the same
-// reason as batchClassifyTemplatesAction: the batch twin of
-// getBrandRequirementsAction with no caller and no batch surface.
+/**
+ * Batch get brand requirements for multiple contexts
+ */
+export async function batchGetBrandRequirementsAction(
+  contexts: BrandContext[]
+): Promise<{
+  success: boolean
+  data?: BrandRequirements[]
+  error?: string
+}> {
+  try {
+    if (!Array.isArray(contexts) || contexts.length === 0) {
+      return { success: false, error: "contexts must be a non-empty array" }
+    }
+
+    const requirements = batchGetBrandRequirements(contexts)
+
+    return { success: true, data: requirements }
+  } catch (err) {
+    console.error("[v0] Batch brand requirements error:", err)
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : "Batch requirements failed",
+    }
+  }
+}
 
 /**
  * Validate if content meets brand requirements

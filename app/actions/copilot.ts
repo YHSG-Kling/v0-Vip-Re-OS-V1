@@ -2,35 +2,137 @@
 
 import { createServerClient, createClient } from "@/lib/supabase/server"
 import { agentIdForUser } from "@/lib/agents/agent-for-user"
+import { logMilestoneOverdue } from "@/lib/events"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { incrementUsage } from "@/lib/usage"
 
 // =====================================================
 // EVENT HANDLERS - Called by orchestrator
 // =====================================================
-//
-// REMOVED (orphan burn-down): handleSuggestionAccepted, handleCoachingSessionBooked,
-// handleMorningKickoff. All three were `(payload: any)` handlers for events with
-// no emitter — no entry in EVENT_HANDLERS (lib/orchestrator/internal.ts), no
-// event type in lib/orchestrator/event-types.ts, no case in the agent tool-call
-// dispatcher, no cron. Each also duplicated a lane that IS wired:
-//
-//   · handleSuggestionAccepted → smart_assistant_suggestions status write. The
-//     survivor is completeSuggestion / dismissSuggestion in app/actions/assistant.ts,
-//     wired to the coaching dashboard's Execute / dismiss buttons. Its one extra
-//     behaviour — recording WHO acted and WHAT action in metadata — was worth
-//     keeping and has been folded into completeSuggestion, with the actor derived
-//     from the SESSION rather than from a caller-supplied user_id.
-//   · handleMorningKickoff → a "you have N tasks today" notification. The survivor
-//     is the real morning lane: app/api/cron/daily-briefing runs at 06:00 for every
-//     active agent through lib/intelligence/daily-briefing-generator, and the ranked
-//     action queue (lib/agent-action-queue/composer) feeds both the dashboard card
-//     and the spoken get_morning_briefing tool.
-//   · handleCoachingSessionBooked → booked a calendar_event against a `coach_id`.
-//     There is no coach entity in this product: `coach_id` and
-//     `event_type: "coaching"` appeared nowhere else in app/ or lib/, there is no
-//     coaches table and no booking surface. Coaching here is the AI brief loop
-//     (lib/kernel/agent-coaching + /dashboard/coaching), not human sessions.
+
+export async function handleSuggestionAccepted(payload: any) {
+  const supabase = await createServerClient()
+  const { suggestion_id, user_id, action_type } = payload
+
+  // ONE write, not two, and the result is read.
+  //
+  // The pair of updates below used to be separate — and the second REPLACED
+  // metadata wholesale rather than merging, so whatever else the suggestion
+  // carried was destroyed on acceptance. Both were awaited with the result
+  // thrown away, then `{ success: true }` was returned unconditionally: an id
+  // that does not exist, or a row RLS hides, reported as accepted.
+  const { data: current } = await supabase
+    .from("smart_assistant_suggestions")
+    .select("metadata")
+    .eq("id", suggestion_id)
+    .maybeSingle()
+
+  const { data: updated, error } = await supabase
+    .from("smart_assistant_suggestions")
+    .update({
+      status: "accepted",
+      metadata: {
+        ...((current?.metadata as Record<string, unknown> | null) ?? {}),
+        outcome: "accepted",
+        action_taken: action_type,
+        acted_by: user_id,
+      },
+    })
+    .eq("id", suggestion_id)
+    .select("id")
+
+  if (error) return { success: false, error: error.message }
+  if (!updated?.length) return { success: false, error: "Suggestion not found" }
+
+  return { success: true }
+}
+
+export async function handleCoachingSessionBooked(payload: any) {
+  const supabase = await createServerClient()
+  const { user_id, session_date, coach_id, topic } = payload
+
+  // calendar_events requires brokerage_id + entity_type/entity_id (NOT NULL,
+  // pass 5 live catch — this insert ALWAYS failed without them) and tasks
+  // requires brokerage_id. Resolve both from the agent row once.
+  const { data: agentRow } = await supabase
+    .from("agents")
+    .select("id, brokerage_id")
+    .eq("user_id", user_id)
+    .maybeSingle()
+  if (!agentRow?.brokerage_id) {
+    return { success: false, error: "No agent profile for this user — cannot book the session" }
+  }
+
+  // Both writes are CHECKED. The file's own note above records that this insert
+  // "ALWAYS failed" before brokerage_id was added — and nobody noticed for
+  // exactly this reason: the error was discarded and the function returned
+  // success regardless, so a coaching session that was never booked looked
+  // booked.
+  const { error: eventError } = await supabase.from("calendar_events").insert({
+    brokerage_id: agentRow.brokerage_id,
+    entity_type: "agent",
+    entity_id: agentRow.id,
+    agent_user_id: user_id,
+    title: `Coaching Session: ${topic}`,
+    start_at: session_date,
+    end_at: new Date(new Date(session_date).getTime() + 60 * 60 * 1000).toISOString(),
+    event_type: "coaching",
+    attendees: [coach_id],
+  })
+  if (eventError) {
+    return { success: false, error: `Coaching session not booked: ${eventError.message}` }
+  }
+
+  // Create reminder task (assignment keys on agents.id, payload carries users.id)
+  const { error: taskError } = await supabase.from("tasks").insert({
+    brokerage_id: agentRow.brokerage_id,
+    assigned_to_agent_id: agentRow.id,
+    title: `Prepare for coaching session: ${topic}`,
+    due_date: new Date(new Date(session_date).getTime() - 24 * 60 * 60 * 1000).toISOString(),
+    priority: "medium",
+  })
+  // The session IS on the calendar at this point — report the missing reminder
+  // rather than implying the booking failed.
+  if (taskError) {
+    return { success: true, warning: `Session booked, but the prep reminder was not created: ${taskError.message}` }
+  }
+
+  return { success: true }
+}
+
+export async function handleMorningKickoff(payload: any) {
+  const supabase = await createServerClient()
+  const { user_id, brokerage_id } = payload
+
+  // Generate daily priorities
+  const { data: todayTasks } = await supabase
+    .from("tasks")
+    .select("*")
+    .eq("assigned_to_agent_id", await agentIdForUser(supabase, user_id))
+    .gte("due_date", new Date().toISOString().split("T")[0])
+    .lte("due_date", new Date().toISOString().split("T")[0] + "T23:59:59")
+    .order("priority", { ascending: false })
+
+  // Create daily summary notification
+  // notifications' real shape is user_id/type/body (the phantom recipient_id/
+  // notification_type/message insert failed silently — no kickoff ever delivered).
+  // Checked, for the reason the comment above already records: the previous
+  // shape failed silently and "no kickoff ever delivered" — which stayed
+  // invisible because the insert's error was discarded and success was returned
+  // either way. A briefing nobody received must not report as sent.
+  const { error: notifyError } = await supabase.from("notifications").insert({
+    user_id: user_id,
+    type: "morning_kickoff",
+    title: "Good Morning! Here's Your Day",
+    body: `You have ${todayTasks?.length || 0} tasks today. Let's make it productive!`,
+    priority: "medium",
+  })
+  if (notifyError) {
+    return { success: false, error: `Kickoff not delivered: ${notifyError.message}` }
+  }
+
+  return { success: true, taskCount: todayTasks?.length || 0 }
+}
 
 export async function generate7DayPlan(payload: any) {
   const supabase = await createServerClient()
@@ -103,28 +205,82 @@ export async function generate7DayPlan(payload: any) {
 // Transaction milestone tracking and automation
 // =====================================================
 
-// REMOVED (orphan burn-down): createTransactionMilestone, checkOverdueMilestones.
-// Both were drifted twins of the canonical, kernel-integrated milestone lane in
-// lib/transactions/, and both were broken in ways that only stayed invisible
-// because nothing called them:
-//
-//   · createTransactionMilestone took a `listing_id` it never wrote and never
-//     wrote `transaction_id` either, so every milestone it inserted belonged to
-//     no transaction and would have rendered in no transaction's milestone list.
-//     The canonical creation lane is lib/transactions/milestone-service.ts
-//     (seedJourneyMilestones / ensureRequiredMilestones), which stamps the
-//     transaction, seeds the matching deadlines and fans out to the lifecycle
-//     kernel. It IS called (app/actions/transaction-milestones.ts, title-portal,
-//     transaction-inspections).
-//   · checkOverdueMilestones only logged an event. The canonical overdue path is
-//     lib/transactions/deadline-monitor.ts:checkTransactionDeadlines, which marks
-//     the row overdue, transitions lifecycle state through the kernel
-//     (transitionLifecycle), files an urgent activity and notifies agent + TC +
-//     broker on the critical milestones. That is the advanced path, so it is the
-//     one that survives. KNOWN GAP, reported not fixed: checkTransactionDeadlines
-//     itself has no cron route calling it — it is exported from
-//     lib/transactions/index.ts and never invoked, so nothing currently sweeps for
-//     overdue milestones on a schedule.
+export async function createTransactionMilestone(params: {
+  listing_id: string
+  milestone_type: string
+  title: string
+  due_date: string
+  responsible_party?: string
+  description?: string
+}) {
+  const supabase = await createServerClient()
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) throw new Error("Not authenticated")
+
+  const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
+  if (!profile?.brokerage_id) throw new Error("No brokerage found")
+
+  // Create milestone
+  const { data, error } = await supabase
+    .from("transaction_milestones")
+    .insert({
+      brokerage_id: profile.brokerage_id,
+      milestone_name: params.milestone_type, // NOT NULL on transaction_milestones
+      milestone_type: params.milestone_type,
+      title: params.title,
+      target_date: params.due_date, // real column is target_date (not due_date)
+      description: params.description,
+      status: "pending",
+    })
+    .select()
+    .single()
+
+  if (error) throw error
+
+  return { success: true, milestone: data }
+}
+
+export async function checkOverdueMilestones() {
+  const supabase = await createServerClient()
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) throw new Error("Not authenticated")
+
+  const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
+  if (!profile?.brokerage_id) throw new Error("No brokerage found")
+
+  // Find overdue milestones
+  const { data: overdueMilestones } = await supabase
+    .from("transaction_milestones")
+    .select("*")
+    .eq("brokerage_id", profile.brokerage_id)
+    .eq("status", "pending")
+    .lt("target_date", new Date().toISOString())
+
+  if (!overdueMilestones || overdueMilestones.length === 0) {
+    return { success: true, count: 0 }
+  }
+
+  for (const milestone of overdueMilestones) {
+    const daysOverdue = Math.floor((Date.now() - new Date(milestone.target_date).getTime()) / (1000 * 60 * 60 * 24))
+
+    await logMilestoneOverdue({
+      brokerage_id: profile.brokerage_id,
+      user_id: user.id,
+      milestone_id: milestone.id,
+      milestone_title: milestone.title,
+      days_overdue: daysOverdue,
+      listing_id: null, // transaction_milestones links via transaction_id, not listing_id
+    })
+  }
+
+  return { success: true, count: overdueMilestones.length }
+}
 
 export async function completeMilestone(params: { milestone_id: string; completion_notes?: string }) {
   const supabase = await createServerClient()
@@ -172,23 +328,7 @@ export async function generateDailyGameplan(userId: string) {
 
   // pass 12: contacts.agent_id and video_scripts_library.agent_id FK agents(id);
   // the dashboard calls this with users.id — resolve once (tasks below already did).
-  //
-  // RESOLVE, NEVER SUBSTITUTE. This was `?? userId` — falling back to the USERS
-  // id when no agents row resolved, then filtering four agents-class columns
-  // (contacts.agent_id, tasks.assigned_to_agent_id, video_scripts_library.agent_id)
-  // by it. Those are different id spaces, so every query silently matched nothing
-  // and the agent was shown an empty gameplan as if their day were clear. An
-  // unresolvable agent gets the same honest empty shape as a missing brokerage.
-  const gameplanAgentId = await agentIdForUser(supabase, userId)
-  if (!gameplanAgentId) {
-    return {
-      people_to_call: [],
-      deals_to_protect: [],
-      content_to_post: [],
-      ai_summary: null,
-      generated_at: new Date().toISOString(),
-    }
-  }
+  const gameplanAgentId = (await agentIdForUser(supabase, userId)) ?? userId
 
   // Get hot leads (score > 70)
   // communications was a writer-less legacy table (burn-down round 6 repoint) — recent replies now read from messages (direction='inbound')
@@ -311,25 +451,162 @@ export async function executeCopilotTask(taskId: string, taskType: string, param
   }
 }
 
-// REMOVED (orphan burn-down): analyzeContactPriority, suggestNextActions.
-//
-//   · analyzeContactPriority was a SECOND lead scorer. It read contacts.lead_score
-//     and then added its own weights (+20 recent activity, +15 recent reply, +25
-//     urgent timeline, +20 pre-approved) into its own priority bands, producing a
-//     number that would disagree with the canonical one for the same contact.
-//     lib/services/lead-management.service.ts:calculateLeadScore is the single
-//     canonical implementation — it documents that EVERY write to
-//     contacts.lead_score / leads.lead_score must go through it (see
-//     lib/lead-scoring/LAYERING.md) and it is called from the contact pipeline,
-//     lead governance, enrichment orchestration and the acquisition handlers.
-//     Lead scoring has ONE implementation; this was the second.
-//   · suggestNextActions was the simpler twin of the ranked agent action queue.
-//     lib/agent-action-queue/composer.ts:composeAgentActionQueue unions seven
-//     sources, ranks them with $ impact and severity, and drives BOTH the agent
-//     dashboard queue card and the spoken get_morning_briefing voice tool. The
-//     deleted version was three hand-rolled queries with no ranking and no
-//     disposition. Its own header note already ruled: "If it is still unused when
-//     the surface is reviewed, delete it — do not leave it half-alive."
+export async function analyzeContactPriority(contactId: string) {
+  const supabase = await createServerClient()
+
+  const { data: contact } = await supabase
+    .from("contacts")
+    .select("*, property_interactions(*)")
+    .eq("id", contactId)
+    .single()
+
+  if (!contact) return { priority: "low", score: 0, factors: [], recommended_action: "Continue nurture" }
+
+  // communications was a writer-less legacy table (burn-down round 6 repoint) — recent replies now read from messages (direction='inbound')
+  const { data: inboundMessages } = await supabase
+    .from("messages")
+    .select("id, direction, created_at")
+    .eq("contact_id", contactId)
+    .eq("direction", "inbound")
+
+  let score = contact.lead_score || 0
+  const factors = []
+
+  // Recent engagement (last 7 days)
+  const last7Days = contact.property_interactions?.filter(
+    (i: any) => new Date(i.created_at) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+  )
+
+  if (last7Days && last7Days.length >= 5) {
+    score += 20
+    factors.push("High recent activity")
+  }
+
+  // Responded to agent recently
+  const recentReplies = inboundMessages?.filter(
+    (c: any) => new Date(c.created_at) > new Date(Date.now() - 3 * 24 * 60 * 60 * 1000),
+  )
+
+  if (recentReplies && recentReplies.length > 0) {
+    score += 15
+    factors.push("Recently engaged with agent")
+  }
+
+  // Timeline urgency
+  if (contact.timeline === "asap" || contact.timeline === "urgent") {
+    score += 25
+    factors.push("Urgent timeline")
+  }
+
+  // Financial readiness
+  if (contact.pre_approved) {
+    score += 20
+    factors.push("Pre-approved")
+  }
+
+  const priority = score >= 80 ? "critical" : score >= 60 ? "high" : score >= 40 ? "medium" : "low"
+
+  return {
+    priority,
+    score,
+    factors,
+    recommended_action:
+      score >= 80
+        ? "Call immediately"
+        : score >= 60
+          ? "Send property matches today"
+          : score >= 40
+            ? "Check in this week"
+            : "Continue nurture sequence",
+  }
+}
+
+/**
+ * NOTE (m343): this export currently has NO callers anywhere in the repo. It is
+ * fixed rather than deleted because an exported server action can be reached by
+ * a path a static search does not see, and a broken-but-unreachable action is a
+ * trap for whoever wires it up next. If it is still unused when the surface is
+ * reviewed, delete it — do not leave it half-alive.
+ *
+ * IDENTITY CLASS: the parameter is a USERS id (the brokerage lookup below reads
+ * `users` by it), but messages, showings, contacts and activities are ALL
+ * agents-class. Every one of the four queries below was keyed with the wrong
+ * class and would have returned nothing.
+ */
+export async function suggestNextActions(agentId: string) {
+  const supabase = await createServerClient()
+
+  const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", agentId).single()
+
+  if (!profile?.brokerage_id) return { suggestions: [] }
+
+  // The agents-class id for the four queries below. Without it they filter an
+  // agents column by a users id and return nothing, which reads as "this agent
+  // has had no activity" rather than as a bug.
+  const agentsId = await agentIdForUser(supabase, agentId)
+  if (!agentsId) return { suggestions: [] }
+
+  // Get agent's recent activity
+  const { data: recentActivity } = await supabase
+    .from("messages")
+    .select("*, contacts(*)")
+    .eq("agent_id", agentsId)
+    .gte("created_at", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
+    .order("created_at", { ascending: false })
+
+  const suggestions = []
+
+  // Check for unanswered messages
+  const unansweredMessages = recentActivity?.filter((comm: any) => comm.direction === "inbound" && !comm.replied_at)
+
+  if (unansweredMessages && unansweredMessages.length > 0) {
+    suggestions.push({
+      type: "reply_to_client",
+      priority: "high",
+      action: `Reply to ${unansweredMessages.length} unanswered messages`,
+      contact_ids: unansweredMessages.map((m: any) => m.contact_id),
+    })
+  }
+
+  // Check for showings without feedback
+  const { data: showingsNoFeedback } = await supabase
+    .from("showings")
+    .select("*, contacts(*)")
+    .eq("agent_id", agentsId)
+    .eq("status", "completed")
+    .is("feedback", null)
+    .gte("scheduled_at", new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString())
+
+  if (showingsNoFeedback && showingsNoFeedback.length > 0) {
+    suggestions.push({
+      type: "collect_feedback",
+      priority: "medium",
+      action: `Get feedback on ${showingsNoFeedback.length} recent showings`,
+      showing_ids: showingsNoFeedback.map((s: any) => s.id),
+    })
+  }
+
+  // Check for stale contacts (no contact in 14+ days)
+  const { data: staleContacts } = await supabase
+    .from("contacts")
+    .select("*")
+    .eq("agent_id", agentsId)
+    .eq("brokerage_id", profile.brokerage_id)
+    .in("status", ["active_client", "hot_lead"])
+    .lt("last_contacted_at", new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString())
+    .limit(5)
+
+  if (staleContacts && staleContacts.length > 0) {
+    suggestions.push({
+      type: "check_in",
+      priority: "medium",
+      action: `Check in with ${staleContacts.length} contacts (no contact in 14+ days)`,
+      contact_ids: staleContacts.map((c: any) => c.id),
+    })
+  }
+
+  return { suggestions }
+}
 
 // Helper functions for task execution
 async function initiateCall(contactId: string) {

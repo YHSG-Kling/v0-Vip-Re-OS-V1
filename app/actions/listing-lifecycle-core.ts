@@ -13,6 +13,9 @@ import {
   type ListingStage,
   type TransitionValidationContext,
   getStageDefinition,
+  getAllStages,
+  getEnabledSystemGates,
+  isSystemGateEnabled,
   validateStageTransition,
   getNextAllowedStages,
   canSkipStages,
@@ -20,6 +23,7 @@ import {
   logStageTransition,
   logFailedTransition,
   logSystemGateEnabled,
+  getLifecycleHistory,
   getCurrentLifecycleStage,
   getLifecycleStatistics,
   getStageTimingMetrics,
@@ -515,19 +519,32 @@ async function handleSellerToLifetimeTransition(
 // LIFECYCLE QUERY ACTIONS
 // ============================================
 
-// REMOVED (orphan burn-down) — getLifecycleStages / getListingLifecycleHistory.
-//
-// getLifecycleStages was a "use server" round-trip that returned getAllStages(),
-// a frozen in-memory array. The lifecycle page and the stage pipeline both import
-// getAllStages directly from lib/listing-lifecycle/lifecycle-definitions, which is
-// the correct way to read a constant and is what survives.
-//
-// getListingLifecycleHistory re-queried the SAME rows the lifecycle page already
-// loads for itself — lifecycle_events where entity_type = 'listing_stage_machine'
-// and entity_id = the listing — and reshaped them. The page's own read feeds both
-// StagePipeline (stage history rows, override/failed badges, durations) and
-// StageTimeline, so adding a second fetch of the same rows would have been drift,
-// not wiring.
+/**
+ * Get all available lifecycle stages
+ */
+export async function getLifecycleStages() {
+  return {
+    success: true,
+    stages: getAllStages(),
+  }
+}
+
+/**
+ * Get lifecycle history for a listing
+ */
+export async function getListingLifecycleHistory(listingId: string) {
+  if (!isValidUUID(listingId)) {
+    return { success: false, error: "Invalid listing ID" }
+  }
+  
+  const supabase = await createClient()
+  const history = await getLifecycleHistory(supabase, listingId)
+  
+  return {
+    success: true,
+    history,
+  }
+}
 
 /**
  * Get current lifecycle stage for a listing
@@ -596,21 +613,65 @@ export async function getListingNextStages(listingId: string) {
 // SYSTEM GATE QUERY ACTIONS
 // ============================================
 
-// REMOVED (orphan burn-down) — checkSystemGate / getEnabledGates.
-//
-// Both were RPC wrappers around pure functions of the stage name
-// (isSystemGateEnabled / getEnabledSystemGates in
-// lib/listing-lifecycle/lifecycle-definitions). The lifecycle page already calls
-// getEnabledSystemGates(currentStage) directly and passes the result into
-// StagePipeline, which renders the "<gate> unlocked" chips — so the gate vocabulary
-// is on screen today via the direct import, and that is what survives.
-//
-// Worse than redundant: both resolved the stage through getCurrentLifecycleStage,
-// which reads `activities` rows of type `listing_lifecycle_transition` — a stream
-// written only by executeListingTransition. A listing advanced through the UI path
-// (advanceListingStage) has none, so these would have answered "no lifecycle stage"
-// and reported ZERO enabled gates for a live listing. That is the direction of
-// error a gate check must never make.
+/**
+ * Check if a system gate is enabled for a listing
+ */
+export async function checkSystemGate(params: {
+  listingId: string
+  gateName: string
+}) {
+  if (!isValidUUID(params.listingId)) {
+    return { success: false, error: "Invalid listing ID" }
+  }
+  
+  const supabase = await createClient()
+  const currentStage = await getCurrentLifecycleStage(supabase, params.listingId)
+  
+  if (!currentStage) {
+    return {
+      success: true,
+      enabled: false,
+      reason: "Listing has no lifecycle stage",
+    }
+  }
+  
+  const enabled = isSystemGateEnabled(currentStage, params.gateName)
+  
+  return {
+    success: true,
+    enabled,
+    currentStage,
+    gateName: params.gateName,
+  }
+}
+
+/**
+ * Get all enabled system gates for a listing
+ */
+export async function getEnabledGates(listingId: string) {
+  if (!isValidUUID(listingId)) {
+    return { success: false, error: "Invalid listing ID" }
+  }
+  
+  const supabase = await createClient()
+  const currentStage = await getCurrentLifecycleStage(supabase, listingId)
+  
+  if (!currentStage) {
+    return {
+      success: true,
+      enabledGates: [],
+      reason: "Listing has no lifecycle stage",
+    }
+  }
+  
+  const enabledGates = getEnabledSystemGates(currentStage)
+  
+  return {
+    success: true,
+    currentStage,
+    enabledGates,
+  }
+}
 
 // ============================================
 // STATISTICS & REPORTING ACTIONS

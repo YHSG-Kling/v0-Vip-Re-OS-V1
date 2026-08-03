@@ -1,30 +1,115 @@
 "use server"
 
 import { createServerClient } from "@/lib/supabase/server"
+import { agentIdForUser } from "@/lib/agents/agent-for-user"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 
 // =====================================================
-// REMOVED (orphan burn-down): handleAssistantQuery, handleAutomationTriggered,
-// handleTaskDelegated.
-//
-// All three were webhook-shaped `(payload: any)` handlers for events this
-// codebase does not emit and never has: there is no `assistant.query`,
-// `automation.triggered` or `task.delegated` event type in lib/orchestrator,
-// no entry for them in the EVENT_HANDLERS map in lib/orchestrator/internal.ts,
-// and no case for them in the agent tool-call dispatcher
-// (app/api/agent-assistant/tool-call/route.ts). Nothing could reach them.
-//
-//   · handleAssistantQuery wrote only to `assistant_queries` and
-//     handleAutomationTriggered only to `automation_logs` — two tables with no
-//     other writer and NO READER anywhere in app/, lib/ or hooks/. Write-only
-//     logging for a webhook that does not exist.
-//   · handleTaskDelegated reassigned a task. The canonical, wired reassignment
-//     path is `updateTask({ taskId, assignedTo })` in app/actions/tasks.ts —
-//     this was its drifted webhook twin. KNOWN GAP kept out of scope: updateTask
-//     does not notify the new assignee, which is the one thing the deleted
-//     handler additionally did. No delegation UI exists today, so nothing
-//     regressed — but a task-delegation surface will need that notification.
+// EVENT HANDLERS — exposed as server actions but no UI currently invokes them.
+// They originally had zero auth and would accept arbitrary payloads (any
+// authenticated user could delegate any task to anyone, log queries as any
+// user, etc.). Hardened: caller must own the relevant user_id, OR be admin.
 // =====================================================
+
+const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
+
+async function authorizeForUser(targetUserId: string | undefined | null): Promise<
+  | { ok: true }
+  | { ok: false; error: string }
+> {
+  const supabase = await createServerClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Not authenticated" }
+  if (targetUserId && targetUserId === user.id) return { ok: true }
+
+  const { data: userRow } = await supabase
+    .from("users")
+    .select("user_type")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (userRow && ADMIN_ROLES.has((userRow.user_type ?? "") as string)) return { ok: true }
+  return { ok: false, error: "Forbidden: must be the user or an admin" }
+}
+
+export async function handleAssistantQuery(payload: any) {
+  const { user_id, query, context } = payload
+  const auth = await authorizeForUser(user_id)
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const supabase = await createServerClient()
+  await supabase.from("assistant_queries").insert({
+    user_id,
+    query,
+    context,
+    timestamp: new Date().toISOString(),
+  })
+
+  return { success: true }
+}
+
+export async function handleTaskDelegated(payload: any) {
+  const { task_id, from_user_id, to_user_id, task_title } = payload
+  // Caller must be the delegator (from_user_id) or an admin. Without this
+  // any agent could reassign any task to any user.
+  const auth = await authorizeForUser(from_user_id)
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const supabase = await createServerClient()
+  // Task assignment keys on agents.id; the webhook payload carries users.id —
+  // translate both sides before the ownership check and the reassignment.
+  const [fromAgentId, toAgentId] = await Promise.all([
+    agentIdForUser(supabase, from_user_id),
+    agentIdForUser(supabase, to_user_id),
+  ])
+  if (!fromAgentId) return { success: false, error: "Delegator has no agent record" }
+  if (!toAgentId)   return { success: false, error: "Recipient has no agent record" }
+  // Verify the task actually belongs to the delegator before reassigning.
+  const { data: task } = await supabase
+    .from("tasks")
+    .select("id, assigned_to_agent_id, created_by_agent_id")
+    .eq("id", task_id)
+    .maybeSingle()
+  if (!task) return { success: false, error: "Task not found" }
+  if (task.assigned_to_agent_id !== fromAgentId && task.created_by_agent_id !== fromAgentId) {
+    return { success: false, error: "Forbidden: not your task to delegate" }
+  }
+
+  await supabase
+    .from("tasks")
+    .update({ assigned_to_agent_id: toAgentId })
+    .eq("id", task_id)
+
+  // Real notifications shape (user_id/type/body/entity_*) — the phantom insert
+  // failed silently, so delegated-task recipients were never notified.
+  await supabase.from("notifications").insert({
+    user_id: to_user_id,
+    type: "task_delegated",
+    title: "New Task Assigned",
+    body: `You've been assigned: ${task_title}`,
+    entity_type: "task",
+    entity_id: task_id,
+  })
+
+  return { success: true }
+}
+
+export async function handleAutomationTriggered(payload: any) {
+  const { automation_id, trigger_type, user_id, result } = payload
+  const auth = await authorizeForUser(user_id)
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const supabase = await createServerClient()
+  await supabase.from("automation_logs").insert({
+    automation_id,
+    user_id,
+    trigger_type,
+    result,
+    executed_at: new Date().toISOString(),
+  })
+
+  return { success: true }
+}
+
 // =====================================================
 // SMART ASSISTANT SUGGESTIONS
 // =====================================================
@@ -77,71 +162,40 @@ export async function generateSmartSuggestion(input: SuggestionInput): Promise<v
 }
 
 /**
- * Suggestion disposition — the two writes behind the accept/dismiss buttons on
- * the coaching dashboard.
- *
- * Both READ their outcome and report the row count. They returned `void`
- * before, so an id that does not exist (or a row RLS hides) was indistinguishable
- * from a successful update — which is exactly how the client-side twin these
- * replace reported "Suggestion dismissed" for a write that never landed.
+ * Both of these used to return void and DROP the supabase error. supabase-js
+ * resolves a rejected update rather than throwing, so a suggestion that failed
+ * to move disappeared from the coaching list anyway and reappeared on the next
+ * load with no explanation. The card is the agent's to-do; silently failing to
+ * action it is the worst outcome. Return the real result and let the caller say
+ * so.
  */
-export async function dismissSuggestion(
+type SuggestionResult = { success: true } | { success: false; error: string }
+
+async function setSuggestionStatus(
   suggestionId: string,
-): Promise<{ success: boolean; error?: string }> {
+  status: "dismissed" | "actioned",
+): Promise<SuggestionResult> {
   const supabase = await createServerClient()
 
-  const { data, error } = await supabase
+  const { error } = await supabase
     .from("smart_assistant_suggestions")
-    .update({
-      // no actioned_at column — status is the canonical action record
-      status: "dismissed",
-    })
+    // no actioned_at column — status is the canonical action record
+    .update({ status })
     .eq("id", suggestionId)
-    .select("id")
 
-  if (error) return { success: false, error: error.message }
-  if (!data?.length) return { success: false, error: "That suggestion no longer exists, or you cannot change it" }
+  if (error) {
+    console.error(`[assistant] suggestion ${suggestionId} → ${status} failed:`, error.message)
+    return { success: false, error: error.message }
+  }
   return { success: true }
 }
 
-export async function completeSuggestion(
-  suggestionId: string,
-): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createServerClient()
+export async function dismissSuggestion(suggestionId: string): Promise<SuggestionResult> {
+  return setSuggestionStatus(suggestionId, "dismissed")
+}
 
-  // WHO acted is recorded, and it comes from the SESSION — never from a
-  // caller-supplied user id. (This audit stamp is the one behaviour worth
-  // keeping from copilot.ts's deleted handleSuggestionAccepted twin, which took
-  // `acted_by` straight off an unauthenticated webhook payload.)
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Not authenticated" }
-
-  // Read-then-merge: metadata carries the suggestion's own context, so replacing
-  // it wholesale would destroy it.
-  const { data: current } = await supabase
-    .from("smart_assistant_suggestions")
-    .select("metadata")
-    .eq("id", suggestionId)
-    .maybeSingle()
-
-  const { data, error } = await supabase
-    .from("smart_assistant_suggestions")
-    .update({
-      // no actioned_at column — status is the canonical action record
-      status: "actioned",
-      metadata: {
-        ...((current?.metadata as Record<string, unknown> | null) ?? {}),
-        outcome: "actioned",
-        acted_by: user.id,
-        acted_at: new Date().toISOString(),
-      },
-    })
-    .eq("id", suggestionId)
-    .select("id")
-
-  if (error) return { success: false, error: error.message }
-  if (!data?.length) return { success: false, error: "That suggestion no longer exists, or you cannot change it" }
-  return { success: true }
+export async function completeSuggestion(suggestionId: string): Promise<SuggestionResult> {
+  return setSuggestionStatus(suggestionId, "actioned")
 }
 
 export async function generateAssistantSuggestions(

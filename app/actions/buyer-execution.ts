@@ -324,7 +324,33 @@ export async function getBuyerUpdateHistory(params: {
   }
 }
 
-// logBuyerAction REMOVED — it was a bare rename of logBuyerExecutionEvent
-// (eventType ← actionType) with no caller anywhere. The surviving path is
-// lib/buyer-execution.logBuyerExecutionEvent, which every real logger in this
-// module and in lib/buyer-execution/** already calls directly.
+/**
+ * Log custom buyer action
+ * Generic logging for buyer interactions
+ */
+export async function logBuyerAction(params: {
+  contactId: string
+  actionType: string
+  userId?: string
+  source: 'buyer_portal' | 'voice_assistant' | 'agent_action' | 'automation'
+  metadata?: Record<string, unknown>
+}) {
+  const { contactId, actionType, userId, source, metadata } = params
+
+  if (!isValidUUID(contactId)) {
+    return { success: false, error: 'Invalid contact ID' }
+  }
+
+  try {
+    return await logBuyerExecutionEvent({
+      contactId,
+      eventType: actionType,
+      userId,
+      source,
+      metadata
+    })
+  } catch (error) {
+    console.error('[buyer-execution] Error in logBuyerAction:', error)
+    return handleError(error, 'logBuyerAction')
+  }
+}

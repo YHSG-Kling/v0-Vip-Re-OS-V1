@@ -5,7 +5,11 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { TRANSACTION_STATUSES_IN_ESCROW, closeConfidence } from "@/lib/transactions/transaction-status"
-import { isMilestoneStatus } from "@/lib/transactions/coordination-status"
+import {
+  MILESTONE_OPEN_STATUSES,
+  DEADLINE_OPEN_STATUSES,
+  isMilestoneStatus,
+} from "@/lib/transactions/coordination-status"
 
 // Multi-persona file covers brokerage admin, TC, lender, vendor, compliance,
 // team, agent, and client surfaces. Every dashboard read in this file used
@@ -123,6 +127,236 @@ export async function assignTransactionCoordinator(data: {
   return { success: true }
 }
 
+export async function getCoordinatorDashboard_v2(coordinatorId: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { coordinator: null, transactions: [], deadlines: [], incompleteMilestones: [] }
+
+  const supabase = await createClient()
+
+  // Verify the coordinator belongs to caller's brokerage
+  const { data: coordinator } = await supabase
+    .from("transaction_coordinators")
+    .select("*")
+    .eq("id", coordinatorId)
+    .eq("brokerage_id", auth.brokerageId)
+    .single()
+
+  if (!coordinator) return { coordinator: null, transactions: [], deadlines: [], incompleteMilestones: [] }
+
+  const { data: transactions } = await supabase
+    .from("transactions")
+    .select(`
+      *,
+      transaction_milestones(*)
+    `)
+    .eq("coordinator_id", coordinatorId)
+    .eq("brokerage_id", auth.brokerageId)
+    .not("status", "in", "(closed,lost)")
+    .order("close_date")
+
+  const transactionIds = transactions?.map((t) => t.id) || []
+
+  const { data: deadlines } = await supabase
+    .from("transaction_deadlines")
+    .select("*, transactions(property_address)")
+    .in("transaction_id", transactionIds)
+    .in("status", [...DEADLINE_OPEN_STATUSES])
+    .gte("deadline_date", new Date().toISOString().split("T")[0])
+    .order("deadline_date")
+    .limit(20)
+
+  const { data: incompleteMilestones } = await supabase
+    .from("transaction_milestones")
+    .select("*, transactions(property_address)")
+    .in("transaction_id", transactionIds)
+    .in("status", [...MILESTONE_OPEN_STATUSES])
+    .order("target_date")
+
+  return { coordinator, transactions, deadlines, incompleteMilestones }
+}
+
+// ============================================
+// VENDOR MANAGEMENT FUNCTIONS
+// ============================================
+
+export async function getVendorDirectory(filters?: {
+  vendorType?: string
+  minRating?: number
+}) {
+  const supabase = await createClient()
+
+  // Tenant anchor — the directory is the CALLER'S brokerage bench, never global.
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return []
+
+  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint).
+  // vendors schema: id, brokerage_id, name, category, phone, email, website, rating, notes, status, created_at
+  let query = supabase.from("vendors").select("*").eq("brokerage_id", ctx.brokerageId)
+
+  if (filters?.vendorType) {
+    query = query.eq("category", filters.vendorType)
+  }
+
+  if (filters?.minRating) {
+    query = query.gte("rating", filters.minRating)
+  }
+
+  const { data, error } = await query.order("rating", { ascending: false })
+
+  if (error) throw error
+  return data || []
+}
+
+export async function bookVendor(data: {
+  vendorId: string
+  transactionId: string
+  bookedBy: string
+  serviceType: string
+  scheduledDate: string
+  cost?: number
+}) {
+  const supabase = await createClient()
+
+  // vendor_bookings schema: id, transaction_id, brokerage_id, vendor_id, service_type,
+  // booked_by, booked_at, scheduled_date, completed_at, cost, status,
+  // client_rating, agent_rating, notes, created_at, contact_id, listing_id
+  const { data: booking, error } = await supabase
+    .from("vendor_bookings")
+    .insert({
+      vendor_id: data.vendorId,
+      transaction_id: data.transactionId,
+      service_type: data.serviceType,
+      scheduled_date: data.scheduledDate,
+      cost: data.cost,
+      status: "booked",
+    })
+    .select()
+    .single()
+
+  if (error) throw error
+
+  revalidatePath("/dashboard/vendors")
+  return booking
+}
+
+export async function updateVendorBookingStatus_v2(data: {
+  bookingId: string
+  status: string
+  notes?: string
+}) {
+  const supabase = await createClient()
+
+  // Only update columns that exist in vendor_bookings schema
+  const { data: booking, error } = await supabase
+    .from("vendor_bookings")
+    .update({
+      status: data.status,
+      notes: data.notes,
+    })
+    .eq("id", data.bookingId)
+    .select()
+    .single()
+
+  if (error) throw error
+
+  revalidatePath("/portal/vendor")
+  return booking
+}
+
+export async function rateVendor(data: {
+  bookingId: string
+  clientRating?: number
+  agentRating?: number
+}) {
+  const supabase = await createClient()
+
+  const { error } = await supabase
+    .from("vendor_bookings")
+    .update({
+      client_rating: data.clientRating,
+      agent_rating: data.agentRating,
+    })
+    .eq("id", data.bookingId)
+
+  if (error) throw error
+
+  const { data: booking } = await supabase
+    .from("vendor_bookings")
+    .select("vendor_id, brokerage_id")
+    .eq("id", data.bookingId)
+    .single()
+
+  if (booking) {
+    const { data: allRatings } = await supabase
+      .from("vendor_bookings")
+      .select("agent_rating, client_rating")
+      .eq("vendor_id", booking.vendor_id)
+      .not("agent_rating", "is", null)
+
+    if (allRatings && allRatings.length > 0) {
+      const agentRatings = allRatings
+        .filter((r) => r.agent_rating != null)
+        .map((r) => r.agent_rating as number)
+      const clientRatings = allRatings
+        .filter((r) => r.client_rating != null)
+        .map((r) => r.client_rating as number)
+      const fiveStars = agentRatings.filter((r) => r === 5).length
+      const oneStars = agentRatings.filter((r) => r === 1).length
+
+      const avgAgentRating =
+        agentRatings.length > 0
+          ? agentRatings.reduce((a, b) => a + b, 0) / agentRatings.length
+          : null
+      const avgClientRating =
+        clientRatings.length > 0
+          ? clientRatings.reduce((a, b) => a + b, 0) / clientRatings.length
+          : null
+
+      if (avgAgentRating) {
+        await supabase
+          .from("vendors")
+          .update({ rating: avgAgentRating })
+          .eq("id", booking.vendor_id)
+      }
+
+      // vendor_ratings: id, vendor_id, brokerage_id, total_bookings, avg_client_rating,
+      // avg_agent_rating, five_star_count, one_star_count, last_updated
+      if (booking.brokerage_id) {
+        await supabase.from("vendor_ratings").upsert(
+          {
+            vendor_id: booking.vendor_id,
+            brokerage_id: booking.brokerage_id,
+            avg_agent_rating: avgAgentRating,
+            avg_client_rating: avgClientRating,
+            total_bookings: allRatings.length,
+            five_star_count: fiveStars,
+            one_star_count: oneStars,
+            last_updated: new Date().toISOString(),
+          },
+          { onConflict: "vendor_id" }
+        )
+      }
+    }
+  }
+
+  return { success: true }
+}
+
+// ============================================
+// LENDER PORTAL FUNCTIONS
+// ============================================
+
+
+/**
+ * Assign a LENDER VENDOR (vendors.category 'Lender') to a transaction.
+ *
+ * Lenders are vendors — a lender in a deal is a vendor assigned through the vendor
+ * rail (vendor_assignments, assignment_type 'lending') plus a transaction_lenders
+ * financing row. This replaced the retired lender_portal_users identity rail. The
+ * lender vendor then inherits the RESPA settlement-service disclosure/kickback
+ * gates automatically. Accepts the legacy `lenderId` param name (now a vendorId).
+ */
 export async function assignLenderToTransaction(data: {
   transactionId: string
   /** vendors.id of the lender vendor (accepts legacy `lenderUserId`/`lenderId`). */
@@ -174,6 +408,38 @@ export async function assignLenderToTransaction(data: {
   revalidatePath("/dashboard/transactions")
   revalidatePath(`/dashboard/transactions/${data.transactionId}`)
   return { success: true }
+}
+
+export async function updateLoanStatus(data: {
+  loanId: string
+  status: string
+  notes?: string
+  conditionsCleared?: number
+}) {
+  const supabase = await createClient()
+
+  const { data: loan, error } = await supabase
+    .from("transaction_lenders")
+    .update({
+      underwriting_status: data.status,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", data.loanId)
+    .select("*, transactions(*)")
+    .single()
+
+  if (error) throw error
+
+  await supabase.from("transaction_timeline").insert({
+    transaction_id: loan.transaction_id,
+    activity_type: "financing_update",
+    description: data.notes || `Underwriting status updated to ${data.status}`,
+    performed_by: null,
+    metadata: { status: data.status },
+  })
+
+  revalidatePath("/portal/lender")
+  return loan
 }
 
 export async function submitLoanConditions(data: {
@@ -312,6 +578,35 @@ export async function getVendorBookings(vendorId: string) {
 // ============================================
 // COMPLIANCE OFFICER FUNCTIONS
 // ============================================
+
+export async function getComplianceOfficerDashboard(_officerId?: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { pendingReviews: [], recentViolations: [] }
+
+  const supabase = await createClient()
+
+  // compliance_reviews does not exist — use compliance_checks (violations) and
+  // compliance_flags (flagged messages/content). Scope to caller's brokerage.
+  const [{ data: pendingReviews }, { data: recentViolations }] =
+    await Promise.all([
+      supabase
+        .from("compliance_events")
+        .select("*")
+        .eq("allowed", false)
+        .eq("brokerage_id", auth.brokerageId)
+        .order("created_at", { ascending: false })
+        .limit(20),
+      supabase
+        .from("compliance_flags")
+        .select("*")
+        .eq("status", "flagged")
+        .eq("brokerage_id", auth.brokerageId)
+        .order("detected_at", { ascending: false })
+        .limit(20),
+    ])
+
+  return { pendingReviews, recentViolations }
+}
 
 export async function submitComplianceReviewDecision(data: {
   reviewId: string
@@ -653,6 +948,159 @@ export async function calculateAgentBilling(data: {
 // CLIENT REVIEW FUNCTIONS
 // ============================================
 
+export async function submitClientReview(data: {
+  leadId?: string
+  transactionId?: string
+  agentId: string
+  rating: number
+  reviewText?: string
+  reviewCategories?: any
+  wouldRecommend?: boolean
+  reviewSource?: string
+  brokerageId?: string
+}) {
+  const supabase = await createClient()
+
+  // client_reviews does not exist — use agent_reviews
+  const { data: review, error } = await supabase
+    .from("agent_reviews")
+    .insert({
+      brokerage_id: data.brokerageId,
+      agent_id: data.agentId,
+      transaction_id: data.transactionId,
+      rating: data.rating,
+      review_text: data.reviewText,
+      platform: "internal",
+      is_published: false,
+    })
+    .select()
+    .single()
+
+  if (error) throw error
+
+  return review
+}
+
+export async function getAgentReviews(agentId: string) {
+  const supabase = await createClient()
+
+  // Use agent_reviews with is_published=true
+  const { data, error } = await supabase
+    .from("agent_reviews")
+    .select("*")
+    .eq("agent_id", agentId)
+    .eq("is_published", true)
+    .order("created_at", { ascending: false })
+
+  if (error) throw error
+
+  const avgRating =
+    data && data.length > 0
+      ? data.reduce((sum, r) => sum + (r.rating || 0), 0) / data.length
+      : 0
+
+  return {
+    reviews: data || [],
+    metrics: {
+      totalReviews: data?.length || 0,
+      averageRating: avgRating,
+      recommendationRate: 0, // would_recommend not in agent_reviews schema
+    },
+  }
+}
+
+// ============================================
+// CLIENT JOURNEY PREFERENCES
+// ============================================
+
+export async function saveClientJourneyPreferences(data: {
+  leadId?: string
+  contactId?: string
+  journeyType: string
+  mustHaveFeatures?: string[]
+  niceToHaveFeatures?: string[]
+  dealBreakers?: string[]
+  preferredNeighborhoods?: string[]
+  commuteConsiderations?: any
+  schoolRequirements?: any
+  lifestylePriorities?: string[]
+  sellingTimeline?: string
+  sellingMotivation?: string[]
+  preferredContactMethod?: string[]
+  preferredContactTimes?: any
+  frequencyPreference?: string
+  decisionMakers?: string[]
+  decisionTimeline?: string
+}) {
+  const supabase = await createClient()
+
+  if (!data.contactId) {
+    return { success: false, error: "contactId required" }
+  }
+
+  // client_journey_preferences does not exist — use property_interests for buyer prefs
+  // property_interests: id, contact_id, property_type, min_price, max_price,
+  // preferred_locations, bedrooms, bathrooms, notes, brokerage_id, agent_user_id,
+  // keywords, zip_codes, must_have_features, max_days_on_market, year_built_min,
+  // search_alert_enabled, alert_frequency, last_search_at, ai_preference_score, updated_at
+  const { data: prefs, error } = await supabase
+    .from("property_interests")
+    .upsert(
+      {
+        contact_id: data.contactId,
+        must_have_features: data.mustHaveFeatures,
+        keywords: [
+          ...(data.dealBreakers || []),
+          ...(data.lifestylePriorities || []),
+        ].join(", "),
+        preferred_locations: data.preferredNeighborhoods,
+        notes: JSON.stringify({
+          journey_type: data.journeyType,
+          commute: data.commuteConsiderations,
+          schools: data.schoolRequirements,
+          contact_method: data.preferredContactMethod,
+          contact_times: data.preferredContactTimes,
+          frequency: data.frequencyPreference,
+          decision_makers: data.decisionMakers,
+          decision_timeline: data.decisionTimeline,
+          selling_timeline: data.sellingTimeline,
+          selling_motivation: data.sellingMotivation,
+          nice_to_have: data.niceToHaveFeatures,
+        }),
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "contact_id" }
+    )
+    .select()
+    .single()
+
+  if (error) throw error
+  return prefs
+}
+
+export async function getClientJourneyPreferences(
+  leadId?: string,
+  contactId?: string
+) {
+  const supabase = await createClient()
+
+  if (!contactId) return null
+
+  const { data, error } = await supabase
+    .from("property_interests")
+    .select("*")
+    .eq("contact_id", contactId)
+    .single()
+
+  if (error && error.code !== "PGRST116") throw error
+
+  return data
+}
+
+// ============================================
+// BROKERAGE REVENUE FORECASTING
+// ============================================
+
 export async function forecastBrokerageRevenue(
   _brokerageId?: string,
   months: number = 3
@@ -749,6 +1197,110 @@ export async function trackLicenseExpirations(_brokerageId?: string) {
 // REFERRAL PARTNER FUNCTIONS
 // ============================================
 
+export async function createReferralPartner(data: {
+  partnerName: string
+  partnerType: "real_estate_agent" | "mortgage_broker" | "title_company" | "home_inspector" | "contractor" | "insurance_agent" | "attorney" | "property_manager" | "other"
+  contactEmail: string
+  contactPhone?: string
+  commissionSplit: number
+  agreementSignedDate?: string
+  notes?: string
+  agentId: string
+  brokerageId?: string
+}) {
+  const supabase = await createClient()
+
+  // referral_partners schema: id, agent_id, brokerage_id, partner_name, partner_type,
+  // company_name, email, phone, address, agreement_type, commission_split_percentage,
+  // referral_fee_flat, agreement_date, agreement_end_date, total_referrals_sent,
+  // total_referrals_received, total_value_generated, notes, active, created_at, updated_at
+  const { data: partner, error } = await supabase
+    .from("referral_partners")
+    .insert({
+      agent_id: data.agentId,
+      brokerage_id: data.brokerageId,
+      partner_name: data.partnerName,
+      partner_type: data.partnerType,
+      email: data.contactEmail,
+      phone: data.contactPhone,
+      commission_split_percentage: data.commissionSplit,
+      agreement_date: data.agreementSignedDate,
+      notes: data.notes,
+      active: true,
+    })
+    .select()
+    .single()
+
+  if (error) throw error
+
+  return partner
+}
+
+export async function trackReferral(data: {
+  referralPartnerId?: string
+  agentId: string
+  brokerageId: string
+  leadId?: string
+  contactId?: string
+  transactionId?: string
+  referralStatus: "received" | "contacted" | "qualified" | "assigned" | "under_contract" | "closed" | "lost"
+  commissionAmount?: number
+}) {
+  const supabase = await createClient()
+
+  // referral_tracking does not exist — use referrals table
+  // referrals: id, brokerage_id, agent_id, partner_id, referred_contact_id,
+  // referred_lead_id, status, referral_source, notes, commission_amount, closed_at, ...
+  const { data: referral, error } = await supabase
+    .from("referrals")
+    .insert({
+      brokerage_id: data.brokerageId,
+      agent_id: data.agentId,
+      partner_id: data.referralPartnerId,
+      referred_contact_id: data.contactId,
+      referred_lead_id: data.leadId,
+      status: data.referralStatus,
+      commission_amount: data.commissionAmount,
+      closed_at:
+        data.referralStatus === "closed" ? new Date().toISOString() : null,
+    })
+    .select()
+    .single()
+
+  if (error) throw error
+
+  return referral
+}
+
+export async function getReferralPartnerStats(partnerId: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { totalReferrals: 0, convertedReferrals: 0, totalCommission: 0, conversionRate: 0 }
+
+  const supabase = await createClient()
+
+  const { data: referrals } = await supabase
+    .from("referrals")
+    .select("*")
+    .eq("partner_id", partnerId)
+    .eq("brokerage_id", auth.brokerageId)
+
+  const totalReferrals = referrals?.length || 0
+  const convertedReferrals =
+    referrals?.filter(
+      (r) => r.status === "under_contract" || r.status === "closed"
+    ).length || 0
+  const totalCommission =
+    referrals?.reduce((sum, r) => sum + (r.commission_amount || 0), 0) || 0
+  const conversionRate =
+    totalReferrals > 0 ? (convertedReferrals / totalReferrals) * 100 : 0
+
+  return { totalReferrals, convertedReferrals, totalCommission, conversionRate }
+}
+
+// ============================================
+// TRANSACTION COORDINATOR ANALYTICS
+// ============================================
+
 export async function predictDeadlineRisks(
   coordinatorId: string,
   scopedTransactionIds?: string[]
@@ -806,6 +1358,153 @@ export async function predictDeadlineRisks(
 
 // ============================================
 // LENDER CONDITION TRACKING
+// ============================================
+
+export async function trackConditionClearance(loanId: string) {
+  const supabase = await createClient()
+
+  const { data: loan } = await supabase
+    .from("transaction_lenders")
+    .select("*")
+    .eq("id", loanId)
+    .single()
+
+  // conditions_list stored in notes as JSON (see submitLoanConditions)
+  let conditionsList: any[] = []
+  try {
+    conditionsList = loan?.notes ? JSON.parse(loan.notes) : []
+  } catch {
+    conditionsList = []
+  }
+
+  const pendingConditions = conditionsList.filter(
+    (c) => c.status !== "cleared"
+  )
+  const clearedConditions = conditionsList.filter(
+    (c) => c.status === "cleared"
+  )
+  const clearanceRate =
+    conditionsList.length > 0
+      ? (clearedConditions.length / conditionsList.length) * 100
+      : 0
+
+  if (
+    clearanceRate === 100 &&
+    loan?.underwriting_status !== "clear_to_close"
+  ) {
+    await supabase
+      .from("transaction_lenders")
+      .update({ underwriting_status: "clear_to_close" })
+      .eq("id", loanId)
+  }
+
+  return { pendingConditions, clearedConditions, clearanceRate }
+}
+
+// ============================================
+// TITLE ISSUE TRACKING
+// ============================================
+
+export async function trackTitleIssues(transactionId: string) {
+  const supabase = await createClient()
+
+  const { data: titleInfo } = await supabase
+    .from("transaction_title_escrow")
+    .select("*")
+    .eq("transaction_id", transactionId)
+    .single()
+
+  // title_issues is a text column in schema — parse as JSON if structured
+  let issues: any[] = []
+  try {
+    issues = titleInfo?.title_issues
+      ? JSON.parse(titleInfo.title_issues)
+      : []
+  } catch {
+    // Plain text — treat as single unresolved issue
+    issues = titleInfo?.title_issues
+      ? [{ text: titleInfo.title_issues, status: "open", severity: "moderate" }]
+      : []
+  }
+
+  const unresolvedIssues = issues.filter((i) => i.status !== "resolved")
+  const critical = unresolvedIssues.filter(
+    (i) => i.severity === "critical"
+  )
+  const moderate = unresolvedIssues.filter(
+    (i) => i.severity === "moderate"
+  )
+
+  return {
+    critical,
+    moderate,
+    totalUnresolved: unresolvedIssues.length,
+    canClose: critical.length === 0,
+  }
+}
+
+// ============================================
+// VENDOR MATCHING & AVAILABILITY
+// ============================================
+
+export async function matchVendorToTransaction(data: {
+  transactionId: string
+  serviceType: string
+  propertyCity: string
+  urgency: "routine" | "urgent"
+  brokerageId: string
+}) {
+  const supabase = await createClient()
+
+  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint).
+  // No `preferred` column on vendors — rating is the only real ranking signal.
+  const { data: vendors } = await supabase
+    .from("vendors")
+    .select("*")
+    .eq("brokerage_id", data.brokerageId)
+    .eq("category", data.serviceType)
+    .gte("rating", 4.0)
+
+  const sorted = vendors?.sort((a, b) => (b.rating || 0) - (a.rating || 0))
+
+  return sorted?.[0] || null
+}
+
+export async function checkVendorAvailability(data: {
+  vendorType: string
+  preferredDate: string
+  brokerageId: string
+}) {
+  const supabase = await createClient()
+
+  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint)
+  const { data: vendors } = await supabase
+    .from("vendors")
+    .select("*")
+    .eq("brokerage_id", data.brokerageId)
+    .eq("category", data.vendorType)
+
+  const { data: existingBookings } = await supabase
+    .from("vendor_bookings")
+    .select("vendor_id, scheduled_date")
+    .eq("scheduled_date", data.preferredDate)
+    .in("status", ["booked", "confirmed"])
+
+  const bookedVendorIds = existingBookings?.map((b) => b.vendor_id) || []
+  const availableVendors = vendors?.filter(
+    (v) => !bookedVendorIds.includes(v.id)
+  )
+
+  return {
+    availableCount: availableVendors?.length || 0,
+    availableVendors:
+      availableVendors?.sort((a, b) => (b.rating || 0) - (a.rating || 0)) ||
+      [],
+  }
+}
+
+// ============================================
+// COMPLIANCE RISK SCORING
 // ============================================
 
 export async function calculateComplianceRiskScore(agentId: string) {
@@ -920,6 +1619,55 @@ export async function bulkUpdateMilestones(
   }
 }
 
+export async function getCoordinatorDashboard(coordinatorId: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { coordinator: null, transactions: [], deadlines: [], incompleteMilestones: [] }
+
+  const supabase = await createClient()
+
+  const { data: coordinator } = await supabase
+    .from("transaction_coordinators")
+    .select("*")
+    .eq("id", coordinatorId)
+    .eq("brokerage_id", auth.brokerageId)
+    .single()
+
+  if (!coordinator) return { coordinator: null, transactions: [], deadlines: [], incompleteMilestones: [] }
+
+  const { data: transactions } = await supabase
+    .from("transactions")
+    .select(`
+      *,
+      transaction_milestones(*)
+    `)
+    .eq("coordinator_id", coordinatorId)
+    .eq("brokerage_id", auth.brokerageId)
+    .not("status", "in", "(closed,lost)")
+    .order("close_date")
+
+  const transactionIds = transactions?.map((t) => t.id) || []
+
+  const { data: deadlines } = await supabase
+    .from("transaction_deadlines")
+    .select("*, transactions(property_address)")
+    .in("transaction_id", transactionIds)
+    .in("status", [...DEADLINE_OPEN_STATUSES])
+    .gte("deadline_date", new Date().toISOString().split("T")[0])
+    .order("deadline_date")
+    .limit(20)
+
+  const { data: incompleteMilestones } = await supabase
+    .from("transaction_milestones")
+    .select("*, transactions(property_address)")
+    .in("transaction_id", transactionIds)
+    .in("status", [...MILESTONE_OPEN_STATUSES])
+    .order("target_date")
+
+  return { coordinator, transactions, deadlines, incompleteMilestones }
+}
+
+/** Lenders are vendors — the loan pipeline for a lender VENDOR (vendors.id).
+ *  Scopes by the transactions the vendor is assigned to (vendor_assignments). */
 export async function getLenderDashboard(vendorId: string) {
   const auth = await requireCaller()
   if (!auth.ok) return { lender: null, loans: [] }

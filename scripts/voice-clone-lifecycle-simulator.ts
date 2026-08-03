@@ -102,8 +102,14 @@ console.log("\n── the clone is SYNCHRONOUS: there is no job to map ──")
   // dead limb "broke" it.
   check("the clone call is synchronous — the voice id comes back in the same request",
     /\/voices\/add/.test(route) && /elData\.voice_id/.test(route))
-  check("no asynchronous training job is opened any more",
-    !/PROFILE_STATUS_FOR_JOB/.test(v) && !/voice_clone_training\b/.test(v.replace(/voice_clone_training\(/g, "")))
+  // NOTE: the phrase-by-phrase training limb (startVoiceCloneTraining /
+  // updateTrainingJobStatus / updateVoiceProfileSamples + voice_clone_training)
+  // is a REAL, DELIBERATE capability that is not finished wiring yet, not dead
+  // code. It was deleted in an earlier pass on the reasoning that "nothing calls
+  // it"; that reasoning was wrong — an unwired capability is work to finish, not
+  // work to remove. It is restored, and this guard does NOT assert its absence.
+  // What it DOES assert is that the synchronous path below is correct, because
+  // that is the path a clone actually takes today.
 
   // THE POINT OF THIS BLOCK. The row is created 'not_started' and every reader
   // gates on 'ready', so saving the id without promoting the status left a

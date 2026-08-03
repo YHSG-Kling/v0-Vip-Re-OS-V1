@@ -6,17 +6,215 @@ import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 
-// ─── Deleted here (orphan burn-down): five drifted twins ──────────────────────
-// generateAINewsletter / generateNewsletterSubjectVariants  → app/actions/ai-newsletter.ts
-//   (aiWriteNewsletterContent + createNewsletterCampaign + aiGenerateSubjectLines) is the
-//   canonical newsletter system — it owns sections, sends, analytics and subscribers.
-// createAIListing / enhanceListingDescription → app/actions/ai-listing-intake.ts
-//   (createListing + aiGenerateListingDescription). enhanceListingDescription also read
-//   listings.mls_description / .marketing_description, neither of which exists.
-// createAIOffer / generateCounterOfferStrategy → app/actions/ai-offer-creation.ts
-//   (submitCompleteOffer + aiCounterOfferStrategy) — the strategy/escalation/contingency
-//   path. generateCounterOfferStrategy also read offers.offer_amount / .close_date
-//   (real columns: offer_price / closing_date).
+// ============================================
+// NEWSLETTER SYSTEM WITH AI
+// ============================================
+
+export interface NewsletterGenerationParams {
+  agentId: string
+  audienceSegment: "buyers" | "sellers" | "investors" | "lifetime_customers" | "sphere" | "all"
+  topic?: string
+  tone?: "professional" | "friendly" | "educational" | "urgent"
+  includeMarketData?: boolean
+  includeListings?: boolean
+  customSections?: string[]
+}
+
+export interface NewsletterResult {
+  success: boolean
+  newsletter?: {
+    id: string
+    subject: string
+    preheader: string
+    sections: {
+      type: string
+      title: string
+      content: string
+    }[]
+    callToAction: {
+      text: string
+      url: string
+    }
+    qualityScore: number
+    themPercentage: number
+  }
+  error?: string
+}
+
+/**
+ * AI-Powered Newsletter Generation
+ * Creates personalized, segmented newsletters with market data and listings
+ */
+export async function generateAINewsletter(params: NewsletterGenerationParams): Promise<NewsletterResult> {
+  try {
+    if (!isValidUUID(params.agentId)) {
+      return { success: false, error: "Invalid agent ID" }
+    }
+
+    const supabase = await createClient()
+
+    // Get agent's brand voice and market data
+    const [brandVoiceResult, marketDataResult, listingsResult] = await Promise.all([
+      supabase.from("brand_voice_profile").select("*").eq("agent_id", params.agentId).maybeSingle(),
+      params.includeMarketData
+        ? supabase
+            .from("market_data")
+            .select("median_sale_price, median_list_price, avg_days_on_market, active_listings, recorded_date:data_date")
+            .order("data_date", { ascending: false })
+            .limit(1)
+            .maybeSingle()
+        : Promise.resolve({ data: null }),
+      params.includeListings
+        ? supabase
+            .from("listings")
+            .select("id, address, city, list_price, bedrooms, bathrooms, photos")
+            .eq("agent_id", params.agentId)
+            .eq("status", "active")
+            .limit(3)
+        : Promise.resolve({ data: [] }),
+    ])
+
+    const brandVoice = brandVoiceResult.data
+    const marketData = marketDataResult.data
+    const featuredListings = listingsResult.data || []
+
+    // Audience-specific prompts
+    const audiencePrompts: Record<string, string> = {
+      buyers: "Focus on buying opportunities, market timing, financing tips, and new listings",
+      sellers: "Focus on selling strategies, home value insights, staging tips, and market conditions",
+      investors: "Focus on ROI analysis, market trends, cap rates, and investment opportunities",
+      lifetime_customers: "Focus on home maintenance, refinancing opportunities, and referral programs",
+      sphere: "Focus on community events, market updates, and staying connected",
+      all: "Balance content for buyers, sellers, and homeowners with broad appeal",
+    }
+
+    const prompt = `You are an expert real estate newsletter writer. Create a high-quality, them-first newsletter.
+
+BRAND VOICE:
+${brandVoice ? `Tone: ${brandVoice.tone_attributes?.join(", ") || "professional"}` : "Professional and helpful"}
+${brandVoice?.key_brand_messages ? `Key phrases: ${brandVoice.key_brand_messages.join(", ")}` : ""}
+
+AUDIENCE: ${params.audienceSegment}
+${audiencePrompts[params.audienceSegment]}
+
+TOPIC: ${params.topic || "Monthly Real Estate Update"}
+TONE: ${params.tone || "friendly"}
+
+${marketData ? `MARKET DATA:
+- Median Price: $${marketData.median_sale_price?.toLocaleString() || "N/A"}
+- Days on Market: ${marketData.avg_days_on_market || "N/A"}
+- Active Inventory: ${marketData.active_listings || "N/A"} homes
+- Median List Price: $${marketData.median_list_price?.toLocaleString() || "N/A"}` : ""}
+
+${featuredListings.length > 0 ? `FEATURED LISTINGS:
+${featuredListings.map((l: any) => `- ${l.address}, ${l.city} - $${l.list_price?.toLocaleString()} | ${l.bedrooms}bd/${l.bathrooms}ba`).join("\n")}` : ""}
+
+${params.customSections ? `INCLUDE SECTIONS: ${params.customSections.join(", ")}` : ""}
+
+RULES:
+1. 85% about THEIR needs, 15% about your expertise
+2. Lead with value, not promotion
+3. Include actionable insights
+4. Keep paragraphs short and scannable
+5. Include ONE clear call-to-action
+
+Return JSON:
+{
+  "subject": "compelling subject line (max 50 chars)",
+  "preheader": "preview text (max 100 chars)",
+  "sections": [
+    { "type": "intro|market_update|tips|listings|community|cta", "title": "...", "content": "..." }
+  ],
+  "callToAction": { "text": "button text", "url": "/path" },
+  "qualityScore": 0-100,
+  "themPercentage": 0-100
+}`
+
+    const { text } = await generateText({
+      model: "openai/gpt-4o",
+      prompt,
+    })
+
+    // Parse AI response
+    let newsletter
+    try {
+      const jsonMatch = text.match(/\{[\s\S]*\}/)
+      newsletter = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(text)
+    } catch {
+      return { success: false, error: "Failed to parse newsletter content" }
+    }
+
+    // Save to database
+    // Canonical newsletter table is newsletter_campaigns (ai-newsletter.ts, send/
+    // analytics, sections/sends FK chains all target it). subject→subject_line;
+    // preheader/quality_score/them_percentage are returned to the caller via the
+    // spread below but are not columns here (they live in the JSON content).
+    const { data: saved, error: saveError } = await supabase
+      .from("newsletter_campaigns")
+      .insert({
+        agent_id: params.agentId,
+        campaign_name: newsletter.subject ?? "AI Newsletter",
+        subject_line: newsletter.subject,
+        content: JSON.stringify(newsletter),
+        status: "draft",
+        is_ai_generated: true,
+      })
+      .select()
+      .single()
+
+    if (saveError) throw saveError
+
+    revalidatePath("/dashboard/marketing/newsletters")
+
+    return {
+      success: true,
+      newsletter: {
+        id: saved.id,
+        ...newsletter,
+      },
+    }
+  } catch (error) {
+    console.error("[AI Newsletter] Error:", error)
+    return handleError(error, "generateAINewsletter") as NewsletterResult
+  }
+}
+
+/**
+ * AI-Powered Newsletter Subject Line A/B Testing
+ */
+export async function generateNewsletterSubjectVariants(
+  agentId: string,
+  topic: string,
+  audience: string
+): Promise<{ success: boolean; variants?: string[]; error?: string }> {
+  try {
+    if (!isValidUUID(agentId)) {
+      return { success: false, error: "Invalid agent ID" }
+    }
+
+    const { text } = await generateText({
+      model: "openai/gpt-4o-mini",
+      prompt: `Generate 5 A/B test subject line variants for a real estate newsletter.
+
+Topic: ${topic}
+Audience: ${audience}
+
+Create 5 different approaches:
+1. Question-based
+2. Number/statistic-based
+3. Curiosity-driven
+4. Benefit-focused
+5. Urgency-based
+
+Return JSON array of strings, each max 50 characters.`,
+    })
+
+    const variants = JSON.parse(text)
+    return { success: true, variants }
+  } catch (error) {
+    return handleError(error, "generateNewsletterSubjectVariants") as any
+  }
+}
 
 // ============================================
 // DIRECT MAIL SYSTEM WITH AI
@@ -206,7 +404,474 @@ Return JSON:
   }
 }
 
+// ============================================
+// LISTING CREATION SYSTEM WITH AI
+// ============================================
 
+export interface ListingCreationParams {
+  agentId: string
+  propertyData: {
+    address: string
+    city: string
+    state: string
+    zip: string
+    price: number
+    bedrooms: number
+    bathrooms: number
+    sqft: number
+    lotSize?: number
+    yearBuilt?: number
+    propertyType: string
+    features?: string[]
+    photos?: string[]
+  }
+  sellerId?: string
+}
+
+export interface ListingCreationResult {
+  success: boolean
+  listing?: {
+    id: string
+    mlsDescription: string
+    marketingDescription: string
+    socialMediaPosts: {
+      facebook: string
+      instagram: string
+      linkedin: string
+    }
+    suggestedPrice: {
+      min: number
+      max: number
+      recommended: number
+      reasoning: string
+    }
+    targetBuyerPersonas: string[]
+    marketingStrategy: string[]
+  }
+  error?: string
+}
+
+/**
+ * AI-Powered Listing Creation
+ * Creates MLS descriptions, marketing content, and pricing recommendations
+ */
+export async function createAIListing(params: ListingCreationParams): Promise<ListingCreationResult> {
+  try {
+    if (!isValidUUID(params.agentId)) {
+      return { success: false, error: "Invalid agent ID" }
+    }
+
+    const supabase = await createClient()
+    const { propertyData } = params
+
+    // brokerage_id is NOT NULL on listings — resolve it from the agent up front
+    // (also anchors the comps read below to the agent's own brokerage).
+    const { data: agentRow } = await supabase.from("users").select("brokerage_id").eq("id", params.agentId).maybeSingle()
+    const brokerageId = (agentRow as { brokerage_id: string | null } | null)?.brokerage_id ?? null
+    if (!brokerageId) return { success: false, error: "Could not resolve brokerage for the agent" }
+
+    // Get comparable sales for pricing
+    const { data: comps } = await supabase
+      .from("listings")
+      // listings has no sold_price/sold_date/price columns — use list_price + go_live_date.
+      .select("list_price, sqft, bedrooms, bathrooms")
+      // tenant anchor (scope burn-down): comps from the agent's own brokerage inventory
+      .eq("brokerage_id", brokerageId)
+      .eq("city", propertyData.city)
+      .eq("status", "sold")
+      .order("go_live_date", { ascending: false })
+      .limit(10)
+
+    // Calculate price per sqft from comps
+    const pricePerSqft = comps?.length
+      ? comps.reduce((sum: number, c: any) => sum + (c.list_price || 0) / (c.sqft || 1), 0) / comps.length
+      : 250
+
+    const prompt = `You are a real estate listing expert. Create comprehensive listing content and analysis.
+
+PROPERTY DETAILS:
+- Address: ${propertyData.address}, ${propertyData.city}, ${propertyData.state} ${propertyData.zip}
+- Price: $${propertyData.price.toLocaleString()}
+- Type: ${propertyData.propertyType}
+- Beds/Baths: ${propertyData.bedrooms}/${propertyData.bathrooms}
+- Sqft: ${propertyData.sqft.toLocaleString()}
+${propertyData.lotSize ? `- Lot: ${propertyData.lotSize.toLocaleString()} sqft` : ""}
+${propertyData.yearBuilt ? `- Built: ${propertyData.yearBuilt}` : ""}
+${propertyData.features?.length ? `- Features: ${propertyData.features.join(", ")}` : ""}
+
+MARKET DATA:
+- Avg Price/Sqft in area: $${pricePerSqft.toFixed(0)}
+- Recent comps: ${comps?.length || 0} sales in last 6 months
+
+Create:
+1. MLS Description (250 words max, factual, highlights key features)
+2. Marketing Description (300 words, emotional, lifestyle-focused)
+3. Social media posts for Facebook, Instagram, LinkedIn
+4. Price analysis with recommendation
+5. Target buyer personas
+6. Marketing strategy recommendations
+
+Return JSON:
+{
+  "mlsDescription": "MLS-compliant description",
+  "marketingDescription": "lifestyle-focused marketing copy",
+  "socialMediaPosts": {
+    "facebook": "post with emojis, engaging",
+    "instagram": "visual-focused, hashtags included",
+    "linkedin": "professional, investment angle"
+  },
+  "suggestedPrice": {
+    "min": number,
+    "max": number,
+    "recommended": number,
+    "reasoning": "explanation"
+  },
+  "targetBuyerPersonas": ["persona1", "persona2"],
+  "marketingStrategy": ["strategy1", "strategy2", "strategy3"]
+}`
+
+    const { text } = await generateText({
+      model: "openai/gpt-4o",
+      prompt,
+    })
+
+    let aiContent
+    try {
+      const jsonMatch = text.match(/\{[\s\S]*\}/)
+      aiContent = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(text)
+    } catch {
+      return { success: false, error: "Failed to parse listing content" }
+    }
+
+    // Create the listing with ONLY valid columns. The MLS description is the public remarks;
+    // the marketing analysis (description/strategy/personas/suggested price) is AI-generated
+    // CONTENT and lives in listing_marketing_content, not as listings columns (the old insert
+    // wrote 5 phantom columns + spread propertyData's price/propertyType/etc. + omitted
+    // brokerage_id, so it always failed and no listing was ever created).
+    const { data: listing, error: listingError } = await supabase
+      .from("listings")
+      .insert({
+        agent_id: params.agentId,
+        brokerage_id: brokerageId,
+        seller_contact_id: params.sellerId ?? null,
+        address: propertyData.address,
+        city: propertyData.city,
+        state: propertyData.state,
+        zip: propertyData.zip,
+        list_price: propertyData.price,
+        property_type: propertyData.propertyType,
+        bedrooms: propertyData.bedrooms,
+        bathrooms: propertyData.bathrooms,
+        sqft: propertyData.sqft,
+        public_remarks: aiContent.mlsDescription,
+        status: "draft",
+      })
+      .select()
+      .single()
+
+    if (listingError) throw listingError
+
+    // Save the AI marketing analysis + social content (content_type rows, brokerage-scoped).
+    await supabase.from("listing_marketing_content").insert([
+      {
+        listing_id: listing.id, brokerage_id: brokerageId, content_type: "ai_marketing",
+        content: {
+          marketingDescription: aiContent.marketingDescription,
+          suggestedPrice:       aiContent.suggestedPrice,
+          targetPersonas:       aiContent.targetBuyerPersonas,
+          marketingStrategy:    aiContent.marketingStrategy,
+        },
+      },
+      { listing_id: listing.id, brokerage_id: brokerageId, content_type: "social_posts", content: aiContent.socialMediaPosts },
+    ])
+
+    revalidatePath("/dashboard/listings")
+
+    return {
+      success: true,
+      listing: {
+        id: listing.id,
+        ...aiContent,
+      },
+    }
+  } catch (error) {
+    console.error("[AI Listing Creation] Error:", error)
+    return handleError(error, "createAIListing") as ListingCreationResult
+  }
+}
+
+/**
+ * AI-Powered Listing Description Enhancement
+ */
+export async function enhanceListingDescription(
+  listingId: string,
+  agentId: string,
+  style: "luxury" | "family" | "investment" | "first_time_buyer"
+): Promise<{ success: boolean; enhanced?: string; error?: string }> {
+  try {
+    if (!isValidUUID(listingId) || !isValidUUID(agentId)) {
+      return { success: false, error: "Invalid ID" }
+    }
+
+    const supabase = await createClient()
+    const { data: listing } = await supabase.from("listings").select("*").eq("id", listingId).single()
+
+    if (!listing) return { success: false, error: "Listing not found" }
+
+    const stylePrompts: Record<string, string> = {
+      luxury: "Emphasize premium finishes, exclusivity, prestige, and sophisticated lifestyle",
+      family: "Focus on space for growing family, schools, safety, and community amenities",
+      investment: "Highlight ROI potential, rental income, appreciation, and cap rate",
+      first_time_buyer: "Emphasize value, starter home benefits, low maintenance, and affordability",
+    }
+
+    const { text } = await generateText({
+      model: "openai/gpt-4o-mini",
+      prompt: `Rewrite this listing description for a ${style} buyer:
+
+Original: ${listing.mls_description || listing.marketing_description}
+
+Style focus: ${stylePrompts[style]}
+
+Keep it under 300 words. Make it compelling and specific.`,
+    })
+
+    return { success: true, enhanced: text }
+  } catch (error) {
+    return handleError(error, "enhanceListingDescription") as any
+  }
+}
+
+// ============================================
+// OFFER CREATION SYSTEM WITH AI
+// ============================================
+
+export interface OfferCreationParams {
+  agentId: string
+  buyerId: string
+  listingId: string
+  offerAmount: number
+  earnestMoney?: number
+  downPaymentPercent?: number
+  financingType: "conventional" | "fha" | "va" | "cash" | "other"
+  contingencies?: string[]
+  closeDate?: string
+  escalationClause?: {
+    maxPrice: number
+    increment: number
+  }
+  additionalTerms?: string
+}
+
+export interface OfferCreationResult {
+  success: boolean
+  offer?: {
+    id: string
+    summary: string
+    strengthScore: number
+    competitiveAnalysis: string
+    suggestedImprovements: string[]
+    negotiationStrategy: string
+    riskAssessment: {
+      level: "low" | "medium" | "high"
+      factors: string[]
+    }
+  }
+  error?: string
+}
+
+/**
+ * AI-Powered Offer Creation and Analysis
+ * Creates competitive offers with strategic recommendations
+ */
+export async function createAIOffer(params: OfferCreationParams): Promise<OfferCreationResult> {
+  try {
+    if (!isValidUUID(params.agentId) || !isValidUUID(params.buyerId) || !isValidUUID(params.listingId)) {
+      return { success: false, error: "Invalid ID" }
+    }
+
+    const supabase = await createClient()
+
+    // Get listing and market context
+    const [listingResult, buyerResult, compsResult] = await Promise.all([
+      supabase.from("listings").select("*, agent:users(first_name, last_name)").eq("id", params.listingId).single(),
+      supabase.from("contacts").select("*").eq("id", params.buyerId).single(),
+      supabase
+        .from("offers")
+        .select("offer_amount:offer_price, status")
+        .eq("listing_id", params.listingId)
+        .order("created_at", { ascending: false })
+        .limit(5),
+    ])
+
+    const listing = listingResult.data
+    const buyer = buyerResult.data
+    const existingOffers = compsResult.data || []
+
+    if (!listing) return { success: false, error: "Listing not found" }
+
+    // Calculate offer metrics
+    const offerToListRatio = (params.offerAmount / listing.list_price) * 100
+    const daysOnMarket = listing.listing_date
+      ? Math.floor((Date.now() - new Date(listing.listing_date).getTime()) / (1000 * 60 * 60 * 24))
+      : 0
+
+    const defaultContingencies = params.contingencies || ["inspection", "financing", "appraisal"]
+    const defaultEarnest = params.earnestMoney || params.offerAmount * 0.01
+    const defaultDownPayment = params.downPaymentPercent || (params.financingType === "cash" ? 100 : 20)
+
+    const prompt = `You are a real estate offer strategist. Analyze and optimize this offer.
+
+LISTING:
+- Address: ${listing.address}
+- List Price: $${listing.list_price.toLocaleString()}
+- Days on Market: ${daysOnMarket}
+- Listing Agent: ${listing.agent?.first_name} ${listing.agent?.last_name}
+
+OFFER DETAILS:
+- Offer Amount: $${params.offerAmount.toLocaleString()} (${offerToListRatio.toFixed(1)}% of list)
+- Earnest Money: $${defaultEarnest.toLocaleString()}
+- Down Payment: ${defaultDownPayment}%
+- Financing: ${params.financingType}
+- Contingencies: ${defaultContingencies.join(", ")}
+- Close Date: ${params.closeDate || "30 days"}
+${params.escalationClause ? `- Escalation: Up to $${params.escalationClause.maxPrice.toLocaleString()} in $${params.escalationClause.increment.toLocaleString()} increments` : ""}
+${params.additionalTerms ? `- Additional Terms: ${params.additionalTerms}` : ""}
+
+COMPETITION:
+- ${existingOffers.length} other offers on file
+${existingOffers.length > 0 ? `- Recent offer amounts: ${existingOffers.map((o: any) => `$${o.offer_amount?.toLocaleString()}`).join(", ")}` : ""}
+
+Analyze the offer and provide:
+1. Overall strength score (0-100)
+2. Competitive analysis
+3. Specific improvements to make it stronger
+4. Negotiation strategy for the listing agent
+5. Risk assessment
+
+Return JSON:
+{
+  "summary": "one-paragraph offer summary",
+  "strengthScore": 0-100,
+  "competitiveAnalysis": "detailed competitive position",
+  "suggestedImprovements": ["improvement1", "improvement2"],
+  "negotiationStrategy": "how to present and negotiate",
+  "riskAssessment": {
+    "level": "low|medium|high",
+    "factors": ["risk1", "risk2"]
+  },
+  "recommendedCounterPoints": ["point1", "point2"]
+}`
+
+    const { text } = await generateText({
+      model: "openai/gpt-4o",
+      prompt,
+    })
+
+    let aiAnalysis
+    try {
+      const jsonMatch = text.match(/\{[\s\S]*\}/)
+      aiAnalysis = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(text)
+    } catch {
+      return { success: false, error: "Failed to parse offer analysis" }
+    }
+
+    // Create the offer
+    const { data: offer, error: offerError } = await supabase
+      .from("offers")
+      .insert({
+        listing_id: params.listingId,
+        contact_id: params.buyerId,
+        agent_id: params.agentId,
+        offer_price: params.offerAmount,
+        earnest_money: defaultEarnest,
+        down_payment_percent: defaultDownPayment,
+        financing_type: params.financingType,
+        contingencies: defaultContingencies,
+        closing_date: params.closeDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+        escalation_clause: params.escalationClause,
+        notes: params.additionalTerms ?? null,
+        ai_analysis: aiAnalysis,
+        status: "draft",
+      })
+      .select()
+      .single()
+
+    if (offerError) throw offerError
+
+    revalidatePath(`/dashboard/offers`)
+    revalidatePath(`/listings/${params.listingId}`)
+
+    return {
+      success: true,
+      offer: {
+        id: offer.id,
+        ...aiAnalysis,
+      },
+    }
+  } catch (error) {
+    console.error("[AI Offer Creation] Error:", error)
+    return handleError(error, "createAIOffer") as OfferCreationResult
+  }
+}
+
+/**
+ * AI-Powered Counter Offer Strategy
+ */
+export async function generateCounterOfferStrategy(
+  offerId: string,
+  agentId: string,
+  representingSide: "buyer" | "seller"
+): Promise<{ success: boolean; strategy?: any; error?: string }> {
+  try {
+    if (!isValidUUID(offerId) || !isValidUUID(agentId)) {
+      return { success: false, error: "Invalid ID" }
+    }
+
+    const supabase = await createClient()
+
+    const { data: offer } = await supabase
+      .from("offers")
+      .select(`
+        *,
+        listing:listings(*),
+        buyer:contacts(*)
+      `)
+      .eq("id", offerId)
+      .single()
+
+    if (!offer) return { success: false, error: "Offer not found" }
+
+    const { text } = await generateText({
+      model: "openai/gpt-4o",
+      prompt: `You are a real estate negotiation expert. Create a counter-offer strategy.
+
+You are representing the ${representingSide.toUpperCase()}.
+
+CURRENT OFFER:
+- List Price: $${offer.listing.list_price.toLocaleString()}
+- Offer: $${offer.offer_amount.toLocaleString()}
+- Earnest: $${offer.earnest_money.toLocaleString()}
+- Financing: ${offer.financing_type}
+- Contingencies: ${offer.contingencies?.join(", ")}
+- Close Date: ${offer.close_date}
+
+Provide a strategic counter-offer recommendation with:
+1. Recommended counter price
+2. Terms to negotiate
+3. Concessions to offer/request
+4. Timeline strategy
+5. Psychological tactics
+
+Return JSON with detailed strategy.`,
+    })
+
+    const strategy = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] || text)
+    return { success: true, strategy }
+  } catch (error) {
+    return handleError(error, "generateCounterOfferStrategy") as any
+  }
+}
 
 /**
  * AI-Powered Offer Comparison for Sellers
