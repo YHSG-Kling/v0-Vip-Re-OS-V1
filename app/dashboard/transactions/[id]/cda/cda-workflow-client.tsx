@@ -41,7 +41,20 @@ import {
   Loader2,
   History,
 } from "lucide-react"
-import { generateCDAPreview, submitCDA, approveCDA } from "@/lib/transactions/cda-workflow"
+// ONE CDA RAIL. This page used to call lib/transactions/cda-workflow.ts — a second
+// implementation over the same closing_disclosure_agreement table with weaker gates
+// (no signature check, no contract/split check, and it shipped the disbursement
+// authorization to title the moment compliance approved, skipping the broker's
+// signature). Its create path also inserted transaction.agent_id — an agents.id —
+// into agent_id, which FKs users, so "Generate CDA Preview" threw on every click.
+// Repointed to app/actions/cda-portal.ts, the rail the compliance review panel
+// already uses; the duplicate file is deleted.
+import {
+  draftOrUpdateCdaAction,
+  submitCdaForApprovalAction,
+  approveCdaAction,
+  uploadPreliminaryCdAction,
+} from "@/app/actions/cda-portal"
 import { CdaTemplateFieldsCard } from "./cda-template-fields-card"
 
 interface CDAWorkflowClientProps {
@@ -78,6 +91,8 @@ interface CDAWorkflowClientProps {
     compliance_approved_by: string | null
     notes: string | null
     created_at: string
+    preliminary_cd_uploaded_at: string | null
+    preliminary_cd_document_id: string | null
   } | null
   agent: {
     id: string
@@ -149,6 +164,15 @@ export function CDAWorkflowClient({
       })
   }, [transaction.id])
 
+  // STEP 1 OF THE CDA CHAIN — the preliminary HUD / settlement statement arriving
+  // from the title company or the closing attorney. uploadPreliminaryCdAction and
+  // notifyAgentOfPreliminaryCdAction were both complete and had NO caller anywhere,
+  // so the chain had no beginning: nothing told the agent the HUD was in, no task
+  // was created, and the CD_RECEIVED kernel event never fanned out.
+  const [uploadingPrelim, setUploadingPrelim] = useState(false)
+  const [prelimError, setPrelimError] = useState<string | null>(null)
+  const [prelimRole, setPrelimRole] = useState<"title_agent" | "closing_attorney" | "tc">("title_agent")
+
   const [showGenerateDialog, setShowGenerateDialog] = useState(false)
   const [showSubmitDialog, setShowSubmitDialog] = useState(false)
   const [showApproveDialog, setShowApproveDialog] = useState(false)
@@ -175,18 +199,59 @@ export function CDAWorkflowClient({
   const canSubmit = cda && cdaStatus === "pending" && isAgent
   const canApprove = cda && cdaStatus === "submitted" && isCompliance
 
+  async function handlePreliminaryCdUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setPrelimError(null)
+    setUploadingPrelim(true)
+    try {
+      const supabase = createClient()
+      const path = `transactions/${transaction.id}/preliminary-cd/${Date.now()}_${file.name}`
+      const { error: uploadError } = await supabase.storage.from("transaction-documents").upload(path, file)
+      if (uploadError) {
+        setPrelimError(`Upload failed: ${uploadError.message}`)
+        return
+      }
+      const { signedDocUrl } = await import("@/lib/storage/signed-doc-url")
+      const storageUrl = await signedDocUrl(supabase, "transaction-documents", path)
+      const res = await uploadPreliminaryCdAction({
+        transactionId:  transaction.id,
+        fileName:       file.name,
+        fileUrl:        storageUrl,
+        uploadedByRole: prelimRole,
+      })
+      if (!res?.success) {
+        setPrelimError(res?.error ?? "Could not record the preliminary CD.")
+        return
+      }
+      router.refresh()
+    } catch {
+      setPrelimError("Upload failed — please try again.")
+    } finally {
+      setUploadingPrelim(false)
+      e.target.value = ""
+    }
+  }
+
   function handleGeneratePreview() {
     startTransition(async () => {
       try {
-        await generateCDAPreview({
+        // Opens the CDA for drafting. The money is NOT auto-filled — the agent
+        // types it into the brokerage's own template below and the computed
+        // waterfall is kept as the `expected` baseline the audit compares against.
+        const res = await draftOrUpdateCdaAction({
           transactionId: transaction.id,
-          brokerageId,
-          agentId: transaction.agent_id,
+          commissionBreakdown: {},
         })
+        if (!res?.success) {
+          setGateError([res?.error ?? "Could not open the CDA for drafting."])
+          return
+        }
         setShowGenerateDialog(false)
         router.refresh()
       } catch (error) {
-        console.error("[CDA] Generate preview failed:", error)
+        console.error("[CDA] Open draft failed:", error)
+        setGateError(["Could not open the CDA for drafting — please try again."])
       }
     })
   }
@@ -196,10 +261,16 @@ export function CDAWorkflowClient({
     setGateError(null)
     startTransition(async () => {
       try {
-        const res = await submitCDA(cda.id, userId)
+        const res = await submitCdaForApprovalAction({ cdaId: cda.id })
         if (!res?.success) {
-          // Final compliance gate failed — keep the dialog open and show why.
-          setGateError(res?.blockers ?? ["Submission was blocked by the final compliance check."])
+          // Full document compliance runs BEFORE the CDA can be accepted. When it
+          // refuses, name what is missing rather than showing a bare failure.
+          const blockers = (res as { blockers?: string[] })?.blockers
+          setGateError(
+            blockers?.length
+              ? blockers
+              : [res?.error ?? "Submission was blocked by the final compliance check."],
+          )
           return
         }
         setShowSubmitDialog(false)
@@ -216,11 +287,7 @@ export function CDAWorkflowClient({
     setGateError(null)
     startTransition(async () => {
       try {
-        const res = await approveCDA({
-          cdaId: cda.id,
-          approverId: userId,
-          approverRole: userType,
-        })
+        const res = await approveCdaAction({ cdaId: cda.id })
         if (!res?.success) {
           setGateError([res?.error ?? "Approval was not allowed."])
           return
@@ -303,6 +370,69 @@ export function CDAWorkflowClient({
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Left Column: Commission Preview */}
           <div className="lg:col-span-2 space-y-6">
+            {/* STEP 1 — the preliminary HUD from title / the closing attorney. This is
+                what starts the CDA: it notifies the agent, opens a "Draft and submit
+                CDA" task, and fans out CD_RECEIVED. */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <FileText className="h-5 w-5" />
+                  Preliminary closing statement (HUD)
+                </CardTitle>
+                <CardDescription>
+                  The CDA starts when title or the closing attorney sends the preliminary
+                  settlement statement. Recording it here notifies the agent and the
+                  transaction coordinator and opens the CDA for drafting.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {cda?.preliminary_cd_uploaded_at ? (
+                  <Alert>
+                    <CheckCircle2 className="h-4 w-4" />
+                    <AlertTitle>Preliminary CD received</AlertTitle>
+                    <AlertDescription>
+                      Recorded {new Date(cda.preliminary_cd_uploaded_at).toLocaleString()}. The
+                      agent has been notified to draft the CDA.
+                    </AlertDescription>
+                  </Alert>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <label className="text-sm">
+                        <span className="block text-xs font-medium mb-1">Sent by</span>
+                        <select
+                          className="w-full border rounded px-2 py-1.5 text-sm"
+                          value={prelimRole}
+                          onChange={(e) => setPrelimRole(e.target.value as typeof prelimRole)}
+                          disabled={uploadingPrelim}
+                        >
+                          <option value="title_agent">Title company</option>
+                          <option value="closing_attorney">Closing attorney</option>
+                          <option value="tc">Transaction coordinator</option>
+                        </select>
+                      </label>
+                      <label className="text-sm">
+                        <span className="block text-xs font-medium mb-1">Statement file</span>
+                        <input
+                          type="file"
+                          accept="application/pdf,image/*"
+                          className="w-full text-sm"
+                          onChange={handlePreliminaryCdUpload}
+                          disabled={uploadingPrelim}
+                        />
+                      </label>
+                    </div>
+                    {uploadingPrelim && (
+                      <p className="text-xs text-muted-foreground flex items-center gap-2">
+                        <Loader2 className="h-3 w-3 animate-spin" /> Recording and notifying the agent…
+                      </p>
+                    )}
+                    {prelimError && <p className="text-xs text-red-600">{prelimError}</p>}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
             {/* Commission Summary Card */}
             <Card>
               <CardHeader>

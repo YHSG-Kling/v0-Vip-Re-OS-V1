@@ -496,6 +496,29 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
     return { success: false as const, error: `cannot_submit_from_status:${cda.status}` }
   }
 
+  // ── FULL DOCUMENT COMPLIANCE, BEFORE THE CDA CAN BE ACCEPTED ───────────────
+  // The owner's process: the preliminary HUD arrives, the agent fills the CDA
+  // from the brokerage's template, and FULL COMPLIANCE OF ALL DOCUMENTS IN THE
+  // FILE IS RUN BEFORE THE CDA IS ACCEPTED. This rail had a signature pre-scan
+  // and a contract/fee audit but never checked the deal FILE — so a CDA could
+  // reach the compliance officer with disclosures missing, documents rejected
+  // or signatures outstanding, and the first person to notice would be the
+  // closing agent holding a disbursement instruction for an incomplete deal.
+  // runFinalComplianceCheck is the canonical gate (required documents present,
+  // nothing rejected, every signature/initial complete, no open blocking
+  // compliance check) and it reuses canProceedToClosingPrep rather than
+  // re-implementing it. BLOCKING, with the blockers named so the agent knows
+  // what to fix — an unexplained refusal on a commission is worse than none.
+  const { runFinalComplianceCheck } = await import("@/lib/transactions/final-compliance-check")
+  const fileCheck = await runFinalComplianceCheck(cda.transaction_id, cda.brokerage_id)
+  if (!fileCheck.passed) {
+    return {
+      success: false as const,
+      error: "final_compliance_failed",
+      blockers: fileCheck.blockers,
+    }
+  }
+
   const now = new Date().toISOString()
 
   // CONTRACT/FEE AUDIT at submit — the AI matches the agent's brokerage CONTRACT (split + cap)
@@ -587,12 +610,50 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
     actedBy: auth.userId,
   })
 
+  // DISCREPANCY SURFACE — carried over from the deleted cda-workflow.ts, which
+  // raised a cda_review_required activity when the computed commission disagreed
+  // with the contract. Here the same check is strictly stronger (live split, cap
+  // and outstanding fees, not just gross), so the activity now rides the verdict
+  // that actually gates approval instead of a parallel comparison.
+  if (submitVerdict && !submitVerdict.passed) {
+    await supabase.from("activities").insert({
+      transaction_id: cda.transaction_id,
+      brokerage_id:   cda.brokerage_id,
+      entity_type:    "transaction",
+      activity_type:  "cda_review_required",
+      title:          "CDA discrepancy — review before approving",
+      description:    `The submitted CDA disagrees with the agent's contract in ${submitVerdict.discrepancies.length} place${submitVerdict.discrepancies.length === 1 ? "" : "s"}. Approval is blocked until it is resolved or manually overridden.`,
+      priority:       "urgent",
+      status:         "pending",
+      notes:          JSON.stringify({ cda_id: cda.id, discrepancies: submitVerdict.discrepancies }),
+    }).then(() => {}, () => {})
+  }
+
   // Run signature/initials pre-scan so compliance sees gate status the
   // moment the CDA hits their queue. Best-effort — never blocks submission.
   // Approval-time gate is enforced separately in approveCdaAction.
   try {
     await runSignatureCheckForCdaAction({ cdaId: cda.id })
   } catch { /* informational pre-scan; approval gate still enforces */ }
+
+  // KERNEL LEDGER. Carried over from lib/transactions/cda-workflow.ts (deleted —
+  // it was a second, weaker rail on this same table). The lifecycle ledger is how
+  // the OS reconstructs what happened to a deal; losing the cda.submitted event
+  // when the duplicate went away would have left a hole in the audit trail.
+  try {
+    const { transitionLifecycle } = await import("@/lib/kernel/lifecycle")
+    await transitionLifecycle({
+      brokerageId: cda.brokerage_id,
+      entityType:  "transaction",
+      entityId:    cda.transaction_id,
+      fromState:   "cda_pending",
+      toState:     "cda_submitted",
+      actorUserId: auth.userId,
+      actorRole:   "agent",
+      eventType:   "cda.submitted",
+      metadata:    { cda_id: cda.id, disposition: disposition.route },
+    })
+  } catch { /* ledger is best-effort — the CDA already moved */ }
 
   if (disposition.route === "external_form_platform") {
     // No in-app broker/compliance — the broker-side steps happen through the agent's external form
@@ -709,6 +770,28 @@ export async function approveCdaAction(input: { cdaId: string }) {
     action: "approved",
     actedBy: auth.userId,
   })
+
+  // KERNEL LEDGER — carried over from the deleted lib/transactions/cda-workflow.ts.
+  // NOTE the deliberate difference from that rail: it completed the cda_delivered
+  // milestone HERE and shipped the disbursement authorization to title the instant
+  // compliance approved, skipping the broker's signature entirely. The owner's
+  // process is compliance approves → the BROKER SIGNS → it is sent to the closing
+  // agent with a record of the send, so the milestone stays with
+  // sendCdaToTitleAction where the delivery actually happens.
+  try {
+    const { transitionLifecycle } = await import("@/lib/kernel/lifecycle")
+    await transitionLifecycle({
+      brokerageId: cda.brokerage_id,
+      entityType:  "transaction",
+      entityId:    cda.transaction_id,
+      fromState:   "cda_submitted",
+      toState:     "cda_approved",
+      actorUserId: auth.userId,
+      actorRole:   (auth.userType ?? "compliance_officer") as never,
+      eventType:   "cda.approved",
+      metadata:    { cda_id: cda.id, approver_role: auth.userType },
+    })
+  } catch { /* ledger is best-effort — the approval is already recorded */ }
 
   // Notify the agent that compliance cleared it — now awaiting the broker's signature.
   // IDENTITY CLASS (m356). cda.agent_id ALREADY IS the agent's users id —

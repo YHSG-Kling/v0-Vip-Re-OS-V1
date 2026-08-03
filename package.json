@@ -630,6 +630,7 @@
     "test:listing-documents-gate": "tsx scripts/listing-documents-gate-simulator.ts",
     "test:cda-delivery": "tsx scripts/cda-delivery-simulator.ts",
     "test:seller-doc-vocabulary": "tsx scripts/seller-document-vocabulary-simulator.ts",
+    "test:cda-process-chain": "tsx scripts/cda-process-chain-simulator.ts",
     "test:deal-room-demo": "tsx scripts/deal-room-demo-simulator.ts",
     "test:child-tenant-scope": "tsx scripts/child-tenant-scope-simulator.ts",
     "test:agent-id-class": "tsx scripts/agent-id-class-guard.ts"

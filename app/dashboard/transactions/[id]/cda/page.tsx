@@ -62,8 +62,18 @@ export default async function CDAPage({ params }: PageProps) {
 
   if (txnError || !transaction) notFound()
 
+  // IDENTITY CLASS. transactions.agent_id is an AGENTS id; user.id is a USERS id.
+  // The two id spaces never overlap, so this comparison was false for everyone —
+  // the agent whose CDA this is got redirected to /dashboard and only
+  // broker/admin/tc/compliance could open the page. RESOLVE, never substitute.
+  const { data: txnAgent } = await supabase
+    .from("agents")
+    .select("id, user_id, commission_split, cap_amount, cap_progress")
+    .eq("id", transaction.agent_id)
+    .maybeSingle()
+
   // Auth: owning agent OR broker/admin/TC in same brokerage
-  const isOwningAgent = transaction.agent_id === user.id
+  const isOwningAgent = !!txnAgent?.user_id && txnAgent.user_id === user.id
   const hasAdminAccess = ["broker", "admin", "tc", "compliance_officer"].includes(userType)
   if (!isOwningAgent && !hasAdminAccess) {
     redirect("/dashboard")
@@ -83,12 +93,10 @@ export default async function CDAPage({ params }: PageProps) {
     .limit(1)
     .maybeSingle()
 
-  // Fetch agent info
-  const { data: agent } = await supabase
-    .from("agents")
-    .select("id, user_id, commission_split, cap_amount, cap_progress")
-    .eq("user_id", transaction.agent_id)
-    .maybeSingle()
+  // Agent info — already resolved above by agents.id (this looked the agents table
+  // up by user_id using an agents.id, so it matched nothing and every split / cap
+  // figure on this page rendered blank).
+  const agent = txnAgent
 
   // Fetch commission calculations if any
   const { data: commissionCalc } = await supabase
