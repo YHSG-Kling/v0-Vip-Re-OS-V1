@@ -5,6 +5,7 @@ import {
   listPartnersWithReferrals,
   createReferral,
   createPartner,
+  deletePartner,
   updateReferralStatus,
   type ReferralPartnerRow,
   type ReferralRow,
@@ -14,15 +15,17 @@ import { getReferralPartnerStats } from "@/app/actions/multi-persona"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
-type PipelineStage = ReferralRow["status"]
+// This list used to be spelled out here with 5 of the 7 storable statuses —
+// `assigned` and `lost` were missing, so a referral in either state matched no
+// column and disappeared from the board entirely. It now comes from the one
+// module that mirrors referrals_status_check.
+import { REFERRAL_STATUSES, type ReferralStatus } from "@/lib/referrals/referral-status"
 
-const PIPELINE_STAGES: { key: PipelineStage; label: string }[] = [
-  { key: "received",       label: "Received" },
-  { key: "contacted",      label: "Contacted" },
-  { key: "qualified",      label: "Qualified" },
-  { key: "under_contract", label: "Under Contract" },
-  { key: "closed",         label: "Closed" },
-]
+type PipelineStage = ReferralStatus
+
+const PIPELINE_STAGES: { key: PipelineStage; label: string }[] = REFERRAL_STATUSES.map(
+  (s) => ({ key: s.value, label: s.label }),
+)
 
 // These were DISPLAY labels — "Lender", "Commission Split" — stored straight into
 // CHECK-constrained columns, so every Add Partner on this screen threw
@@ -30,6 +33,7 @@ const PIPELINE_STAGES: { key: PipelineStage; label: string }[] = [
 // canonical lists store a value and show a label; see the module for the proof.
 import {
   REFERRAL_PARTNER_TYPES, REFERRAL_AGREEMENT_TYPES,
+  referralPartnerTypeLabel, referralAgreementTypeLabel,
   type ReferralPartnerType, type ReferralAgreementType,
 } from "@/lib/referrals/partner-vocabulary"
 
@@ -202,6 +206,26 @@ export default function ReferralsPage() {
     })
   }
 
+  function handleRemovePartner(partner: ReferralPartnerRow) {
+    const referralCount = referrals.filter((r) => r.partner_id === partner.id).length
+    if (referralCount > 0) {
+      setError(
+        `${partner.partner_name} has ${referralCount} referral${referralCount === 1 ? "" : "s"} recorded against it and cannot be removed.`,
+      )
+      return
+    }
+    if (!window.confirm(`Remove ${partner.partner_name} from your referral partners?`)) return
+    setError(null)
+    startTransition(() => {
+      deletePartner(partner.id)
+        .then(() => {
+          if (activePartner?.id === partner.id) setActivePartner(null)
+          reload()
+        })
+        .catch((e: unknown) => setError(e instanceof Error ? e.message : "Failed to remove partner"))
+    })
+  }
+
   function handleStatusChange(referralId: string, status: PipelineStage) {
     startTransition(() => {
       updateReferralStatus(referralId, status)
@@ -288,30 +312,70 @@ export default function ReferralsPage() {
                 {partners.map((p) => {
                   const count = referrals.filter((r) => r.partner_id === p.id).length
                   return (
-                    <button
+                    <div
                       key={p.id}
-                      onClick={() => setActivePartner(p)}
-                      className={`w-full text-left p-3 rounded-lg border transition-colors ${
+                      className={`w-full rounded-lg border transition-colors ${
                         activePartner?.id === p.id
                           ? "border-primary bg-primary/5"
                           : "border-border bg-card hover:bg-muted"
                       }`}
                     >
-                      <p className="font-medium text-sm truncate">{p.partner_name}</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        {p.partner_type} · {count} referrals
-                      </p>
-                      {p.commission_split_percentage != null && (
-                        <p className="text-xs text-muted-foreground">
-                          {p.commission_split_percentage}% split
+                      <button
+                        onClick={() => setActivePartner(p)}
+                        className="w-full text-left p-3"
+                      >
+                        <p className="font-medium text-sm truncate">{p.partner_name}</p>
+                        {/* partner_type is a stored VALUE ("mortgage_broker"); this
+                            was printing it raw at the agent. */}
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {referralPartnerTypeLabel(p.partner_type)} · {count} referrals
                         </p>
-                      )}
-                      {p.referral_fee_flat != null && (
+                        {/* Written by createPartner and by the business-card scan, and
+                            shown nowhere until now. */}
+                        {p.email && (
+                          <p className="text-xs text-muted-foreground truncate">{p.email}</p>
+                        )}
+                        {p.phone && (
+                          <p className="text-xs text-muted-foreground truncate">{p.phone}</p>
+                        )}
                         <p className="text-xs text-muted-foreground">
-                          {fmt(p.referral_fee_flat)} flat fee
+                          {referralAgreementTypeLabel(p.agreement_type)}
+                          {p.agreement_date
+                            ? ` · since ${new Date(p.agreement_date).toLocaleDateString()}`
+                            : ""}
                         </p>
-                      )}
-                    </button>
+                        {p.commission_split_percentage != null && (
+                          <p className="text-xs text-muted-foreground">
+                            {p.commission_split_percentage}% split
+                          </p>
+                        )}
+                        {p.referral_fee_flat != null && (
+                          <p className="text-xs text-muted-foreground">
+                            {fmt(p.referral_fee_flat)} flat fee
+                          </p>
+                        )}
+                      </button>
+                      {/* deletePartner existed as a real, tenant-scoped server action and
+                          had no surface — its only caller was a compensating-transaction
+                          rollback inside the referral pipeline panel, which no longer
+                          creates throwaway partners. A partner with referrals against it
+                          is not removable: the rows would be orphaned. */}
+                      <div className="px-3 pb-2">
+                        <button
+                          type="button"
+                          onClick={() => handleRemovePartner(p)}
+                          disabled={isPending || count > 0}
+                          title={
+                            count > 0
+                              ? "This partner has referrals recorded against it and cannot be removed."
+                              : "Remove this partner"
+                          }
+                          className="text-xs text-muted-foreground hover:text-destructive disabled:opacity-40 disabled:hover:text-muted-foreground"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
                   )
                 })}
               </div>
@@ -370,7 +434,7 @@ export default function ReferralsPage() {
             </div>
 
             {/* Kanban */}
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3">
               {PIPELINE_STAGES.map((stage) => {
                 const stageReferrals = partnerReferrals.filter(
                   (r) => r.status === stage.key
@@ -386,8 +450,12 @@ export default function ReferralsPage() {
                         key={r.id}
                         className="bg-card border border-border rounded-md p-2 text-xs"
                       >
+                        {/* partner_id is nullable — a referral does not have to come
+                            from a partner record. This read "Unknown" for those, which
+                            said the data was missing rather than that there is no
+                            partner. The referred person's name is the honest fallback. */}
                         <p className="font-medium truncate">
-                          {r.referral_partners?.partner_name ?? "Unknown"}
+                          {r.referral_partners?.partner_name ?? r.referral_name ?? "Direct referral"}
                         </p>
                         <p className="text-muted-foreground truncate">
                           {r.referral_source ?? "No source"}
@@ -400,8 +468,8 @@ export default function ReferralsPage() {
                         <p className="text-muted-foreground mt-1">
                           {new Date(r.created_at).toLocaleDateString()}
                         </p>
-                        {/* Stage advance */}
-                        {stage.key !== "closed" && (
+                        {/* Stage advance — hidden on the terminal states (closed, lost). */}
+                        {!REFERRAL_STATUSES.find((s) => s.value === stage.key)?.terminal && (
                           <select
                             value={r.status}
                             onChange={(e) =>

@@ -75,6 +75,7 @@ import { ReputationPanel } from "@/app/components/reputation/ReputationPanel"
 import { CampaignsGiftingPanel } from "./components/campaigns-gifting-panel"
 import { LifetimeNpvPanel } from "@/app/components/features/lifetime-customers/lifetime-npv-panel"
 import { getAgentLifetimeNpvRanked, type NpvRow } from "@/app/actions/lifetime-npv"
+import { referralStatusLabel } from "@/lib/referrals/referral-status"
 
 // Types
 interface PastClient {
@@ -1582,8 +1583,11 @@ export default function LifetimeCustomersPage() {
                       <div className="flex items-center justify-between">
                         <div>
                           <p className="font-medium text-sm">{ref.referral_name || "Unknown Referral"}</p>
-                          <p className="text-xs text-muted-foreground capitalize">
-                            Status: {ref.status?.replace(/_/g, " ")} · Source: {ref.referral_source || "direct"}
+                          {/* The status is a stored VALUE; a regex over it is not a
+                              label. `under_contract` read as "under contract" while
+                              the rest of the app said "Under Contract". */}
+                          <p className="text-xs text-muted-foreground">
+                            Status: {referralStatusLabel(ref.status)} · Source: {ref.referral_source || "direct"}
                           </p>
                         </div>
                         <div className="flex gap-2">

@@ -1025,41 +1025,31 @@ export async function trackLicenseExpirations(_brokerageId?: string) {
 // session instead of taking them as spoofable parameters, and the agent referrals
 // form now collects all three. Nothing is lost by its removal — which is exactly
 // the bar it had to clear.
-export async function trackReferral(data: {
-  referralPartnerId?: string
-  agentId: string
-  brokerageId: string
-  leadId?: string
-  contactId?: string
-  transactionId?: string
-  referralStatus: "received" | "contacted" | "qualified" | "assigned" | "under_contract" | "closed" | "lost"
-  commissionAmount?: number
-}) {
-  const supabase = await createClient()
-
-  // referral_tracking does not exist — use referrals table
-  // referrals: id, brokerage_id, agent_id, partner_id, referred_contact_id,
-  // referred_lead_id, status, referral_source, notes, commission_amount, closed_at, ...
-  const { data: referral, error } = await supabase
-    .from("referrals")
-    .insert({
-      brokerage_id: data.brokerageId,
-      agent_id: data.agentId,
-      partner_id: data.referralPartnerId,
-      referred_contact_id: data.contactId,
-      referred_lead_id: data.leadId,
-      status: data.referralStatus,
-      commission_amount: data.commissionAmount,
-      closed_at:
-        data.referralStatus === "closed" ? new Date().toISOString() : null,
-    })
-    .select()
-    .single()
-
-  if (error) throw error
-
-  return referral
-}
+// CONSOLIDATED AWAY — trackReferral
+//
+// It inserted into `referrals` exactly like the wired path does, and had zero
+// callers. Four things it could do that the wired path could not have been
+// asked for — all four now live on
+// app/actions/referrals/referral-actions.ts:createReferral:
+//
+//   the full 7-value status vocabulary  -> lib/referrals/referral-status.ts,
+//       which ReferralRow["status"] and CreateReferralParams.status both use.
+//   referred_lead_id                    -> CreateReferralParams.referredLeadId.
+//       This was the ONLY function in the codebase that ever wrote that column.
+//   a partner-less referral             -> CreateReferralParams.partnerId is now
+//       optional, matching the nullable column.
+//   closed_at stamped at creation       -> createReferral stamps it when the
+//       referral is created already closed.
+//
+// Its `transactionId` parameter was accepted and never written anywhere, so
+// there was nothing there to carry over.
+//
+// What the survivor adds, and why it is the one that lives: it derives agentId
+// and brokerageId from the session instead of taking them as spoofable
+// parameters, runs the referred person through captureContact(), bumps the
+// partner's total_referrals_received, and writes a REFERRAL_RECEIVED lifecycle
+// event. Nothing is lost by this removal — which is exactly the bar it had
+// to clear.
 
 export async function getReferralPartnerStats(partnerId: string) {
   const auth = await requireCaller()

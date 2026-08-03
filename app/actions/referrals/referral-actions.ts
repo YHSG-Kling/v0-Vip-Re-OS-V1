@@ -5,6 +5,11 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { captureContact } from "@/lib/contact-pipeline/contact-capture"
 import { KernelEvent } from "@/lib/kernel/events"
+import {
+  DEFAULT_REFERRAL_STATUS,
+  isReferralStatus,
+  type ReferralStatus,
+} from "@/lib/referrals/referral-status"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -15,6 +20,13 @@ export type ReferralPartnerRow = {
   partner_name: string
   partner_type: string
   agreement_type: string
+  /** Captured by createPartner and by the business-card scan. They were absent
+   *  from this type, so every surface that listed partners could only ever show
+   *  a name — the contact details were written and then invisible. */
+  email: string | null
+  phone: string | null
+  agreement_date: string | null
+  notes: string | null
   commission_split_percentage: number | null
   referral_fee_flat: number | null
   total_referrals_sent: number
@@ -28,26 +40,60 @@ export type ReferralRow = {
   id: string
   brokerage_id: string
   agent_id: string
-  partner_id: string
+  /** nullable in Postgres — a referral does not have to come from a partner. */
+  partner_id: string | null
   referred_contact_id: string | null
-  status: "received" | "contacted" | "qualified" | "under_contract" | "closed"
+  /** MIRRORS referrals_status_check — see lib/referrals/referral-status.ts for
+   *  the constraint and for what each surface used to believe instead. The union
+   *  used to be spelled out here and carried 5 of the 7: `assigned` and `lost`
+   *  were missing, so a referral handed to an agent or written off could not be
+   *  represented at all and updateReferralStatus could not be asked for them. */
+  status: ReferralStatus
+  referred_lead_id: string | null
+  referral_name: string | null
   referral_source: string | null
+  notes: string | null
   commission_amount: number | null
+  value_estimate: number | null
   closed_at: string | null
   created_at: string
   referral_partners?: Pick<ReferralPartnerRow, "partner_name" | "partner_type"> | null
 }
 
 export type CreateReferralParams = {
-  partnerId: string
+  /** OPTIONAL because referrals.partner_id is nullable and a referral does not
+   *  always come from a partner record — a past client sends you a name, and
+   *  there is no partner to point at. This used to be required, which is why
+   *  referral-pipeline-panel.tsx invents a partner row just to satisfy it and
+   *  then deletes it again if the referral insert fails. Only the orphaned
+   *  multi-persona.ts:trackReferral could record a partner-less referral, and
+   *  nothing called it. */
+  partnerId?: string
   referralSource?: string
   commissionAmount?: number
+  /** referrals.value_estimate — what the referral is thought to be WORTH, which
+   *  is not the same number as the commission on it. The pipeline cards read
+   *  this column; the create dialog labels its field "Potential Value" and had
+   *  nowhere to send it, so it was being folded into commissionAmount. */
+  valueEstimate?: number
+  /** referrals.notes — free text about the referral. The create dialog's Notes
+   *  box was being sent as `referralSource`, which is meant to record WHERE the
+   *  referral came from, not what was said about it. */
+  notes?: string
   referredPerson?: {
     firstName?: string
     lastName?: string
     email?: string
     phone?: string
   }
+  /** Where the referral starts. Defaults to `received`, which is what this
+   *  function used to hard-code — a referral that arrives already assigned or
+   *  already lost could not be recorded as such. */
+  status?: ReferralStatus
+  /** The LEAD this referral points at, when it is a lead rather than a contact.
+   *  referrals.referred_lead_id was written by exactly one function in the
+   *  codebase — an orphan with no callers — so in practice it was never set. */
+  referredLeadId?: string
 }
 
 export type CreatePartnerParams = {
@@ -103,16 +149,35 @@ export async function createReferral(params: CreateReferralParams): Promise<{ id
   }
 
   // Step 2: INSERT referrals
+  const status = params.status ?? DEFAULT_REFERRAL_STATUS
+
+  // referrals.referral_name is what every pipeline card renders. Nothing wrote
+  // it, so every card created through the app rendered a blank title even though
+  // the create dialog asks for the name and makes it required.
+  const referralName =
+    [params.referredPerson?.firstName, params.referredPerson?.lastName]
+      .filter((p) => p && p.trim())
+      .join(" ")
+      .trim() || null
   const { data: referral, error: insertError } = await db
     .from("referrals")
     .insert({
       brokerage_id: brokerageId,
       agent_id: agentId,
-      partner_id: params.partnerId,
+      partner_id: params.partnerId ?? null,
       referred_contact_id: referredContactId,
-      status: "received",
+      referred_lead_id: params.referredLeadId ?? null,
+      status,
+      referral_name: referralName,
       referral_source: params.referralSource ?? null,
       commission_amount: params.commissionAmount ?? null,
+      value_estimate: params.valueEstimate ?? null,
+      notes: params.notes?.trim() || null,
+      // A referral can ARRIVE already closed (a partner tells you about a deal
+      // that has since settled). updateReferralStatus stamps closed_at on the
+      // transition; nothing stamped it on creation, so such a row read as an
+      // open referral forever.
+      closed_at: status === "closed" ? new Date().toISOString() : null,
     })
     .select("id")
     .single()
@@ -122,20 +187,24 @@ export async function createReferral(params: CreateReferralParams): Promise<{ id
   }
 
   // Step 3: UPDATE referral_partners SET total_referrals_received += 1
-  const { error: updateError } = await db.rpc("increment_referral_received", {
-    p_partner_id: params.partnerId,
-  })
-  // Non-fatal if RPC errors — fall back to a read-then-increment update
-  if (updateError) {
-    const { data: partner } = await db
-      .from("referral_partners")
-      .select("total_referrals_received")
-      .eq("id", params.partnerId)
-      .maybeSingle()
-    await db
-      .from("referral_partners")
-      .update({ total_referrals_received: (partner?.total_referrals_received ?? 0) + 1 })
-      .eq("id", params.partnerId)
+  // Skipped entirely when the referral has no partner — there is no counter to bump.
+  if (params.partnerId) {
+    const partnerId = params.partnerId
+    const { error: updateError } = await db.rpc("increment_referral_received", {
+      p_partner_id: partnerId,
+    })
+    // Non-fatal if RPC errors — fall back to a read-then-increment update
+    if (updateError) {
+      const { data: partner } = await db
+        .from("referral_partners")
+        .select("total_referrals_received")
+        .eq("id", partnerId)
+        .maybeSingle()
+      await db
+        .from("referral_partners")
+        .update({ total_referrals_received: (partner?.total_referrals_received ?? 0) + 1 })
+        .eq("id", partnerId)
+    }
   }
 
   // Step 4: INSERT lifecycle_events
@@ -147,8 +216,9 @@ export async function createReferral(params: CreateReferralParams): Promise<{ id
     actor_user_id: userId, // lifecycle_events.actor_user_id FKs users(id) — agentId is agents(id)
     metadata: {
       referral_id: referral.id,
-      partner_id:  params.partnerId,
-      source:      params.referralSource,
+      partner_id:  params.partnerId ?? null,
+      source:      params.referralSource ?? null,
+      status,
     },
   })
 
@@ -157,12 +227,20 @@ export async function createReferral(params: CreateReferralParams): Promise<{ id
 
 export async function updateReferralStatus(
   referralId: string,
-  status: ReferralRow["status"],
+  status: ReferralStatus,
   closedData?: { commissionAmount?: number }
 ): Promise<void> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error("Unauthorized")
+
+  // A server action's arguments are client input — the TYPE is a compile-time
+  // promise, not a runtime one. Both call sites used to cast with `as any`, so a
+  // stage the constraint refuses reached the UPDATE and came back as a raw
+  // Postgres check_violation. Reject it here, in language the agent can read.
+  if (!isReferralStatus(status)) {
+    throw new Error(`"${status}" is not a referral status this system records.`)
+  }
 
   const { agentId, brokerageId, userId } = await getAgentContext()
   const db = createServiceClient()

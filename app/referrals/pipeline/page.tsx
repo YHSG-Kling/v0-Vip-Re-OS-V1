@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Phone, CheckCircle, XCircle, Clock } from "lucide-react"
 import Link from "next/link"
 import { getAgentContext } from "@/lib/identity"
+import { referralStatusBadgeClass, referralStatusLabel } from "@/lib/referrals/referral-status"
 import { PipelineOsClient } from "./pipeline-os-client"
 import { ReferralAppreciationPanel } from "./appreciation-panel"
 
@@ -30,22 +31,11 @@ export default async function ReferralPipelinePage() {
     .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })
 
-  // The LIVE status vocabulary (referrals.status CHECK):
-  //   assigned | closed | contacted | lost | qualified | received | under_contract
-  // The old maps keyed on "new" and "declined", which the CHECK does not admit,
-  // and had no entry for "received" or "assigned" — the two states a brand-new
-  // referral actually lands in. So the states that exist rendered an unstyled
-  // badge while two colours were reserved for states that cannot occur.
-  const statusColors = {
-    received: "bg-blue-100 text-blue-700",
-    assigned: "bg-indigo-100 text-indigo-700",
-    contacted: "bg-purple-100 text-purple-700",
-    qualified: "bg-green-100 text-green-700",
-    under_contract: "bg-orange-100 text-orange-700",
-    closed: "bg-emerald-100 text-emerald-700",
-    lost: "bg-red-100 text-red-700",
-  }
-
+  // The colours used to be a local map keyed on "new" and "declined", which the
+  // CHECK does not admit, with no entry for "received" or "assigned" — the two
+  // states a brand-new referral actually lands in. It was corrected here and then
+  // this page was the ONLY one of four that had the list right. It now reads the
+  // shared module, so there is one place to be right.
   const statusIcons = {
     received: Clock,
     assigned: Clock,
@@ -116,9 +106,9 @@ export default async function ReferralPipelinePage() {
                           : "") ||
                         "Unnamed referral"}
                     </h3>
-                    <Badge className={statusColors[referral.status as keyof typeof statusColors]}>
+                    <Badge className={referralStatusBadgeClass(referral.status)}>
                       <StatusIcon className="w-3 h-3 mr-1" />
-                      {referral.status.replace("_", " ")}
+                      {referralStatusLabel(referral.status)}
                     </Badge>
                     {!referral.thank_you_sent && referral.status !== "received" && (
                       <Badge variant="outline" className="border-yellow-500 text-yellow-700">

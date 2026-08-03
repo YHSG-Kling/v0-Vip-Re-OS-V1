@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation"
 import { ReferralPipelinePanel } from "@/app/dashboard/referrals/components/os"
 import { updateReferralStatus, sendReferralThankYou } from "@/app/actions/referrals/referral-actions"
+import type { ReferralStatus } from "@/lib/referrals/referral-status"
 
 interface Referral {
   id: string
@@ -31,8 +32,8 @@ export function PipelineOsClient({
     router.push("/referrals?action=create")
   }
 
-  const handleUpdateStatus = async (referralId: string, status: string) => {
-    await updateReferralStatus(referralId, status as any)
+  const handleUpdateStatus = async (referralId: string, status: ReferralStatus) => {
+    await updateReferralStatus(referralId, status)
     router.refresh()
   }
 

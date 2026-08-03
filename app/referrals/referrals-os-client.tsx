@@ -12,6 +12,7 @@ import {
   RepeatBusinessPanel,
 } from "@/app/dashboard/referrals/components/os"
 import { updateReferralStatus, sendReferralThankYou } from "@/app/actions/referrals/referral-actions"
+import type { ReferralStatus } from "@/lib/referrals/referral-status"
 import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
 
 interface Referral {
@@ -88,8 +89,10 @@ export function ReferralsOsClient({
     router.push("/referrals?action=create")
   }
 
-  const handleUpdateStatus = async (referralId: string, status: string) => {
-    await updateReferralStatus(referralId, status as any)
+  // No `as any` here any more. The cast is what let the board's non-storable
+  // "new"/"converted" stages reach a CHECK-constrained column at runtime.
+  const handleUpdateStatus = async (referralId: string, status: ReferralStatus) => {
+    await updateReferralStatus(referralId, status)
     router.refresh()
   }
 
