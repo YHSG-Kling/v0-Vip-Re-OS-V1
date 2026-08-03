@@ -625,6 +625,7 @@
     "test:production-smoke": "tsx scripts/production-smoke-drill.ts",
     "test:dispatcher-load": "tsx scripts/dispatcher-load-simulator.ts",
     "test:vendor-w9": "tsx scripts/vendor-w9-simulator.ts",
+    "test:vendor-match": "tsx scripts/vendor-match-availability-simulator.ts",
     "test:deal-room-demo": "tsx scripts/deal-room-demo-simulator.ts",
     "test:child-tenant-scope": "tsx scripts/child-tenant-scope-simulator.ts",
     "test:agent-id-class": "tsx scripts/agent-id-class-guard.ts"

@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
 import { dispatchEmail } from "@/lib/providers/dispatch"
+import { compareVendors, pickBestVendor } from "@/lib/vendors/rank"
 
 // ============================================
 // VENDOR DIRECTORY & SEARCH
@@ -85,6 +86,147 @@ export async function searchVendors(filters: {
     ...v,
     vendor_rating: ratingsMap.get(v.id) || null
   }))
+}
+
+// ─── MATCHING & AVAILABILITY ────────────────────────────────────────────────
+// Moved here from multi-persona.ts, which was a grab-bag: these two are the
+// only things in the app that answer "who is actually free" and "who is the
+// right one", and they belong on the rail that owns vendors.
+
+/** The brokerage of the signed-in caller. Never taken from the client — a
+ *  caller-supplied brokerageId is a tenant boundary the caller controls. */
+async function callerBrokerageId(supabase: Awaited<ReturnType<typeof createClient>>) {
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error("Not authenticated")
+  const { data: profile } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!profile?.brokerage_id) {
+    throw new Error("Your account is not linked to a brokerage yet — ask an admin to assign you one.")
+  }
+  return profile.brokerage_id as string
+}
+
+export interface VendorAvailability {
+  /** Bench considered: active vendors of this category on the caller's bench. */
+  consideredCount: number
+  availableCount: number
+  availableVendors: Array<{
+    id: string
+    name: string
+    category: string | null
+    rating: number | null
+    preferred: boolean | null
+    estimated_turnaround_days: number | null
+  }>
+  /** Ids already committed that day, so the UI can say WHY someone is missing. */
+  busyVendorIds: string[]
+}
+
+/**
+ * Who on the bench is free on a given date.
+ *
+ * scheduled_date is a DATE column, so an exact match on YYYY-MM-DD is right.
+ * Two fixes over the version this replaces:
+ *   · the existing-bookings read was not brokerage-scoped, so ANOTHER tenant's
+ *     booking of the same vendor marked your vendor busy;
+ *   · brokerageId arrived as a parameter from the caller.
+ */
+export async function checkVendorAvailability(input: {
+  serviceType: string
+  preferredDate: string
+}): Promise<VendorAvailability> {
+  const supabase = await createClient()
+  const brokerageId = await callerBrokerageId(supabase)
+
+  const { data: vendors, error } = await supabase
+    .from("vendors")
+    .select("id, name, category, rating, preferred, display_priority, estimated_turnaround_days")
+    .eq("brokerage_id", brokerageId)
+    .eq("status", "active")
+    .ilike("category", `%${input.serviceType}%`)
+
+  if (error) throw error
+  const bench = vendors ?? []
+  if (bench.length === 0) {
+    return { consideredCount: 0, availableCount: 0, availableVendors: [], busyVendorIds: [] }
+  }
+
+  const { data: existingBookings, error: bookingsError } = await supabase
+    .from("vendor_bookings")
+    .select("vendor_id")
+    .eq("brokerage_id", brokerageId)
+    .in("vendor_id", bench.map((v) => v.id))
+    .eq("scheduled_date", input.preferredDate)
+    .in("status", ["booked", "confirmed"])
+
+  // A failed read here would silently report the whole bench as free and let an
+  // agent double-book. Refuse instead of guessing.
+  if (bookingsError) throw bookingsError
+
+  const busyVendorIds = Array.from(new Set((existingBookings ?? []).map((b) => b.vendor_id as string)))
+  const available = bench
+    .filter((v) => !busyVendorIds.includes(v.id))
+    .sort(compareVendors)
+
+  return {
+    consideredCount: bench.length,
+    availableCount: available.length,
+    availableVendors: available.map(({ display_priority: _dp, ...v }) => v),
+    busyVendorIds,
+  }
+}
+
+/**
+ * The single best vendor for a job — the one the form pre-selects.
+ *
+ * `urgency: "urgent"` prefers the fastest turnaround the bench offers, then
+ * falls back to normal ranking; a routine job just takes the best-ranked.
+ *
+ * NOTE ON SCOPE: the version this replaces also took a `propertyCity` and
+ * ranked by it. `vendors` has no city column — it never could have, and the
+ * parameter was accepted and dropped on the floor. Geography is not something
+ * this table can answer, so it is not claimed here.
+ */
+export async function matchVendorToTransaction(input: {
+  serviceType: string
+  urgency?: "routine" | "urgent"
+  /** Optional: exclude anyone already booked that day. */
+  neededOn?: string
+}) {
+  const supabase = await createClient()
+  const brokerageId = await callerBrokerageId(supabase)
+
+  const { data: vendors, error } = await supabase
+    .from("vendors")
+    .select("id, name, category, rating, preferred, display_priority, estimated_turnaround_days, phone, email")
+    .eq("brokerage_id", brokerageId)
+    .eq("status", "active")
+    .ilike("category", `%${input.serviceType}%`)
+
+  if (error) throw error
+  let bench = vendors ?? []
+  if (bench.length === 0) return null
+
+  if (input.neededOn) {
+    const { data: booked, error: bookedError } = await supabase
+      .from("vendor_bookings")
+      .select("vendor_id")
+      .eq("brokerage_id", brokerageId)
+      .in("vendor_id", bench.map((v) => v.id))
+      .eq("scheduled_date", input.neededOn)
+      .in("status", ["booked", "confirmed"])
+    if (bookedError) throw bookedError
+    const busy = new Set((booked ?? []).map((b) => b.vendor_id as string))
+    const free = bench.filter((v) => !busy.has(v.id))
+    // Everyone booked that day → recommend the best one anyway rather than
+    // returning null; the availability panel already says they are committed.
+    if (free.length > 0) bench = free
+  }
+
+  return pickBestVendor(bench, input.urgency ?? "routine")
 }
 
 export async function getSuggestedVendorsByStage(stage: string) {

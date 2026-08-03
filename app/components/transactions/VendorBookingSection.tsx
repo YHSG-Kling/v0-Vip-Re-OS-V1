@@ -16,6 +16,9 @@ import {
   markBookingComplete,
   rateVendorBooking,
   getSuggestedVendorsByStage,
+  checkVendorAvailability,
+  matchVendorToTransaction,
+  type VendorAvailability,
 } from "@/app/actions/vendor-marketplace"
 
 const SERVICE_TYPES = [
@@ -67,11 +70,19 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
   const [searchLoading, setSearchLoading] = useState(false)
   const [bookError, setBookError] = useState<string | null>(null)
 
+  // Availability + best-match for the chosen service type and date
+  const [urgency, setUrgency] = useState<"routine" | "urgent">("routine")
+  const [availability, setAvailability] = useState<VendorAvailability | null>(null)
+  const [bestMatch, setBestMatch] = useState<Vendor | null>(null)
+  const [matchLoading, setMatchLoading] = useState(false)
+  const [matchError, setMatchError] = useState<string | null>(null)
+
   // Rating state
   const [ratingBookingId, setRatingBookingId] = useState<string | null>(null)
   const [ratingValue, setRatingValue] = useState(5)
   const [ratingReview, setRatingReview] = useState("")
   const [ratingPending, setRatingPending] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   // Load fresh bookings on mount
   useEffect(() => {
@@ -87,6 +98,39 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
       .then((data) => setSuggested(data as Vendor[]))
       .catch(() => null)
   }, [showForm, transactionStage])
+
+  // Once the agent has said WHAT and WHEN, answer the two questions the form
+  // could not previously answer: who is actually free that day, and who should
+  // I pick. Both reads are brokerage-scoped server-side.
+  useEffect(() => {
+    if (!showForm || !serviceType || !scheduledDate) {
+      setAvailability(null)
+      setBestMatch(null)
+      setMatchError(null)
+      return
+    }
+    let cancelled = false
+    setMatchLoading(true)
+    setMatchError(null)
+    Promise.all([
+      checkVendorAvailability({ serviceType, preferredDate: scheduledDate }),
+      matchVendorToTransaction({ serviceType, urgency, neededOn: scheduledDate }),
+    ])
+      .then(([avail, match]) => {
+        if (cancelled) return
+        setAvailability(avail)
+        setBestMatch((match as Vendor | null) ?? null)
+      })
+      .catch((err: any) => {
+        if (cancelled) return
+        // Say so. Reporting nothing here would read as "nobody is available".
+        setAvailability(null)
+        setBestMatch(null)
+        setMatchError(err?.message ?? "Could not check vendor availability.")
+      })
+      .finally(() => { if (!cancelled) setMatchLoading(false) })
+    return () => { cancelled = true }
+  }, [showForm, serviceType, scheduledDate, urgency])
 
   const handleSearch = useCallback(() => {
     if (!searchQuery.trim() && !serviceType) return
@@ -131,23 +175,28 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
     })
   }
 
+  // Both of these used to swallow the error and then paint the optimistic
+  // state anyway — the row went green while the write had been refused.
   async function handleMarkComplete(bookingId: string) {
+    setActionError(null)
     try {
       await markBookingComplete(bookingId)
       setBookings(prev => prev.map(b => b.id === bookingId ? { ...b, status: "completed" } : b))
-    } catch {
-      // silent
+    } catch (err: any) {
+      setActionError(err?.message ?? "Could not mark that booking complete.")
     }
   }
 
   async function handleRate(bookingId: string) {
     setRatingPending(true)
+    setActionError(null)
     try {
       await rateVendorBooking({ bookingId, rating: ratingValue, review: ratingReview || undefined })
       setBookings(prev => prev.map(b => b.id === bookingId ? { ...b, agent_rating: ratingValue } : b))
       setRatingBookingId(null)
-    } catch {
-      // silent
+      setRatingReview("")
+    } catch (err: any) {
+      setActionError(err?.message ?? "Could not save that rating.")
     } finally {
       setRatingPending(false)
     }
@@ -248,6 +297,7 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
                 )}
               </div>
             ))}
+            {actionError && <p className="text-xs text-destructive">{actionError}</p>}
           </CardContent>
         </Card>
       )}
@@ -317,7 +367,7 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
               <p className="text-xs text-primary font-medium">Selected: {selectedVendor.name}</p>
             )}
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-3">
               <div>
                 <Label className="text-xs">Scheduled Date *</Label>
                 <Input
@@ -326,6 +376,18 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
                   onChange={(e) => setScheduledDate(e.target.value)}
                   className="h-8 text-xs mt-1"
                 />
+              </div>
+              <div>
+                <Label className="text-xs">Urgency</Label>
+                <Select value={urgency} onValueChange={(v) => setUrgency(v as "routine" | "urgent")}>
+                  <SelectTrigger className="h-8 text-xs mt-1">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="routine" className="text-xs">Routine</SelectItem>
+                    <SelectItem value="urgent" className="text-xs">Urgent — fastest turnaround</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div>
                 <Label className="text-xs">Cost (optional)</Label>
@@ -338,6 +400,81 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
                 />
               </div>
             </div>
+
+            {/* Who is actually free that day, and who to pick. Only shown once
+                the agent has chosen a service type AND a date — before that
+                there is nothing honest to say. */}
+            {serviceType && scheduledDate && (
+              <div className="rounded-md border bg-muted/30 px-3 py-2 space-y-2">
+                {matchLoading ? (
+                  <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Checking who's available…
+                  </p>
+                ) : matchError ? (
+                  <p className="text-xs text-destructive">{matchError}</p>
+                ) : availability ? (
+                  <>
+                    <p className="text-xs font-medium">
+                      {availability.availableCount} of {availability.consideredCount}{" "}
+                      {serviceType.replace(/_/g, " ")}
+                      {availability.consideredCount === 1 ? " vendor" : " vendors"} free on{" "}
+                      {new Date(`${scheduledDate}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                      {availability.busyVendorIds.length > 0 && (
+                        <span className="font-normal text-muted-foreground">
+                          {" "}· {availability.busyVendorIds.length} already booked
+                        </span>
+                      )}
+                    </p>
+
+                    {bestMatch && (
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs text-muted-foreground">
+                          Best match: <span className="font-medium text-foreground">{bestMatch.name}</span>
+                          {bestMatch.rating ? ` · ${bestMatch.rating}/5` : ""}
+                        </p>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-6 text-xs px-2"
+                          onClick={() => setSelectedVendor(bestMatch)}
+                          disabled={selectedVendor?.id === bestMatch.id}
+                        >
+                          {selectedVendor?.id === bestMatch.id ? "Selected" : "Use"}
+                        </Button>
+                      </div>
+                    )}
+
+                    {availability.availableCount > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {availability.availableVendors.slice(0, 6).map((v) => (
+                          <button
+                            key={v.id}
+                            type="button"
+                            onClick={() => setSelectedVendor(v as Vendor)}
+                            className={`text-xs rounded border px-2 py-0.5 transition-colors hover:bg-background ${selectedVendor?.id === v.id ? "border-primary bg-primary/10" : ""}`}
+                          >
+                            {v.name}
+                            {v.preferred ? " ★" : ""}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {availability.consideredCount === 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        No active {serviceType.replace(/_/g, " ")} vendors on your brokerage's bench yet.
+                      </p>
+                    )}
+                    {availability.consideredCount > 0 && availability.availableCount === 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        Everyone is booked that day — pick another date, or book anyway if they've confirmed with you directly.
+                      </p>
+                    )}
+                  </>
+                ) : null}
+              </div>
+            )}
 
             <div>
               <Label className="text-xs">Notes (optional)</Label>

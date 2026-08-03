@@ -176,172 +176,31 @@ export async function getCoordinatorDashboard_v2(coordinatorId: string) {
 }
 
 // ============================================
-// VENDOR MANAGEMENT FUNCTIONS
+// VENDOR MANAGEMENT — CONSOLIDATED AWAY
 // ============================================
-
-export async function getVendorDirectory(filters?: {
-  vendorType?: string
-  minRating?: number
-}) {
-  const supabase = await createClient()
-
-  // Tenant anchor — the directory is the CALLER'S brokerage bench, never global.
-  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return []
-
-  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint).
-  // vendors schema: id, brokerage_id, name, category, phone, email, website, rating, notes, status, created_at
-  let query = supabase.from("vendors").select("*").eq("brokerage_id", ctx.brokerageId)
-
-  if (filters?.vendorType) {
-    query = query.eq("category", filters.vendorType)
-  }
-
-  if (filters?.minRating) {
-    query = query.gte("rating", filters.minRating)
-  }
-
-  const { data, error } = await query.order("rating", { ascending: false })
-
-  if (error) throw error
-  return data || []
-}
-
-export async function bookVendor(data: {
-  vendorId: string
-  transactionId: string
-  bookedBy: string
-  serviceType: string
-  scheduledDate: string
-  cost?: number
-}) {
-  const supabase = await createClient()
-
-  // vendor_bookings schema: id, transaction_id, brokerage_id, vendor_id, service_type,
-  // booked_by, booked_at, scheduled_date, completed_at, cost, status,
-  // client_rating, agent_rating, notes, created_at, contact_id, listing_id
-  const { data: booking, error } = await supabase
-    .from("vendor_bookings")
-    .insert({
-      vendor_id: data.vendorId,
-      transaction_id: data.transactionId,
-      service_type: data.serviceType,
-      scheduled_date: data.scheduledDate,
-      cost: data.cost,
-      status: "booked",
-    })
-    .select()
-    .single()
-
-  if (error) throw error
-
-  revalidatePath("/dashboard/vendors")
-  return booking
-}
-
-export async function updateVendorBookingStatus_v2(data: {
-  bookingId: string
-  status: string
-  notes?: string
-}) {
-  const supabase = await createClient()
-
-  // Only update columns that exist in vendor_bookings schema
-  const { data: booking, error } = await supabase
-    .from("vendor_bookings")
-    .update({
-      status: data.status,
-      notes: data.notes,
-    })
-    .eq("id", data.bookingId)
-    .select()
-    .single()
-
-  if (error) throw error
-
-  revalidatePath("/portal/vendor")
-  return booking
-}
-
-export async function rateVendor(data: {
-  bookingId: string
-  clientRating?: number
-  agentRating?: number
-}) {
-  const supabase = await createClient()
-
-  const { error } = await supabase
-    .from("vendor_bookings")
-    .update({
-      client_rating: data.clientRating,
-      agent_rating: data.agentRating,
-    })
-    .eq("id", data.bookingId)
-
-  if (error) throw error
-
-  const { data: booking } = await supabase
-    .from("vendor_bookings")
-    .select("vendor_id, brokerage_id")
-    .eq("id", data.bookingId)
-    .single()
-
-  if (booking) {
-    const { data: allRatings } = await supabase
-      .from("vendor_bookings")
-      .select("agent_rating, client_rating")
-      .eq("vendor_id", booking.vendor_id)
-      .not("agent_rating", "is", null)
-
-    if (allRatings && allRatings.length > 0) {
-      const agentRatings = allRatings
-        .filter((r) => r.agent_rating != null)
-        .map((r) => r.agent_rating as number)
-      const clientRatings = allRatings
-        .filter((r) => r.client_rating != null)
-        .map((r) => r.client_rating as number)
-      const fiveStars = agentRatings.filter((r) => r === 5).length
-      const oneStars = agentRatings.filter((r) => r === 1).length
-
-      const avgAgentRating =
-        agentRatings.length > 0
-          ? agentRatings.reduce((a, b) => a + b, 0) / agentRatings.length
-          : null
-      const avgClientRating =
-        clientRatings.length > 0
-          ? clientRatings.reduce((a, b) => a + b, 0) / clientRatings.length
-          : null
-
-      if (avgAgentRating) {
-        await supabase
-          .from("vendors")
-          .update({ rating: avgAgentRating })
-          .eq("id", booking.vendor_id)
-      }
-
-      // vendor_ratings: id, vendor_id, brokerage_id, total_bookings, avg_client_rating,
-      // avg_agent_rating, five_star_count, one_star_count, last_updated
-      if (booking.brokerage_id) {
-        await supabase.from("vendor_ratings").upsert(
-          {
-            vendor_id: booking.vendor_id,
-            brokerage_id: booking.brokerage_id,
-            avg_agent_rating: avgAgentRating,
-            avg_client_rating: avgClientRating,
-            total_bookings: allRatings.length,
-            five_star_count: fiveStars,
-            one_star_count: oneStars,
-            last_updated: new Date().toISOString(),
-          },
-          { onConflict: "vendor_id" }
-        )
-      }
-    }
-  }
-
-  return { success: true }
-}
+//
+// getVendorDirectory / bookVendor / updateVendorBookingStatus_v2 / rateVendor
+// were a SECOND vendor rail living beside the live one, and every one of them
+// was strictly weaker than its counterpart — three of the four leaked across
+// tenants. They had no callers; the surfaces that book and rate vendors all use
+// the rail below. Deleted with named replacements:
+//
+//   getVendorDirectory          -> searchVendors            (vendor-marketplace)
+//       …the deleted one could not see GLOBAL vendors (brokerage_id IS NULL)
+//        and never joined vendor_ratings.
+//   bookVendor                  -> createVendorBooking      (vendor-marketplace)
+//       …the deleted one ACCEPTED bookedBy and never wrote it, omitted
+//        brokerage_id entirely (an anchorless row), and logged no timeline entry.
+//   updateVendorBookingStatus_v2-> updateVendorBookingStatus (lib/kernel/vendors)
+//       …the deleted one filtered on id alone — a cross-brokerage write — and
+//        skipped the status transition graph and its lifecycle events.
+//   rateVendor                  -> rateVendorBooking        (vendor-marketplace)
+//       …the deleted one read the booking unscoped, so any authenticated user
+//        could one-star a vendor in another brokerage's marketplace.
+//
+// matchVendorToTransaction and checkVendorAvailability were NOT duplicates —
+// nothing else did either job. They moved to vendor-marketplace.ts (the rail
+// that owns vendors) and were finished there.
 
 // ============================================
 // LENDER PORTAL FUNCTIONS
@@ -1444,65 +1303,13 @@ export async function trackTitleIssues(transactionId: string) {
 }
 
 // ============================================
-// VENDOR MATCHING & AVAILABILITY
+// VENDOR MATCHING & AVAILABILITY — MOVED
 // ============================================
-
-export async function matchVendorToTransaction(data: {
-  transactionId: string
-  serviceType: string
-  propertyCity: string
-  urgency: "routine" | "urgent"
-  brokerageId: string
-}) {
-  const supabase = await createClient()
-
-  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint).
-  // No `preferred` column on vendors — rating is the only real ranking signal.
-  const { data: vendors } = await supabase
-    .from("vendors")
-    .select("*")
-    .eq("brokerage_id", data.brokerageId)
-    .eq("category", data.serviceType)
-    .gte("rating", 4.0)
-
-  const sorted = vendors?.sort((a, b) => (b.rating || 0) - (a.rating || 0))
-
-  return sorted?.[0] || null
-}
-
-export async function checkVendorAvailability(data: {
-  vendorType: string
-  preferredDate: string
-  brokerageId: string
-}) {
-  const supabase = await createClient()
-
-  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint)
-  const { data: vendors } = await supabase
-    .from("vendors")
-    .select("*")
-    .eq("brokerage_id", data.brokerageId)
-    .eq("category", data.vendorType)
-
-  const { data: existingBookings } = await supabase
-    .from("vendor_bookings")
-    .select("vendor_id, scheduled_date")
-    .eq("scheduled_date", data.preferredDate)
-    .in("status", ["booked", "confirmed"])
-
-  const bookedVendorIds = existingBookings?.map((b) => b.vendor_id) || []
-  const availableVendors = vendors?.filter(
-    (v) => !bookedVendorIds.includes(v.id)
-  )
-
-  return {
-    availableCount: availableVendors?.length || 0,
-    availableVendors:
-      availableVendors?.sort((a, b) => (b.rating || 0) - (a.rating || 0)) ||
-      [],
-  }
-}
-
+//
+// matchVendorToTransaction and checkVendorAvailability now live in
+// app/actions/vendor-marketplace.ts, the rail that owns vendors, where they are
+// wired into the transaction booking form. They were real capabilities with no
+// counterpart anywhere — they moved and were finished, not removed.
 // ============================================
 // COMPLIANCE RISK SCORING
 // ============================================
