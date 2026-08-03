@@ -108,6 +108,9 @@ export async function aiGenerateTouchpoint(params: {
   agentId: string
   contactId: string
   touchpointType: "anniversary" | "birthday" | "check_in" | "market_update" | "holiday" | "referral_ask"
+  /** ISO date or datetime. Defaults to today — a touchpoint with no date is a
+   *  touchpoint nothing can ever show; see the note on the insert below. */
+  scheduledFor?: string
 }) {
   if (!isValidUUID(params.agentId) || !isValidUUID(params.contactId)) {
     return { success: false, error: "Invalid IDs" }
@@ -176,12 +179,26 @@ Generate:
 
     // Save the touchpoint — use schema-correct columns only.
     // scheduled_touchpoints uses message_template (text) not content (jsonb).
-    const { data: savedTouchpoint } = await supabase
+    //
+    // scheduled_date AND brokerage_id were both omitted here, and the row still
+    // inserted (both columns are nullable). The consequence was not a failed
+    // write — it was an INVISIBLE one. The only surface that shows these rows is
+    // the calendar, and it reads them with
+    //     .eq("status","scheduled").gte("scheduled_date", …).lt("scheduled_date", …)
+    // A NULL never satisfies a range comparison, so every touchpoint the AI
+    // drafted was stored and could never appear on any day — including the ones
+    // the autonomous sphere-resonance scan writes unattended. The sibling writer
+    // lifetime-customers.ts:scheduleTouchpoint had it right all along: it sets
+    // scheduled_date and the tenant anchor and checks its error.
+    const { data: savedTouchpoint, error: saveError } = await supabase
       .from("scheduled_touchpoints")
       .insert({
         agent_id:         params.agentId,
+        brokerage_id:     contact.brokerage_id ?? null,
         contact_id:       params.contactId,
         touchpoint_type:  params.touchpointType,
+        // date column — take the date part only, same as the sibling writer.
+        scheduled_date:   (params.scheduledFor ?? new Date().toISOString()).split("T")[0],
         message_template: JSON.stringify(touchpoint),
         status:           "scheduled",
         ai_generated:     true,
@@ -189,8 +206,19 @@ Generate:
       .select()
       .single()
 
+    // supabase-js RESOLVES a rejected insert, so this error has to be read to
+    // exist. It used to be dropped, and the action returned success with an
+    // undefined touchpointId — indistinguishable from a saved draft.
+    if (saveError || !savedTouchpoint) {
+      return {
+        success: false,
+        error: `Draft written but not scheduled: ${saveError?.message ?? "no row returned"}`,
+        data: touchpoint,
+      }
+    }
+
     revalidatePath("/sphere")
-    return { success: true, data: touchpoint, touchpointId: savedTouchpoint?.id }
+    return { success: true, data: touchpoint, touchpointId: savedTouchpoint.id }
   } catch (error) {
     return handleError(error, "aiGenerateTouchpoint")
   }
