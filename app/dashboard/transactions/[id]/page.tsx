@@ -9,6 +9,7 @@ import { getBuyerMoveCase } from "@/lib/transactions/buyer-move"
 import { FEATURES } from "@/lib/constants"
 import { TRANSACTION_STAGES, TransactionStage } from "@/lib/transactions/transaction-stages"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { trackTitleIssues } from "@/app/actions/multi-persona"
 
 export const dynamic = "force-dynamic"
 
@@ -385,6 +386,16 @@ export default async function TransactionDetailPage({ params }: PageProps) {
   // Get insurance quotes from vendor services
   const insuranceQuotes = (vendorServices ?? []).filter(v => v.service_type === "insurance_quote")
 
+  // TITLE ISSUE TRIAGE — transaction_title_escrow.title_issues is a TEXT column
+  // the platform writes as a JSON array of { text, status, severity }. The Title
+  // & Escrow card rendered that raw blob inside one destructive badge, so a
+  // resolved issue and an open critical one looked identical and the
+  // closing-blocking verdict was never computed. trackTitleIssues is the parser
+  // that answers it (critical / moderate / canClose) and had no caller.
+  const titleIssueSummary = titleEscrow
+    ? await trackTitleIssues(id).catch(() => null)
+    : null
+
   // Build stage stepper data
   const stages = Object.values(TRANSACTION_STAGES).filter(s => s !== "LOST") as TransactionStage[]
   const currentStageIndex = stages.indexOf(transaction.stage as TransactionStage)
@@ -469,6 +480,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       tasks={tasks ?? []}
       timeline={timeline ?? []}
       titleEscrow={titleEscrow}
+      titleIssueSummary={titleIssueSummary}
       inspections={inspections ?? []}
       pendingQuoteApprovals={pendingQuoteApprovals ?? []}
       vendorServices={vendorServices ?? []}

@@ -8,7 +8,7 @@ import { AlertTriangle, Shield, Award, ClipboardCheck, ExternalLink, FileWarning
 import Link from "next/link"
 import { getPendingApprovals, getComplianceViolations, generateComplianceReport, trackCertificationExpiration } from "@/app/actions/compliance-monitoring"
 import { getAllTransactionComplianceLogs } from "@/app/actions/transaction-compliance"
-import { calculateComplianceRiskScore } from "@/app/actions/multi-persona"
+import { calculateComplianceRiskScore, getComplianceOfficerDashboard } from "@/app/actions/multi-persona"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { RegulatoryChangesPanel, type RegChangeRow } from "./regulatory-changes-panel"
@@ -42,7 +42,14 @@ export default async function ComplianceDashboardPage() {
   const today = new Date()
   const thirtyDaysAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000)
 
-  const [pendingApprovals, violations, monthlyReport, transactionComplianceLogs, certStatus, complianceRiskScore] = await Promise.all([
+  // OFFICER LEDGER — the two tables this command center never read.
+  // compliance_events (allowed=false) is the GATE ledger: every outbound action
+  // the platform structurally refused. compliance_flags is the content-moderation
+  // queue, and the page could already RESOLVE a flag (ExceptionReviewPanelWrapper
+  // → submitComplianceReviewDecision writes compliance_flags) while never LISTING
+  // one, so the officer could close a flag they had no way to see. Both come from
+  // getComplianceOfficerDashboard, which is brokerage-scoped via requireCaller().
+  const [pendingApprovals, violations, monthlyReport, transactionComplianceLogs, certStatus, complianceRiskScore, officerLedger] = await Promise.all([
     getPendingApprovals(),
     getComplianceViolations(),
     generateComplianceReport({
@@ -52,7 +59,27 @@ export default async function ComplianceDashboardPage() {
     getAllTransactionComplianceLogs({ limit: 100 }),
     user ? trackCertificationExpiration(user.id).catch(() => null) : Promise.resolve(null),
     user ? calculateComplianceRiskScore(user.id).catch(() => null) : Promise.resolve(null),
+    getComplianceOfficerDashboard().catch(() => ({ pendingReviews: [], recentViolations: [] })),
   ])
+
+  const blockedGateEvents = (officerLedger?.pendingReviews ?? []) as Array<{
+    id: string
+    gate_name: string | null
+    blocked_reason: string | null
+    entity_type: string | null
+    entity_id: string | null
+    severity: string | null
+    actor_role: string | null
+    created_at: string | null
+  }>
+  const flaggedContent = (officerLedger?.recentViolations ?? []) as Array<{
+    id: string
+    violation_type: string | null
+    severity: string | null
+    content_type: string | null
+    flagged_content: string | null
+    detected_at: string | null
+  }>
 
   // Resolve brokerage for the AI brief
   let brokerageId: string | null = null
@@ -316,6 +343,96 @@ export default async function ComplianceDashboardPage() {
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {/* Blocked gate events + flagged content — the officer ledger.
+          Neither table had a reader on this page; the gate refusals and the
+          content-moderation queue were both invisible here. */}
+      {(blockedGateEvents.length > 0 || flaggedContent.length > 0) && (
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <FileWarning className="h-4 w-4 text-red-600" />
+                Blocked Actions
+                <Badge variant="destructive" className="text-xs">{blockedGateEvents.length}</Badge>
+              </CardTitle>
+              <CardDescription>
+                Outbound actions the compliance gate refused — most recent first
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2 max-h-80 overflow-y-auto">
+              {blockedGateEvents.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No blocked actions on record.</p>
+              ) : (
+                blockedGateEvents.map((e) => (
+                  <div key={e.id} className="rounded-md border p-2.5 space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-medium">
+                        {(e.gate_name ?? "gate").replace(/_/g, " ")}
+                      </span>
+                      {e.severity && (
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">{e.severity}</Badge>
+                      )}
+                      {e.actor_role && (
+                        <span className="text-[10px] text-muted-foreground">{e.actor_role}</span>
+                      )}
+                    </div>
+                    {e.blocked_reason && (
+                      <p className="text-xs text-muted-foreground">{e.blocked_reason}</p>
+                    )}
+                    <p className="text-[10px] text-muted-foreground">
+                      {e.entity_type ?? "entity"}
+                      {e.created_at ? ` · ${new Date(e.created_at).toLocaleString()}` : ""}
+                    </p>
+                  </div>
+                ))
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-amber-600" />
+                Flagged Content Queue
+                <Badge variant="outline" className="text-xs">{flaggedContent.length}</Badge>
+              </CardTitle>
+              <CardDescription>
+                compliance_flags awaiting a review decision
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2 max-h-80 overflow-y-auto">
+              {flaggedContent.length === 0 ? (
+                <p className="text-xs text-muted-foreground">Nothing in the flagged queue.</p>
+              ) : (
+                flaggedContent.map((f) => (
+                  <div key={f.id} className="rounded-md border p-2.5 space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-medium">
+                        {(f.violation_type ?? "violation").replace(/_/g, " ")}
+                      </span>
+                      {f.severity && (
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">{f.severity}</Badge>
+                      )}
+                      {f.content_type && (
+                        <span className="text-[10px] text-muted-foreground">{f.content_type}</span>
+                      )}
+                    </div>
+                    {f.flagged_content && (
+                      <p className="text-xs text-muted-foreground line-clamp-2">{f.flagged_content}</p>
+                    )}
+                    {f.detected_at && (
+                      <p className="text-[10px] text-muted-foreground">
+                        {new Date(f.detected_at).toLocaleString()}
+                      </p>
+                    )}
+                  </div>
+                ))
+              )}
+            </CardContent>
+          </Card>
+        </div>
       )}
 
       {/* Regulatory changes — review UI over the weekly regulatory watcher */}

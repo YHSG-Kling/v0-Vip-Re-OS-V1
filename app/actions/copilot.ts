@@ -355,14 +355,25 @@ export async function generateDailyGameplan(userId: string) {
   }))
 
   // Get at-risk transactions (overdue or due soon)
-  const { data: atRiskDeals } = await supabase
+  //
+  // THE "PROTECT DEALS" COLUMN WAS ALWAYS EMPTY. This selected `listings(*)`,
+  // and transaction_milestones has NO foreign key to listings (verified live:
+  // its only FKs are transaction_id→transactions, brokerage_id→brokerages and
+  // the two user columns). PostgREST cannot resolve that embed, so the request
+  // failed and — because the error was discarded — the gameplan rendered as
+  // "no at-risk deals" forever. The address lives on transactions.
+  const { data: atRiskDeals, error: atRiskError } = await supabase
     .from("transaction_milestones")
-    .select("*, listings(*)")
+    .select("*, transactions(id, property_address)")
     .eq("brokerage_id", profile.brokerage_id)
     .eq("status", "pending")
     .lt("target_date", new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString())
     .order("target_date", { ascending: true })
     .limit(10)
+
+  if (atRiskError) {
+    console.error("[copilot] at-risk milestone read failed:", atRiskError.message)
+  }
 
   // Get overdue tasks
   const { data: overdueTasks } = await supabase
@@ -395,7 +406,7 @@ Generate a daily gameplan for ${profile.first_name}. Organize into 3 columns:
 ${hotLeads?.map((lead) => `- ${lead.first_name} ${lead.last_name} (Score: ${lead.lead_score}) - Stage: ${lead.stage}`).join("\n") || "No hot leads today"}
 
 **DEALS TO PROTECT (At-Risk Transactions):**
-${atRiskDeals?.map((deal) => `- ${deal.listings?.property_address || "Property"} - ${deal.title} (Due: ${new Date(deal.target_date).toLocaleDateString()})`).join("\n") || "No at-risk deals"}
+${atRiskDeals?.map((deal) => `- ${deal.transactions?.property_address || "Property"} - ${deal.title || deal.milestone_name} (Due: ${new Date(deal.target_date).toLocaleDateString()})`).join("\n") || "No at-risk deals"}
 
 **CONTENT TO POST (Ready to Publish):**
 ${contentReady?.map((content) => `- Video: ${content.title || "Untitled"} for ${content.contacts?.first_name || "social media"}`).join("\n") || "No content ready"}

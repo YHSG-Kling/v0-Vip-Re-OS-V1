@@ -10,11 +10,15 @@ import {
   getNextAllowedBuyerStates,
   canBuyerSearchProperties,
   executeBuyerStateTransition,
+  validateBuyerStateTransition,
+  validateBuyerRollback,
+  validateBuyerReactivation,
+  checkBuyerFinancialVerification,
 } from "@/app/actions/buyer-lifecycle-core"
 import { getStateDefinition, getStateIndex, BUYER_LIFECYCLE_STATES } from "@/lib/buyer-lifecycle/lifecycle-definitions"
 import type { BuyerState } from "@/lib/buyer-lifecycle/lifecycle-definitions"
 import type { LifecycleHistoryEntry } from "@/lib/buyer-lifecycle/lifecycle-logger"
-import type { GatingResult } from "@/lib/buyer-lifecycle"
+import type { GatingResult, TransitionValidationResult, FinancialVerificationResult } from "@/lib/buyer-lifecycle"
 import { CheckCircle2, Circle, Loader2, AlertTriangle, ChevronRight, Clock } from "lucide-react"
 
 // ─── PIPELINE STAGES ────────────────────────────────────────────────────────
@@ -50,6 +54,30 @@ function daysSince(date: Date | string): number {
   return Math.floor((Date.now() - new Date(date).getTime()) / 86_400_000)
 }
 
+// ─── GOVERNANCE PRE-FLIGHT ───────────────────────────────────────────────────
+// executeBuyerStateTransition EMITS; it does not validate (emitLifecycleTransition
+// goes straight to transitionLifecycle). The three validators that decide whether
+// a move is legal — frozen state, role authority, allowed-from, financial
+// verification — were exported and called from nowhere, so this panel offered
+// buttons for moves the governance layer would refuse and only found out after
+// the write. The sheet now runs the right validator BEFORE the write and shows
+// the engine's own reason.
+const ROLLBACK_TARGETS = new Set<BuyerState>(["BUYER_ON_HOLD", "BUYER_DISENGAGED"])
+const PAUSED_STATES = new Set<BuyerState>(["BUYER_ON_HOLD", "BUYER_DISENGAGED"])
+
+interface Preflight {
+  kind: "transition" | "rollback" | "reactivation"
+  result: TransitionValidationResult
+  /** Only fetched when the engine names financial verification as the blocker. */
+  financial: FinancialVerificationResult | null
+}
+
+const PREFLIGHT_KIND_LABEL: Record<Preflight["kind"], string> = {
+  transition:   "Transition check",
+  rollback:     "Rollback check",
+  reactivation: "Reactivation check",
+}
+
 // ─── PROPS ───────────────────────────────────────────────────────────────────
 
 interface BuyerLifecyclePanelProps {
@@ -68,9 +96,20 @@ interface TransitionSheetProps {
   onConfirm:    (notes: string, overrideReason?: string) => Promise<void>
   onClose:      () => void
   transitioning: boolean
+  preflight:    Preflight | null
+  preflightLoading: boolean
 }
 
-function TransitionSheet({ toState, fromState, canOverride, onConfirm, onClose, transitioning }: TransitionSheetProps) {
+function TransitionSheet({
+  toState,
+  fromState,
+  canOverride,
+  onConfirm,
+  onClose,
+  transitioning,
+  preflight,
+  preflightLoading,
+}: TransitionSheetProps) {
   const [notes, setNotes] = useState("")
   const [showOverride, setShowOverride] = useState(false)
   const [overrideReason, setOverrideReason] = useState("")
@@ -78,6 +117,9 @@ function TransitionSheet({ toState, fromState, canOverride, onConfirm, onClose, 
 
   const overrideArmed = showOverride && overrideReason.trim().length >= 10
   const overrideTooShort = showOverride && overrideReason.trim().length > 0 && overrideReason.trim().length < 10
+
+  const blocked = !!preflight && !preflight.result.allowed
+  const engineWarnings = preflight?.result.warnings ?? []
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">
@@ -91,6 +133,81 @@ function TransitionSheet({ toState, fromState, canOverride, onConfirm, onClose, 
             </p>
           )}
         </div>
+        {/* ═══ GOVERNANCE PRE-FLIGHT ═══════════════════════════════════════
+            Every line below is text the validator produced. Nothing here
+            guesses a cause the engine did not report. */}
+        {preflightLoading && (
+          <div className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            Checking the governance gate…
+          </div>
+        )}
+
+        {!preflightLoading && preflight && blocked && (
+          <div className="rounded-md border border-red-200 bg-red-50 p-3 space-y-1.5">
+            <p className="text-xs font-semibold text-red-900 flex items-center gap-1.5">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              {PREFLIGHT_KIND_LABEL[preflight.kind]} failed
+            </p>
+            {!!preflight.result.reason && (
+              <p className="text-xs text-red-800">{preflight.result.reason}</p>
+            )}
+            {(preflight.result.blockers ?? []).length > 0 && (
+              <ul className="text-[11px] text-red-700 list-disc pl-4">
+                {preflight.result.blockers!.map((b) => (
+                  <li key={b}>{b.replace(/_/g, " ")}</li>
+                ))}
+              </ul>
+            )}
+            {/* The financial-verification blocker is the one an agent can act on
+                immediately, so show WHAT evidence is on file rather than only
+                that something is missing. */}
+            {preflight.financial && (
+              <div className="border-t border-red-200 pt-1.5 mt-1">
+                {preflight.financial.signals.length === 0 ? (
+                  <p className="text-[11px] text-red-700">
+                    No financial-verification evidence on file — no pre-approval, proof of funds,
+                    lender introduction or agent confirmation has been recorded for this buyer.
+                  </p>
+                ) : (
+                  <>
+                    <p className="text-[11px] font-medium text-red-800">
+                      Evidence on file (still not sufficient to verify):
+                    </p>
+                    <ul className="text-[11px] text-red-700 list-disc pl-4">
+                      {preflight.financial.signals.slice(0, 4).map((s, i) => (
+                        <li key={i}>
+                          {s.type.replace(/[._]/g, " ")} · {new Date(s.occurredAt).toLocaleDateString()}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </div>
+            )}
+            {canOverride && (
+              <p className="text-[11px] text-red-700">
+                A broker/admin override can force this advance — the reason is recorded for audit.
+              </p>
+            )}
+          </div>
+        )}
+
+        {!preflightLoading && preflight && !blocked && engineWarnings.length > 0 && (
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 space-y-0.5">
+            {engineWarnings.map((w, i) => (
+              <p key={i} className="text-[11px] text-amber-800">{w}</p>
+            ))}
+          </div>
+        )}
+
+        {!preflightLoading && preflight && !blocked && engineWarnings.length === 0 && (
+          <p className="text-xs text-emerald-700 flex items-center gap-1.5">
+            <CheckCircle2 className="h-3.5 w-3.5" />
+            {PREFLIGHT_KIND_LABEL[preflight.kind]} passed.
+          </p>
+        )}
+
         <div className="space-y-1.5">
           <label className="text-sm font-medium">Notes (optional)</label>
           <textarea
@@ -146,10 +263,16 @@ function TransitionSheet({ toState, fromState, canOverride, onConfirm, onClose, 
           <Button
             className={overrideArmed ? "flex-1 bg-amber-600 hover:bg-amber-700 text-white" : "flex-1"}
             onClick={() => onConfirm(notes, overrideArmed ? overrideReason.trim() : undefined)}
-            disabled={transitioning || (showOverride && !overrideArmed)}
+            disabled={
+              transitioning ||
+              preflightLoading ||
+              (showOverride && !overrideArmed) ||
+              // A refused pre-flight is only passable with an armed override.
+              (blocked && !overrideArmed)
+            }
           >
             {transitioning && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-            {overrideArmed ? "Force Advance" : "Confirm"}
+            {overrideArmed ? "Force Advance" : blocked ? "Blocked" : "Confirm"}
           </Button>
           <Button variant="outline" className="flex-1" onClick={onClose} disabled={transitioning}>
             Cancel
@@ -173,6 +296,8 @@ export function BuyerLifecyclePanel({ contactId, agentId, brokerageId, userRole 
   const [transitioning,   setTransitioning]   = useState(false)
   const [selectedNext,    setSelectedNext]    = useState<BuyerState | null>(null)
   const [stateEnteredAt,  setStateEnteredAt]  = useState<Date | null>(null)
+  const [preflight,       setPreflight]       = useState<Preflight | null>(null)
+  const [preflightLoading, setPreflightLoading] = useState(false)
 
   // ── Load all data in parallel on mount ──────────────────────────────────
   useEffect(() => {
@@ -199,6 +324,72 @@ export function BuyerLifecyclePanel({ contactId, agentId, brokerageId, userRole 
     load()
     return () => { cancelled = true }
   }, [contactId, userRole])
+
+  // ── Governance pre-flight for the pending transition ─────────────────────
+  // Runs the validator that matches the SHAPE of the move: a move INTO
+  // on-hold/disengaged is a rollback, a move OUT of one is a reactivation,
+  // everything else is an ordinary forward transition. Each has its own rules
+  // (rollback refuses frozen states; reactivation re-checks financial
+  // verification), which is why there are three validators and not one.
+  useEffect(() => {
+    if (!selectedNext) {
+      setPreflight(null)
+      setPreflightLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setPreflight(null)
+    setPreflightLoading(true)
+
+    const target = selectedNext
+    const kind: Preflight["kind"] = ROLLBACK_TARGETS.has(target)
+      ? "rollback"
+      : currentState && PAUSED_STATES.has(currentState)
+        ? "reactivation"
+        : "transition"
+
+    async function run() {
+      const result: TransitionValidationResult =
+        kind === "rollback"
+          ? await validateBuyerRollback({
+              contactId,
+              targetState: target as "BUYER_ON_HOLD" | "BUYER_DISENGAGED",
+              userRole,
+            })
+          : kind === "reactivation"
+            ? await validateBuyerReactivation({ contactId, targetState: target, userRole })
+            : await validateBuyerStateTransition({
+                contactId,
+                currentState,
+                targetState: target,
+                userRole,
+                userId: agentId,
+              })
+
+      const needsFinancial =
+        !result.allowed && (result.blockers ?? []).includes("financial_verification_required")
+      const financial = needsFinancial
+        ? await checkBuyerFinancialVerification(contactId).catch(() => null)
+        : null
+
+      if (cancelled) return
+      setPreflight({ kind, result, financial })
+      setPreflightLoading(false)
+    }
+
+    run().catch((err) => {
+      if (cancelled) return
+      setPreflight({
+        kind,
+        result: { allowed: false, reason: err instanceof Error ? err.message : "Validation failed" },
+        financial: null,
+      })
+      setPreflightLoading(false)
+    })
+
+    return () => { cancelled = true }
+  }, [selectedNext, currentState, contactId, userRole, agentId])
 
   // ── Refresh after a transition ───────────────────────────────────────────
   async function refresh() {
@@ -278,6 +469,8 @@ export function BuyerLifecyclePanel({ contactId, agentId, brokerageId, userRole 
           onConfirm={handleTransition}
           onClose={() => setSelectedNext(null)}
           transitioning={transitioning}
+          preflight={preflight}
+          preflightLoading={preflightLoading}
         />
       )}
 

@@ -23,6 +23,7 @@ import {
   CheckCircle2,
 } from "lucide-react"
 import { CreateTeamDialog } from "./create-team-dialog"
+import { getTeamDashboard } from "@/app/actions/multi-persona"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const dynamic = "force-dynamic"
@@ -196,6 +197,27 @@ export default async function TeamDashboard() {
   // Safely unpack
   const members = membersResult.status === "fulfilled" ? (membersResult.value.data ?? []) : []
   const teams = teamsResult.status === "fulfilled" ? (teamsResult.value.data ?? []) : []
+
+  // TEAM ROLL-UPS — the Teams card listed nothing but a name and a link that
+  // loops back to this page. getTeamDashboard is the roll-up that was built for
+  // exactly this row (members via team_members, that team's open deals, and the
+  // volume behind them) and had no caller anywhere. It is brokerage-scoped by
+  // requireCaller() and throws on a team outside the caller's brokerage, so each
+  // lookup is caught individually and a failed one simply renders as before.
+  const teamMetrics = new Map<
+    string,
+    { totalMembers: number; activeTransactions: number; totalVolume: number }
+  >()
+  const teamRollups = await Promise.all(
+    teams.map((t: { id: string }) =>
+      getTeamDashboard(t.id)
+        .then((d) => ({ id: t.id, metrics: d.metrics }))
+        .catch(() => null)
+    )
+  )
+  for (const r of teamRollups) {
+    if (r) teamMetrics.set(r.id, r.metrics)
+  }
   const activeContactsCount =
     activeContactsResult.status === "fulfilled" ? (activeContactsResult.value.count ?? 0) : 0
   const activeTransactions =
@@ -799,14 +821,27 @@ export default async function TeamDashboard() {
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-2">
-                    {teams.map((team) => (
-                      <Link key={team.id} href="/dashboard/teams">
-                        <div className="flex items-center justify-between p-2.5 rounded-md border border-border hover:bg-muted/50 cursor-pointer">
-                          <p className="text-sm font-medium truncate">{team.name}</p>
-                          <ArrowRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                        </div>
-                      </Link>
-                    ))}
+                    {teams.map((team) => {
+                      const m = teamMetrics.get(team.id)
+                      return (
+                        <Link key={team.id} href="/dashboard/teams">
+                          <div className="flex items-center justify-between gap-2 p-2.5 rounded-md border border-border hover:bg-muted/50 cursor-pointer">
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium truncate">{team.name}</p>
+                              {m && (
+                                <p className="text-[11px] text-muted-foreground">
+                                  {m.totalMembers} member{m.totalMembers === 1 ? "" : "s"}
+                                  {" · "}
+                                  {m.activeTransactions} active deal{m.activeTransactions === 1 ? "" : "s"}
+                                  {m.totalVolume > 0 && ` · $${Math.round(m.totalVolume).toLocaleString()}`}
+                                </p>
+                              )}
+                            </div>
+                            <ArrowRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                          </div>
+                        </Link>
+                      )
+                    })}
                   </div>
                 </CardContent>
               </Card>

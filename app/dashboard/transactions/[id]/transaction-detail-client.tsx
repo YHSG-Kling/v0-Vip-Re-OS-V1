@@ -258,6 +258,21 @@ interface TransactionDetailClientProps {
     closing_scheduled_date: string | null
     closing_location: string | null
   } | null
+  /**
+   * Parsed title-issue triage from trackTitleIssues (multi-persona).
+   * transaction_title_escrow.title_issues is a TEXT column that the platform
+   * writes as a JSON array of { text, status, severity } — the card below used
+   * to render that whole blob inside one red badge, so a resolved issue looked
+   * identical to a critical open one and the closing-blocking question ("are
+   * there open CRITICAL issues?") was never asked. Null when the server-side
+   * triage could not run.
+   */
+  titleIssueSummary: {
+    critical: Array<Record<string, unknown>>
+    moderate: Array<Record<string, unknown>>
+    totalUnresolved: number
+    canClose: boolean
+  } | null
   // Uses actual Supabase transaction_inspections table columns
   inspections: Array<{
     id: string
@@ -454,6 +469,7 @@ export function TransactionDetailClient({
   tasks,
   timeline,
   titleEscrow,
+  titleIssueSummary,
   inspections,
   pendingQuoteApprovals,
   vendorServices,
@@ -4494,9 +4510,29 @@ export function TransactionDetailClient({
                         {titleEscrow.title_issues && (
                           <>
                             <span className="text-muted-foreground">Issues</span>
-                            <Badge variant="destructive" className="w-fit text-[10px] px-1.5 py-0">
-                              {titleEscrow.title_issues}
-                            </Badge>
+                            {titleIssueSummary ? (
+                              <span className="flex flex-wrap items-center gap-1">
+                                {titleIssueSummary.critical.length > 0 && (
+                                  <Badge variant="destructive" className="w-fit text-[10px] px-1.5 py-0">
+                                    {titleIssueSummary.critical.length} critical
+                                  </Badge>
+                                )}
+                                {titleIssueSummary.moderate.length > 0 && (
+                                  <Badge variant="secondary" className="w-fit text-[10px] px-1.5 py-0">
+                                    {titleIssueSummary.moderate.length} moderate
+                                  </Badge>
+                                )}
+                                {titleIssueSummary.totalUnresolved === 0 && (
+                                  <Badge variant="outline" className="w-fit text-[10px] px-1.5 py-0">
+                                    all resolved
+                                  </Badge>
+                                )}
+                              </span>
+                            ) : (
+                              <Badge variant="destructive" className="w-fit text-[10px] px-1.5 py-0">
+                                {titleEscrow.title_issues}
+                              </Badge>
+                            )}
                           </>
                         )}
                         {titleEscrow.earnest_money_amount && (
@@ -4506,6 +4542,21 @@ export function TransactionDetailClient({
                           </>
                         )}
                       </div>
+                      {/* The closing-blocking verdict the triage produces. An open
+                          CRITICAL title issue stops a closing; nothing on this page
+                          said so before. */}
+                      {titleIssueSummary && !titleIssueSummary.canClose && (
+                        <p className="text-[11px] text-destructive">
+                          Cannot close — {titleIssueSummary.critical.length} critical title issue
+                          {titleIssueSummary.critical.length === 1 ? "" : "s"} unresolved.
+                        </p>
+                      )}
+                      {titleIssueSummary && titleIssueSummary.canClose && titleIssueSummary.totalUnresolved > 0 && (
+                        <p className="text-[11px] text-amber-600">
+                          {titleIssueSummary.totalUnresolved} unresolved title issue
+                          {titleIssueSummary.totalUnresolved === 1 ? "" : "s"} — none closing-blocking.
+                        </p>
+                      )}
                     </>
                   ) : (
                     <p className="text-xs text-muted-foreground">No title/escrow info assigned.</p>

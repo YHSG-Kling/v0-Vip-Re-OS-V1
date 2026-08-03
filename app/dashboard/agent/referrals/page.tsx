@@ -10,6 +10,7 @@ import {
   type ReferralRow,
   type CreateReferralParams,
 } from "@/app/actions/referrals/referral-actions"
+import { getReferralPartnerStats } from "@/app/actions/multi-persona"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -101,6 +102,33 @@ export default function ReferralsPage() {
       .catch((e: unknown) => setError(e instanceof Error ? e.message : "Failed to reload"))
       .finally(() => setLoading(false))
   }
+
+  // BROKERAGE-WIDE PARTNER SCORECARD.
+  // Everything else on this page is derived from `referrals`, which
+  // listPartnersWithReferrals scopes to THIS AGENT (and caps at 200). So the
+  // partner card could only ever answer "how has this partner done for me".
+  // getReferralPartnerStats answers the question the agent actually asks before
+  // sending business — how does this partner convert for the BROKERAGE — and it
+  // had no caller. Loaded for the selected partner only.
+  const [partnerStats, setPartnerStats] = useState<{
+    totalReferrals: number
+    convertedReferrals: number
+    totalCommission: number
+    conversionRate: number
+  } | null>(null)
+  const [partnerStatsLoading, setPartnerStatsLoading] = useState(false)
+
+  useEffect(() => {
+    if (!activePartner) { setPartnerStats(null); return }
+    let cancelled = false
+    setPartnerStatsLoading(true)
+    setPartnerStats(null)
+    getReferralPartnerStats(activePartner.id)
+      .then((s) => { if (!cancelled) setPartnerStats(s) })
+      .catch(() => { if (!cancelled) setPartnerStats(null) })
+      .finally(() => { if (!cancelled) setPartnerStatsLoading(false) })
+    return () => { cancelled = true }
+  }, [activePartner])
 
   // Derived
   const partnerReferrals = activePartner
@@ -268,6 +296,41 @@ export default function ReferralsPage() {
                     </button>
                   )
                 })}
+              </div>
+            )}
+
+            {/* Brokerage-wide scorecard for the selected partner */}
+            {activePartner && (
+              <div className="mt-4 rounded-lg border border-border bg-card p-3">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                  {activePartner.partner_name} — brokerage-wide
+                </p>
+                {partnerStatsLoading ? (
+                  <p className="text-xs text-muted-foreground mt-2">Loading…</p>
+                ) : partnerStats ? (
+                  <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <p className="text-muted-foreground">Referrals</p>
+                      <p className="font-semibold text-sm">{partnerStats.totalReferrals}</p>
+                    </div>
+                    <div>
+                      <p className="text-muted-foreground">Converted</p>
+                      <p className="font-semibold text-sm">{partnerStats.convertedReferrals}</p>
+                    </div>
+                    <div>
+                      <p className="text-muted-foreground">Conversion</p>
+                      <p className="font-semibold text-sm">{partnerStats.conversionRate.toFixed(0)}%</p>
+                    </div>
+                    <div>
+                      <p className="text-muted-foreground">Commission</p>
+                      <p className="font-semibold text-sm">{fmt(partnerStats.totalCommission)}</p>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Brokerage-wide stats unavailable.
+                  </p>
+                )}
               </div>
             )}
           </div>

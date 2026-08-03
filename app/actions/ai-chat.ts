@@ -824,13 +824,18 @@ export async function applyChatTemplate(templateId: string, sessionId: string) {
   // Get session context for personalization
   const { data: session } = await supabase.from("conversations").select("*, contacts(*)").eq("id", sessionId).single()
 
-  // Personalize template
-  let personalizedContent = template.template_content
+  // THE COLUMN IS template_body, NOT template_content.
+  // chat_templates carries template_name + template_body (verified live); the
+  // old read of `template.template_content` was undefined, so every "apply
+  // template" produced an empty message — and `undefined.replace(...)` threw
+  // outright the moment the conversation had a contact on it. Personalisation
+  // is global (replaceAll) because a body may use {first_name} more than once.
+  let personalizedContent: string = template.template_body ?? ""
   if (session?.contacts) {
     personalizedContent = personalizedContent
-      .replace("{first_name}", session.contacts.first_name || "")
-      .replace("{last_name}", session.contacts.last_name || "")
-      .replace("{city}", session.contacts.city || "")
+      .replaceAll("{first_name}", session.contacts.first_name || "")
+      .replaceAll("{last_name}", session.contacts.last_name || "")
+      .replaceAll("{city}", session.contacts.city || "")
   }
 
   return {

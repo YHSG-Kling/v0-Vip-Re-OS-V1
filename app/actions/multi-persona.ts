@@ -1219,7 +1219,29 @@ export async function predictDeadlineRisks(
 // LENDER CONDITION TRACKING
 // ============================================
 
-export async function trackConditionClearance(loanId: string) {
+/**
+ * Measure how far a loan's conditions have been cleared.
+ *
+ * `promoteOnFullClearance` DEFAULTS TO FALSE ON PURPOSE.
+ *
+ * This function used to flip `underwriting_status` to `clear_to_close` by itself
+ * the moment the last condition was marked cleared — silently, with no
+ * confirmation and no notification to anyone. That never actually fired, because
+ * nothing called this function and the lender panel did not even offer the
+ * "cleared" status it keys on, so the branch was unreachable.
+ *
+ * Wiring the panel up makes it reachable, and a reachable silent milestone write
+ * is a different thing from a dormant one. Clear-to-close is the lender signing
+ * off on the loan: `app/actions/lender-portal-actions.ts:issueClearToClose` is the
+ * explicit path for it, and it is confirmation-gated AND notifies the buyer and
+ * the agent. Two writers of the same milestone, one of them silent, is how a deal
+ * advances without anybody being told.
+ *
+ * So the promotion is kept — nothing is deleted — but it is now opt-in. The panel
+ * reads this for the meter only and routes the actual milestone through the gated
+ * path. A caller that genuinely wants the automatic promotion can still ask for it.
+ */
+export async function trackConditionClearance(loanId: string, promoteOnFullClearance = false) {
   const supabase = await createClient()
 
   const { data: loan } = await supabase
@@ -1248,13 +1270,17 @@ export async function trackConditionClearance(loanId: string) {
       : 0
 
   if (
+    promoteOnFullClearance &&
     clearanceRate === 100 &&
     loan?.underwriting_status !== "clear_to_close"
   ) {
-    await supabase
+    const { error: promoteError } = await supabase
       .from("transaction_lenders")
       .update({ underwriting_status: "clear_to_close" })
       .eq("id", loanId)
+    if (promoteError) {
+      console.error("[trackConditionClearance] clear_to_close promotion failed:", promoteError.message)
+    }
   }
 
   return { pendingConditions, clearedConditions, clearanceRate }

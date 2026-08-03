@@ -199,10 +199,18 @@ export async function getKnowledgeArticles(options: {
   const { brokerageId } = await getAgentContext()
   const { category, status, limit = 50, offset = 0 } = options
 
+  // A NULL brokerage produced the literal filter `brokerage_id.eq.null`, which
+  // PostgREST rejects (22P02) — the admin screen would have shown "Failed to
+  // fetch articles" for anyone not attached to a brokerage instead of the
+  // platform-wide rows they are entitled to see.
+  const scopeFilter = brokerageId
+    ? `brokerage_id.is.null,brokerage_id.eq.${brokerageId}`
+    : 'brokerage_id.is.null'
+
   let query = supabase
     .from('knowledge_articles')
     .select('*, author:users(first_name, last_name, email)', { count: 'exact' })
-    .or(`brokerage_id.is.null,brokerage_id.eq.${brokerageId}`)
+    .or(scopeFilter)
     .order('updated_at', { ascending: false })
     .range(offset, offset + limit - 1)
 
@@ -231,12 +239,18 @@ export async function getKnowledgeArticle(idOrSlug: string) {
   const supabase = await createClient()
   const { brokerageId } = await getAgentContext()
 
+  // Same NULL-brokerage guard as getKnowledgeArticles — `brokerage_id.eq.null`
+  // is not a filter PostgREST accepts.
+  const scopeFilter = brokerageId
+    ? `brokerage_id.is.null,brokerage_id.eq.${brokerageId}`
+    : 'brokerage_id.is.null'
+
   // Try by ID first
   let { data, error } = await supabase
     .from('knowledge_articles')
     .select('*, author:users(first_name, last_name, email)')
     .eq('id', idOrSlug)
-    .or(`brokerage_id.is.null,brokerage_id.eq.${brokerageId}`)
+    .or(scopeFilter)
     .single()
 
   // If not found, try by slug
@@ -245,7 +259,7 @@ export async function getKnowledgeArticle(idOrSlug: string) {
       .from('knowledge_articles')
       .select('*, author:users(first_name, last_name, email)')
       .eq('slug', idOrSlug)
-      .or(`brokerage_id.is.null,brokerage_id.eq.${brokerageId}`)
+      .or(scopeFilter)
       .single()
 
     data = result.data
@@ -327,6 +341,26 @@ export async function updateKnowledgeArticle(
   const supabase = await createClient()
   const { brokerageId } = await getAgentContext()
 
+  // OWNERSHIP IS DECIDED ON THE ROW THAT IS ACTUALLY THERE.
+  // The filter used to be `.eq('brokerage_id', brokerageId)`, which can never
+  // match a PLATFORM article (brokerage_id IS NULL) — editing one affected zero
+  // rows and `.single()` then failed with a generic "Failed to update article".
+  // Same defect deleteHelpTopic already documents, one table over.
+  const { data: article, error: readError } = await supabase
+    .from('knowledge_articles')
+    .select('id, brokerage_id')
+    .eq('id', id)
+    .maybeSingle()
+  if (readError) throw new Error(readError.message)
+  if (!article) throw new Error('That article was not found')
+  if (article.brokerage_id === null) {
+    if (!(await callerIsPlatformStaff())) {
+      throw new Error('Only platform staff can edit a platform-wide article')
+    }
+  } else if (article.brokerage_id !== brokerageId) {
+    throw new Error('That article belongs to another brokerage')
+  }
+
   const updateData: Record<string, unknown> = {
     ...input,
     updated_at: new Date().toISOString(),
@@ -349,7 +383,6 @@ export async function updateKnowledgeArticle(
     .from('knowledge_articles')
     .update(updateData)
     .eq('id', id)
-    .eq('brokerage_id', brokerageId)
     .select()
     .single()
 
@@ -378,11 +411,27 @@ export async function deleteKnowledgeArticle(id: string) {
   const supabase = await createClient()
   const { brokerageId } = await getAgentContext()
 
+  // Decide on the row that exists — see updateKnowledgeArticle. A delete keyed
+  // on brokerage_id reported success while removing nothing for platform rows.
+  const { data: article, error: readError } = await supabase
+    .from('knowledge_articles')
+    .select('id, brokerage_id')
+    .eq('id', id)
+    .maybeSingle()
+  if (readError) throw new Error(readError.message)
+  if (!article) throw new Error('That article was not found')
+  if (article.brokerage_id === null) {
+    if (!(await callerIsPlatformStaff())) {
+      throw new Error('Only platform staff can delete a platform-wide article')
+    }
+  } else if (article.brokerage_id !== brokerageId) {
+    throw new Error('That article belongs to another brokerage')
+  }
+
   const { error } = await supabase
     .from('knowledge_articles')
     .delete()
     .eq('id', id)
-    .eq('brokerage_id', brokerageId)
 
   if (error) {
     console.error('[KnowledgeSearch] Failed to delete article:', error.message)
@@ -553,17 +602,17 @@ export async function updateHelpTopic(
   // Read the row FIRST. A platform row (brokerage_id NULL) is visible to every
   // tenant, so letting a brokerage admin edit one would let any tenant rewrite
   // what every other tenant reads.
-  const { data: existing, error: readError } = await supabase
+  const { data: article, error: readError } = await supabase
     .from('help_topics_kb')
     .select('id, brokerage_id, published_at:updated_at')
     .eq('id', id)
     .maybeSingle()
   if (readError) return { success: false as const, error: readError.message }
-  if (!existing) return { success: false as const, error: 'That article was not found' }
-  if (existing.brokerage_id === null && !staff) {
+  if (!article) return { success: false as const, error: 'That article was not found' }
+  if (article.brokerage_id === null && !staff) {
     return { success: false as const, error: 'Only platform staff can edit a platform-wide article' }
   }
-  if (existing.brokerage_id !== null && existing.brokerage_id !== ctx.brokerageId) {
+  if (article.brokerage_id !== null && article.brokerage_id !== ctx.brokerageId) {
     return { success: false as const, error: 'That article belongs to another brokerage' }
   }
 
@@ -607,19 +656,19 @@ export async function deleteHelpTopic(id: string) {
   // never match a platform row (brokerage_id IS NULL) — so deleting a
   // platform-wide article silently affected zero rows and still reported
   // success. Decide on the row that is actually there.
-  const { data: existing, error: readError } = await supabase
+  const { data: article, error: readError } = await supabase
     .from('help_topics_kb')
     .select('id, brokerage_id')
     .eq('id', id)
     .maybeSingle()
   if (readError) return { success: false as const, error: readError.message }
-  if (!existing) return { success: false as const, error: 'That article was not found' }
+  if (!article) return { success: false as const, error: 'That article was not found' }
 
-  if (existing.brokerage_id === null) {
+  if (article.brokerage_id === null) {
     if (!(await callerIsPlatformStaff())) {
       return { success: false as const, error: 'Only platform staff can delete a platform-wide article' }
     }
-  } else if (existing.brokerage_id !== ctx.brokerageId) {
+  } else if (article.brokerage_id !== ctx.brokerageId) {
     return { success: false as const, error: 'That article belongs to another brokerage' }
   }
 

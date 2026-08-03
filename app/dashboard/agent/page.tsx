@@ -4,7 +4,13 @@ import { useEffect, useState, useCallback } from "react"
 import { createClient } from "@/lib/supabase/client"
 // Actions
 import { getAgentStats } from "@/app/actions/agents"
-import { generateDailyGameplan, executeCopilotTask } from "@/app/actions/copilot"
+import {
+  generateDailyGameplan,
+  executeCopilotTask,
+  suggestNextActions,
+  analyzeContactPriority,
+  checkOverdueMilestones,
+} from "@/app/actions/copilot"
 import { getTodaysBriefing, generateBriefing, getUpcomingShowings, getActiveTransactions, getUserTypeBrief } from "@/app/actions/briefing-actions"
 import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
 import BudgetWarningBanner from "@/app/components/shell/budget-warning-banner"
@@ -121,6 +127,26 @@ export default function AgentDashboard() {
   // action it names, through the single copilot executor (executeCopilotTask ->
   // initiateWhisperBridge / sendPropertyMatches / checkTransactionDeadlines).
   const [copilotTaskId, setCopilotTaskId] = useState<string | null>(null)
+  // LOOSE ENDS — suggestNextActions is the deterministic counterpart to the
+  // LLM-written briefing: unanswered inbound messages, showings still missing
+  // feedback, and clients who have not been contacted in 14+ days, each with the
+  // ids behind them. It was complete and had no caller anywhere in the repo.
+  const [nextActions, setNextActions] = useState<Array<{
+    type: string
+    priority: string
+    action: string
+    contact_ids?: string[]
+    showing_ids?: string[]
+  }>>([])
+  // Per-contact "why is this person on my list" read (analyzeContactPriority).
+  const [priorityById, setPriorityById] = useState<Record<string, {
+    priority: string
+    score: number
+    factors: string[]
+    recommended_action: string
+  }>>({})
+  const [priorityLoadingId, setPriorityLoadingId] = useState<string | null>(null)
+  const [scanningMilestones, setScanningMilestones] = useState(false)
 
   useEffect(() => {
     const loadData = async () => {
@@ -378,6 +404,14 @@ export default function AgentDashboard() {
       } finally {
         setGameplanLoading(false)
       }
+
+      // Loose ends ride alongside the gameplan — same identity, same card.
+      try {
+        const { suggestions } = await suggestNextActions(user.id)
+        setNextActions(suggestions ?? [])
+      } catch {
+        // non-critical — the gameplan still renders without it
+      }
     }
     loadGameplan()
   }, [])
@@ -412,6 +446,46 @@ export default function AgentDashboard() {
     },
     [],
   )
+
+  /**
+   * "Why is this person on my call list?" — analyzeContactPriority scores the
+   * contact from live signals (recent property activity, recent replies,
+   * timeline urgency) and names the factors plus the recommended action. The
+   * gameplan listed names with no reason attached; this is the reason.
+   */
+  const explainContactPriority = useCallback(async (contactId: string) => {
+    setPriorityLoadingId(contactId)
+    try {
+      const result = await analyzeContactPriority(contactId)
+      setPriorityById((prev) => ({ ...prev, [contactId]: result }))
+    } catch (err: any) {
+      toast.error(err?.message ?? "Could not score that contact")
+    } finally {
+      setPriorityLoadingId(null)
+    }
+  }, [])
+
+  /**
+   * checkOverdueMilestones sweeps this brokerage's pending milestones past their
+   * target date and emits milestone_overdue for each — the event the
+   * orchestrator turns into an assistant suggestion. Complete, and nothing had
+   * ever run it.
+   */
+  const runOverdueMilestoneScan = useCallback(async () => {
+    setScanningMilestones(true)
+    try {
+      const res = await checkOverdueMilestones()
+      toast.success(
+        res.count > 0
+          ? `${res.count} overdue milestone${res.count === 1 ? "" : "s"} flagged — follow-ups queued`
+          : "No overdue milestones",
+      )
+    } catch (err: any) {
+      toast.error(err?.message ?? "Milestone scan did not run")
+    } finally {
+      setScanningMilestones(false)
+    }
+  }, [])
 
   const handleRefreshBriefing = useCallback(async () => {
     setRefreshing(true)
@@ -519,15 +593,26 @@ export default function AgentDashboard() {
         )}
 
         {/* Today's Gameplan */}
-        {(gameplan || gameplanLoading) && (
+        {(gameplan || gameplanLoading || nextActions.length > 0) && (
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm flex items-center gap-2">
-                Today&apos;s Gameplan
-                {gameplanLoading && (
-                  <span className="text-xs text-muted-foreground font-normal">Generating…</span>
-                )}
-              </CardTitle>
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  Today&apos;s Gameplan
+                  {gameplanLoading && (
+                    <span className="text-xs text-muted-foreground font-normal">Generating…</span>
+                  )}
+                </CardTitle>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 px-2 text-xs"
+                  disabled={scanningMilestones}
+                  onClick={runOverdueMilestoneScan}
+                >
+                  {scanningMilestones ? "Scanning…" : "Scan overdue milestones"}
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               {gameplanLoading ? (
@@ -577,6 +662,26 @@ export default function AgentDashboard() {
                                   >
                                     Send matches
                                   </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-6 px-2 text-xs"
+                                    disabled={priorityLoadingId === p.id}
+                                    onClick={() => explainContactPriority(p.id)}
+                                  >
+                                    {priorityLoadingId === p.id ? "…" : "Why?"}
+                                  </Button>
+                                </div>
+                              )}
+                              {p.id && priorityById[p.id] && (
+                                <div className="ml-3 mt-1 rounded border bg-muted/30 p-1.5 text-[11px] text-muted-foreground">
+                                  <span className="font-medium text-foreground">
+                                    {priorityById[p.id].priority.toUpperCase()} · {priorityById[p.id].score}
+                                  </span>
+                                  {priorityById[p.id].factors.length > 0 && (
+                                    <span> — {priorityById[p.id].factors.join(", ")}</span>
+                                  )}
+                                  <div className="mt-0.5">{priorityById[p.id].recommended_action}</div>
                                 </div>
                               )}
                             </li>
@@ -635,6 +740,27 @@ export default function AgentDashboard() {
                       <ReactMarkdown>{gameplan.ai_summary}</ReactMarkdown>
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* LOOSE ENDS — deterministic, id-backed follow-ups. */}
+              {nextActions.length > 0 && (
+                <div className="mt-4 pt-3 border-t">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                    Loose Ends
+                  </p>
+                  <ul className="space-y-1">
+                    {nextActions.map((s, i) => (
+                      <li key={`${s.type}-${i}`} className="text-sm text-foreground flex items-start gap-1.5">
+                        <span
+                          className={`mt-1.5 w-1.5 h-1.5 rounded-full shrink-0 ${
+                            s.priority === "high" ? "bg-red-500" : "bg-amber-500"
+                          }`}
+                        />
+                        <span>{s.action}</span>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               )}
             </CardContent>
