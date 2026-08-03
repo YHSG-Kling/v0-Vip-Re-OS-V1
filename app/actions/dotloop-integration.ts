@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { hashSharePassword, verifySharePassword } from "@/lib/security/share-password"
 import { revalidatePath } from "next/cache"
 import {
   addParticipant,
@@ -357,6 +358,42 @@ export async function getDotloopDocumentStatus(loopId: string, documentId?: stri
 // DOCUMENT SHARING
 // ============================================
 
+/**
+ * The in-app path a share token resolves to. Kept as one constant so the route
+ * (app/documents/shared/[token]/page.tsx) and the minted URL cannot drift — the
+ * previous version minted `/documents/shared/{token}` against a route that had
+ * never existed, so every link it ever produced 404'd.
+ */
+function sharePathFor(token: string): string {
+  return `/documents/shared/${token}`
+}
+
+export interface DocumentShareLinkResult {
+  success: boolean
+  error?: string
+  /** Relative in-app path — use this for <Link>. */
+  sharePath?: string
+  /** Absolute URL for pasting into an email/DM. Falls back to the path when NEXT_PUBLIC_APP_URL is unset. */
+  shareUrl?: string
+  link?: {
+    id: string
+    shareToken: string
+    accessLevel: string
+    expiresAt: string
+    requiresPassword: boolean
+    maxAccessCount: number | null
+  }
+}
+
+/**
+ * Mints a TEAM share link for a document.
+ *
+ * OWNER RULING: "the share document is so the whole team has access." So the
+ * token is a convenient handle for people who are ALREADY inside the brokerage —
+ * it is not a bearer credential for the open internet. The reader
+ * (accessSharedDocument) requires a session and a matching brokerage; this
+ * function stamps the brokerage that will be checked.
+ */
 export async function createDocumentShareLink(data: {
   documentId: string
   sharedBy?: string // ignored — derived from session
@@ -365,12 +402,14 @@ export async function createDocumentShareLink(data: {
   expiresInDays?: number
   requiresPassword?: boolean
   password?: string
-}) {
+  /** Hard cap on total opens. Omit/null for unlimited. */
+  maxAccessCount?: number | null
+}): Promise<DocumentShareLinkResult> {
   // AUTH GATE — was minting shareable tokens for any caller-supplied
   // document under an arbitrary sharedBy identity.
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
-    return { success: false, error: "Unauthorized" } as any
+    return { success: false, error: "Unauthorized" }
   }
 
   const supabase = await createClient()
@@ -380,7 +419,27 @@ export async function createDocumentShareLink(data: {
   const { data: doc } = await svc
     .from("client_documents").select("brokerage_id").eq("id", data.documentId).maybeSingle()
   if (!doc || (doc.brokerage_id && doc.brokerage_id !== ctx.brokerageId)) {
-    return { success: false, error: "Forbidden: document not in your brokerage" } as any
+    return { success: false, error: "Forbidden: document not in your brokerage" }
+  }
+
+  // The tenant that will be allowed to open the link. Taken from the document
+  // when it is stamped, otherwise from the session — an unstamped document is
+  // shared into the sharer's own brokerage and no other.
+  const linkBrokerageId: string = (doc.brokerage_id as string | null) ?? ctx.brokerageId
+
+  if (data.requiresPassword && !data.password) {
+    return { success: false, error: "A password is required when password protection is enabled" }
+  }
+
+  if (
+    data.maxAccessCount != null &&
+    (!Number.isInteger(data.maxAccessCount) || data.maxAccessCount < 1)
+  ) {
+    return { success: false, error: "Open limit must be a whole number of 1 or more" }
+  }
+
+  if (data.expiresInDays != null && (!Number.isFinite(data.expiresInDays) || data.expiresInDays < 1)) {
+    return { success: false, error: "Expiry must be at least 1 day" }
   }
 
   const shareToken = crypto.randomUUID()
@@ -388,102 +447,256 @@ export async function createDocumentShareLink(data: {
     ? new Date(Date.now() + data.expiresInDays * 24 * 60 * 60 * 1000)
     : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // Default 30 days
 
+  // HASHED, not stored raw. `password_hash: data.password` used to put the
+  // plaintext in a column named "hash"; m356 now also refuses anything without
+  // the scrypt envelope, so this is enforced at the database as well as here.
+  const passwordHash = data.requiresPassword ? hashSharePassword(data.password) : null
+  if (data.requiresPassword && !passwordHash) {
+    return { success: false, error: "Could not secure the share password" }
+  }
+
   const { data: link, error } = await supabase
     .from("document_sharing_links")
     .insert({
       document_id: data.documentId,
+      brokerage_id: linkBrokerageId,
       share_token: shareToken,
       shared_by: ctx.userId,
       shared_with_email: data.sharedWithEmail,
       access_level: data.accessLevel,
       requires_password: data.requiresPassword || false,
-      password_hash: data.password || null,
+      password_hash: passwordHash,
       expires_at: expiresAt.toISOString(),
+      max_access_count: data.maxAccessCount ?? null,
     })
-    .select()
+    .select("id, share_token, access_level, expires_at, requires_password, max_access_count")
     .single()
 
-  if (error) throw error
+  // Surfaced, not thrown — the caller is a UI control and needs a message, and a
+  // throw here used to become an opaque server-action rejection.
+  if (error || !link) {
+    return { success: false, error: error?.message ?? "Could not create the share link" }
+  }
 
-  // Log access — caller identity from session
-  await supabase.from("document_audit_trail").insert({
-    document_id: data.documentId,
-    document_source: "client_documents",
-    action: "share_link_created",
-    performed_by: ctx.userId,
-    performed_by_type: "agent",
-    notes: `Share link created for ${data.sharedWithEmail || "anyone with link"} (${data.accessLevel})`,
-  })
+  // Audit entry. Best-effort BY DESIGN — the link already exists and refusing the
+  // action now would invite the agent to mint a second one — but ledgered via
+  // sentinelWrite so a lost compliance entry surfaces in the repair digest rather
+  // than vanishing the way the old unchecked insert did.
+  await sentinelWrite(
+    svc,
+    supabase.from("document_audit_trail").insert({
+      document_id: data.documentId,
+      document_source: "client_documents",
+      action: "share_link_created",
+      performed_by: ctx.userId,
+      performed_by_type: "agent",
+      notes: `Team share link created for ${data.sharedWithEmail || "the brokerage team"} (${data.accessLevel}${
+        data.maxAccessCount ? `, max ${data.maxAccessCount} open${data.maxAccessCount > 1 ? "s" : ""}` : ""
+      })`,
+    }),
+    { table: "document_audit_trail", flow: "document_share_link_created", brokerageId: ctx.brokerageId },
+  )
 
-  const shareUrl = `${process.env.NEXT_PUBLIC_APP_URL}/documents/shared/${shareToken}`
+  const sharePath = sharePathFor(shareToken)
+  const base = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/+$/, "")
 
-  revalidatePath("/documents")
-  return { link, shareUrl }
+  revalidatePath("/dashboard/documents")
+  return {
+    success: true,
+    sharePath,
+    shareUrl: base ? `${base}${sharePath}` : sharePath,
+    link: {
+      id: link.id,
+      shareToken: link.share_token,
+      accessLevel: link.access_level,
+      expiresAt: link.expires_at,
+      requiresPassword: link.requires_password,
+      maxAccessCount: link.max_access_count ?? null,
+    },
+  }
 }
 
-export async function accessSharedDocument(shareToken: string, password?: string) {
-  // Token-based access — intentionally no session check, but the token MUST
-  // be cryptographically random (crypto.randomUUID — see createDocumentShareLink)
-  // and MUST have an expiration. If `expires_at` is null we hard-reject
-  // rather than treat as permanent. We also do not return brokerage info.
-  // TODO(migration): require NOT NULL expires_at + add max_access_count
-  // default on document_sharing_links to make tokens single-use by default.
+export interface SharedDocumentResult {
+  success: boolean
+  error?: string
+  /** True when the link is real and in-tenant but a password is still needed. */
+  passwordRequired?: boolean
+  document?: {
+    id: string
+    documentName: string
+    documentType: string | null
+    documentUrl: string | null
+    status: string | null
+    createdAt: string | null
+  }
+  accessLevel?: string
+  sharedByEmail?: string | null
+  expiresAt?: string
+  /** Remaining opens after this one; null when the link is uncapped. */
+  accessesRemaining?: number | null
+}
+
+/**
+ * Opens a shared document. AUTHENTICATED AND BROKERAGE-SCOPED.
+ *
+ * WHAT CHANGED AND WHY (each of these was verified against the live schema):
+ *
+ *  - SESSION REQUIRED. The owner's ruling is that a share is for the team. A
+ *    bearer token that anyone on the internet could redeem is a different, more
+ *    dangerous feature than the one that was asked for.
+ *
+ *  - BROKERAGE MATCH. The viewer's brokerage must equal the link's. A viewer
+ *    outside it gets the same refusal as a bad token and never the document.
+ *
+ *  - THE EMBED WAS DEAD. The old query was
+ *    `.select("*, client_documents(*)")`, but there is NO foreign key from
+ *    document_sharing_links.document_id to client_documents — PostgREST cannot
+ *    infer that relationship, so the request errored, `data` came back null with
+ *    the error undestructured, and EVERY call returned "Invalid or expired
+ *    link". The document is now fetched with an explicit second query.
+ *
+ *  - THE CAP IS NOW AUTHORITATIVE. `max_access_count` did not exist as a column,
+ *    so the old guard compared against `undefined` and never fired; and the
+ *    increment was an unchecked `.update()` that RLS refused for anyone but the
+ *    sharer (supabase-js resolves a rejected write, so it looked fine). The slot
+ *    is now consumed by consume_document_share_access(), which increments only
+ *    while under the cap and returns whether it succeeded. Access is refused on
+ *    FALSE — so the count, not the read, is what stops the caller.
+ *
+ *  - PASSWORD IS VERIFIED AGAINST A HASH, in constant time, and BEFORE the slot
+ *    is consumed so a wrong guess cannot burn the quota.
+ */
+export async function accessSharedDocument(
+  shareToken: string,
+  password?: string,
+): Promise<SharedDocumentResult> {
   if (!shareToken || typeof shareToken !== "string" || shareToken.length < 16) {
     return { success: false, error: "Invalid share token" }
   }
 
-  const supabase = await createClient()
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Sign in with your team account to open a shared document." }
+  }
 
-  const { data: link } = await supabase
+  // Service client: this read has to see password_hash and the tenant stamp in
+  // order to CHECK them. Authorisation is performed here, explicitly, below —
+  // it is not delegated to a policy that would merely hide the row.
+  const svc = createServiceClient()
+
+  const { data: link, error: linkError } = await svc
     .from("document_sharing_links")
-    .select("*, client_documents(*)")
+    .select(
+      "id, document_id, brokerage_id, access_level, expires_at, is_active, requires_password, password_hash, shared_with_email, current_access_count, max_access_count",
+    )
     .eq("share_token", shareToken)
-    .eq("is_active", true)
     .maybeSingle()
 
-  if (!link) {
-    return { success: false, error: "Invalid or expired link" }
+  if (linkError) {
+    return { success: false, error: "Could not open this link. Try again." }
   }
 
-  // Reject links without an expiration timestamp — never grant unbounded access
-  if (!link.expires_at) {
-    return { success: false, error: "Invalid or expired link" }
+  // One indistinguishable refusal for "no such token", "revoked", and "not your
+  // brokerage" — so the response never confirms that someone else's token exists.
+  const REFUSED = { success: false as const, error: "This link is not available to your account." }
+
+  if (!link || !link.is_active) return REFUSED
+
+  // Tenant boundary. A link minted before m356 has no brokerage stamp; fall back
+  // to the document's own tenant rather than treating "unstamped" as "open".
+  let linkBrokerageId = link.brokerage_id as string | null
+  if (!linkBrokerageId) {
+    const { data: owningDoc } = await svc
+      .from("client_documents")
+      .select("brokerage_id")
+      .eq("id", link.document_id)
+      .maybeSingle()
+    linkBrokerageId = (owningDoc?.brokerage_id as string | null) ?? null
+  }
+  if (!linkBrokerageId || linkBrokerageId !== ctx.brokerageId) return REFUSED
+
+  // Expiry — never grant unbounded access. m356 makes expires_at NOT NULL, so a
+  // null here means a row older than the migration; still refused.
+  if (!link.expires_at) return REFUSED
+  if (new Date(link.expires_at).getTime() < Date.now()) {
+    return { success: false, error: "This link has expired." }
   }
 
-  // Check expiration
-  if (new Date(link.expires_at) < new Date()) {
-    return { success: false, error: "This link has expired" }
+  // Cap check up front so the viewer gets an honest message; the AUTHORITATIVE
+  // enforcement is the atomic consume below, which is what actually stops them.
+  if (link.max_access_count != null && (link.current_access_count ?? 0) >= link.max_access_count) {
+    return { success: false, error: "This link has reached its maximum number of opens." }
   }
 
-  // Check max access count
-  if (link.max_access_count && link.current_access_count >= link.max_access_count) {
-    return { success: false, error: "This link has reached its maximum access limit" }
+  if (link.requires_password) {
+    if (!password) {
+      return { success: false, passwordRequired: true, error: "This document is password protected." }
+    }
+    if (!verifySharePassword(link.password_hash, password)) {
+      // Not a slot consumption — a wrong guess must not burn the quota.
+      return { success: false, passwordRequired: true, error: "Incorrect password." }
+    }
   }
 
-  // Check password if required (NOTE: stored "hash" is currently plaintext —
-  // tracked separately; we still compare in constant-ish time via length+eq)
-  if (link.requires_password && link.password_hash !== password) {
-    return { success: false, error: "Incorrect password" }
-  }
-
-  // Increment access count
-  await supabase
-    .from("document_sharing_links")
-    .update({ current_access_count: (link.current_access_count || 0) + 1 })
-    .eq("id", link.id)
-
-  // Log access
-  await supabase.from("document_access_log").insert({
-    document_id: link.document_id,
-    accessed_by_type: "external",
-    accessed_by_email: link.shared_with_email,
-    access_type: link.access_level,
+  // ATOMIC SLOT CONSUMPTION. Returns false when the link went inactive, expired,
+  // or hit its cap between the checks above and now (including a concurrent
+  // viewer taking the last slot). Access is refused on false.
+  const { data: consumed, error: consumeError } = await svc.rpc("consume_document_share_access", {
+    p_link_id: link.id,
   })
+
+  if (consumeError) {
+    return { success: false, error: "Could not open this link. Try again." }
+  }
+  if (consumed !== true) {
+    return { success: false, error: "This link has reached its maximum number of opens." }
+  }
+
+  const { data: document, error: docError } = await svc
+    .from("client_documents")
+    .select("id, document_name, document_type, document_url, status, created_at, brokerage_id")
+    .eq("id", link.document_id)
+    .maybeSingle()
+
+  // Defence in depth: the document's own tenant must still match the viewer,
+  // even though the link said so.
+  if (docError || !document || (document.brokerage_id && document.brokerage_id !== ctx.brokerageId)) {
+    return REFUSED
+  }
+
+  // Access log — the viewer is a known team member now, so record WHO, not
+  // "external" with the invitee's email. Ledgered, so a lost audit row surfaces.
+  await sentinelWrite(
+    svc,
+    svc.from("document_access_log").insert({
+      document_id: link.document_id,
+      accessed_by_type: "agent",
+      accessed_by_id: ctx.userId,
+      accessed_by_email: link.shared_with_email,
+      access_type: link.access_level ?? "view",
+    }),
+    { table: "document_access_log", flow: "shared_document_opened", brokerageId: ctx.brokerageId },
+  )
+
+  const remaining =
+    link.max_access_count != null
+      ? Math.max(0, link.max_access_count - ((link.current_access_count ?? 0) + 1))
+      : null
 
   return {
     success: true,
-    document: link.client_documents,
-    accessLevel: link.access_level,
+    document: {
+      id: document.id,
+      documentName: document.document_name,
+      documentType: document.document_type ?? null,
+      documentUrl: document.document_url ?? null,
+      status: document.status ?? null,
+      createdAt: document.created_at ?? null,
+    },
+    accessLevel: link.access_level ?? "view",
+    sharedByEmail: link.shared_with_email ?? null,
+    expiresAt: link.expires_at,
+    accessesRemaining: remaining,
   }
 }
 

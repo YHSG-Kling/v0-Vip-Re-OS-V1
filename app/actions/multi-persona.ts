@@ -127,53 +127,17 @@ export async function assignTransactionCoordinator(data: {
   return { success: true }
 }
 
-export async function getCoordinatorDashboard_v2(coordinatorId: string) {
-  const auth = await requireCaller()
-  if (!auth.ok) return { coordinator: null, transactions: [], deadlines: [], incompleteMilestones: [] }
-
-  const supabase = await createClient()
-
-  // Verify the coordinator belongs to caller's brokerage
-  const { data: coordinator } = await supabase
-    .from("transaction_coordinators")
-    .select("*")
-    .eq("id", coordinatorId)
-    .eq("brokerage_id", auth.brokerageId)
-    .single()
-
-  if (!coordinator) return { coordinator: null, transactions: [], deadlines: [], incompleteMilestones: [] }
-
-  const { data: transactions } = await supabase
-    .from("transactions")
-    .select(`
-      *,
-      transaction_milestones(*)
-    `)
-    .eq("coordinator_id", coordinatorId)
-    .eq("brokerage_id", auth.brokerageId)
-    .not("status", "in", `(${TRANSACTION_STATUSES_TERMINAL.join(",")})`)
-    .order("close_date")
-
-  const transactionIds = transactions?.map((t) => t.id) || []
-
-  const { data: deadlines } = await supabase
-    .from("transaction_deadlines")
-    .select("*, transactions(property_address)")
-    .in("transaction_id", transactionIds)
-    .in("status", [...DEADLINE_OPEN_STATUSES])
-    .gte("deadline_date", new Date().toISOString().split("T")[0])
-    .order("deadline_date")
-    .limit(20)
-
-  const { data: incompleteMilestones } = await supabase
-    .from("transaction_milestones")
-    .select("*, transactions(property_address)")
-    .in("transaction_id", transactionIds)
-    .in("status", [...MILESTONE_OPEN_STATUSES])
-    .order("target_date")
-
-  return { coordinator, transactions, deadlines, incompleteMilestones }
-}
+// getCoordinatorDashboard_v2 — DELETED, EXACT DUPLICATE.
+//
+//   getCoordinatorDashboard_v2 -> getCoordinatorDashboard (same file, below)
+//
+// The two bodies were byte-identical once the function name and one comment
+// line were removed — same requireCaller() gate, same brokerage-scoped
+// transaction_coordinators lookup, same three reads (transactions +
+// transaction_milestones embed, transaction_deadlines, incomplete milestones),
+// same shape returned. Nothing was lost because there was nothing different to
+// lose. Both were unwired; the surviving name is the canonical one the
+// coordinator dashboard is written against.
 
 // ============================================
 // VENDOR MANAGEMENT — CONSOLIDATED AWAY
@@ -269,37 +233,33 @@ export async function assignLenderToTransaction(data: {
   return { success: true }
 }
 
-export async function updateLoanStatus(data: {
-  loanId: string
-  status: string
-  notes?: string
-  conditionsCleared?: number
-}) {
-  const supabase = await createClient()
-
-  const { data: loan, error } = await supabase
-    .from("transaction_lenders")
-    .update({
-      underwriting_status: data.status,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", data.loanId)
-    .select("*, transactions(*)")
-    .single()
-
-  if (error) throw error
-
-  await supabase.from("transaction_timeline").insert({
-    transaction_id: loan.transaction_id,
-    activity_type: "financing_update",
-    description: data.notes || `Underwriting status updated to ${data.status}`,
-    performed_by: null,
-    metadata: { status: data.status },
-  })
-
-  revalidatePath("/portal/lender")
-  return loan
-}
+// updateLoanStatus — DELETED, SUPERSEDED BY THE GATED LENDER ACTION.
+//
+//   updateLoanStatus -> app/actions/lender-portal-actions.ts:updateLenderLoanStatus
+//
+// Same capability — write transaction_lenders.underwriting_status + updated_at —
+// evolved. The survivor is WIRED (app/portal/lender/[transactionId]/lender-actions.tsx)
+// and adds requireLenderVendorActor(transactionId), which proves the caller is the
+// lender VENDOR ASSIGNED to that deal (the deleted one had no auth check at all),
+// plus a KernelEvent.JOURNEY_STAGE_UPDATED fan-out so the agent dashboard, the
+// buyer/seller portals and the title portal all see the loan move.
+//
+// NOTHING WAS LOST. The deleted function's only distinct side effect — the
+// transaction_timeline "financing_update" row carrying the free-text `notes` —
+// COULD NEVER BE WRITTEN: it used createClient() (anon key, RLS applies) and
+// omitted brokerage_id, so both WITH CHECK clauses on transaction_timeline
+// (brokerage_id = current_user_brokerage_id()) evaluate to NULL and the INSERT is
+// rejected — verified live: "new row violates row-level security policy for table
+// transaction_timeline". The error was never checked, so the failure was silent.
+// `notes` fed only that dead insert and `conditionsCleared` was never referenced
+// at all. It targeted transaction_lenders by row id where the survivor targets by
+// transaction_id, which is the same row: every reader in this codebase resolves a
+// deal's loan with .maybeSingle() on transaction_id.
+//
+// FOLLOW-UP (not carried over deliberately, one line): the deleted one called
+// revalidatePath("/portal/lender") — the lender INDEX — while the survivor
+// revalidates only /portal/lender/[transactionId]. Adding the index path to
+// updateLenderLoanStatus would make the loan list refresh after a status change.
 
 export async function submitLoanConditions(data: {
   loanId: string

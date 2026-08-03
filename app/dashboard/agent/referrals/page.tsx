@@ -24,8 +24,17 @@ const PIPELINE_STAGES: { key: PipelineStage; label: string }[] = [
   { key: "closed",         label: "Closed" },
 ]
 
-const PARTNER_TYPES = ["Lender", "Title", "Attorney", "Inspector", "Agent", "Other"]
-const AGREEMENT_TYPES = ["Commission Split", "Flat Fee", "Reciprocal", "Other"]
+// These were DISPLAY labels — "Lender", "Commission Split" — stored straight into
+// CHECK-constrained columns, so every Add Partner on this screen threw
+// `violates check constraint "referral_partners_agreement_type_check"`. The
+// canonical lists store a value and show a label; see the module for the proof.
+import {
+  REFERRAL_PARTNER_TYPES, REFERRAL_AGREEMENT_TYPES,
+  type ReferralPartnerType, type ReferralAgreementType,
+} from "@/lib/referrals/partner-vocabulary"
+
+const PARTNER_TYPES = REFERRAL_PARTNER_TYPES
+const AGREEMENT_TYPES = REFERRAL_AGREEMENT_TYPES
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 
@@ -62,8 +71,8 @@ export default function ReferralsPage() {
 
   // Add partner form
   const [pName, setPName]               = useState("")
-  const [pType, setPType]               = useState(PARTNER_TYPES[0])
-  const [pAgreement, setPAgreement]     = useState(AGREEMENT_TYPES[0])
+  const [pType, setPType]               = useState(PARTNER_TYPES[0].value)
+  const [pAgreement, setPAgreement]     = useState(AGREEMENT_TYPES[0].value)
   const [pSplit, setPSplit]             = useState<string>("")
   const [pFlat, setPFlat]               = useState<string>("")
 
@@ -154,7 +163,7 @@ export default function ReferralsPage() {
       })
         .then(() => {
           setShowAddPartner(false)
-          setPName(""); setPType(PARTNER_TYPES[0]); setPAgreement(AGREEMENT_TYPES[0])
+          setPName(""); setPType(PARTNER_TYPES[0].value); setPAgreement(AGREEMENT_TYPES[0].value)
           setPSplit(""); setPFlat("")
           reload()
         })
@@ -430,20 +439,20 @@ export default function ReferralsPage() {
                   <label className="text-xs text-muted-foreground">Type</label>
                   <select
                     value={pType}
-                    onChange={(e) => setPType(e.target.value)}
+                    onChange={(e) => setPType(e.target.value as ReferralPartnerType)}
                     className="w-full mt-1 px-2 py-2 text-sm border border-border rounded-md bg-background"
                   >
-                    {PARTNER_TYPES.map((t) => <option key={t}>{t}</option>)}
+                    {PARTNER_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                   </select>
                 </div>
                 <div>
                   <label className="text-xs text-muted-foreground">Agreement</label>
                   <select
                     value={pAgreement}
-                    onChange={(e) => setPAgreement(e.target.value)}
+                    onChange={(e) => setPAgreement(e.target.value as ReferralAgreementType)}
                     className="w-full mt-1 px-2 py-2 text-sm border border-border rounded-md bg-background"
                   >
-                    {AGREEMENT_TYPES.map((a) => <option key={a}>{a}</option>)}
+                    {AGREEMENT_TYPES.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
                   </select>
                 </div>
               </div>

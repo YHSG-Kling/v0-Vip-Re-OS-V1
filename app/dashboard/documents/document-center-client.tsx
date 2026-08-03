@@ -16,6 +16,7 @@ import {
   Clock,
 } from "lucide-react"
 import type { DocumentCenterFolder, DocumentCenterRow } from "@/app/actions/document-center"
+import { ShareDocumentDialog } from "./share-document-dialog"
 
 interface Props {
   folders: DocumentCenterFolder[]
@@ -225,8 +226,11 @@ function DocRow({ doc }: { doc: DocumentCenterRow }) {
         </div>
       </div>
 
-      <div className="flex items-center gap-2 shrink-0">
+      <div className="flex items-center gap-3 shrink-0">
         <ScanBadge doc={doc} />
+        {/* Share with the brokerage team — mints a token for /documents/shared/[token],
+            which requires a session and refuses anyone outside this brokerage. */}
+        <ShareDocumentDialog documentId={doc.id} documentName={doc.documentName} />
         <a
           href={doc.documentUrl}
           target="_blank"

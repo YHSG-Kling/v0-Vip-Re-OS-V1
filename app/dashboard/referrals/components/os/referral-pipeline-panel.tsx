@@ -23,6 +23,7 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { createReferral, createPartner, deletePartner } from "@/app/actions/referrals/referral-actions"
 import { format } from "date-fns"
+import { DEFAULT_REFERRAL_PARTNER_TYPE, DEFAULT_REFERRAL_AGREEMENT_TYPE } from "@/lib/referrals/partner-vocabulary"
 
 interface Referral {
   id: string
@@ -92,8 +93,12 @@ export function ReferralPipelinePanel({
     try {
       const partner = await createPartner({
         partnerName: formData.referred_name,
-        partnerType: "individual",
-        agreementType: "referral",
+        // "individual" / "referral" exist in neither CHECK on referral_partners, so
+        // this insert always threw and took the whole add-referral flow with it.
+        // A partner created implicitly from a referral has no stated arrangement
+        // yet — that is exactly what these canonical defaults mean.
+        partnerType: DEFAULT_REFERRAL_PARTNER_TYPE,
+        agreementType: DEFAULT_REFERRAL_AGREEMENT_TYPE,
       })
       partnerId = partner.id
 
