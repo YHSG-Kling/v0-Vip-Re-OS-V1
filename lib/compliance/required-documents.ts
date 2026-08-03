@@ -24,13 +24,25 @@
 import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-export type DocumentClassification =
-  | "pre_approval_letter" | "proof_of_funds" | "id_document"
-  | "signed_contract"     | "counter_offer"  | "addendum"
-  | "disclosure"          | "inspection_report" | "appraisal_report"
-  | "title_report"        | "hoa_documents"  | "closing_disclosure"
-  | "wire_instructions"   | "agency_disclosure" | "commission_agreement"
-  | "lender_letter"       | "earnest_money_receipt" | "other"
+/**
+ * THE VOCABULARY LIVES IN lib/compliance/document-classifications.ts and is
+ * re-exported here so every existing import keeps working. It moved because
+ * this module is `import "server-only"` — a client picker cannot render a
+ * classification choice without the label map, and it could not reach it
+ * without dragging the audit + resolver into the browser bundle.
+ *
+ * That file MIRRORS the live CHECK on documents.classification AND
+ * brokerage_required_documents.classification (m356).
+ */
+export {
+  DOCUMENT_CLASSIFICATION_LABEL,
+  SELLER_SIDE_CLASSIFICATIONS,
+  ALL_DOCUMENT_CLASSIFICATIONS,
+  documentClassificationLabel,
+} from "./document-classifications"
+export type { DocumentClassification } from "./document-classifications"
+
+import type { DocumentClassification } from "./document-classifications"
 
 export interface ResolvedRequiredDoc {
   classification:    DocumentClassification

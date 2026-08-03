@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge"
 import { RequiredDocsSettingsClient } from "./required-docs-settings-client"
 import { RequiredDocRowActions } from "./required-doc-row-actions"
 import { getSupportedPresetStates } from "@/lib/compliance/required-doc-presets"
+import { documentClassificationLabel } from "@/lib/compliance/document-classifications"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const dynamic = "force-dynamic"
@@ -92,7 +93,7 @@ export default async function RequiredDocsSettingsPage() {
                   </Badge>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <p className="text-sm font-medium">{r.classification}</p>
+                      <p className="text-sm font-medium">{documentClassificationLabel(r.classification as string | null)}</p>
                       <Badge variant="secondary" className="text-xs">{r.deal_type}</Badge>
                       {r.state_code && <Badge variant="secondary" className="text-xs">{r.state_code}</Badge>}
                       {r.block_on_missing

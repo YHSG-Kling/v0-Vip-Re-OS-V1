@@ -7,29 +7,23 @@ import { Button } from "@/components/ui/button"
 import { Loader2, Plus } from "lucide-react"
 import { seedRequiredDocsForBrokerage } from "@/app/actions/compliance/seed-required-docs"
 import { addRequiredDocument } from "@/app/actions/compliance/manage-required-docs"
+import {
+  ALL_DOCUMENT_CLASSIFICATIONS,
+  DOCUMENT_CLASSIFICATION_LABEL,
+  SELLER_SIDE_CLASSIFICATIONS,
+} from "@/lib/compliance/document-classifications"
 
-// Runtime list mirroring the DocumentClassification union in lib/compliance/
-// required-documents.ts (that module is server-only, so the labels live here).
-const CLASSIFICATIONS: { value: string; label: string }[] = [
-  { value: "pre_approval_letter", label: "Pre-approval letter" },
-  { value: "proof_of_funds", label: "Proof of funds" },
-  { value: "id_document", label: "ID document" },
-  { value: "signed_contract", label: "Signed contract" },
-  { value: "counter_offer", label: "Counter offer" },
-  { value: "addendum", label: "Addendum" },
-  { value: "disclosure", label: "Disclosure" },
-  { value: "inspection_report", label: "Inspection report" },
-  { value: "appraisal_report", label: "Appraisal report" },
-  { value: "title_report", label: "Title report" },
-  { value: "hoa_documents", label: "HOA documents" },
-  { value: "closing_disclosure", label: "Closing disclosure" },
-  { value: "wire_instructions", label: "Wire instructions" },
-  { value: "agency_disclosure", label: "Agency disclosure" },
-  { value: "commission_agreement", label: "Commission agreement" },
-  { value: "lender_letter", label: "Lender letter" },
-  { value: "earnest_money_receipt", label: "Earnest money receipt" },
-  { value: "other", label: "Other" },
-]
+// THE PICKER READS THE ONE VOCABULARY. This was a hand-kept THIRD copy of the
+// classification list — it had already drifted, missing listing_agreement,
+// seller_broker_agreement and preliminary_closing_statement, so a broker could
+// not require the document that starts a listing even after the CHECK admitted
+// it. The union now lives in a client-safe module, so screen, resolver and
+// database read one list.
+const CLASSIFICATIONS = ALL_DOCUMENT_CLASSIFICATIONS.map((value) => ({
+  value,
+  label: DOCUMENT_CLASSIFICATION_LABEL[value],
+  seller: SELLER_SIDE_CLASSIFICATIONS.includes(value),
+}))
 
 interface Props {
   brokerageId:     string
@@ -44,6 +38,10 @@ export function RequiredDocsSettingsClient({ brokerageId, teamId, userId, userTy
   const [pending, startTransition] = useTransition()
   const [stateCode, setStateCode] = useState<string>("")
   const [scope, setScope] = useState<"brokerage" | "team" | "agent">("brokerage")
+  // WHICH SIDE OF THE DEAL to seed. This was hardcoded "buyer", so the seller
+  // stack — the listing agreement above all — was unreachable from the UI, and
+  // seeding "seller" would previously have installed buyer paperwork anyway.
+  const [seedDealType, setSeedDealType] = useState<"buyer" | "seller" | "dual">("buyer")
   const [result, setResult] = useState<string | null>(null)
 
   // ── Add-a-custom-rule form state ──
@@ -76,10 +74,10 @@ export function RequiredDocsSettingsClient({ brokerageId, teamId, userId, userTy
         scopeId,
         stateCode: stateCode || null,
         actorUserId: userId,
-        dealType: "buyer",
+        dealType: seedDealType,
       })
       if (r.success) {
-        setResult(`Seeded ${r.inserted_count} new rule${r.inserted_count === 1 ? "" : "s"} (${r.skipped_count} already on file).`)
+        setResult(`Seeded ${r.inserted_count} new ${seedDealType} rule${r.inserted_count === 1 ? "" : "s"} (${r.skipped_count} already on file).`)
         router.refresh()
       } else {
         setResult(`Failed: ${r.error}`)
@@ -124,7 +122,9 @@ export function RequiredDocsSettingsClient({ brokerageId, teamId, userId, userTy
           <label className="text-sm">
             <span className="block text-xs font-medium mb-1">Document</span>
             <select className="w-full border rounded px-2 py-1.5 text-sm" value={addClass} onChange={e => setAddClass(e.target.value)}>
-              {CLASSIFICATIONS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+              {CLASSIFICATIONS.map(c => (
+                <option key={c.value} value={c.value}>{c.label}{c.seller ? " — seller side" : ""}</option>
+              ))}
             </select>
           </label>
           <label className="text-sm">
@@ -173,10 +173,19 @@ export function RequiredDocsSettingsClient({ brokerageId, teamId, userId, userTy
       <CardHeader><CardTitle>Seed defaults from a per-state preset</CardTitle></CardHeader>
       <CardContent className="space-y-3">
         <p className="text-sm text-muted-foreground">
-          Loads the US baseline plus the state-specific stack (TX, CA, FL, NY, IL, GA, AZ, CO, WA, NC).
-          Existing rules at the same scope are skipped — your customizations are preserved.
+          Loads the baseline for the side of the deal you pick, plus the state-specific stack
+          (TX, CA, FL, NY, IL, GA, AZ, CO, WA, NC). Existing rules at the same scope are
+          skipped — your customizations are preserved.
         </p>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <label className="text-sm">
+            <span className="block text-xs font-medium mb-1">Deal side</span>
+            <select className="w-full border rounded px-2 py-1.5 text-sm" value={seedDealType} onChange={e => setSeedDealType(e.target.value as any)}>
+              <option value="buyer">Buyer side (contract, pre-approval, buyer-broker agreement)</option>
+              <option value="seller">Seller side (listing agreement, disclosures, title)</option>
+              <option value="dual">Both sides (dual)</option>
+            </select>
+          </label>
           <label className="text-sm">
             <span className="block text-xs font-medium mb-1">Scope</span>
             <select className="w-full border rounded px-2 py-1.5 text-sm" value={scope} onChange={e => setScope(e.target.value as any)}>

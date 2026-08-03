@@ -292,7 +292,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["dismissed", "expired", "open", "superseded"],
   },
   brokerage_required_documents: {
-    classification: ["addendum", "agency_disclosure", "appraisal_report", "closing_disclosure", "commission_agreement", "counter_offer", "disclosure", "earnest_money_receipt", "hoa_documents", "id_document", "inspection_report", "lender_letter", "other", "pre_approval_letter", "proof_of_funds", "signed_contract", "title_report", "wire_instructions"],
+    classification: ["addendum", "agency_disclosure", "appraisal_report", "closing_disclosure", "commission_agreement", "counter_offer", "disclosure", "earnest_money_receipt", "hoa_documents", "id_document", "inspection_report", "lender_letter", "listing_agreement", "other", "pre_approval_letter", "preliminary_closing_statement", "proof_of_funds", "seller_broker_agreement", "signed_contract", "title_report", "wire_instructions"],
     deal_type: ["buyer", "dual", "seller"],
     scope_type: ["agent", "brokerage", "multi_location", "platform", "team"],
   },
@@ -628,7 +628,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["approved", "cancelled", "pending", "rejected", "submitted"],
   },
   documents: {
-    classification: ["addendum", "agency_disclosure", "appraisal_report", "closing_disclosure", "commission_agreement", "counter_offer", "disclosure", "earnest_money_receipt", "hoa_documents", "id_document", "inspection_report", "lender_letter", "other", "pre_approval_letter", "proof_of_funds", "signed_contract", "title_report", "wire_instructions"],
+    classification: ["addendum", "agency_disclosure", "appraisal_report", "closing_disclosure", "commission_agreement", "counter_offer", "disclosure", "earnest_money_receipt", "hoa_documents", "id_document", "inspection_report", "lender_letter", "listing_agreement", "other", "pre_approval_letter", "preliminary_closing_statement", "proof_of_funds", "seller_broker_agreement", "signed_contract", "title_report", "wire_instructions"],
     classification_confidence: ["high", "low", "medium"],
     status: ["archived", "cancelled", "complete", "declined", "draft", "draft_ready", "generating", "needs_agent_input", "pending_signature", "review", "signed"],
   },
