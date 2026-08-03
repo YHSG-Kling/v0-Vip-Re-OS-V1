@@ -61,11 +61,16 @@ export async function GET(request: Request) {
   }
 
   try {
-    // Check for home anniversaries
+    // Check for home anniversaries.
+    //
+    // `funded` joins `closed` here: the ladder is closed → funded, so a funded deal
+    // is definitionally past its closing date. Matching only `closed` meant the
+    // clients furthest through the process — the ones whose money actually moved —
+    // were the ones who never got an anniversary touch.
     const { data: anniversaries } = await supabase
       .from("transactions")
       .select("id, contact_id, agent_id, brokerage_id, actual_close_date:close_date, contacts(*)")
-      .eq("status", "closed")
+      .in("status", ["closed", "funded"])
       .not("close_date", "is", null)
 
     for (const txn of anniversaries || []) {
@@ -83,6 +88,27 @@ export async function GET(request: Request) {
         try {
           await sendAnniversaryMessage(txn.contact_id, yearsAgo, { agentId: txn.agent_id, client: supabase })
           results.anniversaries++
+
+          // EMIT THE EVENT. This cron was the only thing that knew an anniversary
+          // had come round, and it kept that to itself — so the "Home Purchase
+          // Anniversary" trigger an agent can pick in the workflow builder fired
+          // never, and the ANNIVERSARY_TRIGGERED portal template in
+          // lib/kernel/event-fanout.ts rendered never. Both ends existed; the
+          // signal between them did not.
+          try {
+            const { fanOutKernelEvent } = await import("@/lib/kernel/event-fanout")
+            const { KernelEvent } = await import("@/lib/kernel/events")
+            await fanOutKernelEvent({
+              event:       KernelEvent.ANNIVERSARY_TRIGGERED,
+              brokerageId: (txn as any).brokerage_id,
+              entityType:  "contact",
+              entityId:    txn.contact_id,
+              metadata:    { years_ago: yearsAgo, transaction_id: txn.id, close_date: txn.actual_close_date },
+            })
+          } catch (fanErr: any) {
+            // The touch already went out; a fan-out failure must not undo it.
+            results.errors.push(`Anniversary fan-out: ${fanErr?.message ?? fanErr}`)
+          }
         } catch (error: any) {
           results.errors.push(`Anniversary error: ${error.message}`)
         }

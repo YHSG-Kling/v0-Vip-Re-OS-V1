@@ -2,6 +2,7 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { ContractReviewClient } from "./contract-review-client"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { TRANSACTION_STATUSES_TERMINAL } from "@/lib/transactions/transaction-status"
 
 export const dynamic = "force-dynamic"
 
@@ -36,12 +37,22 @@ export default async function ContractReviewPage() {
     .eq("user_id", user.id)
     .maybeSingle()
 
-  // Load open transactions so user can pick one
+  // Load open transactions so user can pick one.
+  //
+  // This excluded '("closed","cancelled")'. `cancelled` is not a value
+  // transactions.status can hold — the live CHECK admits lead | qualifying |
+  // active | under_contract | pending | clear_to_close | closed | funded | lost |
+  // archived — so half the filter matched nothing, while the three states that
+  // ARE terminal (funded, lost, archived) were never excluded. Dead and lost
+  // deals were offered for contract review as though they were live.
+  //
+  // Excluding the canonical TERMINAL set keeps every non-terminal deal visible,
+  // including lead/qualifying, so nothing an agent could pick before disappears.
   const { data: transactions } = await supabase
     .from("transactions")
     .select("id, transaction_type:deal_type, status, address:property_address, close_date, contact_id")
     .eq("brokerage_id", userRow.brokerage_id)
-    .not("status", "in", '("closed","cancelled")')
+    .not("status", "in", `(${TRANSACTION_STATUSES_TERMINAL.join(",")})`)
     .order("created_at", { ascending: false })
     .limit(50)
 

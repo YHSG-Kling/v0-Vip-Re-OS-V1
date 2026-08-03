@@ -22,14 +22,34 @@
 // caller-supplied/service client.
 
 import type { createServiceClient } from "@/lib/supabase/service"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-/** Transaction statuses that mean a deal is IN FLIGHT — such a contact is always
- *  reassigned to the successor, never archived (the client is never dropped mid-deal). */
-export const ACTIVE_DEAL_STATUSES = [
-  "active", "under_contract", "pending", "closing", "accepted", "in_escrow",
-] as const
+/**
+ * Transaction statuses that mean a deal is IN FLIGHT — such a contact is always
+ * reassigned to the successor, never archived (the client is never dropped mid-deal).
+ *
+ * THIS IS THE CANONICAL SET, NOT A LOCAL COPY. The hand-written list that used to
+ * live here read:
+ *
+ *     ["active", "under_contract", "pending", "closing", "accepted", "in_escrow"]
+ *
+ * Three of those six — `closing`, `accepted`, `in_escrow` — are not values
+ * transactions.status can hold. The live CHECK admits lead | qualifying | active |
+ * under_contract | pending | clear_to_close | closed | funded | lost | archived, so
+ * those three matched nothing, ever. Worse, the list MISSED `clear_to_close` — the
+ * lender has issued clear-to-close, the deal is days from funding, and this said
+ * the deal was not in flight. A deactivating agent's client could be archived
+ * instead of handed to their successor at the single most fragile moment in the
+ * transaction.
+ *
+ * `closing` is the tell: lib/transactions/transaction-status.ts records that the
+ * column once admitted it and that it was dropped deliberately — "a scheduling
+ * word, not a milestone". This copy was written against the old vocabulary and
+ * never moved.
+ */
+export const ACTIVE_DEAL_STATUSES = TRANSACTION_STATUSES_OPEN
 
 export type ContactOwnership = "agent_book" | "system_acquired"
 

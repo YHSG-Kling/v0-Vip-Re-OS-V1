@@ -373,13 +373,13 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   campaign_sequence_steps: {
     ab_variant: ["A", "B"],
-    channel: ["ad_campaign", "add_to_segment", "ai_call", "ai_image", "assign_task", "avm_cma", "condition", "direct_mail", "draft_document", "email", "in_app", "listing_landing_page", "newsletter", "remove_from_campaign", "schedule_showing", "schedule_tour", "send_for_esign", "send_gift", "sms", "social_post", "video", "voice_drop", "wait"],
+    channel: ["ad_campaign", "add_to_segment", "ai_call", "ai_image", "assign_task", "avm_cma", "commission_video", "condition", "direct_mail", "draft_document", "email", "in_app", "listing_landing_page", "newsletter", "remove_from_campaign", "schedule_showing", "schedule_tour", "send_for_esign", "send_gift", "sms", "social_post", "video", "voice_drop", "wait"],
   },
   campaign_sequences: {
     contact_type: ["both", "buyer", "lifetime", "seller"],
     persona: ["divorce", "downsize", "expired", "first_time", "foreclosure", "fsbo", "luxury", "military", "other", "probate", "relocated", "senior", "upsize"],
     sequence_type: ["drip", "nurture", "post_close", "re_engagement", "transaction"],
-    trigger_event: ["buyer_verified", "contact_created", "deal_closed", "ghost_lead_detected", "isa_qualified_lead", "lead_assigned", "lead_scored", "listing_published", "manual", "new_lead", "offer_submitted", "reengagement_started", "showing_completed", "tour_scheduled"],
+    trigger_event: ["anniversary_triggered", "appraisal_ordered", "buyer_financially_verified", "buyer_verified", "cda_approved", "coming_soon_sent", "contact_captured", "contact_created", "contact_email_opened", "contact_link_clicked", "contract_signed", "deal_closed", "ghl_contact_tag_added", "ghost_lead_detected", "idx_saved_search_match", "isa_qualified_lead", "lead_assigned", "lead_captured", "lead_scored", "lifetime_customer", "listing_cancelled", "listing_created", "listing_expired", "listing_published", "listing_under_contract", "manual", "new_lead", "offer_accepted", "offer_counter_sent", "offer_rejected", "offer_submitted", "open_house_scheduled", "property_match_found", "qr_scan", "reengagement_started", "review_received", "showing_completed", "showing_feedback_received", "tour_scheduled", "transaction_closed"],
   },
   chat_messages: {
     role: ["assistant", "system", "user"],

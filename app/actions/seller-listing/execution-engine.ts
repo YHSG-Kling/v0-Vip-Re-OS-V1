@@ -31,6 +31,11 @@ import { isValidUUID } from "@/lib/validations"
 import { resolveProvider } from "@/lib/kernel/providers"
 import { transitionLifecycle, processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
+import {
+  ledgerMechanismForReason,
+  recipientTypeForReason,
+  commissionAdjustmentReasonLabel,
+} from "@/lib/commission/adjustment-vocabulary"
 
 // ============================================================================
 // DOMAIN 1: Seller Decision & Commitment
@@ -638,22 +643,70 @@ export async function markAgreementSigned(params: {
   }
 
   // ── 5. INSERT commission_adjustments if applicable ────────────────────────
+  //
+  // THIS INSERT COULD NEVER SUCCEED, and nothing said so. Three separate live-schema
+  // violations, all invisible because the result was never destructured — supabase-js
+  // RESOLVES a rejected write, so `await ...insert(...)` with no `error` check reports
+  // a constraint violation exactly like a success:
+  //
+  //   · transaction_id  — NOT NULL, no default. Never supplied.
+  //   · recipient_type  — NOT NULL, no default. Never supplied.
+  //   · adjustment_type — written straight through from the listing agreement's
+  //     REASON vocabulary into the ledger's MECHANISM vocabulary. `military`,
+  //     `repeat_client` and `relocation` are valid reasons and are rejected here.
+  //
+  // What it cost: an agent negotiates a reduced commission, the agreement saves, the
+  // UI confirms — and lib/commission/waterfall/03-apply-gross-adjustments.ts, which
+  // reads this table filtered on transaction_id, finds nothing. The seller is invoiced
+  // the FULL commission the agent promised to discount, at closing, every time.
+  let adjustmentWarning: string | null = null
   if (hasAdjustment && commissionTerms) {
-    await supabase.from("commission_adjustments").insert({
-      brokerage_id:          brokerageId,
-      created_by_agent_id:   await resolveAgentId(supabase as any, userId),
-      adjustment_type:       commissionTerms.adjustmentType!,
-      value:                 commissionTerms.adjustmentValue!,
-      value_type:            commissionTerms.adjustmentValueType ?? "percent",
-      notes:                 commissionTerms.adjustmentNotes ?? null,
-      // commission_adjustments.applies_to is (gross|agent|brokerage) — a
-      // seller-negotiated listing concession comes off the GROSS commission —
-      // and direction is (credit|surcharge); a reduction IS a credit.
-      applies_to:            "gross",
-      direction:             "credit",
-      is_active:             true,
-      effective_date:        new Date().toISOString().slice(0, 10),
-    })
+    // The ledger row hangs off the TRANSACTION — that is the only key the waterfall
+    // reads. Without one there is nothing to attach the concession to, and inventing
+    // a transaction here would be a far larger side effect than this action implies.
+    const { data: tx } = await supabase
+      .from("transactions")
+      .select("id")
+      .eq("listing_id", listingId)
+      .eq("brokerage_id", brokerageId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (!tx?.id) {
+      adjustmentWarning =
+        "The commission adjustment is recorded on the listing agreement but NOT in the commission ledger — this listing has no transaction yet, and the ledger entry is what reduces the commission at closing. Open the transaction for this listing and re-apply the adjustment."
+    } else {
+      const reason = commissionTerms.adjustmentType ?? null
+      const { error: adjustmentError } = await supabase
+        .from("commission_adjustments")
+        .insert({
+          brokerage_id:          brokerageId,
+          transaction_id:        tx.id,
+          created_by_agent_id:   await resolveAgentId(supabase as any, userId),
+          // Reason → mechanism. The reason itself stays on
+          // listing_agreements.adjustment_type and is carried into the notes below,
+          // so translating here loses nothing.
+          adjustment_type:       ledgerMechanismForReason(reason),
+          recipient_type:        recipientTypeForReason(reason),
+          value:                 commissionTerms.adjustmentValue!,
+          value_type:            commissionTerms.adjustmentValueType ?? "percent",
+          notes:                 [commissionAdjustmentReasonLabel(reason), commissionTerms.adjustmentNotes]
+                                   .filter(Boolean).join(" — ") || null,
+          // applies_to is (gross|agent|brokerage) — a seller-negotiated listing
+          // concession comes off the GROSS commission — and direction is
+          // (credit|surcharge); a reduction IS a credit.
+          applies_to:            "gross",
+          direction:             "credit",
+          is_active:             true,
+          effective_date:        new Date().toISOString().slice(0, 10),
+        })
+
+      if (adjustmentError) {
+        adjustmentWarning =
+          `The commission adjustment is recorded on the listing agreement but NOT in the commission ledger (${adjustmentError.message}). The ledger entry is what reduces the commission at closing.`
+      }
+    }
   }
 
   // ── 6. Set go_live_date + calculate open house dates ──────────────────────
@@ -754,7 +807,10 @@ export async function markAgreementSigned(params: {
   // Non-blocking — notification failure must not fail the agreement signing
   })
 
-  return { success: true, agreementId: agreement.id }
+  // The agreement itself saved. If the ledger entry did not, the caller is told so
+  // explicitly rather than being handed an unqualified success — a concession the
+  // money engine never sees is money the seller is charged anyway.
+  return { success: true, agreementId: agreement.id, ...(adjustmentWarning ? { warning: adjustmentWarning } : {}) }
 }
 
 // ─── OPEN HOUSE DATE CALCULATOR ───────────────────────────────────────────────

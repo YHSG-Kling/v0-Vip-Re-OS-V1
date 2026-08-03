@@ -60,6 +60,11 @@ export const WORKFLOW_TRIGGERS: WorkflowTrigger[] = [
   // ─── Lead & Contact ───────────────────────────────────────────────────────
   lifecycle(KernelEvent.CONTACT_CREATED,      "Contact Created",        "Lead & Contact", "A new contact record is created (form, import, manual)."),
   lifecycle(KernelEvent.LEAD_CAPTURED,        "Lead Captured",          "Lead & Contact", "Raw lead captured from form, ad, or open-house sign-in."),
+  // CONTACT_CAPTURED was missing from this catalog while being emitted from nine
+  // places AND used by the default-sequence seeder — so the seeder's first and
+  // most important seed (new-contact nurture) was refused by the column and
+  // dropped in silence, and no agent could pick the trigger by hand either.
+  lifecycle(KernelEvent.CONTACT_CAPTURED,     "Contact Captured",       "Lead & Contact", "A contact is captured from a form, portal, or inbound conversation."),
   lifecycle(KernelEvent.LEAD_SCORED,          "Lead Score Updated",     "Lead & Contact", "AI lead score changes (new data, behaviour signal, enrichment)."),
   lifecycle(KernelEvent.ISA_QUALIFIED_LEAD,   "ISA Qualified Lead",     "Lead & Contact", "AI ISA qualifies a raw lead and promotes it to a contact."),
   lifecycle(KernelEvent.GHOST_LEAD_DETECTED,  "Ghost Lead Detected",    "Lead & Contact", "Active contact has gone silent for a configurable period."),

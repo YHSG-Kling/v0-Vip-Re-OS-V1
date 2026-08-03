@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
-import { TRANSACTION_STATUSES_IN_ESCROW, closeConfidence } from "@/lib/transactions/transaction-status"
+import { TRANSACTION_STATUSES_IN_ESCROW, TRANSACTION_STATUSES_TERMINAL, closeConfidence } from "@/lib/transactions/transaction-status"
 import {
   MILESTONE_OPEN_STATUSES,
   DEADLINE_OPEN_STATUSES,
@@ -59,7 +59,7 @@ export async function getBrokerageDashboard(_brokerageId?: string) {
       .from("transactions")
       .select("*")
       .eq("brokerage_id", brokerageId)
-      .not("status", "in", "(closed,lost)"),
+      .not("status", "in", `(${TRANSACTION_STATUSES_TERMINAL.join(",")})`),
     // compliance_events is the gate ledger; allowed=false means a blocked/violation event
     // (compliance_checks is the separate doc-scan table with no `allowed` column).
     supabase
@@ -151,7 +151,7 @@ export async function getCoordinatorDashboard_v2(coordinatorId: string) {
     `)
     .eq("coordinator_id", coordinatorId)
     .eq("brokerage_id", auth.brokerageId)
-    .not("status", "in", "(closed,lost)")
+    .not("status", "in", `(${TRANSACTION_STATUSES_TERMINAL.join(",")})`)
     .order("close_date")
 
   const transactionIds = transactions?.map((t) => t.id) || []
@@ -712,7 +712,7 @@ export async function getTeamDashboard(teamId: string) {
         .from("transactions")
         .select("*")
         .in("agent_id", agentIds)
-        .not("status", "in", "(closed,lost)")
+        .not("status", "in", `(${TRANSACTION_STATUSES_TERMINAL.join(",")})`)
     : { data: [] }
 
   return {
@@ -1176,7 +1176,7 @@ export async function predictDeadlineRisks(
       transaction_milestones(*),
       transaction_deadlines(*)
     `)
-    .not("status", "in", "(closed,lost)")
+    .not("status", "in", `(${TRANSACTION_STATUSES_TERMINAL.join(",")})`)
 
   if (scopedTransactionIds !== undefined) {
     // Explicit scope provided — use it; empty array means no transactions in scope
@@ -1449,7 +1449,7 @@ export async function getCoordinatorDashboard(coordinatorId: string) {
     `)
     .eq("coordinator_id", coordinatorId)
     .eq("brokerage_id", auth.brokerageId)
-    .not("status", "in", "(closed,lost)")
+    .not("status", "in", `(${TRANSACTION_STATUSES_TERMINAL.join(",")})`)
     .order("close_date")
 
   const transactionIds = transactions?.map((t) => t.id) || []

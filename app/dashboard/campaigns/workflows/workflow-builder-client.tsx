@@ -179,14 +179,23 @@ export function WorkflowBuilderClient({ brokerageId, userId, userType, initialSe
         sid = res.sequence.id
         setSequenceId(sid)
       } else {
-        await updateCampaignSequence(sid, {
+        // The create path above checks its result and aborts; this one discarded
+        // it entirely. Changing an existing workflow's trigger to a value the
+        // column refuses reported "Workflow saved" and changed nothing — the
+        // trigger silently stayed whatever it was, so the workflow kept firing on
+        // the old signal (or never firing at all).
+        const res = await updateCampaignSequence(sid, {
           name: name.trim(),
           description: description.trim() || undefined,
           trigger_event: triggerEvent,
         })
+        if (res?.error) {
+          toast.error(res.error); return
+        }
       }
 
       // Save steps
+      let stepFailed = false
       for (let i = 0; i < steps.length; i++) {
         const s = steps[i]
         // Send the WHOLE step. The actions take the palette as their allow-list,
@@ -206,7 +215,7 @@ export function WorkflowBuilderClient({ brokerageId, userId, userType, initialSe
             subject: s.subject || undefined,
             body: s.body || undefined,
           })
-          if (res.error) toast.error(res.error)
+          if (res.error) { toast.error(res.error); stepFailed = true }
           if (res.step) {
             setSteps((prev) => prev.map((ps, pi) => pi === i ? { ...ps, id: res.step!.id, isNew: false } : ps))
           }
@@ -220,8 +229,16 @@ export function WorkflowBuilderClient({ brokerageId, userId, userType, initialSe
             subject: s.subject || undefined,
             body: s.body || undefined,
           })
-          if (res.error) toast.error(res.error)
+          if (res.error) { toast.error(res.error); stepFailed = true }
         }
+      }
+
+      // A step that failed to save used to be toasted and then immediately
+      // contradicted by "Workflow saved" — and the redirect took the agent away
+      // from the editor holding the only copy of the step that did not persist.
+      if (stepFailed) {
+        toast.error("Some steps did not save — fix the errors above before leaving this page.")
+        return
       }
 
       toast.success("Workflow saved")

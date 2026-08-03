@@ -141,8 +141,13 @@ console.log("\n[the grouping is honest — a 'produce' step contacts nobody]")
     !!video && /delivers nothing on its own/i.test(video.description))
 
   const produce = STEP_PALETTE.filter((s) => s.group === "produce").map((s) => s.channel)
+  // commission_video joined this group when it was finally made selectable: the
+  // adapter had been registered all along with no palette entry and no CHECK
+  // value, so it was unpickable AND unsavable. It is a producer for the same
+  // reason `video` is — it makes an asset a later Email or SMS step delivers.
   check("the produce group is exactly the asset-makers",
-    ["video", "ai_image", "avm_cma", "draft_document"].every((c) => produce.includes(c)) && produce.length === 4)
+    ["video", "commission_video", "ai_image", "avm_cma", "draft_document"].every((c) => produce.includes(c)) &&
+    produce.length === 5)
 
   const groups = paletteByGroup()
   check("every group rendered has steps in it", groups.every((g) => g.steps.length > 0))

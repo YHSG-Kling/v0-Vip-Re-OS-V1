@@ -10,6 +10,7 @@ import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { z } from "zod"
 import { handleError } from "@/lib/errors"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 export async function getDocuments(params?: { contactId?: string; transactionId?: string; type?: string }) {
   try {
@@ -516,7 +517,12 @@ Set overallStatus to "blocking_issues" only if missing signatures would invalida
             .from("transactions")
             .select("id, status")
             .eq("contact_id", docRecord.contact_id)
-            .in("status", ["under_contract", "active"])
+            // Canonical open-deal set. This read ["under_contract", "active"],
+            // which is exactly the gap lib/transactions/transaction-status.ts
+            // documents: it misses `pending` and `clear_to_close`, so a contract
+            // whose contingencies had cleared found NO open transaction and the
+            // document was filed against nothing.
+            .in("status", [...TRANSACTION_STATUSES_OPEN])
             .order("created_at", { ascending: false })
             .limit(1)
             .maybeSingle()

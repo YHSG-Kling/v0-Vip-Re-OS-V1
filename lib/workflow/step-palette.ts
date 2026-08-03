@@ -264,6 +264,38 @@ export const STEP_PALETTE: ReadonlyArray<StepTypeSpec> = [
     ],
   },
   {
+    // REGISTERED BUT UNREACHABLE. commissionVideoAdapter has been in the registry
+    // (lib/workflow/adapters/index.ts) with a real Video Director behind it and a
+    // passing proof — and no palette entry, so no agent could ever select it, and
+    // no CHECK value, so even a hand-written row was refused. A complete capability
+    // sitting dark. The step-palette consolidation guard could not see it either:
+    // it only reports adapters missing from the palette when the channel is ALREADY
+    // a live CHECK value, and this one was missing from both.
+    channel: "commission_video", label: "Produce Commission Video", group: "produce", icon: "Clapperboard", flagKey: "video_campaigns",
+    description: "Asks the Video Director for the right video for this moment — the situation decides the script, not you. Delivers nothing on its own; send it with a later Email or SMS step.",
+    fields: [
+      {
+        name: "video_situation_kind", label: "Situation", type: "select",
+        help: "What this video is for. Anything unset produces a general explainer.",
+        options: [
+          { value: "explainer",     label: "Explainer (general)" },
+          { value: "new_listing",   label: "New Listing" },
+          { value: "coming_soon",   label: "Coming Soon" },
+          { value: "price_drop",    label: "Price Drop" },
+          { value: "just_sold",     label: "Just Sold" },
+          { value: "open_house",    label: "Open House" },
+          { value: "market_update", label: "Market Update" },
+          { value: "cma",           label: "CMA" },
+          { value: "presentation",  label: "Listing Presentation" },
+          { value: "anniversary",   label: "Home Anniversary" },
+          { value: "testimonial",   label: "Testimonial" },
+          { value: "neighborhood",  label: "Neighborhood" },
+        ],
+      },
+      { name: "output_variable_name", label: "Output name", type: "text", help: "Later steps reference it as {{<name>.video_url}}." },
+    ],
+  },
+  {
     channel: "ai_image", label: "Generate Image", group: "produce", icon: "Image", flagKey: null,
     description: "Generates an image for a later post or email to use.",
     fields: [
