@@ -46,6 +46,22 @@
  * NEW instances of either fail the build. The baselines may only go DOWN — a
  * check enforces that, so this burns down and cannot silently refill.
  *
+ * ── ONE DELIBERATE UPWARD CORRECTION: 444 → 487 ─────────────────────────────
+ * The orphan scan read caller files RAW, so a function merely NAMED in prose
+ * counted as a caller. lib/kernel/manager-registry.ts was the worst offender:
+ * every entry carries a long `what:` description, and those descriptions name
+ * the functions they discuss — so documenting an orphan marked it wired. A
+ * comment saying "X has no callers" did the same thing.
+ *
+ * Comments are now stripped and the registry is excluded, and the honest count
+ * came out 44 higher. The baseline was raised to match. This is a MEASUREMENT
+ * correction, not a regression: those 44 were never wired, the guard was
+ * telling us they were. The ratchet is only worth having if the number under it
+ * is true, and a guard that can be satisfied by writing about the problem is
+ * worse than no guard.
+ *
+ * This is the only permitted upward move. Everything after it goes down.
+ *
  * ── WHY IT IS DELIBERATELY CONSERVATIVE ─────────────────────────────────────
  * A false positive here costs someone an afternoon proving a working button
  * works, and two of those and the guard gets switched off. So every recognised
@@ -238,8 +254,26 @@ console.log("\n[repo scan — orphan server actions]")
 const orphanFound: string[] = []
 {
   const actionFiles = walk("app/actions", [".ts"])
+
+  // DOCUMENTATION IS NOT A CALLER.
+  //
+  // This scan used to read caller files raw, so a function merely NAMED in
+  // prose counted as wired. lib/kernel/manager-registry.ts is the worst case:
+  // every entry carries a long `what:` string describing the feature, and those
+  // descriptions name the functions involved — so writing a registry entry
+  // about an orphan silently marked it wired. A comment explaining that
+  // something is unwired did the same thing.
+  //
+  // Comments are stripped, and the registry is excluded outright: it is
+  // ownership metadata, not a call site. Anything it genuinely needs to invoke
+  // it imports, and an import survives comment-stripping.
+  const DOC_ONLY_FILES = new Set(["lib/kernel/manager-registry.ts"])
+  const stripComments = (s: string) =>
+    s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+
   const callerFiles = [...walk("app", [".ts", ".tsx"]), ...walk("lib", [".ts", ".tsx"]), ...walk("hooks", [".ts", ".tsx"])]
-  const callerSrc = new Map(callerFiles.map((f) => [f, readFileSync(f, "utf8")]))
+    .filter((f) => !DOC_ONLY_FILES.has(f.replace(/\\/g, "/")))
+  const callerSrc = new Map(callerFiles.map((f) => [f, stripComments(readFileSync(f, "utf8"))]))
 
   for (const f of actionFiles) {
     const src = readFileSync(f, "utf8")

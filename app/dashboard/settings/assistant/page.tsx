@@ -13,6 +13,9 @@ import { createClient } from "@/lib/supabase/server"
 import { getMyVoiceAvatarPrefs } from "@/app/actions/voice-avatar-settings"
 import { GENERIC_VOICES } from "@/lib/voice/voice-resolver"
 import { ListeningPreferencesPanel } from "./listening-preferences-panel"
+import { ReplyStylePanel } from "./reply-style-panel"
+import { getAgentContext } from "@/lib/identity"
+import { getAgentChatPreferences } from "@/app/actions/ai-chat"
 
 export const metadata = {
   title: "Assistant Voice | Settings",
@@ -24,32 +27,48 @@ async function AssistantContent() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
-  const prefs = await getMyVoiceAvatarPrefs()
+  const [prefs, ctx] = await Promise.all([getMyVoiceAvatarPrefs(), getAgentContext()])
 
-  if (!prefs) {
-    return (
-      <div className="text-center py-12 text-sm text-muted-foreground">
-        Set up your twin first so we know your voice clone, then come back here to choose how your
-        own assistant sounds when it talks to you.
-      </div>
-    )
-  }
+  // Reply style is independent of the twin: an agent with no voice clone still
+  // drafts replies. The old early-return hid the whole page behind twin setup,
+  // so each panel now states its own prerequisite.
+  const replyPrefs = ctx.agentId ? await getAgentChatPreferences(ctx.agentId) : null
 
   return (
     <div className="container mx-auto px-4 py-6 max-w-3xl">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold">Assistant Voice</h1>
+        <h1 className="text-2xl font-bold">Assistant</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          What your AI assistant sounds like when it talks to <strong>you</strong> — your morning
-          brief, copilot replies, voice command bar. Separate from how your <em>twin</em> sounds
-          to contacts (set up in Twin Studio).
+          How your AI works for <strong>you</strong> — what it sounds like in your morning brief and
+          copilot, and how it writes the replies it drafts on your behalf. Separate from how your{" "}
+          <em>twin</em> sounds to contacts (set up in Twin Studio).
         </p>
       </div>
 
-      <ListeningPreferencesPanel
-        initialPrefs={prefs}
-        genericVoices={GENERIC_VOICES}
-      />
+      {prefs ? (
+        <ListeningPreferencesPanel
+          initialPrefs={prefs}
+          genericVoices={GENERIC_VOICES}
+        />
+      ) : (
+        <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+          Set up your twin first so we know your voice clone, then come back here to choose how your
+          own assistant sounds when it talks to you.
+        </div>
+      )}
+
+      {replyPrefs && ctx.agentId ? (
+        <ReplyStylePanel
+          agentId={ctx.agentId}
+          initialTone={replyPrefs.tone}
+          initialModel={replyPrefs.preferred_model}
+        />
+      ) : (
+        <div className="mt-6 rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+          Reply style is set per agent. Your account isn't linked to an agent record yet, so there's
+          nothing to configure here.
+        </div>
+      )}
     </div>
   )
 }
