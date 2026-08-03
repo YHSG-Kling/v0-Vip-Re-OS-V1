@@ -363,10 +363,24 @@ export async function voteArticleHelpful(
   if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
   const svc = createServiceClient()
   const col = helpful ? "helpful_count" : "not_helpful_count"
-  const { data } = await svc.from("knowledge_articles").select(col).eq("id", id).maybeSingle()
-  const row = (data ?? {}) as Record<string, unknown>
-  const current = typeof row[col] === "number" ? (row[col] as number) : 0
-  const { error } = await svc.from("knowledge_articles").update({ [col]: current + 1 }).eq("id", id)
-  if (error) return { ok: false, error: error.message }
+
+  // ATOMIC. This was a read-modify-write: two people voting on the same article
+  // in the same moment both read N and both wrote N+1, so one vote was lost.
+  // public.increment is the counter primitive built for exactly this — it is
+  // SECURITY DEFINER but NOT a generic increment: it hard-allowlists four
+  // (table, column) pairs (ai_video_projects.view_count and the three
+  // knowledge_articles counters), raises on anything else, and quotes the
+  // identifiers with format(%I). One statement, no lost update.
+  const { error } = await svc.rpc("increment", {
+    table_name:  "knowledge_articles",
+    row_id:      id,
+    column_name: col,
+  })
+
+  if (error) {
+    // The allowlist rejects anything unexpected, so a failure here is real —
+    // report it rather than silently falling back to the racy path.
+    return { ok: false, error: error.message }
+  }
   return { ok: true }
 }

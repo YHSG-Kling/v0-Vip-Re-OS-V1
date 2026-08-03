@@ -396,35 +396,12 @@ export async function deleteKnowledgeArticle(id: string) {
 /**
  * Mark article as helpful or not helpful
  */
-export async function rateArticle(id: string, helpful: boolean) {
-  const supabase = await createClient()
-
-  const column = helpful ? 'helpful_count' : 'not_helpful_count'
-
-  const { error } = await supabase.rpc('increment', {
-    row_id: id,
-    table_name: 'knowledge_articles',
-    column_name: column,
-  })
-
-  if (error) {
-    // Fallback to manual increment
-    const { data: article } = await supabase
-      .from('knowledge_articles')
-      .select(column)
-      .eq('id', id)
-      .single()
-
-    if (article) {
-      await supabase
-        .from('knowledge_articles')
-        .update({ [column]: ((article as any)[column] || 0) + 1 })
-        .eq('id', id)
-    }
-  }
-
-  return { success: true }
-}
+// rateArticle was a DUPLICATE of voteArticleHelpful (app/actions/support.ts),
+// which is the one the Help centre actually calls. Both incremented
+// knowledge_articles.helpful_count / not_helpful_count. Deleted here, and the
+// surviving one took this version's better half: the atomic public.increment
+// RPC, instead of the read-modify-write that lost a vote whenever two people
+// rated the same article at once.
 
 /**
  * Increment view count for an article

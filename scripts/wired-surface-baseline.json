@@ -259,7 +259,6 @@
     "app/actions/knowledge/search.ts:deleteKnowledgeArticle",
     "app/actions/knowledge/search.ts:getKnowledgeArticle",
     "app/actions/knowledge/search.ts:getKnowledgeArticles",
-    "app/actions/knowledge/search.ts:rateArticle",
     "app/actions/knowledge/search.ts:regenerateEmbedding",
     "app/actions/knowledge/search.ts:searchArticlesRAG",
     "app/actions/knowledge/search.ts:searchHelpTopicsRAG",

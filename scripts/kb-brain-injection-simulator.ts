@@ -82,6 +82,30 @@ console.log("\n── the brain's knowledge now COVERS CONTACTS (not just broker
   check("voice/call-context rail passes contactId", /loadBrandVoicePrompt\(\{[\s\S]*?contactId: params\.contactId/.test(call))
 }
 
+console.log("\n── one article-rating path, and it does not lose votes ──")
+{
+  const support = src("app/actions/support.ts")
+  const knowledge = src("app/actions/knowledge/search.ts")
+  const raw = readFileSync("app/actions/knowledge/search.ts", "utf8")
+
+  // rateArticle duplicated voteArticleHelpful, which is the one the Help centre
+  // calls. Deleted; the survivor took the deleted one's better half.
+  check("rateArticle is gone", !/export async function rateArticle\b/.test(knowledge))
+  check("…and the file records what replaced it", raw.includes("voteArticleHelpful"))
+  check("voteArticleHelpful is the survivor",
+    /export async function voteArticleHelpful/.test(support))
+
+  // The old body was select-then-update: two simultaneous voters both read N and
+  // both wrote N+1. Verified live — two atomic calls gave 2, two
+  // read-modify-write calls from 2 gave 3 rather than 4.
+  check("the vote is a single atomic statement",
+    /\.rpc\("increment", \{[\s\S]*?table_name:\s+"knowledge_articles"/.test(support))
+  check("…not a read-modify-write any more",
+    !/from\("knowledge_articles"\)\.select\(col\)/.test(support))
+  check("a refused increment is reported, not silently retried down the racy path",
+    /if \(error\) \{[\s\S]{0,200}?return \{ ok: false, error: error\.message \}/.test(support))
+}
+
 console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
 if (fail > 0) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)); console.log(" ❌ KB_BRAIN_INJECTION_FAIL"); process.exit(1) }
 console.log(" ✅ KB_BRAIN_INJECTION_PASS — uploaded knowledge reaches the AI's brand-voice brain, scoped + grounded")
