@@ -483,7 +483,11 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
     systemSource: params.systemSource ?? "dispatch",
     brokerageId: params.brokerageId,
     agentId: params.agentId,
-    leadId: params.leadId ?? params.contactId,
+    // NOT `?? params.contactId`. vendor_usage_tracking.lead_id FKs leads(id) —
+    // a contacts.id put here raises 23503, and logVendorUsage is fire-and-forget,
+    // so the cost row for that send was silently dropped. The contact identity
+    // has its own home in metadata.contact_id, immediately below.
+    leadId: params.leadId,
     metadata: {
       to: params.to,
       subject: params.subject,
@@ -667,10 +671,12 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
     systemSource: params.systemSource ?? "dispatch",
     brokerageId: params.brokerageId,
     agentId: params.agentId,
+    // leads(id) only — see the note on the email path above.
     leadId: params.leadId,
     metadata: {
       to: params.to,
       provider_key: providerKey,
+      contact_id: params.contactId,
       ...(params.metadata ?? {}),
     },
   })

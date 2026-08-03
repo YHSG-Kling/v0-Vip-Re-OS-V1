@@ -70,7 +70,15 @@ export async function sendSMS(params: {
     brokerageId: contact.brokerage_id,
     agentId: contact.agent_id ?? undefined,
     systemSource: "communications",
-    leadId: params.contactId,
+    // contactId, NOT leadId. This read the recipient out of `contacts` above and
+    // then handed that contacts.id to the leadId slot. dispatchSms picks its
+    // lookup table with `params.contactId ? "contacts" : "leads"`, so it went
+    // looking for a contacts.id in `leads`, found nothing, and the guard
+    // `if (!recipientError && recipient)` fell through — which SKIPPED
+    // evaluateOutboundCompliance entirely. Express consent, quiet hours and the
+    // fair-housing content check never ran on anything sent through here.
+    // (checkSuppression still ran, so DNC/opt-out by phone was never the hole.)
+    contactId: params.contactId,
     metadata: params.trackingData,
   })
 
@@ -146,7 +154,8 @@ export async function sendEmail(params: {
     brokerageId: contact.brokerage_id,
     agentId: contact.agent_id ?? undefined,
     systemSource: "communications",
-    leadId: params.contactId,
+    // contactId, NOT leadId — same defect as sendSMS above; see the note there.
+    contactId: params.contactId,
   })
 
   if (result.success) {

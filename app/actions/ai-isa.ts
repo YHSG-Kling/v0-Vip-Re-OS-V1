@@ -707,7 +707,10 @@ export async function triggerGhostRecovery(params: {
     html:           ghostBodyHtml,
     channelPurpose: "campaign",
     systemSource:   "ghost_recovery",
-    leadId:         params.contactId,
+    // contactId, NOT leadId — the recipient was read out of `contacts`. This is
+    // a "campaign" send, the case where express consent matters most, and the
+    // id-space slip was skipping evaluateOutboundCompliance for all of them.
+    contactId:      params.contactId,
   })
 
   if (!dispatchResult.success) return { success: false, error: dispatchResult.error }
@@ -810,7 +813,8 @@ export async function retryGhostContact(params: {
       html:           retryBodyHtml,
       channelPurpose: "campaign",
       systemSource:   "ghost_recovery",
-      leadId:         params.contactId,
+      // contactId, NOT leadId — see the note on the first ghost-recovery send.
+      contactId:      params.contactId,
     })
     if (!result.success) return { success: false, error: result.error }
   }

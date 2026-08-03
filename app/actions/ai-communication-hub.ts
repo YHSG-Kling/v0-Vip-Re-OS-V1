@@ -171,7 +171,10 @@ export async function sendMessage(params: {
           html:           `<p>${params.body}</p>`,
           channelPurpose: "conversation",
           systemSource:   "inbox",
-          leadId:         params.contactId,
+          // contactId, NOT leadId. The recipient was read out of `contacts`;
+          // routing that id through leadId made dispatchEmail look for it in
+          // `leads`, miss, and skip evaluateOutboundCompliance.
+          contactId:      params.contactId,
         })
       }
     } else if (params.channel === "sms") {
