@@ -16,12 +16,13 @@ jobs:
     timeout-minutes: 30
     env:
       # `npm run type-check` (tsc --noEmit) on this app peaks above the default
-      # ~4 GB Node heap and OOM-crashes (exit 134, "Reached heap limit"). The
-      # guards workflow already runs the identical type-check with an 8 GB heap
-      # and passes; this job ran it with the default heap and crashed flakily
-      # (it sits right at the 4 GB edge). Match the proven guards config so the
-      # type-check step is memory-stable here too.
-      NODE_OPTIONS: --max-old-space-size=8192
+      # ~4 GB Node heap and OOM-crashes (exit 134, "Reached heap limit"). This
+      # job runs the IDENTICAL type-check as the guards workflow, so it must
+      # carry the identical heap — 8192 stopped being enough once the program
+      # measured 8.45 GB and guards died with exit 134. Kept in lockstep with
+      # guards.yml deliberately: the two drifting apart is how one workflow goes
+      # green while the other OOMs on the same commit.
+      NODE_OPTIONS: --max-old-space-size=10240
       # Provided via repo Secrets; empty → simulators skip the live layer (still exit 0).
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}

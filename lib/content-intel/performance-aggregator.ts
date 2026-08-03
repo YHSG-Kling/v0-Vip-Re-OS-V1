@@ -35,6 +35,9 @@ export async function logTopicUses(args: {
   brokerageId:  string
   assetType:    AssetType
   assetId?:     string | null
+  /** agents.id of the claimant (m357). The office claim says WHO took the
+   *  topic, so a broker can see which of their agents covered it. */
+  agentId?:     string | null
 }): Promise<void> {
   if (args.topicIds.length === 0) return
   const svc = createServiceClient()
@@ -43,13 +46,15 @@ export async function logTopicUses(args: {
     brokerage_id: args.brokerageId,
     asset_type:   args.assetType,
     asset_id:     args.assetId ?? null,
+    agent_id:     args.agentId ?? null,
   }))
-  try {
-    await svc.from("content_topic_uses").insert(rows)
-  } catch (e) {
-    // Logged-then-swallowed: the producer doesn't fail because audit
-    // hiccuped, but the team sees the degradation in logs.
-    console.error("[performance-aggregator] logTopicUses insert failed:", (e as Error).message)
+  // supabase-js RESOLVES a rejected insert rather than throwing, so the old
+  // try/catch here could never fire — a failed claim was indistinguishable from
+  // a successful one, and a lost claim is exactly how two agents in one office
+  // end up writing the same article.
+  const { error } = await svc.from("content_topic_uses").insert(rows)
+  if (error) {
+    console.error("[performance-aggregator] logTopicUses insert failed — topic claim NOT recorded:", error.message)
   }
 }
 

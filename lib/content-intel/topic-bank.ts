@@ -35,6 +35,13 @@ export interface TopicCandidate {
   geo_match:        boolean
 }
 
+/**
+ * How long an office's claim on a topic holds. Long enough that two agents
+ * working the same week cannot both take it; short enough that a genuinely
+ * evergreen topic returns to the pool rather than being burned forever.
+ */
+export const OFFICE_CLAIM_WINDOW_DAYS = 30
+
 export interface RecipientLocation {
   city?:     string | null
   state?:    string | null
@@ -69,6 +76,9 @@ export async function pickTopics(args: {
    *  differently for podcast/listing-promo). Defaults to
    *  'newsletter_campaign' so existing callers keep prior behavior. */
   assetType?: string
+  /** agents.id of whoever is generating. Recorded on the claim so the office
+   *  can see WHICH agent took a topic, not merely that someone did. */
+  agentId?: string | null
 }): Promise<TopicCandidate[]> {
   const svc   = createServiceClient()
   const limit = Math.min(args.limit ?? 6, 25)
@@ -86,7 +96,7 @@ export async function pickTopics(args: {
   }
 
   const { data } = await q
-  const rows = (data ?? []) as Array<{
+  let rows = (data ?? []) as Array<{
     id:               string
     brokerage_id:     string | null
     topic_title:      string
@@ -98,6 +108,37 @@ export async function pickTopics(args: {
     topic_posted_at:  string | null
     geo_relevance:    { cities?: string[]; states?: string[]; zip_codes?: string[] } | null
   }>
+
+  // ── THE OFFICE CLAIM (m357) ────────────────────────────────────────────
+  // Owner's rule: an agent in the same office cannot write an article from a
+  // topic another agent there already took. The claim ledger for that already
+  // existed — content_topic_uses records (topic, brokerage, asset) — and the
+  // picker NEVER READ IT. The only de-duplication was
+  // content_topic_bank.status='used', a flag on the topic ROW, which is wrong
+  // in both directions: it does not know which office claimed the topic, and
+  // for a PLATFORM-WIDE row (brokerage_id IS NULL, shared by every brokerage)
+  // one office's use removed it from everyone else's pool permanently.
+  //
+  // Excluding on the ledger fixes both: the claim is per office, it expires,
+  // and one brokerage can never drain another's bank.
+  if (rows.length > 0) {
+    const since = new Date(Date.now() - OFFICE_CLAIM_WINDOW_DAYS * 86_400_000).toISOString()
+    const { data: claimed, error: claimErr } = await svc
+      .from("content_topic_uses")
+      .select("topic_id")
+      .eq("brokerage_id", args.brokerageId)
+      .gte("used_at", since)
+      .in("topic_id", rows.map((r) => r.id))
+    if (claimErr) {
+      // Do NOT silently fall through to "nothing is claimed" — that is the
+      // failure mode where two agents in one office publish the same article
+      // and nobody can tell why. Say so, and keep the safer behaviour.
+      console.error("[topic-bank] office claim lookup failed, topics may repeat:", claimErr.message)
+    } else {
+      const taken = new Set((claimed ?? []).map((c: { topic_id: string }) => c.topic_id))
+      if (taken.size > 0) rows = rows.filter((r) => !taken.has(r.id))
+    }
+  }
 
   // Wave 23 — per-persona performance score lookup. ONE query over the
   // candidate set instead of per-topic round-trips inside the scoring map.
@@ -158,9 +199,26 @@ export async function pickTopics(args: {
   .slice(0, limit)
 
   if (args.markUsed && scored.length > 0) {
-    await svc.from("content_topic_bank")
-      .update({ status: "used" })
-      .in("id", scored.map((s) => s.id))
+    // CLAIM, DON'T CONSUME. Flipping status='used' on a PLATFORM-WIDE row
+    // (brokerage_id IS NULL) took the topic away from every other brokerage
+    // forever — a shared bank drained by whoever asked first. Only a row this
+    // brokerage OWNS may be retired outright; a shared one is claimed in the
+    // office-scoped ledger, which is what the exclusion above reads.
+    const ownRows = scored.filter((t) => t.brokerage_id === args.brokerageId).map((t) => t.id)
+    if (ownRows.length > 0) {
+      const { error } = await svc.from("content_topic_bank")
+        .update({ status: "used" })
+        .in("id", ownRows)
+        .eq("brokerage_id", args.brokerageId)
+      if (error) console.error("[topic-bank] markUsed failed:", error.message)
+    }
+    const { logTopicUses } = await import("./performance-aggregator")
+    await logTopicUses({
+      topicIds:    scored.map((t) => t.id),
+      brokerageId: args.brokerageId,
+      assetType:   (args.assetType ?? "newsletter_campaign") as never,
+      agentId:     args.agentId ?? null,
+    })
   }
 
   return scored.map((s) => ({

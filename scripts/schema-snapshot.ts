@@ -243,7 +243,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   content_templates: ["agent_id", "brokerage_id", "category", "content_type", "created_at", "example_output", "id", "is_active", "is_global", "placeholders", "platform", "seo_guidelines", "structure", "template_body", "template_name", "usage_count", "variables"],
   content_topic_bank: ["brokerage_id", "categories", "engagement_score", "expires_at", "geo_relevance", "id", "performance_score", "raw_data", "scraped_at", "source_id", "source_url", "status", "topic_posted_at", "topic_title", "value_angle"],
   content_topic_sources: ["brokerage_id", "created_at", "id", "is_active", "label", "last_run_at", "source_config", "source_type"],
-  content_topic_uses: ["asset_id", "asset_type", "brokerage_id", "id", "topic_id", "used_at"],
+  content_topic_uses: ["agent_id", "asset_id", "asset_type", "brokerage_id", "id", "topic_id", "used_at"],
   contract_reviews: ["agent_id", "brokerage_id", "created_at", "document_id", "document_type", "id", "issues", "key_dates", "missing_items", "overall_assessment", "overall_score", "recommendations", "review_type", "reviewed_at", "risk_factors", "signature_status", "state", "transaction_id"],
   contract_signatures: ["agent_id", "agent_signed_at", "brokerage_id", "contract_type", "created_at", "document_url", "esign_status", "field_values", "form_id", "fully_signed_at", "id", "provider_envelope_id", "provider_name", "sent_at", "signing_url", "updated_at"],
   conversation_audit_flags: ["conversation_id", "created_at", "explanation", "flagged_text", "id", "recommended_action", "resolution_notes", "review_status", "reviewed_at", "reviewed_by", "risk_score", "risk_type"],

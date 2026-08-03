@@ -32,8 +32,23 @@ jobs:
     timeout-minutes: 20
     env:
       # tsc + the simulators need more than Node's default ~4GB heap on this large
-      # codebase (CI OOM'd at the default cap; passes locally with a bigger heap).
-      NODE_OPTIONS: --max-old-space-size=8192
+      # codebase. 8192 was enough until the program outgrew it: `tsc --noEmit
+      # --extendedDiagnostics` now reports "Memory used: 8450371K" — 8.45 GB, just
+      # past the 8 GB cap — and the job died with exit 134, "Ineffective
+      # mark-compacts near heap limit". It passes locally only because a dev box
+      # has more headroom, which is exactly how this stays invisible until CI.
+      #
+      # Measured before choosing the number, not guessed: excluding all 643
+      # scripts/ files from the program saves only ~540 MB (8450 MB → 7911 MB),
+      # so the simulators are NOT the driver and splitting the program would add
+      # a second tsconfig for a 6% win while still sitting at the edge. The app
+      # graph itself is ~7.9 GB. 10240 is the value build.yml already runs on the
+      # same ubuntu-latest runner (16 GB), so it is proven rather than hopeful,
+      # and it leaves ~21% headroom over today's peak.
+      #
+      # This raises the ceiling; it does not shrink the graph. When the peak
+      # approaches 10 GB the answer is project references, not another bump.
+      NODE_OPTIONS: --max-old-space-size=10240
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
