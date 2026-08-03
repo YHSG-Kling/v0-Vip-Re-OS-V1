@@ -124,6 +124,21 @@ console.log("\n── it cannot disagree with the execution checkpoint ──")
   }
 }
 
+console.log("\n── the seller is read from the column that is actually populated ──")
+{
+  // Raised in review on the neighborhood-report fallback, and the SAME column
+  // mistake was in both listing checkpoints: listings.contact_id exists but is
+  // not populated (0 of 3 rows live carry it; seller_contact_id does), so
+  // sellerContactId was always null and the audit silently skipped every
+  // document filed against the seller's CONTACT record rather than the listing.
+  const engine2 = src("app/actions/seller-listing/execution-engine.ts")
+  for (const [label, text] of [["the readiness gate", gate], ["markAgreementSigned", engine2]] as const) {
+    check(`${label} reads seller_contact_id`, /seller_contact_id/.test(text))
+    check(`…${label} does not pass contact_id alone as the seller`,
+      !/sellerContactId:\s*\(?(listing|listingRow)\??\.contact_id/.test(text))
+  }
+}
+
 console.log("\n── identity is RESOLVED, never substituted ──")
 {
   // listings.agent_id is agents.id; auditListingDocuments wants users.id. A

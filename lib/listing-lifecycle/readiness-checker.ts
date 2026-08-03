@@ -167,7 +167,7 @@ async function checkDocumentsVerified(
   // "required" means for this listing.
   const { data: listing, error: listingError } = await supabase
     .from("listings")
-    .select("brokerage_id, agent_id, contact_id, state")
+    .select("brokerage_id, agent_id, seller_contact_id, contact_id, state")
     .eq("id", listingId)
     .maybeSingle()
 
@@ -207,7 +207,14 @@ async function checkDocumentsVerified(
   const audit = await auditListingDocuments(supabase, {
     brokerageId:     listing.brokerage_id,
     listingId,
-    sellerContactId: (listing.contact_id as string | null) ?? null,
+    // THE SELLER IS IN seller_contact_id. listings.contact_id exists but is not
+    // populated — 0 of 3 rows live — so reading it made sellerContactId always
+    // null and the audit silently skipped every document filed against the
+    // seller's CONTACT record rather than the listing. Raised in review on the
+    // neighborhood-report fallback; the same column mistake was here and in
+    // markAgreementSigned, so both were corrected together. contact_id is kept
+    // as a fallback for any legacy row that used it.
+    sellerContactId: ((listing.seller_contact_id ?? listing.contact_id) as string | null) ?? null,
     agentUserId:     listingAgentUserId,
     teamId,
     stateCode:       (listing.state as string | null) ?? null,

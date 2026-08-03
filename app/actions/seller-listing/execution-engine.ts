@@ -411,7 +411,7 @@ export async function markAgreementSigned(params: {
   // the listing-LAUNCH checkpoint, not to executing the agreement.
   const { data: listingRow } = await supabase
     .from("listings")
-    .select("state, agent_id, contact_id")
+    .select("state, agent_id, seller_contact_id, contact_id")
     .eq("id", listingId)
     .maybeSingle()
 
@@ -427,7 +427,12 @@ export async function markAgreementSigned(params: {
 
   const docAudit = await auditListingDocuments(supabase as any, {
     brokerageId,
-    sellerContactId: (listingRow?.contact_id as string | null) ?? null,
+    // The seller lives in seller_contact_id. listings.contact_id exists but is
+    // not populated (0 of 3 rows live), so this had been passing null and the
+    // audit skipped every document filed against the seller's CONTACT record.
+    // Raised in review; the readiness gate carried the same mistake and both
+    // were corrected together so the two checkpoints stay in agreement.
+    sellerContactId: ((listingRow?.seller_contact_id ?? listingRow?.contact_id) as string | null) ?? null,
     agentUserId:     userId,
     teamId:          (actingUser?.team_id as string | null) ?? null,
     stateCode:       (listingRow?.state as string | null) ?? null,
