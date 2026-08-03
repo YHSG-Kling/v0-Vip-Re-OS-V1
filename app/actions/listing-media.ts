@@ -23,7 +23,15 @@ export async function getListingMedia(listingId: string) {
 export async function uploadListingMedia(params: {
   listingId: string
   brokerageId: string
-  mediaType: "photo" | "video" | "floor_plan" | "virtual_tour" | "document"
+  // MIRRORS the live listing_media_media_type_check exactly. This union said
+  // "floor_plan" — one underscore the column does not have — so a floor plan
+  // typed here could never store, and it omitted graphic / reel / story, three
+  // types the column accepts and no caller could name. The picker in
+  // media-grid.tsx was already corrected to the real vocabulary; this signature
+  // was left behind, so the screen and the action disagreed about what a media
+  // type is. A value the CHECK rejects fails SILENTLY — supabase-js resolves a
+  // refused insert — so the upload would report success and store nothing.
+  mediaType: "photo" | "video" | "floorplan" | "virtual_tour" | "graphic" | "reel" | "story" | "document"
   fileUrl: string
   thumbnailUrl?: string
   caption?: string

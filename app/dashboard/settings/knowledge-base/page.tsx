@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import { KnowledgeBaseClient } from './knowledge-base-client'
 import { getEmbeddingQueueStatus } from '@/app/actions/knowledge/search'
+import { HELP_TOPIC_CATEGORIES } from "@/lib/knowledge/help-topic-categories"
 
 export const dynamic = 'force-dynamic'
 
@@ -38,17 +39,12 @@ export default async function KnowledgeBasePage() {
     .select('*')
     .order('updated_at', { ascending: false })
 
-  // Fetch categories for filter
-  const categories = [
-    'all',
-    'platform_setup',
-    'lead_management',
-    'transaction',
-    'compliance',
-    'marketing',
-    'billing',
-    'general',
-  ]
+  // THE CATEGORY LIST IS THE DATABASE'S, NOT THIS PAGE'S. This array was
+  // hand-written and fed BOTH the filter chips and the create/edit dropdown,
+  // while the live CHECK on help_topics_kb.category admits a different set
+  // entirely — only 'general' overlapped, so six of the seven options an admin
+  // could pick were refused with 23514. Sourced from the one module now.
+  const categories = ['all', ...HELP_TOPIC_CATEGORIES]
 
   // KEEP-ONE: the embedding-queue monitor came from /dashboard/admin/knowledge, a
   // SECOND "Knowledge Base" screen (same nav label, same admin audience). That page
