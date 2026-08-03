@@ -21,6 +21,7 @@ import { VendorBookingButton } from "@/app/components/dashboard/listings/lifecyc
 import { DecisionHistoryPanel } from "@/app/components/dashboard/listings/lifecycle/decision-history-panel"
 import { ComingSoonCommandCard } from "@/app/components/dashboard/listings/lifecycle/coming-soon-command-card"
 import { PreListingWorkflowPanel } from "@/app/components/dashboard/listings/lifecycle/pre-listing-workflow-panel"
+import { RecordEventCard } from "@/app/components/dashboard/listings/lifecycle/record-event-card"
 import { MatchingBuyersPanel } from "@/app/components/dashboard/listings/lifecycle/matching-buyers-panel"
 import { PriceReductionSheet } from "../components/price-reduction-sheet"
 import { NeighborNotificationCard } from "../components/neighbor-notification-card"
@@ -116,13 +117,22 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
     .maybeSingle()
 
   // Coming soon state — media approved gate + transaction ID for email campaigns
-  const [mediaApprovedResult, transactionResult] = await Promise.all([
+  const [mediaApprovedResult, recordedEventsResult, transactionResult] = await Promise.all([
     supabase
       .from("activities")
       .select("id")
       .eq("listing_id", listingId)
       .eq("activity_type", "seller.media.approved")
       .maybeSingle(),
+    // RECORDED lifecycle facts — what the agent actually told the OS happened.
+    // The workflow panel used to infer two of its steps from vendor service_type
+    // and task-title keywords; a recorded fact now wins over the guess.
+    supabase
+      .from("activities")
+      .select("activity_type")
+      .eq("listing_id", listingId)
+      .like("activity_type", "seller.%")
+      .limit(200),
     supabase
       .from("transactions")
       .select("id")
@@ -131,6 +141,11 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   ])
 
   const mediaApproved = !!mediaApprovedResult.data
+  const recordedEvents = Array.from(
+    new Set(((recordedEventsResult.data ?? []) as Array<{ activity_type: string | null }>)
+      .map((a) => a.activity_type)
+      .filter((t): t is string => !!t)),
+  )
   const transactionId = transactionResult.data?.id ?? null
 
   // AI listing optimization recommendations — written one row per category by
@@ -532,6 +547,13 @@ const { data: listingVendorBookings } = await supabase
           </div>
         )}
 
+        {/* RECORD WHAT ACTUALLY HAPPENED. Twelve governed recorders — the repair
+            loop, the media shoot, showing feedback, the seller's decision, MLS
+            readiness, and all three ways a listing ends — had no caller anywhere,
+            so the agent could see the listing's progress but never tell the OS
+            what had occurred. The controls are derived from the current stage. */}
+        <RecordEventCard listingId={listingId} currentStage={currentStage} />
+
         {/* Pre-listing workflow panel — shown for pre-active stages */}
         <PreListingWorkflowPanel
           listingId={listingId}
@@ -541,6 +563,7 @@ const { data: listingVendorBookings } = await supabase
             status: b.status,
           }))}
           tasks={(tasks ?? []).map((t: any) => ({ title: t.title, status: t.status }))}
+          recordedEvents={recordedEvents}
           goLiveDate={listing.go_live_date ?? null}
         />
 

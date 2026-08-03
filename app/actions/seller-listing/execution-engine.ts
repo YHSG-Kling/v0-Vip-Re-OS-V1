@@ -21,6 +21,7 @@
 // Agent task (correct location, no changes) — activity_type: seller.appointment.scheduled, seller.cma.started, seller.presentation.*, seller.decision.*, and all seller lifecycle events
 
 import { createClient } from "@/lib/supabase/server"
+import { requireAuth } from "@/lib/kernel/api-auth"
 import { auditListingDocuments } from "@/lib/compliance/required-documents"
 import { scanListingPacketCompleteness } from "@/lib/workflow/intelligence/scan-offer-packet"
 import { notifyComplianceFlag } from "@/lib/notifications/notify-helpers"
@@ -69,14 +70,73 @@ async function logLifecycleActivity(
   }
 }
 
+/**
+ * THE TENANT GATE. Every export in this file is a `"use server"` action, and every
+ * one of them took `userId` and `brokerageId` AS PARAMETERS with no authentication
+ * anywhere in the file — 23 actions, zero requireAuth calls. A server action is a
+ * POST endpoint: whoever called one chose which brokerage's ledger to write into,
+ * whose user id to attribute the act to, and which listing to drive through a
+ * kernel stage transition. Nothing checked that the caller belonged to that
+ * brokerage or that the listing did either.
+ *
+ * These rows ARE the listing's history — the kernel reads them into the AI's
+ * picture of the relationship and a broker would hand them to a regulator. A
+ * forged one is worse than a missing one.
+ *
+ * Identity now comes from the SESSION and the listing must belong to it. The
+ * params are still accepted so existing callers (the voice command map, the
+ * lifecycle cards) keep compiling, but the values USED are the resolved ones —
+ * a caller cannot widen its own scope by passing a different id.
+ */
+export interface ListingActionScope {
+  ok: true
+  userId: string
+  brokerageId: string
+}
+export interface ListingActionDenied {
+  ok: false
+  error: string
+}
+
+async function authorizeListingAction(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  listingId: string,
+): Promise<ListingActionScope | ListingActionDenied> {
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return { ok: false, error: "unauthenticated" }
+  if (!isValidUUID(listingId)) return { ok: false, error: "invalid_listing_id" }
+
+  // The listing must be inside the caller's brokerage. Reading through the
+  // request-scoped client means RLS applies too — a listing the caller cannot
+  // see resolves to no row and is refused rather than silently acted upon.
+  const { data: listing } = await supabase
+    .from("listings")
+    .select("id, brokerage_id")
+    .eq("id", listingId)
+    .maybeSingle()
+  if (!listing) return { ok: false, error: "listing_not_found" }
+  if (listing.brokerage_id !== auth.brokerageId) return { ok: false, error: "listing_not_in_your_brokerage" }
+
+  return { ok: true, userId: auth.userId, brokerageId: auth.brokerageId }
+}
+
 export async function scheduleListingAppointment(params: {
   listingId: string
   appointmentDate: string // ISO date
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, appointmentDate, userId, brokerageId } = params
+  const { listingId, appointmentDate } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   if (!isValidUUID(listingId)) {
     return { success: false, error: "Invalid listing ID" }
@@ -121,6 +181,7 @@ export async function scheduleListingAppointment(params: {
   await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.appointment.scheduled",
     title:         "Listing appointment scheduled",
     description:   `Appointment scheduled for ${appointmentDate}`,
@@ -169,11 +230,20 @@ export async function scheduleListingAppointment(params: {
  */
 export async function markDripCompleted(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId } = params
+  const { listingId } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Stage transition: PRESENTATION_DRIP_PREP → SELLER_DECISION
   const transitionResult = await transitionLifecycle({
@@ -202,6 +272,7 @@ export async function markDripCompleted(params: {
   await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.presentation.drip_completed",
     title:         "Seller drip sequence completed",
     description:   "Presentation drip sequence completed",
@@ -228,12 +299,21 @@ export async function markDripCompleted(params: {
 export async function recordSellerDecision(params: {
   listingId: string
   decision: "accepted" | "declined"
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
   reason?: string
 }) {
   const supabase = await createClient()
-  const { listingId, decision, userId, brokerageId, reason } = params
+  const { listingId, decision, reason } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Stage transition varies by decision
   const toState      = decision === "accepted" ? "LISTING_AGREEMENT_INITIATED" : "SELLER_DECLINED"
@@ -286,11 +366,20 @@ export async function recordSellerDecision(params: {
  */
 export async function initiateListingAgreement(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId } = params
+  const { listingId } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Gate: Requires seller.decision.accepted — check lifecycle_events (activities has no listing_id)
   const { data: decisionEvent } = await supabase
@@ -329,6 +418,7 @@ export async function initiateListingAgreement(params: {
   await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.listing_agreement.initiated",
     title:         "Listing agreement initiated",
     description:   `Listing agreement process initiated for listing ${listingId}`,
@@ -355,8 +445,10 @@ export async function initiateListingAgreement(params: {
  */
 export async function markAgreementSigned(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
   uploadMode: "manual_upload" | "provider_pull"
   documentUrl?: string
   providerRef?: string
@@ -372,7 +464,14 @@ export async function markAgreementSigned(params: {
   }
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId, uploadMode, documentUrl, providerRef, commissionTerms } = params
+  const { listingId, uploadMode, documentUrl, providerRef, commissionTerms } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   if (!isValidUUID(listingId)) {
     return { success: false, error: "Invalid listing ID" }
@@ -690,11 +789,20 @@ export async function recordPreListingRepair(params: {
   repairType: string
   description: string
   vendorId?: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, repairType, description, vendorId, userId, brokerageId } = params
+  const { listingId, repairType, description, vendorId } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Stage transition: LISTING_AGREEMENT_SIGNED → REPAIRS_IN_PROGRESS
   const transitionResult = await transitionLifecycle({
@@ -722,6 +830,7 @@ export async function recordPreListingRepair(params: {
   await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.repair.required.pre_listing",
     title:         `Pre-listing repair required: ${repairType}`,
     description,
@@ -739,11 +848,20 @@ export async function recordPreListingRepair(params: {
 export async function markRepairCompleted(params: {
   listingId: string
   repairId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, repairId, userId, brokerageId } = params
+  const { listingId, repairId } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Stage transition: REPAIRS_IN_PROGRESS → COMING_SOON_PREP
   const transitionResult = await transitionLifecycle({
@@ -771,6 +889,7 @@ export async function markRepairCompleted(params: {
   await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.repair.completed.pre_listing",
     title:         "Pre-listing repair completed",
     notes:         JSON.stringify({ listing_id: listingId, repair_id: repairId }),
@@ -788,15 +907,25 @@ export async function markRepairFailed(params: {
   listingId: string
   repairId: string
   reason: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, repairId, reason, userId, brokerageId } = params
+  const { listingId, repairId, reason } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   const { error } = await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.repair.failed.pre_listing",
     title:         "Pre-listing repair failed",
     description:   reason,
@@ -836,15 +965,25 @@ export async function scheduleMediaCapture(params: {
   listingId: string
   scheduledDate: string
   vendorId?: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, scheduledDate, vendorId, userId, brokerageId } = params
+  const { listingId, scheduledDate, vendorId } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   const { error } = await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.media.scheduled",
     title:         `Media capture scheduled: ${scheduledDate}`,
     description:   `Media capture session scheduled`,
@@ -883,11 +1022,20 @@ export async function markMediaCaptured(params: {
   listingId: string
   photoCount: number
   hasVideo: boolean
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, photoCount, hasVideo, userId, brokerageId } = params
+  const { listingId, photoCount, hasVideo } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Stage transition: COMING_SOON_PREP → MEDIA_CAPTURE
   const transitionResult = await transitionLifecycle({
@@ -915,6 +1063,7 @@ export async function markMediaCaptured(params: {
   await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.media.captured",
     title:         `Media captured: ${photoCount} photos${hasVideo ? ", video" : ""}`,
     description:   `${photoCount} photos captured${hasVideo ? " with video" : ""}`,
@@ -931,12 +1080,21 @@ export async function markMediaCaptured(params: {
  */
 export async function approveMedia(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
   role: "agent" | "team_lead"
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId, role } = params
+  const { listingId, role } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Authority check
   if (role !== "agent" && role !== "team_lead") {
@@ -970,6 +1128,7 @@ export async function approveMedia(params: {
   await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.media.approved",
     title:         "Media approved",
     description:   `Media approved by ${role}`,
@@ -986,11 +1145,20 @@ export async function approveMedia(params: {
  */
 export async function prepareComingSoonAssets(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId } = params
+  const { listingId } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Gate: Requires media approved — check lifecycle_events (activities has no listing_id)
   const { data: mediaEvent } = await supabase
@@ -1031,6 +1199,7 @@ export async function prepareComingSoonAssets(params: {
   await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.coming_soon.assets_prepared",
     title:         "Coming soon assets prepared (without address)",
     description:   "Coming soon marketing assets prepared, address withheld per compliance",
@@ -1047,12 +1216,21 @@ export async function prepareComingSoonAssets(params: {
  */
 export async function activateComingSoon(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
   role: "agent" | "team_lead"
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId, role } = params
+  const { listingId, role } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Authority check
   if (role !== "agent" && role !== "team_lead") {
@@ -1086,6 +1264,7 @@ export async function activateComingSoon(params: {
   await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.coming_soon.activated",
     title:         "Coming soon marketing activated",
     description:   `Coming soon activated by ${role}`,
@@ -1102,11 +1281,20 @@ export async function activateComingSoon(params: {
  */
 export async function markMLSReady(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId } = params
+  const { listingId } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Gate: Requires media approved + coming soon activated — check lifecycle_events
   const { data: gates } = await supabase
@@ -1145,6 +1333,7 @@ export async function markMLSReady(params: {
   await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.mls.ready",
     title:         "Listing MLS ready",
     description:   "Listing cleared all gates and is ready for MLS submission",
@@ -1165,12 +1354,21 @@ export async function markMLSReady(params: {
  */
 export async function approveOpenHouseMarketing(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
   role: "agent" | "team_lead"
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId, role } = params
+  const { listingId, role } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Gate: Requires MLS ready — check lifecycle_events (activities has no listing_id)
   const { data: mlsReady } = await supabase
@@ -1217,6 +1415,7 @@ export async function approveOpenHouseMarketing(params: {
   await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.open_house_marketing.approved",
     title:         "Open house marketing approved",
     description:   `Open house marketing approved by ${role}`,
@@ -1233,11 +1432,20 @@ export async function approveOpenHouseMarketing(params: {
  */
 export async function submitToMLSAdmin(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId } = params
+  const { listingId } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Gate: Requires open house marketing approved — check lifecycle_events
   const { data: openHouseApproved } = await supabase
@@ -1255,6 +1463,7 @@ export async function submitToMLSAdmin(params: {
   const { error } = await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.mls.submitted_to_admin",
     title:         "Listing submitted to MLS admin",
     description:   "Listing submitted to admin for MLS entry",
@@ -1292,12 +1501,21 @@ export async function submitToMLSAdmin(params: {
 export async function activateMLS(params: {
   listingId: string
   mlsNumber: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
   role: string
 }) {
   const supabase = await createClient()
-  const { listingId, mlsNumber, userId, brokerageId, role } = params
+  const { listingId, mlsNumber, role } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Authority check: Admin only
   if (role !== "admin") {
@@ -1332,6 +1550,7 @@ export async function activateMLS(params: {
   await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.mls.activated",
     title:         `Listing activated on MLS: ${mlsNumber}`,
     description:   `Listing published to MLS with number ${mlsNumber}`,
@@ -1359,11 +1578,20 @@ export async function activateMLS(params: {
 export async function scheduleOpenHouse(params: {
   listingId: string
   eventDate: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, eventDate, userId, brokerageId } = params
+  const { listingId, eventDate } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Stage transition: MLS_ACTIVE → OPEN_HOUSE_EVENT
   const transitionResult = await transitionLifecycle({
@@ -1391,6 +1619,7 @@ export async function scheduleOpenHouse(params: {
   await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.open_house.scheduled",
     title:         `Open house scheduled: ${eventDate}`,
     description:   `Open house event scheduled for ${eventDate}`,
@@ -1409,11 +1638,20 @@ export async function scheduleOpenHouse(params: {
 export async function markOpenHouseCompleted(params: {
   listingId: string
   attendeeCount: number
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, attendeeCount, userId, brokerageId } = params
+  const { listingId, attendeeCount } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Stage transition: OPEN_HOUSE_EVENT → SHOWINGS_ACTIVE
   const transitionResult = await transitionLifecycle({
@@ -1441,6 +1679,7 @@ export async function markOpenHouseCompleted(params: {
   await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.open_house.completed",
     title:         `Open house completed: ${attendeeCount} attendees`,
     description:   `Open house completed with ${attendeeCount} attendees`,
@@ -1459,15 +1698,25 @@ export async function recordShowingCompleted(params: {
   listingId: string
   showingId: string
   feedback?: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, showingId, feedback, userId, brokerageId } = params
+  const { listingId, showingId, feedback } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   const { error } = await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.showing.completed",
     title:         "Showing completed",
     description:   feedback ?? "Showing completed",
@@ -1508,11 +1757,20 @@ export async function recordShowingCompleted(params: {
  */
 export async function markUnderContract(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId } = params
+  const { listingId } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Stage transition: OFFERS_RECEIVED → UNDER_CONTRACT (terminal — stops System 5.2)
   const transitionResult = await transitionLifecycle({
@@ -1540,6 +1798,7 @@ export async function markUnderContract(params: {
   await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.under_contract",
     title:         "Listing under contract",
     description:   "Listing moved to under contract — handed off to transaction system",
@@ -1557,11 +1816,20 @@ export async function markUnderContract(params: {
 export async function cancelListing(params: {
   listingId: string
   reason: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, reason, userId, brokerageId } = params
+  const { listingId, reason } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Fetch current stage to use as fromState
   const { data: listingRow } = await supabase
@@ -1598,6 +1866,7 @@ export async function cancelListing(params: {
   await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.listing.cancelled",
     title:         "Listing cancelled",
     description:   reason,
@@ -1614,11 +1883,20 @@ export async function cancelListing(params: {
  */
 export async function markListingExpired(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId } = params
+  const { listingId } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Stage transition: MLS_ACTIVE → LISTING_EXPIRED (terminal)
   const transitionResult = await transitionLifecycle({
@@ -1646,6 +1924,7 @@ export async function markListingExpired(params: {
   await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.listing.expired",
     title:         "Listing expired",
     description:   "Listing expired without a contract",
