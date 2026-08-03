@@ -116,6 +116,29 @@ async function evaluateSingleCheck(
  * Check: documents_verified
  * Verifies all required documents are uploaded
  */
+/**
+ * "Are the required documents on file, and are the ones on file finished?"
+ *
+ * THE BUG THIS REPLACES WAS A COMPLIANCE BYPASS, not a rough edge. The previous
+ * version read the documents ATTACHED to the listing and asked whether any were
+ * in a non-terminal status. With ZERO documents attached, the filter is empty,
+ * `unverified === 0`, and the gate returned passed:true — verified live against
+ * a real listing. A seller listing with no paperwork whatsoever satisfied
+ * "documents verified" and could be advanced to LISTING_AGREEMENT_SIGNED.
+ *
+ * The owner's rule is explicit: all signed documents from both sides, all
+ * required brokerage/team/agent docs, where required-vs-warning is a setting,
+ * and any missing item notifies the TC and/or the listing agent.
+ *
+ * auditListingDocuments is that rule, and it already existed — it resolves the
+ * REQUIRED checklist for the brokerage/team/agent/state and reports what is
+ * missing, split into blocking and warning. It was reachable only through
+ * markAgreementSigned, which nothing called, so the one path an agent actually
+ * has ran the weaker check. Both halves are now enforced here:
+ *
+ *   1. every BLOCKING required document is present  (was not checked at all)
+ *   2. every attached document has reached a terminal status  (the old check)
+ */
 async function checkDocumentsVerified(
   supabase: SupabaseClient,
   listingId: string
@@ -137,14 +160,80 @@ async function checkDocumentsVerified(
 
   // documents.status terminal/verified states are 'complete' and 'signed'.
   const unverifiedDocs = data?.filter((d) => !["complete", "signed"].includes(d.status)) || []
-  
+
+  // ─── The required-checklist half ──────────────────────────────────────────
+  // Same columns and the same identity resolution markAgreementSigned uses, so
+  // the readiness gate and the execution checkpoint cannot disagree about what
+  // "required" means for this listing.
+  const { data: listing, error: listingError } = await supabase
+    .from("listings")
+    .select("brokerage_id, agent_id, contact_id, state")
+    .eq("id", listingId)
+    .maybeSingle()
+
+  if (listingError) {
+    return {
+      check: "documents_verified",
+      passed: false,
+      reason: `Error reading the listing: ${listingError.message}`,
+    }
+  }
+  if (!listing?.brokerage_id) {
+    // No tenant anchor means the required-docs checklist cannot be resolved.
+    // REFUSE rather than fall through to the weaker check — an unresolvable
+    // compliance gate is a blocked transition, not a passed one.
+    return {
+      check: "documents_verified",
+      passed: false,
+      reason: "Listing has no brokerage on file, so its required-document checklist cannot be resolved",
+    }
+  }
+
+  const { auditListingDocuments } = await import("@/lib/compliance/required-documents")
+
+  // listings.agent_id is agents.id. auditListingDocuments wants users.id, so it
+  // is RESOLVED — never substituted. A wrong id here would silently resolve the
+  // wrong agent's document requirements.
+  const listingAgentUserId = listing.agent_id
+    ? ((await supabase.from("agents").select("user_id").eq("id", listing.agent_id).maybeSingle())
+        .data?.user_id as string | null) ?? null
+    : null
+
+  const teamId = listingAgentUserId
+    ? ((await supabase.from("users").select("team_id").eq("id", listingAgentUserId).maybeSingle())
+        .data?.team_id as string | null) ?? null
+    : null
+
+  const audit = await auditListingDocuments(supabase, {
+    brokerageId:     listing.brokerage_id,
+    listingId,
+    sellerContactId: (listing.contact_id as string | null) ?? null,
+    agentUserId:     listingAgentUserId,
+    teamId,
+    stateCode:       (listing.state as string | null) ?? null,
+  })
+
+  const reasons: string[] = []
+  if (audit.missing_blocking.length > 0) {
+    reasons.push(`${audit.missing_blocking.length} required document(s) missing: ${audit.missing_blocking.join(", ")}`)
+  }
+  if (unverifiedDocs.length > 0) {
+    reasons.push(`${unverifiedDocs.length} attached document(s) not yet complete or signed`)
+  }
+
   return {
     check: "documents_verified",
-    passed: unverifiedDocs.length === 0,
-    reason: unverifiedDocs.length > 0
-      ? `${unverifiedDocs.length} required document(s) not verified`
-      : undefined,
-    details: { totalRequired: data?.length || 0, unverified: unverifiedDocs.length },
+    passed: audit.missing_blocking.length === 0 && unverifiedDocs.length === 0,
+    reason: reasons.length > 0 ? reasons.join("; ") : undefined,
+    details: {
+      attached: data?.length || 0,
+      unverified: unverifiedDocs.length,
+      required_total: audit.required_total,
+      missing_blocking: audit.missing_blocking,
+      // Warnings never block, but the surface should still show them so the
+      // agent knows what the TC is about to ask for.
+      missing_warning: audit.missing_warning,
+    },
   }
 }
 
