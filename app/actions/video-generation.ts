@@ -1177,15 +1177,46 @@ export async function generateVideoFromScript(params: {
       return { success: false, error: "Voice ID not configured. Please set up in Agent Roster." }
     }
 
-    // SCHEMA DRIFT: live video_generation_queue has only id, project_id,
-    // status, priority, created_at, processed_at. The columns inserted
-    // below (user_id, title, script, video_type, heygen_avatar_id,
-    // heygen_voice_id) do not exist on that table — Supabase will silently
-    // drop them, leaving a row with status only. Callers should migrate
-    // to ai_video_projects, which has the full video metadata schema.
+    // THE PROJECT IS CREATED FIRST, AND THE QUEUE ROW POINTS AT IT.
+    //
+    // This used to insert a queue row carrying title/script/video_type/avatar/voice
+    // — none of which are columns on video_generation_queue, so Supabase dropped
+    // them and left a row with nothing but a status. Worse, the row had NO
+    // project_id, and video_generation_queue.project_id is the only bridge to
+    // ai_video_projects, the rail that actually finishes work. So this path
+    // submitted a real D-ID job that NOTHING could ever poll: poll-did-videos
+    // selects ai_video_projects rows, and there was no project. The row sat at
+    // 'generating' forever.
+    //
+    // Creating the project restores the dropped metadata to columns that exist
+    // AND puts the job on the rail that reaches a terminal state — the m365
+    // trigger then mirrors that outcome back onto the queue row.
+    const { data: project, error: projectError } = await supabase
+      .from("ai_video_projects")
+      .insert({
+        // ai_video_projects.agent_id is the agent's USER id (FK users) — see
+        // lib/video/video-pipeline-reaper.ts, which notifies on this column.
+        agent_id:      auth.userId,
+        brokerage_id:  auth.brokerageId,
+        title:         params.title,
+        // Mirrors ai_video_projects_video_type — an avatar talking head from a
+        // supplied script is the explainer lane.
+        video_type:    "avatar_explainer",
+        audience_type: "customer_facing",
+        status:        "draft",
+      })
+      .select("id")
+      .single()
+
+    if (projectError || !project) {
+      console.error("[v0] Video project error:", projectError)
+      throw projectError ?? new Error("Failed to create video project")
+    }
+
     const { data: queueRecord, error: queueError } = await supabase
       .from("video_generation_queue")
       .insert({
+        project_id: project.id,
         status: "queued",
         priority: 5,
       })
@@ -1229,21 +1260,46 @@ export async function generateVideoFromScript(params: {
         script: params.script,
         brokerageId: auth.brokerageId ?? undefined,
       })
-      if (didRes.success && (didRes as { videoId?: string }).videoId) {
-        // The D-ID provider job id has no column on video_generation_queue; its canonical
-        // home is ai_video_projects.provider_job_id (see create-video-project + poll-did-videos).
-        // This legacy path creates no project row, so only advance status + log the job id.
-        await supabase.from("video_generation_queue")
-          .update({ status: "generating" })
-          .eq("id", queueRecord.id)
-        console.log(`[v0] D-ID video_id=${(didRes as { videoId?: string }).videoId} queue=${queueRecord.id}`)
+      const didJobId = (didRes as { videoId?: string }).videoId
+      if (didRes.success && didJobId) {
+        // Stamp the provider job onto the PROJECT. This is exactly what
+        // poll-did-videos selects on: status='generating' AND provider_job_id
+        // NOT NULL AND provider_metadata->>provider = 'did'. Without all three
+        // the cron cannot see the job, which is why this path never finished.
+        // mode 'talk' because lib/did/index.ts:generateVideo posts to /talks —
+        // the cron reads this to choose talks vs clips vs expressives.
+        const { error: kickError } = await supabase
+          .from("ai_video_projects")
+          .update({
+            status:            "generating",
+            provider_job_id:   didJobId,
+            provider_status:   "processing",
+            provider_metadata: { provider: "did", mode: "talk", talk_id: didJobId },
+            error_message:     null,
+          })
+          .eq("id", project.id)
+        // The queue row follows the project via the m365 trigger — it is not
+        // set here, so there is exactly one writer of this lifecycle.
+        if (kickError) console.error("[v0] D-ID job stamp failed:", kickError)
+        console.log(`[v0] D-ID video_id=${didJobId} project=${project.id} queue=${queueRecord.id}`)
       } else {
-        console.warn("[v0] D-ID kick deferred, video stays queued:", (didRes as { error?: string }).error)
+        // The project stays 'draft' and the queue row stays 'queued'. Record WHY
+        // on the project so the agent is told, rather than watching a queue row
+        // that never moves.
+        const reason = (didRes as { error?: string }).error ?? "provider not configured"
+        await supabase
+          .from("ai_video_projects")
+          .update({ error_message: `Render not started: ${reason}` })
+          .eq("id", project.id)
+        console.warn("[v0] D-ID kick deferred, video stays queued:", reason)
       }
     }
 
     console.log("[v0] Video queued successfully:", queueRecord.id)
-    return { success: true, videoId: queueRecord.id, queueId: scriptRecord?.id }
+    // projectId is what every downstream video surface keys on (renders,
+    // delivery, the reaper, the poll cron). Returning only the queue id left
+    // callers holding the one id that nothing else in the video system uses.
+    return { success: true, videoId: queueRecord.id, projectId: project.id, queueId: scriptRecord?.id }
   } catch (error: any) {
     console.error("[v0] Video generation error:", error)
     return { success: false, error: error.message }

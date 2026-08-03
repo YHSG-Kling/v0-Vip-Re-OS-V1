@@ -256,9 +256,121 @@ export async function startVideoGeneration(videoQueueId: string) {
   const supabase = createServiceClient()
 
   try {
-    await supabase.from("video_generation_queue").update({ status: "generating_audio" }).eq("id", videoQueueId)
+    // THIS BUTTON USED TO SET A STATUS AND NOTHING ELSE.
+    //
+    // It wrote status='generating_audio' and returned "Video generation
+    // started" — but no renderer was ever invoked and no row existed for one to
+    // find. The Content Studio table then showed "Generating Audio" forever, and
+    // its Download control was gated on a 'completed' this path could not reach.
+    // The script was real, the compliance check was real, and the middle was
+    // missing entirely.
+    //
+    // The render rail is ai_video_projects: /api/did/generate-video submits the
+    // job, poll-did-videos drives it to completed/failed, and
+    // video-pipeline-reaper fails anything that stalls. The queue row reaches a
+    // terminal state through its project_id via the m365 trigger — so all this
+    // has to do is put the work on that rail.
+    const { data: queued, error: readError } = await supabase
+      .from("video_generation_queue")
+      .select("id, project_id, edited_script, ai_generated_script, source_url, content_category, compliance_approved, user_id, organization_id")
+      .eq("id", videoQueueId)
+      .maybeSingle()
+
+    if (readError) {
+      console.error("[link-to-video] Queue read error:", readError)
+      return { success: false, error: "Could not load the video" }
+    }
+    if (!queued) return { success: false, error: "Video not found" }
+
+    const script = (queued.edited_script || queued.ai_generated_script || "").trim()
+    if (!script) {
+      return { success: false, error: "There is no script to render yet — generate or edit one first." }
+    }
+    // The compliance check already exists on this table and had no gate reading
+    // it. A script that has not cleared it must not reach a paid render.
+    if (queued.compliance_approved !== true) {
+      return {
+        success: false,
+        error: "This script has not passed the compliance check yet. Review it before generating the video.",
+      }
+    }
+
+    // Adopt an existing project on a re-run rather than creating a second one.
+    let projectId = queued.project_id as string | null
+    if (!projectId) {
+      const { data: project, error: projectError } = await supabase
+        .from("ai_video_projects")
+        .insert({
+          // ai_video_projects.agent_id is the agent's USER id (FK users).
+          agent_id:      queued.user_id ?? auth.userId,
+          brokerage_id:  auth.brokerageId,
+          title:         `Link-to-video: ${queued.source_url ?? "untitled"}`.slice(0, 200),
+          video_type:    "avatar_explainer",
+          audience_type: "customer_facing",
+          status:        "draft",
+        })
+        .select("id")
+        .single()
+
+      if (projectError || !project) {
+        console.error("[link-to-video] Project create error:", projectError)
+        return { success: false, error: "Could not start the render" }
+      }
+      projectId = project.id
+
+      const { error: linkError } = await supabase
+        .from("video_generation_queue")
+        .update({ project_id: projectId })
+        .eq("id", videoQueueId)
+      if (linkError) {
+        console.error("[link-to-video] Queue/project link error:", linkError)
+        return { success: false, error: "Could not start the render" }
+      }
+    }
+
+    // Submit the job. generateVideo resolves the agent's own D-ID twin from
+    // agentUserId and REFUSES rather than rendering a stock stranger when the
+    // agent has no avatar configured — so a missing twin reaches the agent as an
+    // instruction instead of a wrong face.
+    const { generateVideo } = await import("@/lib/did")
+    const render = await generateVideo({
+      script,
+      agentUserId: queued.user_id ?? auth.userId,
+      brokerageId: auth.brokerageId ?? "",
+    })
+
+    if (render.status === "error" || !render.videoId) {
+      const reason = render.note ?? "the video provider refused the job"
+      await supabase
+        .from("ai_video_projects")
+        .update({ status: "failed", error_message: `Render not started: ${reason}` })
+        .eq("id", projectId)
+      // The queue row follows to 'failed' through the m365 trigger.
+      revalidatePath("/content-studio")
+      return { success: false, error: reason }
+    }
+
+    // Exactly what poll-did-videos selects on: status='generating' AND
+    // provider_job_id NOT NULL AND provider_metadata->>provider='did'.
+    // mode 'talk' because lib/did/index.ts posts to /talks.
+    const { error: stampError } = await supabase
+      .from("ai_video_projects")
+      .update({
+        status:            "generating",
+        provider_job_id:   render.videoId,
+        provider_status:   "processing",
+        provider_metadata: { provider: "did", mode: "talk", talk_id: render.videoId },
+        error_message:     null,
+      })
+      .eq("id", projectId)
+
+    if (stampError) {
+      console.error("[link-to-video] Provider stamp error:", stampError)
+      return { success: false, error: "The render started but could not be tracked — please retry." }
+    }
+
     revalidatePath("/content-studio")
-    return { success: true, message: "Video generation started" }
+    return { success: true, message: "Video generation started", projectId }
   } catch (error) {
     console.error("[link-to-video] Start video generation error:", error)
     return { success: false, error: "Failed to start video generation" }
@@ -277,7 +389,10 @@ export async function getVideoQueue(_userId?: string) {
     // team belongs to caller's brokerage via a separate query).
     const { data: brokerageVideos, error } = await supabase
       .from("video_generation_queue")
-      .select("*")
+      // The rendered file lives on the PROJECT, not the queue row — the queue has
+      // no output column at all, which is why the Content Studio's Download
+      // control was removed as unbackable. Embedding the project restores it.
+      .select("*, ai_video_projects(video_url, thumbnail_url, status, error_message)")
       .eq("organization_id", auth.brokerageId)
       .eq("organization_type", "brokerage")
       .order("created_at", { ascending: false })
@@ -301,7 +416,7 @@ export async function getVideoQueue(_userId?: string) {
     if (teamIds.length > 0) {
       const { data: tv } = await supabase
         .from("video_generation_queue")
-        .select("*")
+        .select("*, ai_video_projects(video_url, thumbnail_url, status, error_message)")
         .in("organization_id", teamIds)
         .eq("organization_type", "team")
         .order("created_at", { ascending: false })

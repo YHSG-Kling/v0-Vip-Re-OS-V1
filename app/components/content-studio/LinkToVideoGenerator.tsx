@@ -22,6 +22,7 @@ import {
   Trash2,
   ChevronDown,
   Video,
+  Download,
 } from "lucide-react"
 import { toast } from "sonner"
 import {
@@ -444,15 +445,41 @@ export default function LinkToVideoGenerator() {
                     <TableCell>{new Date(video.created_at).toLocaleDateString()}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-2">
-                        {/* A "Download" button used to sit here, gated on
-                            status === "completed" and carrying no handler.
-                            There is nothing for it to download:
-                            video_generation_queue holds the source URL and the
-                            script and NO rendered-output column, and
-                            startVideoGeneration only sets status to
-                            "generating_audio" — no renderer advances it further.
-                            Removed rather than pointed at a field that does not
-                            exist. See the report note on the link-to-video gap. */}
+                        {/* The Download control was removed when there was
+                            genuinely nothing to download: the queue has no
+                            rendered-output column and startVideoGeneration only
+                            set status='generating_audio' with no renderer behind
+                            it. Both are fixed — the job now runs on
+                            ai_video_projects, whose video_url is the real file,
+                            and the queue row follows its project to a terminal
+                            status through the m365 trigger. So the control is
+                            back, pointed at a field that exists. */}
+                        {video.ai_video_projects?.video_url && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            asChild
+                            title="Download the rendered video"
+                          >
+                            <a
+                              href={video.ai_video_projects.video_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              download
+                            >
+                              <Download className="h-4 w-4" />
+                            </a>
+                          </Button>
+                        )}
+                        {/* A failed render must say WHY, not just show a red badge. */}
+                        {video.status === "failed" && video.ai_video_projects?.error_message && (
+                          <span
+                            className="text-xs text-destructive max-w-[220px] truncate"
+                            title={video.ai_video_projects.error_message}
+                          >
+                            {video.ai_video_projects.error_message}
+                          </span>
+                        )}
                         <Button size="sm" variant="ghost" onClick={() => handleDeleteVideo(video.id)}>
                           <Trash2 className="h-4 w-4" />
                         </Button>
