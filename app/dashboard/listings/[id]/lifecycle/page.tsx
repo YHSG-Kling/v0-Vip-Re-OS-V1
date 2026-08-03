@@ -28,6 +28,7 @@ import { NeighborNotificationCard } from "../components/neighbor-notification-ca
 import { ListingPacketPanel } from "@/app/components/dashboard/listings/lifecycle/listing-packet-panel"
 import { AiOptimizationPanel, type AiListingOptimizationRow } from "../components/ai-optimization-panel"
 import { ListingFormsPanel } from "@/app/components/dashboard/listings/lifecycle/listing-forms-panel"
+import { CompletedDocumentsPanel } from "@/app/components/dashboard/listings/lifecycle/completed-documents-panel"
 import { CheckCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import Link from "next/link"
@@ -494,6 +495,18 @@ const { data: listingVendorBookings } = await supabase
               ? `${sellerContact.first_name ?? ""} ${sellerContact.last_name ?? ""}`.trim()
               : undefined}
             sellerEmail={(sellerContact as any)?.email ?? undefined}
+          />
+        </div>
+
+        {/* The inbound side of the same file: completed paperwork coming BACK.
+            ListingFormsPanel above sends forms out for signature; this is where
+            the signed copies land, get classified, and — when the agreement is
+            fully executed and the required documents are all in — take the
+            listing on. */}
+        <div className="mb-6">
+          <CompletedDocumentsPanel
+            listingId={listingId}
+            listingStatus={listing.status ?? undefined}
           />
         </div>
 

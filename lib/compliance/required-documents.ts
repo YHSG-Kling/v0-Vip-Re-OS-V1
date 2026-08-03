@@ -239,13 +239,31 @@ export async function auditListingDocuments(
   const presentSet = new Set<DocumentClassification>()
 
   if (params.listingId) {
-    const { data: byListing } = await supabase
+    // MATCH THE COLUMN. documents.listing_id is what lib/documents/upload-document.ts
+    // actually writes when a document is filed against a listing; this audit
+    // matched only `metadata->>linked_listing_id`, a key nothing in the codebase
+    // sets. Every listing-filed document was therefore invisible here, so a
+    // complete file still reported its required documents missing — and the
+    // listing gate that depends on this audit could never be satisfied.
+    //
+    // The metadata form is still honoured for any row written that way.
+    const { data: byListingColumn } = await supabase
+      .from("documents")
+      .select("classification")
+      .eq("brokerage_id", params.brokerageId)
+      .eq("listing_id", params.listingId)
+      .not("classification", "is", null)
+    for (const d of byListingColumn ?? []) {
+      if (d.classification) presentSet.add(d.classification as DocumentClassification)
+    }
+
+    const { data: byListingMetadata } = await supabase
       .from("documents")
       .select("classification")
       .eq("brokerage_id", params.brokerageId)
       .filter("metadata->>linked_listing_id", "eq", params.listingId)
       .not("classification", "is", null)
-    for (const d of byListing ?? []) {
+    for (const d of byListingMetadata ?? []) {
       if (d.classification) presentSet.add(d.classification as DocumentClassification)
     }
   }
