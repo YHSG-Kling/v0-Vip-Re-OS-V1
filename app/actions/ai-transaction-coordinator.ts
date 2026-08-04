@@ -9,10 +9,105 @@ import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
 import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 // ============================================
 // HELPERS
 // ============================================
+
+/**
+ * THE LIVE `transaction_tasks_priority_check` VOCABULARY.
+ *
+ * Verified against pg_constraint on 2026-08-04:
+ *   CHECK (priority = ANY (ARRAY['critical','high','medium','low']))
+ *
+ * The generator used to emit `urgent`, which this CHECK REJECTS. Because the
+ * insert was an unchecked `await supabase...insert()` (supabase-js RESOLVES a
+ * refused write rather than throwing), every single urgent task was silently
+ * discarded and the action still reported success. Probed live: inserting
+ * priority 'urgent' returns
+ *   "violates check constraint transaction_tasks_priority_check".
+ * The AI schema below is now generated FROM this constant so the two can never
+ * drift apart again.
+ */
+// NOTE: NOT exported as a value — a "use server" module may only export async
+// functions. The surface keeps its own copy and the wiring simulator asserts the
+// two are identical.
+const TRANSACTION_TASK_PRIORITIES = ["critical", "high", "medium", "low"] as const
+type TransactionTaskPriority = (typeof TRANSACTION_TASK_PRIORITIES)[number]
+
+/** The live `transaction_deadlines_status_check` vocabulary (pg_constraint). */
+const TRANSACTION_DEADLINE_STATUSES = ["pending", "completed", "extended", "missed", "waived"] as const
+
+/** The live `transaction_communications_status_check` vocabulary (pg_constraint). */
+const TRANSACTION_COMMUNICATION_STATUSES = ["draft", "sent", "delivered", "failed"] as const
+
+/** The live `scheduled_touchpoints_status_check` vocabulary (pg_constraint). */
+const SCHEDULED_TOUCHPOINT_STATUSES = ["scheduled", "sent", "completed", "skipped", "failed"] as const
+
+/**
+ * Coerce whatever the model produced into a `date` column value (YYYY-MM-DD).
+ * `new Date("sometime next week").toISOString()` THROWS RangeError, which used
+ * to abort the entire deadline run on one bad string. Returns null when the
+ * value cannot be read as a date — the caller then skips that row instead of
+ * writing a NOT NULL violation.
+ */
+function toDateOnly(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) return null
+  const t = Date.parse(value.trim())
+  if (!Number.isFinite(t)) return null
+  return new Date(t).toISOString().slice(0, 10)
+}
+
+/** Add `days` to today and return a `date` column value. */
+function dateOnlyFromNow(days: number): string {
+  const d = new Date()
+  d.setDate(d.getDate() + (Number.isFinite(days) ? days : 0))
+  return d.toISOString().slice(0, 10)
+}
+
+interface CoordinatorScope {
+  ok: boolean
+  error?: string
+  userId?: string
+  agentId?: string | null
+  brokerageId?: string
+}
+
+/**
+ * AUTH + TENANCY for every transaction-scoped coordinator action.
+ *
+ * These actions all took a caller-supplied `agentId` and a caller-supplied
+ * `transactionId` with NO gate at all — any authenticated (or unauthenticated)
+ * caller could drive AI writes onto any deal in any brokerage. The identity
+ * classes are also distinct and must not be substituted:
+ *   · transactions.agent_id  FK-> agents(id)   (verified via pg_constraint)
+ *   · users.id                                  (auth.uid())
+ * so the context carries BOTH and each write picks the one its column means.
+ */
+async function scopeTransaction(transactionId: string): Promise<CoordinatorScope> {
+  if (!isValidUUID(transactionId)) return { ok: false, error: "Invalid transaction ID" }
+
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
+
+  const supabase = await createClient()
+  // Destructure `error` — a REFUSED read here used to look like "transaction
+  // not found" and, worse, a clean gate.
+  const { data: txn, error } = await supabase
+    .from("transactions")
+    .select("id, brokerage_id")
+    .eq("id", transactionId)
+    .maybeSingle()
+
+  if (error) return { ok: false, error: `Could not verify the transaction: ${error.message}` }
+  if (!txn) return { ok: false, error: "Transaction not found" }
+  if (txn.brokerage_id !== ctx.brokerageId) {
+    return { ok: false, error: "Forbidden: transaction not in your brokerage" }
+  }
+
+  return { ok: true, userId: ctx.userId, agentId: ctx.agentId, brokerageId: ctx.brokerageId }
+}
 
 function normalizeZip(zip?: string) {
   if (!zip) return undefined
@@ -134,8 +229,12 @@ Analyze for:
 8. Next best actions for the agent`,
     })
 
-    // Update transaction with AI insights
-    await supabase
+    // Update transaction with AI insights.
+    // CHECKED — this was an unchecked `await supabase…update()`. The health score
+    // it writes is what the deal card, the pipeline colour and the risk panel all
+    // read, so a refused update meant the agent kept looking at a stale score
+    // while this action reported a fresh analysis. `applied` says which it was.
+    const { error: insightsError } = await supabase
       .from("transactions")
       .update({
         health_score: analysis.healthScore,
@@ -145,6 +244,13 @@ Analyze for:
         last_ai_analysis: new Date().toISOString(),
       })
       .eq("id", params.transactionId)
+
+    if (insightsError) {
+      return {
+        success: false,
+        error: `The analysis ran but could not be saved to the deal (${insightsError.message}). The score you see elsewhere is still the old one.`,
+      }
+    }
 
     // ── WIN-PROBABILITY FREEZER (owner round 36) ────────────────────────────
     // transactions.win_probability is mutable and converges toward the outcome,
@@ -179,12 +285,16 @@ Analyze for:
  */
 export async function predictAndManageDeadlines(params: {
   transactionId: string
-  agentId: string
+  /** Ignored — identity comes from the session (see scopeTransaction). */
+  agentId?: string
 }) {
   try {
+    const scope = await scopeTransaction(params.transactionId)
+    if (!scope.ok) return { success: false, error: scope.error }
+
     const supabase = await createClient()
 
-    const { data: transaction } = await supabase
+    const { data: transaction, error: txnError } = await supabase
       .from("transactions")
       .select(`
         *,
@@ -192,8 +302,9 @@ export async function predictAndManageDeadlines(params: {
         transaction_milestones(*)
       `)
       .eq("id", params.transactionId)
-      .single()
+      .maybeSingle()
 
+    if (txnError) return { success: false, error: `Could not load the transaction: ${txnError.message}` }
     if (!transaction) {
       return { success: false, error: "Transaction not found" }
     }
@@ -243,29 +354,82 @@ Based on typical ${(transaction.property_state || 'Florida')} real estate timeli
 4. Recommend buffer times for each phase`,
     })
 
-    // Auto-create suggested deadlines
-    for (const deadline of deadlineAnalysis.suggestedDeadlines) {
-      const existing = transaction.transaction_deadlines?.find(
-        (d: any) => d.deadline_type?.toLowerCase() === deadline.task.toLowerCase()
-      )
+    // ── AUTO-CREATE SUGGESTED DEADLINES ──────────────────────────────────────
+    // transaction_deadlines canonical columns: deadline_type (was task_name),
+    // deadline_date (date, NOT NULL, was due_date). No ai_suggested/auto_reminder
+    // columns exist — reminders fire off calendar_events, not this table.
+    //
+    // THREE THINGS WERE WRONG HERE AND ALL THREE WERE INVISIBLE:
+    //  1. brokerage_id came off the embedded transaction row, which is right,
+    //     but nothing verified it was the CALLER's brokerage. Now gated above.
+    //  2. `new Date(deadline.suggestedDate).toISOString()` THROWS RangeError on
+    //     any unparseable model output, aborting the whole run — one bad string
+    //     lost every other deadline. Now coerced, and an unreadable date SKIPS
+    //     that single row.
+    //  3. The insert was unchecked. `trx_agent_transaction_deadlines` has
+    //     WITH CHECK (brokerage_id = current_user_brokerage_id()) — a missing or
+    //     wrong stamp is REFUSED, and supabase-js resolves that refusal, so the
+    //     action reported a clean run over zero rows.
+    //
+    // The dedup is now a DATABASE read, not a scan of the embedded array: the
+    // embedded list is a snapshot and (with PostgREST's default embed cap) is
+    // not guaranteed to hold every existing deadline.
+    const { data: existingDeadlines, error: existingError } = await supabase
+      .from("transaction_deadlines")
+      .select("deadline_type")
+      .eq("transaction_id", params.transactionId)
 
-      if (!existing) {
-        // transaction_deadlines canonical columns: deadline_type (was task_name),
-        // deadline_date (date, was due_date). No ai_suggested/auto_reminder columns
-        // exist — reminders fire off calendar_events, not this table.
-        await supabase.from("transaction_deadlines").insert({
-          transaction_id: params.transactionId,
-          brokerage_id: transaction.brokerage_id,
-          deadline_type: deadline.task,
-          deadline_date: new Date(deadline.suggestedDate).toISOString().slice(0, 10),
-          status: "pending",
-          notes: deadline.reason,
-        })
-      }
+    if (existingError) {
+      return { success: false, error: `Could not read existing deadlines: ${existingError.message}` }
     }
 
-    revalidatePath(`/transactions/${params.transactionId}`)
-    return { success: true, deadlineAnalysis }
+    const known = new Set(
+      (existingDeadlines ?? []).map((d: any) => String(d.deadline_type ?? "").trim().toLowerCase()),
+    )
+
+    let createdCount = 0
+    const skipped: string[] = []
+
+    for (const deadline of deadlineAnalysis.suggestedDeadlines) {
+      const key = String(deadline.task ?? "").trim().toLowerCase()
+      if (!key || known.has(key)) continue
+
+      const deadlineDate = toDateOnly(deadline.suggestedDate)
+      if (!deadlineDate) {
+        skipped.push(`${deadline.task} (unreadable date "${deadline.suggestedDate}")`)
+        continue
+      }
+
+      const { error: insertError } = await supabase.from("transaction_deadlines").insert({
+        transaction_id: params.transactionId,
+        brokerage_id: scope.brokerageId,
+        deadline_type: deadline.task,
+        deadline_date: deadlineDate,
+        // 'pending' is in the live transaction_deadlines_status_check vocabulary.
+        status: TRANSACTION_DEADLINE_STATUSES[0],
+        notes: deadline.reason,
+      })
+
+      if (insertError) {
+        skipped.push(`${deadline.task} (${insertError.message})`)
+        continue
+      }
+
+      known.add(key)
+      createdCount += 1
+    }
+
+    revalidatePath(`/dashboard/transactions/${params.transactionId}`)
+    return {
+      success: true,
+      deadlineAnalysis,
+      // proposedCount is what the model suggested; createdCount is what the
+      // DATABASE now agrees with. Reporting both is the difference between
+      // "we planned 6 deadlines" and "6 deadlines exist".
+      proposedCount: deadlineAnalysis.suggestedDeadlines.length,
+      createdCount,
+      skipped,
+    }
   } catch (error) {
     return handleError(error, "predictAndManageDeadlines")
   }
@@ -276,13 +440,17 @@ Based on typical ${(transaction.property_state || 'Florida')} real estate timeli
  */
 export async function generateSmartTasks(params: {
   transactionId: string
-  agentId: string
+  /** Ignored — identity comes from the session (see scopeTransaction). */
+  agentId?: string
   stage?: string
 }) {
   try {
+    const scope = await scopeTransaction(params.transactionId)
+    if (!scope.ok) return { success: false, error: scope.error }
+
     const supabase = await createClient()
 
-    const { data: transaction } = await supabase
+    const { data: transaction, error: txnError } = await supabase
       .from("transactions")
       .select(`
         *,
@@ -291,8 +459,9 @@ export async function generateSmartTasks(params: {
         contacts(*)
       `)
       .eq("id", params.transactionId)
-      .single()
+      .maybeSingle()
 
+    if (txnError) return { success: false, error: `Could not load the transaction: ${txnError.message}` }
     if (!transaction) {
       return { success: false, error: "Transaction not found" }
     }
@@ -305,7 +474,11 @@ export async function generateSmartTasks(params: {
         tasks: z.array(z.object({
           title: z.string(),
           description: z.string(),
-          priority: z.enum(["low", "medium", "high", "urgent"]),
+          // BUILT FROM THE LIVE CHECK VOCABULARY, not hand-typed. The old literal
+          // list was ["low","medium","high","urgent"]; the database CHECK is
+          // ['critical','high','medium','low']. Every 'urgent' task the model
+          // produced was refused and silently dropped.
+          priority: z.enum(TRANSACTION_TASK_PRIORITIES),
           category: z.enum(["document", "communication", "inspection", "financial", "legal", "closing"]),
           suggestedDeadline: z.string(),
           assignTo: z.enum(["agent", "buyer", "seller", "lender", "title", "attorney"]),
@@ -333,41 +506,77 @@ Generate appropriate tasks for the ${currentStage} stage considering:
 2. Transaction type (${transaction.deal_type})
 3. Already completed items
 4. Typical timeline expectations
-5. Compliance requirements`,
+5. Compliance requirements
+
+Priority MUST be one of: ${TRANSACTION_TASK_PRIORITIES.join(", ")}.`,
     })
 
-    // Save generated tasks
+    // ── SAVE GENERATED TASKS ─────────────────────────────────────────────────
+    // Two silent killers lived here:
+    //  · brokerage_id was NEVER stamped, and the only policy on this table is
+    //    brok_transaction_tasks with
+    //      WITH CHECK (brokerage_id = current_user_brokerage_id())
+    //    which is FALSE for NULL — so RLS refused every insert.
+    //  · the insert was unchecked, so that refusal (and the priority CHECK
+    //    violation above) resolved as success and the panel reported N tasks
+    //    generated over an empty table.
+    // The dedup read is likewise checked now: a refused SELECT used to come back
+    // `{ data: null }`, which read as "no duplicate" and invited a re-insert.
+    const { data: existingTasks, error: existingError } = await supabase
+      .from("transaction_tasks")
+      .select("title")
+      .eq("transaction_id", params.transactionId)
+      .eq("ai_generated", true)
+
+    if (existingError) {
+      return { success: false, error: `Could not read existing tasks: ${existingError.message}` }
+    }
+
+    const known = new Set((existingTasks ?? []).map((t: any) => String(t.title ?? "").trim().toLowerCase()))
+
+    let createdCount = 0
+    const skipped: string[] = []
+
     for (const task of tasks.tasks) {
-      // Check for duplicate task before inserting
-      const existingTask = await supabase
-        .from("transaction_tasks")
-        .select("id")
-        .eq("transaction_id", params.transactionId)
-        .eq("title", task.title)
-        .eq("ai_generated", true)
-        .maybeSingle()
+      const key = String(task.title ?? "").trim().toLowerCase()
+      if (!key || known.has(key)) continue
 
-      if (existingTask.data) {
-        // Skip duplicate task
-        continue
-      }
+      // due_date is a `date` column — an unparseable model string is a NOT NULL /
+      // cast failure, so fall back to a week out rather than losing the task.
+      const dueDate = toDateOnly(task.suggestedDeadline) ?? dateOnlyFromNow(7)
 
-      await supabase.from("transaction_tasks").insert({
+      const { error: insertError } = await supabase.from("transaction_tasks").insert({
         transaction_id: params.transactionId,
+        brokerage_id: scope.brokerageId,
         title: task.title,
         description: task.description,
         priority: task.priority,
         category: task.category,
-        due_date: task.suggestedDeadline,
+        due_date: dueDate,
         assigned_to: task.assignTo,
         ai_generated: true,
         automatable: task.automatable,
+        // 'pending' is in the live transaction_tasks_status_check vocabulary.
         status: "pending",
       })
+
+      if (insertError) {
+        skipped.push(`${task.title} (${insertError.message})`)
+        continue
+      }
+
+      known.add(key)
+      createdCount += 1
     }
 
-    revalidatePath(`/transactions/${params.transactionId}`)
-    return { success: true, tasks }
+    revalidatePath(`/dashboard/transactions/${params.transactionId}`)
+    return {
+      success: true,
+      tasks,
+      proposedCount: tasks.tasks.length,
+      createdCount,
+      skipped,
+    }
   } catch (error) {
     return handleError(error, "generateSmartTasks")
   }
@@ -378,15 +587,19 @@ Generate appropriate tasks for the ${currentStage} stage considering:
  */
 export async function draftTransactionCommunication(params: {
   transactionId: string
-  agentId: string
+  /** Ignored — identity comes from the session (see scopeTransaction). */
+  agentId?: string
   recipientRole: "buyer" | "seller" | "lender" | "title" | "attorney" | "other_agent"
   communicationType: "update" | "request" | "reminder" | "negotiation" | "congratulations"
   context?: string
 }) {
   try {
+    const scope = await scopeTransaction(params.transactionId)
+    if (!scope.ok) return { success: false, error: scope.error }
+
     const supabase = await createClient()
 
-    const { data: transaction } = await supabase
+    const { data: transaction, error: txnError } = await supabase
       .from("transactions")
       .select(`
         *,
@@ -396,17 +609,27 @@ export async function draftTransactionCommunication(params: {
         contacts(*)
       `)
       .eq("id", params.transactionId)
-      .single()
+      .maybeSingle()
 
+    if (txnError) return { success: false, error: `Could not load the transaction: ${txnError.message}` }
     if (!transaction) {
       return { success: false, error: "Transaction not found" }
     }
 
-    const { data: agent } = await supabase
+    // IDENTITY CLASS. `users` is keyed by users.id (auth.uid()); the caller-supplied
+    // params.agentId was ALSO being written to transaction_communications.agent_id.
+    // That is the self-contradiction scripts/identity-class-guard.ts flags for this
+    // function. The session is authoritative for both: userId reads `users`,
+    // agentId (agents.id — the class transactions.agent_id FKs) is stamped on the row.
+    const { data: agent, error: agentError } = await supabase
       .from("users")
       .select("first_name, last_name, phone, email")
-      .eq("id", params.agentId)
-      .single()
+      .eq("id", scope.userId!)
+      .maybeSingle()
+
+    if (agentError) {
+      return { success: false, error: `Could not load your profile: ${agentError.message}` }
+    }
 
     const recipient = transaction.transaction_participants?.find(
       (p: any) => p.role === params.recipientRole
@@ -439,20 +662,72 @@ Generate a professional, warm, and effective ${params.communicationType} message
 Format as both email and SMS versions.`,
     })
 
-    // Log the communication draft
-    await supabase.from("transaction_communications").insert({
-      transaction_id: params.transactionId,
-      agent_id: params.agentId,
-      recipient_role: params.recipientRole,
-      communication_type: params.communicationType,
-      ai_draft: communication,
-      status: "draft",
-    })
+    // ── LOG THE DRAFT — THE ROW THE NEXT READER LOOKS FOR ────────────────────
+    // brok_transaction_communications is the ONLY policy on this table and it
+    // applies to ALL commands with
+    //   WITH CHECK (brokerage_id = current_user_brokerage_id())
+    // The old insert never stamped brokerage_id, so RLS refused EVERY row — and
+    // because the write was unchecked, the action handed the agent a draft and
+    // reported success while transaction_communications stayed permanently
+    // empty (live count: 0). This is a HARD failure now: the draft is the record
+    // of what was said to whom, and a draft that was never recorded is a draft
+    // the agent will send twice.
+    const { data: logged, error: logError } = await supabase
+      .from("transaction_communications")
+      .insert({
+        transaction_id: params.transactionId,
+        brokerage_id: scope.brokerageId,
+        agent_id: scope.agentId,
+        recipient_role: params.recipientRole,
+        communication_type: params.communicationType,
+        ai_draft: communication,
+        // 'draft' is in the live transaction_communications_status_check vocabulary.
+        status: TRANSACTION_COMMUNICATION_STATUSES[0],
+      })
+      .select("id, status, created_at")
+      .single()
 
-    return { success: true, communication }
+    if (logError || !logged) {
+      return {
+        success: false,
+        error: `The draft was written but could not be recorded (${logError?.message ?? "no row returned"}). Nothing was saved — retry.`,
+      }
+    }
+
+    revalidatePath(`/dashboard/transactions/${params.transactionId}`)
+    return {
+      success: true,
+      communication,
+      draftId: logged.id,
+      status: logged.status,
+      recipientName: recipient?.name ?? null,
+      recipientEmail: recipient?.email ?? null,
+    }
   } catch (error) {
     return handleError(error, "draftTransactionCommunication")
   }
+}
+
+/**
+ * Read the recorded communication drafts for a transaction — the reader that
+ * makes draftTransactionCommunication's write visible. Without this the drafts
+ * were write-only and no surface could ever show them back.
+ */
+export async function listTransactionCommunications(transactionId: string) {
+  const scope = await scopeTransaction(transactionId)
+  if (!scope.ok) return { success: false as const, error: scope.error, communications: [] }
+
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from("transaction_communications")
+    .select("id, recipient_role, communication_type, ai_draft, final_content, status, sent_at, created_at")
+    .eq("transaction_id", transactionId)
+    .eq("brokerage_id", scope.brokerageId!)
+    .order("created_at", { ascending: false })
+    .limit(25)
+
+  if (error) return { success: false as const, error: error.message, communications: [] }
+  return { success: true as const, communications: data ?? [] }
 }
 
 /**
@@ -558,16 +833,37 @@ Identify:
 
 /**
  * AI-powered closing preparation checklist
+ *
+ * ── DELIBERATELY NOT WIRED TO A SURFACE ──────────────────────────────────────
+ * transaction_closing_prep is UNIQUE on transaction_id (pg_constraint:
+ * transaction_closing_prep_transaction_id_key), i.e. ONE row per deal, and it
+ * already has a live writer reached from a real page:
+ *
+ *     app/actions/ai-closing-workflow.ts : aiGenerateClosingChecklist
+ *       -> called by app/crm/components/closing-workflow-tab.tsx:192
+ *       -> upserts transaction_closing_prep with { onConflict: "transaction_id" },
+ *          stamps brokerage_id, and ALSO populates closing_checklist_items,
+ *          which app/actions/ai-closing-workflow.ts:getClosingPrepSummary reads.
+ *
+ * Wiring this function to a second button would give one row two independent
+ * authors writing different `checklist` shapes and different `readiness_score`
+ * scales, and whichever ran last would win silently. So it stays unwired — but
+ * NOT unfixed: the three defects below were real and are corrected, so the
+ * capability is whole for whoever consolidates the two.
  */
 export async function prepareForClosing(params: {
   transactionId: string
-  agentId: string
+  /** Ignored — identity comes from the session (see scopeTransaction). */
+  agentId?: string
   closingDate: string
 }) {
   try {
+    const scope = await scopeTransaction(params.transactionId)
+    if (!scope.ok) return { success: false, error: scope.error }
+
     const supabase = await createClient()
 
-    const { data: transaction } = await supabase
+    const { data: transaction, error: txnError } = await supabase
       .from("transactions")
       .select(`
         *,
@@ -576,8 +872,9 @@ export async function prepareForClosing(params: {
         listings(*)
       `)
       .eq("id", params.transactionId)
-      .single()
+      .maybeSingle()
 
+    if (txnError) return { success: false, error: `Could not load the transaction: ${txnError.message}` }
     if (!transaction) {
       return { success: false, error: "Transaction not found" }
     }
@@ -639,16 +936,42 @@ Generate a comprehensive closing preparation plan including:
 5. Potential issues and resolutions`,
     })
 
-    // Save closing preparation
-    await supabase.from("transaction_closing_prep").upsert({
-      transaction_id: params.transactionId,
-      closing_date: params.closingDate,
-      readiness_score: closingPrep.readinessScore,
-      checklist: closingPrep,
-      created_at: new Date().toISOString(),
-    })
+    // ── SAVE CLOSING PREPARATION ─────────────────────────────────────────────
+    // THREE DEFECTS, all verified against the live database:
+    //  1. NO onConflict. supabase-js defaults the arbiter to the PRIMARY KEY
+    //     (id), and no id was supplied — so this "upsert" was a plain INSERT and
+    //     the SECOND call for a deal hit
+    //       duplicate key value violates unique constraint
+    //       "transaction_closing_prep_transaction_id_key"
+    //     (probed live). onConflict is now the real unique key.
+    //  2. brokerage_id was never stamped, and brok_transaction_closing_prep is
+    //     the only policy on the table: WITH CHECK (brokerage_id =
+    //     current_user_brokerage_id()) — FALSE for NULL, so even the first call
+    //     was refused by RLS.
+    //  3. Unchecked write: both of the above resolved as success.
+    //  Also: `created_at` was being re-stamped on every upsert, which rewrites
+    //  when prep STARTED. updated_at is the column that means "last touched".
+    const { error: prepError } = await supabase
+      .from("transaction_closing_prep")
+      .upsert(
+        {
+          transaction_id: params.transactionId,
+          brokerage_id: scope.brokerageId,
+          closing_date: toDateOnly(params.closingDate),
+          // readiness_score has CHECK (>= 0 AND <= 100) — clamp rather than let a
+          // model overshoot refuse the whole row.
+          readiness_score: Math.max(0, Math.min(100, Math.round(closingPrep.readinessScore ?? 0))),
+          checklist: closingPrep,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "transaction_id" },
+      )
 
-    revalidatePath(`/transactions/${params.transactionId}`)
+    if (prepError) {
+      return { success: false, error: `Closing prep could not be saved: ${prepError.message}` }
+    }
+
+    revalidatePath(`/dashboard/transactions/${params.transactionId}`)
     return { success: true, closingPrep }
   } catch (error) {
     return handleError(error, "prepareForClosing")
@@ -660,12 +983,16 @@ Generate a comprehensive closing preparation plan including:
  */
 export async function generatePostClosingPlan(params: {
   transactionId: string
-  agentId: string
+  /** Ignored — identity comes from the session (see scopeTransaction). */
+  agentId?: string
 }) {
   try {
+    const scope = await scopeTransaction(params.transactionId)
+    if (!scope.ok) return { success: false, error: scope.error }
+
     const supabase = await createClient()
 
-    const { data: transaction } = await supabase
+    const { data: transaction, error: txnError } = await supabase
       .from("transactions")
       .select(`
         *,
@@ -673,8 +1000,9 @@ export async function generatePostClosingPlan(params: {
         listings(*)
       `)
       .eq("id", params.transactionId)
-      .single()
+      .maybeSingle()
 
+    if (txnError) return { success: false, error: `Could not load the transaction: ${txnError.message}` }
     if (!transaction) {
       return { success: false, error: "Transaction not found" }
     }
@@ -731,29 +1059,67 @@ Create a comprehensive plan including:
 6. Review request timing and approach`,
     })
 
-    // Create follow-up tasks
-    const contactId = transaction.contact_id
+    // ── SCHEDULE THE IMMEDIATE FOLLOW-UPS ────────────────────────────────────
+    // scheduled_touchpoints is governed by ONE policy, stp_agent:
+    //   USING      (agent_id = auth.uid() OR brokerage_id = current_user_brokerage_id())
+    //   WITH CHECK (brokerage_id = current_user_brokerage_id())
+    // Two consequences the old code got wrong, both silently:
+    //  · brokerage_id was never stamped, so WITH CHECK was FALSE for every row
+    //    and RLS refused all of them (live count: 0).
+    //  · agent_id is compared to auth.uid() by that policy, so this column is
+    //    the USERS class — not agents.id. The old code wrote the caller-supplied
+    //    params.agentId, which for an agent-class id would make the row
+    //    invisible to its own owner on the agent_id leg.
+    // The write is also checked now; a refused touchpoint is reported, not lost.
+    const contactId = transaction.contact_id as string | null
 
-    // Schedule immediate follow-ups
-    for (const followUp of postClosingPlan.immediateFollowUp) {
-      await supabase.from("scheduled_touchpoints").insert({
-        contact_id: contactId,
-        agent_id: params.agentId,
-        touchpoint_type: followUp.channel,
-        scheduled_date: new Date().toISOString(),
-        message_template: followUp.template,
-        ai_generated: true,
-        status: "scheduled",
-      })
+    if (!contactId) {
+      return {
+        success: false,
+        error: "This transaction has no contact, so post-closing touchpoints have nobody to go to.",
+      }
     }
 
-    return { success: true, postClosingPlan }
+    let scheduledCount = 0
+    const skipped: string[] = []
+
+    for (const followUp of postClosingPlan.immediateFollowUp) {
+      const { error: touchError } = await supabase.from("scheduled_touchpoints").insert({
+        contact_id: contactId,
+        agent_id: scope.userId,
+        brokerage_id: scope.brokerageId,
+        touchpoint_type: followUp.channel,
+        // `scheduled_date` is a DATE column — send an ISO timestamp and Postgres
+        // truncates it anyway, so be explicit about what is actually stored.
+        scheduled_date: dateOnlyFromNow(0),
+        message_template: followUp.template,
+        ai_generated: true,
+        // 'scheduled' is in the live scheduled_touchpoints_status_check vocabulary.
+        status: SCHEDULED_TOUCHPOINT_STATUSES[0],
+      })
+
+      if (touchError) {
+        skipped.push(`${followUp.action} (${touchError.message})`)
+        continue
+      }
+      scheduledCount += 1
+    }
+
+    revalidatePath(`/dashboard/transactions/${params.transactionId}`)
+    return {
+      success: true,
+      postClosingPlan,
+      proposedCount: postClosingPlan.immediateFollowUp.length,
+      scheduledCount,
+      skipped,
+    }
   } catch (error) {
     return handleError(error, "generatePostClosingPlan")
   }
 }
 
-// Backward compatibility alias — wrapped because "use server" rejects `const = fn`
+// Backward compatibility alias — wrapped because "use server" rejects `const = fn`.
+// Shares prepareForClosing's "not wired, second writer" verdict; see the note there.
 export async function getClosingPrep(...args: Parameters<typeof prepareForClosing>) {
   return prepareForClosing(...args)
 }

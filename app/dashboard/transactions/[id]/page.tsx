@@ -5,6 +5,7 @@ import { ClosingWatchtowerSection } from "./closing-watchtower-section"
 import { ClosingWarRoomSection } from "./closing-war-room-section"
 import { FinancingPitStopSection } from "./financing-pit-stop-section"
 import { BuyerMoveSection } from "./buyer-move-section"
+import { AiCoordinatorPanel } from "./ai-coordinator-panel"
 import { getBuyerMoveCase } from "@/lib/transactions/buyer-move"
 import { FEATURES } from "@/lib/constants"
 import { TRANSACTION_STAGES, TransactionStage } from "@/lib/transactions/transaction-stages"
@@ -89,8 +90,20 @@ export default async function TransactionDetailPage({ params }: PageProps) {
 
   if (txnError || !transaction) notFound()
 
-  // Auth: owning agent OR broker/admin/TC in same brokerage
-  const isOwningAgent = transaction.agent_id === user.id
+  // Auth: owning agent OR broker/admin/TC in same brokerage.
+  //
+  // IDENTITY CLASS — this comparison was `transaction.agent_id === user.id`,
+  // which pits two DIFFERENT id spaces against each other and is therefore
+  // always false. transactions.agent_id FKs agents(id) (pg_constraint:
+  // transactions_agent_id_fkey -> agents.id) and agents.id is never equal to
+  // users.id in this database (checked live: every agents row has a distinct
+  // user_id). The consequence was total: an ordinary user_type='agent' failed
+  // BOTH branches and was redirected away from their own deal — only
+  // broker/admin/tc could ever open a transaction. Resolved through the
+  // identity helper rather than papered over with `??`.
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const identity = await getAgentContext()
+  const isOwningAgent = !!identity.agentId && transaction.agent_id === identity.agentId
   const hasAdminAccess = ["broker", "admin", "tc"].includes(userType)
   if (!isOwningAgent && !hasAdminAccess) {
     redirect("/dashboard")
@@ -460,6 +473,16 @@ export default async function TransactionDetailPage({ params }: PageProps) {
         initialCase={buyerMoveCase}
         canBootstrap={canBootstrapMove}
         utilityConnectEnabled={FEATURES.BUYER_MOVE_UTILITY_CONNECT}
+      />
+      {/* AI Transaction Coordinator — the surface for the four coordinator
+          capabilities that had no caller anywhere: smart tasks, deadline
+          prediction, participant communication drafting (recorded, then read
+          back), and the post-closing touchpoint plan. Every control reports the
+          server's applied count, not an optimistic success. */}
+      <AiCoordinatorPanel
+        transactionId={id}
+        stage={(transaction as any).stage ?? null}
+        closeDate={(transaction as any).close_date ?? null}
       />
       <TransactionDetailClient
       transaction={transaction}
