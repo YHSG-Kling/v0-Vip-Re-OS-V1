@@ -1061,6 +1061,9 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   integration_credentials: "data_steward",
   intelligence_signals_log: "data_steward",
   journey_states: "data_steward",
+  // Same spine as journey_states / journey_blueprints / client_portal_activity —
+  // the per-contact journey rollup, which data_steward already owns end to end.
+  journey_stage_progress: "data_steward",
   knowledge_articles: "data_steward",
   license_verifications: "data_steward",
   lifecycle_events: "data_steward",
