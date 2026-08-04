@@ -285,11 +285,11 @@ Provide a comprehensive analysis including:
  * Ensures all required disclosures are present and complete
  *
  * ── DELIBERATELY NOT WIRED TO A SURFACE ──────────────────────────────────────
- * compliance_checklists is UNIQUE on (transaction_id, checklist_type) — twice
- * over, in fact (compliance_checklists_transaction_id_checklist_type_key and
- * compliance_checklists_txn_type_unique) — so there is exactly ONE
- * 'disclosures' row per deal, and it already has a live writer reached from a
- * real page:
+ * compliance_checklists is UNIQUE on (transaction_id, checklist_type) —
+ * compliance_checklists_transaction_id_checklist_type_key, the single surviving
+ * constraint after m370 dropped the identical duplicate
+ * compliance_checklists_txn_type_unique — so there is exactly ONE 'disclosures'
+ * row per deal, and it already has a live writer reached from a real page:
  *
  *     app/actions/ai-transaction-documents.ts : checkTransactionDisclosures
  *       -> called by app/dashboard/transactions/[id]/transaction-detail-client.tsx:1077

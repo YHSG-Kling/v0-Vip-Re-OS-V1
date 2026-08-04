@@ -4,6 +4,10 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import {
+  TRANSACTION_TASK_PRIORITY_PROMPT_UNION,
+  coerceTaskPriority,
+} from "@/lib/transactions/task-vocabulary"
 
 // CONTRACT-TYPE doc_type values — drives which analysis path is used
 const CONTRACT_TYPES = new Set([
@@ -248,7 +252,7 @@ Return a JSON array of reminders. Each must have:
 [{
   "title": string (short task title),
   "description": string (clear action for the agent),
-  "priority": "urgent"|"high"|"medium"|"low",
+  "priority": ${TRANSACTION_TASK_PRIORITY_PROMPT_UNION},
   "dueDateOffset": number (days from today, 0 = today, negative = overdue),
   "category": string
 }]
@@ -287,7 +291,14 @@ Only generate reminders for real missing or upcoming items. Maximum 8 reminders.
         assigned_to_agent_id: params.agentId,
         title: r.title,
         description: r.description,
-        priority: r.priority ?? "medium",
+        // `r.priority ?? "medium"` was not a defence: `??` only fires on
+        // null/undefined, so a PRESENT but invalid value ("urgent", which this
+        // very prompt used to offer) went straight to a column whose
+        // transaction_tasks_priority_check accepts only critical|high|medium|low
+        // — and because this insert IS error-checked, one bad value failed the
+        // WHOLE batch. Both the offered vocabulary above and this narrowing now
+        // come from the same constant, so they cannot drift.
+        priority: coerceTaskPriority(r.priority),
         due_date: dueDate.toISOString().split("T")[0],
         category: r.category ?? "documents",
         status: "pending",
@@ -331,14 +342,27 @@ export async function checkTransactionDisclosures(params: {
   if (!isValidUUID(params.transactionId)) {
     return { success: false, error: "Invalid transaction ID" }
   }
+  // Tenant scope is not optional here — the compliance_checklists RLS WITH CHECK
+  // is (brokerage_id = current_user_brokerage_id()) and NULL fails it, so an
+  // unstamped write is refused. Reject up front rather than at the database.
+  if (!isValidUUID(params.brokerageId)) {
+    return { success: false, error: "Invalid brokerage ID" }
+  }
 
   const supabase = await createClient()
 
   try {
-    const { data: docs } = await supabase
+    const { data: docs, error: docsError } = await supabase
       .from("transaction_documents")
       .select("doc_type, doc_label, status")
       .eq("transaction_id", params.transactionId)
+
+    // A refused read resolves rather than throwing. Left undestructured, `docs`
+    // would be null and the model would be asked to grade a deal it was told has
+    // no documents at all — a confidently wrong 0% compliance score.
+    if (docsError) {
+      return { success: false, error: `Could not read transaction documents: ${docsError.message}` }
+    }
 
     const { text } = await generateText({
       model: "openai/gpt-4o-mini",
@@ -373,16 +397,46 @@ Return JSON:
       return { success: false, error: "AI returned unparseable compliance data" }
     }
 
-    // Insert a fresh compliance_checklists snapshot (point-in-time — no unique constraint on txn+type)
-    await supabase.from("compliance_checklists").insert({
-      transaction_id: params.transactionId,
-      brokerage_id: params.brokerageId,
-      checklist_type: "disclosures",
-      items: result.requiredDisclosures ?? [],
-      compliance_score: Math.round(Number(result.complianceScore ?? 0)),
-      ai_recommendations: result.recommendations ?? [],
-      updated_at: new Date().toISOString(),
-    })
+    // ── THE DISCLOSURE CHECK MUST BE RE-RUNNABLE ─────────────────────────────
+    // This was a plain .insert() under a comment that denied the unique index
+    // here existed. It does: compliance_checklists is UNIQUE on
+    // (transaction_id, checklist_type), so the FIRST run wrote a row and every
+    // run after it raised duplicate-key. The result was not destructured, so
+    // supabase-js RESOLVED the refusal and this action returned success while
+    // nothing was written — the check could only ever land once per deal.
+    //
+    // The fix is an UPSERT rather than a history table, because no reader of
+    // compliance_checklists orders by created_at or takes a latest row —
+    // lib/deal-health/health-scorer.ts, lib/application/compliance-monitoring.ts
+    // and app/actions/workflows.ts all read every row for a transaction and treat
+    // it as CURRENT STATE. Keeping a row per run would feed stale scores into the
+    // live deal-health number. One authoritative row per checklist_type;
+    // re-running UPDATES it, and updated_at makes the re-run visible.
+    //
+    // onConflict MUST name the arbiter: an upsert with no onConflict falls back
+    // to the primary key (id), which never collides, so Postgres re-raises the
+    // very same duplicate-key on the unique index. Naming the arbiter is the fix.
+    //
+    // brokerage_id is required, not optional: brok_compliance_checklists is the
+    // only policy covering INSERT/UPDATE and its WITH CHECK is
+    // (brokerage_id = current_user_brokerage_id()), which is FALSE for NULL.
+    // compliance_score is clamped to satisfy CHECK (>= 0 AND <= 100).
+    const { error: checklistError } = await supabase.from("compliance_checklists").upsert(
+      {
+        transaction_id: params.transactionId,
+        brokerage_id: params.brokerageId,
+        checklist_type: "disclosures",
+        items: result.requiredDisclosures ?? [],
+        compliance_score: Math.max(0, Math.min(100, Math.round(Number(result.complianceScore ?? 0)))),
+        ai_recommendations: result.recommendations ?? [],
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "transaction_id,checklist_type" },
+    )
+
+    if (checklistError) {
+      return { success: false, error: `Disclosure check could not be recorded: ${checklistError.message}` }
+    }
 
     return {
       success: true,

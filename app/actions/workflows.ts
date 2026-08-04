@@ -421,17 +421,43 @@ export async function triggerComplianceChecklist(
     if (!own.ok) return { success: false, error: own.error }
 
     // compliance_checklists has no agent_id/status; checklist_type is NOT NULL.
-    const { data: checklist } = await supabase
+    //
+    // THIRD WRITER OF THIS TABLE — it must agree with the other two about what a
+    // re-run means. compliance_checklists is UNIQUE on
+    // (transaction_id, checklist_type), so this plain .insert() succeeded once
+    // per deal and raised duplicate-key forever after; with the error left
+    // undestructured supabase-js RESOLVED that refusal, so `checklist` came back
+    // null and this returned `{ success: true, checklistId: undefined }` — a
+    // caller told the trigger worked, holding no id.
+    //
+    // Upsert on the same named arbiter as
+    // app/actions/ai-transaction-documents.ts : checkTransactionDisclosures and
+    // app/actions/ai-document-intelligence.ts : aiCheckDisclosures. This payload
+    // deliberately carries no items/compliance_score: PostgREST's
+    // merge-duplicates only SETs the columns present, so re-triggering
+    // ensure-exists here can never wipe an AI-written score.
+    const { data: checklist, error: checklistError } = await supabase
       .from("compliance_checklists")
-      .insert({
-        transaction_id: transactionId,
-        brokerage_id: brokerageId,
-        checklist_type: "disclosures",
-      })
+      .upsert(
+        {
+          transaction_id: transactionId,
+          brokerage_id: brokerageId,
+          checklist_type: "disclosures",
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "transaction_id,checklist_type" },
+      )
       .select()
       .single()
 
-    return { success: true, checklistId: checklist?.id }
+    if (checklistError) {
+      return { success: false, error: `Compliance checklist could not be recorded: ${checklistError.message}` }
+    }
+    if (!checklist?.id) {
+      return { success: false, error: "Compliance checklist write returned no row" }
+    }
+
+    return { success: true, checklistId: checklist.id }
   } catch (error: any) {
     return { success: false, error: error?.message ?? "Failed to trigger compliance checklist" }
   }
