@@ -580,57 +580,33 @@ Set overallStatus to "blocking_issues" only if missing signatures would invalida
           zipCode: classification.key_fields?.zip_code ?? null,
         }
 
-        if (classification.document_type === "listing_agreement") {
-          // A listing agreement is EXECUTABLE only when BOTH the listing agent AND
-          // the seller have completed signatures AND initials. overallStatus="pass"
-          // is an aggregate and can pass with one party missing, so enforce per-role
-          // from the scan before auto-creating the listing.
-          const sc = (signatureScan as any)?.signatureCompleteness ?? {}
-          const PARTIES = ["agent", "seller"]
-          const roleOf = (m: any) => String(m?.signer_role ?? "").toLowerCase()
-          const sigGap = (sc.missingSignatures ?? []).some((m: any) => PARTIES.includes(roleOf(m)))
-          const initGap = (sc.missingInitials ?? []).some((m: any) => PARTIES.includes(roleOf(m)))
-          const bothPartiesExecuted =
-            sc.allRequiredSignaturesPresent === true &&
-            sc.allRequiredInitialsPresent === true &&
-            !sigGap && !initGap
-
-          if (!bothPartiesExecuted) {
-            console.warn(
-              `[v0] Listing agreement ${docRecord.id} not fully executed by agent + seller (signatures/initials incomplete) — listing NOT auto-created`
-            )
-          } else {
-            // Executable also requires ALL required listing documents present
-            // (state/federal/brokerage checklist), not just the signed agreement.
-            const { auditListingDocuments } = await import("@/lib/compliance/required-documents")
-            const docAudit = await auditListingDocuments(supabase as any, {
-              brokerageId:     docRecord.brokerage_id,
-              sellerContactId: docRecord.contact_id ?? null,
-              stateCode:       baseExtracted.state ?? null,
-            })
-
-            if (docAudit.missing_blocking.length > 0) {
-              console.warn(
-                `[v0] Listing agreement ${docRecord.id} executed but required documents missing (${docAudit.missing_blocking.join(", ")}) — listing NOT auto-created`
-              )
-            } else {
-              await triggerChainsForEvent({
-                eventType: "compliance.listing_agreement_passed",
-                brokerageId: docRecord.brokerage_id,
-                contactId: docRecord.contact_id ?? null,
-                metadata: {
-                  document_id: docRecord.id,
-                  extracted: baseExtracted,
-                  signature_scan: signatureScan,
-                  required_docs_audit: {
-                    present: docAudit.present,
-                    missing_warning: docAudit.missing_warning,
-                  },
-                },
-              })
-            }
-          }
-        } else if (classification.document_type === "purchase_agreement") {
+        // CONSOLIDATED AWAY — the listing-agreement gate that used to live here.
+        //
+        // It was UNREACHABLE. This function's own classifier prompt offers a fixed enum:
+        // purchase_agreement|addendum|inspection_report|appraisal|proof_of_funds|
+        // closing_disclosure|title_report|disclosure_form|bank_statement|drivers_license|other
+        // — `listing_agreement` is not in it, so `document_type === "listing_agreement"`
+        // could never be true here and the gate never ran from this path.
+        //
+        // It was also on the WRONG path even if it had: this function writes
+        // client_documents, and auditListingDocuments reads `documents`. A gate that fired
+        // here would have judged "are all required listing documents present?" against a
+        // table the audit does not consult.
+        //
+        // Named survivor: lib/documents/listing-agreement-gate.ts:runListingAgreementGate,
+        // called unconditionally from lib/documents/scan-uploaded-document.ts (whose
+        // classifier DOES offer listing_agreement, generated from the canonical taxonomy in
+        // lib/compliance/document-classifications.ts). It keys the emitted
+        // compliance.listing_agreement_passed on the document id so a re-scan reuses the run,
+        // and shares one client-safe execution predicate
+        // (lib/compliance/signature-completeness.ts) so "is it signed" has one answer
+        // everywhere. Nothing is lost: the survivor enforces the same owner rule — a listing
+        // agreement executed by BOTH agent and seller, with every required document present,
+        // before a listing is taken on — on the path that can actually reach it.
+        //
+        // Widening this enum instead would have created a SECOND gate emitting the same
+        // event from the wrong table. See MAINTENANCE_DOMAINS.listing_completed_documents.
+        if (classification.document_type === "purchase_agreement") {
           // Only auto-create transaction when there is an offer record but
           // no transaction yet; otherwise existing applyContractExtraction
           // path above updates the existing transaction.
