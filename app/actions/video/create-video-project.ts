@@ -27,7 +27,22 @@ export interface CreateVideoProjectParams {
    */
   agentUserId: string
   title: string
-  script: string
+  /**
+   * The spoken script. Optional ONLY in the two-stage lane below — every caller
+   * that intends the project to be renderable still has to supply one, and an
+   * empty string is still rejected unless `scriptPending` says so explicitly.
+   */
+  script?: string
+  /**
+   * THE SHELL LANE, moved here from lib/kernel/video.ts:createVideoProject.
+   * That path created a project with a title and a brief and NO script, at
+   * status 'setup', for POST /api/video/projects/[projectId]/script to fill in
+   * later (it reads video_metadata.description as the brief). Collapsing the
+   * kernel creator into this one would have lost that lane, so it is explicit
+   * here rather than inferred from an empty script — a caller that meant to
+   * pass a script and passed "" must still get an error, not a silent shell.
+   */
+  scriptPending?: boolean
   videoType: string
   avatarId?: string
   voiceId?: string
@@ -38,6 +53,24 @@ export interface CreateVideoProjectParams {
   durationSeconds: number
   captionsEnabled: boolean
   listingId?: string
+  /**
+   * CAMPAIGN ATTRIBUTION — moved here from lib/kernel/video.ts:createVideoProject,
+   * which was the only path that carried it. Verified against the live schema:
+   *
+   *   · marketing_campaign_id is a REAL column (uuid, FK marketing_campaigns(id)
+   *     ON DELETE SET NULL), so campaignId is written as a column.
+   *   · There is NO source_type and NO source_id column on ai_video_projects.
+   *     The kernel folded both into the video_metadata jsonb — note the column
+   *     is `video_metadata`, not `metadata` — and so does this.
+   *   · description likewise has no column and lives at video_metadata.description,
+   *     where lib/kernel/video.ts:generateVideoScript reads it as the AI brief.
+   *     It is load-bearing, not decoration.
+   */
+  campaignId?: string
+  sourceType?: "property" | "campaign" | "manual"
+  sourceId?: string
+  /** Free-text brief. Persisted to video_metadata.description (no column). */
+  description?: string
 }
 
 export interface VideoProject {
@@ -45,7 +78,10 @@ export interface VideoProject {
   title: string
   script_content: string
   video_type: string
-  status: "draft" | "generating" | "ready" | "failed" | "distributed"
+  // 'setup' = created without a script, waiting on the scripting step (the lane
+  // inherited from lib/kernel/video.ts). ai_video_projects.status has no CHECK
+  // constraint, so this union is the only place the vocabulary is written down.
+  status: "setup" | "draft" | "generating" | "ready" | "failed" | "distributed"
   provider_job_id: string | null
   provider_status: string | null
   video_url: string | null
@@ -61,6 +97,8 @@ export interface VideoProject {
   agent_id: string
   brokerage_id: string
   listing_id: string | null
+  marketing_campaign_id: string | null
+  video_metadata: Record<string, unknown> | null
 }
 
 // ─── AI SCRIPT GENERATION ──────────────────────────────────────────────────
@@ -218,11 +256,36 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
   if (!params.title?.trim()) {
     return { success: false, error: "Title is required" }
   }
-  if (!params.script?.trim()) {
+  if (!params.script?.trim() && !params.scriptPending) {
     return { success: false, error: "Script is required" }
   }
 
   const supabase = await createClient()
+
+  // CAMPAIGN ATTRIBUTION, tenant-checked. The kernel path wrote the caller's
+  // campaignId into marketing_campaign_id unverified, so a caller could attribute
+  // its video to ANOTHER brokerage's campaign — the FK only proves the campaign
+  // exists, never that it is ours. Resolve it inside the tenant or refuse.
+  let marketingCampaignId: string | null = null
+  if (params.campaignId) {
+    if (!isValidUUID(params.campaignId)) {
+      return { success: false, error: "Invalid campaign ID" }
+    }
+    const { data: campaign, error: campaignError } = await supabase
+      .from("marketing_campaigns")
+      .select("id")
+      .eq("id", params.campaignId)
+      .eq("brokerage_id", params.brokerageId)
+      .maybeSingle()
+    if (campaignError) {
+      console.error("[create-video-project] Campaign lookup error:", campaignError)
+      return { success: false, error: campaignError.message }
+    }
+    if (!campaign) {
+      return { success: false, error: "Marketing campaign not found in this brokerage" }
+    }
+    marketingCampaignId = campaign.id
+  }
 
   // Migration 1052: provider resolved (D-ID default; agent + brokerage
   // overrides). Hard-coded 'heygen' before — wrong; @d-id/client-sdk is
@@ -244,26 +307,37 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
     return { success: false, error: "No agent profile for this user in this brokerage — the video project has no owner to file it under." }
   }
 
+  // ONE jsonb column, several tenants of it — build it up rather than letting a
+  // later key overwrite an earlier one. background_color was the only occupant;
+  // description / source_type / source_id join it from the kernel path. Written
+  // as null (not {}) when empty, which is what this insert did before.
+  const videoMetadata: Record<string, unknown> = {}
+  if (params.backgroundColorHex) videoMetadata.background_color = params.backgroundColorHex
+  if (params.description !== undefined) videoMetadata.description = params.description
+  if (params.sourceType !== undefined) videoMetadata.source_type = params.sourceType
+  if (params.sourceId !== undefined) videoMetadata.source_id = params.sourceId
+
   const { data: project, error } = await supabase
     .from("ai_video_projects")
     .insert({
       brokerage_id: params.brokerageId,
       agent_id: projectAgentId,
       title: params.title,
-      script_content: params.script,
+      script_content: params.script ?? null,
       video_type: params.videoType,
       provider_avatar_id: params.avatarId ?? null,
       provider_voice_id: params.voiceId ?? null,
       background_type: params.backgroundType,
       background_url: params.backgroundUrl ?? null,
-      video_metadata: params.backgroundColorHex
-        ? { background_color: params.backgroundColorHex }
-        : null,
+      video_metadata: Object.keys(videoMetadata).length > 0 ? videoMetadata : null,
+      marketing_campaign_id: marketingCampaignId,
       format: params.format,
       duration_seconds: params.durationSeconds,
       captions_enabled: params.captionsEnabled,
       listing_id: params.listingId ?? null,
-      status: "draft",
+      // 'setup' is the kernel shell lane's status — the project is waiting for
+      // its script. A project created WITH a script is a 'draft', as before.
+      status: params.script?.trim() ? "draft" : "setup",
       retry_count: 0,
       video_provider: provider,
       ...providerCols,
@@ -278,8 +352,10 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
     return { success: false, error: error?.message ?? "Failed to create video project" }
   }
 
-  // Emit kernel event
-  await supabase.from("lifecycle_events").insert({
+  // Emit kernel event. supabase-js RESOLVES a refused insert instead of throwing,
+  // so an un-destructured `await` here would have swallowed an RLS refusal and
+  // reported a project whose lifecycle event never landed.
+  const { error: eventError } = await supabase.from("lifecycle_events").insert({
     entity_type: "video_project",
     entity_id: project.id,
     brokerage_id: params.brokerageId,
@@ -287,8 +363,17 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
     // lifecycle_events.actor_user_id is users-class — the caller-supplied users
     // id is the right value here, NOT the resolved agents id above.
     actor_user_id: params.agentUserId,
-    metadata: { video_type: params.videoType, title: params.title },
+    metadata: {
+      video_type: params.videoType,
+      title: params.title,
+      campaign_id: marketingCampaignId,
+      source_type: params.sourceType ?? null,
+      source_id: params.sourceId ?? null,
+    },
   })
+  if (eventError) {
+    console.error("[create-video-project] lifecycle_events insert error:", eventError)
+  }
 
   await processKernelEvent({
     event: KernelEvent.VIDEO_GENERATION_REQUESTED,

@@ -44,13 +44,22 @@ export async function generateListingVideo(params: {
       return { success: false, error: 'Property not found' }
     }
 
-    // Get listing photos
-    const { data: listingPhotos } = await supabase
-      .from('listing_photos')
-      .select('*')
+    // Get listing photos — listing_media rows of media_type='photo'
+    // (m368/m369 consolidation). The pin is load-bearing: without it a
+    // disclosure PDF or a virtual-tour link would be counted toward the photo
+    // minimum below and then handed to the AI as a video frame.
+    const { data: listingPhotos, error: photosError } = await supabase
+      .from('listing_media')
+      .select('id, file_url, sort_order, is_primary, room_type, ai_quality_score')
       .eq('listing_id', property.id)
-      .order('order_index')
+      .eq('media_type', 'photo')
+      .order('sort_order')
 
+    // A refused read resolves empty, which would surface as "Need at least N
+    // photos" — a message naming the wrong problem.
+    if (photosError) {
+      return { success: false, error: `Could not read the listing photos — ${photosError.message}` }
+    }
     photos = listingPhotos || []
 
     const videoType = params.videoType || 'full_tour'
@@ -97,7 +106,7 @@ export async function generateListingVideo(params: {
     //    so per-project scene rows live in ai_video_projects.video_metadata.
     const sceneAssets = selectedPhotos.photos.map((p: any, i: number) => ({
       asset_type: 'photo',
-      asset_url: p.photo_url,
+      asset_url: p.file_url,
       duration_seconds: selectedPhotos.durations[i] || 3.0,
       sort_order: i + 1,
       transition_effect: selectedPhotos.transitions[i] || 'fade',
@@ -201,9 +210,9 @@ Available Photos: ${allPhotos.length}
 ${allPhotos
   .map(
     (p, i) => `
-${i + 1}. photo - ${p.photo_url}
-   Hero: ${p.is_hero ? 'yes' : 'no'}
-   Order: ${p.order_index}
+${i + 1}. photo - ${p.file_url}
+   Hero: ${p.is_primary ? 'yes' : 'no'}
+   Order: ${p.sort_order}
 `,
   )
   .join('\n')}

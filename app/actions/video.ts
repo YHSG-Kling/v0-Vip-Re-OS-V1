@@ -2,7 +2,6 @@
 
 import { createServerClient } from "@/lib/supabase/server"
 import {
-  createVideoProject,
   generateVideoScript,
   updateVideoGenerationSettings,
   submitVideoGenerationJob,
@@ -13,8 +12,6 @@ import {
   loadVideoPerformance,
 } from "@/lib/kernel/video"
 import type {
-  CreateVideoProjectInput,
-  CreateVideoProjectOutput,
   GenerateVideoScriptInput,
   GenerateVideoScriptOutput,
   UpdateVideoGenerationSettingsInput,
@@ -63,32 +60,26 @@ async function assertProjectInCallerBrokerage(projectId: string): Promise<string
 }
 
 /**
- * NOT WIRED, DELIBERATELY — do not connect this to a surface.
+ * createVideoProjectAction was REMOVED — collapsed into
+ * app/actions/video/create-video-project.ts:createVideoProject.
  *
- * lib/kernel/video.ts:createVideoProject INSERTS into ai_video_projects
- * directly and writes `input.agentId` straight into the agents-class
- * ai_video_projects.agent_id without resolving it, so this wrapper would let a
- * browser name the owning agent. The settled owner ruling is that video
- * projects are created through app/actions/video/create-video-project.ts:
- * createVideoProject, which resolves the agents id via resolveAgentIdInBrokerage,
- * resolves the provider (D-ID default) and emits VIDEO_GENERATION_REQUESTED.
+ * It was a thin wrapper over lib/kernel/video.ts:createVideoProject, which
+ * inserts into ai_video_projects directly and writes `input.agentId` straight
+ * into the agents-class ai_video_projects.agent_id (FK agents(id) since m366)
+ * without resolving it. It was left unwired for that reason, and left UNDELETED
+ * for a different one: the kernel path was the only creator carrying campaign
+ * attribution, so deleting it would have lost a capability rather than a copy.
  *
- * It is left in place rather than deleted because that survivor does NOT carry
- * everything this path does — it has no marketing_campaign_id / source_type /
- * source_id linkage — so removing this would lose the campaign-attributed
- * creation lane that app/api/video/projects/route.ts POST still serves. Closing
- * that gap is a kernel change, not a wiring change.
+ * That capability has since been MOVED, not dropped. The survivor now takes
+ * campaignId / sourceType / sourceId / description and writes
+ * marketing_campaign_id (a real column) plus source_type / source_id /
+ * description into the video_metadata jsonb, exactly as the kernel path did —
+ * and additionally resolves users->agents, tenant-checks the campaign, and
+ * emits VIDEO_GENERATION_REQUESTED, none of which the kernel path did. Its
+ * scriptless 'setup' lane is carried too, via `scriptPending`.
+ * app/api/video/projects/route.ts POST — the only live caller — now calls the
+ * survivor. With nothing left that the wrapper did more completely, it is gone.
  */
-export async function createVideoProjectAction(
-  input: CreateVideoProjectInput
-): Promise<{ success: boolean; data?: CreateVideoProjectOutput; error?: string }> {
-  try {
-    const data = await createVideoProject(input)
-    return { success: true, data }
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : "Failed to create project" }
-  }
-}
 
 export async function generateVideoScriptAction(
   input: GenerateVideoScriptInput

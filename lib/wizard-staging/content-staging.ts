@@ -391,9 +391,16 @@ export async function stageVideoProject(
     // reachable ONLY through the `??` fallback — i.e. the feature worked only
     // for users who had no agents row, and was FK-rejected for everyone else.
     // The resolve is deleted rather than reordered: nothing here needs it.
+    //
+    // The field is `agentUserId`, not `agentId` — it was renamed when the
+    // users->agents resolve moved inside createVideoProject, and the `as never`
+    // cast at the end of this call kept the stale name compiling. The param
+    // arrived undefined, so isValidUUID rejected it and this lane returned
+    // "Invalid brokerage or agent ID" for EVERY user. Named correctly now; the
+    // value was already the right one (users-class ctx.userId).
     const result = await createVideoProject({
       brokerageId: ctx.brokerageId,
-      agentId: ctx.userId,
+      agentUserId: ctx.userId,
       title: intake.title,
       script: intake.script ?? "",
       videoType: (intake.videoType ?? "market_update") as never,
