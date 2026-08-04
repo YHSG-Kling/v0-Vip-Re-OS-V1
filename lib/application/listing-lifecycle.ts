@@ -189,6 +189,26 @@ async function requireListingStageAdvance(
  * FK, where it would be refused and (undestructured) leave no history at all.
  * `supplied ?? session.id` without the resolution step is the bug this avoids.
  */
+/**
+ * The signed-in caller's brokerage, or null.
+ *
+ * These services take only an entity id, and the request-scoped client means RLS
+ * applies — but RLS is not a sufficient tenant boundary in this schema: several
+ * policies read `(brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id())`,
+ * so an untenanted row satisfies the predicate for EVERY brokerage. The explicit
+ * filter is the boundary; the policy is the backstop, not the reverse.
+ */
+async function callerBrokerageId(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+): Promise<string | null> {
+  const { data: auth } = await supabase.auth.getUser()
+  if (!auth?.user) return null
+  const { data: profile, error } = await supabase
+    .from("users").select("brokerage_id").eq("id", auth.user.id).maybeSingle()
+  if (error || !profile?.brokerage_id) return null
+  return profile.brokerage_id as string
+}
+
 async function resolveHistoryActorUserId(
   supabase: Awaited<ReturnType<typeof createClient>>,
   suppliedId: string | null | undefined,
@@ -354,15 +374,16 @@ export async function updateListingStageService(params: {
   const gate = await requireListingStageAdvance(supabase, params.listing_id, params.stage)
   if (!gate.ok) return { success: false as const, error: gate.error }
 
+  // listings.status is kept in lockstep with the stage machine — the same rule
+  // lib/kernel/lifecycle.ts applies on its path. Without it a listing advanced
+  // through this writer reaches MLS_ACTIVE while status is still 'draft', and
+  // buyer search / the public pages never see it. (There is no `notes` column on
+  // listings.) This note sits above the statement, not inside the chain, so the
+  // brokerage filter stays visibly attached to the write it scopes.
   const { data, error } = await supabase
     .from("listings")
     .update({
       lifecycle_stage: params.stage,
-      // notes column doesn't exist on listings table
-      // listings.status is kept in lockstep with the stage machine — the same
-      // rule lib/kernel/lifecycle.ts applies on its path. Without it a listing
-      // advanced through this writer reaches MLS_ACTIVE while status is still
-      // 'draft', and buyer search / the public pages never see it.
       ...(statusForStage(params.stage) ? { status: statusForStage(params.stage) } : {}),
       updated_at: new Date().toISOString(),
     })
@@ -469,10 +490,15 @@ export async function advanceListingStageService(
 
 export async function scheduleClosingGift(listingId: string) {
   const supabase = await createClient()
+  const brokerageId = await callerBrokerageId(supabase)
+  if (!brokerageId) {
+    return { success: false, error: "Not authenticated, or no brokerage on this account" }
+  }
   const { data: listing, error: listingError } = await supabase
     .from("listings")
     .select("estimated_close_date, seller_contact_id, agent_id")
     .eq("id", listingId)
+    .eq("brokerage_id", brokerageId)
     .maybeSingle()
 
   // A refused read used to leave `listing` undefined and this function would
@@ -530,10 +556,13 @@ export async function getListingTimelineService(listingId: string) {
 
 export async function getListingTasksService(listingId: string) {
   const supabase = await createClient()
+  const brokerageId = await callerBrokerageId(supabase)
+  if (!brokerageId) return { tasks: [], error: "Not authenticated, or no brokerage on this account" }
   const { data: tasks, error } = await supabase
     .from("tasks")
     .select("*")
     .eq("listing_id", listingId)
+    .eq("brokerage_id", brokerageId)
     .order("due_date", { ascending: true })
 
   // A refused read is not an empty task list.
@@ -547,10 +576,13 @@ export async function getListingTasksService(listingId: string) {
 
 export async function completeListingTaskService(taskId: string) {
   const supabase = await createClient()
+  const brokerageId = await callerBrokerageId(supabase)
+  if (!brokerageId) return { success: false, error: "Not authenticated, or no brokerage on this account" }
   const { error } = await supabase
     .from("tasks")
     .update({ status: "completed", completed_at: new Date().toISOString() })
     .eq("id", taskId)
+    .eq("brokerage_id", brokerageId)
 
   // The UI ticked the task off on an unchecked write; a refused update looked
   // exactly like a completed one until the page reloaded.
@@ -594,14 +626,28 @@ async function listingTaskContext(
  * contract could reject every row and the handler still returned
  * `{ success: true }`.
  */
+/**
+ * THE WRITER OWNS THE TENANT STAMP.
+ *
+ * This used to trust each caller to have put brokerage_id on every row. `tasks`
+ * RLS permits a NULL brokerage_id, so one unstamped row inserts successfully and
+ * is then invisible to every scoped reader — the same silent shape that left
+ * listing_stage_history tenant-unscoped for its whole life. Taking the brokerage
+ * as a parameter and stamping it here means a caller CANNOT forget, and the
+ * anchor is visible at the write rather than several functions away.
+ */
 async function insertListingTasks(
   supabase: any,
+  brokerageId: string,
   rows: Record<string, unknown>[],
 ): Promise<{ success: boolean; inserted: number; error?: string }> {
   let inserted = 0
   const failures: string[] = []
+  if (!brokerageId) {
+    return { success: false, inserted: 0, error: "No brokerage on the caller — refusing to write untenanted tasks" }
+  }
   for (const row of rows) {
-    const { error } = await supabase.from("tasks").insert(row)
+    const { error } = await supabase.from("tasks").insert({ ...row, brokerage_id: brokerageId })
     if (error) {
       console.error("[listing-lifecycle] task insert failed:", error.message, row.title)
       failures.push(`${String(row.title ?? "task")}: ${error.message}`)
@@ -625,7 +671,7 @@ export async function handleListingAppointmentBookedService(payload: any) {
     { title: "Research comparable sales", dueDays: 1 },
     { title: "Review property info", dueDays: 0 },
   ]
-  return insertListingTasks(supabase, tasks.map((task) => ({
+  return insertListingTasks(supabase, taskCtx.brokerageId, tasks.map((task) => ({
     brokerage_id: taskCtx.brokerageId,
     assigned_to_agent_id: taskCtx.agentId,
     listing_id,
@@ -649,7 +695,7 @@ export async function handleListingAgreementSignedService(payload: any) {
     { title: "Input listing into MLS", dueDays: 3 },
     { title: "Create marketing materials", dueDays: 2 },
   ]
-  return insertListingTasks(supabase, tasks.map((task) => ({
+  return insertListingTasks(supabase, taskCtx.brokerageId, tasks.map((task) => ({
     brokerage_id: taskCtx.brokerageId,
     assigned_to_agent_id: taskCtx.agentId,
     listing_id,
@@ -671,7 +717,7 @@ export async function handleListingLiveService(payload: any) {
     { title: "Schedule first open house", dueDays: 3 },
     { title: "Create video tour", dueDays: 2 },
   ]
-  return insertListingTasks(supabase, tasks.map((task) => ({
+  return insertListingTasks(supabase, taskCtx.brokerageId, tasks.map((task) => ({
     brokerage_id: taskCtx.brokerageId,
     assigned_to_agent_id: taskCtx.agentId,
     listing_id,
@@ -687,7 +733,7 @@ export async function handlePriceReductionService(payload: any) {
   const { listing_id } = payload
   const taskCtx = await listingTaskContext(supabase, listing_id)
   if (!taskCtx) return { success: false, error: "Listing has no agent/brokerage — tasks not created" }
-  return insertListingTasks(supabase, [{
+  return insertListingTasks(supabase, taskCtx.brokerageId, [{
     brokerage_id: taskCtx.brokerageId,
     assigned_to_agent_id: taskCtx.agentId,
     listing_id,
@@ -703,7 +749,7 @@ export async function handleOfferReceivedService(payload: any) {
   const { listing_id, offer_amount, buyer_name } = payload
   const taskCtx = await listingTaskContext(supabase, listing_id)
   if (!taskCtx) return { success: false, error: "Listing has no agent/brokerage — tasks not created" }
-  return insertListingTasks(supabase, [{
+  return insertListingTasks(supabase, taskCtx.brokerageId, [{
     brokerage_id: taskCtx.brokerageId,
     assigned_to_agent_id: taskCtx.agentId,
     listing_id,
@@ -719,7 +765,7 @@ export async function handleContingencyClearedService(payload: any) {
   const { listing_id, contingency_type } = payload
   const taskCtx = await listingTaskContext(supabase, listing_id)
   if (!taskCtx) return { success: false, error: "Listing has no agent/brokerage — tasks not created" }
-  return insertListingTasks(supabase, [{
+  return insertListingTasks(supabase, taskCtx.brokerageId, [{
     brokerage_id: taskCtx.brokerageId,
     assigned_to_agent_id: taskCtx.agentId,
     listing_id,
@@ -740,7 +786,7 @@ export async function handleClosingApproachingService(payload: any) {
     { title: "Verify closing disclosure sent", dueDays: 0 },
     { title: "Confirm wire instructions with title", dueDays: 1 },
   ]
-  return insertListingTasks(supabase, tasks.map((task) => ({
+  return insertListingTasks(supabase, taskCtx.brokerageId, tasks.map((task) => ({
     brokerage_id: taskCtx.brokerageId,
     assigned_to_agent_id: taskCtx.agentId,
     listing_id,
