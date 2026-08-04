@@ -51,7 +51,6 @@
     "app/actions/buyer-offers.ts": 1,
     "app/actions/calculators.ts": 4,
     "app/actions/calendar/calendar-sync-actions.ts": 3,
-    "app/actions/campaign-readiness.ts": 1,
     "app/actions/campaign-sequences.ts": 3,
     "app/actions/cda-portal.ts": 2,
     "app/actions/ce-provider.ts": 1,
@@ -164,7 +163,7 @@
     "app/actions/video-generation.ts": 2,
     "app/actions/video-repurposing.ts": 5,
     "app/actions/video-voice.ts": 4,
-    "app/actions/video.ts": 7,
+    "app/actions/video.ts": 6,
     "app/actions/voice-avatar-settings.ts": 1,
     "app/components/heartbeat/heartbeat-card.tsx": 1,
     "app/components/portal/FitBadge.tsx": 1,
@@ -679,7 +678,7 @@
     "lib/workflow/variables.ts": 1,
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1
   },
-  "census": 8860,
+  "census": 8862,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -986,7 +985,7 @@
     "app/actions/marketing-cadence-policy.ts": 2,
     "app/actions/marketing-campaigns-admin.ts": 2,
     "app/actions/marketing-intelligence.ts": 3,
-    "app/actions/marketing-ops.ts": 1,
+    "app/actions/marketing-ops.ts": 2,
     "app/actions/marketing-package-automation.ts": 8,
     "app/actions/marketing-studio.ts": 20,
     "app/actions/multi-persona.ts": 28,
@@ -1206,7 +1205,7 @@
     "app/actions/video-repurposing.ts": 11,
     "app/actions/video-repurposing.utils.ts": 3,
     "app/actions/video-voice.ts": 12,
-    "app/actions/video.ts": 9,
+    "app/actions/video.ts": 8,
     "app/actions/voice-access.ts": 3,
     "app/actions/voice-assistant/core/dispatch-command.ts": 1,
     "app/actions/voice-assistant/core/emit-audit-event.ts": 1,
@@ -2322,6 +2321,7 @@
     "app/dashboard/marketing/studio/components/ad-os/repurpose-engine-panel.tsx": 1,
     "app/dashboard/marketing/studio/components/ad-os/seller-safe-marketing-summary.tsx": 1,
     "app/dashboard/marketing/studio/components/marketing-ops-panel.tsx": 1,
+    "app/dashboard/marketing/studio/components/readiness-trends-panel.tsx": 1,
     "app/dashboard/marketing/video-pages/client.tsx": 1,
     "app/dashboard/meetings/[eventId]/join-fallback.tsx": 1,
     "app/dashboard/meetings/[eventId]/meeting-embed.tsx": 1,
@@ -4033,6 +4033,7 @@
     "lib/transactions/stranded-offer-policy.ts": 1,
     "lib/transactions/stranded-offer-reaper.ts": 1,
     "lib/transactions/sync-from-provider.ts": 2,
+    "lib/transactions/task-vocabulary.ts": 1,
     "lib/transactions/transaction-status.ts": 4,
     "lib/transactions/vendor-quote-workflow.ts": 3,
     "lib/transactions/walkthrough-outcome.ts": 2,
@@ -6276,7 +6277,8 @@
       "getCompetitorPostInspiration"
     ],
     "app/actions/marketing-ops.ts": [
-      "getMarketingOpsSnapshot"
+      "getMarketingOpsSnapshot",
+      "getReadinessTrendSnapshot"
     ],
     "app/actions/marketing-package-automation.ts": [
       "activateMarketingPackage",
@@ -7829,7 +7831,6 @@
       "getVoiceOptionsForGeneration"
     ],
     "app/actions/video.ts": [
-      "createVideoProjectAction",
       "generateVideoScriptAction",
       "updateVideoGenerationSettingsAction",
       "submitVideoGenerationJobAction",
@@ -11305,6 +11306,9 @@
     ],
     "app/dashboard/marketing/studio/components/marketing-ops-panel.tsx": [
       "MarketingOpsPanel"
+    ],
+    "app/dashboard/marketing/studio/components/readiness-trends-panel.tsx": [
+      "ReadinessTrendsPanel"
     ],
     "app/dashboard/marketing/video-pages/client.tsx": [
       "VideoPagesClient"
@@ -19326,6 +19330,9 @@
     "lib/transactions/sync-from-provider.ts": [
       "syncTransactionDocumentsFromProvider",
       "syncAllForContact"
+    ],
+    "lib/transactions/task-vocabulary.ts": [
+      "coerceTaskPriority"
     ],
     "lib/transactions/transaction-status.ts": [
       "isTransactionStatus",
