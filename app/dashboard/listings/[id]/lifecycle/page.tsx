@@ -22,6 +22,8 @@ import { DecisionHistoryPanel } from "@/app/components/dashboard/listings/lifecy
 import { ComingSoonCommandCard } from "@/app/components/dashboard/listings/lifecycle/coming-soon-command-card"
 import { PreListingWorkflowPanel } from "@/app/components/dashboard/listings/lifecycle/pre-listing-workflow-panel"
 import { RecordEventCard } from "@/app/components/dashboard/listings/lifecycle/record-event-card"
+import { ListingIntelligenceCard } from "@/app/components/dashboard/listings/lifecycle/listing-intelligence-card"
+import { getListingCopyComplianceGate } from "@/app/actions/ai-listing-intake"
 import { MatchingBuyersPanel } from "@/app/components/dashboard/listings/lifecycle/matching-buyers-panel"
 import { PriceReductionSheet } from "../components/price-reduction-sheet"
 import { NeighborNotificationCard } from "../components/neighbor-notification-card"
@@ -64,7 +66,11 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   // Default to the restrictive ("agent") path when user_type is absent.
   let listingQuery = supabase
     .from("listings")
-    .select("id, address, city, state, zip, lifecycle_stage, go_live_date, open_house_marketing_date, open_house_event_date, agent_id, brokerage_id, list_price, seller_contact_id, marketing_tier_id, status, mls_number, mls_link")
+    // The trailing columns feed the listing-intelligence card: public_remarks is
+    // the copy the Fair Housing / MLS review reads, the property facts are what
+    // the pricing model prices, and dotloop_loop_id is written by two paths and
+    // was read by NOTHING for document status.
+    .select("id, address, city, state, zip, lifecycle_stage, go_live_date, open_house_marketing_date, open_house_event_date, agent_id, brokerage_id, list_price, seller_contact_id, marketing_tier_id, status, mls_number, mls_link, public_remarks, property_type, bedrooms, bathrooms, sqft, year_built, lot_size, has_pool, dotloop_loop_id")
     .eq("id", listingId)
     .eq("brokerage_id", userRow.brokerage_id)
 
@@ -346,6 +352,25 @@ const { data: listingVendorBookings } = await supabase
     complianceBlockers = ["Compliance check could not run — resolve before launching"]
   }
 
+  // ── THE COPY GATE ─────────────────────────────────────────────────────────
+  //
+  // auditListingDocuments above checks DOCUMENTS. Nothing in the product ever
+  // read the listing's MARKETING COPY for Fair Housing or MLS violations, so a
+  // listing could be syndicated with discriminatory language in its public
+  // remarks and no surface would have said a word. aiCheckListingCompliance
+  // could do exactly that and had no caller anywhere.
+  //
+  // The verdict is recorded against the listing, and only a verdict made against
+  // the copy AS IT STANDS NOW becomes a blocker — rewriting the remarks marks the
+  // old finding stale rather than holding a launch for a violation already fixed.
+  const copyGate = await getListingCopyComplianceGate(listingId)
+  if (!copyGate.success) {
+    // Same rule as the document audit: a gate that could not run is not a pass.
+    complianceBlockers.push("Listing copy review could not run — resolve before launching")
+  } else {
+    complianceBlockers.push(...copyGate.blockers)
+  }
+
   // Blockers
   const blockers: string[] = []
   if (!mediaReady) blockers.push(`Need at least 5 photos (${photoCount} uploaded)`)
@@ -566,6 +591,38 @@ const { data: listingVendorBookings } = await supabase
             so the agent could see the listing's progress but never tell the OS
             what had occurred. The controls are derived from the current stage. */}
         <RecordEventCard listingId={listingId} currentStage={currentStage} />
+
+        {/* THE INTAKE ENGINE, REACHABLE. app/actions/ai-listing-intake.ts holds a
+            Fair Housing / MLS review of the public copy, a list-price
+            recommendation and the loop's document status — all complete, all
+            called from nowhere. The copy review's findings feed the launch
+            blockers computed above. */}
+        <ListingIntelligenceCard
+          listingId={listingId}
+          publicRemarks={(listing as any).public_remarks ?? null}
+          dotloopLoopId={(listing as any).dotloop_loop_id ?? null}
+          lastReview={{
+            reviewed:   copyGate.reviewed,
+            stale:      copyGate.stale,
+            reviewedAt: copyGate.reviewedAt,
+            blockers:   copyGate.blockers,
+            error:      copyGate.success ? undefined : (copyGate.error ?? "gate unavailable"),
+          }}
+          property={{
+            address:      listing.address,
+            city:         listing.city ?? null,
+            state:        listing.state ?? null,
+            zip:          listing.zip ?? null,
+            propertyType: (listing as any).property_type ?? null,
+            bedrooms:     (listing as any).bedrooms ?? null,
+            bathrooms:    (listing as any).bathrooms ?? null,
+            sqft:         (listing as any).sqft ?? null,
+            yearBuilt:    (listing as any).year_built ?? null,
+            lotSize:      (listing as any).lot_size ?? null,
+            hasPool:      (listing as any).has_pool ?? null,
+            listPrice:    listing.list_price ?? null,
+          }}
+        />
 
         {/* Pre-listing workflow panel — shown for pre-active stages */}
         <PreListingWorkflowPanel

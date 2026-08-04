@@ -13,6 +13,7 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { resolveTransactionProvider } from "@/lib/integrations/transaction-providers/resolve-transaction-provider"
 import { z } from "zod"
+import { createHash } from "node:crypto"
 import { PROPERTY_TYPES } from "@/lib/constants"
 
 // ============================================
@@ -418,11 +419,41 @@ Provide:
 // ============================================
 // 5. AI COMPLIANCE CHECKER
 // ============================================
+/**
+ * THE LISTING-COPY COMPLIANCE GATE.
+ *
+ * activity_type written when this action reviews a REAL listing's public copy.
+ * One spelling, used by the writer below and by getListingCopyComplianceGate —
+ * a second spelling would make the gate read nothing and report "clean".
+ */
+const LISTING_COPY_REVIEW_ACTIVITY = "listing.copy.compliance_reviewed"
+
+/**
+ * Fingerprint of the exact text that was reviewed.
+ *
+ * A finding is only about the words it was made against. Without this, editing
+ * the remarks would leave the old violation blocking a launch that no longer
+ * contains it — or, worse, a CLEAN review would keep vouching for copy the agent
+ * has since rewritten. Short sha256 over the trimmed text; not a secret, just an
+ * identity for the string.
+ */
+function listingCopyFingerprint(text: string): string {
+  return createHash("sha256").update(text.trim()).digest("hex").slice(0, 32)
+}
+
 export async function aiCheckListingCompliance(params: {
   agentId?: string  // ignored — derived from session
   description: string
   photos?: string[]
   state: string
+  /**
+   * When this review is about a REAL listing, its id. Supplying it makes the
+   * review part of that listing's record (an `activities` row carrying the
+   * listing_id COLUMN, which is what every listing-scoped reader filters on)
+   * and lets the launch gate see the finding. Omitted by runCompleteListingIntake,
+   * which reviews copy for a listing that does not exist yet.
+   */
+  listingId?: string
 }) {
   try {
     // Auth gate — was previously fully open (no auth check at all).
@@ -430,6 +461,28 @@ export async function aiCheckListingCompliance(params: {
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated || !ctx.brokerageId) {
       return { success: false, error: "Unauthorized" }
+    }
+
+    // A listing-scoped review must be about a listing THIS caller can act on.
+    // Resolved before the model call so an out-of-tenant id cannot burn inference.
+    const supabase = await createClient()
+    let scopedListingId: string | null = null
+    if (params.listingId) {
+      if (!isValidUUID(params.listingId)) {
+        return { success: false, error: "Invalid listing ID" }
+      }
+      const { data: listing, error: listingError } = await supabase
+        .from("listings")
+        .select("id, brokerage_id")
+        .eq("id", params.listingId)
+        .maybeSingle()
+      if (listingError) {
+        return { success: false, error: `Could not load listing: ${listingError.message}` }
+      }
+      if (!listing || listing.brokerage_id !== ctx.brokerageId) {
+        return { success: false, error: "Forbidden" }
+      }
+      scopedListingId = listing.id as string
     }
 
     const { object: compliance } = await generateObject({
@@ -471,11 +524,149 @@ Check for:
 Be thorough - missing compliance can result in fines or license issues.`,
     })
 
-    return { success: true, compliance }
+    // RECORD IT AGAINST THE LISTING. A Fair Housing finding that lives only in
+    // the browser tab it was rendered in is not a compliance record — the broker
+    // cannot produce it, the launch gate cannot see it, and re-opening the page
+    // loses it. Written to `activities` with the listing_id COLUMN set, which is
+    // what the lifecycle page and every other listing-scoped reader filter on.
+    let recorded = false
+    if (scopedListingId) {
+      const criticalIssues = compliance.issues.filter((i) => i.severity === "critical")
+      const { error: activityError } = await supabase.from("activities").insert({
+        brokerage_id:  ctx.brokerageId,
+        // agents-class id (activities.agent_id FKs agents(id)). Null when the
+        // caller has no agents row — an honest absence, never ctx.userId.
+        agent_id:      ctx.agentId,
+        agent_user_id: ctx.userId || null,
+        listing_id:    scopedListingId,
+        entity_type:   "listing",
+        entity_id:     scopedListingId,
+        activity_type: LISTING_COPY_REVIEW_ACTIVITY,
+        title:         "Listing copy compliance review",
+        description:   compliance.isCompliant
+          ? `Public copy reviewed for ${params.state} — no blocking issues (score ${compliance.overallScore}/100)`
+          : `Public copy reviewed for ${params.state} — ${criticalIssues.length} critical, ${compliance.fairHousingCheck.flaggedPhrases.length} Fair Housing phrase(s) flagged`,
+        status:        "completed",
+        completed_at:  new Date().toISOString(),
+        notes: JSON.stringify({
+          state:              params.state,
+          overall_score:      compliance.overallScore,
+          is_compliant:       compliance.isCompliant,
+          fair_housing_passed: compliance.fairHousingCheck.passed,
+          flagged_phrases:    compliance.fairHousingCheck.flaggedPhrases,
+          mls_passed:         compliance.mlsCompliance.passed,
+          mls_issues:         compliance.mlsCompliance.issues,
+          critical_issues:    criticalIssues.map((i) => i.issue),
+          // The words this verdict is about. The gate refuses to apply a finding
+          // to copy that has since been rewritten.
+          description_fingerprint: listingCopyFingerprint(params.description),
+        }),
+      })
+      // supabase-js RESOLVES a rejected insert. Dropping this would leave the
+      // action reporting a compliance review that was never recorded.
+      if (activityError) {
+        console.error("[AI Listing Intake] compliance review NOT recorded:", activityError.message)
+      } else {
+        recorded = true
+        revalidatePath(`/dashboard/listings/${scopedListingId}/lifecycle`)
+      }
+    }
+
+    return { success: true, compliance, recorded }
   } catch (error) {
     console.error("[AI Listing Intake] Compliance error:", error)
     return handleError(error, "aiCheckListingCompliance")
   }
+}
+
+/**
+ * THE READ SIDE OF THE GATE — what the launch surface is allowed to conclude.
+ *
+ * aiCheckListingCompliance can tell an agent their public remarks contain a Fair
+ * Housing violation. Nothing consumed that: the listing could go to the MLS with
+ * the violation still in it, because the launch checklist's only compliance input
+ * was auditListingDocuments — a DOCUMENT check that never looks at the marketing
+ * copy at all.
+ *
+ * Returns blockers ONLY for a finding made against the copy as it stands now. If
+ * the remarks changed since the review, the finding is reported STALE rather than
+ * enforced — enforcing a verdict about words that are no longer there would hold
+ * a launch for a violation the agent already fixed.
+ */
+export async function getListingCopyComplianceGate(listingId: string): Promise<{
+  success: boolean
+  reviewed: boolean
+  stale: boolean
+  reviewedAt: string | null
+  blockers: string[]
+  error?: string
+}> {
+  const empty = { reviewed: false, stale: false, reviewedAt: null, blockers: [] as string[] }
+  if (!isValidUUID(listingId)) {
+    return { success: false, ...empty, error: "Invalid listing ID" }
+  }
+
+  const supabase = await createClient()
+
+  // RLS scopes both reads to the caller's brokerage. `error` is destructured on
+  // BOTH — `const { data }` on a failed read is indistinguishable from "clean",
+  // and a compliance gate that reads clean on failure is the whole defect class.
+  const [{ data: listing, error: listingError }, { data: rows, error: activityError }] =
+    await Promise.all([
+      supabase.from("listings").select("public_remarks").eq("id", listingId).maybeSingle(),
+      supabase
+        .from("activities")
+        .select("created_at, notes")
+        .eq("listing_id", listingId)
+        .eq("activity_type", LISTING_COPY_REVIEW_ACTIVITY)
+        .order("created_at", { ascending: false })
+        .limit(1),
+    ])
+
+  if (listingError || activityError) {
+    // Silence is not consent: a gate that could not run says so, and the caller
+    // surfaces it as a blocker rather than waving the launch through.
+    return {
+      success: false,
+      ...empty,
+      error: listingError?.message ?? activityError?.message ?? "Gate could not run",
+    }
+  }
+
+  const latest = (rows ?? [])[0]
+  if (!latest) return { success: true, ...empty }
+
+  let parsed: Record<string, unknown> = {}
+  try {
+    parsed = JSON.parse((latest.notes as string | null) ?? "{}") as Record<string, unknown>
+  } catch {
+    return { success: true, reviewed: true, stale: true, reviewedAt: latest.created_at as string, blockers: [] }
+  }
+
+  const currentRemarks = ((listing?.public_remarks as string | null) ?? "").trim()
+  const reviewedFingerprint = String(parsed.description_fingerprint ?? "")
+  const stale =
+    !currentRemarks ||
+    !reviewedFingerprint ||
+    listingCopyFingerprint(currentRemarks) !== reviewedFingerprint
+
+  const blockers: string[] = []
+  if (!stale) {
+    const flagged = Array.isArray(parsed.flagged_phrases) ? (parsed.flagged_phrases as string[]) : []
+    const critical = Array.isArray(parsed.critical_issues) ? (parsed.critical_issues as string[]) : []
+    if (parsed.fair_housing_passed === false || flagged.length > 0) {
+      blockers.push(
+        flagged.length > 0
+          ? `Fair Housing: listing copy still contains ${flagged.map((p) => `"${p}"`).join(", ")}`
+          : "Fair Housing: listing copy failed review",
+      )
+    }
+    for (const issue of critical) {
+      blockers.push(`Listing copy: ${issue}`)
+    }
+  }
+
+  return { success: true, reviewed: true, stale, reviewedAt: latest.created_at as string, blockers }
 }
 
 // ============================================
