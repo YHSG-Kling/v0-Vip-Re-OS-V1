@@ -45,7 +45,7 @@ export function MarketingOpsPanel() {
     return <p className="py-10 text-sm text-muted-foreground text-center">{error ?? "No data."}</p>
   }
 
-  const { counts, needsAttention, failedPublishes, pendingApproval, neverLaunched, mailCampaigns, integrations } = snapshot
+  const { counts, passRateError, needsAttention, failedPublishes, pendingApproval, neverLaunched, mailCampaigns, integrations } = snapshot
 
   return (
     <div className="space-y-6">
@@ -63,9 +63,24 @@ export function MarketingOpsPanel() {
           <div className="flex items-center gap-2 mb-1"><AlertTriangle className="h-4 w-4 text-red-500" /><span className="text-xs text-muted-foreground font-medium">Failed Publishes</span></div>
           <p className="text-2xl font-bold">{counts.failedPublishes}</p>
         </CardContent></Card>
+        {/* Readiness Pass Rate. A rate that could NOT be computed renders "—"
+            and says why — never 0%. supabase-js resolves a refused query, so an
+            aggregate over a refusal is otherwise indistinguishable from a real
+            zero, and "0% of your campaign content is publishable" is a claim
+            about the brokerage that a failed read does not support. */}
         <Card><CardContent className="pt-4 pb-3">
-          <div className="flex items-center gap-2 mb-1"><CheckCircle2 className="h-4 w-4 text-indigo-600" /><span className="text-xs text-muted-foreground font-medium">Readiness Pass Rate</span></div>
+          <div className="flex items-center gap-2 mb-1">
+            {passRateError ? <AlertTriangle className="h-4 w-4 text-amber-500" /> : <CheckCircle2 className="h-4 w-4 text-indigo-600" />}
+            <span className="text-xs text-muted-foreground font-medium">Readiness Pass Rate</span>
+          </div>
           <p className="text-2xl font-bold">{counts.passRate != null ? `${Math.round(counts.passRate)}%` : "—"}</p>
+          {passRateError ? (
+            <p className="text-[11px] text-amber-700 dark:text-amber-400 mt-0.5 leading-tight" title={passRateError}>
+              Not computed — {passRateError}
+            </p>
+          ) : counts.passRate == null ? (
+            <p className="text-[11px] text-muted-foreground mt-0.5 leading-tight">No evaluations recorded yet</p>
+          ) : null}
         </CardContent></Card>
       </div>
 

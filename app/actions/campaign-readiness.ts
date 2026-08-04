@@ -337,10 +337,11 @@ export async function fetchReadinessHistory(
     }
 
     // TENANT GATE. getReadinessHistory reads `activities` through the SERVICE
-    // client (RLS bypassed) filtered only by entity_id, so without this gate any
-    // authenticated user who knows a content UUID could read another
-    // brokerage's readiness trail. Prove the content belongs to the caller's
-    // brokerage with an explicitly brokerage-filtered probe FIRST.
+    // client (RLS bypassed). The lib read is now itself brokerage-filtered and
+    // REFUSES without a brokerageId, so this probe is the second of two locks,
+    // not the only one: it proves the content has a readiness trail inside the
+    // caller's brokerage before the service-role read runs at all, and turns
+    // "someone else's content id" into an empty result rather than a lookup.
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated || !ctx.brokerageId) {
       return { success: false, error: "Unauthorized" }
@@ -362,7 +363,7 @@ export async function fetchReadinessHistory(
       return { success: true, evaluations: [] }
     }
 
-    return await getReadinessHistory(contentId, limit)
+    return await getReadinessHistory(ctx.brokerageId, contentId, limit)
   } catch (err) {
     console.error("[v0] Error fetching readiness history:", err)
     return {
@@ -373,9 +374,41 @@ export async function fetchReadinessHistory(
 }
 
 /**
- * ACTION 6: Get readiness statistics for time period
+ * TENANT SCOPE FOR THE AGGREGATE READS (ACTIONS 6 + 7).
+ *
+ * Both aggregates run on the SERVICE-ROLE client inside lib, where RLS is
+ * bypassed and the explicit brokerage filter IS the boundary. These are exported
+ * server actions, so the brokerageId argument arrives over the wire and is
+ * therefore UNTRUSTED. It is used only as an assertion: the session's brokerage
+ * is resolved independently through the identity helper, a disagreement is
+ * REFUSED outright, and the value handed to lib is always the SESSION's — never
+ * the argument. A caller that supplies nothing gets a refusal, not a
+ * platform-wide aggregate.
+ */
+async function resolveReadScope(
+  claimedBrokerageId: string
+): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  if (!ctx.brokerageId) return { ok: false, error: "No brokerage associated with your account." }
+  if (!claimedBrokerageId) {
+    return { ok: false, error: "brokerageId is required — readiness reads are tenant-scoped." }
+  }
+  if (claimedBrokerageId !== ctx.brokerageId) {
+    return { ok: false, error: "Brokerage scope mismatch — refusing to read another brokerage's readiness." }
+  }
+  return { ok: true, brokerageId: ctx.brokerageId }
+}
+
+/**
+ * ACTION 6: Get readiness statistics for time period — ONE brokerage.
+ *
+ * On refusal this returns { success: false, error } with NO `statistics`
+ * payload. A pass rate that could not be COMPUTED must never reach a surface as
+ * 0% — see MarketingOpsSnapshot.counts.passRate (null) + passRateError.
  */
 export async function fetchReadinessStatistics(
+  brokerageId: string,
   startDate: string,
   endDate: string
 ): Promise<{
@@ -390,6 +423,9 @@ export async function fetchReadinessStatistics(
   error?: string
 }> {
   try {
+    const scope = await resolveReadScope(brokerageId)
+    if (!scope.ok) return { success: false, error: scope.error }
+
     // Validate date format
     if (isNaN(Date.parse(startDate)) || isNaN(Date.parse(endDate))) {
       return {
@@ -398,7 +434,7 @@ export async function fetchReadinessStatistics(
       }
     }
 
-    return await getReadinessStatistics(startDate, endDate)
+    return await getReadinessStatistics(scope.brokerageId, startDate, endDate)
   } catch (err) {
     console.error("[v0] Error fetching readiness statistics:", err)
     return {
@@ -409,21 +445,19 @@ export async function fetchReadinessStatistics(
 }
 
 /**
- * ACTION 7: Get readiness trends over time
+ * ACTION 7: Get readiness trends over time — ONE brokerage.
  *
- * ⚠ NOT TENANT-SCOPED — DELIBERATELY LEFT UNWIRED.
- * lib/campaign-readiness/readiness-logger.ts::getReadinessTrends reads
- * `activities` through the SERVICE client (RLS bypassed) with NO brokerage
- * filter, so it aggregates every brokerage on the platform. The same defect
- * affects getReadinessStatistics (ACTION 6), which IS already wired into the
- * Marketing Studio ops tab via app/actions/marketing-ops.ts.
- *
- * The fix belongs in the lib query (add a brokerageId parameter and an
- * explicit .eq("brokerage_id", …)); that file is outside this change's file
- * set, so this action is NOT surfaced on any tenant page until it is scoped.
- * Do not wire it to a brokerage-facing view before then.
+ * WIRED. This used to be held back deliberately: the lib query behind it read
+ * `activities` through the SERVICE client with no brokerage filter, so it
+ * aggregated every brokerage on the platform and could not be shown to a tenant.
+ * lib/campaign-readiness/readiness-logger.ts::getReadinessTrends now takes a
+ * REQUIRED brokerageId and filters on it, and this action resolves that
+ * brokerage from the SESSION (never from the argument it is handed). It feeds
+ * the Readiness Trend panel on the Marketing Studio → Ops tab, via
+ * getReadinessTrendSnapshot in app/actions/marketing-ops.ts.
  */
 export async function fetchReadinessTrends(
+  brokerageId: string,
   startDate: string,
   endDate: string
 ): Promise<{
@@ -437,6 +471,9 @@ export async function fetchReadinessTrends(
   error?: string
 }> {
   try {
+    const scope = await resolveReadScope(brokerageId)
+    if (!scope.ok) return { success: false, error: scope.error }
+
     // Validate date format
     if (isNaN(Date.parse(startDate)) || isNaN(Date.parse(endDate))) {
       return {
@@ -445,7 +482,7 @@ export async function fetchReadinessTrends(
       }
     }
 
-    return await getReadinessTrends(startDate, endDate)
+    return await getReadinessTrends(scope.brokerageId, startDate, endDate)
   } catch (err) {
     console.error("[v0] Error fetching readiness trends:", err)
     return {

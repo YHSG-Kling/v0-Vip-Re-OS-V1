@@ -5,6 +5,7 @@ import { useToast } from "@/hooks/use-toast"
 import { StagedDraftBanner } from "@/app/components/shared/staged-draft-banner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { MarketingOpsPanel } from "./components/marketing-ops-panel"
+import { ReadinessTrendsPanel } from "./components/readiness-trends-panel"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -3190,6 +3191,9 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
           {/* Ops — brokerage marketing health (consolidated from the retired Ops Center page) */}
           <TabsContent value="ops" className="space-y-6">
             <MarketingOpsPanel />
+            {/* The trend behind the pass-rate tile — brokerage-scoped in
+                app/actions/marketing-ops.ts::getReadinessTrendSnapshot. */}
+            <ReadinessTrendsPanel />
           </TabsContent>
 
         </Tabs>
