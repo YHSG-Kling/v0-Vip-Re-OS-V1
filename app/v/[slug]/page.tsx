@@ -14,6 +14,7 @@
 import type { Metadata } from "next"
 import { notFound } from "next/navigation"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 import { assembleSocialDisclosures } from "@/lib/social/assemble-disclosures"
 import {
   buildVideoObjectJsonLd,
@@ -146,17 +147,22 @@ async function loadProjectPage(
   } | null
   if (!proj || !proj.video_url) return null
 
-  // Agent attribution.
+  // Agent attribution. ai_video_projects.agent_id is agents-class since m366, so
+  // the photo comes off that agents row directly and the NAME (which lives on
+  // users) needs the resolve across. Client-agnostic resolver — this is a page,
+  // and the server-only one cannot be reachable from a page bundle.
   let agentName: string | null = null
   let agentPhoto: string | null = null
+  let projAgentUserId: string | null = null
   if (proj.agent_id) {
-    const [{ data: u }, { data: a }] = await Promise.all([
-      svc.from("users").select("first_name, last_name").eq("id", proj.agent_id).maybeSingle(),
-      svc.from("agents").select("photo_url").eq("user_id", proj.agent_id).eq("brokerage_id", proj.brokerage_id).maybeSingle(),
-    ])
-    const ur = u as { first_name: string | null; last_name: string | null } | null
-    agentName = ur ? [ur.first_name, ur.last_name].filter(Boolean).join(" ") || null : null
+    projAgentUserId = await resolveUserIdForAgentRecord(svc, proj.agent_id)
+    const { data: a } = await svc.from("agents").select("photo_url").eq("id", proj.agent_id).maybeSingle()
     agentPhoto = (a as { photo_url: string | null } | null)?.photo_url ?? null
+    if (projAgentUserId) {
+      const { data: u } = await svc.from("users").select("first_name, last_name").eq("id", projAgentUserId).maybeSingle()
+      const ur = u as { first_name: string | null; last_name: string | null } | null
+      agentName = ur ? [ur.first_name, ur.last_name].filter(Boolean).join(" ") || null : null
+    }
   }
 
   const { data: b } = await svc.from("brokerages").select("name").eq("id", proj.brokerage_id).maybeSingle()
@@ -181,7 +187,7 @@ async function loadProjectPage(
 
   const disclosures = await assembleSocialDisclosures(svc as never, {
     brokerageId: proj.brokerage_id,
-    userId:      proj.agent_id,
+    userId:      projAgentUserId,
   })
 
   // Shape a synthetic composition so the shared body + JSON-LD builders work.
@@ -192,7 +198,9 @@ async function loadProjectPage(
   }
   const render: RenderRow = {
     id: proj.id, brokerage_id: proj.brokerage_id, composition_id: proj.video_type ?? "video",
-    agent_user_id: proj.agent_id, entity_type: proj.listing_id ? "listing" : null,
+    // RenderRow.agent_user_id mirrors remotion_composition_renders.agent_user_id,
+    // which is users-class — the resolved id, not the project's agents id.
+    agent_user_id: projAgentUserId, entity_type: proj.listing_id ? "listing" : null,
     entity_id: proj.listing_id, output_url: proj.video_url, thumbnail_url: proj.thumbnail_url,
     published_at: proj.published_at,
   }

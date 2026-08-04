@@ -17,7 +17,6 @@
 //   - All functions are pure async — no global state, no module-level DB calls.
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveAgentRecordToUserId } from "@/lib/kernel/agent-identity-resolver"
 import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
 
@@ -266,14 +265,13 @@ export async function loadReputationWorkspace(
   try {
     const supabase = createServiceClient()
 
-    // IDENTITY CLASS (m339). input.agentId is an AGENTS id — resolveActor in
-    // reputation-kernel returns agents.id and says so in its own comment — but
-    // review_requests.agent_id FKs USERS. agent_reviews and referrals are
-    // agents-class and are correctly filtered by input.agentId; only this one
-    // table is the other class. The insert below was therefore a foreign-key
-    // violation: no review request could ever be created, and the workspace
-    // read returned an empty list that looked like "no requests yet".
-    const reviewRequestAgentId = await resolveAgentRecordToUserId(input.agentId)
+    // IDENTITY CLASS (m339, INVERTED by m366). input.agentId is an AGENTS id.
+    // review_requests.agent_id used to FK users, so m339 resolved agents→users
+    // here to stop the insert being a foreign-key violation. m366 re-pointed the
+    // column at agents(id) — which turned that very resolve into the violation it
+    // was written to prevent, in the same table, with the same symptom: no review
+    // request could be created and the workspace read looked like "no requests
+    // yet". All three tables here are agents-class now; no hop, no sentinel.
 
     const [reviewsRes, requestsRes, referralsRes] = await Promise.all([
       supabase
@@ -286,7 +284,7 @@ export async function loadReputationWorkspace(
       supabase
         .from("review_requests")
         .select("id, contact_id, contact_name, platform, status, sent_at, completed_at, review_url, created_at")
-        .eq("agent_id",     reviewRequestAgentId ?? "00000000-0000-0000-0000-000000000000")
+        .eq("agent_id",     input.agentId)
         .eq("brokerage_id", input.brokerageId)
         .order("created_at", { ascending: false })
         .limit(100),
@@ -330,21 +328,20 @@ export async function createReviewRequest(
   try {
     const supabase = createServiceClient()
 
-    // IDENTITY CLASS (m339). input.agentId is an AGENTS id — resolveActor in
-    // reputation-kernel returns agents.id and says so in its own comment — but
-    // review_requests.agent_id FKs USERS. agent_reviews and referrals are
-    // agents-class and are correctly filtered by input.agentId; only this one
-    // table is the other class. The insert below was therefore a foreign-key
-    // violation: no review request could ever be created, and the workspace
-    // read returned an empty list that looked like "no requests yet".
-    const reviewRequestAgentId = await resolveAgentRecordToUserId(input.agentId)
+    // IDENTITY CLASS (m339, INVERTED by m366). input.agentId is an AGENTS id.
+    // review_requests.agent_id used to FK users, so m339 resolved agents→users
+    // here to stop the insert being a foreign-key violation. m366 re-pointed the
+    // column at agents(id) — which turned that very resolve into the violation it
+    // was written to prevent, in the same table, with the same symptom: no review
+    // request could be created and the workspace read looked like "no requests
+    // yet". All three tables here are agents-class now; no hop, no sentinel.
 
     // Guard: no duplicate pending request for same contact + platform
     if (input.contactId) {
       const { data: existing } = await supabase
         .from("review_requests")
         .select("id")
-        .eq("agent_id",     reviewRequestAgentId ?? "00000000-0000-0000-0000-000000000000")
+        .eq("agent_id",     input.agentId)
         .eq("brokerage_id", input.brokerageId)
         .eq("contact_id",   input.contactId)
         .eq("platform",     input.platform)
@@ -359,7 +356,7 @@ export async function createReviewRequest(
     const { data, error } = await supabase
       .from("review_requests")
       .insert({
-        agent_id:     reviewRequestAgentId,
+        agent_id:     input.agentId,
         brokerage_id: input.brokerageId,
         contact_id:   input.contactId ?? null,
         contact_name: input.contactName.trim(),

@@ -181,14 +181,17 @@ console.log("\n═══ 7. The LIVE rows, through the shipped functions ══�
 
 console.log("\n═══ 8. Rule 4 is given the id class the ledger actually keys on ═══")
 {
-  // lifetime_customer_npv_scores.agent_id FKs users(id); contacts,
-  // transactions and listings all FK agents(id). Rule 4 was passed the
-  // agents.id and therefore matched ZERO rows — the sphere-nurture action had
-  // never once reached an agent's queue. The caller already resolves the user
-  // id three lines earlier for income_forecast_snapshots.
+  // FLIPPED BY m366. lifetime_customer_npv_scores.agent_id USED to FK users(id)
+  // while contacts, transactions and listings all FK agents(id) — Rule 4 was passed
+  // the agents.id, matched ZERO rows, and the sphere-nurture action had never once
+  // reached an agent's queue. The fix then was to pass the USERS id. m366 re-pointed
+  // the ledger column at agents(id), which makes that fix the new zero-match: the
+  // scorer writes contacts.agent_id (agents-class) and this reader must filter on
+  // the same class or Rule 4 goes silent again, in exactly the way it did before.
   const rec = code("lib/income-engine/action-recommender.ts")
   ok("the recommender takes BOTH ids", /agentUserId:\s*string/.test(rec) && /agentId:\s*string/.test(rec))
-  ok("...and the ledger query uses the USERS one", /agentId: params\.agentUserId/.test(rec))
+  ok("...and the ledger query uses the AGENTS one, matching what the scorer writes",
+    /agentId: params\.agentId/.test(rec) && !/agentId: params\.agentUserId/.test(rec))
   const caller = code("app/actions/income-engine.ts")
   ok("the caller passes the resolved user id", /agentUserId: userId/.test(caller))
   ok("...which it resolves from agents.user_id", /from\("agents"\)[\s\S]{0,80}select\("user_id"\)/.test(caller))

@@ -117,9 +117,23 @@ export async function GET(req: NextRequest) {
     `
     const html = await embedVideoInEmail(baseHtml, r.project.video_url)
 
+    // agent_intro_videos.agent_id is agents-class since m366; dispatchEmail's
+    // userId is the SENDING USER (it drives the signature + the agent's voice
+    // clone lookup), so it crosses id spaces. No users row ⇒ hold the row instead
+    // of sending unsigned under a mismatched id.
+    const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
+    const senderUserId = await resolveAgentRecordToUserId(r.agent_id)
+    if (!senderUserId) {
+      await svc.from("agent_intro_videos")
+        .update({ status: "failed", error_message: `no users row behind agents.id=${r.agent_id}` })
+        .eq("id", r.id)
+      results.push({ id: r.id, outcome: "failed", reason: "agent_user_unresolved" })
+      continue
+    }
+
     const result = await dispatchEmail({
       brokerageId:    r.brokerage_id,
-      userId:         r.agent_id,
+      userId:         senderUserId,
       contactId:      r.contact_id,
       systemSource:   "intro_video_email_backfill",
       channelPurpose: "conversation",

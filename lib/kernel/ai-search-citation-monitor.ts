@@ -381,7 +381,8 @@ interface PageOwner {
  * absorb. The two citable-page tables both call their owner column `agent_id`
  * and they mean different things:
  *
- *   · ai_video_projects.agent_id  FKs USERS  (a users.id)
+ *   · ai_video_projects.agent_id  FKs AGENTS (an agents.id) — since m366; it was
+ *     a users.id before, which is why the caller declares its class here
  *   · lead_capture_forms.agent_id FKs AGENTS (an agents.id)
  *
  * Stamping either straight onto the observation would be wrong for one of them:
@@ -484,8 +485,10 @@ export async function runCitationMonitor(
   }>
 
   // One read for every agent in the pass — team (for scope) + name (for brand).
-  // ai_video_projects.agent_id is a USERS id despite the column name.
-  const owners = await loadPageOwners(supabase, pages.map((p) => p.agent_id ?? ""), "users", brokerageId)
+  // ai_video_projects.agent_id became agents-class in m366; keying this by
+  // "users" now matches nothing, so every reel page would lose its agent brand
+  // target and its team scope silently.
+  const owners = await loadPageOwners(supabase, pages.map((p) => p.agent_id ?? ""), "agents", brokerageId)
 
   const allObs: CitationObservation[] = []
 

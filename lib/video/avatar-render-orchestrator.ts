@@ -98,9 +98,22 @@ export async function enqueueAvatarCompositionForProject(
   const avatarVideoUrl = (meta.clean_video_url as string | null) ?? project.video_url
   if (!avatarVideoUrl) return { ok: false, skipped: "no avatar video URL on completed project" }
 
+  // buildAvatarRenderRow fills remotion_composition_renders.agent_user_id (and
+  // scope_id), which is users-class — /v/[slug] reads it straight into a users
+  // lookup for the public page's agent attribution. ai_video_projects.agent_id is
+  // agents-class since m366, so it crosses here. Null ⇒ the render is enqueued
+  // unattributed rather than stamped with an id from the other space.
+  // Client-agnostic resolver on purpose — this module declares itself "not
+  // server-only" above, so it must never drag `server-only` into a bundle.
+  const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+  const agentUserId = project.agent_id ? await resolveUserIdForAgentRecord(supabase, project.agent_id) : null
+  if (project.agent_id && !agentUserId) {
+    console.warn(`[avatar-render-orchestrator] no users row behind agents.id=${project.agent_id} (project ${projectId}) — render enqueued unattributed`)
+  }
+
   const row = buildAvatarRenderRow({
     brokerageId:     project.brokerage_id,
-    agentId:         project.agent_id ?? null,
+    agentId:         agentUserId,
     compositionId,
     avatarVideoUrl,
     voiceoverUrl:    (meta.voiceover_url as string | null) ?? null,

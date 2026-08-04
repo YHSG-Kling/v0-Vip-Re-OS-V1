@@ -10,10 +10,17 @@
  *     podcast_show_settings.agent_id (semantic, no FK)
  *
  *   USERS-ID columns (FK → users.id):
- *     ai_video_projects.agent_id, podcast_episodes.agent_id,
- *     agent_intro_videos.agent_id (m121),
- *     listing_promo_videos.agent_id (m124),
- *     newsletter_video_renders.agent_id (m127)
+ *     the `*_user_id` family — listing_agreements.agent_user_id,
+ *     listing_presentations.agent_user_id, workflow_runs.agent_user_id, … —
+ *     plus two that do NOT read that way: contacts.source_agent_id and
+ *     closing_disclosure.title_agent_id
+ *
+ * m366 RE-POINTED 20 columns from users(id) to agents(id), including the five
+ * this header used to list as users-class: ai_video_projects, podcast_episodes,
+ * agent_intro_videos, listing_promo_videos and newsletter_video_renders. After
+ * that migration NO column spelled plainly `agent_id` is a users.id — the plain
+ * spelling means agents(id) everywhere. scripts/agent-fk-columns.ts holds the
+ * authoritative snapshot; this comment is a summary of it, not a second source.
  *
  * Wave 6, 9, 11, 14, 15 each caught FK violations from this confusion.
  * Wave 38 caught the agent_voice_profiles one — its agent_id FKs to

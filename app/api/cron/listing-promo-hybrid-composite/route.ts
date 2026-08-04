@@ -94,6 +94,16 @@ export async function GET(req: NextRequest) {
       continue
     }
 
+    // ai_video_projects.agent_id is agents-class since m366, while the persona
+    // post-pass and lifecycle_events.actor_user_id both want the owner's USERS
+    // id. One resolve for the row; null means the agents row is gone and those
+    // two hand-offs are skipped rather than handed the wrong id space.
+    const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
+    const projAgentUserId = p.agent_id ? await resolveAgentRecordToUserId(p.agent_id) : null
+    if (p.agent_id && !projAgentUserId) {
+      console.error(`[listing-promo-hybrid-composite] no users row behind agents.id=${p.agent_id} (project ${p.id}) — persona post-pass + lifecycle actor skipped`)
+    }
+
     try {
       // Download the Remotion middle MP4 to a buffer (ffmpeg needs a local file).
       const mainResp = await fetch(p.video_url!)
@@ -145,6 +155,7 @@ export async function GET(req: NextRequest) {
         // post-pass logs failures per-persona without blocking the
         // social-publish handoff.
         try {
+          if (!projAgentUserId) throw new Error("agent owner unresolved — nothing to personalize under")
           const { runPersonaVariantPostPass } = await import("@/lib/video/persona-variant-post-pass")
           // Pull listing + brokerage display data for the still composition.
           const { data: listingRow } = await svc.from("listings")
@@ -163,7 +174,7 @@ export async function GET(req: NextRequest) {
             assetType:    "listing_promo",
             assetId:      p.listing_id,
             brokerageId:  p.brokerage_id,
-            agentUserId:  p.agent_id,
+            agentUserId:  projAgentUserId,
             brand: {
               primaryColor:  br?.brand_primary_color ?? "#0F172A",
               accentColor:   br?.brand_accent_color  ?? "#F59E0B",
@@ -186,7 +197,7 @@ export async function GET(req: NextRequest) {
 
       await svc.from("lifecycle_events").insert({
         brokerage_id:  p.brokerage_id,
-        actor_user_id: p.agent_id,
+        actor_user_id: projAgentUserId,  // FK users(id) — the resolved owner, not the project's agents id
         event_type:    KernelEvent.VIDEO_GENERATION_COMPLETED,
         metadata: {
           ai_video_project_id: p.id,

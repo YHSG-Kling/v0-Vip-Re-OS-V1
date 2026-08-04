@@ -262,12 +262,20 @@ export async function aiWriteNewsletterContent(params: {
 
     const supabase = await createClient()
 
-    // Get agent's brand voice
-    const { data: brandVoice } = await supabase
-      .from("brand_voice_profile")
-      .select("*")
-      .eq("agent_id", sessionAgentId ?? sessionUserId)
-      .maybeSingle()
+    // Get agent's brand voice. brand_voice_profile.agent_id is agents-class; the
+    // session USERS id is not a stand-in for a missing agents row — it just matches
+    // nothing, and the newsletter then generates in the default voice while looking
+    // like the agent had no brand voice configured.
+    let brandVoice: Record<string, unknown> | null = null
+    if (sessionAgentId) {
+      const { data, error: bvErr } = await supabase
+        .from("brand_voice_profile")
+        .select("*")
+        .eq("agent_id", sessionAgentId)
+        .maybeSingle()
+      if (bvErr) console.error("[ai-newsletter] brand voice read failed:", bvErr.message)
+      brandVoice = data as Record<string, unknown> | null
+    }
 
     const template = NEWSLETTER_TEMPLATES.find((t) => t.id === (params.template ?? "modern")) || NEWSLETTER_TEMPLATES[0]
 
@@ -504,7 +512,7 @@ ready with a fenced yard" is not.`,
           : "seller"
         const branded = await applyBrandVoice({
           brokerageId: sessionBrokerageId,
-          actorUserId: sessionAgentId ?? sessionUserId,
+          actorUserId: sessionUserId,
           actorRole: "agent",
           journeyType: "seller",
           persona: seedPersona,
@@ -518,7 +526,7 @@ ready with a fenced yard" is not.`,
     // Run compliance check on all content
     for (const section of brandedSections) {
       const compliance = await evaluateOutbound({
-        actorContext: { userId: sessionAgentId ?? sessionUserId, role: "agent", brokerageId: sessionBrokerageId },
+        actorContext: { userId: sessionUserId, role: "agent", brokerageId: sessionBrokerageId },
         journeyType: "buyer",
         persona: "first_time",
         messageType: "email",
@@ -538,7 +546,7 @@ ready with a fenced yard" is not.`,
       }
     }
 
-    await incrementFeatureUsage(sessionAgentId ?? sessionUserId, "newsletter_engine")
+    await incrementFeatureUsage(sessionUserId, "newsletter_engine")
 
     // Build a flat HTML string from sections for display with dangerouslySetInnerHTML
     const flatContent = brandedSections
@@ -596,13 +604,20 @@ export async function aiOptimizeSendTime(params: {
 
     const supabase = await createClient()
 
-    // Get historical email performance
-    const { data: emailStats } = await supabase
-      .from("newsletter_scheduled_sends")
-      .select("sent_at:sent_time, newsletter:newsletter_campaigns!inner(open_rate, click_rate, agent_id)")
-      .eq("newsletter.agent_id", sessionAgentId ?? sessionUserId)
-      .order("sent_time", { ascending: false })
-      .limit(50)
+    // Get historical email performance. newsletter_campaigns.agent_id is
+    // agents-class; falling back to the session USERS id here matched nothing and
+    // read as "no history" — so no agents row means no history, said honestly.
+    let emailStats: Array<Record<string, unknown>> | null = null
+    if (sessionAgentId) {
+      const { data, error: statsErr } = await supabase
+        .from("newsletter_scheduled_sends")
+        .select("sent_at:sent_time, newsletter:newsletter_campaigns!inner(open_rate, click_rate, agent_id)")
+        .eq("newsletter.agent_id", sessionAgentId)
+        .order("sent_time", { ascending: false })
+        .limit(50)
+      if (statsErr) console.error("[ai-newsletter] send-time history read failed:", statsErr.message)
+      emailStats = data as Array<Record<string, unknown>> | null
+    }
 
     const { object: optimization } = await generateObject({
       model: resolveModel("openai/gpt-4o-mini"),
@@ -868,7 +883,7 @@ export async function createNewsletterCampaign(params: {
       }).catch((err) => console.error("[Kernel] NEWSLETTER_SCHEDULED error:", err))
     }
 
-    await incrementFeatureUsage(sessionAgentId ?? sessionUserId, "newsletter_engine")
+    await incrementFeatureUsage(sessionUserId, "newsletter_engine")
 
     revalidatePath("/content-studio")
     revalidatePath("/dashboard/marketing/studio")
@@ -899,6 +914,13 @@ export async function sendNewsletter(params: { newsletterId: string; agentId?: s
 
     if (!isValidUUID(params.newsletterId)) {
       return { success: false, error: "Invalid IDs" }
+    }
+
+    // newsletter_subscribers.agent_id is agents-class. Substituting the session
+    // USERS id matched no rows and surfaced as "No active subscribers for this
+    // agent" — a missing agents profile reported as an empty audience.
+    if (!sessionAgentId) {
+      return { success: false, error: "No agent profile for this user in this brokerage — there is no subscriber list to send to." }
     }
 
     // Kernel: Feature access check
@@ -949,7 +971,7 @@ export async function sendNewsletter(params: { newsletterId: string; agentId?: s
       .from("newsletter_subscribers")
       .select("id, contact_id, email, first_name, last_name, status, agent_id, contact:contacts(id, email, first_name, last_name, contact_persona, city, state, zip_code)")
       .eq("brokerage_id", sessionBrokerageId)
-      .eq("agent_id", sessionAgentId ?? sessionUserId)
+      .eq("agent_id", sessionAgentId)
       .eq("status", "subscribed")
 
     if (!subscribers || subscribers.length === 0) {
@@ -1156,14 +1178,21 @@ export async function aiAnalyzeNewsletterPerformance(params: { agentId?: string 
       }
     }
 
-    // Get historical performance
-    const { data: sends } = await supabase
-      .from("newsletter_scheduled_sends")
-      .select("*, newsletter:newsletter_campaigns!inner(*)")
-      .eq("newsletter.agent_id", sessionAgentId ?? sessionUserId)
-      .eq("newsletter.brokerage_id", sessionBrokerageId)
-      .order("sent_time", { ascending: false })
-      .limit(20)
+    // Get historical performance. Same class rule as above — newsletter_campaigns
+    // .agent_id is agents-class, and the session users id is not a substitute for
+    // a missing agents row.
+    let sends: Array<Record<string, unknown>> | null = null
+    if (sessionAgentId) {
+      const { data, error: sendsErr } = await supabase
+        .from("newsletter_scheduled_sends")
+        .select("*, newsletter:newsletter_campaigns!inner(*)")
+        .eq("newsletter.agent_id", sessionAgentId)
+        .eq("newsletter.brokerage_id", sessionBrokerageId)
+        .order("sent_time", { ascending: false })
+        .limit(20)
+      if (sendsErr) console.error("[ai-newsletter] performance history read failed:", sendsErr.message)
+      sends = data as Array<Record<string, unknown>> | null
+    }
 
     const { object: analysis } = await generateObject({
       model: resolveModel("openai/gpt-4o-mini"),
@@ -1223,15 +1252,21 @@ export async function manageSubscribers(params: {
       return { success: false, error: "Unauthorized" }
     }
     const sessionBrokerageId = ctx.brokerageId
-    const sessionUserId = ctx.userId
     const sessionAgentId = ctx.agentId
+
+    // newsletter_subscribers.agent_id is agents-class — a users id here is an FK
+    // violation on insert and a no-match on update, both of which supabase-js
+    // reports as an ordinary empty result.
+    if (!sessionAgentId) {
+      return { success: false, error: "No agent profile for this user in this brokerage — subscribers have no owner to file under." }
+    }
 
     const supabase = await createClient()
 
     if (params.action === "add") {
       const { data, error } = await supabase.from("newsletter_subscribers").insert({
         email: params.email,
-        agent_id: sessionAgentId ?? sessionUserId,
+        agent_id: sessionAgentId,
         brokerage_id: sessionBrokerageId,
         subscribed_at: new Date().toISOString(),
         source: params.source || "manual",
@@ -1249,7 +1284,7 @@ export async function manageSubscribers(params: {
         .from("newsletter_subscribers")
         .update({ status: "unsubscribed", unsubscribed_at: new Date().toISOString() })
         .eq("email", params.email)
-        .eq("agent_id", sessionAgentId ?? sessionUserId)
+        .eq("agent_id", sessionAgentId)
         .eq("brokerage_id", sessionBrokerageId)
 
       if (error) throw error
@@ -1406,8 +1441,13 @@ export async function manageSubscriberBatch(params: {
       return { success: false, error: "Unauthorized" }
     }
     const sessionBrokerageId = ctx.brokerageId
-    const sessionUserId = ctx.userId
     const sessionAgentId = ctx.agentId
+
+    // Same class rule as manageSubscribers — newsletter_subscribers.agent_id is
+    // agents-class, so a missing agents profile is a refusal, not a users id.
+    if (!sessionAgentId) {
+      return { success: false, error: "No agent profile for this user in this brokerage — subscribers have no owner to file under." }
+    }
 
     const supabase = await createClient()
     let affected = 0
@@ -1427,7 +1467,7 @@ export async function manageSubscriberBatch(params: {
 
       if (params.action === "add") {
         await supabase.from("newsletter_subscribers").upsert({
-          agent_id: sessionAgentId ?? sessionUserId,
+          agent_id: sessionAgentId,
           brokerage_id: sessionBrokerageId,
           contact_id: contactId,
           status: "subscribed",
@@ -1439,7 +1479,7 @@ export async function manageSubscriberBatch(params: {
           .from("newsletter_subscribers")
           .update({ status: "unsubscribed", unsubscribed_at: new Date().toISOString() })
           .eq("contact_id", contactId)
-          .eq("agent_id", sessionAgentId ?? sessionUserId)
+          .eq("agent_id", sessionAgentId)
           .eq("brokerage_id", sessionBrokerageId)
         affected++
       } else if (params.action === "update_segment" && params.segment) {

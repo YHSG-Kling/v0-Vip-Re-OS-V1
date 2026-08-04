@@ -31,7 +31,6 @@
  */
 
 import "server-only"
-import { resolveAgentRecordToUserId } from "@/lib/kernel/agent-identity-resolver"
 import { latestByContact } from "./current"
 import { createServiceClient } from "@/lib/supabase/service"
 import { WEALTH_ACTIVE_STATUSES } from "@/lib/wealth-advisor/recommendation-status"
@@ -285,21 +284,24 @@ export async function scoreContactNpv(input: {
   const previousScore: number | null = prev?.npv_score ?? null
   const scoreDelta = previousScore != null ? npvScore - Number(previousScore) : null
 
-  // IDENTITY CLASS. contacts.agent_id is an AGENTS id;
-  // lifetime_customer_npv_scores.agent_id FKs USERS. Writing the one into the
-  // other is not a subtle mismatch — it is a foreign-key violation, verified
-  // live against this schema, so EVERY NPV computation failed to persist and
-  // the Lifetime Customer ledger has never held a row it could not have held.
-  // The canonical resolver has existed in lib/kernel/agent-identity-resolver
-  // the whole time; this path simply never called it.
-  const ownerUserId = contact.agent_id
-    ? await resolveAgentRecordToUserId(contact.agent_id as string)
-    : null
+  // IDENTITY CLASS — and the direction REVERSED with m366.
+  //
+  // The original defect: contacts.agent_id is an AGENTS id and
+  // lifetime_customer_npv_scores.agent_id FK'd USERS, so writing one into the
+  // other was a foreign-key violation, verified live, and the Lifetime Customer
+  // ledger could never hold a row. The fix then was to resolve agents->users.
+  //
+  // m366 re-pointed that column to agents(id) — verified live against
+  // pg_constraint. So the resolve is now the thing that breaks it: it would
+  // hand a users id to a column that FKs agents, re-creating the exact rejection
+  // it was added to cure. contacts.agent_id already IS the value this column
+  // wants, and no crossing is needed at all.
+  const ownerAgentId = (contact.agent_id as string | null) ?? null
 
   const result: NpvScoreResult = {
     contactId:   input.contactId,
     brokerageId: input.brokerageId,
-    agentId:     ownerUserId,
+    agentId:     ownerAgentId,
     npvScore,
     npvDollars,
     tier,

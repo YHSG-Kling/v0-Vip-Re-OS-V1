@@ -143,16 +143,30 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ skipped: "row not in remotion_pending or not found" }, { status: 200 })
   }
 
+  // promo.agent_id is agents-class since m366. The voice-profile lookup wants
+  // exactly that; the brand card (users.first_name/phone), the compliance actor,
+  // the QR mint and the render registry's agent_user_id all want the OWNER'S
+  // USERS id. Resolve once. Null means the agents row is gone — the reel is
+  // failed rather than rendered under the wrong identity.
+  const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+  const promoAgentUserId = await resolveUserIdForAgentRecord(svc, promo.agent_id)
+  if (!promoAgentUserId) {
+    await svc.from("listing_promo_videos")
+      .update({ status: "failed", error_message: `no users row behind agents.id=${promo.agent_id}` })
+      .eq("id", promo.id)
+    return NextResponse.json({ skipped: "promo agent has no users row — cannot attribute the reel" }, { status: 200 })
+  }
+
   try {
     // 2. Gather facts + brand context.
     const facts = await loadListingFacts(svc, promo.listing_id)
-    const brand = await loadBrandContext(svc, promo.brokerage_id, promo.agent_id)
+    const brand = await loadBrandContext(svc, promo.brokerage_id, promoAgentUserId)
 
     // 3. Draft + pre-flight compliance (broadcast shape).
     const script = await draftAndClearScript({
       svc,
       brokerageId: promo.brokerage_id,
-      agentUserId: promo.agent_id,
+      agentUserId: promoAgentUserId,
       facts,
       eventType:   promo.event_type,
     })
@@ -162,9 +176,11 @@ export async function POST(req: NextRequest) {
     //    word-accurate; null alignment → the caption plan even-distributes.
     const { url: voiceoverUrl, alignment: voiceoverAlignment } = await renderVoiceover({
       svc,
-      brokerageId: promo.brokerage_id,
-      agentUserId: promo.agent_id,
-      promoId:     promo.id,
+      brokerageId:   promo.brokerage_id,
+      // agent_voice_profiles.agent_id is agents-class — the same class the promo
+      // row now carries, so the clone is asked for under the key it is filed by.
+      agentRecordId: promo.agent_id,
+      promoId:       promo.id,
       script,
     })
 
@@ -173,7 +189,7 @@ export async function POST(req: NextRequest) {
     //     just_listed/just_sold → listing_detail; open_house → book_meeting.
     const qr = await mintVideoQr({
       brokerageId: promo.brokerage_id,
-      agentUserId: promo.agent_id,
+      agentUserId: promoAgentUserId,
       kind:        videoQrKindForEvent(promo.event_type),
       listingId:   promo.listing_id,
     }, svc)
@@ -184,7 +200,7 @@ export async function POST(req: NextRequest) {
     const reel = await renderRemotionReel({
       promoId: promo.id,
       brokerageId: promo.brokerage_id,
-      agentUserId: promo.agent_id,
+      agentUserId: promoAgentUserId,
       facts,
       brand,
       voiceoverUrl,
@@ -236,7 +252,7 @@ export async function POST(req: NextRequest) {
 
     await svc.from("lifecycle_events").insert({
       brokerage_id:  promo.brokerage_id,
-      actor_user_id: promo.agent_id,
+      actor_user_id: promoAgentUserId,  // FK users(id) — the resolved owner
       event_type:    hybrid ? KernelEvent.VIDEO_GENERATION_REQUESTED : KernelEvent.VIDEO_GENERATION_COMPLETED,
       metadata: {
         ai_video_project_id: project!.id,
@@ -256,7 +272,7 @@ export async function POST(req: NextRequest) {
     if (hybrid) {
       const introResult = await dispatchVideo({
         brokerageId:    promo.brokerage_id,
-        userId:         promo.agent_id,
+        userId:         promoAgentUserId,
         templateId:     buildHybridHookScript("intro", facts, brand.agentName ?? ""),
         recipientEmail: "system@internal",
         systemSource:   `listing_promo_hybrid.intro`,
@@ -264,7 +280,7 @@ export async function POST(req: NextRequest) {
       })
       const outroResult = await dispatchVideo({
         brokerageId:    promo.brokerage_id,
-        userId:         promo.agent_id,
+        userId:         promoAgentUserId,
         templateId:     buildHybridHookScript("outro", facts, brand.agentName ?? ""),
         recipientEmail: "system@internal",
         systemSource:   `listing_promo_hybrid.outro`,
@@ -414,13 +430,14 @@ Return ONLY the script text the avatar will speak — no scene directions.${viol
 async function renderVoiceover(args: {
   svc: ReturnType<typeof createServiceClient>
   brokerageId: string
-  agentUserId: string
+  /** agents.id — agent_voice_profiles.agent_id FKs agents, not users. */
+  agentRecordId: string
   promoId: string
   script: string
 }): Promise<{ url: string; alignment: CharacterAlignment | null }> {
   const { data: profile } = await args.svc.from("agent_voice_profiles")
     .select("elevenlabs_voice_id")
-    .eq("agent_id", args.agentUserId)
+    .eq("agent_id", args.agentRecordId)
     .maybeSingle()
   const voiceId = (profile as { elevenlabs_voice_id?: string } | null)?.elevenlabs_voice_id ?? null
   if (!voiceId) throw new Error("agent has no elevenlabs_voice_id — Settings → Voice & Avatar")

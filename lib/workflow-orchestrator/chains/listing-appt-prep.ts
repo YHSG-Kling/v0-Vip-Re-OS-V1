@@ -518,9 +518,18 @@ export const listingApptPrepChain: WorkflowChain = {
           // approval_status reflects the render path: 'auto_approved'
           // when AI-drafted copy passed the gate, 'fell_back' when we
           // dropped to the static template (admin can audit drift).
+          // direct_mail_campaigns.agent_id is agents-class — the USERS id was
+          // FK-rejected, so the pre-listing-kit cohort this row exists to feed
+          // was permanently empty and the ROI split could never be computed.
+          let kitAgentId: string | null = null
+          if (ctx.agentUserId) {
+            const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+            kitAgentId = await resolveUserIdToAgentRecord(ctx.agentUserId, ctx.brokerageId)
+          }
+
           await svc.from("direct_mail_campaigns").insert({
             brokerage_id:    ctx.brokerageId,
-            agent_id:        ctx.agentUserId ?? null,
+            agent_id:        kitAgentId,
             contact_id:      ctx.contactId,
             campaign_name:   `Pre-Listing Kit (${piece}) - ${recipientName}`,
             target_audience: "pre_listing_kit",

@@ -5,15 +5,24 @@
 // is reviewable in a diff.
 //
 // WHY THIS EXISTS. The schema is split-brain: some columns named agent_id FK
-// agents(id) and others FK users(id) — newsletter_scheduled_sends.agent_id is a
-// users.id, net_sheet_calculations.agent_id is an agents.id. You cannot tell from
-// the column name, which is exactly how wrong-class writes keep shipping. Only the
+// agents(id) and others FK users(id) — activities.agent_user_id is a users.id,
+// net_sheet_calculations.agent_id is an agents.id. You cannot tell from the
+// column name, which is exactly how wrong-class writes keep shipping. Only the
 // columns BELOW are agents(id); anything else named agent_id is a different animal.
 //
-// Regenerate from:
-//   select con.conrelid::regclass::text, (the conkey attname)
-//   from pg_constraint con where con.contype='f'
-//     and con.confrelid='public.agents'::regclass;
+// RE-SNAPSHOT AFTER ANY FK MIGRATION. m366 re-pointed 20 columns from users(id)
+// to agents(id) and this map went stale the moment it landed — a stale map makes
+// the guard flag correct writes and, worse, bless wrong ones. Regenerate from:
+//
+//   select con.conrelid::regclass::text as tbl, a.attname as col,
+//          con.confrelid::regclass::text as refs
+//   from pg_constraint con
+//   join lateral unnest(con.conkey) k(attnum) on true
+//   join pg_attribute a on a.attrelid = con.conrelid and a.attnum = k.attnum
+//   where con.contype = 'f'
+//     and con.connamespace = 'public'::regnamespace
+//     and con.confrelid in ('public.agents'::regclass, 'public.users'::regclass)
+//     and array_length(con.conkey, 1) = 1;
 export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   activities: ["agent_id"],
   agent_achievements: ["agent_id"],
@@ -28,11 +37,13 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   agent_commission_profiles: ["agent_id"],
   agent_commissions: ["agent_id"],
   agent_credit_budgets: ["agent_id"],
+  agent_did_consents: ["agent_id"],
   agent_earnings: ["agent_id"],
   agent_fee_assignments: ["agent_id"],
   agent_fee_charges: ["agent_id"],
   agent_goals: ["agent_id"],
   agent_handoffs: ["human_agent_id"],
+  agent_intro_videos: ["agent_id"],
   agent_learning_paths: ["agent_id"],
   agent_licenses: ["agent_id"],
   agent_mentor_relationships: ["mentee_agent_id", "mentor_agent_id"],
@@ -59,11 +70,14 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   ai_insights: ["agent_id"],
   ai_isa_call_batches: ["proposed_by_agent_id"],
   ai_isa_qualifications: ["agent_id"],
+  ai_search_citation_observations: ["agent_id"],
+  ai_search_landing_citation_observations: ["agent_id"],
   ai_subscription_tier: ["agent_id"],
   ai_suggestions: ["agent_id"],
   ai_tool_usage: ["agent_id"],
   ai_usage_log: ["agent_id"],
   ai_usage_monthly: ["agent_id"],
+  ai_video_projects: ["agent_id"],
   appointments: ["agent_id"],
   approval_items: ["agent_id"],
   assignment_log: ["agent_id"],
@@ -87,6 +101,7 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   client_gifts: ["agent_id"],
   client_portal_activity: ["agent_id"],
   client_portal_messages: ["agent_id"],
+  closing_disclosure_agreement: ["agent_id"],
   closing_gifts: ["agent_id"],
   cma_packages: ["agent_id"],
   cma_reports: ["agent_id"],
@@ -107,10 +122,12 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   content_generation_logs: ["agent_id"],
   content_performance_tracking: ["agent_id"],
   content_templates: ["agent_id"],
+  content_topic_uses: ["agent_id"],
   contract_reviews: ["agent_id"],
   contract_signatures: ["agent_id"],
   conversation_insights: ["agent_id"],
   conversation_intelligence: ["agent_id"],
+  conversation_logs: ["agent_id"],
   conversations: ["agent_id"],
   copilot_plans: ["agent_id"],
   cost_allocation: ["agent_id"],
@@ -128,6 +145,7 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   hashtag_performance: ["agent_id"],
   home_value_page_configs: ["agent_id"],
   income_forecast_gap_analysis: ["agent_id"],
+  income_forecast_snapshots: ["agent_id"],
   income_gap_recommended_actions: ["agent_id"],
   isa_outreach_log: ["agent_id"],
   lead_capture_forms: ["agent_id"],
@@ -137,28 +155,39 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   lead_sla_tracking: ["agent_id"],
   leaderboard_rankings: ["agent_id"],
   leads: ["agent_id"],
+  lifetime_customer_npv_scores: ["agent_id"],
   lifetime_customer_touchpoints: ["agent_id"],
+  listing_health_interventions: ["agent_id"],
+  listing_health_scores: ["agent_id"],
   listing_price_changes: ["agent_id"],
+  listing_promo_videos: ["agent_id"],
   listings: ["agent_id"],
   market_insights: ["agent_id"],
   meeting_briefs: ["agent_id"],
   messages: ["agent_id"],
   net_sheet_calculations: ["agent_id"],
   newsletter_campaigns: ["agent_id"],
+  newsletter_scheduled_sends: ["agent_id"],
   newsletter_subscribers: ["agent_id"],
   newsletter_templates: ["agent_id"],
+  newsletter_video_renders: ["agent_id"],
   objection_scenario_agents: ["agent_id"],
   offer_comparison: ["agent_id"],
   offers: ["agent_id"],
   onboarding_ai_chats: ["agent_id"],
   open_house_events: ["agent_id"],
   open_houses: ["agent_id"],
+  pattern_adoptions: ["agent_id"],
   pattern_detections: ["agent_id"],
   pattern_predictions: ["agent_id"],
   phone_number_events: ["agent_id"],
   photo_enhancement_jobs: ["agent_id"],
   photo_ordering_rules: ["agent_id"],
+  podcast_auto_runs: ["agent_id"],
+  podcast_episodes: ["agent_id"],
+  podcast_templates: ["agent_id"],
   portal_access_logs: ["agent_id"],
+  property_preferences: ["agent_id"],
   prospects: ["agent_id"],
   qr_codes: ["agent_id"],
   quickbooks_sync_log: ["agent_id"],
@@ -168,6 +197,8 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   recruits: ["recruiter_agent_id"],
   referral_partners: ["agent_id"],
   referrals: ["agent_id", "referring_agent_id"],
+  revenue_protection_snapshots: ["agent_id"],
+  review_requests: ["agent_id"],
   showing_briefings: ["agent_id"],
   showing_routes: ["agent_id"],
   showings: ["agent_id"],
@@ -175,6 +206,7 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   social_accounts: ["agent_id"],
   social_media_accounts: ["agent_id"],
   social_posts: ["agent_id"],
+  studio_sessions: ["agent_id"],
   support_tickets: ["agent_id"],
   tasks: ["assigned_to_agent_id", "created_by_agent_id"],
   team_earnings: ["top_agent_id"],
@@ -186,6 +218,7 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   transaction_agent_roles: ["agent_id"],
   transaction_pending_actions: ["agent_id"],
   transactions: ["agent_id", "buyer_agent_id", "seller_agent_id"],
+  transparency_updates: ["agent_id"],
   usage_events: ["agent_id"],
   usage_logs: ["agent_id"],
   valuation_requests: ["agent_id"],
@@ -207,64 +240,47 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
  * half of the split-brain. Snapshotted from the live database.
  *
  * These are the REVERSE-direction hazard: writing a resolved agents.id here is just
- * as broken as writing a user.id into an agents(id) FK. listing_promo_videos.agent_id
- * is the case that killed the entire lifecycle-promo path, and
- * listing_health_scores.agent_id / listing_health_interventions.agent_id are why the
- * listing-health scorer had never persisted a score.
+ * as broken as writing a user.id into an agents(id) FK. `contacts.source_agent_id`
+ * is the sharpest trap left — it sits on the same row as `contacts.agent_id`, which
+ * is an agents.id, so the two columns one line apart are opposite classes.
  *
  * Only agent-ish NAMES are listed. A column called `created_by` or `uploaded_by` is
  * not going to be confused for an agents.id, and listing every users FK would bury
  * the ones that actually mislead.
+ *
+ * This half shrank by 20 at m366. If a name you remember living here is gone, it did
+ * not stop existing — it became an agents(id) column and moved up.
  */
 export const USERS_FK_AGENTISH_COLUMNS: Record<string, string[]> = {
   activities: ["agent_user_id"],
   ad_campaigns: ["agent_user_id"],
-  agent_intro_videos: ["agent_id"],
   agent_social_shares: ["agent_user_id"],
   ai_isa_qualifications: ["assigned_to_agent_id"],
   ai_message_drafts: ["agent_user_id"],
-  ai_video_projects: ["agent_id"],
   blog_posts: ["agent_user_id"],
   buyer_financial_profiles: ["agent_user_id"],
   buyer_intake_tokens: ["agent_user_id"],
   campaign_calendar: ["agent_user_id"],
   closing_disclosure: ["title_agent_id"],
-  closing_disclosure_agreement: ["agent_id"],
-  conversation_logs: ["agent_id"],
+  contacts: ["source_agent_id"],
   fatigue_alerts: ["agent_user_id"],
-  income_forecast_snapshots: ["agent_id"],
   learning_assignments: ["agent_user_id"],
-  lifetime_customer_npv_scores: ["agent_id"],
   listing_agreements: ["agent_user_id"],
-  listing_health_interventions: ["agent_id"],
-  listing_health_scores: ["agent_id"],
   listing_packet_jobs: ["agent_user_id"],
   listing_presentations: ["agent_user_id"],
-  listing_promo_videos: ["agent_id"],
   marketing_assets: ["agent_user_id"],
   marketing_campaigns: ["agent_user_id"],
   message_threads: ["agent_user_id"],
   negotiation_strategies: ["agent_user_id"],
   neighbor_notification_campaigns: ["agent_user_id"],
-  newsletter_scheduled_sends: ["agent_id"],
-  newsletter_video_renders: ["agent_id"],
   objection_training_sessions: ["agent_user_id"],
-  pattern_adoptions: ["agent_id"],
   platform_credentials: ["agent_user_id"],
-  podcast_auto_runs: ["agent_id"],
-  podcast_episodes: ["agent_id"],
-  podcast_templates: ["agent_id"],
   portal_event_stream: ["agent_user_id"],
   property_alerts: ["agent_user_id"],
   property_interests: ["agent_user_id"],
-  property_preferences: ["agent_id"],
   repurpose_pipelines: ["agent_user_id"],
-  revenue_protection_snapshots: ["agent_id"],
-  review_requests: ["agent_id"],
   seo_keywords: ["agent_user_id"],
   strategy_recommendations: ["agent_user_id"],
-  studio_sessions: ["agent_id"],
-  transparency_updates: ["agent_id"],
   workflow_intake_sessions: ["agent_user_id"],
   workflow_runs: ["agent_user_id"],
 }
@@ -335,5 +351,4 @@ export const CONTACT_FK_TABLES: string[] = [
   "usage_events",
   "voice_calls",
   "website_visitors",
-  "workflow_runs",
 ]

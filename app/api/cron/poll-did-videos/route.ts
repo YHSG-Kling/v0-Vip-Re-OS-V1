@@ -86,6 +86,18 @@ export async function GET(request: NextRequest) {
       results.processed++
 
       try {
+        // ai_video_projects.agent_id is agents-class since m366. Every notify /
+        // event hand-off below writes a USERS id (notifications.user_id,
+        // lifecycle_events.actor_user_id, the payload's agent_user_id), so the
+        // owner is resolved once per row. Null = the agents row is gone; those
+        // hand-offs are then skipped with a line naming the row, never sent with
+        // the agents id standing in for a users id.
+        const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
+        const agentUserId = video.agent_id ? await resolveAgentRecordToUserId(video.agent_id) : null
+        if (video.agent_id && !agentUserId) {
+          console.error(`[poll-did-videos] no users row behind agents.id=${video.agent_id} (project ${video.id}) — owner notifications skipped`)
+        }
+
         // Engine by job: clips (V3 Pro), expressives (V4 — owner rule for
         // personalized avatar video), else the classic talks (V2 photo).
         const pmeta = video.provider_metadata as any
@@ -117,9 +129,9 @@ export async function GET(request: NextRequest) {
                 retry_count: (video.retry_count ?? 0) + 1,
               })
               .eq("id", video.id)
-            if (video.agent_id) {
+            if (agentUserId) {
               await supabase.from("notifications").insert({
-                user_id: video.agent_id,
+                user_id: agentUserId,
                 brokerage_id: video.brokerage_id,
                 type: "video_failed",
                 title: "Video Generation Failed",
@@ -454,9 +466,9 @@ export async function GET(request: NextRequest) {
             .eq("provider", "did")
 
           // Notify agent — schema: user_id, brokerage_id, type, title, body, entity_type, entity_id
-          if (video.agent_id) {
+          if (agentUserId) {
             await supabase.from("notifications").insert({
-              user_id: video.agent_id,
+              user_id: agentUserId,
               brokerage_id: video.brokerage_id,
               type: "video_ready",
               title: "Video Ready",
@@ -480,7 +492,7 @@ export async function GET(request: NextRequest) {
           if (video.brokerage_id) {
             await emitEventFromCron({
               brokerage_id: video.brokerage_id,
-              user_id:      video.agent_id ?? undefined,
+              user_id:      agentUserId ?? undefined,
               event_type:   "video.generated",
               source:       "system",
               dedupe_key:   `video.generated:${video.id}`,
@@ -492,7 +504,7 @@ export async function GET(request: NextRequest) {
                 listing_id:            (video as any).listing_id ?? null,
                 contact_id:            (video as any).contact_id ?? null,
                 marketing_campaign_id: (video as any).marketing_campaign_id ?? null,
-                agent_user_id:         video.agent_id ?? null,
+                agent_user_id:         agentUserId ?? null,
               },
             }).catch((err) => console.error("[poll-did-videos] Orchestrator event failed:", err))
           }
@@ -533,9 +545,9 @@ export async function GET(request: NextRequest) {
             })
             .eq("id", video.id)
 
-          if (video.agent_id) {
+          if (agentUserId) {
             await supabase.from("notifications").insert({
-              user_id: video.agent_id,
+              user_id: agentUserId,
               brokerage_id: video.brokerage_id,
               type: "video_failed",
               title: "Video Generation Failed",

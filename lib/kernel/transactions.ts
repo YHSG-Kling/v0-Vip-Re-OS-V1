@@ -1232,7 +1232,12 @@ export async function closeTransactionCommand(params: {
       if (reviewContactId) {
         await supabase.from("review_requests").insert({
           brokerage_id: params.brokerageId,
-          agent_id:     params.agentId,
+          // AGENTS id since m366. This was params.agentId (users-class), which
+          // was correct while the column FK'd users and became an FK violation
+          // the moment it did not — and the write is double-swallowed by the
+          // .then(null, null) below and the surrounding catch, so the post-close
+          // review request simply stopped being scheduled, silently.
+          agent_id:     agentRecordId,
           contact_id:   reviewContactId,
           status:       "scheduled",
           created_at:   nowIso,

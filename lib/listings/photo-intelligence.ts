@@ -368,9 +368,18 @@ async function runPhotoEdit(
     tags: string[]
   },
 ): Promise<StagedPhotoResult> {
+  // photo_enhancement_jobs.agent_id is agents-class — the USERS id written here was
+  // FK-rejected, so the job row never existed and the enhanced photo had no record
+  // to be marked complete against.
+  let jobAgentId: string | null = null
+  if (params.agentUserId) {
+    const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+    jobAgentId = await resolveUserIdToAgentRecord(params.agentUserId, params.brokerageId)
+  }
+
   const { data: job } = await svc.from("photo_enhancement_jobs").insert({
     photo_id: params.photoId ?? null,
-    agent_id: params.agentUserId ?? null,
+    agent_id: jobAgentId,
     brokerage_id: params.brokerageId,
     original_url: params.photoUrl,
     enhancement_type: params.kind,

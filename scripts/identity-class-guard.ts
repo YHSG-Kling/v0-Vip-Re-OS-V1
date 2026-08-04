@@ -279,9 +279,18 @@ console.log("\n═══ 1. No function uses one value as both identity classes 
 console.log("\n═══ 2. The three verified defects stay fixed ═══")
 {
   const npv = code("lib/lifetime-customer-npv/scorer.ts")
-  ok("the NPV scorer resolves contacts.agent_id (AGENTS) to a users id before\n    writing the users-class column — proven live: the raw write is rejected\n    by the foreign key, so this ledger could never have held a row",
-    /resolveAgentRecordToUserId\(contact\.agent_id/.test(npv) &&
-    !/agentId:\s+\(contact\.agent_id as string \| null\) \?\? null/.test(npv),
+  // REVERSED BY m366, and this one is worth reading twice. The original defect
+  // was real and proven live: contacts.agent_id is AGENTS, the ledger column
+  // FK'd USERS, so every NPV persist was foreign-key rejected and the Lifetime
+  // Customer ledger could never hold a row. The fix was to resolve agents->users.
+  // m366 re-pointed that column to agents(id), which makes the RESOLVE the
+  // breakage — it would hand a users id to a column that FKs agents and
+  // re-create the identical rejection. Verified live against pg_constraint
+  // before flipping. The two id spaces are the same distance apart as they ever
+  // were; only the destination moved.
+  ok("the NPV scorer writes contacts.agent_id straight through, because the\n    ledger column FKs agents(id) since m366 — the agents->users resolve that\n    once fixed this would now re-break it",
+    /const ownerAgentId = \(contact\.agent_id as string \| null\) \?\? null/.test(npv) &&
+    !/resolveAgentRecordToUserId\(contact\.agent_id/.test(npv),
     "lib/lifetime-customer-npv/scorer.ts")
 
   // SCOPED to aiScheduleShowing. The file also holds createTour and
@@ -349,22 +358,22 @@ console.log("\n═══ 2. The three verified defects stay fixed ═══")
     "app/actions/copilot.ts")
 
   const txk = code("lib/kernel/transactions.ts")
-  // COUNTED, not banned. A blanket "no params.agentId write" also forbade the
-  // review_requests write, which is genuinely users-class and correct — the same
-  // over-broad-pattern mistake as m338, caught the same way. Five agents-class
-  // writes move; exactly one users-class write stays.
-  // FOUR object-writes (three activities + commission_calculations) and ONE
-  // filter (agent_commission_profiles). Counted off the code — my first pass
-  // asserted five writes from memory and failed on correct code, which is the
-  // same over-claiming this guard exists to stop.
+  // COUNTED, not banned — the count is the point. This used to allow exactly ONE
+  // params.agentId write, for review_requests, which was genuinely users-class.
+  // m366 re-pointed review_requests at agents(id), so that one permitted exception
+  // became the file's only wrong-class write: the post-close review request was
+  // FK-rejected and the failure was swallowed twice over (a .then(null, null) and
+  // an enclosing catch). The exception is now gone — FIVE agents-class writes, ZERO
+  // users-class ones. Counted off the code, never from memory; asserting a count
+  // from memory is the over-claiming this guard exists to stop.
   const agentsWrites  = (txk.match(/agent_id:\s+agentRecordId/g) ?? []).length
   const agentsFilters = (txk.match(/\.eq\("agent_id", agentRecordId\)/g) ?? []).length
   const usersWrites   = (txk.match(/agent_id:\s+params\.agentId/g) ?? []).length
-  ok("the transactions kernel writes activities / agent_commission_profiles /\n    commission_calculations with the AGENTS id — commission_calculations is\n    money, and it was a foreign-key violation",
-    agentsWrites === 4 && agentsFilters === 1,
+  ok("the transactions kernel writes activities / agent_commission_profiles /\n    commission_calculations / review_requests with the AGENTS id —\n    commission_calculations is money, and it was a foreign-key violation",
+    agentsWrites === 5 && agentsFilters === 1,
     `agentRecordId writes: ${agentsWrites}, filters: ${agentsFilters}`)
-  ok("...while the ONE genuinely users-class write (review_requests) keeps the\n    users id",
-    usersWrites === 1, `params.agentId writes left: ${usersWrites}`)
+  ok("...and NO users-class agent_id write is left — since m366 there is no\n    column in this file for one to be correct in",
+    usersWrites === 0, `params.agentId writes left: ${usersWrites}`)
 
   // m342 — onboarding PROGRESS. Its two branches produced DIFFERENT classes into
   // the same variable: the self path resolved an agents id, the admin path kept
@@ -399,10 +408,18 @@ console.log("\n═══ 2. The three verified defects stay fixed ═══")
 
   // m339 batch — three surfaces that returned an EMPTY RESULT rather than an
   // error, which is why none of them ever looked broken.
+  // FLIPPED BY m366. This used to assert the OPPOSITE — that review_requests was
+  // keyed by a resolved USERS id, because the column FK'd users. m366 re-pointed it
+  // at agents(id), which turned m339's corrective resolve into the very FK violation
+  // it had been written to cure: same table, same symptom, opposite direction. A
+  // guard that pins yesterday's schema does not protect the code, it preserves the
+  // bug — so this now asserts that all three tables are keyed by the agents id with
+  // no hop and no null-sentinel.
   const rep = code("lib/kernel/reputation.ts")
-  ok("review_requests (users-class) is keyed by the resolved users id, while\n    agent_reviews and referrals keep the agents id — the insert was an FK\n    violation, so no review request could ever be created",
-    /resolveAgentRecordToUserId\(input\.agentId\)/.test(rep) &&
-    /agent_id:\s+reviewRequestAgentId/.test(rep),
+  ok("review_requests, agent_reviews and referrals are ALL agents-class — keyed\n    by input.agentId with no users-ward resolve, which since m366 would be the\n    FK violation that stops any review request being created",
+    !/resolveAgentRecordToUserId/.test(rep) &&
+    !/reviewRequestAgentId/.test(rep) &&
+    /\.from\("review_requests"\)[\s\S]{0,400}?agent_id:\s+input\.agentId/.test(rep),
     "lib/kernel/reputation.ts")
 
   const pod = code("lib/podcast/auto-producer.ts")

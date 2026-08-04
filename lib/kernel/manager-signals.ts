@@ -642,6 +642,12 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const situation = (meta.situation ?? {}) as { kind?: string; tier?: string; target_channel?: string }
     if (!situation.kind || !situation.tier) return "no stamped situation on the primary — can't replay for shorts"
     const row = v as { brokerage_id: string; agent_id: string; listing_id: string | null; contact_id: string | null; marketing_campaign_id: string | null }
+    // commissionVideo's agentUserId is a USERS id — it resolves users→agents
+    // itself before writing. ai_video_projects.agent_id is agents-class since
+    // m366, so hand it the resolved owner; unresolvable ⇒ no shorts, said plainly.
+    const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+    const primaryAgentUserId = row.agent_id ? await resolveUserIdForAgentRecord(ctx.supabase, row.agent_id) : null
+    if (!primaryAgentUserId) return `no users row behind agents.id=${row.agent_id ?? "null"} — platform shorts deferred`
     const { commissionVideo } = await import("@/lib/video/video-director")
     const made: string[] = []
     for (const channel of channels) {
@@ -649,7 +655,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
         { kind: situation.kind as any, tier: situation.tier as any, targetChannel: channel, facts: {} },
         {
           brokerageId: row.brokerage_id,
-          agentUserId: row.agent_id,
+          agentUserId: primaryAgentUserId,
           listingId: row.listing_id ?? null,
           contactId: row.contact_id ?? null,
           campaignId: row.marketing_campaign_id ?? null,
@@ -688,11 +694,14 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     let notified = 0
     // Responsible agent for this video, when resolvable.
     const rawAgentRef = (signal.payload?.agent_id as string | undefined) ?? null
-    // notifications.user_id FKs users(id); payload refs may carry agents(id) — resolve-or-keep.
-    let agentId: string | null = rawAgentRef
-    if (rawAgentRef) {
-      const { data: aRow } = await ctx.supabase.from("agents").select("user_id").eq("id", rawAgentRef).maybeSingle()
-      if ((aRow as any)?.user_id) agentId = (aRow as any).user_id
+    // notifications.user_id FKs users(id) and this payload's agent_id is an
+    // agents id (video-coordination copies ai_video_projects.agent_id, agents-class
+    // since m366). Resolve-or-SKIP: keeping the raw ref on a failed resolve wrote an
+    // agents id into a users column, which the FK rejects into a discarded error.
+    const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+    const agentId = rawAgentRef ? await resolveUserIdForAgentRecord(ctx.supabase, rawAgentRef) : null
+    if (rawAgentRef && !agentId) {
+      console.warn(`[manager-signals] no users row behind agents.id=${rawAgentRef} — owner notice skipped; managers still notified`)
     }
     if (agentId) {
       const { error } = await ctx.supabase.from("notifications").insert({

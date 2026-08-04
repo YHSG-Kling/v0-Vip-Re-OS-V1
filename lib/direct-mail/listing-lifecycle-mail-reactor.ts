@@ -322,9 +322,15 @@ export async function dispatchLifecycleMail(
 
     // Log the campaign with the sentinel that makes the idempotency
     // check work for the NEXT firing.
+    // direct_mail_campaigns.agent_id is agents-class. The USERS id here was
+    // FK-rejected, which took the idempotency sentinel with it — so the next
+    // firing saw no prior campaign and mailed the same lifecycle piece again.
+    const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+    const mailAgentId = await resolveUserIdToAgentRecord(args.agentUserId, args.brokerageId)
+
     await svc.from("direct_mail_campaigns").insert({
       brokerage_id:        args.brokerageId,
-      agent_id:            args.agentUserId,
+      agent_id:            mailAgentId,
       contact_id:          contactId,
       marketing_campaign_id: args.listingId,
       campaign_name:       `Lifecycle ${args.eventType} - ${propertyAddress.slice(0, 60)}`,

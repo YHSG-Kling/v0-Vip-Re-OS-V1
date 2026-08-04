@@ -1305,22 +1305,14 @@ async function incomeForecastAdapter(svc: Svc, brokerageId?: string): Promise<Ra
   const { data: deals, error: tErr } = await tq
   if (tErr) return unavailable(INCOME_FORECAST_BASE, `ledger unreadable: ${tErr.message}`)
 
-  // IDENTITY CLASS (m352). summarizeIncomeForecastRows
-  // joins these two lists BY agentId — and they were two different classes.
-  // income_forecast_snapshots.agent_id FKs users; transactions.agent_id
-  // FKs agents; the two never overlap. So `dealsByAgent.get(snapshot.agentId)`
-  // could not hit for any agent, `realized` was 0 for every window, and this
-  // rail graded every income forecast as a total miss — in a surface that
-  // governs how much autonomy the OS is allowed. Translate the deals side to
-  // the snapshot's class so the join is between like and like.
-  const dealAgentIds = Array.from(new Set(((deals ?? []) as any[]).map((d) => d.agent_id).filter(Boolean)))
-  const agentToUser = new Map<string, string>()
-  if (dealAgentIds.length > 0) {
-    const { data: agentRows } = await svc.from("agents").select("id, user_id").in("id", dealAgentIds)
-    for (const a of ((agentRows ?? []) as Array<{ id: string; user_id: string | null }>)) {
-      if (a.user_id) agentToUser.set(a.id, a.user_id)
-    }
-  }
+  // IDENTITY CLASS (m352, corrected by m366). summarizeIncomeForecastRows joins
+  // these two lists BY agentId, and they used to be two different classes:
+  // income_forecast_snapshots.agent_id FK'd users while transactions.agent_id FK'd
+  // agents, so `dealsByAgent.get(snapshot.agentId)` never hit and this rail graded
+  // every income forecast as a total miss — in a surface that governs how much
+  // autonomy the OS is allowed. m366 re-pointed the snapshot column at agents, so
+  // both sides are agents-class now and the translation that fixed the join would
+  // re-break it in the opposite direction. Join agents to agents, no hop.
 
   return summarizeIncomeForecastRows(
     snapRows.map((s) => ({
@@ -1331,9 +1323,9 @@ async function incomeForecastAdapter(svc: Svc, brokerageId?: string): Promise<Ra
       highBandPct: num(s.high_band_pct),
     })),
     ((deals ?? []) as any[]).map((d) => ({
-      // null when the agents row is gone — an unmatchable deal is dropped by the
+      // Agents-class on both sides; a deal with no agent is dropped by the
       // existing `if (!d.agentId) continue`, which is the honest outcome.
-      agentId: d.agent_id ? (agentToUser.get(d.agent_id) ?? null) : null,
+      agentId: (d.agent_id as string | null) ?? null,
       closeDate: d.close_date ?? null,
       gci: num(d.commission_amount) ?? num(d.estimated_commission),
     })),

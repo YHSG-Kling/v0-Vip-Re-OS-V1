@@ -73,7 +73,20 @@ export async function GET(request: Request) {
   const compositionId: string = meta.composition_id
   const inputProps: Record<string, unknown> = (meta.input_props ?? {}) as Record<string, unknown>
   const needsAvatar: boolean = !!vmeta.needs_avatar
+  // ai_video_projects.agent_id is agents-class since m366, but everything below
+  // this line — the presenter/voice lookup, the D-ID submit, notifications.user_id,
+  // remotion_composition_renders.agent_user_id — speaks the OWNER'S USERS id. One
+  // resolve here rather than one per hand-off. A null resolve on a non-null
+  // agent_id means the agents row is gone; the reel is failed, never re-pointed at
+  // the other id space.
+  const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
   const agentUserId: string | null = row.agent_id
+    ? await resolveAgentRecordToUserId(row.agent_id)
+    : null
+  if (row.agent_id && !agentUserId) {
+    await fail(svc, row.id, `no users row behind agents.id=${row.agent_id} — reel cannot be attributed`)
+    return NextResponse.json({ ran_at: ranAt, processed: 1, render_id: row.id, result: "failed_agent_unresolved" })
+  }
   const brokerageId: string | null = row.brokerage_id
 
   try {

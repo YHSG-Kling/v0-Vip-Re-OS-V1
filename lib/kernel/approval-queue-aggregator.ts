@@ -440,9 +440,11 @@ export async function aggregatePendingApprovals(
   }
 
   for (const row of (podcasts.data ?? []) as Array<Record<string, unknown>>) {
-    // podcast_episodes.agent_id FKs users.id while the agent scope key is
-    // agents.id — same id-class mismatch as blog_posts, so these list
-    // brokerage-wide (like blogs).
+    // podcast_episodes.agent_id is agents-class since m366 — the SAME key the
+    // agent scope uses, so these scope like newsletters/videos now. Listing them
+    // brokerage-wide (the old id-class mismatch) put one agent's episodes in
+    // another agent's review queue.
+    if (agentScopeId && row.agent_id && row.agent_id !== agentScopeId) continue
     items.push({
       id: `pc:${String(row.id)}`,
       type: "podcast",
@@ -725,8 +727,8 @@ async function cascade(
       // Podcast episode release — canonical transition (approve also defaults
       // publish_channels to everything the brokerage has enabled, else the
       // distributor would have nothing to ship to). podcast_episodes.agent_id
-      // is users.id — brokerage-wide, like blogs.
-      return marketingCascade("podcast", "podcast", null)
+      // is agents.id since m366 — the same scope key as newsletters/videos.
+      return marketingCascade("podcast", "podcast", "agent_id")
     case "vp":
       // Commissioned video render release — canonical transition; the publish
       // rail (publishVideo) refuses anything not 'approved'.

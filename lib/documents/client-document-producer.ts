@@ -88,9 +88,18 @@ export async function produceClientDocument(
     const fileName = `${params.documentType}-${Date.now()}.pdf`
     const pdfUrl = await hostRenderedMedia(svc, `client-docs/${params.brokerageId}/${fileName}`, buf, "application/pdf")
 
+    // generated_documents.agent_id is agents-class. This used to file the USERS id,
+    // which the FK rejected — so every client PDF this produced was hosted and then
+    // lost its ledger row, and the document never appeared in the agent's library.
+    let docAgentId: string | null = null
+    if (params.agentUserId) {
+      const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+      docAgentId = await resolveUserIdToAgentRecord(params.agentUserId, params.brokerageId)
+    }
+
     const { data: doc } = await svc.from("generated_documents").insert({
       brokerage_id: params.brokerageId,
-      agent_id: params.agentUserId ?? null,
+      agent_id: docAgentId,
       contact_id: params.contactId ?? null,
       listing_id: params.listingId ?? null,
       document_type: params.documentType,

@@ -2,11 +2,13 @@
 /**
  * scripts/agent-id-class-guard.ts   (npm run test:agent-id-class) — pure, no DB.
  * ─────────────────────────────────────────────────────────────────────────────
- * THE WRONG-CLASS WRITE. This schema is split-brain: some columns named agent_id
- * FOREIGN KEY agents(id) and others FK users(id). newsletter_scheduled_sends.agent_id
- * is a users.id; net_sheet_calculations.agent_id is an agents.id. The column NAME
- * tells you nothing, so `agent_id: user.id` reads fine in review and is rejected by
- * the foreign key at runtime.
+ * THE WRONG-CLASS WRITE. This schema was split-brain: some columns named agent_id
+ * FOREIGN KEY agents(id) and others FK users(id). m366 re-pointed the 20 stragglers,
+ * so the plain spelling `agent_id` now means agents(id) everywhere — but the hazard
+ * did not go away, it moved to the confusable NAMES: contacts.source_agent_id and
+ * closing_disclosure.title_agent_id are users ids sitting beside agents ids. The
+ * column NAME still tells you nothing, so `agent_id: user.id` reads fine in review
+ * and is rejected by the foreign key at runtime.
  *
  * lib/kernel/agent-identity.ts states the rule in its own header — "NEVER do:
  * agentId = user.id" — and a prior pass fixed 60+ sites. It still missed
@@ -31,7 +33,7 @@ import { AGENT_FK_COLUMNS, USERS_FK_AGENTISH_COLUMNS, CONTACT_FK_TABLES } from "
 const root = process.cwd()
 
 /** Expressions that denote a users.id. */
-const USER_ID_EXPR = /\b(user\.user\.id|user\.id|userId|session\.user\.id|authUserId|currentUserId)\b/
+const USER_ID_EXPR = /\b(user\.user\.id|user\.id|session\.user\.id|\w*[Uu]serId)\b/
 /** Already routed through the canonical resolver (or a value known to be an agents.id). */
 const RESOLVED = /resolveAgentId|requireAgentId|actingAgentId|\bagentId\b|agent\.id|agentRow/
 
@@ -206,25 +208,40 @@ check("accepts a resolveAgentId call",
   scanSource('await svc.from("activities").insert({ agent_id: await resolveAgentId(svc, user.id) })', "t.ts").length === 0)
 check("accepts an already-resolved agent id variable",
   scanSource('await svc.from("activities").insert({ agent_id: actingAgentId })', "t.ts").length === 0)
-check("ignores a column that is NOT an agents(id) FK (users-FK agent_id)",
-  scanSource('await svc.from("newsletter_scheduled_sends").insert({ agent_id: user.id })', "t.ts").length === 0)
+// newsletters.agent_id carries NO foreign key at all, so no class can be asserted
+// about it — the detector must stay silent rather than guess. (This fixture used to
+// point at newsletter_scheduled_sends; m366 made that column an agents(id) FK, so
+// the write below is now a REAL defect there and the fixture had to move.)
+check("ignores a column that is NOT an agents(id) FK (FK-less agent_id)",
+  scanSource('await svc.from("newsletters").insert({ agent_id: user.id })', "t.ts").length === 0)
 check("does not spill into the NEXT query's payload",
   scanSource(
     'await svc.from("activities").select("id").eq("x",1)\n' +
-    'await svc.from("newsletter_scheduled_sends").insert({ agent_id: user.id })', "t.ts",
+    'await svc.from("newsletters").insert({ agent_id: user.id })', "t.ts",
   ).length === 0)
 check("ignores a read-only chain (no insert/update)",
   scanSource('await svc.from("activities").select("agent_id").eq("agent_id", user.id)', "t.ts").length === 0)
+// THE SPELLING THAT HID TEN DEFECTS. USER_ID_EXPR used to list `userId` with word
+// boundaries, which does not match `sessionUserId` or `params.agentUserId` — so ten
+// real wrong-class writes sat under a green guard. A detector that only knows the
+// spellings it was born with reports zero and means "I did not look".
+check("catches the session-id spelling (sessionAgentId ?? sessionUserId)",
+  scanSource('await svc.from("newsletter_subscribers").insert({ agent_id: sessionAgentId ?? sessionUserId })', "t.ts").length === 1)
+check("catches a params.agentUserId on an agents(id) FK",
+  scanSource('await svc.from("direct_mail_campaigns").insert({ agent_id: params.agentUserId })', "t.ts").length === 1)
 
 console.log("\n[pure — the REVERSE detector]")
+// contacts.source_agent_id is the sharpest trap left after m366: it sits on the same
+// row as contacts.agent_id, one is a users.id and the other an agents.id. A detector
+// that keys on the TABLE instead of the COLUMN gets both of these backwards.
 check("flags a resolved agents.id on a users(id) FK",
-  scanSourceReverse('await svc.from("listing_promo_videos").insert({ agent_id: await resolveAgentId(svc, x) })', "t.ts").length === 1)
+  scanSourceReverse('await svc.from("contacts").insert({ source_agent_id: await resolveAgentId(svc, x) })', "t.ts").length === 1)
 check("flags listings.agent_id on a users(id) FK",
-  scanSourceReverse('await svc.from("listing_health_scores").insert({ agent_id: listing.agent_id })', "t.ts").length === 1)
+  scanSourceReverse('await svc.from("contacts").insert({ source_agent_id: listing.agent_id })', "t.ts").length === 1)
 check("accepts a genuine users.id there",
-  scanSourceReverse('await svc.from("transparency_updates").insert({ agent_id: user.id })', "t.ts").length === 0)
+  scanSourceReverse('await svc.from("contacts").insert({ source_agent_id: user.id })', "t.ts").length === 0)
 check("accepts an already-normalised agentUserId",
-  scanSourceReverse('await svc.from("listing_promo_videos").insert({ agent_id: agentUserId })', "t.ts").length === 0)
+  scanSourceReverse('await svc.from("listing_agreements").insert({ agent_user_id: agentUserId })', "t.ts").length === 0)
 
 console.log("\n[pure — a LEAD is not a CONTACT]")
 check("flags a lead id in a contacts(id) FK",

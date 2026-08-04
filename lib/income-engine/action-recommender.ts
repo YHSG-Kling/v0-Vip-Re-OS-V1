@@ -77,16 +77,17 @@ export async function recommendActionsForAgent(params: {
   /** agents.id — what contacts/transactions/listings.agent_id reference. */
   agentId:      string
   /**
-   * users.id — what lifetime_customer_npv_scores.agent_id references.
+   * users.id — retained on the CONTRACT, not used for the NPV ledger any more.
    *
-   * TWO ID CLASSES, and the ledger is the odd one out: of every table this
-   * recommender reads, contacts/transactions/listings all FK agent_id to
-   * agents(id) while lifetime_customer_npv_scores FKs it to users(id). Rule 4
-   * filtered the ledger with the agents.id and therefore matched ZERO rows —
-   * the sphere-nurture action has never once reached an agent's queue. The
-   * caller already resolves this id three lines before calling us (it needs it
-   * for income_forecast_snapshots, which is also users-keyed) and then passed
-   * the other one.
+   * History: lifetime_customer_npv_scores.agent_id used to FK users(id) while
+   * every other table this recommender reads FK'd agents(id), so Rule 4 filtered
+   * the ledger with the wrong class and the sphere-nurture action never once
+   * reached an agent's queue. m366 re-pointed that column at agents(id) and the
+   * writer (lib/lifetime-customer-npv/scorer.ts) now files contacts.agent_id, so
+   * reader and writer are both agents-class and the filter below uses agentId.
+   *
+   * The param stays because it is a genuine users id the caller already has and
+   * downstream users-class work may need; it is not a second spelling of agentId.
    */
   agentUserId:  string
   brokerageId:  string
@@ -171,7 +172,11 @@ export async function recommendActionsForAgent(params: {
     recommended_action: string | null; recommended_cadence: string | null
     next_touchpoint_due: string | null
   }>(svc, {
-    agentId: params.agentUserId,
+    // Matches the class scoreContactNpv writes. Since m366 that is an AGENTS
+    // id: lifetime_customer_npv_scores.agent_id FKs agents(id), so filtering by
+    // the users id matched nothing and Rule 4 silently produced no sphere
+    // actions at all.
+    agentId: params.agentId,
     brokerageId: params.brokerageId,
     dueOnOrBefore: new Date(now + 7 * 86_400_000).toISOString().slice(0, 10),
     tiers: ["platinum", "gold", "silver"],

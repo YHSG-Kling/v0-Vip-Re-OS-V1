@@ -232,8 +232,14 @@ ${includeSubject ? "- Start your reply with SUBJECT: <subject line> on the first
     }
 
     // ── 9. Write smart_assistant_suggestions row ─────────────────────────────
+    // smart_assistant_suggestions.agent_id is agents-class. Writing the USERS id was
+    // FK-rejected, so the draft was saved but the "AI Reply Ready" nudge that tells
+    // the agent it exists never reached the assistant panel.
+    const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+    const suggestionAgentId = await resolveUserIdToAgentRecord(params.agentUserId, params.brokerageId)
+
     await supabase.from("smart_assistant_suggestions").insert({
-      agent_id:            params.agentUserId,
+      agent_id:            suggestionAgentId,
       title:               `AI Reply Ready — ${contact.first_name} ${contact.last_name}`,
       description:         `${resolvedTone} draft prepared for ${params.channel} reply (confidence: ${confidenceScore}%)`,
       context_type:        "inbox_reply",
