@@ -6,6 +6,8 @@
 // ============================================
 
 import { isValidUUID } from "@/lib/validations"
+import { createClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import {
   evaluateCampaignReadiness,
   batchEvaluateCampaignReadiness,
@@ -24,6 +26,35 @@ import { type ComplianceVerdict } from "@/lib/compliance-rules"
 import { type ApprovalDecision } from "@/lib/approval-workflow"
 
 /**
+ * IDENTITY RESOLUTION FOR READINESS LOGGING.
+ *
+ * `activities` requires brokerage_id (NOT NULL) and activities.agent_id FKs
+ * agents(id) — NOT users(id). Every logger in lib/campaign-readiness refuses
+ * to write without both, and until now NOTHING supplied them: the only wired
+ * caller (runPrelaunchCheck) passed no additional_context at all, so
+ * logReadinessEvaluation returned {success:false} on every single call and
+ * this action DISCARDED that failure (`if (logResult.success)`), leaving the
+ * Studio's "Readiness Pass Rate" tile reading a table nothing ever wrote to.
+ *
+ * Resolve both from the session — never `x.agent_id ?? user.id`.
+ */
+async function resolveLoggingIdentity(): Promise<
+  | { ok: true; brokerageId: string; agentId: string }
+  | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  if (!ctx.brokerageId) return { ok: false, error: "No brokerage associated with your account." }
+  if (!ctx.agentId) {
+    return {
+      ok: false,
+      error: "No agent profile found for your account — readiness cannot be recorded.",
+    }
+  }
+  return { ok: true, brokerageId: ctx.brokerageId, agentId: ctx.agentId }
+}
+
+/**
  * ACTION 1: Evaluate campaign readiness (main entry point)
  */
 export async function evaluateContentReadiness(
@@ -36,6 +67,8 @@ export async function evaluateContentReadiness(
   success: boolean
   readiness_output?: ReadinessOutput
   activity_id?: string
+  /** Non-fatal: readiness was evaluated but could not be RECORDED. Never swallowed. */
+  log_error?: string
   error?: string
 }> {
   try {
@@ -52,14 +85,26 @@ export async function evaluateContentReadiness(
 
     // Log to activities if requested
     let activity_id: string | undefined
-    if (options?.log_to_activities && input.content_id) {
-      const logResult = await logReadinessEvaluation(
-        input.content_id,
-        readinessOutput,
-        options.additional_context
-      )
-      if (logResult.success) {
-        activity_id = logResult.activity_id
+    let log_error: string | undefined
+    if (options?.log_to_activities) {
+      if (!input.content_id) {
+        log_error = "content_id is required to record a readiness evaluation"
+      } else {
+        const identity = await resolveLoggingIdentity()
+        if (!identity.ok) {
+          log_error = identity.error
+        } else {
+          const logResult = await logReadinessEvaluation(input.content_id, readinessOutput, {
+            ...options.additional_context,
+            brokerage_id: identity.brokerageId,
+            agent_id: identity.agentId,
+          })
+          if (logResult.success) {
+            activity_id = logResult.activity_id
+          } else {
+            log_error = logResult.error ?? "Failed to record readiness evaluation"
+          }
+        }
       }
     }
 
@@ -67,6 +112,7 @@ export async function evaluateContentReadiness(
       success: true,
       readiness_output: readinessOutput,
       activity_id,
+      log_error,
     }
   } catch (err) {
     console.error("[v0] Error evaluating content readiness:", err)
@@ -92,6 +138,8 @@ export async function batchEvaluateContentReadiness(
     readiness_output: ReadinessOutput
   }>
   logged_count?: number
+  /** Non-fatal: evaluations succeeded but could not be RECORDED. Never swallowed. */
+  log_error?: string
   error?: string
 }> {
   try {
@@ -115,17 +163,34 @@ export async function batchEvaluateContentReadiness(
 
     // Log to activities if requested
     let logged_count = 0
+    let log_error: string | undefined
     if (options?.log_to_activities) {
-      const evaluationsToLog = results
-        .filter((r) => r.input.content_id)
-        .map((r) => ({
-          content_id: r.input.content_id!,
-          readiness_output: r.readiness_output,
-        }))
+      const identity = await resolveLoggingIdentity()
+      if (!identity.ok) {
+        log_error = identity.error
+      } else {
+        // additional_context carries the NOT NULL activities columns — without
+        // it batchLogReadinessEvaluations fails every row and reports 0 logged.
+        const evaluationsToLog = results
+          .filter((r) => r.input.content_id)
+          .map((r) => ({
+            content_id: r.input.content_id!,
+            readiness_output: r.readiness_output,
+            additional_context: {
+              brokerage_id: identity.brokerageId,
+              agent_id: identity.agentId,
+            },
+          }))
 
-      if (evaluationsToLog.length > 0) {
-        const logResult = await batchLogReadinessEvaluations(evaluationsToLog)
-        logged_count = logResult.logged_count
+        if (evaluationsToLog.length === 0) {
+          log_error = "No inputs carried a content_id — nothing could be recorded"
+        } else {
+          const logResult = await batchLogReadinessEvaluations(evaluationsToLog)
+          logged_count = logResult.logged_count
+          if (logResult.failed_count > 0) {
+            log_error = `${logResult.failed_count} of ${evaluationsToLog.length} evaluations could not be recorded: ${logResult.errors.slice(0, 2).join("; ")}`
+          }
+        }
       }
     }
 
@@ -133,6 +198,7 @@ export async function batchEvaluateContentReadiness(
       success: true,
       results,
       logged_count,
+      log_error,
     }
   } catch (err) {
     console.error("[v0] Error batch evaluating content readiness:", err)
@@ -180,15 +246,14 @@ export async function checkSpecificChannelReadiness(
   targetChannel: ExecutionChannel,
   options?: {
     log_to_activities?: boolean
-    /** Required if log_to_activities=true — activities row needs both. */
-    brokerage_id?: string
-    agent_id?: string
   }
 ): Promise<{
   success: boolean
   is_ready?: boolean
   reason?: string
   activity_id?: string
+  /** Non-fatal: the check ran but could not be RECORDED. Never swallowed. */
+  log_error?: string
   error?: string
 }> {
   try {
@@ -201,18 +266,33 @@ export async function checkSpecificChannelReadiness(
 
     const result = checkChannelReadiness(input, targetChannel)
 
-    // Log to activities if requested (skipped silently if brokerage/agent missing).
+    // Log to activities if requested. brokerage_id / agent_id used to be
+    // CALLER-SUPPLIED and the write was skipped SILENTLY when either was
+    // missing — a control that appeared to record and did not. Both are now
+    // resolved from the session and any failure is reported to the caller.
     let activity_id: string | undefined
-    if (options?.log_to_activities && input.content_id && options.brokerage_id && options.agent_id) {
-      const logResult = await logChannelReadinessCheck(
-        input.content_id,
-        targetChannel,
-        result.is_ready,
-        result.reason,
-        { brokerageId: options.brokerage_id, agentId: options.agent_id }
-      )
-      if (logResult.success) {
-        activity_id = logResult.activity_id
+    let log_error: string | undefined
+    if (options?.log_to_activities) {
+      if (!input.content_id) {
+        log_error = "content_id is required to record a channel readiness check"
+      } else {
+        const identity = await resolveLoggingIdentity()
+        if (!identity.ok) {
+          log_error = identity.error
+        } else {
+          const logResult = await logChannelReadinessCheck(
+            input.content_id,
+            targetChannel,
+            result.is_ready,
+            result.reason,
+            { brokerageId: identity.brokerageId, agentId: identity.agentId }
+          )
+          if (logResult.success) {
+            activity_id = logResult.activity_id
+          } else {
+            log_error = logResult.error ?? "Failed to record channel readiness check"
+          }
+        }
       }
     }
 
@@ -221,6 +301,7 @@ export async function checkSpecificChannelReadiness(
       is_ready: result.is_ready,
       reason: result.reason,
       activity_id,
+      log_error,
     }
   } catch (err) {
     console.error("[v0] Error checking channel readiness:", err)
@@ -253,6 +334,32 @@ export async function fetchReadinessHistory(
         success: false,
         error: "Invalid content_id format (must be UUID)",
       }
+    }
+
+    // TENANT GATE. getReadinessHistory reads `activities` through the SERVICE
+    // client (RLS bypassed) filtered only by entity_id, so without this gate any
+    // authenticated user who knows a content UUID could read another
+    // brokerage's readiness trail. Prove the content belongs to the caller's
+    // brokerage with an explicitly brokerage-filtered probe FIRST.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+
+    const supabase = await createClient()
+    const { count, error: scopeError } = await supabase
+      .from("activities")
+      .select("id", { count: "exact", head: true })
+      .eq("brokerage_id", ctx.brokerageId)
+      .eq("entity_type", "content")
+      .eq("entity_id", contentId)
+
+    if (scopeError) {
+      return { success: false, error: scopeError.message }
+    }
+    if (!count) {
+      // No readiness trail for this content inside the caller's brokerage.
+      return { success: true, evaluations: [] }
     }
 
     return await getReadinessHistory(contentId, limit)
@@ -303,6 +410,18 @@ export async function fetchReadinessStatistics(
 
 /**
  * ACTION 7: Get readiness trends over time
+ *
+ * ⚠ NOT TENANT-SCOPED — DELIBERATELY LEFT UNWIRED.
+ * lib/campaign-readiness/readiness-logger.ts::getReadinessTrends reads
+ * `activities` through the SERVICE client (RLS bypassed) with NO brokerage
+ * filter, so it aggregates every brokerage on the platform. The same defect
+ * affects getReadinessStatistics (ACTION 6), which IS already wired into the
+ * Marketing Studio ops tab via app/actions/marketing-ops.ts.
+ *
+ * The fix belongs in the lib query (add a brokerageId parameter and an
+ * explicit .eq("brokerage_id", …)); that file is outside this change's file
+ * set, so this action is NOT surfaced on any tenant page until it is scoped.
+ * Do not wire it to a brokerage-facing view before then.
  */
 export async function fetchReadinessTrends(
   startDate: string,

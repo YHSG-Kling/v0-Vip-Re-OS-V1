@@ -10,13 +10,139 @@ import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { createClient } from "@/lib/supabase/server"
 import { predictPerformanceAction, getUserContextForPrediction } from "@/app/actions/content-prediction"
-import { evaluateContentReadiness } from "@/app/actions/campaign-readiness"
+// Type-only (erased at compile time): the real shape the predictor returns, so the
+// panel can read predicted_score / rationale / confidence without a cast.
+import type { PredictionResult } from "@/lib/content/performance-predictor"
+import {
+  evaluateContentReadiness,
+  batchEvaluateContentReadiness,
+  checkSpecificChannelReadiness,
+  quickCheckReadiness,
+  validateReadinessInput,
+  formatReadinessResult,
+  fetchReadinessHistory,
+} from "@/app/actions/campaign-readiness"
+import { evaluateContentCompliance, type ComplianceVerdict } from "@/lib/compliance-rules"
+import { determineApprovalDecision, type ApprovalDecision } from "@/lib/approval-workflow"
 import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
 import { scheduleSocialPost } from "@/app/actions/social-media-automation"
 import { createCampaign } from "@/app/actions/marketing-studio"
 import { runComplianceGate } from "@/lib/kernel/marketing/real-estate-compliance-gate"
 import type { ContentType } from "@/lib/content/performance-predictor"
-import type { ReadinessInput } from "@/lib/campaign-readiness/readiness-evaluator"
+import type {
+  ReadinessInput,
+  ExecutionChannel,
+  ContentType as ReadinessContentType,
+} from "@/lib/campaign-readiness/readiness-evaluator"
+
+// ─── READINESS INPUT BUILDER ──────────────────────────────────────────────────
+// Systems 4.2 (compliance) → 4.3 (approval) → 4.5 (readiness) are a chain.
+// This builds the 4.5 input from the REAL 4.2/4.3 verdicts instead of the
+// hard-coded {compliance_status:"pass", approval_status:"auto_approved"} stub
+// that used to sit inline in runPrelaunchCheck. That stub was wrong twice over:
+//   1. it declared every piece of content compliant without evaluating it, and
+//   2. "auto_approved" is not in ApprovalStatus ("approved"|"pending"|
+//      "rejected"), so checkApprovalReadiness compared it against "approved",
+//      failed, and EVERY pre-launch check in the Studio came back BLOCKED with
+//      'Content approval status is auto_approved, not approved'.
+
+/** Readiness ContentType vocabulary (lib/campaign-readiness/readiness-evaluator). */
+const READINESS_CONTENT_TYPES = [
+  "email", "sms", "social_post", "ad", "newsletter", "blog_post",
+  "listing_description", "video_script", "direct_mail", "image_prompt",
+] as const
+
+/** ExecutionChannel vocabulary (lib/campaign-readiness/readiness-evaluator). */
+const EXECUTION_CHANNELS = [
+  "email", "sms", "direct_mail", "facebook", "instagram", "linkedin", "twitter",
+  "tiktok", "youtube", "google_ads", "meta_ads", "newsletter", "blog",
+  "listing_website",
+] as const
+
+function toReadinessContentType(value: string): ReadinessContentType {
+  if ((READINESS_CONTENT_TYPES as readonly string[]).includes(value)) {
+    return value as ReadinessContentType
+  }
+  // Predictor vocabulary → readiness vocabulary
+  if (value === "ad_creative") return "ad"
+  return "social_post"
+}
+
+function toExecutionChannel(value: string): ExecutionChannel | null {
+  return (EXECUTION_CHANNELS as readonly string[]).includes(value)
+    ? (value as ExecutionChannel)
+    : null
+}
+
+/** Compliance content_type vocabulary accepted by runComplianceGate. */
+function toGateContentType(
+  value: ReadinessContentType
+): "social_post" | "ad" | "listing_remarks" | "comment_reply" | "newsletter" | "blog" {
+  switch (value) {
+    case "ad": return "ad"
+    case "newsletter":
+    case "email": return "newsletter"
+    case "blog_post": return "blog"
+    case "listing_description": return "listing_remarks"
+    default: return "social_post"
+  }
+}
+
+async function buildReadinessInput(params: {
+  contentText: string
+  contentType: string
+  platform: string
+  brokerageId: string
+  contentId?: string
+  audienceScope?: "public" | "private"
+}): Promise<{
+  input: ReadinessInput
+  compliance: ComplianceVerdict
+  approval: ApprovalDecision
+  channel: ExecutionChannel | null
+}> {
+  const readinessType = toReadinessContentType(params.contentType)
+  const channel = toExecutionChannel(params.platform)
+
+  // SYSTEM 4.2 — real compliance verdict, brokerage-scoped so state-specific
+  // protected-class rules load for the caller's brokerage.
+  const compliance = await evaluateContentCompliance({
+    content_type: readinessType,
+    channel_intent: params.platform,
+    raw_content: params.contentText,
+    brokerage_id: params.brokerageId,
+    intended_audience: params.audienceScope ?? "public",
+  })
+
+  // SYSTEM 4.3 — real approval decision derived from that verdict.
+  const approval = determineApprovalDecision(
+    {
+      content_type: readinessType,
+      channel_intent: params.platform,
+      raw_content: params.contentText,
+      source_inputs: {},
+      generated_at: new Date().toISOString(),
+    },
+    compliance,
+    {
+      requester_role: "agent",
+      content_origin: "ai_generated",
+      audience_scope: params.audienceScope ?? "public",
+    }
+  )
+
+  const input: ReadinessInput = {
+    content_type: readinessType,
+    channel_intent: channel ? [channel] : [],
+    audience_scope: params.audienceScope ?? "public",
+    content_id: params.contentId,
+    compliance_verdict: compliance,
+    approval_decision: approval,
+    context: {},
+  }
+
+  return { input, compliance, approval, channel }
+}
 
 // ─── generateMarketingInsight ─────────────────────────────────────────────────
 // Free-form AI generation for Competitor Watch and Repurpose Engine.
@@ -47,13 +173,35 @@ export async function generateMarketingInsight(
 // Combines performance prediction + readiness evaluation for a piece of content.
 // Takes simple UI inputs and builds the required complex types internally.
 
+interface PrelaunchCheckResult {
+  success: boolean
+  error?: string
+  // `unknown` here forced every consumer to cast: `res.prediction ?? null` widens
+  // to `{} | null`, which no typed setState will accept. The predictor already
+  // publishes PredictionResult — say so.
+  prediction?: PredictionResult | null
+  predictionError?: string | null
+  readiness?: { readiness_status: "ready" | "blocked"; blocking_reasons?: string[]; ready_for_channels?: string[] } | null
+  readinessError?: string | null
+  readinessLogError?: string | null
+  readinessReport?: string | null
+  quickVerdict?: { isReady: boolean; reason: string | null } | null
+  channelVerdict?: { channel: string; isReady: boolean; reason: string | null } | null
+  compliance?: {
+    status: "pass" | "fail" | "review_required"
+    violations: Array<{ severity: string; rule: string; detail: string; suggestedFix: string | null }>
+    requiredActions: string[]
+  } | null
+  approval?: { status: string; blockingReason: string | null; requiredApprovers: string[] } | null
+}
+
 export async function runPrelaunchCheck(params: {
   contentText: string
   contentType: ContentType
   platform: string
   sourceTable?: string
   sourceId?: string
-}) {
+}): Promise<PrelaunchCheckResult> {
   const userCtx = await getUserContextForPrediction()
   if (!userCtx.success || !userCtx.userId || !userCtx.brokerageId) {
     return { success: false, error: "Not authenticated or no brokerage found" }
@@ -72,45 +220,49 @@ export async function runPrelaunchCheck(params: {
     platform: params.platform,
   })
 
-  // 2. Readiness evaluation — build minimal ReadinessInput with sensible defaults
-  const now = new Date().toISOString()
+  // 2. Readiness evaluation — real 4.2 compliance + 4.3 approval, no stubs.
+  const contentId = params.sourceId && isUuid(params.sourceId) ? params.sourceId : undefined
+  const { input: readinessInput, compliance, approval, channel } = await buildReadinessInput({
+    contentText: params.contentText,
+    contentType: params.contentType,
+    platform: params.platform,
+    brokerageId,
+    contentId,
+  })
 
-  const complianceVerdict = {
-    compliance_status: "pass" as const,
-    violations: [],
-    required_actions: [],
-    evaluated_at: now,
-    summary: {
-      total_violations: 0,
-      by_category: {},
-      by_severity: {},
-      highest_severity: null as null,
-    },
+  // Structural validation of the 4.5 input BEFORE evaluating, so a malformed
+  // input reports which field is missing instead of a generic failure.
+  const validation = await validateReadinessInput(readinessInput)
+  if (validation.success && validation.is_valid === false) {
+    return {
+      success: false,
+      error: `Readiness input incomplete — missing: ${(validation.missing_fields ?? []).join(", ")}`,
+    }
   }
 
-  const approvalDecision = {
-    approval_status: "auto_approved" as const,
-    approval_notes: ["Pre-launch preview — not a final approval"],
-    decided_at: now,
-    metadata: {
-      content_type: params.contentType,
-      channel_intent: params.platform,
-      compliance_status: "pass",
-      highest_violation_severity: null,
-      auto_approved: true,
-    },
-  }
+  // Fast approval+compliance verdict, and the full multi-check evaluation.
+  // log_to_activities records the verdict where the ops tab's pass-rate reads
+  // it — only possible when the content has a real id.
+  const [quick, readyResult] = await Promise.all([
+    quickCheckReadiness(approval, compliance),
+    evaluateContentReadiness(readinessInput, { log_to_activities: Boolean(contentId) }),
+  ])
 
-  const readinessInput: ReadinessInput = {
-    content_type: params.contentType as any,
-    channel_intent: [params.platform as any],
-    audience_scope: "public" as any,
-    compliance_verdict: complianceVerdict,
-    approval_decision: approvalDecision as any,
-    context: {},
-  }
+  // Per-channel verdict for the selected platform + the human-readable report,
+  // both rendered from the SERVER's answer.
+  const channelCheck = channel
+    ? await checkSpecificChannelReadiness(readinessInput, channel)
+    : {
+        success: false,
+        is_ready: false,
+        reason: undefined as string | undefined,
+        error: `"${params.platform}" is not an execution channel`,
+      }
 
-  const readyResult = await evaluateContentReadiness(readinessInput)
+  const formatted =
+    readyResult.success && readyResult.readiness_output
+      ? await formatReadinessResult(readyResult.readiness_output)
+      : { success: false, formatted: undefined as string | undefined, error: "No readiness output to format" }
 
   return {
     success: true,
@@ -118,6 +270,109 @@ export async function runPrelaunchCheck(params: {
     predictionError: predResult.success ? null : predResult.error,
     readiness: readyResult.success ? readyResult.readiness_output : null,
     readinessError: readyResult.success ? null : readyResult.error,
+    /** Set when readiness was evaluated but could NOT be recorded. */
+    readinessLogError: readyResult.success ? (readyResult.log_error ?? null) : null,
+    readinessReport: formatted.success ? (formatted.formatted ?? null) : null,
+    quickVerdict: quick.success ? { isReady: quick.is_ready ?? false, reason: quick.reason ?? null } : null,
+    channelVerdict: channelCheck.success
+      ? { channel: params.platform, isReady: channelCheck.is_ready ?? false, reason: channelCheck.reason ?? null }
+      : { channel: params.platform, isReady: false, reason: channelCheck.error ?? "Channel check failed" },
+    compliance: {
+      status: compliance.compliance_status,
+      violations: compliance.violations.map((v) => ({
+        severity: v.severity,
+        rule: v.rule_name,
+        detail: v.description,
+        suggestedFix: v.suggested_fix ?? null,
+      })),
+      requiredActions: compliance.required_actions,
+    },
+    approval: {
+      status: approval.approval_status,
+      blockingReason: approval.blocking_reason ?? null,
+      requiredApprovers: approval.required_approvers ?? [],
+    },
+  }
+}
+
+function isUuid(v: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)
+}
+
+// ─── runBatchReadinessCheck ───────────────────────────────────────────────────
+// Evaluates a whole shortlist of marketing assets in one pass and RECORDS each
+// verdict, so the Studio ops "Readiness Pass Rate" reflects real content
+// instead of an empty table.
+
+export async function runBatchReadinessCheck(
+  items: Array<{ contentId: string; contentText: string; contentType: string; platform: string }>
+): Promise<{
+  success: boolean
+  results?: Array<{ contentId: string; status: "ready" | "blocked"; blockingReasons: string[] }>
+  loggedCount?: number
+  logError?: string | null
+  error?: string
+}> {
+  if (items.length === 0) return { success: false, error: "Nothing to evaluate" }
+
+  const userCtx = await getUserContextForPrediction()
+  if (!userCtx.success || !userCtx.brokerageId) {
+    return { success: false, error: "Not authenticated or no brokerage found" }
+  }
+
+  const built = await Promise.all(
+    items.map((item) =>
+      buildReadinessInput({
+        contentText: item.contentText,
+        contentType: item.contentType,
+        platform: item.platform,
+        brokerageId: userCtx.brokerageId as string,
+        contentId: item.contentId,
+      })
+    )
+  )
+
+  const res = await batchEvaluateContentReadiness(
+    built.map((b) => b.input),
+    { log_to_activities: true }
+  )
+  if (!res.success) return { success: false, error: res.error ?? "Batch evaluation failed" }
+
+  return {
+    success: true,
+    results: (res.results ?? []).map((r, i) => ({
+      contentId: items[i].contentId,
+      status: r.readiness_output.readiness_status,
+      blockingReasons: r.readiness_output.blocking_reasons ?? [],
+    })),
+    loggedCount: res.logged_count ?? 0,
+    logError: res.log_error ?? null,
+  }
+}
+
+// ─── loadReadinessHistory ─────────────────────────────────────────────────────
+// The recorded readiness trail for one piece of content — brokerage-gated in
+// app/actions/campaign-readiness.ts before the service-role read runs.
+
+export async function loadReadinessHistory(contentId: string): Promise<{
+  success: boolean
+  entries?: Array<{ id: string; activityType: string; status: string; reasons: string[]; createdAt: string }>
+  error?: string
+}> {
+  if (!isUuid(contentId)) return { success: false, error: "Invalid content id" }
+
+  const res = await fetchReadinessHistory(contentId, 25)
+  if (!res.success) return { success: false, error: res.error ?? "Could not load readiness history" }
+
+  return {
+    success: true,
+    entries: (res.evaluations ?? []).map((e) => ({
+      id: e.id,
+      activityType: e.activity_type,
+      status: String((e.metadata as any)?.readiness_status ?? (e.activity_type === "campaign_ready" ? "ready" : "blocked")),
+      reasons: ((e.metadata as any)?.blocking_reasons ?? []) as string[],
+      createdAt: e.created_at,
+    })),
   }
 }
 

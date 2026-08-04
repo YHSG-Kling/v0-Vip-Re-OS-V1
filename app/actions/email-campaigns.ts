@@ -42,12 +42,15 @@ async function requireCaller(): Promise<
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthorized" }
-  const { data: u } = await supabase
+  // supabase-js RESOLVES a refused read — destructure `error` or a blocked
+  // lookup is indistinguishable from "user has no brokerage".
+  const { data: u, error: userError } = await supabase
     .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  if (userError) return { ok: false, error: `Could not resolve your brokerage: ${userError.message}` }
+  if (!u?.brokerage_id) return { ok: false, error: "No brokerage associated with your account." }
   return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
 }
 
@@ -67,7 +70,13 @@ export interface UpdateEmailCampaignParams {
   campaignName?: string
   subjectLine?: string
   content?: string
+  /** email_campaigns.preview_text — the inbox preheader. */
+  previewText?: string
   sendDate?: string
+  /** Subset of the live email_campaigns_status_check vocabulary
+   *  (draft|scheduled|sending|sent|paused|cancelled|failed). The send-state
+   *  literals are owned by lib/marketing/email-campaign-sender and are
+   *  deliberately NOT settable here. */
   status?: "draft" | "scheduled" | "sent" | "cancelled"
   approvalStatus?: "pending" | "approved" | "rejected"
 }
@@ -208,12 +217,13 @@ export async function updateEmailCampaign(
 
     const supabase = await createClient()
 
-    const { data: existing } = await supabase
+    const { data: existing, error: existingError } = await supabase
       .from("email_campaigns")
       .select("status, brokerage_id")
       .eq("id", campaignId)
       .maybeSingle()
 
+    if (existingError) throw existingError
     if (!existing) return { success: false, error: "Campaign not found" }
     if (existing.brokerage_id !== auth.brokerageId) {
       return { success: false, error: "Forbidden" }
@@ -221,11 +231,16 @@ export async function updateEmailCampaign(
     if (existing.status === "sent") {
       return { success: false, error: "Cannot update a sent campaign" }
     }
+    // The sender owns the row once it is in flight — don't race it.
+    if (existing.status === "sending") {
+      return { success: false, error: "Campaign is currently sending" }
+    }
 
     const payload: Record<string, unknown> = {}
     if (updates.campaignName !== undefined) payload.campaign_name = updates.campaignName
     if (updates.subjectLine !== undefined) payload.subject_line = updates.subjectLine
     if (updates.content !== undefined) payload.content = updates.content
+    if (updates.previewText !== undefined) payload.preview_text = updates.previewText
     if (updates.sendDate !== undefined) payload.send_date = updates.sendDate
     if (updates.status !== undefined) payload.status = updates.status
     if (updates.approvalStatus !== undefined) payload.approval_status = updates.approvalStatus
@@ -239,6 +254,7 @@ export async function updateEmailCampaign(
       .maybeSingle()
 
     if (error) throw error
+    if (!data) return { success: false, error: "Update was refused — campaign not found in your brokerage" }
 
     revalidatePath("/dashboard/marketing/studio")
     revalidatePath("/newsletters")
@@ -261,12 +277,13 @@ export async function deleteEmailCampaign(campaignId: string) {
 
     const supabase = await createClient()
 
-    const { data: existing } = await supabase
+    const { data: existing, error: existingError } = await supabase
       .from("email_campaigns")
       .select("status, brokerage_id")
       .eq("id", campaignId)
       .maybeSingle()
 
+    if (existingError) throw existingError
     if (!existing) return { success: false, error: "Campaign not found" }
     if (existing.brokerage_id !== auth.brokerageId) {
       return { success: false, error: "Forbidden" }
@@ -367,12 +384,13 @@ export async function sendEmailCampaign(campaignId: string, _actorUserId?: strin
 
     const supabase = await createClient()
 
-    const { data: campaign } = await supabase
+    const { data: campaign, error: campaignError } = await supabase
       .from("email_campaigns")
       .select("id, status, brokerage_id")
       .eq("id", campaignId)
       .maybeSingle()
 
+    if (campaignError) throw campaignError
     if (!campaign) return { success: false, error: "Campaign not found" }
     if (campaign.brokerage_id !== brokerageId) {
       return { success: false, error: "Forbidden" }
@@ -419,12 +437,13 @@ export async function scheduleEmailCampaign(
 
     const supabase = await createClient()
 
-    const { data: existing } = await supabase
+    const { data: existing, error: existingError } = await supabase
       .from("email_campaigns")
       .select("status, content, subject_line, brokerage_id")
       .eq("id", campaignId)
       .maybeSingle()
 
+    if (existingError) throw existingError
     if (!existing) return { success: false, error: "Campaign not found" }
     if (existing.brokerage_id !== auth.brokerageId) {
       return { success: false, error: "Forbidden" }
@@ -475,6 +494,11 @@ export async function getEmailCampaignStats(_brokerageId?: string) {
         .eq("status", "subscribed"),
     ])
 
+    // Both legs are reads that can be REFUSED; `|| []` on data alone reports a
+    // blocked query as "you have zero campaigns / zero subscribers".
+    if (campaignsResult.error) throw campaignsResult.error
+    if (subscribersResult.error) throw subscribersResult.error
+
     const campaigns = campaignsResult.data || []
     const activeCampaigns = campaigns.filter((c) => c.status === "scheduled").length
     const sentCampaigns = campaigns.filter((c) => c.status === "sent")
@@ -520,12 +544,13 @@ export async function prepareListingEmailCampaign(params: {
       return { success: false, error: access.reason ?? "Email campaigns feature not available" }
     }
 
-    const { data: transaction } = await supabase
+    const { data: transaction, error: transactionError } = await supabase
       .from("transactions")
       .select("*, listings(*), listing_photos(*)")
       .eq("id", params.transactionId)
-      .single()
+      .maybeSingle()
 
+    if (transactionError) throw transactionError
     if (!transaction || !transaction.listings) {
       return { success: false, error: "Transaction not found" }
     }
@@ -592,7 +617,7 @@ export async function prepareListingEmailCampaign(params: {
       price_drop: "offer",
       sold: "closing",
     }
-    const { data: template } = await supabase
+    const { data: template, error: templateError } = await supabase
       .from("email_templates")
       .insert({
         brokerage_id: brokerageId,
@@ -612,24 +637,38 @@ export async function prepareListingEmailCampaign(params: {
       .select()
       .single()
 
+    if (templateError) throw templateError
     if (template) {
-      await supabase.from("email_campaigns").update({ template_id: template.id }).eq("id", campaign.id)
+      const { error: linkError } = await supabase
+        .from("email_campaigns")
+        .update({ template_id: template.id })
+        .eq("id", campaign.id)
+      if (linkError) throw linkError
     }
 
+    // A refused email_sends insert used to vanish: the campaign reported N
+    // recipients while the queue the sender drains stayed empty.
     const uniqueRecipients = [...new Set(recipients.filter(Boolean))]
+    let queued = 0
     for (const contactId of uniqueRecipients) {
-      await supabase.from("email_sends").insert({
+      const { error: queueError } = await supabase.from("email_sends").insert({
         campaign_id: campaign.id,
         contact_id: contactId,
         status: "queued",
       })
+      if (queueError) {
+        console.error("[prepareListingEmailCampaign] could not queue recipient:", queueError.message)
+        continue
+      }
+      queued++
     }
 
     revalidatePath("/dashboard/listings")
     return {
       success: true,
       campaign_id: campaign.id,
-      recipients: uniqueRecipients.length,
+      recipients: queued,
+      recipientsRequested: uniqueRecipients.length,
       subject: emailContent.data?.subject,
     }
   } catch (error) {
@@ -646,36 +685,40 @@ async function getListingCampaignRecipients(
   const supabase = await createClient()
 
   if (campaignType === "coming_soon" || campaignType === "launch") {
-    const { data: contacts } = await supabase
+    const { data: contacts, error: contactsError } = await supabase
       .from("contacts")
       .select("id")
       .eq("brokerage_id", listing.brokerage_id)
       .eq("status", "active")
       .gte("budget_max", (listing.price || 0) * 0.9)
       .lte("budget_min", (listing.price || 0) * 1.1)
+    if (contactsError) throw contactsError
     return contacts?.map((c) => c.id) || []
   }
 
   if (campaignType === "open_house") {
-    const { data: interested } = await supabase
+    const { data: interested, error: interestedError } = await supabase
       .from("property_interactions")
       .select("contact_id")
       .eq("listing_id", listing.id)
       .in("interaction_type", ["view", "save"])
+    if (interestedError) throw interestedError
     return interested?.map((i) => i.contact_id).filter((id) => id) || []
   }
 
   if (campaignType === "price_drop") {
-    const { data: viewers } = await supabase
+    const { data: viewers, error: viewersError } = await supabase
       .from("property_interactions")
       .select("contact_id")
       .eq("listing_id", listing.id)
       .eq("interaction_type", "view")
+    if (viewersError) throw viewersError
     return viewers?.map((v) => v.contact_id).filter((id) => id) || []
   }
 
-  const { data: allContacts } = await supabase.from("contacts").select("id")
+  const { data: allContacts, error: allContactsError } = await supabase.from("contacts").select("id")
     .eq("brokerage_id", listing.brokerage_id).eq("status", "active").limit(100)
+  if (allContactsError) throw allContactsError
   return allContacts?.map((c) => c.id) || []
 }
 

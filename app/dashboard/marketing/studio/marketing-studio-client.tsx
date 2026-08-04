@@ -92,6 +92,7 @@ import {
   PerformanceIntelligencePanel,
   PrelaunchPredictionPanel,
   SellerSafeMarketingSummary,
+  ListingCopyPanel,
 } from "./components/ad-os"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -236,6 +237,67 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
   const [newsletterTemplates, setNewsletterTemplates] = useState<any[]>([])
   const [localContent, setLocalContent] = useState<any[]>([])
   const [isNewsletterLoading, setIsNewsletterLoading] = useState(false)
+  const [newsletterError, setNewsletterError] = useState<string | null>(null)
+
+  // EMAIL CAMPAIGN state. The "New Campaign" button on this tab has always
+  // called createEmailCampaign, which writes `email_campaigns` — but the list
+  // beside it read `newsletter_campaigns`, so every campaign created here
+  // vanished on save. These are the email_campaigns rows, read back through
+  // the canonical brokerage-scoped action.
+  const [emailCampaigns, setEmailCampaigns] = useState<any[]>([])
+  const [emailStats, setEmailStats] = useState<{
+    totalCampaigns: number
+    activeCampaigns: number
+    totalSubscribers: number
+    avgOpenRate: number | null
+  } | null>(null)
+  const [emailCampaignsError, setEmailCampaignsError] = useState<string | null>(null)
+  const [editingEmailCampaign, setEditingEmailCampaign] = useState<any | null>(null)
+  const [emailEditorDraft, setEmailEditorDraft] = useState({
+    campaignName: "",
+    subjectLine: "",
+    previewText: "",
+    content: "",
+  })
+  const [isLoadingEmailCampaign, setIsLoadingEmailCampaign] = useState(false)
+  const [isSavingEmailCampaign, setIsSavingEmailCampaign] = useState(false)
+  const [emailEditorError, setEmailEditorError] = useState<string | null>(null)
+  const [isComposingEmail, setIsComposingEmail] = useState(false)
+  const [aiComposeTopic, setAiComposeTopic] = useState("")
+  const [aiComposeAudience, setAiComposeAudience] = useState<
+    "buyers" | "sellers" | "investors" | "lifetime_customers" | "all"
+  >("all")
+
+  // AI newsletter generator (writes a newsletter_campaigns draft through the
+  // canonical createNewsletterCampaign writer — see ai-marketing-automation).
+  const [isAiNewsletterOpen, setIsAiNewsletterOpen] = useState(false)
+  const [aiNewsletter, setAiNewsletter] = useState<{
+    topic: string
+    audienceSegment: "buyers" | "sellers" | "investors" | "lifetime_customers" | "sphere" | "all"
+    tone: "professional" | "friendly" | "educational" | "urgent"
+    includeMarketData: boolean
+    includeListings: boolean
+  }>({
+    topic: "",
+    audienceSegment: "all",
+    tone: "friendly",
+    includeMarketData: true,
+    includeListings: true,
+  })
+  const [isGeneratingNewsletter, setIsGeneratingNewsletter] = useState(false)
+  const [aiNewsletterError, setAiNewsletterError] = useState<string | null>(null)
+  const [subjectVariants, setSubjectVariants] = useState<string[] | null>(null)
+  const [isGeneratingVariants, setIsGeneratingVariants] = useState(false)
+
+  // Bulk readiness sweep over the loaded marketing assets. Each verdict is
+  // RECORDED against the asset, which is where the ops tab's pass-rate reads.
+  const [isSweepingReadiness, setIsSweepingReadiness] = useState(false)
+  const [readinessSweep, setReadinessSweep] = useState<{
+    results: Array<{ contentId: string; status: "ready" | "blocked"; blockingReasons: string[] }>
+    loggedCount: number
+    logError: string | null
+  } | null>(null)
+  const [readinessSweepError, setReadinessSweepError] = useState<string | null>(null)
 
   // Blog state
   const [blogPosts, setBlogPosts] = useState<any[]>([])
@@ -392,9 +454,212 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
     if (result.success) setAvailableQrCodes(result.qrCodes)
   }
 
+  // ─── EMAIL CAMPAIGNS (email_campaigns) ──────────────────────────────────────
+  // Both reads go through the brokerage-scoped server actions, and both report
+  // the SERVER's verdict rather than rendering an empty list on refusal.
+  async function loadEmailCampaigns() {
+    setEmailCampaignsError(null)
+    const { getEmailCampaigns, getEmailCampaignStats } = await import("@/app/actions/email-campaigns")
+    const [listRes, statsRes] = await Promise.all([getEmailCampaigns(), getEmailCampaignStats()])
+    if (listRes.success) {
+      setEmailCampaigns((listRes as any).campaigns ?? [])
+    } else {
+      setEmailCampaigns([])
+      setEmailCampaignsError((listRes as any).error ?? "Could not load email campaigns")
+    }
+    if (statsRes.success) {
+      setEmailStats((statsRes as any).stats ?? null)
+    } else {
+      setEmailStats(null)
+      setEmailCampaignsError(
+        (prev) => prev ?? ((statsRes as any).error ?? "Could not load email campaign stats")
+      )
+    }
+  }
+
+  async function openEmailCampaignEditor(campaignId: string) {
+    setIsLoadingEmailCampaign(true)
+    setEmailEditorError(null)
+    try {
+      const { getEmailCampaign } = await import("@/app/actions/email-campaigns")
+      const res = await getEmailCampaign(campaignId)
+      if (!res.success) {
+        toast({
+          title: "Could not open campaign",
+          description: (res as any).error ?? "Unknown error",
+          variant: "destructive",
+        })
+        return
+      }
+      const campaign = (res as any).campaign
+      setEditingEmailCampaign(campaign)
+      setEmailEditorDraft({
+        campaignName: campaign.campaign_name ?? "",
+        subjectLine: campaign.subject_line ?? "",
+        previewText: campaign.preview_text ?? "",
+        content: campaign.content ?? "",
+      })
+      setAiComposeTopic(campaign.campaign_name ?? "")
+    } finally {
+      setIsLoadingEmailCampaign(false)
+    }
+  }
+
+  async function saveEmailCampaign() {
+    if (!editingEmailCampaign) return
+    setIsSavingEmailCampaign(true)
+    setEmailEditorError(null)
+    try {
+      const { updateEmailCampaign } = await import("@/app/actions/email-campaigns")
+      // The second argument is ignored server-side (identity comes from the
+      // session) — it is kept only for the existing signature.
+      const res = await updateEmailCampaign(editingEmailCampaign.id, "", {
+        campaignName: emailEditorDraft.campaignName.trim(),
+        subjectLine: emailEditorDraft.subjectLine.trim(),
+        previewText: emailEditorDraft.previewText.trim(),
+        content: emailEditorDraft.content,
+      })
+      if (!res.success) {
+        // Report the SERVER's refusal — never an optimistic "Saved!".
+        setEmailEditorError((res as any).error ?? "Save was refused")
+        return
+      }
+      setEditingEmailCampaign(null)
+      toast({ title: "Campaign saved" })
+      await loadEmailCampaigns()
+    } finally {
+      setIsSavingEmailCampaign(false)
+    }
+  }
+
+  async function composeEmailWithAI() {
+    if (!aiComposeTopic.trim()) return
+    setIsComposingEmail(true)
+    setEmailEditorError(null)
+    try {
+      const { aiComposeEmail } = await import("@/app/actions/email-campaigns")
+      const res = await aiComposeEmail({
+        brokerageId: brokerageIdProp || brokerageId,
+        agentId: agentId || undefined,
+        topic: aiComposeTopic.trim(),
+        audience: aiComposeAudience,
+        campaignId: editingEmailCampaign?.id,
+      })
+      if (!res.success) {
+        setEmailEditorError((res as any).error ?? "AI compose failed")
+        return
+      }
+      // Draft only — nothing is persisted or sent until the agent saves.
+      setEmailEditorDraft((prev) => ({
+        ...prev,
+        subjectLine: (res as any).subject ?? prev.subjectLine,
+        previewText: (res as any).preheader ?? prev.previewText,
+        content: (res as any).body ?? prev.content,
+      }))
+    } finally {
+      setIsComposingEmail(false)
+    }
+  }
+
+  // ─── BULK READINESS SWEEP ───────────────────────────────────────────────────
+  async function sweepAssetReadiness() {
+    const candidates = assets
+      .filter((a) => (a.preview_text ?? "").trim().length > 0)
+      .slice(0, 25)
+    if (candidates.length === 0) {
+      setReadinessSweepError("No assets with preview text to evaluate.")
+      setReadinessSweep(null)
+      return
+    }
+    setIsSweepingReadiness(true)
+    setReadinessSweepError(null)
+    setReadinessSweep(null)
+    try {
+      const { runBatchReadinessCheck } = await import("./components/ad-os/ad-os-actions")
+      const res = await runBatchReadinessCheck(
+        candidates.map((a) => ({
+          contentId: a.id,
+          contentText: a.preview_text as string,
+          contentType: a.asset_type,
+          platform: "email",
+        }))
+      )
+      if (!res.success) {
+        setReadinessSweepError(res.error ?? "Readiness sweep failed")
+        return
+      }
+      setReadinessSweep({
+        results: res.results ?? [],
+        loggedCount: res.loggedCount ?? 0,
+        logError: res.logError ?? null,
+      })
+    } finally {
+      setIsSweepingReadiness(false)
+    }
+  }
+
+  // ─── AI NEWSLETTER ──────────────────────────────────────────────────────────
+  async function generateSubjectVariants() {
+    if (!aiNewsletter.topic.trim() || !agentId) return
+    setIsGeneratingVariants(true)
+    setAiNewsletterError(null)
+    setSubjectVariants(null)
+    try {
+      const { generateNewsletterSubjectVariants } = await import(
+        "@/app/actions/ai-marketing-automation"
+      )
+      const res = await generateNewsletterSubjectVariants(
+        agentId,
+        aiNewsletter.topic.trim(),
+        aiNewsletter.audienceSegment
+      )
+      if (!res.success) setAiNewsletterError(res.error ?? "Could not generate subject variants")
+      else setSubjectVariants(res.variants ?? [])
+    } finally {
+      setIsGeneratingVariants(false)
+    }
+  }
+
+  async function generateNewsletterWithAI() {
+    if (!agentId) {
+      setAiNewsletterError("No agent profile resolved for your account.")
+      return
+    }
+    setIsGeneratingNewsletter(true)
+    setAiNewsletterError(null)
+    try {
+      const { generateAINewsletter } = await import("@/app/actions/ai-marketing-automation")
+      const res = await generateAINewsletter({
+        agentId,
+        audienceSegment: aiNewsletter.audienceSegment,
+        topic: aiNewsletter.topic.trim() || undefined,
+        tone: aiNewsletter.tone,
+        includeMarketData: aiNewsletter.includeMarketData,
+        includeListings: aiNewsletter.includeListings,
+      })
+      if (!res.success) {
+        // The server's refusal, verbatim — no optimistic success.
+        setAiNewsletterError(res.error ?? "Newsletter generation failed")
+        return
+      }
+      setIsAiNewsletterOpen(false)
+      setSubjectVariants(null)
+      toast({
+        title: "AI newsletter drafted",
+        description: res.newsletter?.subject ?? "Saved as a draft campaign",
+      })
+      // Re-read so the new draft appears in the list it was written to.
+      await loadNewsletterData()
+    } finally {
+      setIsGeneratingNewsletter(false)
+    }
+  }
+
   async function loadNewsletterData() {
     setIsNewsletterLoading(true)
+    setNewsletterError(null)
     try {
+      await loadEmailCampaigns()
       // Use server-resolved props first; fall back to action
       let resolvedBrokerageId = brokerageIdProp
       let resolvedUserId = userIdProp
@@ -415,13 +680,15 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
 
       const supabase = (await import("@/lib/supabase/client")).createClient()
       
-      // Get newsletter campaigns
-      const { data: campaigns } = await supabase
+      // Get newsletter campaigns. `const { data } = ...` alone turns a REFUSED
+      // read into an empty list — destructure error and surface it.
+      const { data: campaigns, error: campaignsError } = await supabase
         .from("newsletter_campaigns")
         .select("*")
         .eq("brokerage_id", brokerageId)
         .order("created_at", { ascending: false })
         .limit(10)
+      if (campaignsError) setNewsletterError(campaignsError.message)
       setNewsletterCampaigns(campaigns || [])
 
       // Get scheduled sends. agent_id here is agents-class — agentIdProp is
@@ -442,28 +709,32 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
       }
 
       // Get subscriber count
-      const { count } = await supabase
+      const { count, error: countError } = await supabase
         .from("newsletter_subscribers")
         .select("*", { count: "exact", head: true })
         .eq("brokerage_id", brokerageId)
         .eq("status", "subscribed")
+      if (countError) setNewsletterError((prev) => prev ?? countError.message)
       setSubscriberCount(count || 0)
 
-      // Get templates
-      const { data: templates } = await supabase
+      // Get templates. A refusal here used to render the "No newsletter
+      // templates yet" empty state — an error disguised as an onboarding hint.
+      const { data: templates, error: templatesError } = await supabase
         .from("newsletter_brokers_templates")
         .select("*")
         .eq("brokerage_id", brokerageId)
         .limit(5)
+      if (templatesError) setNewsletterError((prev) => prev ?? templatesError.message)
       setNewsletterTemplates(templates || [])
 
       // Get local content
-      const { data: content } = await supabase
+      const { data: content, error: contentError } = await supabase
         .from("newsletter_local_content")
         .select("*")
         .eq("brokerage_id", brokerageId)
         .order("created_at", { ascending: false })
         .limit(5)
+      if (contentError) setNewsletterError((prev) => prev ?? contentError.message)
       setLocalContent(content || [])
     } catch (error) {
       console.error("[v0] Failed to load newsletter data:", error)
@@ -1216,7 +1487,12 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
               <PerformanceIntelligencePanel brokerageId={brokerageId} />
             </div>
 
-            {/* Row 4: Seller-Safe Marketing Summary (full width) */}
+            {/* Row 4: Listing Copy Enhancer (read-only rewrite) */}
+            <div className="grid lg:grid-cols-2 gap-6">
+              <ListingCopyPanel agentId={agentId} listings={listings} />
+            </div>
+
+            {/* Row 5: Seller-Safe Marketing Summary (full width) */}
             <SellerSafeMarketingSummary campaigns={campaigns} />
           </TabsContent>
 
@@ -1482,6 +1758,18 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                   </SelectContent>
                 </Select>
               </div>
+              <Button
+                variant="outline"
+                disabled={isSweepingReadiness || assets.length === 0}
+                onClick={sweepAssetReadiness}
+              >
+                {isSweepingReadiness ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <CheckSquare className="mr-2 h-4 w-4" />
+                )}
+                Check Readiness
+              </Button>
               <Dialog open={isCreateAssetOpen} onOpenChange={setIsCreateAssetOpen}>
                 <DialogTrigger asChild>
                   <Button className="bg-violet-600 hover:bg-violet-700">
@@ -1575,6 +1863,47 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                 </DialogContent>
               </Dialog>
             </div>
+
+            {readinessSweepError && (
+              <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                {readinessSweepError}
+              </div>
+            )}
+
+            {readinessSweep && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <CheckSquare className="h-4 w-4 text-indigo-600" />
+                    Readiness sweep — {readinessSweep.results.filter((r) => r.status === "ready").length} of{" "}
+                    {readinessSweep.results.length} ready
+                  </CardTitle>
+                  <CardDescription>
+                    {readinessSweep.loggedCount} verdict{readinessSweep.loggedCount === 1 ? "" : "s"} recorded
+                    against the assets — feeds the Readiness Pass Rate on the Ops tab.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-1.5">
+                  {readinessSweep.logError && (
+                    <p className="text-xs text-yellow-800 bg-yellow-50 rounded p-2">
+                      Not everything was recorded: {readinessSweep.logError}
+                    </p>
+                  )}
+                  {readinessSweep.results
+                    .filter((r) => r.status === "blocked")
+                    .map((r) => {
+                      const asset = assets.find((a) => a.id === r.contentId)
+                      return (
+                        <div key={r.contentId} className="text-xs rounded border px-2 py-1.5">
+                          <span className="font-medium">{asset?.asset_name ?? r.contentId}</span>
+                          <span className="text-muted-foreground"> — {r.blockingReasons.join("; ") || "blocked"}</span>
+                        </div>
+                      )
+                    })}
+                </CardContent>
+              </Card>
+            )}
 
             <div className="grid md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {assets
@@ -1994,6 +2323,113 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
 
           {/* Newsletters Tab */}
           <TabsContent value="newsletters" className="space-y-6">
+            {newsletterError && (
+              <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                Newsletter data could not be loaded: {newsletterError}
+              </div>
+            )}
+
+            {/* ── EMAIL CAMPAIGNS (email_campaigns) ────────────────────────────
+                The rows the "New Campaign" button on this tab actually creates.
+                Deliberately OUTSIDE the newsletter-template gate below: an
+                email blast does not require an approved newsletter template. */}
+            {!isNewsletterLoading && (
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="flex items-center gap-2">
+                        <Mail className="h-5 w-5 text-violet-600" />
+                        Email Campaigns
+                      </CardTitle>
+                      <CardDescription>
+                        Drafts you create here. Compose with AI, then send or schedule from
+                        the newsletter manager — every send rides the consent-gated dispatcher.
+                      </CardDescription>
+                    </div>
+                    <Button
+                      size="sm"
+                      className="bg-violet-600 hover:bg-violet-700"
+                      onClick={() => setIsCreateNewsletterOpen(true)}
+                    >
+                      <Plus className="h-3.5 w-3.5 mr-1.5" />
+                      New Campaign
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {emailCampaignsError && (
+                    <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700 flex items-center gap-2">
+                      <AlertCircle className="h-4 w-4 shrink-0" />
+                      {emailCampaignsError}
+                    </div>
+                  )}
+
+                  {emailStats && (
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      <div className="rounded-lg border px-3 py-2">
+                        <p className="text-xs text-muted-foreground">Total Campaigns</p>
+                        <p className="text-xl font-bold">{emailStats.totalCampaigns}</p>
+                      </div>
+                      <div className="rounded-lg border px-3 py-2">
+                        <p className="text-xs text-muted-foreground">Scheduled</p>
+                        <p className="text-xl font-bold">{emailStats.activeCampaigns}</p>
+                      </div>
+                      <div className="rounded-lg border px-3 py-2">
+                        <p className="text-xs text-muted-foreground">Subscribers</p>
+                        <p className="text-xl font-bold">{emailStats.totalSubscribers.toLocaleString()}</p>
+                      </div>
+                      <div className="rounded-lg border px-3 py-2">
+                        <p className="text-xs text-muted-foreground">Avg Open Rate</p>
+                        <p className="text-xl font-bold">
+                          {emailStats.avgOpenRate != null ? `${(emailStats.avgOpenRate * 100).toFixed(1)}%` : "—"}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {emailCampaigns.length === 0 ? (
+                    <p className="text-muted-foreground text-center py-6 text-sm">
+                      No email campaigns yet — create one to get started.
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {emailCampaigns.map((c) => (
+                        <div
+                          key={c.id}
+                          className="flex items-center justify-between gap-3 p-3 rounded-lg bg-muted/50"
+                        >
+                          <div className="min-w-0">
+                            <p className="font-medium truncate">{c.campaign_name}</p>
+                            <p className="text-sm text-muted-foreground truncate">
+                              {c.subject_line}
+                              {c.send_date ? ` · ${format(new Date(c.send_date), "MMM d, yyyy")}` : ""}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <Badge className={getStatusColor(c.status || "draft")}>{c.status || "draft"}</Badge>
+                            <Badge variant="outline" className="text-xs capitalize">
+                              {(c.approval_status || "pending").replace("_", " ")}
+                            </Badge>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              aria-label={`Edit ${c.campaign_name}`}
+                              disabled={isLoadingEmailCampaign || c.status === "sent" || c.status === "sending"}
+                              onClick={() => openEmailCampaignEditor(c.id)}
+                            >
+                              <Edit className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+
             {isNewsletterLoading ? (
               <div className="flex items-center justify-center py-12">
                 <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -2043,17 +2479,22 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                   <CardHeader>
                     <div className="flex items-center justify-between">
                       <CardTitle className="flex items-center gap-2">
-                        <Mail className="h-5 w-5 text-violet-600" />
-                        Recent Campaigns
+                        <Newspaper className="h-5 w-5 text-violet-600" />
+                        Newsletter Campaigns
                       </CardTitle>
+                      {/* The "New Campaign" button used to sit here, but it
+                          creates an email_campaigns row while this list reads
+                          newsletter_campaigns — so nothing it made ever showed
+                          up. It now lives on the Email Campaigns card above,
+                          next to the list it actually populates. */}
                       <div className="flex gap-2">
                         <Button
                           size="sm"
                           className="bg-violet-600 hover:bg-violet-700"
-                          onClick={() => setIsCreateNewsletterOpen(true)}
+                          onClick={() => setIsAiNewsletterOpen(true)}
                         >
-                          <Plus className="h-3.5 w-3.5 mr-1.5" />
-                          New Campaign
+                          <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+                          AI Newsletter
                         </Button>
                         <Button variant="outline" size="sm" asChild>
                           <a href="/newsletters">Manage</a>
@@ -2864,6 +3305,269 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
               >
                 {isCreatingNewsletter ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
                 Save Draft
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* AI Newsletter Dialog — generateAINewsletter + generateNewsletterSubjectVariants */}
+        <Dialog
+          open={isAiNewsletterOpen}
+          onOpenChange={(open) => {
+            setIsAiNewsletterOpen(open)
+            if (!open) {
+              setAiNewsletterError(null)
+              setSubjectVariants(null)
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-[560px] max-h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Generate Newsletter with AI</DialogTitle>
+              <DialogDescription>
+                Writes a them-first newsletter from your brand voice, your brokerage&apos;s
+                market data and your active listings, and saves it as a DRAFT newsletter
+                campaign. Nothing is sent.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4 py-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="ain-topic">Topic</Label>
+                <Input
+                  id="ain-topic"
+                  placeholder="e.g. Spring market outlook for our neighbourhood"
+                  value={aiNewsletter.topic}
+                  onChange={(e) => setAiNewsletter((p) => ({ ...p, topic: e.target.value }))}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label>Audience</Label>
+                  <Select
+                    value={aiNewsletter.audienceSegment}
+                    onValueChange={(v) =>
+                      setAiNewsletter((p) => ({ ...p, audienceSegment: v as typeof p.audienceSegment }))
+                    }
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Everyone</SelectItem>
+                      <SelectItem value="buyers">Buyers</SelectItem>
+                      <SelectItem value="sellers">Sellers</SelectItem>
+                      <SelectItem value="investors">Investors</SelectItem>
+                      <SelectItem value="lifetime_customers">Lifetime customers</SelectItem>
+                      <SelectItem value="sphere">Sphere</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Tone</Label>
+                  <Select
+                    value={aiNewsletter.tone}
+                    onValueChange={(v) => setAiNewsletter((p) => ({ ...p, tone: v as typeof p.tone }))}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="friendly">Friendly</SelectItem>
+                      <SelectItem value="professional">Professional</SelectItem>
+                      <SelectItem value="educational">Educational</SelectItem>
+                      <SelectItem value="urgent">Urgent</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-4 text-sm">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={aiNewsletter.includeMarketData}
+                    onChange={(e) => setAiNewsletter((p) => ({ ...p, includeMarketData: e.target.checked }))}
+                  />
+                  Include market data
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={aiNewsletter.includeListings}
+                    onChange={(e) => setAiNewsletter((p) => ({ ...p, includeListings: e.target.checked }))}
+                  />
+                  Include my active listings
+                </label>
+              </div>
+
+              {/* Subject-line A/B variants */}
+              <div className="rounded-lg border p-3 space-y-2 bg-muted/30">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={isGeneratingVariants || !aiNewsletter.topic.trim() || !agentId}
+                  onClick={generateSubjectVariants}
+                >
+                  {isGeneratingVariants ? (
+                    <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+                  )}
+                  Generate 5 A/B subject lines
+                </Button>
+                {subjectVariants && (
+                  subjectVariants.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No variants returned.</p>
+                  ) : (
+                    <ol className="list-decimal pl-5 space-y-0.5 text-sm">
+                      {subjectVariants.map((v, i) => <li key={i}>{v}</li>)}
+                    </ol>
+                  )
+                )}
+              </div>
+
+              {aiNewsletterError && (
+                <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700 flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  {aiNewsletterError}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setIsAiNewsletterOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                className="bg-violet-600 hover:bg-violet-700"
+                disabled={isGeneratingNewsletter || !agentId}
+                onClick={generateNewsletterWithAI}
+              >
+                {isGeneratingNewsletter ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                Generate Draft
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Edit Email Campaign Dialog — getEmailCampaign → aiComposeEmail → updateEmailCampaign */}
+        <Dialog
+          open={!!editingEmailCampaign}
+          onOpenChange={(open) => {
+            if (!open) {
+              setEditingEmailCampaign(null)
+              setEmailEditorError(null)
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-[640px] max-h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Edit Email Campaign</DialogTitle>
+              <DialogDescription>
+                Compose the draft. Saving does NOT send — sending and scheduling stay on the
+                consent-gated dispatcher in the newsletter manager.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4 py-2">
+              {/* AI compose */}
+              <div className="rounded-lg border p-3 space-y-3 bg-muted/30">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <Sparkles className="h-4 w-4 text-violet-600" />
+                  Compose with AI
+                </div>
+                <div className="grid sm:grid-cols-[1fr_180px] gap-2">
+                  <Input
+                    placeholder="What should this email be about?"
+                    value={aiComposeTopic}
+                    onChange={(e) => setAiComposeTopic(e.target.value)}
+                  />
+                  <Select
+                    value={aiComposeAudience}
+                    onValueChange={(v) => setAiComposeAudience(v as typeof aiComposeAudience)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All contacts</SelectItem>
+                      <SelectItem value="buyers">Buyers</SelectItem>
+                      <SelectItem value="sellers">Sellers</SelectItem>
+                      <SelectItem value="investors">Investors</SelectItem>
+                      <SelectItem value="lifetime_customers">Lifetime customers</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={isComposingEmail || !aiComposeTopic.trim()}
+                  onClick={composeEmailWithAI}
+                >
+                  {isComposingEmail ? (
+                    <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+                  )}
+                  Draft subject, preheader &amp; body
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  Fills the fields below with a draft in your brand voice. Nothing is saved until you press Save.
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="ec-name">Campaign Name</Label>
+                <Input
+                  id="ec-name"
+                  value={emailEditorDraft.campaignName}
+                  onChange={(e) => setEmailEditorDraft((p) => ({ ...p, campaignName: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="ec-subject">Subject Line</Label>
+                <Input
+                  id="ec-subject"
+                  value={emailEditorDraft.subjectLine}
+                  onChange={(e) => setEmailEditorDraft((p) => ({ ...p, subjectLine: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="ec-preview">Preview Text</Label>
+                <Input
+                  id="ec-preview"
+                  placeholder="Inbox preheader"
+                  value={emailEditorDraft.previewText}
+                  onChange={(e) => setEmailEditorDraft((p) => ({ ...p, previewText: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="ec-content">Body</Label>
+                <Textarea
+                  id="ec-content"
+                  rows={10}
+                  value={emailEditorDraft.content}
+                  onChange={(e) => setEmailEditorDraft((p) => ({ ...p, content: e.target.value }))}
+                />
+              </div>
+
+              {emailEditorError && (
+                <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700 flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  {emailEditorError}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setEditingEmailCampaign(null)}>
+                Cancel
+              </Button>
+              <Button
+                className="bg-violet-600 hover:bg-violet-700"
+                disabled={isSavingEmailCampaign || !emailEditorDraft.campaignName.trim() || !emailEditorDraft.subjectLine.trim()}
+                onClick={saveEmailCampaign}
+              >
+                {isSavingEmailCampaign ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                Save
               </Button>
             </div>
           </DialogContent>
