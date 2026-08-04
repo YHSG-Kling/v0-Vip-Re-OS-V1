@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { DollarSign, ArrowLeft, TrendingUp, Clock, CheckCircle2, AlertCircle, Landmark } from 'lucide-react'
 import Link from 'next/link'
 import { PayoutButton } from '@/app/components/features/financial/PayoutButton'
+import { ApproveCommissionButton } from '@/app/components/features/financial/ApproveCommissionButton'
 import { DepositReceivedButton } from '@/app/components/features/financial/DepositReceivedButton'
 import { ExportCSVButton } from '@/app/components/features/financial/ExportCSVButton'
 import {
@@ -221,6 +222,16 @@ export default async function CommissionsPage() {
                               <CheckCircle2 className="w-3 h-3 mr-1" />
                               Paid
                             </>
+                          ) : c.status === 'approved' ? (
+                            <>
+                              <CheckCircle2 className="w-3 h-3 mr-1" />
+                              Approved — ready to pay
+                            </>
+                          ) : c.status === 'disputed' ? (
+                            <>
+                              <AlertCircle className="w-3 h-3 mr-1" />
+                              Disputed
+                            </>
                           ) : c.deposit_received_at ? (
                             <>
                               <Landmark className="w-3 h-3 mr-1" />
@@ -236,11 +247,20 @@ export default async function CommissionsPage() {
                       </td>
                       {isBrokerAdmin && (
                         <td className="py-3 px-2 text-center">
-                          {/* Close froze the amount → record the deposit → disburse (Mark as Paid). */}
+                          {/* Close froze the amount → record the deposit → BROKER APPROVES →
+                              disburse. The approval step was missing here, and the kernel
+                              refuses pending → paid outright, so "Mark as Paid" was rendered
+                              on exactly the rows it could never pay. */}
                           {c.status === 'pending' && !c.deposit_received_at && c.transaction_id && (
                             <DepositReceivedButton transactionId={c.transaction_id} />
                           )}
                           {c.status === 'pending' && c.deposit_received_at && (
+                            <ApproveCommissionButton
+                              commissionId={c.id}
+                              brokerageId={brokerageId ?? ''}
+                            />
+                          )}
+                          {c.status === 'approved' && (
                             <PayoutButton
                               commissionId={c.id}
                               brokerageId={brokerageId ?? ''}

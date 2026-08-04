@@ -98,6 +98,14 @@ export default async function CDAPage({ params }: PageProps) {
   // figure on this page rendered blank).
   const agent = txnAgent
 
+  // Does this brokerage offer CDAs at all? When it does not, the agent records how the
+  // brokerage should disburse to them after funds clear instead (the non-CDA path).
+  const { data: brokerage } = await supabase
+    .from("brokerages")
+    .select("offers_cda")
+    .eq("id", brokerageId)
+    .maybeSingle()
+
   // Fetch commission calculations if any
   const { data: commissionCalc } = await supabase
     .from("commission_calculations")
@@ -132,6 +140,7 @@ export default async function CDAPage({ params }: PageProps) {
       userType={userType}
       userId={user.id}
       cda={cda}
+      offersCda={(brokerage as { offers_cda?: boolean | null } | null)?.offers_cda ?? true}
       agent={agent}
       commissionCalc={commissionCalc}
       complianceChecks={complianceChecks ?? []}

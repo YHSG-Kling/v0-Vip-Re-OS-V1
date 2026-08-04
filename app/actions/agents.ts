@@ -316,6 +316,23 @@ export async function getAgentCommissions(agentId: string, year?: number) {
   return data || []
 }
 
+/**
+ * NOT THE CANONICAL COMMISSION CREATOR. The canonical creator on this rail is
+ * lib/kernel/financial.ts:createCommissionRecord (exposed as
+ * app/actions/financial-kernel.ts:createCommissionRecordAction and wired at
+ * app/dashboard/financials/agent/agent-financials-client.tsx) — it applies the cap,
+ * the fee schedule and the splits ledger. This one is kept ONLY because it carries two
+ * things that one does not: the caller's real close_date and the deal `side`. It is
+ * deliberately left without a UI surface so agent_commissions keeps a single live writer.
+ *
+ * It could never have run as written. Verified against the live schema:
+ *   • agent_commissions.brokerage_id is NOT NULL and was never supplied (23502), and
+ *   • agent_commission / brokerage_commission are GENERATED ALWAYS columns
+ *     (gross_commission * agent_split_percent / 100 and its complement) — inserting
+ *     into them is rejected outright.
+ * So every call returned an error and the splits row below was unreachable. Both are
+ * fixed here rather than left as a landmine on the money ledger.
+ */
 export async function addAgentCommission(commissionData: {
   agent_id: string
   transaction_id: string
@@ -329,12 +346,24 @@ export async function addAgentCommission(commissionData: {
   const agentCommission = commissionData.gross_commission * (commissionData.agent_split_percent / 100)
   const brokerageCommission = commissionData.gross_commission - agentCommission
 
+  // agent_commissions.agent_id is agents-class, so the brokerage anchor comes off the
+  // agents row (NOT NULL on the table).
+  const { data: agentRow, error: agentErr } = await supabase
+    .from("agents").select("brokerage_id").eq("id", commissionData.agent_id).maybeSingle()
+  if (agentErr) {
+    console.error("Error resolving agent brokerage:", agentErr)
+    return { error: agentErr.message }
+  }
+  if (!agentRow?.brokerage_id) {
+    return { error: "Agent has no brokerage — cannot create a commission record" }
+  }
+
   const { data, error } = await supabase
     .from("agent_commissions")
     .insert({
       ...commissionData,
-      agent_commission: agentCommission,
-      brokerage_commission: brokerageCommission,
+      brokerage_id: agentRow.brokerage_id,
+      // agent_commission / brokerage_commission are GENERATED — the database computes them.
       status: "pending",
     })
     .select()
@@ -347,11 +376,9 @@ export async function addAgentCommission(commissionData: {
 
   // Splits ledger row alongside the commission (burn-down round 4 — the agent
   // financials page reads commission_splits). Same numbers, same lifecycle.
-  const { data: agentRow } = await supabase
-    .from("agents").select("brokerage_id").eq("id", commissionData.agent_id).maybeSingle()
-  await supabase.from("commission_splits").insert({
+  const { error: splitErr } = await supabase.from("commission_splits").insert({
     agent_id: commissionData.agent_id,
-    brokerage_id: agentRow?.brokerage_id ?? null,
+    brokerage_id: agentRow.brokerage_id,
     transaction_id: commissionData.transaction_id,
     commission_id: data.id,
     agent_amount: agentCommission,
@@ -359,6 +386,9 @@ export async function addAgentCommission(commissionData: {
     status: "pending",
     metadata: { agent_split_percent: commissionData.agent_split_percent, side: commissionData.side },
   })
+  if (splitErr) {
+    console.error("Error writing commission split ledger row:", splitErr)
+  }
 
   // Update agent YTD stats
   await updateAgentYTDStats(commissionData.agent_id)

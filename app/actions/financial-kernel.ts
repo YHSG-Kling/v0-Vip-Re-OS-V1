@@ -198,12 +198,20 @@ export async function recalculateCommissionStateAction(
   }
 }
 
+/**
+ * Broker approval of a commission: pending → approved, the step the kernel REQUIRES
+ * before markCommissionPaid will disburse (COMMISSION_STATUS_TRANSITIONS rejects
+ * pending → paid outright). approvedBy defaults to the authenticated caller — the
+ * approver on a money record is who the session says it is, never a value the client
+ * chose. It stays overridable so server-side callers can attribute an approval they
+ * are performing on someone else's behalf.
+ */
 export async function markCommissionApprovedAction(
-  input: Omit<MarkCommissionApprovedInput, "ctx">
+  input: Omit<MarkCommissionApprovedInput, "ctx" | "approvedBy"> & { approvedBy?: string }
 ) {
   try {
     const ctx = await getFinancialActorContext()
-    return await markCommissionApproved({ ...input, ctx })
+    return await markCommissionApproved({ ...input, approvedBy: input.approvedBy ?? ctx.userId, ctx })
   } catch (error) {
     return { success: false, error: String(error) }
   }

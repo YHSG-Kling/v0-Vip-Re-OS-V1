@@ -215,6 +215,7 @@ export default async function FinancialReportsPage() {
           ytdCommissions={ytdCommissions}
           ytdAgentNet={ytdAgentNet}
           ytdExpenses={ytdExpenses}
+          userType={userType ?? "agent"}
         />
       </div>
     </div>

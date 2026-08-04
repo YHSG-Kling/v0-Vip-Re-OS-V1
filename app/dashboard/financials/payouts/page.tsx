@@ -12,6 +12,8 @@ import {
 } from '../components/os'
 import { loadCommissionQueueAction } from '@/app/actions/financial-kernel'
 import { CommissionDisputeQueue } from '../components/commission-dispute-queue'
+import { ApproveCommissionButton } from '@/app/components/features/financial/ApproveCommissionButton'
+import { PayoutButton } from '@/app/components/features/financial/PayoutButton'
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const dynamic = 'force-dynamic'
@@ -222,6 +224,10 @@ export default async function PayoutsPage() {
                     <th className="text-right py-2 px-2 font-semibold">Agent</th>
                     <th className="text-right py-2 px-2 font-semibold">Brokerage</th>
                     <th className="text-center py-2 px-2 font-semibold">Status</th>
+                    {/* The broker's payout board listed every commission and offered no way to
+                        move any of them. Approval (pending → approved) is the step the kernel
+                        REQUIRES before a payout is legal, and it had no surface anywhere. */}
+                    <th className="text-center py-2 px-2 font-semibold">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
@@ -238,8 +244,20 @@ export default async function PayoutsPage() {
                         <Badge variant={c.status === 'paid' ? 'default' : 'secondary'} className="text-xs">
                           {c.status === 'paid'
                             ? <><CheckCircle2 className="w-3 h-3 mr-1 inline" />Paid</>
-                            : <><Clock className="w-3 h-3 mr-1 inline" />Pending</>}
+                            : c.status === 'approved'
+                              ? <><CheckCircle2 className="w-3 h-3 mr-1 inline" />Approved</>
+                              : c.status === 'disputed'
+                                ? <>Disputed</>
+                                : <><Clock className="w-3 h-3 mr-1 inline" />Pending</>}
                         </Badge>
+                      </td>
+                      <td className="py-3 px-2 text-center">
+                        {c.status === 'pending' && (
+                          <ApproveCommissionButton commissionId={c.id} brokerageId={profile.brokerage_id} />
+                        )}
+                        {c.status === 'approved' && (
+                          <PayoutButton commissionId={c.id} brokerageId={profile.brokerage_id} />
+                        )}
                       </td>
                     </tr>
                   ))}

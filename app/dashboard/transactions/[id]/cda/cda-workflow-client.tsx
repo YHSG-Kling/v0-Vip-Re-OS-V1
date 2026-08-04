@@ -54,6 +54,16 @@ import {
   submitCdaForApprovalAction,
   approveCdaAction,
   uploadPreliminaryCdAction,
+  // THE TAIL OF THE MONEY RAIL. These four were complete, tenant-scoped and had no
+  // caller anywhere: the final CD coming back from title (which is also one of the two
+  // events that FINALIZES the transaction's commission), the copy of the commission
+  // check, closing the CDA file, and — for a brokerage that doesn't do CDAs at all —
+  // the agent's payout preference. getCdaForTransactionAction is the only reader of
+  // closing_disclosure_agreement_revisions, the audit log every state change writes.
+  recordCdaClosingArtifactAction,
+  closeCdaAction,
+  recordNonCdaPayoutPreferenceAction,
+  getCdaForTransactionAction,
 } from "@/app/actions/cda-portal"
 import { CdaTemplateFieldsCard } from "./cda-template-fields-card"
 
@@ -93,7 +103,20 @@ interface CDAWorkflowClientProps {
     created_at: string
     preliminary_cd_uploaded_at: string | null
     preliminary_cd_document_id: string | null
+    broker_approved_at: string | null
+    sent_to_title_at: string | null
+    sent_to_title_recipient: string | null
+    sent_to_title_method: string | null
+    final_cd_document_id: string | null
+    final_cd_uploaded_at: string | null
+    check_copy_document_id: string | null
+    check_copy_uploaded_at: string | null
+    closed_at: string | null
+    uses_cda: boolean | null
+    non_cda_payout_method: string | null
   } | null
+  /** brokerages.offers_cda — false routes the agent to the payout-preference path. */
+  offersCda: boolean
   agent: {
     id: string
     user_id: string
@@ -132,6 +155,7 @@ export function CDAWorkflowClient({
   userType,
   userId,
   cda,
+  offersCda,
   agent,
   commissionCalc,
   complianceChecks,
@@ -196,8 +220,113 @@ export function CDAWorkflowClient({
   // CDA status
   const cdaStatus = cda?.status ?? "not_started"
   const canGeneratePreview = !cda
-  const canSubmit = cda && cdaStatus === "pending" && isAgent
+  // THE SEVERED MIDDLE. This read `cdaStatus === "pending"` — but the moment the agent
+  // opens the CDA for drafting, draftOrUpdateCdaAction moves the row pending → DRAFTING,
+  // and compliance sending it back moves it changes_requested → drafting on the next
+  // edit. So the "Submit CDA for Approval" button vanished the instant the agent started
+  // work and never came back: the agent could draft a disbursement and had no way to
+  // submit it. The set below is exactly the set submitCdaForApprovalAction itself accepts.
+  const SUBMITTABLE = ["pending", "drafting", "changes_requested"]
+  const canSubmit = !!cda && SUBMITTABLE.includes(cdaStatus) && isAgent
   const canApprove = cda && cdaStatus === "submitted" && isCompliance
+
+  // ─── POST-CLOSE / NON-CDA STATE ────────────────────────────────────────────
+  const [artifactBusy, setArtifactBusy] = useState<"final_cd" | "check_copy" | null>(null)
+  const [artifactError, setArtifactError] = useState<string | null>(null)
+  const [closingCda, setClosingCda] = useState(false)
+  const [payoutMethod, setPayoutMethod] = useState<"direct_deposit" | "check">("direct_deposit")
+  const [payoutSaving, setPayoutSaving] = useState(false)
+  const [payoutError, setPayoutError] = useState<string | null>(null)
+  const [revisions, setRevisions] = useState<Array<{
+    id: string
+    revision_number: number
+    action: string
+    status_at_snapshot: string
+    notes: string | null
+    changes_requested_notes: string | null
+    acted_at: string
+  }>>([])
+
+  // The revision log is written on every state change of this money instruction and
+  // getCdaForTransactionAction is its only reader — an audit trail nobody can see.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const res = await getCdaForTransactionAction(transaction.id)
+      if (!cancelled && res.success && res.revisions) setRevisions(res.revisions as typeof revisions)
+    })()
+    return () => { cancelled = true }
+  }, [transaction.id, cda?.status, cda?.closed_at])
+
+  /** Upload a post-close artifact to storage, then record + attach it to the CDA. */
+  async function handleArtifactUpload(
+    kind: "final_cd" | "check_copy",
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) {
+    const file = e.target.files?.[0]
+    if (!file || !cda) return
+    setArtifactError(null)
+    setArtifactBusy(kind)
+    try {
+      const supabase = createClient()
+      const path = `transactions/${transaction.id}/${kind}/${Date.now()}_${file.name}`
+      const { error: uploadError } = await supabase.storage.from("transaction-documents").upload(path, file)
+      if (uploadError) {
+        setArtifactError(`Upload failed: ${uploadError.message}`)
+        return
+      }
+      const { signedDocUrl } = await import("@/lib/storage/signed-doc-url")
+      const storageUrl = await signedDocUrl(supabase, "transaction-documents", path)
+      const res = await recordCdaClosingArtifactAction({
+        cdaId: cda.id,
+        kind,
+        fileName: file.name,
+        fileUrl: storageUrl,
+      })
+      if (!res?.success) {
+        setArtifactError(("error" in res && res.error) || "Could not record the document.")
+        return
+      }
+      router.refresh()
+    } catch {
+      setArtifactError("Upload failed — please try again.")
+    } finally {
+      setArtifactBusy(null)
+      e.target.value = ""
+    }
+  }
+
+  function handleCloseCda() {
+    if (!cda) return
+    setArtifactError(null)
+    setClosingCda(true)
+    startTransition(async () => {
+      const res = await closeCdaAction({ cdaId: cda.id })
+      setClosingCda(false)
+      if (!res?.success) {
+        setArtifactError(("error" in res && res.error) || "Could not close the CDA.")
+        return
+      }
+      router.refresh()
+    })
+  }
+
+  function handleSavePayoutPreference() {
+    setPayoutError(null)
+    setPayoutSaving(true)
+    startTransition(async () => {
+      const res = await recordNonCdaPayoutPreferenceAction({
+        transactionId: transaction.id,
+        method: payoutMethod,
+      })
+      setPayoutSaving(false)
+      if (!res?.success) {
+        setPayoutError(("error" in res && res.error) || "Could not save your payout preference.")
+        return
+      }
+      router.refresh()
+    })
+  }
 
   async function handlePreliminaryCdUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -302,11 +431,22 @@ export function CDAWorkflowClient({
   }
 
   function getStatusBadge(status: string) {
+    // "drafting" and "changes_requested" are both real values of the live status CHECK
+    // and both were rendered as "Not Started" — a CDA the agent was actively working on,
+    // or one compliance had sent back, looked like nothing had happened.
+    if (cda?.closed_at) return <Badge className="bg-slate-600"><CheckCircle2 className="h-3 w-3 mr-1" />Closed</Badge>
+    if (status === "approved" && cda?.sent_to_title_at) {
+      return <Badge className="bg-emerald-600"><Send className="h-3 w-3 mr-1" />Delivered to closing agent</Badge>
+    }
     switch (status) {
       case "approved":
         return <Badge className="bg-green-500"><CheckCircle2 className="h-3 w-3 mr-1" />Approved</Badge>
       case "submitted":
         return <Badge className="bg-blue-500"><Send className="h-3 w-3 mr-1" />Submitted</Badge>
+      case "changes_requested":
+        return <Badge className="bg-amber-500"><AlertTriangle className="h-3 w-3 mr-1" />Changes requested</Badge>
+      case "drafting":
+        return <Badge variant="secondary"><FileText className="h-3 w-3 mr-1" />Drafting</Badge>
       case "pending":
         return <Badge variant="secondary"><Clock className="h-3 w-3 mr-1" />Pending</Badge>
       default:
@@ -710,6 +850,169 @@ export function CDAWorkflowClient({
                 )}
               </CardContent>
             </Card>
+            {/* ── NON-CDA PATH ──────────────────────────────────────────────
+                Some brokerages don't issue CDAs at all: the brokerage collects the
+                whole commission at closing and disburses to the agent afterwards.
+                recordNonCdaPayoutPreferenceAction stores how the agent wants to be
+                paid, and had no surface — the agent had nowhere to say it. */}
+            {!offersCda && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <DollarSign className="h-5 w-5" />
+                    How should the brokerage pay you?
+                  </CardTitle>
+                  <CardDescription>
+                    Your brokerage doesn&apos;t issue a CDA at closing — it collects the commission
+                    and disburses to you once funds clear. Record how you want that payment made.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {cda?.non_cda_payout_method ? (
+                    <Alert>
+                      <CheckCircle2 className="h-4 w-4" />
+                      <AlertTitle>Payout preference recorded</AlertTitle>
+                      <AlertDescription>
+                        {cda.non_cda_payout_method === "direct_deposit" ? "Direct deposit" : "Check"}
+                      </AlertDescription>
+                    </Alert>
+                  ) : null}
+                  <div className="flex flex-wrap items-end gap-3">
+                    <label className="text-sm">
+                      <span className="block text-xs font-medium mb-1">Payment method</span>
+                      <select
+                        className="border rounded px-2 py-1.5 text-sm"
+                        value={payoutMethod}
+                        onChange={(e) => setPayoutMethod(e.target.value as typeof payoutMethod)}
+                        disabled={payoutSaving}
+                      >
+                        <option value="direct_deposit">Direct deposit</option>
+                        <option value="check">Check</option>
+                      </select>
+                    </label>
+                    <Button size="sm" onClick={handleSavePayoutPreference} disabled={payoutSaving || isPending}>
+                      {payoutSaving && <Loader2 className="h-3 w-3 mr-2 animate-spin" />}
+                      Save payout preference
+                    </Button>
+                  </div>
+                  {payoutError && <p className="text-xs text-red-600">{payoutError}</p>}
+                </CardContent>
+              </Card>
+            )}
+
+            {/* ── THE TAIL OF THE CHAIN ─────────────────────────────────────
+                Delivery record → final CD back from title → copy of the commission
+                check → close the file. Every one of these actions existed and none of
+                them had a surface, so the money rail simply stopped after the send. */}
+            {cda && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Send className="h-5 w-5" />
+                    Closing record &amp; post-close file
+                  </CardTitle>
+                  <CardDescription>
+                    The record of the send to the closing agent, and the documents that come
+                    back from the closing table.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {/* RECORD OF THE SEND */}
+                  {cda.sent_to_title_at ? (
+                    <Alert>
+                      <CheckCircle2 className="h-4 w-4" />
+                      <AlertTitle>Sent to the closing agent</AlertTitle>
+                      <AlertDescription>
+                        {new Date(cda.sent_to_title_at).toLocaleString()}
+                        {cda.sent_to_title_recipient ? ` — ${cda.sent_to_title_recipient}` : ""}
+                        {cda.sent_to_title_method ? ` (${cda.sent_to_title_method})` : ""}
+                      </AlertDescription>
+                    </Alert>
+                  ) : (
+                    <Alert>
+                      <Clock className="h-4 w-4" />
+                      <AlertTitle>Not yet delivered</AlertTitle>
+                      <AlertDescription>
+                        {cda.broker_approved_at
+                          ? "The broker has signed. Compliance sends the signed CDA to the closing agent from the CDA approval queue."
+                          : "The CDA goes to the closing agent after compliance approves it and the broker signs it."}
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  <Separator />
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <p className="text-xs font-medium">Final Closing Disclosure</p>
+                      {cda.final_cd_uploaded_at ? (
+                        <p className="text-xs text-green-700 flex items-center gap-1">
+                          <CheckCircle2 className="h-3 w-3" />
+                          On file {new Date(cda.final_cd_uploaded_at).toLocaleDateString()}
+                        </p>
+                      ) : (
+                        <>
+                          <input
+                            type="file"
+                            accept="application/pdf,image/*"
+                            className="w-full text-sm"
+                            onChange={(e) => handleArtifactUpload("final_cd", e)}
+                            disabled={artifactBusy !== null}
+                          />
+                          <p className="text-[11px] text-muted-foreground">
+                            Uploading the final CD finalizes this transaction&apos;s commission.
+                          </p>
+                        </>
+                      )}
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-xs font-medium">Copy of the commission check</p>
+                      {cda.check_copy_uploaded_at ? (
+                        <p className="text-xs text-green-700 flex items-center gap-1">
+                          <CheckCircle2 className="h-3 w-3" />
+                          On file {new Date(cda.check_copy_uploaded_at).toLocaleDateString()}
+                        </p>
+                      ) : (
+                        <input
+                          type="file"
+                          accept="application/pdf,image/*"
+                          className="w-full text-sm"
+                          onChange={(e) => handleArtifactUpload("check_copy", e)}
+                          disabled={artifactBusy !== null}
+                        />
+                      )}
+                    </div>
+                  </div>
+
+                  {artifactBusy && (
+                    <p className="text-xs text-muted-foreground flex items-center gap-2">
+                      <Loader2 className="h-3 w-3 animate-spin" /> Recording the document…
+                    </p>
+                  )}
+                  {artifactError && <p className="text-xs text-red-600">{artifactError}</p>}
+
+                  {isCompliance && (
+                    <div className="pt-1">
+                      {cda.closed_at ? (
+                        <p className="text-xs text-muted-foreground">
+                          CDA file closed {new Date(cda.closed_at).toLocaleString()}.
+                        </p>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={handleCloseCda}
+                          disabled={closingCda || isPending || !cda.sent_to_title_at}
+                        >
+                          {closingCda && <Loader2 className="h-3 w-3 mr-2 animate-spin" />}
+                          Close CDA file
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
           </div>
 
           {/* Right Column: Actions & Timeline */}
@@ -796,6 +1099,48 @@ export function CDAWorkflowClient({
                           <p>{entry.description}</p>
                           <p className="text-xs text-muted-foreground">
                             {new Date(entry.created_at).toLocaleString()}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* CDA AUDIT TRAIL. Every state change of this disbursement instruction
+                writes a row to closing_disclosure_agreement_revisions, and until now
+                nothing anywhere read them back. */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Shield className="h-5 w-5" />
+                  CDA record &amp; audit trail
+                </CardTitle>
+                <CardDescription>Every state change, who made it and when</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {revisions.length === 0 ? (
+                  <p className="text-muted-foreground text-center py-4 text-sm">
+                    No recorded CDA revisions yet
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {revisions.map(r => (
+                      <div key={r.id} className="flex gap-3 text-sm">
+                        <div className="w-2 h-2 rounded-full bg-muted-foreground mt-1.5 shrink-0" />
+                        <div className="min-w-0">
+                          <p className="capitalize">
+                            {r.action.replace(/_/g, " ")}
+                            <span className="text-muted-foreground"> · rev {r.revision_number} · {r.status_at_snapshot}</span>
+                          </p>
+                          {(r.changes_requested_notes || r.notes) && (
+                            <p className="text-xs text-muted-foreground italic break-words">
+                              {r.changes_requested_notes || r.notes}
+                            </p>
+                          )}
+                          <p className="text-xs text-muted-foreground">
+                            {new Date(r.acted_at).toLocaleString()}
                           </p>
                         </div>
                       </div>
