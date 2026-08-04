@@ -336,6 +336,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   intelligent_outreach_log: ["brokerage_id", "channel", "contact_id", "content", "created_at", "id", "outreach_type", "result"],
   investor_deal_matches: ["agent_id", "brokerage_id", "candidate_count", "candidates", "contact_id", "created_at", "id", "last_matched_at", "status", "updated_at"],
   isa_outreach_log: ["agent_id", "body_snippet", "brokerage_id", "calendar_event_id", "channel", "compliance_passed", "contact_id", "created_at", "provider_job_id", "id", "lead_id", "lob_letter_id", "opened_at", "replied_at", "sent_at", "status", "subject", "them_first_score"],
+  journey_stage_progress: ["brokerage_id", "completed_at", "contact_id", "created_at", "current_task", "id", "progress_pct", "stage_name", "started_at", "updated_at"],
   journey_states: ["brokerage_id", "contact_id", "created_at", "current_stage", "deal_id", "id", "listing_id", "metadata_json", "persona", "updated_at", "user_id"],
   keyword_intelligence: ["brokerage_id", "captured_at", "city", "competition_score", "expires_at", "id", "intent_category", "keyword", "related_keywords", "search_volume_monthly", "source", "state", "trend_change_pct", "trend_direction", "zip_code"],
   knowledge_articles: ["author_id", "brokerage_id", "category", "content", "content_embedding", "created_at", "excerpt", "helpful_count", "id", "not_helpful_count", "published_at", "slug", "status", "tags", "title", "updated_at", "view_count"],
