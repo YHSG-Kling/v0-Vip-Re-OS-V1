@@ -54,6 +54,8 @@ import {
   aiEnrichPropertyData,
   aiCheckDocumentStatus,
 } from "@/app/actions/ai-listing-intake"
+import { ListingDescriptionComposer } from "./listing-description-composer"
+import { ListingGatesPanel } from "./listing-gates-panel"
 
 export interface ListingIntelligenceProperty {
   address: string
@@ -282,6 +284,7 @@ export function ListingIntelligenceCard({
   }
 
   return (
+    <>
     <Card className="mb-6">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
@@ -320,8 +323,8 @@ export function ListingIntelligenceCard({
 
           {!remarks && (
             <p className="text-xs text-muted-foreground border rounded px-3 py-2 bg-muted/30">
-              This listing has no public remarks yet — there is nothing to review. Add the marketing
-              description first.
+              This listing has no public remarks yet — there is nothing to review. Write or generate
+              the marketing description below first.
             </p>
           )}
           {remarks && !propertyState && (
@@ -461,6 +464,15 @@ export function ListingIntelligenceCard({
             </div>
           )}
         </section>
+
+        {/* ── THE COPY ITSELF, EDITABLE ─────────────────────────────────────────
+            The review above had no companion writer: listings.public_remarks is
+            read by nine surfaces and the Fair Housing gate, and nothing in the
+            dashboard could set it. generateListingDescriptionAction and
+            saveListingDraftAction — both complete, both caller-less — are that
+            writer. Placed directly beneath the review so a flagged phrase can be
+            fixed and re-reviewed without leaving the card. */}
+        <ListingDescriptionComposer listingId={listingId} initialRemarks={publicRemarks} />
 
         {/* ── LIST PRICE RECOMMENDATION ─────────────────────────────────────── */}
         <section className="space-y-3 border-t pt-5">
@@ -634,5 +646,13 @@ export function ListingIntelligenceCard({
         )}
       </CardContent>
     </Card>
+
+    {/* WHAT THE SERVER SAYS IS UNLOCKED. The left rail's gate chips are computed
+        client-side from the static stage table — the rulebook, not this listing.
+        This asks getEnabledGates / checkSystemGate, and renders the recorded
+        stage history from getListingLifecycleHistory. All four were exported,
+        complete and called by nothing. */}
+    <ListingGatesPanel listingId={listingId} />
+    </>
   )
 }

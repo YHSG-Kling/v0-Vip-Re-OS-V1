@@ -1,10 +1,11 @@
 "use client"
 
-import { useState, useTransition } from "react"
-import { Check, Star, ChevronRight, Loader2, Eye, EyeOff } from "lucide-react"
+import { useEffect, useState, useTransition } from "react"
+import { Check, Star, ChevronRight, Loader2, Eye, EyeOff, ShieldAlert } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { StageDefinition, ListingStage } from "@/lib/listing-lifecycle/lifecycle-definitions"
 import { advanceListingStage, setMilestonePortalVisibility } from "@/app/actions/listing-lifecycle"
+import { getListingNextStages } from "@/app/actions/listing-lifecycle-core"
 import { StageAdvanceModal } from "./stage-advance-modal"
 
 const MILESTONE_STAGES = new Set([
@@ -52,6 +53,64 @@ export function StagePipeline({
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
 
+  // ── WHAT THIS CALLER MAY ACTUALLY DO ────────────────────────────────────────
+  //
+  // `validNextStages` arrives from the page computed purely from the stage graph:
+  //
+  //   allStages.filter(s => s.allowedFrom.includes(currentStage))
+  //
+  // with NO role filter. Every user is therefore offered every structurally
+  // reachable stage, whatever their authority — the pipeline lights a stage amber,
+  // the agent clicks it, and the server refuses on role. getListingNextStages
+  // returns the same list intersected with the caller's REAL authority, using the
+  // normalised role (so a broker_owner / superadmin gets their full set instead of
+  // the empty set their raw user_type produced against the engine's four-role
+  // vocabulary).
+  //
+  // Until it answers, the page's unfiltered list stands — narrowing the UI on a
+  // read that has not returned would hide stages the user can legitimately reach.
+  // If the read FAILS we keep the unfiltered list and say so, rather than
+  // presenting an empty pipeline as though nothing were permitted.
+  const [authorizedNextStages, setAuthorizedNextStages] = useState<string[] | null>(null)
+  const [authorityNote, setAuthorityNote] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    getListingNextStages(listingId)
+      .then((res) => {
+        if (cancelled) return
+        const r = res as {
+          success: boolean
+          error?: string
+          nextStages?: string[]
+          unauthorizedReason?: string
+        }
+        if (!r.success) {
+          setAuthorityNote(
+            `Your stage authority could not be confirmed (${r.error ?? "unknown error"}) — the list below is unfiltered and the server may still refuse.`,
+          )
+          return
+        }
+        setAuthorizedNextStages(r.nextStages ?? [])
+        if (r.unauthorizedReason) setAuthorityNote(r.unauthorizedReason)
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return
+        setAuthorityNote(
+          `Your stage authority could not be confirmed (${e instanceof Error ? e.message : "unknown error"}) — the list below is unfiltered.`,
+        )
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [listingId, currentStage])
+
+  // Intersect: a stage must be BOTH structurally reachable and within authority.
+  const effectiveNextStages =
+    authorizedNextStages === null
+      ? validNextStages
+      : validNextStages.filter((s) => authorizedNextStages.includes(s))
+
   // Portal visibility state per milestone stage
   // Derived from the most recent lifecycle event for each milestone stage
   const [portalVisibility, setPortalVisibility] = useState<Record<string, boolean>>(() => {
@@ -79,7 +138,7 @@ export function StagePipeline({
   }
 
   function handleStageClick(stage: StageDefinition) {
-    if (!validNextStages.includes(stage.stage)) return
+    if (!effectiveNextStages.includes(stage.stage)) return
     setSelectedStage(stage)
     setError(null)
   }
@@ -137,11 +196,35 @@ export function StagePipeline({
         </div>
       )}
 
+      {/* The server's word on this caller's authority. Rendered whenever the
+          engine has no seat for their role, or the authority read itself failed —
+          so a pipeline with nothing clickable always explains WHY rather than
+          just looking inert. */}
+      {authorityNote && (
+        <div className="mx-3 mt-3 rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-900 flex items-start gap-1.5">
+          <ShieldAlert className="w-3.5 h-3.5 shrink-0 mt-px" />
+          <span>{authorityNote}</span>
+        </div>
+      )}
+
+      {!authorityNote &&
+        authorizedNextStages !== null &&
+        validNextStages.length > 0 &&
+        effectiveNextStages.length === 0 && (
+          <div className="mx-3 mt-3 rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-900 flex items-start gap-1.5">
+            <ShieldAlert className="w-3.5 h-3.5 shrink-0 mt-px" />
+            <span>
+              This listing can move on from here, but not by you — the next stages require a higher
+              role. Ask a broker or admin to advance it.
+            </span>
+          </div>
+        )}
+
       <ol className="p-3 space-y-1">
         {allStages.map((stage) => {
           const isCompleted = completedStages.has(stage.stage)
           const isCurrent = stage.stage === currentStage
-          const isValidNext = validNextStages.includes(stage.stage)
+          const isValidNext = effectiveNextStages.includes(stage.stage)
           const isMilestone = MILESTONE_STAGES.has(stage.stage)
           const historyEvents = stageHistoryMap[stage.stage] ?? []
 
