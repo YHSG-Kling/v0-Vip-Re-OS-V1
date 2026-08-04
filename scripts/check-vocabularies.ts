@@ -1369,7 +1369,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["closed", "in_progress", "open", "resolved"],
   },
   system_health_checks: {
-    status: ["degraded", "down", "error", "healthy", "timeout"],
+    status: ["degraded", "down", "error", "healthy", "timeout", "unknown"],
   },
   team_commission_profiles: {
     referral_type: ["flat", "percent"],

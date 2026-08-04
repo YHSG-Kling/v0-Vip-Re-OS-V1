@@ -1,12 +1,12 @@
 // app/api/admin/domain-coherence/routes/classify/route.ts
 // Input contract:  GET — no body, works against full registry
 // Output contract: { canonical, redirects, toRemove, children, unclassified }
-// Access:          superadmin / admin / broker
+// Access:          platform staff with the 'sentinel' capability
 // Tables read:     none (registry)
 // Tables written:  none
 
 import { NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase/server"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import {
   enumerateDomainRoutes,
   classifyRouteOwnership,
@@ -21,20 +21,22 @@ interface ClassifyResponse {
 }
 
 export async function GET(): Promise<NextResponse<ClassifyResponse | { error: string }>> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
-
-  const { data: profile } = await supabase
-    .from("users")
-    .select("user_type")
-    .eq("id", user.id)
-    .maybeSingle()
-
-  if (!profile || !["superadmin", "admin", "broker"].includes(profile.user_type ?? "")) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+  // PLATFORM GOVERNANCE, NOT TENANT DATA. The route registry describes every
+  // surface in the product across ALL tenants and carries no brokerage_id, so
+  // it cannot be tenant-filtered. The previous guard here accepted
+  // users.user_type in {superadmin, admin, broker} — but 'admin' and 'broker'
+  // are TENANT roles in this schema, so any brokerage broker could GET the full
+  // report. It also ignored users.platform_role entirely.
+  //
+  // These routes are the HTTP path around app/actions/admin/domain-coherence.ts.
+  // Gating only the actions would have closed the front door and left this one
+  // open, so both now delegate to the same canonical platform gate.
+  const gate = await requirePlatformCapability("sentinel")
+  if (!gate.ok) {
+    return NextResponse.json(
+      { error: gate.error ?? "Forbidden" },
+      { status: gate.userId ? 403 : 401 },
+    )
   }
 
   const { routes } = enumerateDomainRoutes({ includePersonaRoutes: true })

@@ -128,6 +128,36 @@ const SERVICE_CHECKS: Record<
 // recover before staff publish (a PUBLISHED notice is never auto-cleared).
 const CONSECUTIVE_DOWN_THRESHOLD = 2
 
+// RAW CHECK OUTCOME → SERVICE_STATUS ROLLUP.
+//
+// These are two CHECK-constrained vocabularies over the same concept and they
+// are NOT the same set. The ledger (system_health_checks.status) records the raw
+// outcome and admits 'timeout' and 'error'; the rollup
+// (service_status.current_status) is the summary and does not. Writing the raw
+// value into both — which is what this cron used to do — means any raw status
+// the rollup does not admit is refused by the database, and because the write
+// was undestructured the refusal was invisible.
+//
+// The mapping is explicit so a new raw outcome cannot silently fail to roll up:
+// anything that is not a recognised rollup state degrades to 'down', which is
+// the safe direction for a monitoring surface. Never map an unproven state to
+// 'healthy'.
+type RawCheckStatus = "healthy" | "degraded" | "down" | "unknown" | "timeout" | "error"
+type RollupStatus = "healthy" | "degraded" | "down" | "unknown"
+
+function rollupStatus(raw: RawCheckStatus): RollupStatus {
+  switch (raw) {
+    case "healthy":
+    case "degraded":
+    case "down":
+    case "unknown":
+      return raw
+    case "timeout":
+    case "error":
+      return "down"
+  }
+}
+
 // Integration services that check brokerage_integrations table
 const INTEGRATION_SERVICES = [
   "dotloop",
@@ -183,6 +213,12 @@ export async function POST(request: NextRequest) {
       responseTimeMs: number
     }> = []
 
+    // Every write in this cron used to be undestructured. A monitoring job that
+    // cannot report its own failed writes is the worst possible place for a
+    // swallowed error: it goes on returning 200 while recording nothing, and the
+    // surface built on top reports a clean bill of health over an empty table.
+    const writeFailures: string[] = []
+
     // Per-provider aggregate across all checked rows (service_status is
     // per-brokerage; the notice proposal is platform-wide, so a provider only
     // counts as platform-down when NO row of it came back healthy this run).
@@ -195,7 +231,7 @@ export async function POST(request: NextRequest) {
     for (const service of services || []) {
       const serviceKey = service.service_key
       let checkResult: {
-        status: "healthy" | "degraded" | "down" | "unknown"
+        status: RawCheckStatus
         responseTimeMs: number
         errorMessage?: string
         httpStatusCode?: number
@@ -254,8 +290,11 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // Insert health check record
-      await supabase.from("system_health_checks").insert({
+      // Insert health check record. Destructured: this insert used to swallow
+      // its error, and the value it most often carries ('unknown') was refused
+      // by the ledger's CHECK constraint until m371 — so every unconfigured
+      // service wrote nothing and reported nothing.
+      const { error: ledgerError } = await supabase.from("system_health_checks").insert({
         brokerage_id: service.brokerage_id,
         service_key: serviceKey,
         service_name: service.service_name,
@@ -266,10 +305,14 @@ export async function POST(request: NextRequest) {
         error_message: checkResult.errorMessage || null,
         checked_at: new Date().toISOString(),
       })
+      if (ledgerError) {
+        writeFailures.push(`system_health_checks[${serviceKey}]: ${ledgerError.message}`)
+      }
 
-      // Update service_status
+      // Update service_status — the ROLLUP, whose vocabulary is narrower than
+      // the ledger's, so the raw outcome is mapped rather than passed through.
       const updateData: Record<string, unknown> = {
-        current_status: checkResult.status,
+        current_status: rollupStatus(checkResult.status),
         response_time_ms: checkResult.responseTimeMs,
         last_checked_at: new Date().toISOString(),
         error_message: checkResult.errorMessage || null,
@@ -303,10 +346,13 @@ export async function POST(request: NextRequest) {
         criticalProviderRuns.set(serviceKey, agg)
       }
 
-      await supabase
+      const { error: rollupError } = await supabase
         .from("service_status")
         .update(updateData)
         .eq("id", service.id)
+      if (rollupError) {
+        writeFailures.push(`service_status[${serviceKey}]: ${rollupError.message}`)
+      }
 
       results.push({
         serviceKey,
@@ -324,20 +370,44 @@ export async function POST(request: NextRequest) {
         (s) => s.brokerage_id === brokerageId
       )
       for (const service of brokerageServices) {
-        // Get today's checks for this service
-        const { data: todayChecks } = await supabase
+        // Get today's checks for this service.
+        //
+        // .eq("brokerage_id", null) is NOT a null match — PostgREST renders it
+        // as `brokerage_id=eq.null`, which is SQL `= NULL` and matches nothing.
+        // service_status is seeded entirely with brokerage_id IS NULL (all 15
+        // rows today are platform-level), so this read returned an empty set for
+        // every service and the rollup below was computed over nothing.
+        let todayQuery = supabase
           .from("system_health_checks")
           .select("status, response_time_ms")
-          .eq("brokerage_id", brokerageId)
           .eq("service_key", service.service_key)
           .gte("checked_at", `${today}T00:00:00Z`)
+        todayQuery = brokerageId === null
+          ? todayQuery.is("brokerage_id", null)
+          : todayQuery.eq("brokerage_id", brokerageId)
+        const { data: todayChecks, error: todayError } = await todayQuery
+        if (todayError) {
+          writeFailures.push(`system_health_checks read[${service.service_key}]: ${todayError.message}`)
+          continue
+        }
 
         const totalChecks = todayChecks?.length || 0
+
+        // NO CHECKS MEANS NO CLAIM. This used to default uptime_pct to 100 when
+        // totalChecks was 0 — a service nobody has ever checked reported a
+        // perfect day, which is the same "green over an absence" failure the
+        // /dashboard/system surface had. Write nothing instead; the reader
+        // already renders a missing snapshot as unknown.
+        if (totalChecks === 0) continue
+
         const successfulChecks =
           todayChecks?.filter((c) => c.status === "healthy").length || 0
+        // Anything that is not affirmatively healthy or degraded counts as a
+        // failure — down, timeout, error and unknown alike. Counting only
+        // "down" left four of six raw outcomes in neither column.
         const failedChecks =
-          todayChecks?.filter((c) => c.status === "down").length || 0
-        const uptimePct = totalChecks > 0 ? (successfulChecks / totalChecks) * 100 : 100
+          todayChecks?.filter((c) => c.status !== "healthy" && c.status !== "degraded").length || 0
+        const uptimePct = (successfulChecks / totalChecks) * 100
         const avgResponseMs =
           totalChecks > 0
             ? Math.round(
@@ -346,17 +416,25 @@ export async function POST(request: NextRequest) {
               )
             : 0
 
-        // Upsert health_check_history
-        const { data: existing } = await supabase
+        // Upsert health_check_history — same null-match correction as above,
+        // and maybeSingle() because "no snapshot yet today" is the normal case
+        // and .single() turns it into an error row.
+        let existingQuery = supabase
           .from("health_check_history")
           .select("id")
-          .eq("brokerage_id", brokerageId)
           .eq("service_key", service.service_key)
           .eq("snapshot_date", today)
-          .single()
+        existingQuery = brokerageId === null
+          ? existingQuery.is("brokerage_id", null)
+          : existingQuery.eq("brokerage_id", brokerageId)
+        const { data: existing, error: existingError } = await existingQuery.maybeSingle()
+        if (existingError) {
+          writeFailures.push(`health_check_history read[${service.service_key}]: ${existingError.message}`)
+          continue
+        }
 
         if (existing) {
-          await supabase
+          const { error: histUpdateError } = await supabase
             .from("health_check_history")
             .update({
               uptime_pct: uptimePct,
@@ -365,8 +443,11 @@ export async function POST(request: NextRequest) {
               avg_response_ms: avgResponseMs,
             })
             .eq("id", existing.id)
+          if (histUpdateError) {
+            writeFailures.push(`health_check_history[${service.service_key}]: ${histUpdateError.message}`)
+          }
         } else {
-          await supabase.from("health_check_history").insert({
+          const { error: histInsertError } = await supabase.from("health_check_history").insert({
             brokerage_id: brokerageId,
             service_key: service.service_key,
             snapshot_date: today,
@@ -376,6 +457,9 @@ export async function POST(request: NextRequest) {
             avg_response_ms: avgResponseMs,
             incidents: 0,
           })
+          if (histInsertError) {
+            writeFailures.push(`health_check_history[${service.service_key}]: ${histInsertError.message}`)
+          }
         }
       }
     }
@@ -413,23 +497,32 @@ export async function POST(request: NextRequest) {
 
     const durationMs = Date.now() - startTime
 
-    // Log cron execution
+    // A HEALTH CHECK THAT COULD NOT RECORD ITS FINDINGS DID NOT SUCCEED.
+    // This used to log status "completed" and return 200 regardless, so a run
+    // whose every write was refused was indistinguishable from a clean one —
+    // and cron_health_snapshot, which reads this ledger, would have called the
+    // job healthy while the tables it feeds stayed empty.
+    const wroteNothing = writeFailures.length > 0
     await supabase.from("cron_execution_logs").insert({
       cron_path: "/api/cron/health-check",
       cron_name: "System Health Check",
-      status: "completed",
+      status: wroteNothing ? "failed" : "completed",
       duration_ms: durationMs,
       records_processed: results.length,
+      ...(wroteNothing
+        ? { error_message: `${writeFailures.length} write(s) refused: ${writeFailures.slice(0, 5).join("; ")}` }
+        : {}),
       started_at: new Date(startTime).toISOString(),
       completed_at: new Date().toISOString(),
-      metadata: { results },
+      metadata: { results, writeFailures },
     })
 
     return NextResponse.json({
-      success: true,
+      success: !wroteNothing,
       servicesChecked: results.length,
       durationMs,
       results,
+      ...(wroteNothing ? { writeFailures } : {}),
     })
   } catch (error) {
     const durationMs = Date.now() - startTime
