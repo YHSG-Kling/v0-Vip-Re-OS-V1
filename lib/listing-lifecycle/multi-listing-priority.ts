@@ -125,10 +125,24 @@ export async function resolvePrimaryListing(
   }> = []
   
   for (const listing of listings) {
-    const stage = await getCurrentLifecycleStage(supabase, listing.id)
+    // getCurrentLifecycleStage now THROWS on a failed read instead of returning
+    // null, because null is a real state ("no stage") and a refused query is not.
+    // Caught per listing so one unreadable row cannot silently drop the whole
+    // brokerage's ranking — the listing is skipped and the reason is logged,
+    // rather than being ranked at the bottom as if it had no stage.
+    let stage: ListingStage | null
+    try {
+      stage = await getCurrentLifecycleStage(supabase, listing.id)
+    } catch (err) {
+      console.error(
+        `[multi-listing-priority] skipping listing ${listing.id}:`,
+        err instanceof Error ? err.message : String(err),
+      )
+      continue
+    }
     const priorityTier = getStagePriorityTier(stage)
     const stageIndex = stage ? getStageIndex(stage) : -1
-    
+
     listingsWithStages.push({
       listingId: listing.id,
       stage,
