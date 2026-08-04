@@ -137,13 +137,25 @@ interface Baseline {
   census: number
   /** Per-file export census, so a drop can name the file that lost capability. */
   fileCensus: Record<string, number>
+  /**
+   * Per-file export NAMES. The census above counts; this one identifies.
+   *
+   * Counting alone cannot tell a MOVE from a DELETION, and it cannot see a swap
+   * at all — delete `foo` from a file and add an unrelated `bar` to it and the
+   * count is unchanged while a capability is gone. Names close both holes.
+   */
+  fileExports: Record<string, string[]>
 }
 
 const fileCensus: Record<string, number> = {}
-for (const e of exportsFound) fileCensus[e.file] = (fileCensus[e.file] ?? 0) + 1
+const fileExports: Record<string, string[]> = {}
+for (const e of exportsFound) {
+  fileCensus[e.file] = (fileCensus[e.file] ?? 0) + 1
+  ;(fileExports[e.file] ??= []).push(e.name)
+}
 
 if (process.env.ORPHAN_EXPORT_BASELINE === "1") {
-  const next: Baseline = { files: counts, census: exportsFound.length, fileCensus }
+  const next: Baseline = { files: counts, census: exportsFound.length, fileCensus, fileExports }
   writeFileSync(baselinePath, `${JSON.stringify(next, null, 2)}\n`)
   console.log(`Baseline written: ${orphans.length} orphaned of ${exportsFound.length} exports across ${Object.keys(counts).length} files.`)
   process.exit(0)
@@ -183,16 +195,74 @@ if (improved.length > 0) {
 }
 
 // ── THE CENSUS CHECK — did a capability disappear? ──────────────────────────
+//
+// BY NAME, NOT BY COUNT. Counting per file cannot tell the two apart:
+//
+//   · MOVED  — extracted to another module. The capability still exists and every
+//              caller still resolves it. Splitting a module so a pure leaf stops
+//              dragging the server kernel into a client bundle is exactly this,
+//              and it is a FIX. A count-only census calls it capability loss and
+//              fails CI on correct work, which teaches people to re-baseline
+//              reflexively — and a reflex re-baseline is how a real deletion gets
+//              waved through.
+//   · DELETED — the name is gone from the entire tree. That is the thing this
+//              guard exists to catch.
+//
+// Names also close a hole counting never could: delete `foo` from a file and add
+// an unrelated `bar` to it, and the count is unchanged while a capability is gone.
 const lostCapability: string[] = []
+const movedCapability: string[] = []
 if (baselineObj.census > 0) {
-  for (const [file, had] of Object.entries(baselineObj.fileCensus)) {
-    const now = fileCensus[file] ?? 0
-    if (now < had) lostCapability.push(`${file} — ${had} → ${now} exported function(s)`)
+  const baseNames = baselineObj.fileExports
+  if (baseNames) {
+    // Where each name is exported NOW, and where it was exported at baseline.
+    const liveHomes = new Map<string, string[]>()
+    for (const e of exportsFound) (liveHomes.get(e.name) ?? liveHomes.set(e.name, []).get(e.name)!).push(e.file)
+    const baselineHomes = new Map<string, Set<string>>()
+    for (const [f, names] of Object.entries(baseNames)) {
+      for (const n of names) (baselineHomes.get(n) ?? baselineHomes.set(n, new Set()).get(n)!).add(f)
+    }
+
+    for (const [file, had] of Object.entries(baseNames)) {
+      const nowHere = new Set(fileExports[file] ?? [])
+      for (const name of had) {
+        if (nowHere.has(name)) continue
+        // A MOVE needs a NEW HOME — a file that exports this name now and did NOT
+        // export it at baseline.
+        //
+        // "The name still exists somewhere" is not enough, and assuming it was is a
+        // false negative this guard's own negative test caught: deleting
+        // seller-context-presentation.ts:formatPrice was waved through because
+        // app/lib/listing-utils.ts has always had an unrelated formatPrice. Common
+        // names — formatPrice, getStats, handler — would mask each other's deletion
+        // forever. A pre-existing same-named function in an unrelated module is a
+        // COINCIDENCE, not a destination.
+        const newHome = (liveHomes.get(name) ?? []).find(
+          (f) => f !== file && !(baselineHomes.get(name)?.has(f)),
+        )
+        if (newHome) movedCapability.push(`${name}: ${file} → ${newHome}`)
+        else lostCapability.push(`${file}:${name}`)
+      }
+    }
+  } else {
+    // Pre-names baseline: fall back to counting so the guard still protects a
+    // repo that has not been re-baselined yet.
+    for (const [file, had] of Object.entries(baselineObj.fileCensus)) {
+      const now = fileCensus[file] ?? 0
+      if (now < had) lostCapability.push(`${file} — ${had} → ${now} exported function(s)`)
+    }
   }
 }
 
+if (movedCapability.length > 0) {
+  console.log(`\n  → ${movedCapability.length} export(s) MOVED (still present elsewhere — not a loss):`)
+  for (const m of movedCapability.slice(0, 20)) console.log(`     ${m}`)
+  if (movedCapability.length > 20) console.log(`     … and ${movedCapability.length - 20} more`)
+  console.log("     Re-baseline to record the new home: ORPHAN_EXPORT_BASELINE=1 npm run test:orphan-exports")
+}
+
 if (lostCapability.length > 0) {
-  console.log(`\n  ✗ CAPABILITY REMOVED — ${lostCapability.length} file(s) export FEWER functions than the baseline:`)
+  console.log(`\n  ✗ CAPABILITY REMOVED — ${lostCapability.length} export(s) exist NOWHERE in the tree:`)
   for (const l of lostCapability.slice(0, 25)) console.log(`     - ${l}`)
   if (lostCapability.length > 25) console.log(`     … and ${lostCapability.length - 25} more`)
   console.log("\n  An unwired capability is work to FINISH, never to remove. Deleting one")
