@@ -29,6 +29,7 @@ import "server-only"
 import { NextResponse, type NextRequest } from "next/server"
 import { put } from "@vercel/blob"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
@@ -69,6 +70,12 @@ export async function POST(req: NextRequest) {
     .maybeSingle()
   const ledger = claim.data as { id: string; brokerage_id: string; agent_id: string } | null
   if (!ledger) return NextResponse.json({ skipped: "no row in 'queued' status for this campaign" })
+
+  // ledger.agent_id is agents-class. The compliance actor, the QR mint, the
+  // render registry and the persona post-pass all want the OWNER'S USERS id, so
+  // it is resolved once here rather than at each of them. Null means the agents
+  // row is gone — those users-class hand-offs are then skipped, never faked.
+  const ledgerAgentUserId = await resolveUserIdForAgentRecord(svc, ledger.agent_id)
 
   try {
     // 2. Campaign + brand.
@@ -199,7 +206,7 @@ Return ONLY the spoken text.${fix}`
       draft: ({ violations }) => draft(violations),
       gate:  async (s) => {
         const r = await evaluateOutbound({
-          actorContext: { brokerageId: camp.brokerage_id, userId: ledger.agent_id, role: "system" },
+          actorContext: { brokerageId: camp.brokerage_id, userId: ledgerAgentUserId ?? "", role: "system" },
           journeyType:  "buyer", persona: "other", messageType: "email", content: s,
         })
         return { allowed: r.allowed, violations: r.violations }
@@ -209,24 +216,11 @@ Return ONLY the spoken text.${fix}`
     const script = complianceResult.script
 
     // 4. ElevenLabs voiceover.
-    // IDENTITY CLASS (m352). Both sides of this lookup are spelled `agent_id`
-    // and they are not the same thing: agent_voice_profiles.agent_id FKs AGENTS,
-    // while newsletter_video_renders.agent_id is one of the twenty that FK USERS.
-    // The two never overlap, so the lookup matched nothing on every render and
-    // the route threw "agent has no elevenlabs_voice_id" — a message that blamed
-    // the agent's setup for a lookup bug. The voice clone existed; it was being
-    // asked for under the wrong key.
-    //
-    // Once newsletter_video_renders.agent_id is re-pointed to agents(id) with
-    // the rest of the twenty, this resolve step becomes unnecessary and should
-    // be deleted along with it.
-    const { data: voiceAgentRow } = await svc.from("agents")
-      .select("id").eq("user_id", ledger.agent_id).eq("brokerage_id", ledger.brokerage_id).maybeSingle()
-    const voiceAgentRecordId = (voiceAgentRow as { id?: string } | null)?.id ?? null
-    if (!voiceAgentRecordId) throw new Error("no agents row for this newsletter's owner — cannot resolve their cloned voice")
+    // agent_voice_profiles.agent_id and the ledger's agent_id are now the same
+    // class, so the voice clone is asked for under the key it is filed by.
     const { data: profile } = await svc.from("agent_voice_profiles")
       .select("elevenlabs_voice_id")
-      .eq("agent_id", voiceAgentRecordId)
+      .eq("agent_id", ledger.agent_id)
       .maybeSingle()
     const voiceId = (profile as { elevenlabs_voice_id?: string } | null)?.elevenlabs_voice_id ?? null
     if (!voiceId) throw new Error("agent has no elevenlabs_voice_id — Settings → Voice & Avatar")
@@ -241,10 +235,10 @@ Return ONLY the spoken text.${fix}`
 
     // 4c. Mint (or reuse) the tracked outro QR for this campaign. Newsletter
     //     → landing_page. Never throws; null mint = render without a QR.
-    const qr = ledger.agent_id
+    const qr = ledgerAgentUserId
       ? await mintVideoQr({
           brokerageId: camp.brokerage_id,
-          agentUserId: ledger.agent_id,
+          agentUserId: ledgerAgentUserId,
           kind:        "newsletter",
           campaignId:  camp.id,
         }, svc)
@@ -303,7 +297,7 @@ Return ONLY the spoken text.${fix}`
       const { finalizeCoordinatedRender } = await import("@/lib/remotion/render-coordinator")
       const rq = await recordRenderQueued({
         brokerageId: camp.brokerage_id, compositionId: "NewsletterDigestVideo",
-        agentUserId: ledger.agent_id ?? null,
+        agentUserId: ledgerAgentUserId,
         entityType: "newsletter_video", entityId: ledger.id,
         usedVoiceover: true,
         // NOTE: no voiceover_url in input_props — the narration is already the
@@ -314,7 +308,7 @@ Return ONLY the spoken text.${fix}`
       if (rq.ok && rq.renderId) {
         const intent = buildRenderIntent({
           brokerage_id: camp.brokerage_id, composition_id: "NewsletterDigestVideo",
-          agent_user_id: ledger.agent_id ?? null, entity_type: "newsletter_video", entity_id: ledger.id,
+          agent_user_id: ledgerAgentUserId, entity_type: "newsletter_video", entity_id: ledger.id,
           scope_type: "brokerage", scope_id: camp.brokerage_id,
           input_props: { music_mood: "calm" },
         } as Parameters<typeof buildRenderIntent>[0], "brokerage")
@@ -385,7 +379,7 @@ Return ONLY the spoken text.${fix}`
       assetType:    "newsletter_campaign",
       assetId:      camp.id,
       brokerageId:  camp.brokerage_id,
-      agentUserId:  ledger.agent_id,
+      agentUserId:  ledgerAgentUserId ?? "",
       brand: {
         primaryColor:  br?.brand_primary_color ?? "#0F172A",
         accentColor:   br?.brand_accent_color  ?? "#F59E0B",

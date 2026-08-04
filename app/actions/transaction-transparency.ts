@@ -11,7 +11,7 @@ export async function logTransactionDelay(params: {
   notifyClient?: boolean
 }) {
   const supabase = await createClient()
-  const { brokerageId, userId } = await getAgentContext()
+  const { brokerageId, agentId } = await getAgentContext()
 
   const { data, error } = await supabase
     .from("timeline_transparency")
@@ -32,15 +32,24 @@ export async function logTransactionDelay(params: {
   if (error) return { success: false, error: error.message }
 
   if (params.notifyClient) {
-    void supabase
+    // The delay row is saved either way; only the client-facing update needs an
+    // agent to sign it, and transparency_updates.agent_id will not take a null.
+    if (!agentId) {
+      return { success: true, delay: data, error: "Delay saved, but no agent profile on this account — the client was not notified." }
+    }
+
+    const { error: updateError } = await supabase
       .from("transparency_updates")
       .insert({
         transaction_id: params.transactionId,
         update_type: "delay_notice",
         message: `Your closing may be impacted by ${params.impactDays} day(s) due to: ${params.reasons.join(", ")}. Your agent is actively managing this.`,
         is_visible_to_client: true,
-        agent_id: userId,
+        agent_id: agentId,
       })
+    if (updateError) {
+      return { success: true, delay: data, error: `Delay saved, but the client notice failed: ${updateError.message}` }
+    }
 
     void supabase
       .from("timeline_transparency")

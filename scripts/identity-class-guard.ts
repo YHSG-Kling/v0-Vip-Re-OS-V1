@@ -75,15 +75,24 @@ const src = (p: string) => (existsSync(p) ? readFileSync(p, "utf8") : "")
 const code = (p: string) =>
   src(p).replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
 
-/** The 20 tables whose agent_id column FKs USERS. Everything else FKs agents. */
-const USERS_CLASS_TABLES = new Set([
-  "agent_intro_videos", "ai_video_projects", "closing_disclosure_agreement", "conversation_logs",
-  "income_forecast_snapshots", "lifetime_customer_npv_scores", "listing_health_interventions",
-  "listing_health_scores", "listing_promo_videos", "newsletter_scheduled_sends",
-  "newsletter_video_renders", "pattern_adoptions", "podcast_auto_runs", "podcast_episodes",
-  "podcast_templates", "property_preferences", "revenue_protection_snapshots", "review_requests",
-  "studio_sessions", "transparency_updates",
-])
+/**
+ * Tables whose `agent_id` column FKs USERS. THERE ARE NONE — m366 re-pointed the
+ * last 20 to agents(id), so `agent_id` now means exactly one thing everywhere:
+ * an agents(id).
+ *
+ * This used to list 20 tables. They were the reason the name lied, and the
+ * reason a filter could silently match nothing or a write could be rejected by a
+ * constraint whose error was then discarded. All 45 callers were converted to
+ * resolve through lib/kernel/agent-identity.ts FIRST, and only then did the DDL
+ * land — see scripts/agent-id-repoint-guard.ts for why that order is the whole
+ * lesson.
+ *
+ * The set is kept rather than deleted, and the classification below still reads
+ * it, so that if a future table is ever created with a users-class agent_id it
+ * has an honest place to be declared instead of being silently mis-classified as
+ * agents-class. It should stay empty.
+ */
+const USERS_CLASS_TABLES = new Set<string>([])
 
 function walk(dir: string, out: string[] = []): string[] {
   if (!existsSync(dir)) return out
@@ -403,8 +412,14 @@ console.log("\n═══ 2. The three verified defects stay fixed ═══")
     "lib/podcast/auto-producer.ts")
 
   const vrec = code("app/api/ai/video-recommendations/route.ts")
-  ok("the \"already sent a market update?\" check reads ai_video_projects\n    (users-class) by user.id — keyed by the agents id it never matched, so the\n    route recommended the same video every single time",
-    /\.from\("ai_video_projects"\)[\s\S]{0,80}\.eq\("agent_id", user\.id\)/.test(vrec),
+  // FLIPPED BY m366. This used to assert the OPPOSITE — that the check was keyed
+  // by user.id, because ai_video_projects.agent_id was users-class. The re-point
+  // made agents the one class, so the same query is now correct keyed by the
+  // agents id, and the defect it originally caught (the route recommending the
+  // same video forever because the filter matched nothing) stays fixed.
+  ok("the \"already sent a market update?\" check reads ai_video_projects by the\n    AGENTS id, which is what that column means now",
+    /\.from\("ai_video_projects"\)[\s\S]{0,80}\.eq\("agent_id", agentId\)/.test(vrec) &&
+    !/\.from\("ai_video_projects"\)[\s\S]{0,80}\.eq\("agent_id", user\.id\)/.test(vrec),
     "app/api/ai/video-recommendations/route.ts")
 
   const life = code("app/dashboard/listings/[id]/lifecycle/page.tsx")
@@ -497,16 +512,25 @@ console.log("\n═══ 3d. The CDA: four defects, one class confusion ══�
   // got it wrong four ways — on the commission-approval workflow, which is
   // money and compliance.
   const cda = code("app/actions/cda-portal.ts")
-  ok("the CDA row is created with the agent's USERS id — the agents id was\n    FK-rejected, so a closing disclosure agreement could never be created at\n    all and the workflow was dead before it started",
-    /agent_id: agent\.user_id,/.test(cda))
+  // FLIPPED BY m366. closing_disclosure_agreement.agent_id was users-class, so
+  // the fix at the time was to write agent.user_id. It now FKs agents(id), so the
+  // correct value is agent.id — and the original defect (a CDA that could never
+  // be created at all, on the commission-approval workflow) stays closed.
+  ok("the CDA row is created with the agent's AGENTS id, matching every other\n    agents-class table this workflow touches",
+    /agent_id: agent\.id,/.test(cda) && !/agent_id: agent\.user_id,/.test(cda))
   ok("...the commission verdict resolves users→agents before reading split, cap\n    and outstanding fees — all three read EMPTY, so the agent's net was\n    computed from a zero split and an untouched cap",
     /const cdaAgentRecordId = /.test(cda) &&
     (cda.match(/\.eq\("agent_id", cdaAgentRecordId\)/g) ?? []).length === 3)
-  ok("...the submit gate compares users id to users id — it compared auth.agentId\n    (agents.id) to cda.agent_id (users), which can never be equal, so the\n    assigned agent was denied 100% of the time and nobody could submit a CDA",
-    /if \(auth\.userId !== cda\.agent_id\)/.test(cda))
-  ok("...and the two agent notifications use cda.agent_id directly — it IS the\n    users id, and the code was looking agents up BY id with it, so the agent\n    was never told their CDA had moved",
-    (cda.match(/const notifyUserId = cda\.agent_id/g) ?? []).length === 2 &&
-    !/\.eq\("id", cda\.agent_id\)/.test(cda))
+  // FLIPPED BY m366: both sides are agents-class now, so the comparison the
+  // ORIGINAL code made (auth.agentId vs cda.agent_id) is finally the right one.
+  ok("...the submit gate compares agents id to agents id, so the assigned agent\n    is the one who can submit",
+    /auth\.agentId !== cda\.agent_id/.test(cda) && !/auth\.userId !== cda\.agent_id/.test(cda))
+  // FLIPPED BY m366. cda.agent_id used to BE the users id, so notifications used
+  // it directly. It is an agents id now, and notifications.user_id needs a users
+  // id — so this is a RESOLVE, which is the rule this whole sweep exists to state.
+  ok("...and the two agent notifications RESOLVE agents->users before writing\n    notifications.user_id, rather than substituting one id space for the other",
+    (cda.match(/const notifyUserId = await resolveUserIdForAgentRecord\(/g) ?? []).length === 2 &&
+    !/const notifyUserId = cda\.agent_id/.test(cda))
 }
 
 console.log("\n═══ 3e. The certificate was issued to \"Agent\" ═══")
@@ -532,21 +556,32 @@ console.log("\n═══ 3f. Every write into a users-class agent_id, enumerated
   // The lesson is the method: fixing the site a detector names is not the same
   // as fixing the class of write, and only the enumeration closes the gap.
   const cda = code("app/actions/cda-portal.ts")
-  ok("ALL THREE cda-portal creation paths write a users id — the two m356 missed\n    were FK-rejected exactly like the one it caught",
-    /agent_id: agent\.user_id,/.test(cda) && /agent_id: auth\.userId,/.test(cda) &&
-    /agent_id:              cdaCreateUserId3,/.test(cda) &&
-    // Scoped to the CDA table's own windows. A blanket ban on `txn.agent_id`
-    // would forbid the activities + task writes in the same file, which are
-    // agents-class and correct — the same over-assertion m343 had to walk back.
-    !/from\("closing_disclosure_agreement"\)[\s\S]{0,400}?agent_id:\s*txn\.agent_id/.test(cda))
+  // FLIPPED BY m366. The enumeration is what mattered here, not which class was
+  // correct: m356 fixed only the ONE path a detector named, and reading every
+  // write found the other two. All three now carry an AGENTS id.
+  ok("ALL THREE cda-portal creation paths write an AGENTS id — the enumeration is\n    the lesson: fixing the site a detector names is not fixing the class",
+    !/agent_id: agent\.user_id,/.test(cda) && !/agent_id: auth\.userId,/.test(cda) &&
+    !/cdaCreateUserId3/.test(cda) &&
+    // The three creation paths, by the agents-class value each one has in hand:
+    // the resolved agent record, and the assigned agent off the transaction.
+    // `txn.agent_id` is now the RIGHT answer here — before m366 this clause
+    // forbade it, because the column was users-class and that write was
+    // FK-rejected.
+    /agent_id: agent\.id,/.test(cda) &&
+    (cda.match(/agent_id:\s+txn\.agent_id,/g) ?? []).length >= 2)
 
   const lm = code("app/actions/listing-media.ts")
-  ok("listing-media writes user.id to ai_video_projects — it resolved an AGENTS\n    id for a users-class column, so every listing video insert was rejected",
-    /agent_id:            user\.id,/.test(lm) && !/agent_id:            agent\.id,/.test(lm))
+  // FLIPPED BY m366: the column is agents-class now, so the AGENTS id this file
+  // already resolved is finally the value it should be writing.
+  ok("listing-media writes the resolved AGENTS id to ai_video_projects",
+    /agent_id:            agentRecordId,/.test(lm) && !/agent_id:            user\.id,/.test(lm))
 
   const mk = code("lib/kernel/marketing.ts")
-  ok("kernel/marketing sends ctx.userId to the two users-class tables it writes\n    (ai_video_projects, podcast_episodes)",
-    (mk.match(/agent_id:\s*ctx\.userId,/g) ?? []).length === 2)
+  // FLIPPED BY m366. Both tables are agents-class now, so ctx.userId is exactly
+  // the wrong value — each write resolves through the identity component first.
+  ok("kernel/marketing RESOLVES an agents id for the two video/podcast tables it\n    writes, instead of sending ctx.userId",
+    /agent_id:\s+videoAgentId,/.test(mk) && /agent_id:\s*episodeAgentId,/.test(mk) &&
+    !/agent_id:\s*ctx\.userId,/.test(mk))
   ok("...and KEEPS ctx.agentId for newsletter_campaigns, direct_mail_campaigns and\n    qr_codes, which genuinely FK agents — the same file, both classes, on purpose",
     (mk.match(/agent_id:\s*ctx\.agentId \?\? null,/g) ?? []).length === 3)
 }
@@ -622,8 +657,11 @@ console.log("\n═══ 3i. A nested JSONB key is not a column ═══")
 
 console.log("\n═══ 4. The catalogue this guard reasons from is honest ═══")
 {
-  ok("the users-class table list is exactly the 20 the live schema reports",
-    USERS_CLASS_TABLES.size === 20, String(USERS_CLASS_TABLES.size))
+  // FLIPPED BY m366: the live schema now reports ZERO users-class agent_id
+  // columns. Re-run the query in this file's header to confirm — it should
+  // return no rows.
+  ok("the users-class table list is EMPTY, which is what the live schema reports\n    now that all 20 have been re-pointed to agents(id)",
+    USERS_CLASS_TABLES.size === 0, String(USERS_CLASS_TABLES.size))
   ok("...and this file carries the query to regenerate it, so it cannot quietly\n    drift away from the schema it describes",
     /information_schema\.table_constraints/.test(src("scripts/identity-class-guard.ts")))
 }

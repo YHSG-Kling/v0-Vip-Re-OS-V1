@@ -17,7 +17,15 @@ import { generateAvatarVideo, getAvatarVideoStatus } from "@/app/actions/externa
 
 export interface CreateVideoProjectParams {
   brokerageId: string
-  agentId: string
+  /**
+   * The agent's USERS id — which is what every caller actually holds (ctx.userId,
+   * auth.userId, a session user). It was called `agentId` and fed to TWO
+   * destinations in different id spaces: resolveVideoProvider, which wants a
+   * users id, and ai_video_projects.agent_id, which since m366 is a FK to
+   * agents(id). One value cannot be both. Named for what it is, and the
+   * users->agents resolve now happens HERE, once, instead of at every caller.
+   */
+  agentUserId: string
   title: string
   script: string
   videoType: string
@@ -204,7 +212,7 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
   project?: VideoProject
   error?: string
 }> {
-  if (!isValidUUID(params.brokerageId) || !isValidUUID(params.agentId)) {
+  if (!isValidUUID(params.brokerageId) || !isValidUUID(params.agentUserId)) {
     return { success: false, error: "Invalid brokerage or agent ID" }
   }
   if (!params.title?.trim()) {
@@ -222,15 +230,25 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
   const { resolveVideoProvider, initialProviderColumns } = await import("@/lib/marketing/video-provider-resolver")
   const provider = await resolveVideoProvider(supabase, {
     brokerageId: params.brokerageId,
-    agentUserId: params.agentId,
+    agentUserId: params.agentUserId,
   })
   const providerCols = initialProviderColumns(provider)
+
+  // ai_video_projects.agent_id FKs agents(id) since m366, so the users id the
+  // caller holds has to be RESOLVED, never substituted. The column is NOT NULL,
+  // so a user with no agent profile cannot own a video project — say so rather
+  // than letting the foreign key phrase it.
+  const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
+  const projectAgentId = await resolveAgentIdInBrokerage(supabase, params.agentUserId, params.brokerageId)
+  if (!projectAgentId) {
+    return { success: false, error: "No agent profile for this user in this brokerage — the video project has no owner to file it under." }
+  }
 
   const { data: project, error } = await supabase
     .from("ai_video_projects")
     .insert({
       brokerage_id: params.brokerageId,
-      agent_id: params.agentId,
+      agent_id: projectAgentId,
       title: params.title,
       script_content: params.script,
       video_type: params.videoType,
@@ -266,7 +284,9 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
     entity_id: project.id,
     brokerage_id: params.brokerageId,
     event_type: KernelEvent.VIDEO_GENERATION_REQUESTED,
-    actor_user_id: params.agentId,
+    // lifecycle_events.actor_user_id is users-class — the caller-supplied users
+    // id is the right value here, NOT the resolved agents id above.
+    actor_user_id: params.agentUserId,
     metadata: { video_type: params.videoType, title: params.title },
   })
 

@@ -151,8 +151,7 @@ export async function assemblePresentation(input: PresentationInput): Promise<Pr
       const videoResult = await generatePresentationVideo({
         listingId: input.listingId,
         contactId: input.contactId,
-        // resolved users.id — ai_video_projects.agent_id and
-        // activities.agent_user_id are both USERS-class
+        // resolved users.id — activities.agent_user_id is USERS-class
         agentId: presAgentUserId,
         presentationContent
       })
@@ -349,7 +348,7 @@ async function generatePresentationVideo(params: {
     // replaces the former stub that wrote dead columns and a fake 'processing'.
     const videoResult = await createVideoProject({
       brokerageId: listing.brokerage_id,
-      agentId: params.agentId,
+      agentUserId: params.agentId,
       title: `Listing Tour — ${listing.address ?? "Property"}`,
       script: videoScript,
       videoType: "listing_tour",

@@ -6,7 +6,6 @@ import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
-import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 
 /**
  * AI Agent Goals System
@@ -319,14 +318,9 @@ export async function syncGoalCurrentValues(params: {
   const yearEnd   = `${year}-12-31`
 
   try {
-    // params.agentId is an AGENTS id (every caller passes ctx.agentId). Four of
-    // the five counters below read agents-class columns, which is correct — but
-    // review_requests.agent_id FKs USERS, so counting it by the agents id
-    // matched nothing and this function UPDATED the reviews_requested goal's
-    // current_value to 0 on every sync. Not a stale number: an actively written
-    // wrong one, so an agent who requested reviews still saw 0 / target.
-    const agentUserId = await resolveUserIdForAgentRecord(supabase, params.agentId)
-
+    // params.agentId is an AGENTS id (every caller passes ctx.agentId) and all
+    // five counters below are now agents-class, review_requests included — so
+    // the reverse users lookup this count used to need is gone.
     const [
       { count: transactionCount },
       { data: commissionData },
@@ -366,7 +360,7 @@ export async function syncGoalCurrentValues(params: {
       supabase
         .from("review_requests")
         .select("id", { count: "exact", head: true })
-        .eq("agent_id",     agentUserId ?? "00000000-0000-0000-0000-000000000000")
+        .eq("agent_id",     params.agentId)
         .eq("brokerage_id", params.brokerageId)
         .gte("created_at",  yearStart)
         .lte("created_at",  yearEnd),
@@ -379,9 +373,7 @@ export async function syncGoalCurrentValues(params: {
       gci:               totalGCI,
       listings_taken:    listingCount       ?? 0,
       referrals_generated: referralCount    ?? 0,
-      // Omitted entirely when the users id could not be resolved — the count
-      // would be a meaningless 0, and writing it would clobber a real value.
-      ...(agentUserId ? { reviews_requested: reviewCount ?? 0 } : {}),
+      reviews_requested: reviewCount        ?? 0,
     }
 
     // Batch update current_value for each goal type that has live data

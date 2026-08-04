@@ -82,6 +82,7 @@ import { createCampaignSequence, createSequenceStep, deleteCampaignSequence } fr
 import { getCampaignRegistry, registerCampaignSource, type ContentSourceItem } from "@/lib/marketing/campaign-registry"
 import { listAvailableQrCodes, type QrLinkInfo } from "@/lib/marketing/qr-asset-linker"
 import { predictPerformanceAction, getUserContextForPrediction } from "@/app/actions/content-prediction"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { PredictionWidget, type PredictionData } from "@/app/components/prediction-widget"
 import {
   CampaignLauncherPanel,
@@ -423,14 +424,22 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
         .limit(10)
       setNewsletterCampaigns(campaigns || [])
 
-      // Get scheduled sends
-      const { data: sends } = await supabase
-        .from("newsletter_scheduled_sends")
-        .select("*, newsletter:newsletter_campaigns(campaign_name)")
-        .eq("agent_id", userId)
-        .order("sent_time", { ascending: false })
-        .limit(10)
-      setScheduledSends(sends || [])
+      // Get scheduled sends. agent_id here is agents-class — agentIdProp is
+      // already server-resolved; without it, resolve rather than reach for the
+      // users id sitting in the same scope. No agents row ⇒ no sends are yours.
+      const sendsAgentId = agentIdProp || agentId || (await resolveAgentIdInBrokerage(supabase, userId, brokerageId))
+      if (!sendsAgentId) {
+        setScheduledSends([])
+      } else {
+        const { data: sends, error: sendsError } = await supabase
+          .from("newsletter_scheduled_sends")
+          .select("*, newsletter:newsletter_campaigns(campaign_name)")
+          .eq("agent_id", sendsAgentId)
+          .order("sent_time", { ascending: false })
+          .limit(10)
+        if (sendsError) console.error("[v0] Failed to load scheduled sends:", sendsError.message)
+        setScheduledSends(sends || [])
+      }
 
       // Get subscriber count
       const { count } = await supabase

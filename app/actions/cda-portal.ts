@@ -49,6 +49,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
+import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 import { revalidatePath } from "next/cache"
 import { canApproveCda, canBrokerSignCda, canSendCdaToTitle } from "@/lib/transactions/cda-signing-policy"
 import { buildCdaContractVerdict, expectedGrossFromTerms, sumOutstandingAgentFees, type CdaDiscrepancy } from "@/lib/commission/cda-discrepancy"
@@ -118,15 +119,10 @@ async function loadCdaContractVerdict(
   supabase: SupabaseClient,
   cda: { transaction_id: string; brokerage_id: string; agent_id: string; gross_commission: number | null; agent_net: number | null },
 ): Promise<CdaContractVerdict | null> {
-  // IDENTITY CLASS (m356). cda.agent_id comes off closing_disclosure_agreement,
-  // whose agent_id FKs USERS — but agent_commission_profiles, agent_cap_tracking
-  // and agent_fee_charges all FK AGENTS. Filtering them by the users id matched
-  // nothing, so the verdict computed the agent's net from a zero split, an
-  // untouched cap and no outstanding fees. Every number on a CDA is money, and
-  // all three inputs read empty without erroring.
-  const { data: cdaAgentRow } = await supabase
-    .from("agents").select("id").eq("user_id", cda.agent_id).eq("brokerage_id", cda.brokerage_id).maybeSingle()
-  const cdaAgentRecordId = (cdaAgentRow as { id?: string } | null)?.id ?? null
+  // cda.agent_id is agents-class, the same class agent_commission_profiles,
+  // agent_cap_tracking and agent_fee_charges key on — so all three read
+  // directly off it. No agent on the CDA means no contract to check against.
+  const cdaAgentRecordId = cda.agent_id ?? null
   if (!cdaAgentRecordId) return null
 
   const [{ data: txn }, { data: profile }, { data: cap }, { data: feeCharges }] = await Promise.all([
@@ -255,13 +251,7 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
       .insert({
         transaction_id: input.transactionId,
         brokerage_id: txn.brokerage_id,
-        // IDENTITY CLASS (m356). closing_disclosure_agreement.agent_id FKs
-        // USERS; txn.agent_id is an AGENTS id, so this insert was rejected
-        // every time and the CDA row could never be created — the commission
-        // approval workflow was dead before it started. The resolved user_id
-        // was already computed twenty lines above, for the agents lookup that
-        // guards this very function, and then not used here.
-        agent_id: agent.user_id,
+        agent_id: agent.id,
         status: "pending",
         preliminary_cd_uploaded_at: new Date().toISOString(),
         preliminary_cd_document_id: input.documentId,
@@ -443,11 +433,9 @@ export async function draftOrUpdateCdaAction(input: {
         ...payload,
         transaction_id: input.transactionId,
         brokerage_id: txn.brokerage_id,
-        // IDENTITY CLASS (m364). m356 fixed ONE of this file's three CDA
-        // creation paths — the one the guard pointed at. This is the second:
-        // closing_disclosure_agreement.agent_id FKs USERS and txn.agent_id is
-        // an agents id, so this insert was rejected too.
-        agent_id: auth.userId,
+        // The gate above already established auth.agentId === txn.agent_id, so
+        // the assigned agent's agents id is what this row is stamped with.
+        agent_id: txn.agent_id,
         revision_number: 1,
       })
       .select("id")
@@ -485,11 +473,10 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
   if (!cda || cda.brokerage_id !== auth.brokerageId) {
     return { success: false as const, error: "not_found" }
   }
-  // IDENTITY CLASS (m356). auth.agentId is agents.id — lib/kernel/api-auth says
-  // so in capitals ("agents.id ≠ users.id") — while cda.agent_id FKs USERS. The
-  // two can never be equal, so this gate denied the assigned agent 100% of the
-  // time: nobody could submit a CDA. Compare the users id to the users id.
-  if (auth.userId !== cda.agent_id) {
+  // Both sides are agents-class now: auth.agentId is agents.id (lib/kernel/api-auth
+  // says so in capitals) and so is cda.agent_id. Comparing across the two id
+  // spaces is what used to lock the assigned agent out of their own CDA.
+  if (!auth.agentId || auth.agentId !== cda.agent_id) {
     return { success: false as const, error: "only_assigned_agent_can_submit" }
   }
   if (!["pending", "drafting", "changes_requested"].includes(cda.status)) {
@@ -794,11 +781,9 @@ export async function approveCdaAction(input: { cdaId: string }) {
   } catch { /* ledger is best-effort — the approval is already recorded */ }
 
   // Notify the agent that compliance cleared it — now awaiting the broker's signature.
-  // IDENTITY CLASS (m356). cda.agent_id ALREADY IS the agent's users id —
-  // closing_disclosure_agreement.agent_id FKs users — so this looked the agents
-  // table up BY id using a users id, matched nothing, and the notification was
-  // silently skipped. The agent was never told their CDA moved.
-  const notifyUserId = cda.agent_id
+  // notifications.user_id FKs users while cda.agent_id is agents-class, so this
+  // is the one direction that genuinely has to be resolved back.
+  const notifyUserId = await resolveUserIdForAgentRecord(supabase, cda.agent_id ?? "")
   if (notifyUserId) {
     await supabase.from("notifications").insert({
       user_id: notifyUserId,
@@ -1000,12 +985,8 @@ export async function requestCdaChangesAction(input: { cdaId: string; reason: st
     actedBy: auth.userId,
   })
 
-  // Notify agent.
-  // IDENTITY CLASS (m356). cda.agent_id ALREADY IS the agent's users id —
-  // closing_disclosure_agreement.agent_id FKs users — so this looked the agents
-  // table up BY id using a users id, matched nothing, and the notification was
-  // silently skipped. The agent was never told their CDA moved.
-  const notifyUserId = cda.agent_id
+  // Notify agent. notifications.user_id FKs users; cda.agent_id is agents-class.
+  const notifyUserId = await resolveUserIdForAgentRecord(supabase, cda.agent_id ?? "")
   if (notifyUserId) {
     await supabase.from("notifications").insert({
       user_id: notifyUserId,
@@ -1338,20 +1319,16 @@ export async function recordNonCdaPayoutPreferenceAction(input: {
       return { success: false as const, error: "transaction_not_found" }
     }
     // Unlike the draft path there is no "caller is the assigned agent" gate
-    // here, so the users id has to be resolved from the transaction's agent.
-    const { data: cdaAgentRow } = await supabase
-      .from("agents").select("user_id").eq("id", txn.agent_id ?? "").maybeSingle()
-    const cdaCreateUserId3 = (cdaAgentRow as { user_id?: string } | null)?.user_id ?? null
-    if (!cdaCreateUserId3) {
-      return { success: false as const, error: "agent_user_not_found" }
+    // here, so the CDA is stamped with the transaction's own assigned agent.
+    if (!txn.agent_id) {
+      return { success: false as const, error: "transaction_has_no_agent" }
     }
     const { data: created, error } = await supabase
       .from("closing_disclosure_agreement")
       .insert({
         transaction_id:        input.transactionId,
         brokerage_id:          txn.brokerage_id,
-        // IDENTITY CLASS (m364) — the third creation path, same users FK.
-        agent_id:              cdaCreateUserId3,
+        agent_id:              txn.agent_id,
         status:                "pending",
         revision_number:       1,
         uses_cda:              false,

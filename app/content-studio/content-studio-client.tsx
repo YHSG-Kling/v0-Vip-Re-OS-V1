@@ -44,6 +44,7 @@ import { aiWriteNewsletterContent, aiGenerateSubjectLines, getNewsletters } from
 import { getDirectMailCampaigns } from "@/app/actions/ai-direct-mail"
 import { createMailCampaign } from "@/app/actions/direct-mail"
 import { createClient } from "@/lib/supabase/client"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import LinkToVideoGenerator from "@/components/content-studio/LinkToVideoGenerator"
 import { executeWorkflow } from "@/app/actions/workflows"
 import { generateVideoFromScript } from "@/app/actions/video-generation"
@@ -486,8 +487,16 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
           setUploadProgress(0)
           return
         }
+        // Scoped — brokerageId is the studio's active tenant and a user can hold
+        // an agents row in more than one. No row ⇒ the upload has nobody to
+        // belong to, so it is refused rather than written under the users id.
+        const agentRecordId = await resolveAgentIdInBrokerage(supabase, user.id, brokerageId)
+        if (!agentRecordId) {
+          throw new Error("No agent profile on your account — finish agent setup before uploading a video.")
+        }
+
         const { error: dbError } = await supabase.from("ai_video_projects").insert({
-          agent_id: user.id,
+          agent_id: agentRecordId,
           brokerage_id: brokerageId,
           title: newVideoTitle,
           video_url: publicUrl,

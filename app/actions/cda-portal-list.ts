@@ -99,29 +99,22 @@ export async function listCdasForComplianceReviewAction(): Promise<{
   // Resolve transaction property + agent name (separate batched lookups —
   // the table has no FK joins declared)
   //
-  // TWO ID SPACES, AND THIS READ WAS CONFLATING THEM.
-  // closing_disclosure_agreement.agent_id is FK → users(id), while
-  // agent_commission_profiles / agent_cap_tracking / agent_fee_charges are all
-  // FK → agents(id). Every one of those four lookups was keyed with the CDA's
-  // USER id, so every one matched nothing: the reviewer saw no agent name, no
-  // contract split, no cap, and — the one that costs money — outstandingFees
-  // permanently 0, so the panel's "must deduct $X in fees" warning could never
-  // fire on a disbursement that should have had fees taken out of it.
-  //
-  // Resolve users.id → agents.id ONCE, then key the agent-scoped reads on that.
+  // cda.agent_id is agents-class, the same class agent_commission_profiles /
+  // agent_cap_tracking / agent_fee_charges key on, so every agent-scoped read
+  // below is keyed straight off it. Only the DISPLAY NAME needs the other
+  // direction — names live on users — so agents.user_id is the single hop.
   const txnIds = Array.from(new Set(cdas.map(c => c.transaction_id).filter(Boolean)))
-  const cdaUserIds = Array.from(new Set(cdas.map(c => c.agent_id).filter(Boolean)))
+  const agentIds = Array.from(new Set(cdas.map(c => c.agent_id).filter(Boolean)))
 
-  const { data: agentRows } = cdaUserIds.length
-    ? await supabase.from("agents").select("id, user_id").eq("brokerage_id", auth.brokerageId).in("user_id", cdaUserIds)
+  const { data: agentRows } = agentIds.length
+    ? await supabase.from("agents").select("id, user_id").eq("brokerage_id", auth.brokerageId).in("id", agentIds)
     : { data: [] as Array<{ id: string; user_id: string | null }> }
 
-  /** users.id → agents.id, for this brokerage. */
-  const agentIdByUserId = new Map<string, string>()
+  /** agents.id → users.id, for the name lookup only. */
+  const userIdByAgentId = new Map<string, string>()
   for (const a of agentRows ?? []) {
-    if (a.user_id) agentIdByUserId.set(a.user_id, a.id)
+    if (a.user_id) userIdByAgentId.set(a.id, a.user_id)
   }
-  const agentIds = Array.from(new Set([...agentIdByUserId.values()]))
 
   const [txnsRes, profilesRes, capRes] = await Promise.all([
     txnIds.length
@@ -164,8 +157,7 @@ export async function listCdasForComplianceReviewAction(): Promise<{
     const prev = capByAgent.get(c.agent_id)
     if (!prev || Number(c.cap_paid_to_date ?? 0) > Number(prev.cap_paid_to_date ?? 0)) capByAgent.set(c.agent_id, { cap_amount: c.cap_amount, cap_paid_to_date: c.cap_paid_to_date })
   }
-  // cda.agent_id IS the users.id, so the name comes straight off it — no
-  // agents hop needed for the display name.
+  const cdaUserIds = Array.from(new Set([...userIdByAgentId.values()]))
   const usersRes = cdaUserIds.length
     ? await supabase.from("users").select("id, first_name, last_name").in("id", cdaUserIds)
     : { data: [] as Array<{ id: string; first_name: string | null; last_name: string | null }> }
@@ -174,9 +166,8 @@ export async function listCdasForComplianceReviewAction(): Promise<{
   )
 
   const items: CdaReviewItem[] = cdas.map(c => {
-    const userId = c.agent_id ?? null
-    // Everything below is keyed on agents.id, which the CDA does NOT carry.
-    const agentId = userId ? agentIdByUserId.get(userId) ?? null : null
+    const agentId = c.agent_id ?? null
+    const userId = agentId ? userIdByAgentId.get(agentId) ?? null : null
     // Live split-vs-contract verdict (the compliance officer's "does the contract agree" check).
     const profile = agentId ? profileByAgent.get(agentId) : undefined
     const contractSplit = profile?.split_percent ?? null

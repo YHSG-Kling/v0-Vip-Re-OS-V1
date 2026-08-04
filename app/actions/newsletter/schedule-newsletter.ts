@@ -94,12 +94,13 @@ export async function scheduleNewsletter(input: ScheduleNewsletterInput) {
   //
   // approval_status "approved" is justified, not assumed: this action already
   // refuses above unless the TEMPLATE is approved.
-  // newsletter_campaigns.agent_id FKs agents(id); created_by FKs users(id).
-  // Passing the users id to both would have thrown a foreign-key violation on
-  // every schedule — the exact identity-class defect this sweep exists to
-  // remove, and I nearly shipped it. Resolve, never substitute.
-  const { resolveAgentId } = await import('@/lib/kernel/agent-identity')
-  const agentRecordId = await resolveAgentId(supabase, user.id)
+  // agent_id on BOTH newsletter_campaigns and the newsletter_scheduled_sends
+  // ledger below is agents-class; created_by FKs users(id). Passing the users id
+  // to both would have thrown a foreign-key violation on every schedule — the
+  // exact identity-class defect this sweep exists to remove. Resolve, never
+  // substitute — and scoped, since the brokerage is already established above.
+  const { resolveAgentIdInBrokerage } = await import('@/lib/kernel/agent-identity')
+  const agentRecordId = await resolveAgentIdInBrokerage(supabase, user.id, userData.brokerage_id)
   if (!agentRecordId) {
     throw new Error('Your account has no agent profile yet, so the newsletter cannot be attributed to a sender. Finish agent setup first.')
   }
@@ -134,7 +135,7 @@ export async function scheduleNewsletter(input: ScheduleNewsletterInput) {
       // to them too, not just to delivery.
       newsletter_id: campaign.id,
       template_id: input.templateId,
-      agent_id: user.id,
+      agent_id: agentRecordId,
       subject_line: input.subjectLine,
       preview_text: input.previewText,
       scheduled_send_time: scheduleTime.iso!,

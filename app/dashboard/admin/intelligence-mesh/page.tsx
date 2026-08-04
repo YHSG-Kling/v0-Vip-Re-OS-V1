@@ -48,7 +48,7 @@ export default async function IntelligenceMeshPage() {
       .select(`
         id, applied_actions, baseline_metric, followup_metric, observed_lift_pct, status, created_at,
         insight:brokerage_intelligence_insights(headline, pattern_key),
-        agent:users!pattern_adoptions_agent_id_fkey(first_name, last_name),
+        agent:agents!pattern_adoptions_agent_id_fkey(users(first_name, last_name)),
         adopter:users!pattern_adoptions_adopted_by_fkey(first_name, last_name)
       `)
       .eq("brokerage_id", profile.brokerage_id)
@@ -130,7 +130,8 @@ export default async function IntelligenceMeshPage() {
                           </span>
                         )}
                       </td>
-                      <td className="px-4 py-2.5">{fmtName(adoption.agent)}</td>
+                      {/* agent_id is agents-class; the name it displays lives one hop away on users. */}
+                      <td className="px-4 py-2.5">{fmtName(adoption.agent?.users ?? null)}</td>
                       <td className="px-4 py-2.5">{fmtName(adoption.adopter)}</td>
                       <td className="px-4 py-2.5 text-right tabular-nums">
                         {adoption.baseline_metric != null ? Number(adoption.baseline_metric).toLocaleString() : "—"}

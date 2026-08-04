@@ -332,16 +332,19 @@ export async function stagePodcastEpisode(
 
   // Fallback — direct insert
   const svc = createServiceClient()
-  // IDENTITY CLASS (m363), the same inversion as stageVideoProject above and
-  // with no fallback to hide it: podcast_episodes.agent_id is one of the twenty
-  // columns that FK USERS. This resolved users→AGENTS and wrote that, so the
-  // insert was FK-rejected and a podcast episode staged through this path could
-  // never be created.
+  // podcast_episodes.agent_id is a NOT NULL FK to agents(id). Scoped resolve —
+  // ctx carries the brokerage, and this is the webhook path where the caller is
+  // whichever user the wizard is acting for, who may hold rows in two tenants.
+  const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
+  const episodeAgentId = await resolveAgentIdInBrokerage(svc, ctx.userId, ctx.brokerageId)
+  if (!episodeAgentId) {
+    return { success: false, error: "No agent profile for this user in this brokerage — the episode has no owner to file it under." }
+  }
   const { data, error } = await svc
     .from("podcast_episodes")
     .insert({
       brokerage_id: ctx.brokerageId,
-      agent_id: ctx.userId,
+      agent_id: episodeAgentId,
       title: intake.title,
       description: intake.description ?? null,
       script: intake.script ?? null,

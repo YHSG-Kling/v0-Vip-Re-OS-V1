@@ -1,5 +1,5 @@
 "use server"
-import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { resolveAgentId, resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { resolveAgreedCommission, resolveClosingCosts } from "@/lib/offers/net-sheet-calc"
 import { deriveNetSheetClosingCostSection } from "@/lib/offers/seller-closing-costs"
 
@@ -370,6 +370,15 @@ export async function shareNetSheetToPortal(params: {
       .select("brokerage_id")
       .eq("id", user.id)
       .maybeSingle()
+    const brokerageId = (agent as { brokerage_id: string | null } | null)?.brokerage_id ?? null
+
+    // Scoped whenever the tenant is known — one agents row per (user, brokerage).
+    const agentRecordId = brokerageId
+      ? await resolveAgentIdInBrokerage(supabase, user.id, brokerageId)
+      : await resolveAgentId(supabase, user.id)
+    if (!agentRecordId) {
+      return { success: false, error: "No agent profile for this user — the net sheet was not shared to the portal." }
+    }
 
     const message =
       `Based on a sale price of ${formatCurrency(params.netSheetData.estimatedSalePrice)}, ` +
@@ -382,9 +391,7 @@ export async function shareNetSheetToPortal(params: {
     const { error } = await supabase.from("transparency_updates").insert({
       listing_id: params.listingId,
       contact_id: params.contactId,
-      // transparency_updates.agent_id FKs USERS(id) — NOT agents(id), despite the
-      // name. A resolved agents.id is FK-rejected here. Verified against pg_constraint.
-      agent_id: user.id,
+      agent_id: agentRecordId,
       update_type: "net_sheet",
       title: "Your Estimated Net Proceeds",
       message,
@@ -401,9 +408,8 @@ export async function shareNetSheetToPortal(params: {
     await supabase.from("activities").insert({
       activity_type: "net_sheet_shared_to_portal",
       contact_id: params.contactId,
-      // FKs agents(id), not users(id) — a raw user id is FK-rejected (agent-identity rule).
-      agent_id: await resolveAgentId(supabase, user.id),
-      brokerage_id: agent?.brokerage_id ?? null,
+      agent_id: agentRecordId,
+      brokerage_id: brokerageId,
       title: "Net sheet shared to seller portal",
       description: `Estimated net: ${formatCurrency(params.netSheetData.estimatedNet)}`,
     })

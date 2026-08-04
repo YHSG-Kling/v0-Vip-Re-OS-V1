@@ -186,8 +186,7 @@ export async function createPodcastEpisode(params: {
       .from("podcast_episodes")
       .insert({
         brokerage_id: brokerageId,
-        // podcast_episodes.agent_id FKs to users (content/business action), not agents.
-        agent_id: userId,
+        agent_id: agentId,
         template_id: params.templateId || null,
         marketing_campaign_id: params.marketingCampaignId || null,
         source_video_project_id: params.sourceVideoProjectId || null,
@@ -368,7 +367,7 @@ export async function generatePodcastAudio(episodeId: string) {
       .single()
 
     if (episodeError) throw episodeError
-    if (episode.agent_id !== userId) {
+    if (episode.agent_id !== agentId) {
       return { success: false, error: "Unauthorized" }
     }
 
@@ -571,14 +570,17 @@ async function synthesizeVoice(
 
 // Get all podcast episodes for agent
 export async function getPodcastEpisodes(filters?: { status?: string; category?: string }) {
-  const { userId, brokerageId } = await getAgentContext()
+  const { userId, agentId, brokerageId } = await getAgentContext()
   if (!userId || !brokerageId) {
     return { success: false, error: "Missing agent context", episodes: [] }
   }
+  // Authenticated but no agent profile ⇒ no episodes are yours. Empty list,
+  // not a filter on null.
+  if (!agentId) return { success: true, episodes: [] }
   const supabase = await createClient()
 
   try {
-    let query = supabase.from("podcast_episodes").select("*").eq("agent_id", userId).eq("brokerage_id", brokerageId).order("created_at", { ascending: false })
+    let query = supabase.from("podcast_episodes").select("*").eq("agent_id", agentId).eq("brokerage_id", brokerageId).order("created_at", { ascending: false })
 
     if (filters?.status) {
       query = query.eq("status", filters.status)
@@ -656,7 +658,7 @@ export async function publishPodcastEpisode(
       .single()
 
     if (episodeError) throw episodeError
-    if (episode.agent_id !== userId) {
+    if (episode.agent_id !== agentId) {
       return { success: false, error: "Unauthorized" }
     }
 
@@ -691,7 +693,7 @@ export async function publishPodcastEpisode(
         publish_channels: channels,
       })
       .eq("id", episodeId)
-      .eq("agent_id", userId)
+      .eq("agent_id", agentId)
       .eq("brokerage_id", brokerageId)
 
     if (error) throw error
@@ -815,14 +817,16 @@ export async function trackPodcastEvent(episodeId: string, eventType: string, da
 
 // Get podcast templates
 export async function getPodcastTemplates() {
-  const { userId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId } = await getAgentContext()
+  // Templates are owned by an agents row; without one the honest answer is none.
+  if (!agentId) return { success: true, templates: [] }
   const supabase = await createClient()
 
   try {
     const { data: templates, error } = await supabase
       .from("podcast_templates")
       .select("*")
-      .eq("agent_id", userId)
+      .eq("agent_id", agentId)
       .eq("brokerage_id", brokerageId)
       .eq("is_active", true)
       .order("use_count", { ascending: false })
@@ -845,7 +849,8 @@ export async function createPodcastTemplate(params: {
   showName?: string
   hostName?: string
 }) {
-  const { userId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId) return { success: false, error: "No agent profile for this user — the template was not created." }
   const supabase = await createClient()
 
   try {
@@ -853,7 +858,7 @@ export async function createPodcastTemplate(params: {
       .from("podcast_templates")
       .insert({
         brokerage_id: brokerageId,
-        agent_id: userId,
+        agent_id: agentId,
         name: params.name,
         description: params.description || "",
         template_type: params.templateType,
@@ -886,7 +891,8 @@ export async function updatePodcastTemplate(
     isActive?: boolean
   }
 ) {
-  const { userId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId) return { success: false, error: "No agent profile for this user — nothing to update." }
   const supabase = await createClient()
 
   try {
@@ -903,7 +909,7 @@ export async function updatePodcastTemplate(
         updated_at: new Date().toISOString(),
       })
       .eq("id", templateId)
-      .eq("agent_id", userId)
+      .eq("agent_id", agentId)
       .eq("brokerage_id", brokerageId)
       .select()
       .single()
@@ -1037,7 +1043,8 @@ export async function getVideoScriptsLibrary() {
 
 // Get video projects for episode sourcing
 export async function getVideoProjects() {
-  const { userId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId) return { success: true, projects: [] }
   const supabase = await createClient()
 
   try {
@@ -1045,7 +1052,7 @@ export async function getVideoProjects() {
       .from("ai_video_projects")
       .select("id, title, script_content, video_type, duration_seconds, status, created_at")
       .eq("brokerage_id", brokerageId)
-      .eq("agent_id", userId)
+      .eq("agent_id", agentId)
       .in("status", ["completed", "published"])
       .order("created_at", { ascending: false })
       .limit(50)
@@ -1142,7 +1149,10 @@ export async function getPodcastAnalytics() {
 
 // Delete podcast episode
 export async function deletePodcastEpisode(episodeId: string) {
-  const { userId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId } = await getAgentContext()
+  // The ownership filter is agents-class; with no agent profile there is no row
+  // this caller owns, so refuse rather than issue a delete that matches nothing.
+  if (!agentId) return { success: false, error: "No agent profile for this user." }
   const supabase = await createClient()
 
   try {
@@ -1154,7 +1164,7 @@ export async function deletePodcastEpisode(episodeId: string) {
       .from("podcast_episodes")
       .delete()
       .eq("id", episodeId)
-      .eq("agent_id", userId)
+      .eq("agent_id", agentId)
       .eq("brokerage_id", brokerageId)
 
     if (error) throw error

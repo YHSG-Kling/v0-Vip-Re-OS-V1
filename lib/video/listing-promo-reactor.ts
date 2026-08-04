@@ -66,10 +66,8 @@ export interface ListingPromoInput {
   brokerageId:  string
   listingId:    string
   /** The listing agent. Callers may pass EITHER an agents.id (what
-   *  listings.agent_id actually holds — it FKs agents(id)) or a users.id;
-   *  dispatchListingPromoVideo normalises to a users.id before use. The previous
-   *  comment here claimed listings.agent_id was "already a users.id", which is
-   *  false on the live schema and is what broke the ledger insert. */
+   *  listings.agent_id actually holds) or a users.id; dispatchListingPromoVideo
+   *  normalises to both classes before use and writes the agents.id. */
   agentUserId:  string
   eventType:    ListingPromoEventType
   /** Wave 27 — when true, skip the lifecycle_promo_policy auto_spawn check
@@ -116,17 +114,11 @@ export async function dispatchListingPromoVideo(
 
   // ── ID-CLASS NORMALISATION (resolve-or-keep) ───────────────────────────────
   //
-  // listing_promo_videos.agent_id FKs users(id). listings.agent_id FKs AGENTS(id)
-  // — verified live: 3 of 3 listing rows match agents.id, 0 match users.id. The
-  // doc comment on ListingPromoInput.agentUserId asserted the opposite ("already
-  // a users.id"), and most of the 13 call sites feed it listings.agent_id
-  // straight through. The ledger insert below therefore FK-failed every time, and
-  // listing_promo_videos held ZERO rows: the whole lifecycle-promo path — policy
-  // gate, compliance gate, 8-platform social fan-out — had never once fired.
-  //
-  // Fixed HERE rather than at each caller: one seam covers all 13, and it is safe
-  // for the callers that already pass a genuine users.id. If the value resolves to
-  // an agents row, translate to that agent's user_id; otherwise keep it as given.
+  // The 13 call sites are split: most feed listings.agent_id (an agents.id)
+  // straight through, some pass a genuine users.id. Normalising HERE covers all
+  // of them with one seam. Both classes are needed downstream — the users.id for
+  // the policy resolver and the compliance actor context, the agents.id for
+  // listing_promo_videos.agent_id and agent_voice_profiles.agent_id.
   let agentUserId = input.agentUserId
   if (agentUserId) {
     const { data: agentRow } = await svc
@@ -183,13 +175,28 @@ export async function dispatchListingPromoVideo(
     }
   }
 
-  // 2. Idempotency ledger
+  // 2. Idempotency ledger. Server-only resolver: this module is already
+  //    "server-only" reactor code and the mapping is re-read on every lifecycle
+  //    event a listing throws, which is what its cache is for.
+  //    listing_promo_videos.agent_id is NOT NULL, so an unresolvable agent means
+  //    the promo cannot be recorded at all — refuse loudly rather than stage a
+  //    row the FK will reject. Nothing is watching this reactor.
+  const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+  const agentRecordId = await resolveUserIdToAgentRecord(agentUserId, input.brokerageId)
+  if (!agentRecordId) {
+    console.error(
+      `[listing-promo] no agent profile for users.id=${agentUserId} in brokerage=${input.brokerageId}` +
+      ` — listing=${input.listingId} event=${input.eventType} promo not staged`,
+    )
+    return { ok: false, status: "failed", reason: "no agent profile for this user in this brokerage" }
+  }
+
   const ledger = await svc
     .from("listing_promo_videos")
     .insert({
       brokerage_id: input.brokerageId,
       listing_id:   input.listingId,
-      agent_id:     agentUserId,
+      agent_id:     agentRecordId,
       event_type:   input.eventType,
       status:       "queued",
     })
@@ -203,18 +210,12 @@ export async function dispatchListingPromoVideo(
   }
   const ledgerId = ledger.data?.id as string | undefined
 
-  // 3. Agent voice/avatar gate — same as intro-video-reactor.
-  // agent_voice_profiles.agent_id FKs to agents(id); resolve users.id
-  // → agents.id via the canonical helper.
-  const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
-  const agentRecordId = await resolveUserIdToAgentRecord(agentUserId, input.brokerageId)
-  const { data: profile } = agentRecordId
-    ? await svc
-        .from("agent_voice_profiles")
-        .select("elevenlabs_voice_id, did_photo_url, did_video_url")
-        .eq("agent_id", agentRecordId)
-        .maybeSingle()
-    : { data: null }
+  // 3. Agent voice/avatar gate — same agents.id resolved above.
+  const { data: profile } = await svc
+    .from("agent_voice_profiles")
+    .select("elevenlabs_voice_id, did_photo_url, did_video_url")
+    .eq("agent_id", agentRecordId)
+    .maybeSingle()
   if (!profile?.elevenlabs_voice_id || (!profile.did_photo_url && !profile.did_video_url)) {
     await svc.from("listing_promo_videos")
       .update({ status: "failed", error_message: "agent has no voice/avatar profile" })

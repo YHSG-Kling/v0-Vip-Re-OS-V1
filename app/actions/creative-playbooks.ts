@@ -150,11 +150,17 @@ export async function installCreativePlaybook(playbookKey: string): Promise<Inst
 
   // ── 2. THE AUTO-RENDERED VIDEO (the differentiator) ───────────────────────
   const videoStep = playbook.steps.find((s) => s.kind === "video")
-  if (videoStep && ctx.agentId) {
-    videoProjectId = await createPlaybookVideo({
-      svc, brokerageId: ctx.brokerageId, agentUserId: ctx.userId, agentRecordId: ctx.agentId,
-      playbook, videoStep, brandLine, magnetId, notes, author,
-    })
+  if (videoStep) {
+    if (!ctx.agentId) {
+      // The project row is stamped with the agents id; without an agent profile
+      // there is nothing to attribute the video to, and the step says so.
+      notes.push(`${videoStep.label}: no agent profile on your account yet — finish agent setup and reinstall to get the video.`)
+    } else {
+      videoProjectId = await createPlaybookVideo({
+        svc, brokerageId: ctx.brokerageId, agentUserId: ctx.userId, agentRecordId: ctx.agentId,
+        playbook, videoStep, brandLine, magnetId, notes, author,
+      })
+    }
   }
 
   // ── 3. Tracked QR pointing at the magnet ──────────────────────────────────
@@ -388,12 +394,14 @@ async function createPlaybookVideo(args: {
     }
   } catch { /* gate unavailable → proceed; the send-side gates still stand */ }
 
-  // Project row (the reactor shape: agent_id carries users.id on this table).
+  // agentRecordId is the agents id already resolved by the caller's context —
+  // the same one the voice-profile gate above keys on. agentUserId stays for
+  // the compliance/dispatch calls, which are users-class.
   const { data: project, error: projErr } = await svc
     .from("ai_video_projects")
     .insert({
       brokerage_id: args.brokerageId,
-      agent_id: args.agentUserId,
+      agent_id: args.agentRecordId,
       title: copy.title,
       script_content: copy.script,
       video_type: "education",

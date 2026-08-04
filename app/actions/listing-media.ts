@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel"
@@ -235,19 +236,11 @@ export async function createVideoProject(params: {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { data: null, error: "Not authenticated" }
 
-  // IDENTITY CLASS (m364). ai_video_projects.agent_id is one of the twenty
-  // columns that FK USERS — so this resolve produces the WRONG class and the
-  // insert below was FK-rejected on every listing video. user.id is already in
-  // hand (it is passed as agent_user_id to resolveVideoProvider just below).
-  // The lookup is kept only for its existence check, which is a real gate.
-  // Resolve agent record to confirm the caller has one (agent_id itself is users-class)
-  const { data: agent } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("user_id", user.id)
-    .eq("brokerage_id", params.brokerageId)
-    .maybeSingle()
-  if (!agent?.id) return { data: null, error: "No agent record found" }
+  // Brokerage-scoped: params.brokerageId names the tenant this listing belongs
+  // to, and a user can hold an agents row in more than one. No row ⇒ refuse;
+  // ai_video_projects.agent_id has nothing valid to carry.
+  const agentRecordId = await resolveAgentIdInBrokerage(supabase, user.id, params.brokerageId)
+  if (!agentRecordId) return { data: null, error: "No agent record found" }
 
   // Migration 1052: resolve the actual provider (D-ID default, with agent
   // + brokerage overrides). Listing videos are customer-facing by default
@@ -264,7 +257,7 @@ export async function createVideoProject(params: {
     .insert({
       listing_id:          params.listingId,
       brokerage_id:        params.brokerageId,
-      agent_id:            user.id,
+      agent_id:            agentRecordId,
       title:               params.title,
       script_content:      params.scriptContent,
       video_type:          params.videoType,

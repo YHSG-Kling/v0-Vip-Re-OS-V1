@@ -115,17 +115,10 @@ export async function GET(request: NextRequest) {
 
     // 4. Market update opportunity - check if one was sent recently
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
-    // IDENTITY CLASS (m339). agentId is an AGENTS id — it is validated above
-    // against callerAgent.id, which comes from `agents` — and leads /
-    // transactions are agents-class so they filter correctly. But
-    // ai_video_projects.agent_id FKs USERS, so this "did we already send one?"
-    // check never matched and the route recommended a market-update video every
-    // single time, including the day after one went out. user.id is the same
-    // person in the other class and is already in scope from the auth gate.
     const { data: recentMarketVideo, error: marketVideoError } = await supabase
       .from("ai_video_projects")
       .select("id")
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
       .eq("video_type", "market_update")
       .gte("created_at", thirtyDaysAgo.toISOString())
       .limit(1)

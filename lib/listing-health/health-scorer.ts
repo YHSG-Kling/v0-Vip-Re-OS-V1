@@ -25,7 +25,6 @@
  */
 
 import "server-only"
-import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
@@ -375,15 +374,18 @@ export async function calculateListingHealth(params: {
   if (!listing) {
     throw new Error(`Listing ${listingId} not found`)
   }
-  // listing_health_scores.agent_id and listing_health_interventions.agent_id both FK
-  // USERS(id) — despite the name — while listings.agent_id FKs AGENTS(id) (verified
-  // against pg_constraint: 3 of 3 live listings match agents.id, 0 match users.id).
-  // Writing the listing's agent_id straight through FK-failed every insert, which is
-  // why both tables hold 0 rows: the listing-health scorer has never persisted a
-  // score or an intervention. Resolve once to the agent's users.id.
-  const healthAgentUserId = listing?.agent_id
-    ? (await supabase.from("agents").select("user_id").eq("id", listing.agent_id).maybeSingle()).data?.user_id ?? null
-    : null
+  // listings.agent_id, listing_health_scores.agent_id and
+  // listing_health_interventions.agent_id are now all the same class — agents(id) —
+  // so the listing's own agent goes straight through. The users.id round-trip this
+  // used to make existed only to satisfy the old FK and has no meaning left.
+  // Both columns are nullable: an unassigned listing still gets scored, it just
+  // carries no agent, which is what the data actually says.
+  const healthAgentId = (listing.agent_id as string | null) ?? null
+  if (!healthAgentId) {
+    // Unattended scan — say it once, or an unassigned listing's missing agent
+    // attribution is invisible forever.
+    console.warn(`[listing-health] listing ${listingId} has no agent_id — score + interventions persist unattributed`)
+  }
 
   // Score every component in parallel
   const [dom, showings, feedback, openHouse, price, activity] = await Promise.all([
@@ -449,7 +451,7 @@ export async function calculateListingHealth(params: {
   await supabase.from("listing_health_scores").insert({
     listing_id:         listingId,
     brokerage_id:       listing.brokerage_id ?? null,
-    agent_id:           healthAgentUserId,
+    agent_id:           healthAgentId,
     overall_score:      overallScore,
     risk_level:         riskLevel,
     score_components:   components.map((c) => ({
@@ -487,7 +489,7 @@ export async function calculateListingHealth(params: {
         await supabase.from("listing_health_interventions").insert({
           listing_id:        listingId,
           brokerage_id:      listing.brokerage_id ?? null,
-          agent_id:          healthAgentUserId,
+          agent_id:          healthAgentId,
           issue_detected:    issue,
           severity:          riskLevel === "critical" ? "critical" : "high",
           ai_recommendation: aiNarrative ?? recommendedActions[0]?.action ?? null,

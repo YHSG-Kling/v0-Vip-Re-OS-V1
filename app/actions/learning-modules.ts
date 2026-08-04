@@ -36,6 +36,7 @@
 import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { pickLearningModulesForActor, type LearningActorKind, type LearningModulePick } from "@/lib/learning-router/composer"
 
 type Channel =
@@ -347,6 +348,14 @@ async function fanOutToChannel(
       })
       const providerCols = initialProviderColumns(provider)
 
+      // authored_by is a users id — the provider resolve above wants exactly
+      // that — but ai_video_projects.agent_id is agents-class. Brokerage-scoped,
+      // matching the podcast branch below; no agents row ⇒ refuse, same as it.
+      const videoAgentId = await resolveAgentIdInBrokerage(
+        supabase, mod.authored_by ?? authorUserId, mod.brokerage_id,
+      )
+      if (!videoAgentId) throw new Error("video requires an agent row for the authoring user")
+
       const audienceType = (mod.audience_roles ?? []).includes("customer")
         ? "customer_facing"
         : "in_house"
@@ -360,7 +369,7 @@ async function fanOutToChannel(
         .from("ai_video_projects")
         .insert({
           brokerage_id:       mod.brokerage_id,
-          agent_id:           mod.authored_by ?? authorUserId,
+          agent_id:           videoAgentId,
           title:              mod.title,
           script_content:     mod.body ?? mod.summary ?? mod.title,
           video_type:         "education",

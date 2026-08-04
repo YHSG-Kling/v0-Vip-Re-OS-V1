@@ -227,19 +227,17 @@ Generate:
 
     const brokerageId = await resolveNoteBrokerageId(supabase, params.agentId)
 
-    // review_requests.agent_id FKs USERS, not agents. params.agentId is an
-    // agents id, and no agents row's id is also a users id — so writing it raw
-    // was rejected on every attempt and this table has never held a row.
+    // review_requests.agent_id is agents-class and params.agentId already is
+    // that class (see the header), so it is written straight through. The users
+    // id is still resolved below because ai_assistant_notes.created_by really
+    // does FK users — the two columns want different id spaces on the same actor.
     const agentUserId = await resolveUserIdForAgentRecord(supabase, params.agentId)
-    if (!agentUserId) {
-      return { success: false, error: "Could not resolve the agent's user account; the review request was not saved." }
-    }
 
     // Save to review_requests using verified live schema columns only.
     const { data: rrInsert, error: rrError } = await supabase
       .from("review_requests")
       .insert({
-        agent_id:     agentUserId,
+        agent_id:     params.agentId,
         brokerage_id: brokerageId,
         contact_id:   transaction.contacts?.id ?? transaction.contact_id ?? null,
         contact_name: `${transaction.contacts?.first_name ?? ""} ${transaction.contacts?.last_name ?? ""}`.trim() || null,
@@ -259,7 +257,9 @@ Generate:
     }
 
     // Persist AI-generated draft to ai_assistant_notes (note_text is the correct column).
-    if (rrInsert?.id && brokerageId) {
+    // No users id ⇒ no valid created_by, and the note is skipped rather than
+    // written under a substituted actor. The review request itself already landed.
+    if (rrInsert?.id && brokerageId && agentUserId) {
       await supabase.from("ai_assistant_notes").insert({
         brokerage_id: brokerageId,
         created_by:   agentUserId,

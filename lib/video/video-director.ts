@@ -718,7 +718,8 @@ function formatForAspect(aspect: VideoAspect): string {
 
 export interface CommissionOpts {
   brokerageId: string
-  /** users.id of the agent (ai_video_projects.agent_id FK → users.id). */
+  /** users.id of the agent. Resolved to the agents.id that
+   *  ai_video_projects.agent_id wants before anything is staged. */
   agentUserId: string
   /** Listing this video promotes — drives QR listing_detail + idempotency entity. */
   listingId?: string | null
@@ -794,6 +795,18 @@ export async function commissionVideo(
 
   const { createServiceClient } = await import("@/lib/supabase/service")
   const svc: AnyClient = client ?? createServiceClient()
+
+  // 0. Identity before spend. ai_video_projects.agent_id is a NOT NULL FK to
+  //    agents(id). The CLIENT-AGNOSTIC resolver, not agent-identity-resolver:
+  //    this module is deliberately not server-only (the simulator imports the
+  //    pure selectors), so it must resolve through whatever client it was handed
+  //    — including the injected test client. Refuse before minting QRs or
+  //    burning gateway tokens on a hook nobody can own.
+  const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
+  const directorAgentId = await resolveAgentIdInBrokerage(svc, opts.agentUserId, opts.brokerageId)
+  if (!directorAgentId) {
+    return { ok: false, status: "failed", reason: "no agent profile for this user in this brokerage" }
+  }
 
   // 1. Resolve the format + assembly structure (pure).
   //    Learning is ON BY DEFAULT: we consult the SELF-IMPROVING layer, which still
@@ -1106,7 +1119,7 @@ export async function commissionVideo(
     .from("ai_video_projects")
     .insert({
       brokerage_id: opts.brokerageId,
-      agent_id: opts.agentUserId,
+      agent_id: directorAgentId,
       listing_id: opts.listingId ?? null,
       contact_id: opts.contactId ?? null,
       title: opts.title ?? `${hookLine} — ${format.compositionId}`,
@@ -1269,6 +1282,15 @@ export async function commissionVideoExperiment(
 
   const { createServiceClient } = await import("@/lib/supabase/service")
   const svc: AnyClient = client ?? createServiceClient()
+
+  // Same identity gate as commissionVideo, and for the same reason — but here it
+  // guards N variant rows, so resolving once up front is what keeps a half-staged
+  // experiment from happening.
+  const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
+  const directorAgentId = await resolveAgentIdInBrokerage(svc, opts.agentUserId, opts.brokerageId)
+  if (!directorAgentId) {
+    return { ok: false, status: "failed", reason: "no agent profile for this user in this brokerage" }
+  }
 
   const variantCount = Math.max(2, Math.min(HOOK_ANGLE_ORDER.length, Math.floor(cfg.variants ?? 3) || 3))
 
@@ -1442,7 +1464,7 @@ export async function commissionVideoExperiment(
       .from("ai_video_projects")
       .insert({
         brokerage_id: opts.brokerageId,
-        agent_id: opts.agentUserId,
+        agent_id: directorAgentId,
         listing_id: opts.listingId ?? null,
         contact_id: opts.contactId ?? null,
         title: opts.title ? `${opts.title} — ${v.angle}` : `${hookLine} — ${format.compositionId} (${v.angle})`,

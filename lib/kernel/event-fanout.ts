@@ -29,6 +29,7 @@ import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
 import { renderTemplateText } from "./portal-template-render"
 import { sentinelWrite } from "./write-sentinel"
+import { resolveUserIdToAgentRecord } from "./agent-identity-resolver"
 
 export interface KernelEventContext {
   event:          KernelEvent
@@ -628,14 +629,32 @@ export async function writePortalUpdate(
     // Resolve the agents.id for the (optional) companion chat. client_portal_messages.agent_id is
     // NOT NULL with an FK to *agents* (not users), and contacts.agent_id is the agents.id — so use
     // that. ctx.agentUserId is a users.id (the actor) and is the WRONG id space here; feeding it in
-    // is why every prior chat insert silently failed the FK. Used ONLY for the chat ping — the
-    // transparency card's agent_id is a separate FK to users (ctx.agentUserId).
+    // is why every prior chat insert silently failed the FK.
     const { data: chatAgentRow } = await supabase
       .from("contacts")
       .select("agent_id")
       .eq("id", contactId)
       .maybeSingle()
     const chatAgentId: string | null = chatAgentRow?.agent_id ?? null
+
+    // The transparency card records the ACTOR, and its agent_id is an agents.id now — so the
+    // actor's users.id has to be resolved, not stamped. Server-only resolver: this module is
+    // already `import "server-only"`, it's brokerage-scoped, and it memoises — fan-out calls it
+    // once per contact per event, which is the read pattern that cache exists for.
+    // Empty agentUserId = a system actor, which is a legitimate null (the column is nullable).
+    // A NON-empty id that fails to resolve is a real user with no agents row in this brokerage:
+    // the card still posts (the client needs it) but it must say so, because nothing downstream
+    // of an unattended fan-out will.
+    let actorAgentId: string | null = null
+    if (ctx.agentUserId) {
+      actorAgentId = await resolveUserIdToAgentRecord(ctx.agentUserId, ctx.brokerageId)
+      if (!actorAgentId) {
+        console.warn(
+          `[event-fanout] no agent profile for users.id=${ctx.agentUserId} in brokerage=${ctx.brokerageId}` +
+          ` — transparency_updates card for event=${ctx.event} contact=${contactId} posts unattributed`,
+        )
+      }
+    }
 
     // Idempotency — TWO layers:
     //   1. App-layer dedupe SELECT (fast-path skip without a DB write). Skips when an identical
@@ -670,9 +689,7 @@ export async function writePortalUpdate(
         contact_id:               contactId,
         transaction_id:           ctx.transactionId ?? null,
         listing_id:               ctx.listingId ?? null,
-        // `|| null` (not `?? null`): a system actor passes agentUserId="" — an empty string would fail
-        // the uuid FK to users and the swallowed insert would silently drop the whole card.
-        agent_id:                 ctx.agentUserId || null,
+        agent_id:                 actorAgentId,
         title:                    title,
         plain_language_summary:   summary,
         stage:                    merged.stage ?? null,

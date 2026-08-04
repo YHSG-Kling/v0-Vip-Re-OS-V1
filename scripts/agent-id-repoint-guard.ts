@@ -116,23 +116,30 @@ function ok(label: string, cond: boolean, detail?: string) {
   else { fail++; failures.push(label); console.log(`  ✗ ${label}${detail ? ` — ${detail}` : ""}`) }
 }
 
-console.log("\n═══ 1. The catalogue still matches the live schema ═══")
+console.log("\n═══ 1. The catalogue matches the live schema ═══")
 {
-  // While the re-point is pending, the sibling guard MUST still list all 20 —
-  // it is describing the schema as it actually is, not as it will be. Flip this
-  // assertion (and that Set) in the same change that applies the migration.
+  // FLIPPED WITH m366. This assertion used to require the sibling guard to list
+  // all 20, because it was describing the schema as it actually was. The
+  // re-point has landed: every one of the 20 now FKs agents(id), verified live
+  // against pg_constraint, so the users-class catalogue must be EMPTY. A name
+  // reappearing there means either a new users-class column was introduced or
+  // the re-point was partially reverted — both worth failing over.
   const cls = read("scripts/identity-class-guard.ts")
-  const listed = (cls.match(/USERS_CLASS_TABLES = new Set\(\[([\s\S]*?)\]\)/)?.[1] ?? "")
+  const listed = (cls.match(/USERS_CLASS_TABLES = new Set<string>\(\[([\s\S]*?)\]\)/)?.[1] ?? "")
     .split(",").map((x) => x.trim().replace(/^"|"$/g, "")).filter(Boolean)
-  ok("identity-class-guard still catalogues exactly the 20 users-class tables,\n    because the re-point has not landed yet",
-    listed.length === REPOINTED.size && listed.every((t) => REPOINTED.has(t)),
-    `catalogue has ${listed.length}, expected ${REPOINTED.size}`)
+  ok("identity-class-guard catalogues ZERO users-class tables,\n    because m366 re-pointed the last 20 to agents(id)",
+    listed.length === 0,
+    `catalogue still has ${listed.length}: ${listed.join(", ")}`)
 }
 
 console.log("\n═══ 2. The conversion backlog, as a ratchet ═══")
-// 45 at the time the backlog was enumerated. Lower it as sites convert; never
-// raise it. At zero, apply the re-point and flip section 1.
-const BACKLOG = 45
+// ZERO, AND IT STAYS ZERO. This was 45 when the backlog was enumerated. All 45
+// were converted to resolve through the identity component, then m366 moved the
+// constraints, and now the ratchet is an invariant rather than a countdown: any
+// new site passing a users id into one of these columns would be REFUSED by the
+// foreign key at runtime, so this guard's job has changed from "drive it down"
+// to "it must never come back".
+const BACKLOG = 0
 const sites = findUnconverted()
 {
   for (const s of sites) console.log(`     ${s.file}:${s.line}  ${s.table}.agent_id ${s.kind === "write" ? "<-" : "=?"} ${s.expr}`)

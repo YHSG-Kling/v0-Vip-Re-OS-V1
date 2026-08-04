@@ -1201,7 +1201,7 @@ export async function generateVideoFromScript(params: {
     const { createVideoProject } = await import("@/app/actions/video/create-video-project")
     const created = await createVideoProject({
       brokerageId:      auth.brokerageId ?? "",
-      agentId:          auth.userId,
+      agentUserId:      auth.userId,
       title:            params.title,
       script:           params.script,
       // Mirrors ai_video_projects_video_type — an avatar talking head from a

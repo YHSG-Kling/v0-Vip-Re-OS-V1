@@ -717,7 +717,7 @@ export async function repurposeUrlToBrandedVideo(input: {
   // the existing create flow which passes the user id.
   const created = await createVideoProject({
     brokerageId: ctx.brokerageId,
-    agentId: ctx.userId,
+    agentUserId: ctx.userId,
     title: input.title?.trim() || `Repurposed video ${new Date().toISOString().slice(0, 10)}`,
     script,
     videoType: "social_reel",

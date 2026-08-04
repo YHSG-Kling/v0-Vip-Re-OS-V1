@@ -30,6 +30,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { isValidUUID } from "@/lib/validations"
 import { revalidatePath } from "next/cache"
 
@@ -135,7 +136,7 @@ export async function adoptInsightAction(params: {
   /** users.id values. `agentIds` is accepted as the older parameter name. */
   agentUserIds?: string[]
   agentIds?: string[]
-}): Promise<{ success: boolean; error?: string; adopted?: number }> {
+}): Promise<{ success: boolean; error?: string; adopted?: number; skippedNoAgentProfile?: number }> {
   if (!isValidUUID(params.insightId)) return { success: false, error: "Invalid insight id" }
   const auth = await requireAdmin()
   if (!auth.ok) return { success: false, error: auth.error }
@@ -156,10 +157,9 @@ export async function adoptInsightAction(params: {
 
   // Resolve target agent list — if empty, broadcast to all agents
   // NAMED agentUserIds, not agentIds (m352). These are `users.id` — the query
-  // below reads the users table — and the distinction is load-bearing: the
-  // pattern_adoptions write wants exactly this class (that table is one of the
-  // twenty whose agent_id FK points at users), while the contacts update in
-  // applyAction wants the other. One variable, two classes, one name.
+  // below reads the users table — and the name has to say so, because every
+  // agent-scoped write in this action (pattern_adoptions, and the contacts
+  // update inside applyAction) is agents-class and must resolve first.
   let agentUserIds = (params.agentUserIds ?? params.agentIds ?? []).filter(Boolean)
   if (agentUserIds.length === 0) {
     const { data: allAgents } = await svc
@@ -172,22 +172,38 @@ export async function adoptInsightAction(params: {
 
   const actions = (insight.playbook_actions as Array<{ type: string; [k: string]: unknown }>) ?? []
   let appliedCount = 0
+  let skippedNoAgentProfile = 0
 
   for (const agentUserId of agentUserIds) {
     try {
+      // Scoped resolve: this is a broker adopting a playbook onto members of ONE
+      // brokerage, and a user can hold agents rows in several.
+      const agentRecordId = await resolveAgentIdInBrokerage(svc, agentUserId, auth.brokerageId)
+      if (!agentRecordId) {
+        // No agent profile in this brokerage means there is nothing to adopt
+        // against and no id pattern_adoptions.agent_id would accept. Counted,
+        // never papered over with the users id.
+        skippedNoAgentProfile += 1
+        continue
+      }
+
       const applied: typeof actions = []
       for (const action of actions) {
         const ok = await applyAction({ svc, agentUserId, brokerageId: auth.brokerageId, action })
         if (ok) applied.push(action)
       }
-      await svc.from("pattern_adoptions").insert({
+      const { error: adoptionError } = await svc.from("pattern_adoptions").insert({
         insight_id:       insight.id,
         brokerage_id:     auth.brokerageId,
-        agent_id:         agentUserId,
+        agent_id:         agentRecordId,
         adopted_by:       auth.userId,
         applied_actions:  applied,
         status:           applied.length === actions.length ? "applied" : (applied.length === 0 ? "failed" : "applied"),
       })
+      if (adoptionError) {
+        console.error(`[adoptInsight] adoption row for agent ${agentUserId}:`, adoptionError.message)
+        continue
+      }
       appliedCount += 1
     } catch (e) {
       console.error(`[adoptInsight] agent ${agentUserId}:`, e)
@@ -195,7 +211,7 @@ export async function adoptInsightAction(params: {
   }
 
   revalidatePath("/dashboard/admin")
-  return { success: true, adopted: appliedCount }
+  return { success: true, adopted: appliedCount, skippedNoAgentProfile }
 }
 
 async function applyAction(input: {

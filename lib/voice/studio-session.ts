@@ -320,6 +320,17 @@ export async function commissionStudioSession(
   const { createServiceClient } = await import("@/lib/supabase/service")
   const svc: AnyClient = client ?? createServiceClient()
 
+  // studio_sessions.agent_id is a NOT NULL FK to agents(id). CLIENT-AGNOSTIC
+  // resolver: this module is deliberately not server-only (planStudioSession is
+  // pure and the simulator drives it), so it resolves through the client it was
+  // handed. Both the idempotency lookup and the anchor insert key off this — a
+  // null here would silently match every session, so refuse instead.
+  const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
+  const sessionAgentId = await resolveAgentIdInBrokerage(svc, opts.agentUserId, opts.brokerageId)
+  if (!sessionAgentId) {
+    return { ok: false, status: "failed", commissioned: 0, skipped: 0, videoProjectIds: [], spoken: "I couldn't find your agent profile in this brokerage — finish onboarding and I'll book the session.", reason: "no agent profile for this user in this brokerage" }
+  }
+
   // ── Idempotency: derive or accept the session key ──────────────────────────
   const sessionKey = opts.sessionKey ??
     `studio:${opts.brokerageId}:${opts.agentUserId}:${plan.durationLabel}:${plan.items[0]?.scheduledFor ?? "no-dates"}`
@@ -329,7 +340,7 @@ export async function commissionStudioSession(
     .from("studio_sessions")
     .select("id, status, commissioned_count, skipped_count")
     .eq("brokerage_id", opts.brokerageId)
-    .eq("agent_id", opts.agentUserId)
+    .eq("agent_id", sessionAgentId)
     .eq("session_key", sessionKey)
     .maybeSingle()
 
@@ -360,7 +371,7 @@ export async function commissionStudioSession(
     .from("studio_sessions")
     .insert({
       brokerage_id: opts.brokerageId,
-      agent_id: opts.agentUserId,
+      agent_id: sessionAgentId,
       spoken_command: opts.spokenCommand,
       duration_label: plan.durationLabel,
       plan: plan.items,

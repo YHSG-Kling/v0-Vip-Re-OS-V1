@@ -30,6 +30,10 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+// Client-agnostic identity resolver, NOT agent-identity-resolver: this module
+// carries no "server-only" marker and is imported from the marketing surfaces,
+// so it must never pull the service-role resolver into a page bundle.
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { applyKernelBrandVoice, isBrandVoiceBlocked } from "@/lib/kernel/adapters/brand-voice"
 import { evaluateKernelOutbound, isComplianceBlocked, getComplianceReason } from "@/lib/kernel/adapters/compliance"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
@@ -902,13 +906,19 @@ export async function createVideoProject(
   // to 'customer_facing' (safer — over-restrict by default).
   const audienceType = input.audienceType ?? "customer_facing"
 
+  // ai_video_projects.agent_id is a NOT NULL FK to agents(id). ctx.agentId is
+  // caller-supplied and optional, so resolve from the authenticated users.id
+  // instead of trusting it — and refuse rather than stage a project nobody owns.
+  const videoAgentId = await resolveAgentIdInBrokerage(supabase, ctx.userId, ctx.brokerageId)
+  if (!videoAgentId) {
+    return { success: false, error: "No agent profile for this user in this brokerage — complete onboarding before generating video." }
+  }
+
   const { data, error } = await supabase
     .from("ai_video_projects")
     .insert({
       brokerage_id:        ctx.brokerageId,
-      // IDENTITY CLASS (m364) — ai_video_projects.agent_id FKs USERS, and
-      // MarketingActorContext carries both ids. ctx.agentId is the agents id.
-      agent_id:            ctx.userId,
+      agent_id:            videoAgentId,
       title:               input.title.trim(),
       script_content:      input.scriptContent.trim(),
       video_type:          input.videoType,
@@ -1193,14 +1203,18 @@ export async function createPodcastEpisodeKernel(
   }
 
   const supabase = await createServiceClient()
+  // podcast_episodes.agent_id is a NOT NULL FK to agents(id) — same resolve as
+  // the video path, same refusal when the user has no agent profile.
+  const episodeAgentId = await resolveAgentIdInBrokerage(supabase, ctx.userId, ctx.brokerageId)
+  if (!episodeAgentId) {
+    return { success: false, error: "No agent profile for this user in this brokerage — complete onboarding before creating a podcast episode." }
+  }
+
   const { data, error } = await supabase
     .from("podcast_episodes")
     .insert({
       brokerage_id: ctx.brokerageId,
-      // IDENTITY CLASS (m364) — podcast_episodes.agent_id FKs USERS. The three
-      // other ctx.agentId writes in this file (newsletter_campaigns,
-      // direct_mail_campaigns, qr_codes) are agents-class and stay as they are.
-      agent_id: ctx.userId,
+      agent_id: episodeAgentId,
       title: input.title.trim(),
       description: input.description ?? null,
       script: input.script ?? null,

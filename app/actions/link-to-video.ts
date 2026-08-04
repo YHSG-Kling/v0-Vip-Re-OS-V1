@@ -307,7 +307,7 @@ export async function startVideoGeneration(videoQueueId: string) {
       const { createVideoProject } = await import("@/app/actions/video/create-video-project")
       const created = await createVideoProject({
         brokerageId:     auth.brokerageId ?? "",
-        agentId:         queued.user_id ?? auth.userId,
+        agentUserId:     queued.user_id ?? auth.userId,
         title:           `Link-to-video: ${queued.source_url ?? "untitled"}`.slice(0, 200),
         script,
         videoType:       "avatar_explainer",

@@ -16,8 +16,9 @@
  * never spend D-ID render credit on a non-compliant script:
  *
  *   1. Gate on contacts.video_opt_out.
- *   2. Resolve agents.id (kernel id on contacts.agent_id) → users.id (FK
- *      target for ai_video_projects.agent_id + agent_voice_profiles.agent_id).
+ *   2. Resolve agents.id (kernel id on contacts.agent_id) → users.id, which the
+ *      compliance actor context and dispatchVideo still speak. Every agent_id
+ *      column written below stays in the agents class it arrived in.
  *   3. Gate on agent_voice_profiles — elevenlabs_voice_id + a Supabase-hosted
  *      avatar source URL (our storage, never D-ID-side).
  *   4. Insert agent_intro_videos (m121) — partial unique index = idempotency.
@@ -61,7 +62,8 @@ interface BaseInput {
   brokerageId:  string
   contactId:    string
   /** agents.id — the value stored on contacts.agent_id (per m111 / RLS).
-   *  Resolved to the agent's users.id inside the reactor. */
+   *  Written straight through to the ledger + project rows; also resolved to
+   *  the agent's users.id inside the reactor for the actor-context consumers. */
   agentId:      string
   /** 'email' (default), 'portal', or 'both' */
   delivery?:    "email" | "portal" | "both"
@@ -213,16 +215,23 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
 
   // 2. Resolve agents.id → users.id via the canonical resolver
   //    (lib/kernel/agent-identity-resolver.ts — cached at module scope).
+  //    input.agentId is already the AGENTS id (it comes off contacts.agent_id),
+  //    which is what agent_intro_videos / ai_video_projects want now. This
+  //    resolve stays because the users.id is still needed downstream — the
+  //    compliance actor context, dispatchVideo, lifecycle_events.actor_user_id —
+  //    and because a resolve that comes back empty means the agents row is gone,
+  //    so there is nothing to attribute the video to either way.
   const agentUserId = await resolveAgentRecordToUserId(input.agentId)
   if (!agentUserId) {
     return { ok: false, status: "skipped", reason: "agent record not found or missing user_id" }
   }
+  const agentRecordId = input.agentId
 
   if (contact.video_opt_out) {
     await svc.from("agent_intro_videos").insert({
       brokerage_id: input.brokerageId,
       contact_id:   input.contactId,
-      agent_id:     agentUserId,
+      agent_id:     agentRecordId,
       trigger:      input.trigger,
       trigger_year: input.triggerYear,
       status:       "suppressed",
@@ -232,25 +241,18 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     return { ok: true, status: "suppressed", reason: "video_opt_out" }
   }
 
-  // 3. Voice + avatar gate (OUR storage URLs).
-  // agent_voice_profiles.agent_id FKs to agents(id); we have users.id
-  // here. Resolve through the canonical helper so the join lands on
-  // the right row (previously this lookup silently returned null and
-  // every intro-video send failed with "no voice profile").
-  const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
-  const agentRecordId = await resolveUserIdToAgentRecord(agentUserId, input.brokerageId)
-  const { data: profile } = agentRecordId
-    ? await svc
-        .from("agent_voice_profiles")
-        .select("elevenlabs_voice_id, did_photo_url, did_video_url")
-        .eq("agent_id", agentRecordId)
-        .maybeSingle()
-    : { data: null }
+  // 3. Voice + avatar gate (OUR storage URLs). agent_voice_profiles.agent_id is
+  //    the same agents.id we already hold — no second round-trip through users.
+  const { data: profile } = await svc
+    .from("agent_voice_profiles")
+    .select("elevenlabs_voice_id, did_photo_url, did_video_url")
+    .eq("agent_id", agentRecordId)
+    .maybeSingle()
   if (!profile?.elevenlabs_voice_id || (!profile.did_photo_url && !profile.did_video_url)) {
     await svc.from("agent_intro_videos").insert({
       brokerage_id: input.brokerageId,
       contact_id:   input.contactId,
-      agent_id:     agentUserId,
+      agent_id:     agentRecordId,
       trigger:      input.trigger,
       trigger_year: input.triggerYear,
       status:       "failed",
@@ -266,7 +268,7 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     .insert({
       brokerage_id:     input.brokerageId,
       contact_id:       input.contactId,
-      agent_id:         agentUserId,
+      agent_id:         agentRecordId,
       trigger:          input.trigger,
       trigger_year:     input.triggerYear,
       status:           "queued",
@@ -381,7 +383,7 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     .from("ai_video_projects")
     .insert({
       brokerage_id:   input.brokerageId,
-      agent_id:       agentUserId,
+      agent_id:       agentRecordId,
       contact_id:     input.contactId,
       title:          input.trigger === "contact_agent_assigned"
                         ? `Intro for ${contact.first_name}`

@@ -18,11 +18,8 @@
  *      Housing state-specific (Florida etc.) + Them-First. ONE redraft
  *      on violation.
  *   4. ElevenLabs TTS in the agent's cloned voice → Supabase Blob URL.
- *   5. Insert podcast_episodes row (podcast_episodes.agent_id FKs USERS — one
- *      of the twenty FKs that point at the wrong table. This header used to say
- *      agents.id and contradicted the comment at the write site 130 lines
- *      below; both were written deliberately, so one had to be wrong.
- *      status='completed', is_ai_generated=true,
+ *   5. Insert podcast_episodes row (agent_id is the host's agents.id, resolved
+ *      once at the top of the run — status='completed', is_ai_generated=true,
  *      approval_status='pending_review' — the agent reviews before
  *      distribute-podcast-episodes cron syndicates).
  *   6. Update podcast_auto_runs ledger: status='rendered', linked
@@ -72,10 +69,27 @@ interface FactPack {
 export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
   const svc = createServiceClient()
 
+  // 0. Identity, once, before anything is written. podcast_auto_runs.agent_id,
+  //    podcast_episodes.agent_id and agent_voice_profiles.agent_id are all
+  //    agents(id) and all NOT NULL, so the host's users.id has to become an
+  //    agents.id here or the run has nowhere to land. Server-only resolver:
+  //    this is unattended cron code that already imports "server-only", and it
+  //    memoises across the week's hosts.
+  //    A host with no agents row in this brokerage is a real misconfiguration —
+  //    nobody is watching this run, so it is logged, not swallowed.
+  const hostAgentRecordId = await resolveUserIdToAgentRecord(input.hostUserId, input.brokerageId)
+  if (!hostAgentRecordId) {
+    console.error(
+      `[auto-podcast] no agent profile for host users.id=${input.hostUserId} in brokerage=${input.brokerageId}` +
+      ` — skipping ${input.isoWeek}; podcast_show_settings points at a user with no agents row`,
+    )
+    return { ok: false, status: "failed", reason: "host has no agent profile in this brokerage" }
+  }
+
   // 1. Idempotency ledger.
   const ledgerIns = await svc.from("podcast_auto_runs").insert({
     brokerage_id:  input.brokerageId,
-    agent_id:      input.hostUserId,
+    agent_id:      hostAgentRecordId,
     iso_week:     input.isoWeek,
     status:       "queued",
   }).select("id").maybeSingle()
@@ -88,28 +102,16 @@ export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
   const ledgerId = ledgerIns.data!.id as string
 
   try {
-    // 2. Voice profile gate.
-    // IDENTITY CLASS (m339). hostUserId is a USERS id and podcast_auto_runs /
-    // podcast_episodes are users-class, which the comments below correctly note.
-    // agent_voice_profiles.agent_id is the OTHER class — it FKs AGENTS — so this
-    // lookup never matched and voiceId was always null: every auto-produced
-    // podcast fell through to a non-cloned voice and nothing said why.
-    const hostAgentRecordId = await resolveUserIdToAgentRecord(input.hostUserId, input.brokerageId)
-    const { data: profile } = hostAgentRecordId
-      ? await svc.from("agent_voice_profiles")
-          .select("elevenlabs_voice_id")
-          .eq("agent_id", hostAgentRecordId)
-          .maybeSingle()
-      : { data: null }
+    // 2. Voice profile gate — same agents.id resolved above.
+    const { data: profile } = await svc.from("agent_voice_profiles")
+      .select("elevenlabs_voice_id")
+      .eq("agent_id", hostAgentRecordId)
+      .maybeSingle()
     const voiceId = (profile as { elevenlabs_voice_id?: string } | null)?.elevenlabs_voice_id ?? null
     if (!voiceId) {
       await svc.from("podcast_auto_runs").update({ status: "skipped", error_message: "host has no elevenlabs_voice_id" }).eq("id", ledgerId)
       return { ok: true, status: "skipped", reason: "host voice profile not configured" }
     }
-
-    // podcast_episodes.agent_id FKs to users.id (verified on the live schema —
-    // despite the column name, the FK targets users, not agents). So we pass
-    // input.hostUserId directly; no agents.id resolution needed for this table.
 
     // 3. Pull value-first topics from the content intelligence bank. The
     //    podcast LEADS with these (audience-driven Reddit threads, market
@@ -155,7 +157,7 @@ export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
     const { data: episode, error: epErr } = await svc.from("podcast_episodes")
       .insert({
         brokerage_id:      input.brokerageId,
-        agent_id:          input.hostUserId, // users.id per the FK on this table
+        agent_id:          hostAgentRecordId,
         title:             `${facts.brokerage_name} Weekly — ${input.isoWeek}`,
         description:       `Auto-generated weekly market commentary. Reviewed by the host before publication.`,
         script,
