@@ -67,6 +67,14 @@ const CHAIN    = src("lib/workflow-orchestrator/chains/compliance-listing-auto-c
 const WIZARD   = src("app/components/form-wizard/FormWizard.tsx")
 const ACTIONS  = src("app/actions/listings-kernel.ts")
 const DOCS     = src("app/actions/documents.ts")
+// CONSOLIDATED: the listing-agreement gate used to live inline in
+// app/actions/documents.ts behind a branch nothing could reach. It now lives in
+// its own module, which app/actions/documents.ts calls. Same gate, one home.
+const GATE     = src("lib/documents/listing-agreement-gate.ts")
+// …and the execution test the gate delegates to.
+const EXEC     = src("lib/compliance/signature-completeness.ts")
+// …and the upload path that actually invokes the gate.
+const SCANNER  = src("lib/documents/scan-uploaded-document.ts")
 const INTAKE   = src("app/actions/ai-listing-intake.ts")
 
 console.log("\n── a new listing opens as a DRAFT, never live ──")
@@ -96,14 +104,46 @@ console.log("\n── only signed + compliance-cleared promotes it ──")
 {
   // The emitter must demand BOTH parties' signatures AND initials, then a clean
   // required-document audit. Either half missing re-opens the bypass.
+  // ASSERT THE CONSTRUCT, NOT THE OLD SPELLING. These three used to scan
+  // app/actions/documents.ts for two named booleans and a `!sigGap && !initGap`
+  // expression. The gate has since been consolidated into its own module and the
+  // execution test extracted into evaluateExecution, so the literals are gone —
+  // but the REQUIREMENT is unchanged and in fact stricter. Pinning the old
+  // spelling would have blocked a correct consolidation; pinning the requirement
+  // still catches anyone weakening it.
   check("both parties' signatures and initials are required",
-    /allRequiredSignaturesPresent === true/.test(DOCS) &&
-    /allRequiredInitialsPresent === true/.test(DOCS) &&
-    /!sigGap && !initGap/.test(DOCS))
+    // the gate defers to the one execution test…
+    /evaluateExecution\(/.test(GATE) &&
+    // …which demands, PER PARTY, a signature AND initials…
+    /for \(const party of parties\)/.test(EXEC) &&
+    /\.signed === true/.test(EXEC) &&
+    /\.all_required_initials_present === true/.test(EXEC) &&
+    // …and refuses anything that is merely truthy. `=== true` is the whole point:
+    // the string "false" and the number 1 must not read as a signature.
+    /=== true/.test(EXEC) &&
+    // …across BOTH parties, not just the seller.
+    /LISTING_AGREEMENT_PARTIES/.test(EXEC))
   check("…and every required document must be present",
-    /auditListingDocuments/.test(DOCS) && /missing_blocking\.length > 0/.test(DOCS))
+    /auditListingDocuments/.test(GATE) && /missing_blocking\.length > 0/.test(GATE))
   check("…before the pass event is emitted at all",
-    /compliance\.listing_agreement_passed/.test(DOCS))
+    /compliance\.listing_agreement_passed/.test(GATE))
+  // The consolidation must be real: ONE live caller, and no second copy left
+  // behind in app/actions/documents.ts. Two gates that can disagree is exactly the
+  // defect this replaced, and the branch in documents.ts was unreachable anyway.
+  check("…the gate has a live caller on the upload path",
+    /runListingAgreementGate\(/.test(SCANNER))
+  // documents.ts still PRODUCES the signature payload — that is its job; the scan
+  // prompt names those booleans and the parse fallback sets them. What it must not
+  // do is DECIDE on them a second time. Banning the names outright would have
+  // banned the producer, so assert the absence of a second verdict instead.
+  check("…and app/actions/documents.ts does not re-decide the verdict itself",
+    !/allRequiredSignaturesPresent\s*===/.test(DOCS) &&
+    !/allRequiredInitialsPresent\s*===/.test(DOCS) &&
+    !/evaluateExecution\(/.test(DOCS))
+  // A scan that could not be parsed must not read as "signed".
+  check("…and an unparseable scan falls back to NOT signed",
+    /allRequiredSignaturesPresent:\s*false/.test(DOCS) &&
+    /allRequiredInitialsPresent:\s*false/.test(DOCS))
   check("the chain listens for exactly that event",
     /triggerEvent:\s*"compliance\.listing_agreement_passed"/.test(CHAIN))
   check("…and promotes to the signed stage",

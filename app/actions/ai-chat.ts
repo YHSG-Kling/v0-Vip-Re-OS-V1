@@ -1223,14 +1223,16 @@ export async function grantMessageAccess(data: {
 
   const supabase = await createClient()
 
-  const { data: grantee, error: granteeError } = await supabase
+  // Named for what the query actually tests — a USER row inside this brokerage —
+  // so the refusal below names the same thing it checked.
+  const { data: granteeUser, error: granteeError } = await supabase
     .from("users")
     .select("id")
     .eq("id", data.userId)
     .eq("brokerage_id", scope.brokerageId)
     .maybeSingle()
   if (granteeError) throw granteeError
-  if (!grantee) throw new Error("That person is not in this brokerage")
+  if (!granteeUser) throw new Error("That user is not in this brokerage")
 
   // UNIQUE (conversation_id, user_id) — without naming it, upsert falls back to
   // the primary key, a new uuid is generated, and re-granting access to the
