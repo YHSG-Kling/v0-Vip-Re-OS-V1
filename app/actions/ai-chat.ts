@@ -92,17 +92,54 @@ function complianceIssueLabels(issues: unknown): string[] {
 // CHAT SESSION MANAGEMENT
 // =====================================================
 
+/**
+ * Resolve the caller to the agents.id that conversations.agent_id demands.
+ *
+ * conversations.agent_id is NOT NULL and FKs agents(id) (verified live:
+ * conversations_agent_id_fkey). A users.id here is REJECTED by the foreign key,
+ * and `?? userId` — the substitution this repo keeps finding — would turn a
+ * loud rejection into a wrong-row write. getAgentContext only looks the agents
+ * row up when user_type is literally 'agent', so a broker or admin who DOES
+ * have an agents row would otherwise be told they have no agent profile; the
+ * canonical resolver covers that case.
+ */
+async function callerAgentIdentity(): Promise<
+  | { ok: true; agentId: string; brokerageId: string; userId: string }
+  | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Not signed in" }
+  if (!ctx.brokerageId) return { ok: false, error: "No brokerage is attached to this account" }
+
+  let agentId = ctx.agentId
+  if (!agentId) {
+    const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+    agentId = await resolveUserIdToAgentRecord(ctx.userId, ctx.brokerageId)
+  }
+  if (!agentId) {
+    return {
+      ok: false,
+      error: "No agent profile is linked to this account yet — finish account setup to use AI chat.",
+    }
+  }
+  return { ok: true, agentId, brokerageId: ctx.brokerageId, userId: ctx.userId }
+}
+
 export async function createChatSession(data: {
-  agentId: string
+  /**
+   * OPTIONAL and ADVISORY. The session is always opened for the agents.id the
+   * SESSION resolves to; a mismatching value is refused rather than honoured,
+   * so a browser cannot open a conversation under someone else's agent row.
+   */
+  agentId?: string
   leadId?: string
   sessionType: "lead_qualification" | "client_support" | "transaction_help" | "market_insights"
 }) {
-  console.log("[v0] createChatSession called with agentId:", data.agentId)
-  
-  // Validate UUID format
-  if (!isValidUUID(data.agentId)) {
-    console.log("[v0] Invalid UUID format for agentId, cannot create session")
-    throw new Error("Invalid agent ID format")
+  const identity = await callerAgentIdentity()
+  if (!identity.ok) throw new Error(identity.error)
+
+  if (data.agentId && data.agentId !== identity.agentId) {
+    throw new Error("That agent id is not this account's")
   }
 
   const supabase = await createClient()
@@ -145,7 +182,12 @@ export async function createChatSession(data: {
   const { data: session, error } = await supabase
     .from("conversations")
     .insert({
-      agent_id: data.agentId,
+      agent_id: identity.agentId,
+      // THE TENANT ANCHOR WAS MISSING. getChatSession/getAgentChatSessions read
+      // back through `.eq("brokerage_id", …)`, so a session created without one
+      // inserted fine and then could never be re-opened — the row existed and
+      // the screen said "not found". conversations.brokerage_id FKs brokerages.
+      brokerage_id: identity.brokerageId,
       // NOT a lead id despite the name: the field is validated above via
       // requirePermission("view","contact", …) and resolved with
       // .from("contacts").eq("id", …). conversations.contact_id FKs contacts(id),
@@ -163,17 +205,24 @@ export async function createChatSession(data: {
     throw error
   }
 
-  console.log("[v0] Chat session created successfully:", session.id)
-
   // Create welcome message
-  await supabase.from("messages").insert({
+  const { error: welcomeError } = await supabase.from("messages").insert({
     conversation_id: session.id,
+    brokerage_id: identity.brokerageId,
+    agent_id: identity.agentId,
+    contact_id: session.contact_id,
     sender_type: "ai_assistant",
     body: data.leadId
       ? `I'm ready to help you engage with this lead using them-first communication. I have their profile loaded and can suggest personalized approaches.`
       : `I'm here to assist you. What would you like help with today?`,
     type: "system",
   })
+  if (welcomeError) {
+    // Not fatal — the session is real and usable. Said out loud because a
+    // swallowed insert here is indistinguishable from a chat that simply
+    // opened without a greeting.
+    console.error("[v0] Chat session welcome message failed:", welcomeError)
+  }
 
   revalidatePath("/dashboard/chat")
   return session
@@ -181,20 +230,47 @@ export async function createChatSession(data: {
 
 export async function sendChatMessage(data: {
   sessionId: string
-  senderId: string
+  /**
+   * WHO IS TALKING — stated, not guessed.
+   *
+   * This used to be inferred as `senderId !== "agent"`. messages.sender_id is a
+   * uuid column, so every real caller passes a uuid, so the comparison was true
+   * every time: EVERY message the agent typed was stored as sender_type
+   * "client", ran the lead-temperature analyser over the agent's own words, and
+   * wrote that verdict onto the conversation's lead_temperature. The channel
+   * restrictions for a "cold lead" then keyed off a temperature derived from the
+   * agent's typing. There is no way to recover the answer from an id, so the
+   * caller says it.
+   */
+  senderType: "agent" | "client"
   messageContent: string
   requestAiResponse?: boolean
 }) {
+  const identity = await callerAgentIdentity()
+  if (!identity.ok) throw new Error(identity.error)
+
   const supabase = await createClient()
 
+  // The conversation must belong to this tenant before anything is written to
+  // it — a raw session id is otherwise enough to post into another brokerage's
+  // thread and to spend that brokerage's AI budget answering it.
+  const { data: conversation, error: conversationError } = await supabase
+    .from("conversations")
+    .select("id, contact_id, brokerage_id")
+    .eq("id", data.sessionId)
+    .eq("brokerage_id", identity.brokerageId)
+    .maybeSingle()
+  if (conversationError) throw conversationError
+  if (!conversation) throw new Error("That conversation was not found")
+
   let temperatureAnalysis = null
-  const isClientMessage = data.senderId !== "agent" // Adjust this logic based on your sender identification
+  const isClientMessage = data.senderType === "client"
 
   if (isClientMessage) {
     temperatureAnalysis = await analyzeLeadTemperatureFromMessage(data.messageContent, data.sessionId)
 
     // Update session with new temperature
-    await supabase
+    const { error: temperatureError } = await supabase
       .from("conversations")
       .update({
         lead_temperature: temperatureAnalysis.temperature,
@@ -206,6 +282,7 @@ export async function sendChatMessage(data: {
         },
       })
       .eq("id", data.sessionId)
+    if (temperatureError) console.error("[v0] Chat temperature update failed:", temperatureError)
   }
 
   // Analyze them-first quality
@@ -218,8 +295,16 @@ export async function sendChatMessage(data: {
     .from("messages")
     .insert({
       conversation_id: data.sessionId,
+      brokerage_id: identity.brokerageId,
+      contact_id: conversation.contact_id,
+      agent_id: identity.agentId,
       sender_type: isClientMessage ? "client" : "agent",
-      sender_id: data.senderId,
+      // messages.sender_id is uuid with NO foreign key, so nothing in the
+      // database pins its id class — this file is the only writer, so it sets
+      // the convention explicitly: sender_id mirrors whichever FK'd column the
+      // sender_type names (agents.id for "agent", contacts.id for "client").
+      // Never a users.id, which would be a third class in one column.
+      sender_id: isClientMessage ? (conversation.contact_id ?? null) : identity.agentId,
       body: data.messageContent,
       them_first_analysis: themFirstAnalysis,
       compliance_flagged: !complianceCheck.passed,
@@ -245,41 +330,67 @@ export async function sendChatMessage(data: {
   if (error) throw error
 
   // Update session activity
-  await supabase
+  const { error: activityError } = await supabase
     .from("conversations")
     .update({
       last_message_at: new Date().toISOString(),
       them_first_score: themFirstAnalysis.score,
     })
     .eq("id", data.sessionId)
+  if (activityError) console.error("[v0] Chat session activity update failed:", activityError)
 
   // Generate AI response if requested
+  let assistantMessage: Record<string, unknown> | null = null
   if (data.requestAiResponse) {
     const aiResponse = await generateAiResponse(data.sessionId, data.messageContent)
 
-    await supabase.from("messages").insert({
-      conversation_id: data.sessionId,
-      sender_type: "ai_assistant",
-      body: aiResponse.message,
-      type: aiResponse.type,
-      metadata: aiResponse.metadata,
-    })
+    const { data: aiRow, error: aiInsertError } = await supabase
+      .from("messages")
+      .insert({
+        conversation_id: data.sessionId,
+        brokerage_id: identity.brokerageId,
+        contact_id: conversation.contact_id,
+        agent_id: identity.agentId,
+        sender_type: "ai_assistant",
+        body: aiResponse.message,
+        type: aiResponse.type,
+        metadata: aiResponse.metadata,
+      })
+      .select("*, message_content:body, message_type:type")
+      .single()
+
+    // The reply IS the product here. A failed insert used to be invisible: the
+    // caller got the agent's own message back and the assistant's answer was
+    // simply never stored, which reads as "the AI didn't respond".
+    if (aiInsertError) throw aiInsertError
+    assistantMessage = aiRow as Record<string, unknown>
 
     // Generate suggestions
-    if (aiResponse.suggestions) {
+    if (Array.isArray(aiResponse.suggestions) && aiResponse.suggestions.length > 0) {
       const suggestions = aiResponse.suggestions.map((sug: any) => ({
         session_id: data.sessionId,
-        suggestion_type: sug.type,
-        suggestion_content: sug.content,
-        confidence_score: sug.confidence,
+        // getChatSession reads suggestions back through
+        // `.eq("brokerage_id", …)` (ai_suggestions HAS a brokerage_id and a
+        // real FK to brokerages) — unstamped rows were written and then never
+        // shown again. agent_id likewise FKs agents(id).
+        brokerage_id: identity.brokerageId,
+        agent_id: identity.agentId,
+        suggestion_type: typeof sug?.type === "string" ? sug.type : "response_template",
+        // suggestion_content is TEXT. The prompt asks the model for an object
+        // ({"template": "…"}), and posting an object into a text column is a
+        // 22P02 that took the whole batch insert down.
+        suggestion_content:
+          typeof sug?.content === "string" ? sug.content : JSON.stringify(sug?.content ?? {}),
+        confidence_score: typeof sug?.confidence === "number" ? sug.confidence : null,
       }))
 
-      await supabase.from("ai_suggestions").insert(suggestions)
+      const { error: suggestionError } = await supabase.from("ai_suggestions").insert(suggestions)
+      if (suggestionError) console.error("[v0] AI suggestion insert failed:", suggestionError)
     }
   }
 
   revalidatePath("/dashboard/chat")
-  return message
+  return { message, assistantMessage }
 }
 
 // =====================================================
@@ -470,6 +581,39 @@ Lead Information:
     : { data: null }
   const style = resolveReplyStyle(prefRow)
 
+  // THE BRAIN CORPUS REACHES THE ANSWER.
+  //
+  // knowledge_articles + help_topics_kb are embedded on save and searchable,
+  // and until now the only thing that read them at answer time was the
+  // inbound-email ISA. An agent asking this assistant a question got a generic
+  // real-estate answer while the brokerage's own written policy sat one vector
+  // search away. buildRAGContext is the retrieval built for prompts — and it is
+  // the RIGHT one HERE specifically because its scope comes from the caller's
+  // cookie session, which exists in a server action (the brand-voice rail
+  // deliberately avoids it for exactly the opposite reason: webhooks and cron
+  // have no cookie to scope from).
+  //
+  // Best-effort: a knowledge-base outage degrades the answer, it does not
+  // withhold it. Empty string when nothing clears the similarity threshold, so
+  // an unembedded corpus adds nothing to the prompt rather than adding noise.
+  let knowledgeContext = ""
+  try {
+    const { buildRAGContext } = await import("@/app/actions/knowledge/search")
+    knowledgeContext = await buildRAGContext(userMessage, { maxResults: 4, maxTokens: 1500 })
+  } catch (kbError) {
+    console.error("[v0] Knowledge retrieval failed for AI response:", kbError)
+  }
+
+  const knowledgeBlock = knowledgeContext
+    ? `
+BROKERAGE KNOWLEDGE — these are this brokerage's OWN documented answers. Prefer
+them over general real-estate knowledge, and say so when you rely on one. If
+they do not cover the question, say that rather than inventing a policy.
+
+${knowledgeContext}
+`
+    : ""
+
   // Create AI prompt with them-first philosophy
   const prompt = `You are an AI assistant helping a real estate agent communicate with leads and clients using a "them-first" communication philosophy.
 
@@ -483,7 +627,7 @@ CRITICAL RULES:
 7. Keep responses concise, actionable, and compliant
 
 AGENT'S CHOSEN VOICE: ${style.toneDirective}
-
+${knowledgeBlock}
 ${leadContext}
 
 Conversation History:
@@ -776,6 +920,12 @@ export async function getAgentChatSessions(agentId: string) {
     return [] // Return empty array instead of object
   }
 
+  // agentId arrives from the browser. Anchoring the read to the caller's own
+  // brokerage means a borrowed agents.id lists nothing rather than another
+  // tenant's conversation history.
+  const identity = await callerAgentIdentity()
+  if (!identity.ok) return []
+
   const { data, error } = await supabase
     .from("conversations")
     .select(
@@ -794,6 +944,7 @@ export async function getAgentChatSessions(agentId: string) {
     `,
     )
     .eq("agent_id", agentId)
+    .eq("brokerage_id", identity.brokerageId)
     .eq("status", "active")
     .order("last_message_at", { ascending: false })
 
@@ -806,17 +957,26 @@ export async function getAgentChatSessions(agentId: string) {
 }
 
 export async function endChatSession(sessionId: string) {
+  // Same tenant anchor getChatSession applies. Without it a raw session id
+  // closes any brokerage's conversation, and the update reports success either
+  // way because a zero-row update is not an error.
+  const identity = await callerAgentIdentity()
+  if (!identity.ok) throw new Error(identity.error)
+
   const supabase = await createClient()
 
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("conversations")
     .update({
       status: "completed",
       ended_at: new Date().toISOString(),
     })
     .eq("id", sessionId)
+    .eq("brokerage_id", identity.brokerageId)
+    .select("id")
 
   if (error) throw error
+  if (!data || data.length === 0) throw new Error("That conversation was not found")
 
   revalidatePath("/dashboard/chat")
   return { success: true }
@@ -1020,16 +1180,57 @@ export async function getAgentChatPreferences(agentId: string): Promise<AgentCha
 // MESSAGE ACCESS CONTROL
 // =====================================================
 
+/**
+ * message_access_control has NO foreign keys at all (verified live — its only
+ * constraints are the primary key and UNIQUE (conversation_id, user_id)). So
+ * nothing in the database stops a grant naming another tenant's conversation or
+ * another tenant's user. Every entry point here checks the conversation belongs
+ * to the caller's brokerage first.
+ */
+async function conversationInCallerTenant(
+  conversationId: string,
+): Promise<{ ok: true; brokerageId: string; userId: string } | { ok: false; error: string }> {
+  const identity = await callerAgentIdentity()
+  if (!identity.ok) return { ok: false, error: identity.error }
+  if (!isValidUUID(conversationId)) return { ok: false, error: "Invalid conversation id" }
+
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from("conversations")
+    .select("id")
+    .eq("id", conversationId)
+    .eq("brokerage_id", identity.brokerageId)
+    .maybeSingle()
+  if (error) return { ok: false, error: error.message }
+  if (!data) return { ok: false, error: "That conversation was not found" }
+  return { ok: true, brokerageId: identity.brokerageId, userId: identity.userId }
+}
+
 export async function grantMessageAccess(data: {
   conversationId: string
   userId: string
   userType: "agent" | "client" | "admin" | "broker"
   canRead?: boolean
   canWrite?: boolean
-  grantedBy: string
   expiresAt?: string
 }) {
+  // `grantedBy` used to be a CALLER-SUPPLIED parameter. An audit column whose
+  // value the client picks records whatever the client says, which is the one
+  // thing an audit column must not do. It is the session's user now, and the
+  // parameter is gone so no call site can pass a different answer.
+  const scope = await conversationInCallerTenant(data.conversationId)
+  if (!scope.ok) throw new Error(scope.error)
+
   const supabase = await createClient()
+
+  const { data: grantee, error: granteeError } = await supabase
+    .from("users")
+    .select("id")
+    .eq("id", data.userId)
+    .eq("brokerage_id", scope.brokerageId)
+    .maybeSingle()
+  if (granteeError) throw granteeError
+  if (!grantee) throw new Error("That person is not in this brokerage")
 
   // UNIQUE (conversation_id, user_id) — without naming it, upsert falls back to
   // the primary key, a new uuid is generated, and re-granting access to the
@@ -1041,7 +1242,7 @@ export async function grantMessageAccess(data: {
       user_type: data.userType,
       can_read: data.canRead ?? true,
       can_write: data.canWrite ?? true,
-      granted_by: data.grantedBy,
+      granted_by: scope.userId,
       expires_at: data.expiresAt,
       granted_at: new Date().toISOString(),
     },
@@ -1055,6 +1256,9 @@ export async function grantMessageAccess(data: {
 }
 
 export async function revokeMessageAccess(conversationId: string, userId: string) {
+  const scope = await conversationInCallerTenant(conversationId)
+  if (!scope.ok) throw new Error(scope.error)
+
   const supabase = await createClient()
 
   const { error } = await supabase
@@ -1070,6 +1274,9 @@ export async function revokeMessageAccess(conversationId: string, userId: string
 }
 
 export async function getMessageAccessList(conversationId: string) {
+  const scope = await conversationInCallerTenant(conversationId)
+  if (!scope.ok) throw new Error(scope.error)
+
   const supabase = await createClient()
 
   // NO FOREIGN KEY from message_access_control.user_id to users, so PostgREST

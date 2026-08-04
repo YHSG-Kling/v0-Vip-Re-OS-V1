@@ -79,7 +79,10 @@ import {
   getMotivatedSellers,
   getUnifiedLeadProfiles,
   deliverIntelligentValue,
+  updateLeadProfile,
+  getAgentWorkloadStats,
 } from "@/app/actions/lead-intelligence"
+import type { AgentWorkloadRow } from "@/app/actions/lead-intelligence"
 import LeadIntelligencePanel from "@/app/components/intelligence/LeadIntelligencePanel"
 import { initiateWhisperBridge, triggerAiVoiceCall } from "@/app/actions/voice-call-bridge"
 import { aiBatchReengagement } from "@/app/actions/ai-lead-nurturing"
@@ -279,6 +282,15 @@ export default function LeadsPage() {
   const [unifiedProfiles, setUnifiedProfiles] = useState<any[]>([])
   const [profilesLoading, setProfilesLoading] = useState(false)
 
+  // TRIAGE — the profile card showed the AI's verdict and gave the agent no way
+  // to correct or claim it. updateLeadProfile existed the whole time with no
+  // caller, so a wrong temperature stayed wrong and nobody could take a profile.
+  const [triagingId, setTriagingId] = useState<string | null>(null)
+
+  // Who is carrying which share of the qualified pipeline (broker/admin only).
+  const [workload, setWorkload] = useState<AgentWorkloadRow[]>([])
+  const [workloadLoading, setWorkloadLoading] = useState(false)
+
   // Selected lead for inline LeadIntelligencePanel
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
   const [selectedLeadData, setSelectedLeadData] = useState<any>(null)
@@ -468,6 +480,60 @@ export default function LeadsPage() {
     }
     loadHotLeads()
   }, [])
+
+  // Workload distribution — only meaningful to someone who can move work
+  // between agents, so it loads only once the role is known to be broker/admin.
+  useEffect(() => {
+    if (!roleResolved || !isAdminOrBroker) return
+    let cancelled = false
+    const loadWorkload = async () => {
+      setWorkloadLoading(true)
+      try {
+        const result = await getAgentWorkloadStats()
+        if (!cancelled && result.success) setWorkload(result.workload)
+      } catch (error) {
+        console.error("[leads] Agent workload load failed:", error)
+      } finally {
+        if (!cancelled) setWorkloadLoading(false)
+      }
+    }
+    loadWorkload()
+    return () => {
+      cancelled = true
+    }
+  }, [roleResolved, isAdminOrBroker])
+
+  /**
+   * Apply one triage change to a unified profile and reflect the row the server
+   * actually wrote — not the value that was clicked. updateLeadProfile resolves
+   * "me" to an agents.id and refuses a profile outside this brokerage, so a
+   * refused change must not look applied.
+   */
+  const applyProfileTriage = async (
+    profileId: string,
+    updates: Parameters<typeof updateLeadProfile>[1],
+  ) => {
+    setTriagingId(profileId)
+    try {
+      const result = await updateLeadProfile(profileId, updates)
+      if (!result.success) {
+        toast.error(result.error ?? "Could not update this profile")
+        return
+      }
+      setUnifiedProfiles((prev) =>
+        prev.map((p) => (p.id === profileId ? { ...p, ...result.profile } : p)),
+      )
+      toast.success("Profile updated")
+      if (isAdminOrBroker) {
+        const refreshed = await getAgentWorkloadStats()
+        if (refreshed.success) setWorkload(refreshed.workload)
+      }
+    } catch (error: any) {
+      toast.error(error?.message ?? "Could not update this profile")
+    } finally {
+      setTriagingId(null)
+    }
+  }
 
   // Debounced search — only runs after role is resolved
   useEffect(() => {
@@ -1222,6 +1288,43 @@ export default function LeadsPage() {
               </div>
             )}
 
+          {/* WHO IS CARRYING WHAT. getAgentWorkloadStats aggregated the qualified
+              pipeline by assigned agent and had no caller — so "Assign to me"
+              above had no counterweight and nobody could see a lopsided desk. */}
+            {isAdminOrBroker && (
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <Users className="h-4 w-4 text-primary" />
+                  <h2 className="text-base font-semibold">Qualified Pipeline by Agent</h2>
+                  <span className="text-xs text-muted-foreground">assigned unified profiles</span>
+                </div>
+                {workloadLoading ? (
+                  <div className="h-20 bg-muted animate-pulse rounded-lg" />
+                ) : workload.length === 0 ? (
+                  <Card>
+                    <CardContent className="py-6 text-center text-muted-foreground text-sm">
+                      No profiles are assigned to an agent yet.
+                    </CardContent>
+                  </Card>
+                ) : (
+                  <div className="rounded-lg border bg-card divide-y">
+                    {workload.map((row) => (
+                      <div key={row.agentId} className="flex items-center justify-between gap-3 px-4 py-2">
+                        <p className="text-sm font-medium truncate">{row.agentName}</p>
+                        <div className="flex items-center gap-1.5 text-[11px] shrink-0">
+                          <span className="rounded-full bg-red-100 text-red-700 px-2 py-0.5">{row.hot} hot</span>
+                          <span className="rounded-full bg-amber-100 text-amber-700 px-2 py-0.5">{row.warm} warm</span>
+                          <span className="rounded-full bg-slate-100 text-slate-600 px-2 py-0.5">{row.cold} cold</span>
+                          <span className="rounded-full bg-emerald-100 text-emerald-700 px-2 py-0.5">{row.ready} ready</span>
+                          <span className="text-muted-foreground">· {row.total} total</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
           {/* Part C — Top Profiles Ready for Outreach */}
             <div>
               <div className="flex items-center justify-between mb-3">
@@ -1329,6 +1432,61 @@ export default function LeadsPage() {
                               <>Delivered</>
                             ) : (
                               <><Sparkles className="h-3 w-3" /> Deliver Value</>
+                            )}
+                          </button>
+                        </div>
+
+                        {/* TRIAGE — correct the AI, or claim the lead. */}
+                        <div
+                          className="flex flex-wrap items-center gap-1 border-t pt-2"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {(["hot", "warm", "cold"] as const).map((t) => (
+                            <button
+                              key={t}
+                              type="button"
+                              disabled={triagingId === profile.id}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                void applyProfileTriage(profile.id, { temperature: t })
+                              }}
+                              className={`rounded px-2 py-0.5 text-[11px] border capitalize transition-colors disabled:opacity-60 ${
+                                profile.temperature === t
+                                  ? "bg-primary text-primary-foreground border-primary"
+                                  : "bg-background hover:bg-muted text-muted-foreground border-border"
+                              }`}
+                            >
+                              {t}
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            disabled={triagingId === profile.id}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              void applyProfileTriage(profile.id, {
+                                ready_for_outreach: !profile.ready_for_outreach,
+                              })
+                            }}
+                            className="rounded px-2 py-0.5 text-[11px] border bg-background hover:bg-muted text-muted-foreground border-border transition-colors disabled:opacity-60"
+                          >
+                            {profile.ready_for_outreach ? "Hold" : "Mark ready"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={triagingId === profile.id}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              // "me" is resolved server-side to this user's
+                              // agents.id — the browser never guesses an id class.
+                              void applyProfileTriage(profile.id, { assigned_agent_id: "me" })
+                            }}
+                            className="rounded px-2 py-0.5 text-[11px] border bg-background hover:bg-muted text-muted-foreground border-border transition-colors disabled:opacity-60"
+                          >
+                            {triagingId === profile.id ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : (
+                              "Assign to me"
                             )}
                           </button>
                         </div>

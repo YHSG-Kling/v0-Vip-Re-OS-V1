@@ -1132,69 +1132,214 @@ function analyzeSearchIntent(results: any[]): string | null {
   return "market_research"
 }
 
-export async function updateLeadProfile(profileId: string, updates: any) {
-  try {
-    await requirePermission("edit", "lead_intelligence", profileId)
-    const supabase = createServiceClient()
+/** The only unified_lead_profile fields an agent may set by hand. */
+export interface LeadProfileTriage {
+  temperature?: "hot" | "warm" | "cold"
+  intent_type?: "buyer" | "seller" | "both" | "investor" | "researcher" | "unknown"
+  intent_strength?: "browsing" | "researching" | "active"
+  estimated_timeline?: "immediate" | "1-3months" | "3-6months"
+  ready_for_outreach?: boolean
+  ai_summary?: string
+  /**
+   * agents.id, or the string "me". unified_lead_profile.assigned_agent_id has
+   * NO declared foreign key (verified live — the table's only FKs are
+   * brokerage_id and contact_id), so nothing in the database catches a users.id
+   * written here; the check has to happen in code. "me" is resolved through the
+   * canonical resolver rather than defaulted with `??`.
+   */
+  assigned_agent_id?: string | "me" | null
+}
 
-    const { data, error } = await supabase
-      .from("unified_lead_profile")
-      .update(updates)
-      .eq("id", profileId)
-      .select()
-      .single()
+const TEMPERATURES = ["hot", "warm", "cold"] as const
+const INTENT_TYPES = ["buyer", "seller", "both", "investor", "researcher", "unknown"] as const
+const INTENT_STRENGTHS = ["browsing", "researching", "active"] as const
+const TIMELINES = ["immediate", "1-3months", "3-6months"] as const
 
-    if (error) throw error
+/**
+ * Hand-triage one unified lead profile.
+ *
+ * THIS WAS `updates: any` SPREAD STRAIGHT INTO AN UPDATE, over a SERVICE
+ * client, with no tenant filter. requirePermission defers everything that is
+ * not a broker/admin to RLS (lib/security/rbac.ts step 7) — and the service
+ * client is precisely the client RLS does not apply to. So any signed-in agent
+ * could rewrite any brokerage's profile row, including its brokerage_id, by
+ * naming the id. The columns are now an allow-list, the row is anchored to the
+ * caller's brokerage, and the update is confirmed to have matched something.
+ */
+export async function updateLeadProfile(profileId: string, updates: LeadProfileTriage) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
 
-    revalidatePath("/intelligence")
-    return { success: true, profile: data }
-  } catch (error) {
-    console.error("[v0] Error updating lead profile:", error)
-    return { success: false, error: String(error) }
+  await requirePermission("edit", "lead_intelligence", profileId)
+
+  const supabase = createServiceClient()
+  const patch: Record<string, unknown> = {}
+
+  if (updates.temperature !== undefined) {
+    if (!TEMPERATURES.includes(updates.temperature)) {
+      return { success: false, error: "Unsupported temperature" }
+    }
+    patch.temperature = updates.temperature
   }
+  if (updates.intent_type !== undefined) {
+    if (!INTENT_TYPES.includes(updates.intent_type)) {
+      return { success: false, error: "Unsupported intent type" }
+    }
+    patch.intent_type = updates.intent_type
+  }
+  if (updates.intent_strength !== undefined) {
+    if (!INTENT_STRENGTHS.includes(updates.intent_strength)) {
+      return { success: false, error: "Unsupported intent strength" }
+    }
+    patch.intent_strength = updates.intent_strength
+  }
+  if (updates.estimated_timeline !== undefined) {
+    if (!TIMELINES.includes(updates.estimated_timeline)) {
+      return { success: false, error: "Unsupported timeline" }
+    }
+    patch.estimated_timeline = updates.estimated_timeline
+  }
+  if (updates.ready_for_outreach !== undefined) {
+    patch.ready_for_outreach = Boolean(updates.ready_for_outreach)
+  }
+  if (updates.ai_summary !== undefined) {
+    patch.ai_summary = String(updates.ai_summary).slice(0, 4000)
+  }
+
+  if (updates.assigned_agent_id !== undefined) {
+    if (updates.assigned_agent_id === null) {
+      patch.assigned_agent_id = null
+    } else if (updates.assigned_agent_id === "me") {
+      // users.id → agents.id. NOT `?? auth.userId`: a users.id in an
+      // agents-class column reads back as an unknown agent and the profile
+      // silently belongs to nobody.
+      const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+      const agentId = await resolveUserIdToAgentRecord(auth.userId, auth.brokerageId)
+      if (!agentId) {
+        return { success: false, error: "No agent profile is linked to this account yet" }
+      }
+      patch.assigned_agent_id = agentId
+    } else {
+      // A raw agents.id from the browser — confirm it is an agent of THIS
+      // brokerage before it lands in a column with no foreign key to catch it.
+      const { data: agent, error: agentError } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("id", updates.assigned_agent_id)
+        .eq("brokerage_id", auth.brokerageId)
+        .maybeSingle()
+      if (agentError) return { success: false, error: agentError.message }
+      if (!agent) return { success: false, error: "That agent is not in this brokerage" }
+      patch.assigned_agent_id = agent.id
+    }
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return { success: false, error: "Nothing to update" }
+  }
+  patch.updated_at = new Date().toISOString()
+
+  const { data, error } = await supabase
+    .from("unified_lead_profile")
+    .update(patch)
+    .eq("id", profileId)
+    .eq("brokerage_id", auth.brokerageId)
+    .select()
+    .maybeSingle()
+
+  if (error) {
+    console.error("[v0] Error updating lead profile:", error)
+    return { success: false, error: error.message }
+  }
+  // A filtered update that matches nothing is not an error to PostgREST. Saying
+  // "saved" over zero rows is how a cross-tenant id looks like success.
+  if (!data) return { success: false, error: "That profile was not found" }
+
+  // /leads is where the triage controls live; /intelligence kept from the
+  // original so nothing that page renders goes stale.
+  revalidatePath("/leads")
+  revalidatePath("/intelligence")
+  return { success: true, profile: data }
+}
+
+export interface AgentWorkloadRow {
+  agentId: string
+  agentName: string
+  total: number
+  hot: number
+  warm: number
+  cold: number
+  ready: number
 }
 
 export async function getAgentWorkloadStats() {
   const auth = await requireCaller()
-  if (!auth.ok) return { success: false, error: auth.error, workload: {} }
+  if (!auth.ok) return { success: false, error: auth.error, workload: [] as AgentWorkloadRow[] }
 
-  try {
-    const supabase = createServiceClient()
+  const supabase = createServiceClient()
 
-    const { data, error } = await supabase
-      .from("unified_lead_profile")
-      .select("assigned_agent_id, temperature, ready_for_outreach")
+  const { data, error } = await supabase
+    .from("unified_lead_profile")
+    .select("assigned_agent_id, temperature, ready_for_outreach")
+    .eq("brokerage_id", auth.brokerageId)
+
+  if (error) {
+    console.error("[v0] Error getting agent workload:", error)
+    return { success: false, error: error.message, workload: [] as AgentWorkloadRow[] }
+  }
+
+  // Aggregate by agent
+  const byAgent = new Map<string, AgentWorkloadRow>()
+  for (const profile of data ?? []) {
+    const agentId = profile.assigned_agent_id as string | null
+    if (!agentId) continue
+
+    let row = byAgent.get(agentId)
+    if (!row) {
+      row = { agentId, agentName: "Unknown agent", total: 0, hot: 0, warm: 0, cold: 0, ready: 0 }
+      byAgent.set(agentId, row)
+    }
+
+    row.total++
+    // `workload[id][profile.temperature]++` produced NaN the moment temperature
+    // was null or anything outside the three buckets — and temperature is a
+    // nullable free-text column, so an unscored profile poisoned the whole row.
+    const t = profile.temperature as string | null
+    if (t === "hot" || t === "warm" || t === "cold") row[t]++
+    if (profile.ready_for_outreach) row.ready++
+  }
+
+  // A count with no name is not something a broker can act on.
+  //
+  // THE NAME IS NOT ON `agents`. That table carries licence, fee and profile
+  // columns but no first_name / last_name / email — those live on `users`, one
+  // hop away through agents.user_id. Selecting them off `agents` is a phantom
+  // column, and PostgREST answers a phantom column by failing the whole select.
+  // The embed below is backed by a DECLARED foreign key (agents_user_id_fkey →
+  // users(id), verified live), which is what makes it resolvable.
+  const agentIds = [...byAgent.keys()]
+  if (agentIds.length > 0) {
+    const { data: agents, error: agentsError } = await supabase
+      .from("agents")
+      .select("id, users:user_id(first_name, last_name, email)")
+      .in("id", agentIds)
       .eq("brokerage_id", auth.brokerageId)
-
-    if (error) throw error
-
-    // Aggregate by agent
-    const workload: Record<string, any> = {}
-    data?.forEach((profile) => {
-      if (!profile.assigned_agent_id) return
-
-      if (!workload[profile.assigned_agent_id]) {
-        workload[profile.assigned_agent_id] = {
-          total: 0,
-          hot: 0,
-          warm: 0,
-          cold: 0,
-          ready: 0,
+    if (agentsError) {
+      console.error("[v0] Agent name lookup failed:", agentsError.message)
+    } else {
+      for (const a of agents ?? []) {
+        const row = byAgent.get(a.id as string)
+        const u = (a as { users?: { first_name?: string | null; last_name?: string | null; email?: string | null } | null }).users
+        if (row && u) {
+          row.agentName =
+            `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim() || u.email || "Unnamed agent"
         }
       }
-
-      workload[profile.assigned_agent_id].total++
-      workload[profile.assigned_agent_id][profile.temperature]++
-      if (profile.ready_for_outreach) {
-        workload[profile.assigned_agent_id].ready++
-      }
-    })
-
-    return { success: true, workload }
-  } catch (error) {
-    console.error("[v0] Error getting agent workload:", error)
-    return { success: false, error: String(error), workload: {} }
+    }
   }
+
+  const workload = [...byAgent.values()].sort((a, b) => b.total - a.total)
+  return { success: true, workload }
 }
 
 // ============================================
