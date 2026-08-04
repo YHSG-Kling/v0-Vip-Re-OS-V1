@@ -43,11 +43,17 @@ import {
   getOpenHouseFeedback,
   sendOpenHouseInvites,
   cancelOpenHouse,
-  recordAttendee,
   type OpenHouseEvent,
   type OpenHouseAttendee,
   type OpenHouseFeedback,
 } from "@/app/actions/open-house"
+import {
+  resolveOrCreateOpenHouseContactAction,
+  createOpenHouseAttendeeFromContactAction,
+  attachOpenHouseSourceAttributionAction,
+  notifyAssignedAgentForOpenHouseLeadAction,
+  generateOpenHouseFollowupNextActionAction,
+} from "@/app/actions/open-house-kernel"
 import { useToast } from "@/hooks/use-toast"
 import { toast as sonnerToast } from "sonner"
 
@@ -64,10 +70,30 @@ const STATUS_STYLES: Record<string, string> = {
   invitations_sent: "bg-purple-100 text-purple-700 border-purple-200",
 }
 
+// open_house_attendees.interest_level is CHECK-constrained (verified live in
+// pg_constraint):
+//   open_house_attendees_interest_level_check → hot | warm | cold | no_interest
+// This map and the Add-Attendee picker below both used high|medium|low, which is
+// storable nowhere. Stored rows (hot/warm/…) therefore rendered with no badge
+// style, and every value the picker could produce was refused by the column.
+const INTEREST_LEVELS = [
+  { value: "hot",         label: "Hot",         numeric: 5 },
+  { value: "warm",        label: "Warm",        numeric: 3 },
+  { value: "cold",        label: "Cold",        numeric: 2 },
+  { value: "no_interest", label: "No interest", numeric: 1 },
+] as const
+
 const INTEREST_STYLES: Record<string, string> = {
-  high: "bg-green-100 text-green-700 border-green-200",
-  medium: "bg-yellow-100 text-yellow-700 border-yellow-200",
-  low: "bg-slate-100 text-slate-600 border-slate-200",
+  hot: "bg-green-100 text-green-700 border-green-200",
+  warm: "bg-yellow-100 text-yellow-700 border-yellow-200",
+  cold: "bg-slate-100 text-slate-600 border-slate-200",
+  no_interest: "bg-slate-100 text-slate-500 border-slate-200",
+}
+
+/** The kernel commands take the 1-5 numeric scale and map it back to the text
+ *  enum themselves; this is the one place the two scales meet. */
+function interestNumeric(value: string): number {
+  return INTEREST_LEVELS.find((l) => l.value === value)?.numeric ?? 3
 }
 
 function formatDate(dateStr: string) {
@@ -129,34 +155,160 @@ function AttendeesTab({ eventId }: { eventId: string }) {
 
   const [showAddForm, setShowAddForm] = useState(false)
   const [addForm, setAddForm] = useState({
-    name: "",
+    firstName: "",
+    lastName: "",
     email: "",
-    interestLevel: "",
+    phone: "",
+    interestLevel: "warm",
+    notes: "",
   })
   const [addPending, startAddTransition] = useTransition()
+  const [addError, setAddError] = useState<string | null>(null)
+  const [addWarning, setAddWarning] = useState<string | null>(null)
+
+  // ── WALK-IN CHECK-IN ──────────────────────────────────────────────────────
+  //
+  // This control used to call app/actions/open-house.ts:recordAttendee, whose
+  // insert omits contact_id. open_house_attendees.contact_id is NOT NULL
+  // (verified live; probed with the exact insert shape and refused with
+  // SQLSTATE 23502), so the button has never been able to record anybody — and
+  // its interest_level picker offered high|medium|low, three values the column's
+  // CHECK also refuses. Two independent reasons it could not work.
+  //
+  // The kernel commands are what makes it work, in the order the rail is
+  // defined in: a walk-in is a CONTACT first, an ATTENDEE second, and an
+  // attributed lead third. Each step reports the SERVER's verdict and the chain
+  // stops at the first refusal, so a half-written check-in is never presented as
+  // a whole one.
+  const refreshAttendees = async () => {
+    const refresh = await getOpenHouseAttendees(eventId)
+    if (refresh.success) {
+      setAttendees(refresh.attendees ?? [])
+      setLoadError(null)
+    } else {
+      // A failed re-read must not look like "the event emptied out".
+      setLoadError(refresh.error ?? "Failed to reload attendees")
+    }
+  }
 
   const handleAdd = () => {
-    if (!addForm.name.trim()) {
-      sonnerToast.error("Name is required")
+    setAddError(null)
+    setAddWarning(null)
+    if (!addForm.firstName.trim()) {
+      setAddError("First name is required")
       return
     }
     startAddTransition(async () => {
-      const res = await recordAttendee(eventId, {
-        name: addForm.name.trim(),
+      // 1. Resolve or create the contact this walk-in belongs to.
+      const contactRes = await resolveOrCreateOpenHouseContactAction({
+        open_house_id: eventId,
+        first_name: addForm.firstName.trim(),
+        last_name: addForm.lastName.trim() || undefined,
         email: addForm.email.trim() || undefined,
-        interestLevel: addForm.interestLevel || undefined,
+        phone: addForm.phone.trim() || undefined,
       })
-      if (res.success) {
-        sonnerToast.success("Attendee recorded")
-        setAddForm({ name: "", email: "", interestLevel: "" })
-        setShowAddForm(false)
-        // Refresh attendee list
-        const refresh = await getOpenHouseAttendees(eventId)
-        if (refresh.success) setAttendees(refresh.attendees ?? [])
-      } else {
-        sonnerToast.error(res.error ?? "Failed to record attendee")
+      if (!contactRes.success || !contactRes.contact_id) {
+        setAddError(contactRes.error ?? "Could not resolve a contact for this visitor")
+        return
       }
+
+      // 2. Record the attendee against that contact.
+      const attendeeRes = await createOpenHouseAttendeeFromContactAction({
+        open_house_id: eventId,
+        contact_id: contactRes.contact_id,
+        first_name: addForm.firstName.trim(),
+        last_name: addForm.lastName.trim() || undefined,
+        email: addForm.email.trim() || undefined,
+        phone: addForm.phone.trim() || undefined,
+        check_in_method: "manual",
+        interest_level: interestNumeric(addForm.interestLevel),
+        notes: addForm.notes.trim() || undefined,
+      })
+      if (!attendeeRes.success || !attendeeRes.attendee_id) {
+        setAddError(
+          `${attendeeRes.error ?? "Could not record the attendee"} (the contact was saved and is in your CRM).`,
+        )
+        await refreshAttendees()
+        return
+      }
+
+      // 3. Attribute the contact to this open house. Non-fatal — the person IS
+      //    checked in — but the failure is shown, never swallowed.
+      const attributionRes = await attachOpenHouseSourceAttributionAction({
+        open_house_id: eventId,
+        contact_id: contactRes.contact_id,
+        attendee_id: attendeeRes.attendee_id,
+      })
+      if (!attributionRes.success) {
+        setAddWarning(`Checked in, but the source attribution was not recorded: ${attributionRes.error}`)
+      }
+
+      sonnerToast.success(
+        contactRes.was_created
+          ? "Checked in — new contact created"
+          : "Checked in — matched an existing contact",
+      )
+      setAddForm({ firstName: "", lastName: "", email: "", phone: "", interestLevel: "warm", notes: "" })
+      setShowAddForm(false)
+      await refreshAttendees()
     })
+  }
+
+  // ── FOLLOW-UP QUEUE ───────────────────────────────────────────────────────
+  //
+  // Attendees captured by the public kiosk (app/api/open-house/attend) get an
+  // instant greeting but NO entry in the agent's next-actions feed. These two
+  // commands are what puts one there: the notification the assigned agent reads
+  // on /dashboard/agent, and the AI-drafted follow-up scheduled by interest
+  // level. Both write ai_autopilot_actions only — nothing is sent to the
+  // attendee here, so no consent or channel-preference gate is involved.
+  const [followUpFor, setFollowUpFor] = useState<string | null>(null)
+  const [followUpResult, setFollowUpResult] = useState<Record<string, { ok: boolean; text: string }>>({})
+
+  const handleQueueFollowUp = async (attendee: OpenHouseAttendee) => {
+    if (!attendee.contact_id) return
+    setFollowUpFor(attendee.id)
+    try {
+      const firstName = (attendee.name ?? "").trim().split(/\s+/)[0] || "Visitor"
+      const numeric = interestNumeric(attendee.interest_level ?? "warm")
+
+      const notifyRes = await notifyAssignedAgentForOpenHouseLeadAction({
+        open_house_id: eventId,
+        contact_id: attendee.contact_id,
+        attendee_id: attendee.id,
+        first_name: firstName,
+        email: attendee.email ?? undefined,
+        interest_level: numeric,
+      })
+      if (!notifyRes.success) {
+        setFollowUpResult((p) => ({
+          ...p,
+          [attendee.id]: { ok: false, text: notifyRes.error ?? "The assigned agent could not be notified." },
+        }))
+        return
+      }
+
+      const followRes = await generateOpenHouseFollowupNextActionAction({
+        open_house_id: eventId,
+        contact_id: attendee.contact_id,
+        attendee_id: attendee.id,
+        first_name: firstName,
+        interest_level: numeric,
+      })
+      setFollowUpResult((p) => ({
+        ...p,
+        [attendee.id]: followRes.success
+          ? {
+              ok: true,
+              text:
+                (followRes as { message?: string }).message ??
+                "Follow-up scheduled in your next-actions feed.",
+            }
+          : { ok: false, text: (followRes as { error?: string }).error ?? "Follow-up could not be scheduled." },
+      }))
+    } finally {
+      setFollowUpFor(null)
+    }
   }
 
   if (isPending && !loaded) {
@@ -182,31 +334,58 @@ function AttendeesTab({ eventId }: { eventId: string }) {
         <p className="text-xs text-muted-foreground">{attendees?.length ?? 0} attendee{attendees?.length !== 1 ? "s" : ""}</p>
         <Button size="sm" variant="outline" className="gap-1.5 h-7 text-xs" onClick={() => setShowAddForm((v) => !v)}>
           <Plus className="h-3.5 w-3.5" />
-          Add Attendee
+          Check In Walk-In
         </Button>
       </div>
 
       {showAddForm && (
         <div className="rounded-lg border bg-muted/30 p-3 space-y-3">
-          <p className="text-xs font-medium">New Attendee</p>
-          <div>
-            <Label className="text-xs">Name *</Label>
-            <Input
-              value={addForm.name}
-              onChange={(e) => setAddForm((f) => ({ ...f, name: e.target.value }))}
-              placeholder="Full name"
-              className="h-7 text-xs mt-1"
-            />
+          <p className="text-xs font-medium">Walk-In Check-In</p>
+          <p className="text-[11px] text-muted-foreground">
+            Creates or matches a contact in your CRM, records the attendance and attributes the
+            contact to this open house.
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <Label className="text-xs">First name *</Label>
+              <Input
+                value={addForm.firstName}
+                onChange={(e) => setAddForm((f) => ({ ...f, firstName: e.target.value }))}
+                placeholder="Jane"
+                className="h-7 text-xs mt-1"
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Last name</Label>
+              <Input
+                value={addForm.lastName}
+                onChange={(e) => setAddForm((f) => ({ ...f, lastName: e.target.value }))}
+                placeholder="Smith"
+                className="h-7 text-xs mt-1"
+              />
+            </div>
           </div>
-          <div>
-            <Label className="text-xs">Email (optional)</Label>
-            <Input
-              type="email"
-              value={addForm.email}
-              onChange={(e) => setAddForm((f) => ({ ...f, email: e.target.value }))}
-              placeholder="email@example.com"
-              className="h-7 text-xs mt-1"
-            />
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <Label className="text-xs">Email</Label>
+              <Input
+                type="email"
+                value={addForm.email}
+                onChange={(e) => setAddForm((f) => ({ ...f, email: e.target.value }))}
+                placeholder="email@example.com"
+                className="h-7 text-xs mt-1"
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Phone</Label>
+              <Input
+                type="tel"
+                value={addForm.phone}
+                onChange={(e) => setAddForm((f) => ({ ...f, phone: e.target.value }))}
+                placeholder="(555) 000-0000"
+                className="h-7 text-xs mt-1"
+              />
+            </div>
           </div>
           <div>
             <Label className="text-xs">Interest Level</Label>
@@ -218,22 +397,53 @@ function AttendeesTab({ eventId }: { eventId: string }) {
                 <SelectValue placeholder="Select level…" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="high">High</SelectItem>
-                <SelectItem value="medium">Medium</SelectItem>
-                <SelectItem value="low">Low</SelectItem>
+                {INTEREST_LEVELS.map((l) => (
+                  <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
+          <div>
+            <Label className="text-xs">Notes</Label>
+            <Textarea
+              value={addForm.notes}
+              onChange={(e) => setAddForm((f) => ({ ...f, notes: e.target.value }))}
+              placeholder="What did they say about the property?"
+              rows={2}
+              className="text-xs mt-1 resize-none"
+            />
+          </div>
+
+          {addError && (
+            <p className="flex items-start gap-1.5 text-xs text-destructive">
+              <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-px" />
+              {addError}
+            </p>
+          )}
+          {addWarning && (
+            <p className="flex items-start gap-1.5 text-xs text-yellow-700">
+              <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-px" />
+              {addWarning}
+            </p>
+          )}
+
           <div className="flex gap-2">
             <Button size="sm" className="h-7 text-xs gap-1" onClick={handleAdd} disabled={addPending}>
               {addPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
-              Save
+              Check In
             </Button>
             <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setShowAddForm(false)}>
               Cancel
             </Button>
           </div>
         </div>
+      )}
+
+      {addWarning && !showAddForm && (
+        <p className="flex items-start gap-1.5 text-xs text-yellow-700">
+          <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-px" />
+          {addWarning}
+        </p>
       )}
 
       {attendees && attendees.length === 0 && !showAddForm && (
@@ -266,6 +476,38 @@ function AttendeesTab({ eventId }: { eventId: string }) {
                 <p className="text-[11px] text-muted-foreground mt-0.5">
                   Check-in: {formatCheckInTime(a.check_in_time)}
                 </p>
+
+                {/* Queue the assigned agent's notification + the AI follow-up.
+                    Disabled without a contact_id: the next-action rows key off
+                    a contacts.id and an attendee id is a different id space. */}
+                <div className="mt-1.5 flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 text-[11px] gap-1"
+                    disabled={!a.contact_id || followUpFor === a.id}
+                    onClick={() => handleQueueFollowUp(a)}
+                  >
+                    {followUpFor === a.id ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Send className="h-3 w-3" />
+                    )}
+                    Queue follow-up
+                  </Button>
+                  {!a.contact_id && (
+                    <span className="text-[10px] text-muted-foreground">No linked contact yet</span>
+                  )}
+                </div>
+                {followUpResult[a.id] && (
+                  <p
+                    className={`mt-1 text-[11px] ${
+                      followUpResult[a.id].ok ? "text-muted-foreground" : "text-destructive"
+                    }`}
+                  >
+                    {followUpResult[a.id].text}
+                  </p>
+                )}
               </div>
               {a.ai_lead_score != null && (
                 <div className="text-right shrink-0">

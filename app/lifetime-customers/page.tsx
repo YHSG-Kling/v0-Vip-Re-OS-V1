@@ -279,6 +279,7 @@ export default function LifetimeCustomersPage() {
   // Total Reviews / Avg Rating tiles were permanently empty even though
   // loadReputationWorkspaceAction already reads agent_reviews for this agent.
   const [reviews, setReviews] = useState<any[]>([])
+  const [reviewsLoadError, setReviewsLoadError] = useState<string | null>(null)
   const [nurtureResults, setNurtureResults] = useState<Record<string, any>>({})
   const [rewardResults, setRewardResults] = useState<Record<string, any>>({})
 
@@ -353,9 +354,17 @@ export default function LifetimeCustomersPage() {
         const result = await loadReputationWorkspaceAction()
         if (result.success && (result as any).data?.reviews) {
           setReviews((result as any).data.reviews)
+          setReviewsLoadError(null)
+        } else if (!result.success) {
+          // A refused read used to leave `reviews` at [] and say nothing, so the
+          // Reputation tab rendered "no reviews yet" for a workspace that could
+          // simply not be looked at. The kernel now distinguishes the two; carry
+          // the distinction to the screen.
+          setReviewsLoadError((result as any).error ?? "Your reviews could not be loaded.")
         }
       } catch (e) {
         console.error("Error loading reviews:", e)
+        setReviewsLoadError(e instanceof Error ? e.message : "Your reviews could not be loaded.")
       }
     }
     loadReviews()
@@ -1781,6 +1790,15 @@ export default function LifetimeCustomersPage() {
 
           {/* TAB 5: Reputation */}
           <TabsContent value="reputation">
+            {reviewsLoadError && (
+              <div className="mb-4 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>
+                  Your reviews could not be loaded, so the counts below are not a
+                  reading of your reputation: {reviewsLoadError}
+                </span>
+              </div>
+            )}
             <ReputationPanel
               agentId={currentAgentId}
               clients={clients}

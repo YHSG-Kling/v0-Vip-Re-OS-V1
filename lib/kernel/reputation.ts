@@ -25,27 +25,55 @@ import { processKernelEvent } from "./notification-engine"
 const VALID_RATINGS = [1, 2, 3, 4, 5] as const
 type Rating = typeof VALID_RATINGS[number]
 
-const REVIEW_PLATFORMS = [
+// THE REVIEW PLATFORM VOCABULARY IS THE CONSTRAINT'S, NOT THE DESIGNER'S.
+//
+// Verified live against pg_constraint:
+//   agent_reviews_platform_check → google | zillow | realtor_com | internal |
+//                                  facebook | yelp
+//
+// This list used to read google|zillow|realtor_com|yelp|facebook|trulia|other.
+// `trulia` and `other` are in NO constraint — probed against the live database,
+// both are refused with SQLSTATE 23514. recordReview typed them as valid, so a
+// caller could pick a platform the column cannot store; and `internal`, the
+// value every in-app review actually carries (multi-persona.ts and
+// portal-lifetime.ts both write it), was missing, so the ONE platform this
+// system produces itself was untypeable.
+export const REVIEW_PLATFORMS = [
   "google",
   "zillow",
   "realtor_com",
-  "yelp",
+  "internal",
   "facebook",
-  "trulia",
-  "other",
+  "yelp",
 ] as const
-type ReviewPlatform = typeof REVIEW_PLATFORMS[number]
+export type ReviewPlatform = typeof REVIEW_PLATFORMS[number]
 
-// Referral status transition graph — only these transitions are valid
+// Referral status transition graph — only these transitions are valid.
+//
+// SAME RULE, SAME DEFECT CLASS. referrals.status is CHECK-constrained:
+//   referrals_status_check → received | contacted | qualified | assigned |
+//                            under_contract | closed | lost
+// (see lib/referrals/referral-status.ts, which is the one vocabulary this graph
+// is now expressed in). The previous graph was built from
+// new|identified|asked|received|converting|converted|lost — FIVE of those seven
+// states are storable nowhere. Only `received` and `lost` were real, so from the
+// only status a referral can be created in, the single transition this function
+// would permit was `converting`, which the database then refused with 23514
+// (probed live). Every other stage change was rejected by the graph before it
+// ever reached the column. The pipeline was unadvanceable in both directions.
 const REFERRAL_STATUS_TRANSITIONS: Record<string, string[]> = {
-  new:        ["identified", "lost"],
-  identified: ["asked", "lost"],
-  asked:      ["received", "lost"],
-  received:   ["converting", "lost"],
-  converting: ["converted", "lost"],
-  converted:  [],
-  lost:       ["identified"], // allow re-open
+  received:       ["contacted", "qualified", "lost"],
+  contacted:      ["qualified", "lost"],
+  qualified:      ["assigned", "lost"],
+  assigned:       ["under_contract", "lost"],
+  under_contract: ["closed", "lost"],
+  closed:         [],
+  lost:           ["contacted"], // allow re-open
 }
+
+/** The status that means the referral produced a closed deal. `converted` was
+ *  never storable — see the note above. */
+const REFERRAL_TERMINAL_WON = "closed"
 
 // ─── INPUT / OUTPUT TYPES ─────────────────────────────────────────────────────
 
@@ -184,7 +212,10 @@ async function emitLifecycleEvent(params: {
   event:       KernelEvent
   metadata?:   Record<string, unknown>
 }) {
-  const { data } = await params.supabase
+  // The error was not destructured: a refused audit insert resolved with
+  // data === null, the `if (data?.id)` below quietly skipped, and every caller
+  // reported a clean success with no lifecycle row and no notification fan-out.
+  const { data, error } = await params.supabase
     .from("lifecycle_events")
     .insert({
       brokerage_id: params.brokerageId,
@@ -198,6 +229,14 @@ async function emitLifecycleEvent(params: {
     .select("id")
     .single()
 
+  if (error) {
+    console.error(
+      `[kernel/reputation] lifecycle_events insert refused for ${params.event} on ${params.entityType}:${params.entityId}:`,
+      error.message,
+    )
+    return { emitted: false as const, error: error.message }
+  }
+
   if (data?.id) {
     processKernelEvent({
       event:             params.event,
@@ -207,6 +246,8 @@ async function emitLifecycleEvent(params: {
       lifecycleEventId:  data.id,
     }).catch(() => { /* non-blocking */ })
   }
+
+  return { emitted: true as const }
 }
 
 function computePerformance(reviews: ReviewRow[]): ReputationPerformance {
@@ -297,6 +338,20 @@ export async function loadReputationWorkspace(
         .limit(200),
     ])
 
+    // `data ?? []` on a refused read produces an empty list indistinguishable
+    // from a genuinely empty workspace — "you have no reviews" when the truth is
+    // "we could not look". All three are checked; any refusal fails the load so
+    // the surface can say so.
+    const readFailures = [
+      reviewsRes.error   ? `reviews: ${reviewsRes.error.message}`   : null,
+      requestsRes.error  ? `review requests: ${requestsRes.error.message}`  : null,
+      referralsRes.error ? `referrals: ${referralsRes.error.message}` : null,
+    ].filter((m): m is string => Boolean(m))
+
+    if (readFailures.length > 0) {
+      return { success: false, error: `Reputation workspace could not be loaded — ${readFailures.join("; ")}` }
+    }
+
     const reviews  = (reviewsRes.data  ?? []) as ReviewRow[]
     const requests = (requestsRes.data ?? []) as ReviewRequestRow[]
     const refs     = (referralsRes.data ?? []) as ReferralRow[]
@@ -338,7 +393,7 @@ export async function createReviewRequest(
 
     // Guard: no duplicate pending request for same contact + platform
     if (input.contactId) {
-      const { data: existing } = await supabase
+      const { data: existing, error: dupErr } = await supabase
         .from("review_requests")
         .select("id")
         .eq("agent_id",     input.agentId)
@@ -347,6 +402,12 @@ export async function createReviewRequest(
         .eq("platform",     input.platform)
         .eq("status",       "pending")
         .maybeSingle()
+
+      // A refused duplicate check resolved to null and this guard waved the
+      // insert through — the one thing the guard exists to stop.
+      if (dupErr) {
+        return { success: false, error: `Could not check for an existing review request: ${dupErr.message}` }
+      }
 
       if (existing) {
         return { success: false, error: `A pending ${input.platform} review request already exists for this contact.` }
@@ -455,8 +516,11 @@ export async function respondToReview(
   try {
     const supabase = createServiceClient()
 
-    // Verify ownership
-    const { data: review } = await supabase
+    // Verify ownership.
+    // A REFUSED READ IS NOT AN ABSENT ROW. Without the error destructure this
+    // returned "not owned by this agent" for a permission or transport failure,
+    // which sends the agent looking for the wrong problem.
+    const { data: review, error: ownershipErr } = await supabase
       .from("agent_reviews")
       .select("id, agent_id")
       .eq("id",         input.reviewId)
@@ -464,18 +528,29 @@ export async function respondToReview(
       .eq("brokerage_id", input.brokerageId)
       .maybeSingle()
 
+    if (ownershipErr) {
+      return { success: false, error: `Could not verify this review: ${ownershipErr.message}` }
+    }
     if (!review) {
       return { success: false, error: "Review not found or not owned by this agent." }
     }
 
+    // is_published is only ever RAISED here, never lowered.
+    // It used to be written unconditionally as `input.publishNow ?? false`, so
+    // responding to an already-published review with publishNow omitted took it
+    // OFF the public profile (app/p/[agentSlug] and multi-persona.ts:
+    // getAgentReviews both filter is_published = true). Answering a review is
+    // not a request to retract it.
+    const updatePayload: Record<string, unknown> = {
+      response_text: input.responseText.trim(),
+      response_at:   new Date().toISOString(),
+      updated_at:    new Date().toISOString(),
+    }
+    if (input.publishNow) updatePayload.is_published = true
+
     const { error } = await supabase
       .from("agent_reviews")
-      .update({
-        response_text: input.responseText.trim(),
-        response_at:   new Date().toISOString(),
-        is_published:  input.publishNow ?? false,
-        updated_at:    new Date().toISOString(),
-      })
+      .update(updatePayload)
       .eq("id",           input.reviewId)
       .eq("agent_id",     input.agentId)
       .eq("brokerage_id", input.brokerageId)
@@ -590,8 +665,13 @@ export async function advanceReferralStatus(
       status:     input.newStatus,
       updated_at: new Date().toISOString(),
     }
-    if (input.newStatus === "converted") {
-      updatePayload.converted_at = new Date().toISOString()
+    if (input.newStatus === REFERRAL_TERMINAL_WON) {
+      // Both columns exist on referrals and both are read: closed_at is what
+      // app/actions/referrals/referral-actions.ts stamps, converted_at is what
+      // the ReferralRow projection and the ROI rollups read.
+      const now = new Date().toISOString()
+      updatePayload.converted_at = now
+      updatePayload.closed_at    = now
     }
 
     const { error } = await supabase
@@ -605,7 +685,7 @@ export async function advanceReferralStatus(
       return { success: false, error: error.message }
     }
 
-    const kernelEvent = input.newStatus === "converted"
+    const kernelEvent = input.newStatus === REFERRAL_TERMINAL_WON
       ? KernelEvent.REFERRAL_CONVERTED
       : KernelEvent.REFERRAL_ADVANCED
 

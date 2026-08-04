@@ -46,12 +46,19 @@ async function resolveActor(): Promise<{ agentId: string; brokerageId: string; u
   if (!user) return null
 
   const service = createServiceClient()
-  const { data: profile } = await service
+  // Destructured: a refused agents read used to resolve to null and this
+  // function returned null, which every caller reports as "Not authenticated."
+  // — sending the agent to re-login for a problem that is not their session.
+  const { data: profile, error: profileErr } = await service
     .from("agents")
     .select("id, brokerage_id")
     .eq("user_id", user.id)
     .maybeSingle()
 
+  if (profileErr) {
+    console.error("[reputation-kernel] agents lookup refused:", profileErr.message)
+    return null
+  }
   if (!profile?.id || !profile?.brokerage_id) return null
   // userId travels too: the dispatchers take the ACTING USER (for the autonomy
   // gate and per-actor provider credentials), which is a users.id — not the

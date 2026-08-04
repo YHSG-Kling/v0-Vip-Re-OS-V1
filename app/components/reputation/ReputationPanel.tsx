@@ -65,6 +65,7 @@ import {
   loadNoteHistoryAction,
   loadGiftHistoryAction,
   createReviewRequestAction,
+  loadReviewPerformanceAction,
 } from "@/app/actions/reputation-kernel"
 import { getReputationPreferences, saveReputationPreferences } from "@/app/actions/settings/reputation-preferences"
 
@@ -102,7 +103,37 @@ const GIFT_TYPES = [
   { value: "donation",   label: "Donation"       },
 ]
 
-const REVIEW_PLATFORMS = ["google", "zillow", "realtor", "facebook", "yelp"]
+// A picker stores a VALUE and shows a LABEL, and the value set belongs to the
+// constraint. agent_reviews_platform_check (verified live in pg_constraint)
+// admits google | zillow | realtor_com | internal | facebook | yelp. This list
+// stored "realtor", which is in no constraint and matches no recorded review, so
+// a request raised on Realtor.com could never be reconciled against the review
+// that answered it. `internal` is excluded on purpose: it is the platform the
+// app writes for its own in-portal reviews, not something an agent asks for.
+const REVIEW_PLATFORMS: Array<{ value: string; label: string }> = [
+  { value: "google",      label: "Google"      },
+  { value: "zillow",      label: "Zillow"      },
+  { value: "realtor_com", label: "Realtor.com" },
+  { value: "facebook",    label: "Facebook"    },
+  { value: "yelp",        label: "Yelp"        },
+]
+
+/**
+ * The AI DRAFT generator (app/actions/ai-review-automation.ts) carries its own
+ * older literal union and keys its URL map on "realtor". That is a different
+ * vocabulary from the one the COLUMN accepts, and the two must not be conflated
+ * — so the stored value stays realtor_com and only the draft call is translated.
+ */
+const DRAFT_PLATFORM: Record<string, "google" | "zillow" | "realtor" | "yelp" | "facebook"> = {
+  google: "google", zillow: "zillow", realtor_com: "realtor", facebook: "facebook", yelp: "yelp",
+}
+
+/** Filters must speak the same vocabulary the rows are stored in. */
+const REVIEW_FILTER_PLATFORMS: Array<{ value: string; label: string }> = [
+  { value: "all", label: "All" },
+  ...REVIEW_PLATFORMS,
+  { value: "internal", label: "In-app" },
+]
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -136,7 +167,7 @@ export function ReputationPanel({
   const [copiedId, setCopiedId] = useState<string | null>(null)
 
   // J8 Gap 8.2 — review filters + auto-respond preferences
-  const [reviewFilterPlatform, setReviewFilterPlatform] = useState<"all" | "google" | "zillow" | "realtor" | "yelp" | "facebook">("all")
+  const [reviewFilterPlatform, setReviewFilterPlatform] = useState<string>("all")
   const [reviewFilterRange, setReviewFilterRange] = useState<"30d" | "90d" | "all">("all")
   const [autoRespondMode, setAutoRespondMode] = useState<"off" | "review" | "auto">("off")
   const [autoRespondApprovalHours, setAutoRespondApprovalHours] = useState<number>(24)
@@ -172,6 +203,41 @@ export function ReputationPanel({
   const [reviewDraft,       setReviewDraft]        = useState("")
   const [reviewClient,      setReviewClient]       = useState<any>(null)
   const [reviewDialogOpen,  setReviewDialogOpen]   = useState(false)
+  const [loggingRequest,    setLoggingRequest]     = useState(false)
+
+  // ── REPUTATION PERFORMANCE ────────────────────────────────────────────────
+  //
+  // The four tiles above are computed from the `reviews` prop, so they can only
+  // ever say "how many" and "how good". Response rate, per-platform breakdown
+  // and direction of travel are computed server-side by the reputation kernel
+  // and were reaching no screen at all. This read is scoped to the acting agent
+  // by the action itself — no id crosses the wire.
+  //
+  // `null` is "not loaded yet"; a refusal is kept as its own state so an
+  // unreadable performance strip cannot be mistaken for a spotless one.
+  const [performance, setPerformance] = useState<{
+    avgRating: number
+    totalReviews: number
+    responseRate: number
+    byPlatform: Record<string, { count: number; avgRating: number }>
+    recentTrend: "improving" | "stable" | "declining"
+  } | null>(null)
+  const [performanceError, setPerformanceError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    loadReviewPerformanceAction().then((res) => {
+      if (cancelled) return
+      if (res.success && (res as any).data) {
+        setPerformance((res as any).data)
+        setPerformanceError(null)
+      } else {
+        setPerformance(null)
+        setPerformanceError((res as { error?: string })?.error ?? "Reputation performance could not be loaded.")
+      }
+    })
+    return () => { cancelled = true }
+  }, [])
 
   const reviewReadyClients = recentClosings.filter((c: any) => {
     const d = new Date(c.actual_close_date || c.close_date || Date.now())
@@ -188,7 +254,7 @@ export function ReputationPanel({
       const result = await aiGenerateReviewRequest({
         transactionId,
         agentId,
-        platform: reviewPlatform as "google" | "zillow" | "realtor" | "yelp" | "facebook",
+        platform: DRAFT_PLATFORM[reviewPlatform] ?? "google",
         channel:  "email",
       })
       if (result.success && result.message) {
@@ -484,6 +550,61 @@ export function ReputationPanel({
         ))}
       </div>
 
+      {/* Performance — the server's view of this agent's reputation */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <ThumbsUp className="w-4 h-4 text-emerald-500" /> Reputation Performance
+          </CardTitle>
+          <CardDescription>Response rate and direction of travel across every platform</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {performanceError ? (
+            <p className="text-sm text-destructive">{performanceError}</p>
+          ) : !performance ? (
+            <p className="text-sm text-muted-foreground flex items-center gap-2">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading performance…
+            </p>
+          ) : performance.totalReviews === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No reviews recorded yet — performance appears here once the first one lands.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-4 text-sm">
+                <span>
+                  <span className="font-semibold">{performance.responseRate}%</span>{" "}
+                  <span className="text-muted-foreground">responded to</span>
+                </span>
+                <span>
+                  <span className="font-semibold">{performance.avgRating}</span>{" "}
+                  <span className="text-muted-foreground">avg over {performance.totalReviews}</span>
+                </span>
+                <Badge
+                  variant="outline"
+                  className={
+                    performance.recentTrend === "improving"
+                      ? "border-green-200 bg-green-50 text-green-700"
+                      : performance.recentTrend === "declining"
+                        ? "border-red-200 bg-red-50 text-red-700"
+                        : "border-slate-200 bg-slate-50 text-slate-600"
+                  }
+                >
+                  {performance.recentTrend}
+                </Badge>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(performance.byPlatform).map(([platform, stats]) => (
+                  <Badge key={platform} variant="outline" className="text-xs">
+                    {platform}: {stats.count} &middot; {stats.avgRating.toFixed(1)}★
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       <Tabs defaultValue="reviews">
         <TabsList className="w-full grid grid-cols-3">
           <TabsTrigger value="reviews">Reviews</TabsTrigger>
@@ -508,7 +629,7 @@ export function ReputationPanel({
                   </SelectTrigger>
                   <SelectContent>
                     {REVIEW_PLATFORMS.map(p => (
-                      <SelectItem key={p} value={p} className="capitalize">{p}</SelectItem>
+                      <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -551,17 +672,17 @@ export function ReputationPanel({
               {/* J8 Gap 8.2 — platform + date filters */}
               <div className="flex flex-wrap items-center gap-2 text-xs">
                 <span className="text-muted-foreground">Platform:</span>
-                {(["all", "google", "zillow", "realtor", "yelp", "facebook"] as const).map((p) => (
+                {REVIEW_FILTER_PLATFORMS.map((p) => (
                   <button
-                    key={p}
-                    onClick={() => setReviewFilterPlatform(p)}
-                    className={`px-2 py-0.5 rounded-full border capitalize ${
-                      reviewFilterPlatform === p
+                    key={p.value}
+                    onClick={() => setReviewFilterPlatform(p.value)}
+                    className={`px-2 py-0.5 rounded-full border ${
+                      reviewFilterPlatform === p.value
                         ? "bg-primary text-primary-foreground border-primary"
                         : "bg-background border-muted-foreground/20 hover:border-primary/50"
                     }`}
                   >
-                    {p}
+                    {p.label}
                   </button>
                 ))}
                 <span className="text-muted-foreground ml-2">Range:</span>
@@ -752,15 +873,38 @@ export function ReputationPanel({
             <Button variant="outline" onClick={() => copy(reviewDraft, "review")}>
               {copiedId === "review" ? <><Check className="w-4 h-4 mr-1" />Copied</> : <><Copy className="w-4 h-4 mr-1" />Copy</>}
             </Button>
-            <Button onClick={async () => {
-              const contactName = `${reviewClient?.contacts?.first_name || reviewClient?.first_name || ""} ${reviewClient?.contacts?.last_name || reviewClient?.last_name || ""}`.trim()
-              await createReviewRequestAction({
-                contactId: reviewClient?.contact_id || reviewClient?.id,
-                contactName: contactName || "Client",
-                platform: reviewPlatform as any,
-              }).catch(() => null)
-              setReviewDialogOpen(false)
-            }}>Done</Button>
+            {/* This button used to `.catch(() => null)` and close the dialog
+                unconditionally. The kernel refuses a duplicate pending request
+                for the same contact and platform, and refuses an unresolvable
+                actor — both verdicts went into the bin and the agent was shown
+                a dialog that closed as if the request had been logged. The
+                dialog now stays open on a refusal and repeats what the server
+                said. */}
+            <Button
+              disabled={loggingRequest}
+              onClick={async () => {
+                const contactName = `${reviewClient?.contacts?.first_name || reviewClient?.first_name || ""} ${reviewClient?.contacts?.last_name || reviewClient?.last_name || ""}`.trim()
+                setLoggingRequest(true)
+                try {
+                  const result = await createReviewRequestAction({
+                    contactId: reviewClient?.contact_id || reviewClient?.id,
+                    contactName: contactName || "Client",
+                    platform: reviewPlatform as any,
+                  })
+                  if (result?.success) {
+                    toast.success("Review request logged")
+                    setReviewDialogOpen(false)
+                  } else {
+                    toast.error((result as { error?: string })?.error ?? "The review request was not logged.")
+                  }
+                } finally {
+                  setLoggingRequest(false)
+                }
+              }}
+            >
+              {loggingRequest ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
+              Log Request
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
