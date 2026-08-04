@@ -2,6 +2,8 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { ShieldCheck } from "lucide-react"
 import { VendorApprovalClient, type PendingVendor } from "./approval-client"
+import { ReviewModerationClient } from "./review-moderation-client"
+import { getVendorReviewModerationQueue } from "@/app/actions/vendor-marketplace"
 import { resolveVendorTiers, type VendorTier } from "@/lib/kernel/vendor-subscription"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
@@ -64,6 +66,10 @@ export default async function VendorApprovalsPage() {
         </p>
       </div>
       <VendorApprovalClient vendors={vendors} pricing={pricing} />
+
+      {/* The other half of vendor governance: reviews the moderation brain
+          routed to a human. Same admin gate as the approval queue above. */}
+      <ReviewModerationClient initialQueue={await getVendorReviewModerationQueue()} />
     </div>
   )
 }

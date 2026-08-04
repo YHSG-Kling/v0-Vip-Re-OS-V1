@@ -146,6 +146,9 @@ export default async function VendorDashboardPage() {
           <Link href="/vendor/invoices">
             <Button size="sm" variant="outline">Invoices</Button>
           </Link>
+          <Link href="/vendor/reviews">
+            <Button size="sm" variant="outline">Reviews</Button>
+          </Link>
           <Link href="/vendor/jobs">
             <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white">View Jobs</Button>
           </Link>

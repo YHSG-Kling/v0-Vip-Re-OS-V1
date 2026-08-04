@@ -155,6 +155,17 @@ function VideoLibraryContent() {
   // move a script through them.
   const [approvingScriptId, setApprovingScriptId] = useState<string | null>(null)
 
+  // Distribution performance for the video a script produced.
+  const [performance, setPerformance] = useState<{
+    title: string
+    projectId: string
+    views: number
+    engagement: number
+    comments: number
+    shares: number
+    generatedAt: string
+  } | null>(null)
+
   // ─── Load Scripts ──────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -321,13 +332,38 @@ function VideoLibraryContent() {
     }
   }
 
-  // ─── Distribute Script ─────────────────────────────────────────────────────
+  // ─── Video Performance ─────────────────────────────────────────────────────
 
-  async function handleDistribute(script: VideoScript) {
+  /**
+   * The distribution numbers for the video this script produced — views,
+   * engagement, comments and shares aggregated from the social posts carrying
+   * its video_url. loadVideoPerformanceAction is the only path to these; there
+   * is no API route for it, so before this the aggregate was computed for
+   * nobody.
+   */
+  async function handleShowPerformance(script: VideoScript) {
     const { toast } = await import("sonner")
 
-    // Look up the ai_video_projects record linked to this script-library entry
-    const { data: project, error: projectError } = await supabase
+    const projectId = await resolveProjectIdForScript(script)
+    if (!projectId) {
+      toast.error("No video project found for this script. Generate a video first.")
+      return
+    }
+
+    const { loadVideoPerformanceAction } = await import("@/app/actions/video")
+    const result = await loadVideoPerformanceAction({ projectId })
+    if (!result.success || !result.data) {
+      toast.error(result.error ?? "Could not load performance")
+      return
+    }
+
+    const p = result.data
+    setPerformance({ title: script.title, ...p })
+  }
+
+  /** The ai_video_projects row this script-library entry produced. */
+  async function resolveProjectIdForScript(script: VideoScript): Promise<string | null> {
+    const { data: project, error } = await supabase
       .from("ai_video_projects")
       .select("id")
       // source_type/source_id live inside the video_metadata jsonb (no real columns)
@@ -336,11 +372,22 @@ function VideoLibraryContent() {
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle()
+    if (error || !project) return null
+    return project.id as string
+  }
 
-    if (projectError || !project) {
+  // ─── Distribute Script ─────────────────────────────────────────────────────
+
+  async function handleDistribute(script: VideoScript) {
+    const { toast } = await import("sonner")
+
+    // Look up the ai_video_projects record linked to this script-library entry
+    const projectId = await resolveProjectIdForScript(script)
+    if (!projectId) {
       toast.error("No video project found for this script. Generate a video first.")
       return
     }
+    const project = { id: projectId }
 
     const { distributeVideoProjectAction } = await import("@/app/actions/video")
     const result = await distributeVideoProjectAction({
@@ -644,6 +691,10 @@ function VideoLibraryContent() {
                               Distribute
                             </DropdownMenuItem>
                           )}
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleShowPerformance(script) }}>
+                            <BarChart3 className="h-4 w-4 mr-2" />
+                            Video Performance
+                          </DropdownMenuItem>
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
                             className="text-red-600"
@@ -755,6 +806,10 @@ function VideoLibraryContent() {
                             Distribute
                           </DropdownMenuItem>
                         )}
+                        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleShowPerformance(script) }}>
+                          <BarChart3 className="h-4 w-4 mr-2" />
+                          Video Performance
+                        </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
                           className="text-red-600"
@@ -1055,6 +1110,39 @@ function VideoLibraryContent() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* VIDEO PERFORMANCE — real aggregate from the social posts carrying this
+          project's video_url. Zeroes are shown as zeroes, not hidden. */}
+      <Dialog open={!!performance} onOpenChange={(open) => { if (!open) setPerformance(null) }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Video Performance</DialogTitle>
+            <DialogDescription>{performance?.title}</DialogDescription>
+          </DialogHeader>
+          {performance && (
+            <div className="space-y-3 py-2">
+              <div className="grid grid-cols-2 gap-3">
+                {[
+                  { label: "Views", value: performance.views },
+                  { label: "Engagement", value: performance.engagement },
+                  { label: "Comments", value: performance.comments },
+                  { label: "Shares", value: performance.shares },
+                ].map((stat) => (
+                  <div key={stat.label} className="rounded-md border p-3">
+                    <p className="text-xs text-muted-foreground">{stat.label}</p>
+                    <p className="text-xl font-semibold">{stat.value.toLocaleString()}</p>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Aggregated from published social posts carrying this video. All zeroes means it
+                has not been distributed yet, or no platform has reported metrics back.
+              </p>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
     </div>
   )
 }

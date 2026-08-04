@@ -18,6 +18,7 @@ import {
   getSuggestedVendorsByStage,
   checkVendorAvailability,
   matchVendorToTransaction,
+  getAssignedVendorsForTransaction,
   type VendorAvailability,
 } from "@/app/actions/vendor-marketplace"
 
@@ -88,6 +89,18 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
   useEffect(() => {
     getVendorBookingsForTransaction(transactionId)
       .then((data) => setBookings(data as any))
+      .catch(() => null)
+  }, [transactionId])
+
+  // ASSIGNMENTS are a different record from BOOKINGS: assignVendorToTransaction
+  // writes vendor_assignments + a vendor_jobs row and emails the vendor, and
+  // nothing on this screen ever showed them. An agent could assign a vendor from
+  // the vendor rail and then find no trace of it on the deal — including the job
+  // cost the vendor had already quoted.
+  const [assignments, setAssignments] = useState<any[]>([])
+  useEffect(() => {
+    getAssignedVendorsForTransaction(transactionId)
+      .then((data) => setAssignments(data as any[]))
       .catch(() => null)
   }, [transactionId])
 
@@ -207,6 +220,72 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
   return (
     <div className="space-y-4">
       {/* Existing Bookings */}
+      {assignments.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Wrench className="h-4 w-4 text-muted-foreground" />
+              Assigned Vendors
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 pt-0">
+            {assignments.map((assignment) => {
+              const jobs = Array.isArray(assignment.vendor_jobs) ? assignment.vendor_jobs : []
+              return (
+                <div key={assignment.id} className="rounded-md border px-3 py-2.5 text-sm space-y-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="font-medium leading-tight">{assignment.vendors?.name ?? "Unknown Vendor"}</p>
+                      <p className="text-xs text-muted-foreground capitalize">
+                        {String(assignment.assignment_type ?? "assignment").replace(/_/g, " ")}
+                      </p>
+                      {assignment.scheduled_date && (
+                        <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
+                          <CalendarDays className="h-3 w-3" />
+                          {new Date(assignment.scheduled_date).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+                        </p>
+                      )}
+                      {(assignment.vendors?.phone || assignment.vendors?.email) && (
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {[assignment.vendors?.phone, assignment.vendors?.email].filter(Boolean).join(" · ")}
+                        </p>
+                      )}
+                    </div>
+                    <Badge variant={
+                      assignment.status === "completed" ? "outline" :
+                      assignment.status === "confirmed" || assignment.status === "in_progress" ? "default" :
+                      assignment.status === "cancelled" ? "destructive" : "secondary"
+                    } className="text-xs shrink-0">
+                      {assignment.status === "completed" && <CheckCircle2 className="h-3 w-3 mr-1 text-green-600" />}
+                      {assignment.status === "cancelled" && <XCircle className="h-3 w-3 mr-1" />}
+                      {String(assignment.status ?? "pending").replace(/_/g, " ")}
+                    </Badge>
+                  </div>
+
+                  {jobs.length > 0 && (
+                    <div className="space-y-1 border-t pt-2">
+                      {jobs.map((job: any) => (
+                        <div key={job.id} className="flex items-center justify-between text-xs">
+                          <span className="capitalize">{String(job.job_title ?? "Job").replace(/_/g, " ")}</span>
+                          <span className="text-muted-foreground">
+                            {String(job.status ?? "pending").replace(/_/g, " ")}
+                            {job.cost_actual != null
+                              ? ` · $${Number(job.cost_actual).toLocaleString()}`
+                              : job.cost_estimate != null
+                                ? ` · est. $${Number(job.cost_estimate).toLocaleString()}`
+                                : ""}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </CardContent>
+        </Card>
+      )}
+
       {bookings.length > 0 && (
         <Card>
           <CardHeader className="pb-2 flex flex-row items-center justify-between">

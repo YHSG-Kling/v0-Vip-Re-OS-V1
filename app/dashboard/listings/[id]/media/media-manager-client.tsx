@@ -1,14 +1,25 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState, useEffect, useTransition } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { MediaGrid } from "./components/media-grid"
 import { VideoPanel } from "./components/video-panel"
 import { SocialPanel } from "./components/social-panel"
-import { ImageIcon, VideoIcon, Share2Icon, Sparkles, Loader2, Sofa, Sunset, Wand2 } from "lucide-react"
-import { analyzePhoto, stageListingPhoto, twilightListingPhoto, enhancePhoto } from "@/app/actions/photo-management"
+import { ImageIcon, VideoIcon, Share2Icon, Sparkles, Loader2, Sofa, Sunset, Wand2, ListOrdered, Download, ShieldCheck, AlertTriangle } from "lucide-react"
+import {
+  analyzePhoto,
+  stageListingPhoto,
+  twilightListingPhoto,
+  enhancePhoto,
+  getListingPhotoSet,
+  processVendorPhotos,
+  optimizePhotoOrder,
+  batchEnhancePhotos,
+  validatePhotoQuality,
+  getPhotoPerformanceStats,
+} from "@/app/actions/photo-management"
 import { toast } from "sonner"
 
 interface Listing {
@@ -52,6 +63,55 @@ export function MediaManagerClient({
   const [isPending, startTransition] = useTransition()
   const [busyPhotoId, setBusyPhotoId] = useState<string | null>(null)
 
+  /**
+   * THE MLS PHOTO SET (`listing_photos`) — a different entity from the marketing
+   * media above (`listing_media`). Every photo tool on this screen addresses a
+   * listing_photos id; the grid holds listing_media ids. They were being used
+   * interchangeably, so each tool resolved "photo not found" against a row that
+   * was never the one on screen. The set is loaded here and matched to media by
+   * file URL, which is exactly what the import writes.
+   */
+  const [photoSet, setPhotoSet] = useState<any[]>([])
+  const [photoSetLoading, setPhotoSetLoading] = useState(true)
+  const [photoStats, setPhotoStats] = useState<any>(null)
+  const [photoQuality, setPhotoQuality] = useState<any>(null)
+
+  const refreshPhotoSet = async () => {
+    const [setResult, stats, quality] = await Promise.all([
+      getListingPhotoSet(listingId),
+      getPhotoPerformanceStats(listingId),
+      validatePhotoQuality(listingId),
+    ])
+    setPhotoSet(setResult.success ? setResult.photos : [])
+    setPhotoStats(stats)
+    setPhotoQuality(quality)
+    setPhotoSetLoading(false)
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const [setResult, stats, quality] = await Promise.all([
+        getListingPhotoSet(listingId),
+        getPhotoPerformanceStats(listingId),
+        validatePhotoQuality(listingId),
+      ])
+      if (cancelled) return
+      setPhotoSet(setResult.success ? setResult.photos : [])
+      setPhotoStats(stats)
+      setPhotoQuality(quality)
+      setPhotoSetLoading(false)
+    })()
+    return () => { cancelled = true }
+  }, [listingId])
+
+  /** listing_media.media_type is CHECK-constrained to photo|video|reel|story|
+   *  graphic|floorplan|virtual_tour|document. "image" is not a value that column
+   *  can ever hold, so the old filter matched nothing at all. */
+  const photoMedia = media.filter((m: any) => m.media_type === "photo" && (m.file_url || m.url))
+  const importedUrls = new Set(photoSet.map((p: any) => p.photo_url))
+  const notYetImported = photoMedia.filter((m: any) => !importedUrls.has(m.file_url ?? m.url))
+
   const runPhotoTool = (photoId: string, tool: "stage" | "twilight" | "enhance") => {
     setBusyPhotoId(photoId)
     startTransition(async () => {
@@ -59,13 +119,14 @@ export function MediaManagerClient({
         const result =
           tool === "stage" ? await stageListingPhoto({ photoId })
           : tool === "twilight" ? await twilightListingPhoto({ photoId })
-          : await enhancePhoto({ photoId, enhancements: ["auto"], agentId })
+          : await enhancePhoto({ photoId, enhancements: ["auto"] })
         if (result.success) {
           toast.success(
             tool === "stage" ? "Virtually staged — saved to your marketing assets with the required disclosure"
             : tool === "twilight" ? "Twilight version saved to your marketing assets"
             : "Photo enhanced",
           )
+          await refreshPhotoSet()
         } else {
           toast.error(result.error ?? "Photo tool failed")
         }
@@ -77,21 +138,71 @@ export function MediaManagerClient({
 
   const canApprove = userRole === "admin" || userRole === "broker"
 
+  /** Bring approved photo media into the MLS photo set. Nothing else in the app
+   *  writes listing_photos, so until this runs the MLS set — and every reader of
+   *  it — has nothing to work from. Idempotent: already-imported URLs are skipped. */
+  const handleImportToPhotoSet = () => {
+    if (notYetImported.length === 0) { toast.error("Every photo is already in the MLS set"); return }
+    startTransition(async () => {
+      const result = await processVendorPhotos({
+        listingId,
+        photoUrls: notYetImported.map((m: any) => m.file_url ?? m.url),
+      })
+      if (!result.success) { toast.error(result.error ?? "Import failed"); return }
+      toast.success(
+        `${result.processed} photo${result.processed === 1 ? "" : "s"} added to the MLS set` +
+        (result.analyzed ? ` · ${result.analyzed} analyzed` : "") +
+        (result.skipped ? ` · ${result.skipped} already present` : ""),
+      )
+      await refreshPhotoSet()
+    })
+  }
+
+  const handleOptimizeOrder = () => {
+    startTransition(async () => {
+      const result = await optimizePhotoOrder(listingId)
+      if (!result.success) { toast.error(result.error ?? "Could not reorder"); return }
+      toast.success(
+        `Reordered ${result.reordered} photo${result.reordered === 1 ? "" : "s"}` +
+        (result.ruleApplied ? ` using your "${result.ruleApplied}" rule` : " using the MLS default sequence"),
+      )
+      await refreshPhotoSet()
+    })
+  }
+
+  const handleBatchEnhance = () => {
+    startTransition(async () => {
+      const result = await batchEnhancePhotos({ listingId })
+      if (!result.success) { toast.error(result.error ?? "Batch enhance failed"); return }
+      if ((result.candidates ?? 0) === 0) {
+        toast.success("No photo scored below 80 — nothing needed enhancing")
+      } else {
+        toast.success(`Enhanced ${result.enhanced} of ${result.candidates} low-scoring photo${result.candidates === 1 ? "" : "s"}`)
+      }
+      await refreshPhotoSet()
+    })
+  }
+
   const handleAnalyzePhotos = () => {
-    const photos = media.filter((m: any) => m.media_type === "image" && (m.file_url || m.url))
-    if (photos.length === 0) { toast.error("No photos to analyze"); return }
+    const pending = photoSet.filter((p: any) => !p.ai_analysis_completed)
+    if (photoSet.length === 0) {
+      toast.error("The MLS photo set is empty — import your photos first")
+      return
+    }
+    const targets = pending.length > 0 ? pending : photoSet
     startTransition(async () => {
       const results = await Promise.allSettled(
-        photos.map((m: any) => analyzePhoto({ photoId: m.id, photoUrl: m.file_url ?? m.url ?? "" }))
+        targets.map((p: any) => analyzePhoto({ photoId: p.id, photoUrl: p.photo_url }))
       )
       const scores: Record<string, any> = {}
       results.forEach((r, i) => {
         if (r.status === "fulfilled" && r.value.success) {
-          scores[photos[i].id] = r.value.data
+          scores[targets[i].id] = r.value.data
         }
       })
       setPhotoScores(scores)
       toast.success(`Analyzed ${Object.keys(scores).length} photo${Object.keys(scores).length !== 1 ? "s" : ""}`)
+      await refreshPhotoSet()
     })
   }
 
@@ -155,6 +266,65 @@ export function MediaManagerClient({
         </TabsList>
 
         <TabsContent value="media" className="mt-6">
+          {/* MLS PHOTO SET — listing_photos, the set the MLS / hero picker /
+              readiness checks / direct mail all read. Distinct from the
+              marketing media grid below. */}
+          <div className="mb-4 rounded-lg border p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="font-medium flex items-center gap-1.5">
+                  <ListOrdered className="h-4 w-4 text-primary" />
+                  MLS Photo Set
+                </p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {photoSetLoading
+                    ? "Loading…"
+                    : photoSet.length === 0
+                      ? "Empty — import your delivered photos to start MLS ordering, hero selection and quality checks."
+                      : `${photoSet.length} photo${photoSet.length === 1 ? "" : "s"} in MLS order` +
+                        (photoStats?.avgQuality != null ? ` · avg quality ${Math.round(photoStats.avgQuality)}/100` : " · not analyzed yet") +
+                        (photoStats?.enhancedCount ? ` · ${photoStats.enhancedCount} enhanced` : "")}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" onClick={handleImportToPhotoSet}
+                  disabled={isPending || photoSetLoading || notYetImported.length === 0}>
+                  <Download className="h-4 w-4 mr-1.5" />
+                  Import {notYetImported.length > 0 ? `${notYetImported.length} ` : ""}photo{notYetImported.length === 1 ? "" : "s"}
+                </Button>
+                <Button size="sm" variant="outline" onClick={handleOptimizeOrder}
+                  disabled={isPending || photoSet.length === 0}>
+                  <ListOrdered className="h-4 w-4 mr-1.5" /> Optimize order
+                </Button>
+                <Button size="sm" variant="outline" onClick={handleBatchEnhance}
+                  disabled={isPending || photoSet.length === 0}>
+                  <Wand2 className="h-4 w-4 mr-1.5" /> Enhance low scores
+                </Button>
+              </div>
+            </div>
+
+            {photoQuality && photoSet.length > 0 && (
+              <div className="mt-3 rounded border bg-muted/40 p-3 text-xs">
+                <p className="font-medium flex items-center gap-1.5">
+                  {photoQuality.passed
+                    ? <><ShieldCheck className="h-3.5 w-3.5 text-emerald-600" /> Photo set passes MLS quality checks</>
+                    : <><AlertTriangle className="h-3.5 w-3.5 text-amber-600" /> {photoQuality.issues?.length ?? 0} issue{(photoQuality.issues?.length ?? 0) === 1 ? "" : "s"} to fix before this goes live</>}
+                </p>
+                {!photoQuality.passed && Array.isArray(photoQuality.issues) && (
+                  <ul className="mt-1.5 space-y-0.5 text-muted-foreground list-disc list-inside">
+                    {photoQuality.issues.map((issue: string) => <li key={issue}>{issue}</li>)}
+                  </ul>
+                )}
+                {photoStats?.roomCoverage != null && (
+                  <p className="mt-1.5 text-muted-foreground">
+                    Room coverage {Math.round(photoStats.roomCoverage)}%
+                    {photoStats.heroImageQuality != null && ` · hero quality ${Math.round(photoStats.heroImageQuality)}/100`}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
           {Object.keys(photoScores).length > 0 && (
             <div className="mb-4 p-3 rounded-lg border bg-muted/40 text-sm">
               <p className="font-medium mb-2 flex items-center gap-1.5">

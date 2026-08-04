@@ -628,7 +628,7 @@ export async function getVendorReviews(vendorId: string) {
   // Only show reviews to agents in brokerage, not to clients
   if (!profile?.brokerage_id) return []
 
-  const { data: reviews } = await supabase
+  const { data: reviews, error } = await supabase
     .from("vendor_reviews")
     .select(`
       id,
@@ -637,17 +637,161 @@ export async function getVendorReviews(vendorId: string) {
       headline,
       sub_ratings,
       is_verified,
+      verification_method,
       moderation_status,
+      flag_count,
       vendor_response,
+      vendor_response_at,
       created_at,
       users:user_id(first_name, last_name)
     `)
     .eq("vendor_id", vendorId)
     .eq("brokerage_id", profile.brokerage_id)
+    // A rejected review is a moderation decision that has been made. It was
+    // still being rendered here, so a review an admin had thrown out kept
+    // arguing its case on the vendor's card while counting for nothing in the
+    // weighted average.
+    .neq("moderation_status", "rejected")
     .order("created_at", { ascending: false })
     .limit(20)
 
+  if (error) {
+    console.error("[vendor-marketplace] getVendorReviews failed:", error.message)
+    return []
+  }
   return reviews || []
+}
+
+/**
+ * The reviews of the vendor the CALLER OWNS — the vendor portal's side of the
+ * marketplace. Canonical vendor linkage is user_role_assignments.vendor_id
+ * (`vendors` has no user_id column), the same link /vendor/invoices and
+ * /vendor/connections resolve through.
+ *
+ * Rejected reviews are withheld: a vendor should not be answering a review the
+ * brokerage has already removed.
+ */
+export async function getMyVendorReviews(): Promise<{
+  vendorId: string | null
+  reviews: Array<Record<string, unknown>>
+}> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { vendorId: null, reviews: [] }
+
+  const vendorId = await resolveCallerVendorId(supabase, user.id)
+  if (!vendorId) return { vendorId: null, reviews: [] }
+
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+
+  const { data, error } = await svc
+    .from("vendor_reviews")
+    .select("id, rating, review, headline, sub_ratings, is_verified, verification_method, moderation_status, flag_count, vendor_response, vendor_response_at, created_at")
+    .eq("vendor_id", vendorId)
+    .neq("moderation_status", "rejected")
+    .order("created_at", { ascending: false })
+    .limit(100)
+
+  if (error) {
+    console.error("[vendor-marketplace] getMyVendorReviews failed:", error.message)
+    return { vendorId, reviews: [] }
+  }
+  return { vendorId, reviews: (data ?? []) as Array<Record<string, unknown>> }
+}
+
+/**
+ * The vendors row a signed-in VENDOR user owns, or null for anyone else.
+ * `vendors` has no user_id — user_role_assignments.vendor_id is the link.
+ */
+async function resolveCallerVendorId(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("user_role_assignments")
+    .select("vendor_id")
+    .eq("user_id", userId)
+    .not("vendor_id", "is", null)
+    .maybeSingle()
+  if (error) {
+    console.error("[vendor-marketplace] vendor linkage read failed:", error.message)
+    return null
+  }
+  return (data?.vendor_id as string | undefined) ?? null
+}
+
+/**
+ * The brokerage's review moderation queue — everything screenReview or a
+ * community flag routed to a human. Admin/broker only; without this reader
+ * moderateVendorReview had nothing to moderate.
+ */
+export async function getVendorReviewModerationQueue(): Promise<Array<{
+  id: string
+  vendor_id: string
+  vendor_name: string | null
+  rating: number | null
+  review: string | null
+  headline: string | null
+  is_verified: boolean
+  verification_method: string | null
+  moderation_status: string
+  flag_count: number
+  created_at: string | null
+  reviewer_name: string | null
+}>> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return []
+
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+
+  const { data: profile, error: profileError } = await svc
+    .from("users").select("brokerage_id, user_type, role").eq("id", user.id).maybeSingle()
+  if (profileError) {
+    console.error("[vendor-marketplace] moderation queue profile read failed:", profileError.message)
+    return []
+  }
+  const brokerageId = (profile as any)?.brokerage_id
+  const isAdmin =
+    ["broker", "admin", "broker_admin", "superadmin"].includes(String((profile as any)?.user_type)) ||
+    ["broker", "admin", "owner"].includes(String((profile as any)?.role))
+  if (!brokerageId || !isAdmin) return []
+
+  const { data, error } = await svc
+    .from("vendor_reviews")
+    .select(`
+      id, vendor_id, rating, review, headline, is_verified, verification_method,
+      moderation_status, flag_count, created_at,
+      vendors:vendor_id(name),
+      users:user_id(first_name, last_name)
+    `)
+    .eq("brokerage_id", brokerageId)
+    .in("moderation_status", ["pending", "under_review"])
+    .order("flag_count", { ascending: false })
+    .order("created_at", { ascending: true })
+    .limit(200)
+
+  if (error) {
+    console.error("[vendor-marketplace] moderation queue read failed:", error.message)
+    return []
+  }
+
+  return (data ?? []).map((r: any) => ({
+    id: r.id,
+    vendor_id: r.vendor_id,
+    vendor_name: r.vendors?.name ?? null,
+    rating: r.rating,
+    review: r.review,
+    headline: r.headline,
+    is_verified: !!r.is_verified,
+    verification_method: r.verification_method ?? null,
+    moderation_status: r.moderation_status,
+    flag_count: r.flag_count ?? 0,
+    created_at: r.created_at,
+    reviewer_name: [r.users?.first_name, r.users?.last_name].filter(Boolean).join(" ") || null,
+  }))
 }
 
 /**
@@ -759,15 +903,23 @@ export async function respondToVendorReview(reviewId: string, response: string):
   const { createServiceClient } = await import("@/lib/supabase/service")
   const svc = createServiceClient()
 
-  // The caller must own the reviewed vendor (vendor_marketplace_profiles.user_id) — a vendor can only
-  // respond to reviews of itself.
+  // The caller must own the REVIEWED vendor — a vendor can only respond to reviews of itself.
+  //
+  // The check this replaces was `if (!profileVendor && !ownsVendor)`, where
+  // `ownsVendor` was `vendors.select(id).eq("id", review.vendor_id)` — i.e. "does
+  // the reviewed vendor exist". For any real review that is always true, so the
+  // gate passed for EVERY authenticated user and anyone could post the vendor's
+  // one immutable public reply. `vendors` has no user_id column;
+  // user_role_assignments.vendor_id is the canonical linkage (same one
+  // /vendor/invoices and getAllVendorBookings resolve through).
   const { data: review } = await svc.from("vendor_reviews").select("id, vendor_id, vendor_response").eq("id", reviewId).maybeSingle()
   if (!review) throw new Error("Review not found")
   if ((review as any).vendor_response) throw new Error("A response has already been submitted (responses are immutable).")
 
-  const { data: profileVendor } = await svc.from("vendor_marketplace_profiles").select("id").eq("user_id", user.id).maybeSingle()
-  const { data: ownsVendor } = await svc.from("vendors").select("id").eq("id", (review as any).vendor_id).maybeSingle()
-  if (!profileVendor && !ownsVendor) throw new Error("Not authorized to respond to this review")
+  const callerVendorId = await resolveCallerVendorId(supabase, user.id)
+  if (!callerVendorId || callerVendorId !== (review as any).vendor_id) {
+    throw new Error("Not authorized to respond to this review")
+  }
 
   const { screenReview } = await import("@/lib/kernel/vendor-review-moderation")
   const screen = screenReview({ rating: 5, body: response.length < 50 ? response.padEnd(50, " ") : response, accountAgeDays: 999 })
@@ -777,6 +929,9 @@ export async function respondToVendorReview(reviewId: string, response: string):
 
   const { error } = await svc.from("vendor_reviews").update({ vendor_response: response, vendor_response_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", reviewId)
   if (error) throw error
+
+  const { revalidatePath } = await import("next/cache")
+  revalidatePath("/vendor/reviews")
   return { ok: true }
 }
 
@@ -792,8 +947,16 @@ export async function flagVendorReview(reviewId: string, reason: string): Promis
   const { createServiceClient } = await import("@/lib/supabase/service")
   const svc = createServiceClient()
 
-  const { data: review } = await svc.from("vendor_reviews").select("id, brokerage_id, moderation_status, flag_count").eq("id", reviewId).maybeSingle()
+  const { data: review } = await svc.from("vendor_reviews").select("id, vendor_id, brokerage_id, moderation_status, flag_count").eq("id", reviewId).maybeSingle()
   if (!review) throw new Error("Review not found")
+
+  // "Any authenticated user EXCEPT the vendor" — the reviewed vendor cannot flag
+  // its own bad review into the human queue. The docstring claimed this; the code
+  // did not enforce it.
+  const callerVendorId = await resolveCallerVendorId(supabase, user.id)
+  if (callerVendorId && callerVendorId === (review as any).vendor_id) {
+    throw new Error("A vendor cannot flag a review of itself — respond to it instead.")
+  }
 
   const allowed = ["inappropriate", "fake", "competitor", "pii", "irrelevant"]
   const reasonCode = allowed.includes(reason) ? reason : "inappropriate"
@@ -833,8 +996,18 @@ export async function moderateVendorReview(reviewId: string, decision: "approve"
   const { data: review } = await svc.from("vendor_reviews").select("id, vendor_id, brokerage_id").eq("id", reviewId).eq("brokerage_id", brokerageId).maybeSingle()
   if (!review) throw new Error("Review not found in your brokerage")
 
-  await svc.from("vendor_reviews").update({ moderation_status: decision === "approve" ? "approved" : "rejected", updated_at: new Date().toISOString() }).eq("id", reviewId)
+  const { error: decisionError } = await svc.from("vendor_reviews")
+    .update({ moderation_status: decision === "approve" ? "approved" : "rejected", updated_at: new Date().toISOString() })
+    .eq("id", reviewId)
+  // A refused UPDATE resolves rather than throwing — reporting ok:true here
+  // would tell an admin the review was decided while it sat in the queue.
+  if (decisionError) throw decisionError
+
   await recomputeVendorReviewStats((review as any).vendor_id, brokerageId)
+
+  const { revalidatePath } = await import("next/cache")
+  revalidatePath("/dashboard/admin/vendor-approvals")
+  revalidatePath("/dashboard/vendors")
   return { ok: true }
 }
 

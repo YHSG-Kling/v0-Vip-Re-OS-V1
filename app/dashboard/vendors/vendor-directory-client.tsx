@@ -64,6 +64,8 @@ import {
   markBookingComplete,
   getVendorCostComparison,
   getVendorReviews,
+  submitVendorReview,
+  flagVendorReview,
 } from "@/app/actions/vendor-marketplace"
 import {
   createVendorRecordAction,
@@ -198,6 +200,17 @@ export function VendorDirectoryClient({
   const [reviewsDialogOpen, setReviewsDialogOpen] = useState(false)
   const [reviewsVendor, setReviewsVendor] = useState<Vendor | null>(null)
   const [vendorReviews, setVendorReviews] = useState<any[]>([])
+
+  // Write-a-review state. submitVendorReview is the transaction-linked lane:
+  // rateVendorBooking only exists once a booking has been completed and rated,
+  // so a vendor an agent worked with off-booking had no way to be reviewed.
+  const [newReviewRating, setNewReviewRating] = useState(5)
+  const [newReviewHeadline, setNewReviewHeadline] = useState("")
+  const [newReviewBody, setNewReviewBody] = useState("")
+  const [newReviewTransactionId, setNewReviewTransactionId] = useState("")
+  const [reviewFormError, setReviewFormError] = useState("")
+  const [reviewFormNotice, setReviewFormNotice] = useState("")
+  const [flaggingReviewId, setFlaggingReviewId] = useState<string | null>(null)
 
   // Calendar overlay: all bookings for selected vendor in next 30 days
   const [vendorCalendarBookings, setVendorCalendarBookings] = useState<{ date: string; count: number }[]>([])
@@ -415,10 +428,70 @@ export function VendorDirectoryClient({
 
   const handleShowReviews = (vendor: Vendor) => {
     setReviewsVendor(vendor)
+    setReviewFormError("")
+    setReviewFormNotice("")
+    setNewReviewRating(5)
+    setNewReviewHeadline("")
+    setNewReviewBody("")
+    setNewReviewTransactionId("")
     startTransition(async () => {
       const reviews = await getVendorReviews(vendor.id)
       setVendorReviews(reviews)
       setReviewsDialogOpen(true)
+    })
+  }
+
+  const handleSubmitReview = () => {
+    if (!reviewsVendor) return
+    setReviewFormError("")
+    setReviewFormNotice("")
+    if (newReviewBody.trim().length < 50) {
+      setReviewFormError("A review needs at least 50 characters — shorter ones go to a human moderator instead of publishing.")
+      return
+    }
+    startTransition(async () => {
+      try {
+        const result = await submitVendorReview({
+          vendorId: reviewsVendor.id,
+          rating: newReviewRating,
+          body: newReviewBody.trim(),
+          headline: newReviewHeadline.trim() || undefined,
+          transactionId: newReviewTransactionId || undefined,
+        })
+        // Report what the server actually decided — screenReview may have routed
+        // this to a human, and saying "published" would be a lie.
+        setReviewFormNotice(
+          result.moderationStatus === "approved"
+            ? `Published${result.isVerified ? " as a verified review" : " (unverified — not linked to a deal you were a party to)"}.`
+            : "Submitted for moderation — a broker admin will review it before it appears.",
+        )
+        setNewReviewBody("")
+        setNewReviewHeadline("")
+        const reviews = await getVendorReviews(reviewsVendor.id)
+        setVendorReviews(reviews)
+        router.refresh()
+      } catch (err) {
+        setReviewFormError(err instanceof Error ? err.message : "Could not submit the review")
+      }
+    })
+  }
+
+  const handleFlagReview = (reviewId: string) => {
+    setFlaggingReviewId(reviewId)
+    startTransition(async () => {
+      try {
+        const result = await flagVendorReview(reviewId, "inappropriate")
+        setReviewFormNotice(
+          result.status === "under_review"
+            ? "Flagged — this review has reached the flag threshold and is now with a moderator."
+            : `Flagged (${result.flagCount} flag${result.flagCount === 1 ? "" : "s"} so far).`,
+        )
+        if (reviewsVendor) setVendorReviews(await getVendorReviews(reviewsVendor.id))
+      } catch (err) {
+        setReviewFormError(err instanceof Error ? err.message : "Could not flag the review")
+      } finally {
+        setFlaggingReviewId(null)
+      }
     })
   }
 
@@ -1152,7 +1225,7 @@ export function VendorDirectoryClient({
             </DialogDescription>
           </DialogHeader>
 
-          <div className="py-4 max-h-96 overflow-y-auto">
+          <div className="py-4 max-h-72 overflow-y-auto">
             {vendorReviews.length === 0 ? (
               <p className="text-muted-foreground text-center py-8">
                 No reviews yet for this vendor in your brokerage.
@@ -1176,16 +1249,101 @@ export function VendorDirectoryClient({
                         {new Date(review.created_at).toLocaleDateString()}
                       </span>
                     </div>
+                    {review.headline && <p className="text-sm font-medium">{review.headline}</p>}
                     {review.review && (
                       <p className="text-sm">{review.review}</p>
                     )}
-                    <div className="text-xs text-muted-foreground mt-2">
-                      - {review.users?.first_name} {review.users?.last_name}
+                    <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                      {review.is_verified ? (
+                        <Badge variant="secondary" className="text-[10px]">
+                          <CheckCircle2 className="h-3 w-3 mr-1" />
+                          Verified {review.verification_method === "transaction_party" ? "deal party" : "booking party"}
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-[10px]">Unverified</Badge>
+                      )}
+                      {review.moderation_status !== "approved" && (
+                        <Badge variant="outline" className="text-[10px] capitalize">
+                          {String(review.moderation_status).replace(/_/g, " ")}
+                        </Badge>
+                      )}
+                      {(review.flag_count ?? 0) > 0 && (
+                        <Badge variant="outline" className="text-[10px]">
+                          {review.flag_count} flag{review.flag_count === 1 ? "" : "s"}
+                        </Badge>
+                      )}
+                    </div>
+                    {review.vendor_response && (
+                      <div className="mt-2 rounded border-l-2 border-primary/40 bg-muted/40 p-2">
+                        <p className="text-[11px] font-medium text-muted-foreground">Vendor response</p>
+                        <p className="text-sm">{review.vendor_response}</p>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between mt-2">
+                      <span className="text-xs text-muted-foreground">
+                        - {review.users?.first_name} {review.users?.last_name}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 px-2 text-[11px]"
+                        disabled={isPending || flaggingReviewId === review.id}
+                        onClick={() => handleFlagReview(review.id)}
+                      >
+                        <AlertCircle className="h-3 w-3 mr-1" /> Flag
+                      </Button>
                     </div>
                   </div>
                 ))}
               </div>
             )}
+          </div>
+
+          {/* WRITE A REVIEW — verification is decided by the server from the
+              deal you name; it can never be self-asserted here. */}
+          <div className="border-t pt-4 space-y-3">
+            <p className="text-sm font-medium">Write a review</p>
+            <div className="flex items-center gap-1">
+              {[1, 2, 3, 4, 5].map((star) => (
+                <button key={star} type="button" onClick={() => setNewReviewRating(star)}>
+                  <Star
+                    className={`h-5 w-5 ${star <= newReviewRating ? "fill-yellow-400 text-yellow-400" : "text-gray-300"}`}
+                  />
+                </button>
+              ))}
+              <span className="ml-2 text-sm text-muted-foreground">{newReviewRating} of 5</span>
+            </div>
+            <Input
+              value={newReviewHeadline}
+              onChange={(e) => setNewReviewHeadline(e.target.value)}
+              placeholder="Headline (optional)"
+            />
+            <Textarea
+              value={newReviewBody}
+              onChange={(e) => setNewReviewBody(e.target.value)}
+              placeholder="What was the work like? At least 50 characters."
+              rows={3}
+            />
+            <div className="space-y-1">
+              <Label className="text-xs">Link to a transaction (makes the review verified)</Label>
+              <Select value={newReviewTransactionId} onValueChange={setNewReviewTransactionId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="No transaction" />
+                </SelectTrigger>
+                <SelectContent>
+                  {transactions.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>{t.property_address}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {reviewFormError && <p className="text-sm text-destructive">{reviewFormError}</p>}
+            {reviewFormNotice && <p className="text-sm text-muted-foreground">{reviewFormNotice}</p>}
+            <DialogFooter>
+              <Button onClick={handleSubmitReview} disabled={isPending || !newReviewBody.trim()}>
+                Submit review
+              </Button>
+            </DialogFooter>
           </div>
         </DialogContent>
       </Dialog>
