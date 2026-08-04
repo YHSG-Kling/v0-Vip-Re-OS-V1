@@ -1,34 +1,23 @@
-import { NextRequest, NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase/server"
-import { createServiceClient } from "@/lib/supabase/service"
-import { requireAuth } from "@/lib/kernel/api-auth"
-import { generateVideoScript } from "@/lib/kernel/video"
+import { NextRequest } from "next/server"
+import { generateVideoScriptAction } from "@/app/actions/video"
+import { videoActionResponse } from "../video-action-http"
 import type { GenerateVideoScriptInput } from "@/lib/kernel/video"
 
+/**
+ * POST /api/video/projects/:projectId/script — generate the AI script.
+ *
+ * The auth + project-ownership check that used to live here now lives once, in
+ * app/actions/video.ts:generateVideoScriptAction, which the Video Studio calls
+ * directly. This route is the HTTP door onto that same implementation; its
+ * status codes are unchanged (see ../video-action-http.ts).
+ */
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ projectId: string }> }
 ) {
-  // Auth + project ownership — script generation is an AI call ($) per
-  // request. Was previously unauthenticated.
-  const supabase = await createClient()
-  const auth = await requireAuth(supabase)
-  if (!auth.ok) return auth.response
-
   const { projectId } = await params
+  const body = await request.json().catch(() => ({} as Record<string, unknown>))
 
-  const svc = createServiceClient()
-  const { data: project } = await svc
-    .from("ai_video_projects")
-    .select("brokerage_id")
-    .eq("id", projectId)
-    .maybeSingle()
-  if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 })
-  if (project.brokerage_id !== auth.brokerageId) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 })
-  }
-
-  const body = await request.json()
   const input: GenerateVideoScriptInput = {
     projectId,
     contentStrategy: body.contentStrategy,
@@ -36,11 +25,5 @@ export async function POST(
     duration: body.duration,
   }
 
-  try {
-    const output = await generateVideoScript(input)
-    return NextResponse.json({ script: output }, { status: 200 })
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to generate script"
-    return NextResponse.json({ error: message }, { status: 500 })
-  }
+  return videoActionResponse(await generateVideoScriptAction(input), "script")
 }

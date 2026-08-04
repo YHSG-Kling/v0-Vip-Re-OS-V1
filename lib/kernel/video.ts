@@ -117,6 +117,12 @@ export interface DistributeVideoProjectOutput {
     url?: string
     error?: string
   }>
+  /**
+   * Set when the posts were queued but the project's own status could not be
+   * persisted (e.g. an RLS refusal). The distribution still happened — this
+   * says the bookkeeping did not, instead of hiding it.
+   */
+  statusUpdateError?: string
 }
 
 export interface RepurposeVideoOutputInput {
@@ -478,13 +484,24 @@ export async function distributeVideoProject(
 
   for (const channel of input.channels) {
     try {
-      // Get social account for channel
-      const { data: account } = await supabase
+      // Get social account for channel. Destructure the error: a refused read
+      // resolves with data null, which reported "No account connected" for an
+      // account that is connected — a lie the agent cannot act on.
+      const { data: account, error: accountError } = await supabase
         .from("social_media_accounts")
         .select("*")
         .eq("platform", channel)
         .eq("agent_id", project.agent_id)
         .maybeSingle()
+
+      if (accountError) {
+        distributions.push({
+          channel,
+          status: "failed",
+          error: `Could not read connected account: ${accountError.message}`,
+        })
+        continue
+      }
 
       if (!account) {
         distributions.push({
@@ -534,7 +551,9 @@ export async function distributeVideoProject(
   }
 
   // Mark the project distributed (posts now carry their own publish lifecycle).
-  await supabase
+  // This was a bare await: an RLS refusal here resolves, so the project stayed
+  // in its old status while the caller was told distribution succeeded.
+  const { error: statusError } = await supabase
     .from("ai_video_projects")
     .update({
       status: "distributed",
@@ -542,9 +561,17 @@ export async function distributeVideoProject(
     })
     .eq("id", input.projectId)
 
+  if (statusError) {
+    console.error(
+      `[VideoKernel] project ${input.projectId} distributed but status not persisted:`,
+      statusError.message,
+    )
+  }
+
   return {
     projectId: input.projectId,
     distributions,
+    statusUpdateError: statusError?.message,
   }
 }
 
@@ -586,13 +613,32 @@ export async function loadVideoPerformance(
     throw new Error(`Video project not found: ${input.projectId}`)
   }
 
+  // A project with no rendered video has no posts carrying it. Say zero
+  // honestly rather than sending `contains("media_urls", [null])` to PostgREST.
+  if (!project.video_url) {
+    return {
+      projectId: input.projectId,
+      views: 0,
+      engagement: 0,
+      comments: 0,
+      shares: 0,
+      generatedAt: new Date().toISOString(),
+    }
+  }
+
   // Aggregate analytics from social posts. social_posts stores media as a
   // media_urls array and metrics in engagement_data (there is no media_url /
-  // engagement_metrics column).
-  const { data: posts } = await supabase
+  // engagement_metrics column). Destructure the error: a refused read resolves
+  // with data null, and every total below would then report a truthful-looking
+  // zero for numbers nobody was allowed to see.
+  const { data: posts, error: postsError } = await supabase
     .from("social_posts")
     .select("engagement_data")
     .contains("media_urls", [project.video_url])
+
+  if (postsError) {
+    throw new Error(`Failed to load video performance: ${postsError.message}`)
+  }
 
   let totalViews = 0
   let totalEngagement = 0
@@ -771,10 +817,12 @@ export async function proposeGatedVideoDistribution(
     .from("social_posts")
     .insert({
       brokerage_id:          input.brokerageId,
-      // NOTE: ai_video_projects.agent_id FKs users.id, but social_posts.agent_id FKs
-      // agents.id — they are different id-spaces. Leave null on the gated draft (the
-      // agent + connected social account are bound at approval/publish time, mirroring
-      // the gated marketing-bench pattern) rather than cross-wire mismatched ids.
+      // NOTE: both ai_video_projects.agent_id and social_posts.agent_id FK agents.id
+      // (verified against pg_constraint: ai_video_projects_agent_id_fkey REFERENCES
+      // agents(id) since m366 — the older comment here claimed users.id and was
+      // wrong). Still left null on the gated draft: the agent and the connected
+      // social account are bound at approval/publish time, mirroring the gated
+      // marketing-bench pattern.
       agent_id:              null,
       listing_id:            (project as any).listing_id ?? null,
       marketing_campaign_id: (project as any).marketing_campaign_id ?? null,

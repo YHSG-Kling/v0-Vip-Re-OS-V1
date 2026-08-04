@@ -26,6 +26,7 @@ import {
   Shield,
   ExternalLink,
   Download,
+  Wand2,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -39,6 +40,7 @@ import { useAuth } from "@/lib/auth/client"
 import { createClient } from "@/lib/supabase/client"
 import { toast } from "sonner"
 import { distributeVideo } from "@/app/actions/video/distribute-video"
+import { VideoStudioDialog } from "./video-studio-dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -113,6 +115,13 @@ export default function VideoKanbanBoard() {
 
   // Preview/Distribute Dialog
   const [previewDialog, setPreviewDialog] = useState<{ open: boolean; video: VideoProject | null }>({
+    open: false,
+    video: null,
+  })
+
+  // Video Studio — the surface for the kernel video commands (script, settings,
+  // render submission, state, preview, repurpose). Opens on a project row.
+  const [studioDialog, setStudioDialog] = useState<{ open: boolean; video: VideoProject | null }>({
     open: false,
     video: null,
   })
@@ -509,6 +518,11 @@ export default function VideoKanbanBoard() {
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => setStudioDialog({ open: true, video })}>
+                                <Wand2 className="mr-2 h-4 w-4" />
+                                Open Video Studio
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
                               {(video.status === "preview_ready" || video.provider_status === "completed") && (
                                 <>
                                   <DropdownMenuItem onClick={() => setPreviewDialog({ open: true, video })}>
@@ -572,6 +586,24 @@ export default function VideoKanbanBoard() {
                             </DropdownMenuContent>
                           </DropdownMenu>
                         </div>
+
+                        {/* A queued project is one nobody has scripted or
+                            submitted yet — the Studio is the surface that does
+                            both, so put it on the card rather than behind a
+                            menu. */}
+                        {column.id === "pending" && (
+                          <div className="mt-3">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="w-full"
+                              onClick={() => setStudioDialog({ open: true, video })}
+                            >
+                              <Wand2 className="mr-2 h-4 w-4" />
+                              Open Video Studio
+                            </Button>
+                          </div>
+                        )}
 
                         {/* Status-specific content */}
                         {column.id === "generating" && (
@@ -650,6 +682,14 @@ export default function VideoKanbanBoard() {
           )
         })}
       </div>
+
+      {/* Video Studio — script / settings / render / state / preview / repurpose */}
+      <VideoStudioDialog
+        open={studioDialog.open}
+        onOpenChange={(open) => setStudioDialog({ open, video: open ? studioDialog.video : null })}
+        project={studioDialog.video}
+        onProjectChanged={loadVideos}
+      />
 
       {/* Preview & Publish Dialog */}
       <Dialog open={previewDialog.open} onOpenChange={(open) => setPreviewDialog({ open, video: previewDialog.video })}>

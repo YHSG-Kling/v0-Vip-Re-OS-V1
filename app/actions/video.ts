@@ -1,6 +1,7 @@
 "use server"
 
 import { createServerClient } from "@/lib/supabase/server"
+import { isValidUUID } from "@/lib/validations"
 import {
   generateVideoScript,
   updateVideoGenerationSettings,
@@ -31,31 +32,101 @@ import type {
 } from "@/lib/kernel/video"
 
 /**
- * The caller's brokerage, and a check that a video project belongs to it.
- * Mirrors the `authorize` gate in app/api/video/projects/[projectId]/generate.
+ * THIS MODULE IS THE ONE IMPLEMENTATION of the video generation lane.
  *
- * The kernel video functions take a projectId and read ai_video_projects with no
- * tenant check of their own, so a server action reached from a browser must do
- * the check before delegating — otherwise any signed-in user can name any
- * project id.
+ * Every export here is a "use server" function, which means it is an HTTP
+ * endpoint the browser can call by name with arguments of its choosing. The
+ * kernel commands they delegate to (lib/kernel/video.ts) take a projectId and
+ * read/write ai_video_projects with NO tenant check of their own, so the tenant
+ * check has to happen HERE, before the delegation, or any signed-in user can
+ * name any project id.
+ *
+ * RLS is not a substitute. ai_video_projects has RLS enabled, but every policy
+ * reads `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`
+ * and brokerage_id is NULLABLE — so any project row created without a tenant is
+ * readable AND writable by every authenticated user in the system. The gate
+ * below closes that hole because it compares the project's brokerage_id to the
+ * caller's for equality, which a NULL can never satisfy.
+ *
+ * app/api/video/projects/[projectId]/{script,generate,preview,publish} are the
+ * SECOND DOOR onto these same functions — they parse HTTP and delegate here.
+ * They do not re-implement the gate.
  */
-async function assertProjectInCallerBrokerage(projectId: string): Promise<string | null> {
+
+/** Why a call was refused. Maps to an HTTP status at the route door. */
+export type VideoActionDenialCode =
+  | "invalid_project_id"
+  | "unauthenticated"
+  | "no_brokerage"
+  | "project_not_found"
+  | "forbidden"
+  | "failed"
+
+interface TenantDenial {
+  code: VideoActionDenialCode
+  message: string
+}
+
+export type VideoActionResult<T> =
+  | { success: true; data: T; error?: undefined; code?: undefined }
+  | { success: false; data?: undefined; error: string; code: VideoActionDenialCode }
+
+function denied<T>(d: TenantDenial): VideoActionResult<T> {
+  return { success: false, error: d.message, code: d.code }
+}
+
+function failed<T>(err: unknown, fallback: string): VideoActionResult<T> {
+  return {
+    success: false,
+    error: err instanceof Error ? err.message : fallback,
+    code: "failed",
+  }
+}
+
+/**
+ * The caller's own brokerage, resolved from the session — never from an
+ * argument. Split out of the project gate so the gate stays short enough to
+ * read in one screen.
+ */
+async function callerBrokerage(): Promise<{ brokerage_id: string } | TenantDenial> {
   const supabase = await createServerClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return "Not authenticated"
+  const { data: auth, error: authError } = await supabase.auth.getUser()
+  if (authError) return { code: "unauthenticated", message: authError.message }
+  if (!auth?.user) return { code: "unauthenticated", message: "Not authenticated" }
 
   const { data: profile, error: profileError } = await supabase
-    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
-  if (profileError) return profileError.message
-  if (!profile?.brokerage_id) return "Your account is not linked to a brokerage yet"
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", auth.user.id)
+    .maybeSingle()
+  if (profileError) return { code: "failed", message: profileError.message }
+  if (!profile?.brokerage_id) {
+    return { code: "no_brokerage", message: "Your account is not linked to a brokerage yet" }
+  }
+  return { brokerage_id: profile.brokerage_id as string }
+}
 
-  const { createServiceClient } = await import("@/lib/supabase/service")
-  const svc = createServiceClient()
+/**
+ * THE GATE. A video project belongs to the caller's brokerage, or this refuses.
+ * Mirrors the `authorize` gate in app/api/video/projects/[projectId]/generate.
+ *
+ * Returns null when the caller may proceed, and a denial otherwise. A project
+ * in another brokerage is reported as "not found" on this door so the action
+ * cannot be used to enumerate project ids across tenants; the route door still
+ * answers 403 for it, preserving the HTTP contract it already had.
+ */
+async function assertProjectInCallerBrokerage(projectId: string): Promise<TenantDenial | null> {
+  if (!isValidUUID(projectId)) return { code: "invalid_project_id", message: "Invalid video project id" }
+  const profile = await callerBrokerage()
+  if ("code" in profile) return profile
+  const svc = (await import("@/lib/supabase/service")).createServiceClient()
   const { data: project, error } = await svc
     .from("ai_video_projects").select("brokerage_id").eq("id", projectId).maybeSingle()
-  if (error) return error.message
-  if (!project) return "Video project not found"
-  if (project.brokerage_id !== profile.brokerage_id) return "Video project not found"
+  if (error) return { code: "failed", message: error.message }
+  if (!project) return { code: "project_not_found", message: "Video project not found" }
+  if (project.brokerage_id !== profile.brokerage_id) {
+    return { code: "forbidden", message: "Video project not found" }
+  }
   return null
 }
 
@@ -81,80 +152,123 @@ async function assertProjectInCallerBrokerage(projectId: string): Promise<string
  * survivor. With nothing left that the wrapper did more completely, it is gone.
  */
 
+/**
+ * Write the AI script onto an existing project and move it to 'scripting'.
+ * Tenant anchor: input.projectId → ai_video_projects.brokerage_id.
+ */
 export async function generateVideoScriptAction(
   input: GenerateVideoScriptInput
-): Promise<{ success: boolean; data?: GenerateVideoScriptOutput; error?: string }> {
+): Promise<VideoActionResult<GenerateVideoScriptOutput>> {
+  const denial = await assertProjectInCallerBrokerage(input.projectId)
+  if (denial) return denied(denial)
   try {
     const data = await generateVideoScript(input)
     return { success: true, data }
   } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : "Failed to generate script" }
+    return failed(err, "Failed to generate script")
   }
 }
 
+/**
+ * Voice / avatar / music / subtitle / watermark settings for a project.
+ * Tenant anchor: input.projectId → ai_video_projects.brokerage_id.
+ */
 export async function updateVideoGenerationSettingsAction(
   input: UpdateVideoGenerationSettingsInput
-): Promise<{ success: boolean; data?: UpdateVideoGenerationSettingsOutput; error?: string }> {
+): Promise<VideoActionResult<UpdateVideoGenerationSettingsOutput>> {
+  const denial = await assertProjectInCallerBrokerage(input.projectId)
+  if (denial) return denied(denial)
   try {
     const data = await updateVideoGenerationSettings(input)
     return { success: true, data }
   } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : "Failed to update settings" }
+    return failed(err, "Failed to update settings")
   }
 }
 
+/**
+ * Submit the render to the platform vendor (D-ID). Spends money and claims the
+ * project's generation slot, so the gate matters most here.
+ * Tenant anchor: input.projectId → ai_video_projects.brokerage_id.
+ */
 export async function submitVideoGenerationJobAction(
   input: SubmitVideoGenerationJobInput
-): Promise<{ success: boolean; data?: SubmitVideoGenerationJobOutput; error?: string }> {
+): Promise<VideoActionResult<SubmitVideoGenerationJobOutput>> {
+  const denial = await assertProjectInCallerBrokerage(input.projectId)
+  if (denial) return denied(denial)
   try {
     const data = await submitVideoGenerationJob(input)
     return { success: true, data }
   } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : "Failed to submit job" }
+    return failed(err, "Failed to submit job")
   }
 }
 
+/**
+ * The project's live generation state — status, script, settings, video url.
+ * Tenant anchor: input.projectId → ai_video_projects.brokerage_id.
+ */
 export async function loadVideoGenerationStateAction(
   input: LoadVideoGenerationStateInput
-): Promise<{ success: boolean; data?: LoadVideoGenerationStateOutput; error?: string }> {
+): Promise<VideoActionResult<LoadVideoGenerationStateOutput>> {
+  const denial = await assertProjectInCallerBrokerage(input.projectId)
+  if (denial) return denied(denial)
   try {
     const data = await loadVideoGenerationState(input)
     return { success: true, data }
   } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : "Failed to load state" }
+    return failed(err, "Failed to load state")
   }
 }
 
+/**
+ * The rendered stream url for playback.
+ * Tenant anchor: input.projectId → ai_video_projects.brokerage_id.
+ */
 export async function previewVideoProjectAction(
   input: PreviewVideoProjectInput
-): Promise<{ success: boolean; data?: PreviewVideoProjectOutput; error?: string }> {
+): Promise<VideoActionResult<PreviewVideoProjectOutput>> {
+  const denial = await assertProjectInCallerBrokerage(input.projectId)
+  if (denial) return denied(denial)
   try {
     const data = await previewVideoProject(input)
     return { success: true, data }
   } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : "Failed to load preview" }
+    return failed(err, "Failed to load preview")
   }
 }
 
+/**
+ * Queue the rendered video onto the agent's connected social accounts.
+ * Tenant anchor: input.projectId → ai_video_projects.brokerage_id.
+ */
 export async function distributeVideoProjectAction(
   input: DistributeVideoProjectInput
-): Promise<{ success: boolean; data?: DistributeVideoProjectOutput; error?: string }> {
+): Promise<VideoActionResult<DistributeVideoProjectOutput>> {
+  const denial = await assertProjectInCallerBrokerage(input.projectId)
+  if (denial) return denied(denial)
   try {
     const data = await distributeVideoProject(input)
     return { success: true, data }
   } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : "Failed to distribute" }
+    return failed(err, "Failed to distribute")
   }
 }
 
+/**
+ * Derivative cuts of a finished render (shorts / clips / thumbnail).
+ * Tenant anchor: input.projectId → ai_video_projects.brokerage_id.
+ */
 export async function repurposeVideoOutputAction(
   input: RepurposeVideoOutputInput
-): Promise<{ success: boolean; data?: RepurposeVideoOutputOutput; error?: string }> {
+): Promise<VideoActionResult<RepurposeVideoOutputOutput>> {
+  const denial = await assertProjectInCallerBrokerage(input.projectId)
+  if (denial) return denied(denial)
   try {
     const data = await repurposeVideoOutput(input)
     return { success: true, data }
   } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : "Failed to repurpose" }
+    return failed(err, "Failed to repurpose")
   }
 }
 
@@ -163,16 +277,17 @@ export async function repurposeVideoOutputAction(
  * comments / shares aggregated from the social posts whose media_urls contain
  * this project's video_url. There is no API route for this, so this action is
  * the only path to it; the numbers were being computed for nobody.
+ * Tenant anchor: input.projectId → ai_video_projects.brokerage_id.
  */
 export async function loadVideoPerformanceAction(
   input: LoadVideoPerformanceInput
-): Promise<{ success: boolean; data?: LoadVideoPerformanceOutput; error?: string }> {
-  const denied = await assertProjectInCallerBrokerage(input.projectId)
-  if (denied) return { success: false, error: denied }
+): Promise<VideoActionResult<LoadVideoPerformanceOutput>> {
+  const denial = await assertProjectInCallerBrokerage(input.projectId)
+  if (denial) return denied(denial)
   try {
     const data = await loadVideoPerformance(input)
     return { success: true, data }
   } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : "Failed to load performance" }
+    return failed(err, "Failed to load performance")
   }
 }
