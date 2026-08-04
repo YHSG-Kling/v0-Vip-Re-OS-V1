@@ -46,9 +46,59 @@ interface LeadPrediction {
   }>
 }
 
-// Predict which leads will convert (ML-based)
+// ─────────────────────────────────────────────────────────────────────────────
+// DELIBERATELY NOT WIRED — READ THIS BEFORE GIVING IT A CALLER.
+//
+// (1) IT WOULD BE THE THIRD LEAD SCORER. Two already exist and one is canonical:
+//       lib/services/lead-management.service.ts:calculateLeadScore  — writes
+//         contacts.lead_score + lead_scores + lead_engagement_scores; every other
+//         scoring path in the repo has already been re-pointed at it (see the
+//         keep-one notes in app/actions/ai-auto-response.ts and
+//         app/actions/ai-lead-nurturing.ts:133).
+//       app/actions/ai-lead-scoring.ts:scoreLeadWithAI — the agent-triggered
+//         override, WIRED at app/crm/page.tsx:1201.
+//     This one is a third independent model of the same subject with its own
+//     storage. It is not a second writer of contacts.lead_score — it writes
+//     predictive_lead_scores, a different table — but standing it up as a rival
+//     verdict on "will this lead convert" is the collision the owner named.
+//
+// (2) THE WRITE HAS NEVER SUCCEEDED, ONCE, EVER. predictive_lead_scores.brokerage_id
+//     is NOT NULL and the row was inserted without it, inside a try/catch that only
+//     logs — and supabase-js RESOLVES a refused write, so even the catch never fired.
+//     predictive_lead_scores holds 0 rows on the live database. Every reader hanging
+//     off it (getPredictiveLeadScore, getTopConversionCandidates,
+//     refreshStalePredictions, and the prompt at line ~515) has therefore always
+//     returned nothing while looking like a working query. brokerage_id is now
+//     supplied and the refusal is surfaced.
+//
+// (3) RLS EXCLUDES THE AGENT ANYWAY. predictive_lead_scores_insert and _select both
+//     require is_lead_visible_role(), which is broker / broker_owner / admin /
+//     superadmin only. Under the anon key an AGENT can neither write nor read this
+//     table, so a wiring onto any agent-facing surface would be refused at the
+//     database even with the columns correct.
+//
+// (4) IDENTITY CLASS. predictive_lead_scores.lead_id FKs leads(id), but this
+//     function's own fallback resolves the id against `contacts` when it misses in
+//     `leads` — so a contacts.id reached a leads FK. That is now refused explicitly
+//     rather than being written and rejected silently.
+//
+// Its defects are fixed so the next pass inherits a correct function, not a trap.
+// ─────────────────────────────────────────────────────────────────────────────
 export async function predictLeadConversion(leadId: string): Promise<LeadPrediction | { error: string }> {
   const supabase = await createClient()
+
+  // Tenant anchor for the two prediction writes below. Both tables carry
+  // brokerage_id and both RLS policies test it.
+  const { data: { user: predictionCaller } } = await supabase.auth.getUser()
+  if (!predictionCaller) return { error: "Unauthorized" }
+  const { data: callerRow, error: callerError } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", predictionCaller.id)
+    .maybeSingle()
+  if (callerError) return { error: `Caller lookup failed: ${callerError.message}` }
+  const callerBrokerageId = callerRow?.brokerage_id as string | undefined
+  if (!callerBrokerageId) return { error: "Unauthorized" }
 
   // Try to gather lead data - handle tables that may not exist
   let lead: unknown = null
@@ -67,6 +117,10 @@ export async function predictLeadConversion(leadId: string): Promise<LeadPredict
     .select("*")
     .eq("id", leadId)
     .maybeSingle()
+
+  // Whether the id is LEADS-class decides where the prediction may be stored:
+  // predictive_lead_scores.lead_id FKs leads(id) and nothing else.
+  const isLeadsClassId = !!leadData
 
   if (leadData) {
     lead = leadData
@@ -252,39 +306,51 @@ Respond with JSON only:
 
     const prediction = result.data
 
-    // Save prediction to ai_predictions table
-    try {
-      await supabase.from("ai_predictions").insert({
-        prediction_type: "lead_conversion",
-        entity_type: "lead",
-        entity_id: leadId,
-        prediction_value: prediction,
-        confidence_score: (prediction as any).confidence,
-        prediction_factors: extractFactors(lead as any, leadIntelligence, engagementScores, propertyInteractions) as any,
-        model_version: "v1.0",
-      })
-    } catch (e) {
-      console.error("[v0] Failed to save ai_predictions:", e)
+    // Save prediction to ai_predictions table. brokerage_id was omitted, which
+    // made the row invisible to has_brokerage_access() in every scoped reader.
+    const { error: predictionInsertError } = await supabase.from("ai_predictions").insert({
+      brokerage_id: callerBrokerageId,
+      prediction_type: "lead_conversion",
+      entity_type: isLeadsClassId ? "lead" : "contact",
+      entity_id: leadId,
+      prediction_value: prediction,
+      confidence_score: (prediction as any).confidence,
+      prediction_factors: extractFactors(lead as any, leadIntelligence, engagementScores, propertyInteractions) as any,
+      model_version: "v1.0",
+    })
+    if (predictionInsertError) {
+      console.error("[ai-predictions] ai_predictions insert refused:", predictionInsertError.message)
     }
 
-    // Save/update predictive lead score
-    try {
-      await supabase.from("predictive_lead_scores").upsert({
-        lead_id: leadId,
-        conversion_probability: prediction.conversionProbability,
-        predicted_conversion_date: prediction.predictedConversionDate,
-        predicted_deal_size: prediction.predictedDealSize,
-        predicted_timeline_days: prediction.predictedTimelineDays,
-        overall_ai_score: prediction.conversionProbability,
-        score_tier: prediction.scoreTier,
-        recommended_actions: prediction.optimalStrategy,
-        optimal_contact_time: calculateOptimalContactTime(behavioralData),
-        best_communication_channel: prediction.optimalStrategy.channelPreference,
-        personalized_approach: prediction.optimalStrategy.approach,
-        model_version: "v1.0",
-      })
-    } catch (e) {
-      console.error("[v0] Failed to save predictive_lead_scores:", e)
+    // Save/update predictive lead score. predictive_lead_scores.lead_id FKs
+    // leads(id): a contacts.id here is a foreign-key violation, not a fallback.
+    if (!isLeadsClassId) {
+      console.warn(
+        "[ai-predictions] predictive_lead_scores skipped — id is contacts-class and lead_id FKs leads(id)",
+      )
+    } else {
+      const { error: scoreError } = await supabase.from("predictive_lead_scores").upsert(
+        {
+          lead_id: leadId,
+          brokerage_id: callerBrokerageId, // NOT NULL, and both halves of the RLS policy
+          conversion_probability: prediction.conversionProbability,
+          predicted_conversion_date: prediction.predictedConversionDate,
+          predicted_deal_size: prediction.predictedDealSize,
+          predicted_timeline_days: prediction.predictedTimelineDays,
+          overall_ai_score: prediction.conversionProbability,
+          score_tier: prediction.scoreTier,
+          recommended_actions: prediction.optimalStrategy,
+          optimal_contact_time: calculateOptimalContactTime(behavioralData),
+          best_communication_channel: prediction.optimalStrategy.channelPreference,
+          personalized_approach: prediction.optimalStrategy.approach,
+          model_version: "v1.0",
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "lead_id" }, // predictive_lead_scores_lead_id_key
+      )
+      if (scoreError) {
+        console.error("[ai-predictions] predictive_lead_scores upsert refused:", scoreError.message)
+      }
     }
 
     return prediction
@@ -368,7 +434,10 @@ export async function getLeadPredictions(leadId: string) {
     .from("ai_predictions")
     .select("*")
     .eq("entity_id", leadId)
-    .eq("entity_type", "lead")
+    // predictLeadConversion accepts a leads.id OR a contacts.id and stamps
+    // entity_type accordingly, so filtering on "lead" alone would hide half of
+    // what it writes. entity_id is a uuid — no cross-class collision to worry about.
+    .in("entity_type", ["lead", "contact"])
     .order("created_at", { ascending: false })
     .limit(10)
 
@@ -384,6 +453,11 @@ export async function getLeadPredictions(leadId: string) {
 // GET PREDICTIVE LEAD SCORE
 // ============================================
 
+// UNWIRED BY CONSEQUENCE, not by choice: its only writer is predictLeadConversion
+// above, which is deliberately unwired, and predictive_lead_scores_select requires
+// is_lead_visible_role() (broker/admin only) so an agent surface could not read it
+// even once rows exist. Wiring this before its writer would ship a card that is
+// empty by construction.
 export async function getPredictiveLeadScore(leadId: string) {
   const supabase = await createClient()
 
@@ -405,6 +479,9 @@ export async function getPredictiveLeadScore(leadId: string) {
 // BATCH PREDICT FOR MULTIPLE LEADS
 // ============================================
 
+// UNWIRED BY CONSEQUENCE: a fan-out over predictLeadConversion, so it inherits that
+// function's verdict verbatim. It is one AI call per lead with no concurrency cap;
+// whoever wires it should bound it.
 export async function batchPredictLeadConversions(leadIds: string[]) {
   const results = await Promise.allSettled(
     leadIds.map((id) => predictLeadConversion(id))
@@ -1394,7 +1471,7 @@ export async function massGenerateCMAs(_ignoredAgentId?: string) {
 
   const { getAgentContext } = await import("@/lib/identity/get-agent-context")
   const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated) throw new Error("Unauthorized")
+  if (!ctx.isAuthenticated) throw new Error("Not authenticated")
   if (!ctx.agentId) throw new Error("Agent profile not found")
 
   const agentId = ctx.agentId
@@ -1694,7 +1771,7 @@ Provide strategic negotiation advice:
     const strategy = await generateAIJSON(prompt)
 
     if (!strategy.data) {
-      throw new Error("Negotiation analysis failed")
+      throw new Error("No negotiation strategy was returned")
     }
 
     // Save negotiation strategy
@@ -2119,6 +2196,23 @@ Detect churn risk and provide save strategy:
 // SHOWING ROUTE OPTIMIZER
 // ============================================
 
+// STILL UNWIRED, AND THE READER IS ALREADY BUILT.
+//
+// app/crm/contacts/[contactId]/page.tsx:224 renders an "AI Showing Plan" card off
+// smart_showing_recommendations and is complete — it even handles both target
+// classes (contact_id directly, or any of the contact's leads). This function is
+// the ONLY writer of that table, and it has no caller, so the card has never had a
+// row to show. That reader lives on app/crm/**, which is outside the surface set
+// this pass may edit, so the wire is left for the pass that owns it.
+//
+// TWO DEFECTS FIXED SO IT IS WIREABLE WHEN THAT HAPPENS:
+//   · brokerage_id was omitted. smart_showing_recommendations_select is
+//     `is_platform_admin() OR has_brokerage_access(brokerage_id)`, and
+//     has_brokerage_access(NULL) is false — so every row this wrote would have been
+//     unreadable by everyone, including the agent who asked for the route. A
+//     write-only table wearing the costume of a working one.
+//   · the insert's error was never destructured, so a refusal returned
+//     `{ success: true }` with the route rendered on screen and nothing stored.
 export async function optimizeShowingRoute(data: {
   leadId: string
   propertyIds: string[]
@@ -2126,6 +2220,17 @@ export async function optimizeShowingRoute(data: {
   startLocation: string
 }) {
   const supabase = await createClient()
+
+  const { data: { user: routeCaller } } = await supabase.auth.getUser()
+  if (!routeCaller) throw new Error("No signed-in caller")
+  const { data: routeCallerRow, error: routeCallerError } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", routeCaller.id)
+    .maybeSingle()
+  if (routeCallerError) throw new Error(`Caller lookup failed: ${routeCallerError.message}`)
+  const routeBrokerageId = routeCallerRow?.brokerage_id as string | undefined
+  if (!routeBrokerageId) throw new Error("No brokerage on this account")
   const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
   const idxClient = new IDXBrokerClient()
 
@@ -2184,18 +2289,24 @@ Optimize for:
       throw new Error("Route optimization failed")
     }
 
-    await supabase.from("smart_showing_recommendations").insert({
+    const { error: recError } = await supabase.from("smart_showing_recommendations").insert({
       lead_id: data.leadId,
-      recommended_properties: optimizedRoute.data.optimizedRoute?.properties,
+      brokerage_id: routeBrokerageId, // without this the row is unreadable by everyone
+      recommended_properties: optimizedRoute.data.optimizedRoute?.properties ?? [],
       showing_route: optimizedRoute.data.optimizedRoute,
       total_drive_time: optimizedRoute.data.optimizedRoute?.totalDriveTime,
       suggested_order: optimizedRoute.data.optimizedRoute?.properties?.map((p: any) => p.address),
       recommended_day: data.preferredDate,
       why_these_properties: "AI-optimized for maximum impact",
     })
+    if (recError) {
+      console.error("[ai-predictions] smart_showing_recommendations insert refused:", recError.message)
+      return { success: false as const, error: recError.message, route: optimizedRoute.data.optimizedRoute }
+    }
 
     return {
-      success: true,
+      success: true as const,
+      error: null,
       route: optimizedRoute.data.optimizedRoute,
     }
   } catch (error) {
@@ -2263,7 +2374,7 @@ Find opportunities:
     const opportunities = await generateAIJSON(prompt)
 
     if (!opportunities.data) {
-      throw new Error("Opportunity detection failed")
+      throw new Error("No opportunities were returned")
     }
 
     for (const opp of opportunities.data.opportunities?.slice(0, 20) || []) {
@@ -2447,7 +2558,7 @@ Output Example:
     const intel = await generateAIJSON(prompt)
 
     if (!intel.data) {
-      throw new Error("Competitive analysis failed")
+      throw new Error("No competitive intel was returned")
     }
 
     return {

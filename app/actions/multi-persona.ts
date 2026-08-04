@@ -105,25 +105,98 @@ export async function getBrokerageDashboard(_brokerageId?: string) {
 // TRANSACTION COORDINATOR FUNCTIONS
 // ============================================
 
+/**
+ * THE SPLIT-BRAIN THIS CLOSES.
+ *
+ * A TC assignment lived in TWO places that never talked to each other:
+ *
+ *   transactions.coordinator_id       written ONLY here, and this is the function
+ *                                     behind the transaction detail page's
+ *                                     "Assign TC" panel — the assignment UI an
+ *                                     agent actually reaches
+ *                                     (app/dashboard/transactions/[id]/assign-tc-panel.tsx:63).
+ *   transaction_assignments           written ONLY by
+ *                                     app/dashboard/settings/team/tc/tc-actions.ts,
+ *                                     and READ by the coordinator dashboard
+ *                                     (app/dashboard/coordinator/page.tsx:111).
+ *
+ * So a TC assigned from the deal page NEVER appeared on that TC's own dashboard —
+ * the assignment looked like it worked, the deal was simply invisible to the person
+ * assigned to it. Confirmed live: transaction_assignments and
+ * transactions.coordinator_id both hold 0 rows, i.e. neither side has ever seen the
+ * other's writes.
+ *
+ * The fix writes the junction the dashboard reads, in the same call. It is not a
+ * competing writer: the junction row is keyed by UNIQUE (transaction_id,
+ * coordinator_id), so this and tc-actions converge on the same row instead of
+ * racing, and other coordinators on the deal are demoted rather than deleted —
+ * transactions.coordinator_id is single-valued but the junction is not, and
+ * throwing away another TC's assignment to satisfy a column is not a fix.
+ *
+ * THE THROWING CONTRACT IS DELIBERATE AND MUST STAY. Its one caller discards the
+ * return value, which is only safe because failure arrives as an exception;
+ * scripts/discarded-outcome-guard.ts:194 asserts exactly that. Every new failure
+ * path below therefore throws too.
+ */
 export async function assignTransactionCoordinator(data: {
   transactionId: string
   coordinatorId: string
 }) {
+  const auth = await requireCaller()
+  if (!auth.ok) throw new Error(auth.error)
+
   const supabase = await createClient()
+
+  // The coordinator must be one of OURS. Without this a caller could hand any
+  // transaction to a coordinator id belonging to another brokerage.
+  const { data: coordinator, error: coordError } = await supabase
+    .from("transaction_coordinators")
+    .select("id, brokerage_id")
+    .eq("id", data.coordinatorId)
+    .eq("brokerage_id", auth.brokerageId)
+    .maybeSingle()
+  if (coordError) throw coordError
+  if (!coordinator) throw new Error("Coordinator not found in your brokerage")
 
   // Update transaction with coordinator
   const { error: txnError } = await supabase
     .from("transactions")
     .update({ coordinator_id: data.coordinatorId })
     .eq("id", data.transactionId)
+    .eq("brokerage_id", auth.brokerageId)
 
   if (txnError) throw txnError
 
+  // Demote any other coordinator on this deal — one primary, many possible helpers.
+  const { error: demoteError } = await supabase
+    .from("transaction_assignments")
+    .update({ is_primary: false })
+    .eq("transaction_id", data.transactionId)
+    .eq("brokerage_id", auth.brokerageId)
+    .neq("coordinator_id", data.coordinatorId)
+  if (demoteError) throw demoteError
+
+  // THE ROW THE COORDINATOR DASHBOARD READS.
+  const { error: junctionError } = await supabase
+    .from("transaction_assignments")
+    .upsert(
+      {
+        transaction_id: data.transactionId,
+        coordinator_id: data.coordinatorId,
+        brokerage_id: auth.brokerageId,
+        assigned_by: auth.userId, // users-class: transaction_assignments.assigned_by is a users id
+        is_primary: true,
+      },
+      { onConflict: "transaction_id,coordinator_id" }
+    )
+  if (junctionError) throw junctionError
+
   // active_transactions_count does not exist on transaction_coordinators.
   // max_active_deals is the cap — no counter column to update.
-  // We track load by querying coordinator_id on transactions instead.
 
   revalidatePath("/dashboard/transactions")
+  revalidatePath("/dashboard/coordinator")
+  revalidatePath("/dashboard/settings/team/tc")
   return { success: true }
 }
 
@@ -767,8 +840,32 @@ export async function calculateAgentBilling(data: {
 // CLIENT REVIEW FUNCTIONS
 // ============================================
 
+// DELIBERATELY LEFT UNWIRED — SECOND WRITER.
+//
+//   submitClientReview  ->  app/actions/multi-persona.ts:submitClientFeedback
+//
+// Same table (agent_reviews), same platform literal ("internal"), same
+// is_published=false, and the survivor is a strict SUPERSET: it also writes
+// `contact_id`, the column that ties a review to the client who left it. It is
+// WIRED, at app/portal/[contactId]/transaction/[transactionId]/client-feedback-widget.tsx:45.
+// agent_reviews already has a second client-side writer besides it
+// (app/actions/portal-lifetime.ts:91, the lifetime testimonial capture).
+//
+// Wiring this one would put a THIRD independent path into the same table with a
+// LESS complete row, so it is not wired. It is NOT deleted either: `leadId`,
+// `reviewCategories`, `wouldRecommend` and `reviewSource` are accepted here and
+// have no column anywhere in agent_reviews, so removing the function would not
+// merely relocate a capability — it would erase the only remaining record that
+// those four inputs were ever meant to be captured. Its schema-truth defects are
+// fixed below so it is not a trap for whoever finishes it:
+//   · brokerage_id is NOT NULL on agent_reviews AND is both halves of the RLS
+//     policy (qual and with_check are `brokerage_id = current_user_brokerage_id()`),
+//     so an omitted/undefined brokerageId made the insert unconditionally fail.
+//     It is now derived from the session, never from the caller's parameter.
+//   · contact_id was never written, so a review could not be traced to its author.
 export async function submitClientReview(data: {
   leadId?: string
+  contactId?: string
   transactionId?: string
   agentId: string
   rating: number
@@ -778,18 +875,24 @@ export async function submitClientReview(data: {
   reviewSource?: string
   brokerageId?: string
 }) {
+  const auth = await requireCaller()
+  if (!auth.ok) throw new Error(auth.error)
+
   const supabase = await createClient()
 
-  // client_reviews does not exist — use agent_reviews
+  // client_reviews does not exist — use agent_reviews.
+  // TENANT: the session's brokerage wins over the parameter. A caller-supplied
+  // brokerageId is spoofable and the RLS with_check would reject it anyway.
   const { data: review, error } = await supabase
     .from("agent_reviews")
     .insert({
-      brokerage_id: data.brokerageId,
+      brokerage_id: auth.brokerageId,
       agent_id: data.agentId,
+      contact_id: data.contactId ?? null,
       transaction_id: data.transactionId,
       rating: data.rating,
       review_text: data.reviewText,
-      platform: "internal",
+      platform: "internal", // one of the six values agent_reviews_platform_check allows
       is_published: false,
     })
     .select()
@@ -800,31 +903,60 @@ export async function submitClientReview(data: {
   return review
 }
 
+/**
+ * The CLIENT-FACING read of an agent's reputation: PUBLISHED reviews only.
+ *
+ * NOT a duplicate of lib/kernel/reputation.ts:loadReputationWorkspace, which is the
+ * AGENT-side workspace — it returns every review including unpublished drafts, plus
+ * review_requests and referrals, for the agent's own console. This one is what a
+ * client may see about their agent, and `is_published = true` is the whole point of
+ * the distinction.
+ *
+ * TENANT: createClient() means the anon key and RLS applies — agent_reviews_pol is
+ * `brokerage_id = current_user_brokerage_id()`, and a portal contact has a real
+ * users row (user_type 'contact', brokerage_id = the contact's brokerage; see
+ * lib/portal/portal-invite-core.ts), so the policy resolves for them. The explicit
+ * brokerage filter below is belt-and-braces so the query is still correct if this
+ * is ever moved onto a service client.
+ *
+ * Returns rather than throws: this is read by a page, and an exception here would
+ * blank the whole portal instead of one card.
+ */
 export async function getAgentReviews(agentId: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) {
+    return { reviews: [], metrics: { totalReviews: 0, averageRating: 0, recommendationRate: 0 }, error: auth.error }
+  }
+
   const supabase = await createClient()
 
-  // Use agent_reviews with is_published=true
   const { data, error } = await supabase
     .from("agent_reviews")
-    .select("*")
+    .select("id, agent_id, contact_id, rating, review_text, platform, reviewer_name, created_at")
     .eq("agent_id", agentId)
+    .eq("brokerage_id", auth.brokerageId)
     .eq("is_published", true)
     .order("created_at", { ascending: false })
 
-  if (error) throw error
+  if (error) {
+    console.error("[multi-persona] getAgentReviews read failed:", error.message)
+    return { reviews: [], metrics: { totalReviews: 0, averageRating: 0, recommendationRate: 0 }, error: error.message }
+  }
 
-  const avgRating =
-    data && data.length > 0
-      ? data.reduce((sum, r) => sum + (r.rating || 0), 0) / data.length
-      : 0
+  const rows = data ?? []
+  const avgRating = rows.length > 0 ? rows.reduce((sum, r) => sum + (r.rating || 0), 0) / rows.length : 0
 
   return {
-    reviews: data || [],
+    reviews: rows,
     metrics: {
-      totalReviews: data?.length || 0,
+      totalReviews: rows.length,
       averageRating: avgRating,
-      recommendationRate: 0, // would_recommend not in agent_reviews schema
+      // agent_reviews has no would_recommend column. A 4-or-5 star review is the
+      // closest HONEST proxy and it is labelled as that, not as a recommendation rate.
+      recommendationRate:
+        rows.length > 0 ? Math.round((rows.filter((r) => (r.rating ?? 0) >= 4).length / rows.length) * 100) : 0,
     },
+    error: null as string | null,
   }
 }
 
@@ -851,6 +983,31 @@ export async function saveClientJourneyPreferences(data: {
   decisionMakers?: string[]
   decisionTimeline?: string
 }) {
+  // DELIBERATELY LEFT UNWIRED — SECOND WRITER ON THE SAME ROW.
+  //
+  // property_interests is ONE ROW PER CONTACT (unique index uq_property_interests_contact
+  // on contact_id) and it already has a writer:
+  //
+  //   app/crm/contacts/[contactId]/search/search-client.tsx:422  handleSaveCriteria
+  //
+  // — the AGENT-side "save this buyer's criteria" upsert, which writes
+  // contact_id / brokerage_id / agent_user_id / min_price / max_price / bedrooms /
+  // bathrooms / property_type / preferred_locations / zip_codes onto that same row.
+  // This function writes preferred_locations too, so a client saving journey
+  // preferences would silently overwrite the neighbourhoods the agent had saved,
+  // with no second row to hold both opinions.
+  //
+  // It also JSON.stringify()s a nine-key blob into `notes`, a free-text column the
+  // agent's contact page (app/crm/contacts/[contactId]/page.tsx:88) reads and shows
+  // as prose — so wiring it would print raw JSON into the agent's view of the buyer.
+  //
+  // NOT DELETED: there is no other home in the schema for sellingTimeline /
+  // sellingMotivation / decisionMakers / decisionTimeline / preferredContactTimes,
+  // and this is the only place they are named. The tenant defect is fixed so the
+  // row it would write is at least anchored (see brokerage_id below).
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = await createClient()
 
   if (!data.contactId) {
@@ -867,6 +1024,11 @@ export async function saveClientJourneyPreferences(data: {
     .upsert(
       {
         contact_id: data.contactId,
+        // TENANT ANCHOR. Omitting this wrote brokerage_id NULL, and
+        // property_interests_tenant_select is
+        //   (brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id())
+        // — an unanchored row is readable by EVERY tenant on the platform.
+        brokerage_id: auth.brokerageId,
         must_have_features: data.mustHaveFeatures,
         keywords: [
           ...(data.dealBreakers || []),
@@ -897,21 +1059,42 @@ export async function saveClientJourneyPreferences(data: {
   return prefs
 }
 
+/**
+ * The client's stated criteria as they stand on file.
+ *
+ * A READ, so it is not blocked by the second-writer verdict above — the row exists
+ * (written by the agent-side handleSaveCriteria) and the client had no way to see
+ * what their agent had recorded for them.
+ *
+ * AUTHORIZATION: property_interests_tenant_select admits any row whose brokerage
+ * matches the caller's, so RLS alone lets one portal contact read ANOTHER portal
+ * contact's criteria — both are `user_type: 'contact'` rows in the same brokerage.
+ * requireContactAccess is what actually stops that: it proves the caller is either
+ * this contact or same-brokerage staff before the query runs.
+ */
 export async function getClientJourneyPreferences(
   leadId?: string,
   contactId?: string
 ) {
-  const supabase = await createClient()
-
   if (!contactId) return null
+
+  const { requireContactAccess } = await import("@/lib/portal/require-contact-access")
+  const access = await requireContactAccess(contactId)
+  if (!access.ok) return null
+
+  const supabase = await createClient()
 
   const { data, error } = await supabase
     .from("property_interests")
     .select("*")
     .eq("contact_id", contactId)
-    .single()
+    .eq("brokerage_id", access.brokerageId)
+    .maybeSingle() // .single() made "no criteria on file yet" an exception (PGRST116)
 
-  if (error && error.code !== "PGRST116") throw error
+  if (error) {
+    console.error("[multi-persona] getClientJourneyPreferences read failed:", error.message)
+    return null
+  }
 
   return data
 }
@@ -1372,51 +1555,147 @@ export async function bulkUpdateMilestones(
   }
 }
 
-export async function getCoordinatorDashboard(coordinatorId: string) {
+/**
+ * THE ONE COORDINATOR WORKLOAD READ.
+ *
+ * It used to see only `transactions.coordinator_id` while the coordinator dashboard
+ * read only `transaction_assignments` — the two halves of the split-brain documented
+ * on assignTransactionCoordinator above. Either source alone hides real work from the
+ * TC, so this reads BOTH and unions them by transaction id. Fixing the writer stops
+ * NEW divergence; reading the union is what makes deals assigned before the fix
+ * visible at all.
+ *
+ * TENANT: every statement carries `brokerage_id = auth.brokerageId`, and the
+ * coordinator lookup is the authorization gate — a coordinatorId from another
+ * brokerage resolves to null and the read stops there rather than enumerating
+ * someone else's pipeline.
+ */
+export async function getCoordinatorDashboard(
+  coordinatorId: string,
+  options?: { deadlineWindowDays?: number },
+) {
+  const empty = {
+    coordinator: null as any,
+    transactions: [] as any[],
+    transactionIds: [] as string[],
+    deadlines: [] as any[],
+    incompleteMilestones: [] as any[],
+    error: null as string | null,
+  }
+
   const auth = await requireCaller()
-  if (!auth.ok) return { coordinator: null, transactions: [], deadlines: [], incompleteMilestones: [] }
+  if (!auth.ok) return { ...empty, error: auth.error }
 
   const supabase = await createClient()
 
-  const { data: coordinator } = await supabase
+  const { data: coordinator, error: coordError } = await supabase
     .from("transaction_coordinators")
     .select("*")
     .eq("id", coordinatorId)
     .eq("brokerage_id", auth.brokerageId)
-    .single()
+    .maybeSingle() // .single() turned "no such coordinator" into a thrown error
 
-  if (!coordinator) return { coordinator: null, transactions: [], deadlines: [], incompleteMilestones: [] }
+  if (coordError) {
+    console.error("[multi-persona] getCoordinatorDashboard coordinator read failed:", coordError.message)
+    return { ...empty, error: coordError.message }
+  }
+  if (!coordinator) return empty
 
-  const { data: transactions } = await supabase
-    .from("transactions")
-    .select(`
-      *,
-      transaction_milestones(*)
-    `)
+  // SOURCE A — the junction the settings page writes and the dashboard reads.
+  const { data: assignments, error: assignError } = await supabase
+    .from("transaction_assignments")
+    .select("id, is_primary, assigned_at, transaction_id")
     .eq("coordinator_id", coordinatorId)
+    .eq("brokerage_id", auth.brokerageId)
+
+  if (assignError) {
+    console.error("[multi-persona] getCoordinatorDashboard assignment read failed:", assignError.message)
+    return { ...empty, coordinator, error: assignError.message }
+  }
+
+  const assignmentByTxn = new Map(
+    (assignments ?? []).map((a) => [
+      a.transaction_id as string,
+      { assignment_id: a.id as string, is_primary: a.is_primary as boolean, assigned_at: a.assigned_at as string },
+    ]),
+  )
+
+  // SOURCE B — the column the deal page's Assign TC panel writes.
+  const { data: directTxns, error: directError } = await supabase
+    .from("transactions")
+    .select("id")
+    .eq("coordinator_id", coordinatorId)
+    .eq("brokerage_id", auth.brokerageId)
+
+  if (directError) {
+    console.error("[multi-persona] getCoordinatorDashboard direct read failed:", directError.message)
+    return { ...empty, coordinator, error: directError.message }
+  }
+
+  const unionIds = Array.from(
+    new Set([...assignmentByTxn.keys(), ...(directTxns ?? []).map((t) => t.id as string)]),
+  )
+  if (unionIds.length === 0) return { ...empty, coordinator }
+
+  const { data: transactionRows, error: txnError } = await supabase
+    .from("transactions")
+    .select(`*, transaction_milestones(*)`)
+    .in("id", unionIds)
     .eq("brokerage_id", auth.brokerageId)
     .not("status", "in", `(${TRANSACTION_STATUSES_TERMINAL.join(",")})`)
     .order("close_date")
 
-  const transactionIds = transactions?.map((t) => t.id) || []
+  if (txnError) {
+    console.error("[multi-persona] getCoordinatorDashboard transaction read failed:", txnError.message)
+    return { ...empty, coordinator, error: txnError.message }
+  }
 
-  const { data: deadlines } = await supabase
+  const transactions = (transactionRows ?? []).map((t) => ({
+    ...t,
+    ...(assignmentByTxn.get(t.id as string) ?? { assignment_id: null, is_primary: true, assigned_at: null }),
+  }))
+  const transactionIds = transactions.map((t) => t.id as string)
+
+  if (transactionIds.length === 0) {
+    return { ...empty, coordinator }
+  }
+
+  const today = new Date().toISOString().split("T")[0]
+  let deadlineQuery = supabase
     .from("transaction_deadlines")
     .select("*, transactions(property_address)")
     .in("transaction_id", transactionIds)
     .in("status", [...DEADLINE_OPEN_STATUSES])
-    .gte("deadline_date", new Date().toISOString().split("T")[0])
-    .order("deadline_date")
-    .limit(20)
+    .gte("deadline_date", today)
+  if (options?.deadlineWindowDays) {
+    const until = new Date(Date.now() + options.deadlineWindowDays * 24 * 60 * 60 * 1000)
+      .toISOString()
+      .split("T")[0]
+    deadlineQuery = deadlineQuery.lte("deadline_date", until)
+  }
+  const { data: deadlines, error: deadlineError } = await deadlineQuery.order("deadline_date").limit(50)
+  if (deadlineError) {
+    console.error("[multi-persona] getCoordinatorDashboard deadline read failed:", deadlineError.message)
+  }
 
-  const { data: incompleteMilestones } = await supabase
+  const { data: incompleteMilestones, error: milestoneError } = await supabase
     .from("transaction_milestones")
     .select("*, transactions(property_address)")
     .in("transaction_id", transactionIds)
     .in("status", [...MILESTONE_OPEN_STATUSES])
     .order("target_date")
+  if (milestoneError) {
+    console.error("[multi-persona] getCoordinatorDashboard milestone read failed:", milestoneError.message)
+  }
 
-  return { coordinator, transactions, deadlines, incompleteMilestones }
+  return {
+    coordinator,
+    transactions,
+    transactionIds,
+    deadlines: deadlines ?? [],
+    incompleteMilestones: incompleteMilestones ?? [],
+    error: deadlineError?.message ?? milestoneError?.message ?? null,
+  }
 }
 
 /** Lenders are vendors — the loan pipeline for a lender VENDOR (vendors.id).

@@ -4,7 +4,6 @@ import { Progress } from "@/components/ui/progress"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { createClient } from "@/lib/supabase/server"
-import { MILESTONE_OPEN_STATUSES, DEADLINE_OPEN_STATUSES } from "@/lib/transactions/coordination-status"
 import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity"
 import { toCanonicalRoleOrDefault } from "@/lib/security"
@@ -30,7 +29,7 @@ import Link from "next/link"
 import { TcFastActionPanel } from "./components/tc-fast-action-panel"
 import { ClosingReadinessGate } from "./components/closing-readiness-gate"
 import { TRANSACTION_STAGES } from "@/lib/transactions/transaction-stages"
-import { predictDeadlineRisks } from "@/app/actions/multi-persona"
+import { predictDeadlineRisks, getCoordinatorDashboard } from "@/app/actions/multi-persona"
 import { LearnThisWeekCard } from "@/app/components/learning/learn-this-week-card"
 
 export default async function CoordinatorDashboard({
@@ -106,47 +105,17 @@ export default async function CoordinatorDashboard({
     )
   }
 
-  // Fetch assigned transactions via transaction_assignments
-  const { data: assignments } = await supabase
-    .from("transaction_assignments")
-    .select(
-      `
-      id,
-      is_primary,
-      assigned_at,
-      transaction_id,
-      transactions (
-        id,
-        property_address,
-        close_date,
-        status,
-        stage,
-        purchase_price,
-        health_score,
-        agent_id,
-        contact_id,
-        deal_type,
-        buyer_contact_id,
-        seller_contact_id,
-        buyer_agent_id,
-        seller_agent_id,
-        created_at
-      )
-    `
-    )
-    .eq("coordinator_id", coordinatorId)
-
-  // Extract transaction IDs and full transaction data
-  const transactionIds = assignments?.map((a) => a.transaction_id).filter(Boolean) || []
-  const transactions =
-    assignments
-      ?.map((a: any) => ({
-        ...a.transactions,
-        assignment_id: a.id,
-        is_primary: a.is_primary,
-        assigned_at: a.assigned_at,
-      }))
-      .filter((t: any) => t && t.id && t.status !== "closed" && t.status !== "cancelled") || []
+  // THE ONE WORKLOAD READ. This page used to query transaction_assignments
+  // inline, which meant it could not see a TC assigned from the deal page's
+  // "Assign TC" panel — that path writes transactions.coordinator_id and nothing
+  // else, so those deals were invisible to the very coordinator assigned to them.
+  // getCoordinatorDashboard reads BOTH sources, unions them, scopes every
+  // statement by brokerage, and reports read failures instead of resolving them
+  // to an empty pipeline that looks like "no work today".
+  const coordinatorWorkload = await getCoordinatorDashboard(coordinatorId, { deadlineWindowDays: 14 })
+  const workloadError = coordinatorWorkload.error
+  const transactions = coordinatorWorkload.transactions
+  const transactionIds = coordinatorWorkload.transactionIds
 
   // Fetch deal health scores for assigned transactions
   const { data: healthScores } = transactionIds.length
@@ -165,29 +134,9 @@ export default async function CoordinatorDashboard({
     }
   })
 
-  // Fetch upcoming deadlines for assigned transactions
-  const today = new Date().toISOString().split("T")[0]
-  const twoWeeksOut = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
-  const { data: deadlines } = transactionIds.length
-    ? await supabase
-        .from("transaction_deadlines")
-        .select("*, transactions(property_address)")
-        .in("transaction_id", transactionIds)
-        .in("status", [...DEADLINE_OPEN_STATUSES])
-        .gte("deadline_date", today)
-        .lte("deadline_date", twoWeeksOut)
-        .order("deadline_date")
-    : { data: [] }
-
-  // Fetch incomplete milestones
-  const { data: incompleteMilestones } = transactionIds.length
-    ? await supabase
-        .from("transaction_milestones")
-        .select("*, transactions(property_address)")
-        .in("transaction_id", transactionIds)
-        .in("status", [...MILESTONE_OPEN_STATUSES])
-        .order("target_date")
-    : { data: [] }
+  // Deadlines (14-day window) and open milestones come from the same scoped read.
+  const deadlines = coordinatorWorkload.deadlines
+  const incompleteMilestones = coordinatorWorkload.incompleteMilestones
 
   // Calculate overdue milestones
   const overdueMilestones = incompleteMilestones?.filter((m) => {
@@ -230,7 +179,8 @@ export default async function CoordinatorDashboard({
   )
 
   // Deadline risk prediction — scoped to the same transaction IDs the dashboard
-  // already fetched via transaction_assignments (not transactions.coordinator_id)
+  // already resolved by getCoordinatorDashboard (the UNION of transaction_assignments
+  // and transactions.coordinator_id — neither source alone sees the whole workload)
   const { atRiskTransactions, atRiskCount } = await predictDeadlineRisks(coordinatorId, transactionIds)
 
   // Pre-compute per-transaction risk details for display
@@ -279,6 +229,16 @@ export default async function CoordinatorDashboard({
           </Badge>
         </div>
       </div>
+
+      {/* A refused or failed workload read is NOT "no deals today". Say so. */}
+      {workloadError && (
+        <Alert className="border-amber-200 bg-amber-50">
+          <AlertTriangle className="h-4 w-4 text-amber-600" />
+          <AlertDescription className="text-amber-800">
+            Your assigned deals could not be loaded, so this page may be incomplete: {workloadError}
+          </AlertDescription>
+        </Alert>
+      )}
 
       {/* Today's Focus — AI Brief */}
       <TodaysFocusCard brief={tcBrief} />

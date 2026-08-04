@@ -7,7 +7,8 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/app/components/ui/avatar"
 import { Badge } from "@/app/components/ui/badge"
 import { Button } from "@/app/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
-import { Phone, Mail, MessageSquare, Building2, CreditCard, FileCheck, ArrowLeft } from "lucide-react"
+import { Phone, Mail, MessageSquare, Building2, CreditCard, FileCheck, ArrowLeft, Star } from "lucide-react"
+import { getAgentReviews } from "@/app/actions/multi-persona"
 
 export default async function TeamPage({
   params,
@@ -92,6 +93,17 @@ export default async function TeamPage({
 
   const contactName = contact.first_name || "Guest"
 
+  // WHAT OTHER CLIENTS SAID. agent_reviews already collects these — the portal
+  // testimonial capture (app/actions/portal-lifetime.ts) and the transaction
+  // feedback widget both write them, and the agent publishes the ones they want
+  // shown (is_published). Nothing on the CLIENT side had ever read them back, so a
+  // published review reached the agent's own console and the public agent page and
+  // stopped there. contact.agent_id is AGENTS-class, which is exactly what
+  // agent_reviews.agent_id FKs — no identity hop.
+  const agentReviews = contact.agent_id
+    ? await getAgentReviews(contact.agent_id)
+    : { reviews: [], metrics: { totalReviews: 0, averageRating: 0, recommendationRate: 0 }, error: null }
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -165,6 +177,50 @@ export default async function TeamPage({
                 </div>
               </div>
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* What other clients said — PUBLISHED reviews only. A read failure says so
+          rather than rendering as "no reviews", which would libel a good agent. */}
+      {contact.agent_id && (agentReviews.reviews.length > 0 || agentReviews.error) && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex flex-wrap items-center gap-2">
+              <Star className="h-5 w-5 text-amber-500" />
+              What other clients say
+              {agentReviews.metrics.totalReviews > 0 && (
+                <Badge variant="secondary">
+                  {agentReviews.metrics.averageRating.toFixed(1)} average · {agentReviews.metrics.totalReviews} review
+                  {agentReviews.metrics.totalReviews !== 1 ? "s" : ""}
+                </Badge>
+              )}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {agentReviews.error ? (
+              <p className="text-sm text-amber-700">
+                Reviews could not be loaded right now: {agentReviews.error}
+              </p>
+            ) : (
+              agentReviews.reviews.slice(0, 5).map((r: any) => (
+                <div key={r.id} className="rounded-lg border p-3">
+                  <div className="flex items-center gap-1">
+                    {[1, 2, 3, 4, 5].map((n) => (
+                      <Star
+                        key={n}
+                        className={`h-4 w-4 ${n <= (r.rating ?? 0) ? "fill-amber-400 text-amber-400" : "text-muted-foreground/30"}`}
+                      />
+                    ))}
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      {r.reviewer_name || "A past client"}
+                      {r.created_at ? ` · ${new Date(r.created_at).toLocaleDateString()}` : ""}
+                    </span>
+                  </div>
+                  {r.review_text && <p className="mt-2 text-sm">{r.review_text}</p>}
+                </div>
+              ))
+            )}
           </CardContent>
         </Card>
       )}
