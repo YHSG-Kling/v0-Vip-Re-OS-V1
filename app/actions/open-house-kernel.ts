@@ -135,6 +135,9 @@ export async function createOpenHouseAttendeeFromContactAction(input: {
   check_in_method?: string
   interest_level?: number
   notes?: string
+  /** TCPA consent, carried through from the check-in form. Without it the
+   *  kernel records the attendance but retains no phone number. */
+  tcpa_consent?: boolean
 }) {
   const scoped = await resolveOpenHouseScope(input.open_house_id)
   if (!scoped.ok) return { success: false as const, attendee_id: null, error: scoped.error }
@@ -150,6 +153,7 @@ export async function createOpenHouseAttendeeFromContactAction(input: {
     check_in_method: input.check_in_method,
     interest_level: input.interest_level,
     notes: input.notes,
+    tcpa_consent: input.tcpa_consent,
   })
 }
 

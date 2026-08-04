@@ -505,77 +505,30 @@ export async function sendOpenHouseInvites(openHouseId: string): Promise<{
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RECORD ATTENDEE (check-in)
+// RECORD ATTENDEE — REMOVED. Both of its branches have named, working homes.
+//
+// It could never insert an attendee at all: its payload omits contact_id, and
+// open_house_attendees.contact_id is NOT NULL — probed live with the exact
+// insert shape and refused with SQLSTATE 23502. The table holds zero rows.
+//
+//   authenticated agent walk-in  ->  lib/kernel/open-house.ts
+//                                    resolveOrCreateOpenHouseContact +
+//                                    createOpenHouseAttendeeFromContact,
+//                                    wired to /dashboard/open-houses. Supplies
+//                                    contact_id and the tenant stamp this one
+//                                    omitted.
+//   public QR / kiosk check-in   ->  app/api/open-house/attend/route.ts, which
+//                                    resolves the contact, upserts on
+//                                    (event_id, contact_id) and writes the
+//                                    lifecycle event. It REQUIRES tcpaConsent
+//                                    and answers 400 without it.
+//
+// The one thing this function did that the kernel did not was gate phone
+// storage on TCPA consent. That was MOVED onto createOpenHouseAttendeeFromContact
+// (and surfaced as a consent checkbox on the walk-in form) BEFORE this was
+// removed — otherwise retiring it would have started storing walk-in mobile
+// numbers with consent recorded as false.
 // ─────────────────────────────────────────────────────────────────────────────
-
-export async function recordAttendee(
-  openHouseId: string,
-  attendeeData: {
-    name: string
-    email?: string
-    phone?: string
-    workingWithAgent?: boolean
-    interestLevel?: string
-    notes?: string
-    tcpaConsent?: boolean
-  }
-): Promise<{ success: boolean; attendeeId?: string; error?: string }> {
-  try {
-    const ctx = await getAgentContext()
-    const service = createServiceClient()
-
-    // Validate event exists
-    const { data: event } = await service
-      .from("open_house_events")
-      .select("id, brokerage_id, agent_id, status")
-      .eq("id", openHouseId)
-      .maybeSingle()
-
-    if (!event) return { success: false, error: "Event not found" }
-
-    if (ctx.isAuthenticated) {
-      // Authenticated callers must belong to the same brokerage as the event
-      if (!ctx.brokerageId || ctx.brokerageId !== event.brokerage_id) {
-        return { success: false, error: "Unauthorized" }
-      }
-      // Agents can only record attendees for their own events
-      if (ctx.userType === "agent" && ctx.agentId && ctx.agentId !== event.agent_id) {
-        return { success: false, error: "Unauthorized" }
-      }
-    } else {
-      // Unauthenticated (public QR check-in): only allow for active events
-      const activeStatuses = ["active", "live", "scheduled", "open"]
-      if (!activeStatuses.includes(event.status ?? "")) {
-        return { success: false, error: "Event is not accepting check-ins" }
-      }
-    }
-
-    const { data, error } = await service
-      .from("open_house_attendees")
-      .insert({
-        event_id: openHouseId,
-        brokerage_id: event.brokerage_id,
-        name: attendeeData.name,
-        email: attendeeData.email ?? null,
-        phone: attendeeData.tcpaConsent ? (attendeeData.phone ?? null) : null,
-        working_with_agent: attendeeData.workingWithAgent ?? false,
-        interest_level: attendeeData.interestLevel ?? null,
-        notes: attendeeData.notes ?? null,
-        check_in_time: new Date().toISOString(),
-        tcpa_consent: attendeeData.tcpaConsent ?? false,
-      })
-      .select("id")
-      .maybeSingle()
-
-    if (error) return { success: false, error: error.message }
-
-    revalidatePath("/dashboard/open-houses")
-    return { success: true, attendeeId: data?.id }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "Unknown error"
-    return { success: false, error: msg }
-  }
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET AGENT LISTINGS (for the schedule dialog dropdown)

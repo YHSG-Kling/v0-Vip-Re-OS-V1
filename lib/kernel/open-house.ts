@@ -272,6 +272,21 @@ export async function createOpenHouseAttendeeFromContact(input: {
   check_in_method?: string
   interest_level?: number
   notes?: string
+  /**
+   * TCPA CONSENT — MOVED HERE FROM app/actions/open-house.ts:recordAttendee,
+   * which is being retired. That function gated phone storage on consent
+   * (`phone: tcpaConsent ? phone : null`) and this one did not, so repointing
+   * the walk-in surface at the kernel would have started storing a walk-in's
+   * mobile number with tcpa_consent recorded as FALSE — capturing a number the
+   * OS then knows it has no permission to dial or text. The column is NOT NULL
+   * DEFAULT false, so omitting it does not fail loudly; it just quietly records
+   * the absence of consent next to the number it should have suppressed.
+   *
+   * The rule is the same one the public kiosk route enforces: no consent, no
+   * phone number retained. Name, email and the attendance record are all still
+   * captured — declining consent costs the lead nothing except the phone.
+   */
+  tcpa_consent?: boolean
 }): Promise<CreateAttendeeResult> {
   const supabase = createServiceClient()
 
@@ -287,6 +302,7 @@ export async function createOpenHouseAttendeeFromContact(input: {
       check_in_method = "manual",
       interest_level = 3,
       notes,
+      tcpa_consent = false,
     } = input
 
     // Validate required fields
@@ -314,7 +330,12 @@ export async function createOpenHouseAttendeeFromContact(input: {
         brokerage_id,
         name: `${first_name.trim()} ${(last_name || "").trim()}`.trim(),
         email: email ? email.trim().toLowerCase() : null,
-        phone: phone ? phone.replace(/\D/g, "") : null,
+        // NO CONSENT, NO NUMBER. Storing the digits while recording
+        // tcpa_consent false is the worst of both: the OS holds a number it is
+        // not permitted to dial or text, and every downstream consent check
+        // reads false and suppresses it anyway. Drop it at the write.
+        phone: tcpa_consent && phone ? phone.replace(/\D/g, "") : null,
+        tcpa_consent,
         // interest_level is CHECK-constrained (hot|warm|cold|no_interest); map the numeric 1-5 input.
         interest_level:
           interest_level == null ? "warm"

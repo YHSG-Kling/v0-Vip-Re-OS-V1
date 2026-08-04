@@ -159,6 +159,7 @@ function AttendeesTab({ eventId }: { eventId: string }) {
     lastName: "",
     email: "",
     phone: "",
+    tcpaConsent: false,
     interestLevel: "warm",
     notes: "",
   })
@@ -223,6 +224,7 @@ function AttendeesTab({ eventId }: { eventId: string }) {
         check_in_method: "manual",
         interest_level: interestNumeric(addForm.interestLevel),
         notes: addForm.notes.trim() || undefined,
+        tcpa_consent: addForm.tcpaConsent,
       })
       if (!attendeeRes.success || !attendeeRes.attendee_id) {
         setAddError(
@@ -248,7 +250,7 @@ function AttendeesTab({ eventId }: { eventId: string }) {
           ? "Checked in — new contact created"
           : "Checked in — matched an existing contact",
       )
-      setAddForm({ firstName: "", lastName: "", email: "", phone: "", interestLevel: "warm", notes: "" })
+      setAddForm({ firstName: "", lastName: "", email: "", phone: "", tcpaConsent: false, interestLevel: "warm", notes: "" })
       setShowAddForm(false)
       await refreshAttendees()
     })
@@ -387,6 +389,28 @@ function AttendeesTab({ eventId }: { eventId: string }) {
               />
             </div>
           </div>
+          {/* TCPA CONSENT — the control that governs the field above it.
+              This moved off app/actions/open-house.ts:recordAttendee, which
+              gated phone storage on consent and is now retired. Unchecked, the
+              kernel still records the check-in and the contact; it just keeps
+              no phone number, because a number the OS may not dial or text is
+              a liability rather than a lead. */}
+          <label className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-2">
+            <input
+              type="checkbox"
+              checked={addForm.tcpaConsent}
+              onChange={(e) => setAddForm((f) => ({ ...f, tcpaConsent: e.target.checked }))}
+              className="mt-0.5 h-3.5 w-3.5 shrink-0"
+            />
+            <span className="text-[11px] leading-snug text-amber-900">
+              This visitor gave permission to be called or texted at the number above.
+              {!addForm.tcpaConsent && addForm.phone.trim() ? (
+                <strong className="block font-semibold">
+                  Without this, the check-in is still recorded — the phone number is not kept.
+                </strong>
+              ) : null}
+            </span>
+          </label>
           <div>
             <Label className="text-xs">Interest Level</Label>
             <Select

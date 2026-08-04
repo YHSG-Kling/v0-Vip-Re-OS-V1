@@ -296,6 +296,8 @@ const F = {
   referralWriter: "app/actions/referrals/referral-actions.ts",
   reviewWriterA: "app/actions/multi-persona.ts",
   reviewWriterB: "app/actions/portal-lifetime.ts",
+  ohLegacy: "app/actions/open-house.ts",
+  ohKiosk: "app/api/open-house/attend/route.ts",
 }
 
 const S: Record<keyof typeof F, string> = Object.fromEntries(
@@ -549,6 +551,53 @@ function staticLayer(): void {
       /export\s+async\s+function\s+recordReviewAction\b/.test(S.repAction) &&
       /export\s+async\s+function\s+createReferralRequestAction\b/.test(S.repAction) &&
       /export\s+async\s+function\s+advanceReferralStatusAction\b/.test(S.repAction))
+  }
+
+  console.log("\n[TCPA · the capability moved before the duplicate was removed]")
+  {
+    const insertPayload = functionBody(S.ohKernel, "createOpenHouseAttendeeFromContact")
+
+    // The CONSTRUCT, not the spelling: the phone that reaches the insert must be
+    // guarded by the consent flag. A payload that writes phone unconditionally
+    // fails even if the word "tcpa" appears elsewhere in the function.
+    check("TCPA-KERNEL-GATE", "the kernel drops the phone number when consent was not given",
+      /phone:\s*tcpa_consent\s*&&/.test(insertPayload))
+    check("TCPA-KERNEL-PERSISTS", "the kernel records the consent decision itself",
+      /\btcpa_consent,/.test(insertPayload))
+    check("TCPA-KERNEL-DEFAULT-DENY", "consent defaults to withheld, never to granted",
+      /tcpa_consent\s*=\s*false/.test(insertPayload))
+
+    // The action layer must carry it through; a dropped field silently
+    // re-defaults to false at the kernel and the checkbox becomes decorative.
+    const actionBody = functionBody(S.ohAction, "createOpenHouseAttendeeFromContactAction")
+    check("TCPA-ACTION-THREADED", "the action forwards consent rather than dropping it",
+      /tcpa_consent:\s*input\.tcpa_consent/.test(actionBody))
+
+    // The surface must actually collect it and send what it collected.
+    const addHandler = functionBody(S.ohSurface, "handleAdd")
+    check("TCPA-SURFACE-COLLECTS", "the walk-in form has a consent control bound to state",
+      /tcpaConsent:\s*e\.target\.checked/.test(S.ohSurface))
+    check("TCPA-SURFACE-SENDS", "the check-in sends the consent the user actually gave",
+      /tcpa_consent:\s*addForm\.tcpaConsent/.test(addHandler))
+
+    // The duplicate is gone, and the homes that replaced it are real.
+    check("TCPA-LEGACY-RETIRED", "recordAttendee is removed, not merely unreferenced",
+      !/export\s+async\s+function\s+recordAttendee\b/.test(S.ohLegacy))
+    // Sliced, not grepped: the contact_id must be in the ATTENDEE insert payload
+    // (the route also writes contacts and lifecycle_events, and a match in
+    // either of those would prove nothing about the attendee row), and the
+    // consent check must be a REFUSAL, not merely a mention of the token.
+    const kioskAttendeeInsert = (() => {
+      const i = S.ohKiosk.indexOf('.from("open_house_attendees")')
+      return i === -1 ? "" : S.ohKiosk.slice(i, i + 400)
+    })()
+    check("TCPA-KIOSK-HOME-EXISTS", "the public kiosk home supplies contact_id on the attendee row itself",
+      /contact_id:/.test(kioskAttendeeInsert))
+    check("TCPA-KIOSK-REFUSES", "the public kiosk REFUSES a check-in with no consent, it does not just note it",
+      /if\s*\(\s*!\s*tcpaConsent\s*\)[\s\S]{0,200}?\b400\b/.test(S.ohKiosk))
+    check("TCPA-AGENT-HOME-EXISTS", "the authenticated home still exists and supplies contact_id",
+      /export\s+async\s+function\s+createOpenHouseAttendeeFromContact\b/.test(S.ohKernel) &&
+      /contact_id,/.test(insertPayload))
   }
 
   console.log("\n[compliance · no new egress]")
