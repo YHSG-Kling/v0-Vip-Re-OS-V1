@@ -31,6 +31,7 @@ import { isValidUUID } from "@/lib/validations"
 import { resolveProvider } from "@/lib/kernel/providers"
 import { transitionLifecycle, processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
+import { getStageDefinition, type ListingStage } from "@/lib/listing-lifecycle/lifecycle-definitions"
 import {
   ledgerMechanismForReason,
   recipientTypeForReason,
@@ -123,6 +124,82 @@ async function authorizeListingAction(
   if (listing.brokerage_id !== auth.brokerageId) return { ok: false, error: "listing_not_in_your_brokerage" }
 
   return { ok: true, userId: auth.userId, brokerageId: auth.brokerageId }
+}
+
+/**
+ * THE STAGE PRECONDITION — read the listing's CURRENT stage, not a pile of events.
+ *
+ * Four stage-advancing actions each hand-rolled their own gate, and all four were
+ * broken in the same two ways:
+ *
+ *   1. THEY MATCHED AN EVENT TYPE NOTHING WRITES. Each queried lifecycle_events
+ *      for `event_type = KernelEvent.LISTING_STAGE_CHANGED` — the bare
+ *      'listing_stage_changed'. But transitionLifecycle, the ONLY writer of these
+ *      rows, stores `lifecycle.${eventType}` (lib/kernel/lifecycle.ts:218). The
+ *      prefixed value never equals the bare one, so every one of these gates
+ *      matched ZERO rows for every listing, and markMLSReady /
+ *      approveOpenHouseMarketing / prepareComingSoonAssets / submitToMLSAdmin
+ *      could NEVER SUCCEED. Not "rarely" — never.
+ *
+ *   2. THEY ASKED THE WRONG QUESTION. "Has an event of this type ever been
+ *      recorded" is not "is the listing in the required state". markMLSReady
+ *      counted rows of EITHER type and accepted `length >= 2`, so once the prefix
+ *      was corrected two ordinary stage changes would have satisfied a gate whose
+ *      stated meaning is "media approved AND coming soon activated". Fixing only
+ *      the prefix would have turned a gate that blocks everything into a gate
+ *      that blocks nothing.
+ *
+ * And nothing downstream catches it: transitionLifecycle writes the state column
+ * UNCONDITIONALLY and records `fromState` in metadata as a claim it never
+ * verifies. These pre-gates are the only enforcement of stage order that exists,
+ * and listing_stage_machine transitions also sync `listings.status`, so a listing
+ * that skipped ahead goes publicly live out of order.
+ *
+ * So the precondition is read from the entity's own stage column and compared
+ * against `allowedFrom` in LISTING_LIFECYCLE_STAGES — the authoritative table
+ * that already declares which stage each target may be entered from. Deriving the
+ * gate from the definition means the two cannot drift; adding a stage updates
+ * both at once.
+ */
+async function requireCurrentListingStage(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  listingId: string,
+  allowed: readonly ListingStage[],
+  requirementLabel: string,
+): Promise<{ ok: true; from: ListingStage } | { ok: false; error: string }> {
+  const { data: listing, error } = await supabase
+    .from("listings")
+    .select("lifecycle_stage")
+    .eq("id", listingId)
+    .maybeSingle()
+
+  // A gate that could not READ is not a gate that passed. supabase-js resolves a
+  // failed query, so without this the refusal would be indistinguishable from a
+  // listing sitting in the wrong stage — and the message would send the agent
+  // hunting for a stage problem that does not exist.
+  if (error) return { ok: false, error: `stage_check_failed:${error.message}` }
+  if (!listing) return { ok: false, error: "listing_not_found" }
+
+  const current = (listing.lifecycle_stage as ListingStage | null) ?? null
+  if (!current) return { ok: false, error: `listing_has_no_stage; ${requirementLabel} requires ${allowed.join(" or ")}` }
+  if (!allowed.includes(current)) {
+    return { ok: false, error: `listing is ${current}; ${requirementLabel} requires ${allowed.join(" or ")}` }
+  }
+  return { ok: true, from: current }
+}
+
+/**
+ * For an action that ADVANCES the stage: the listing must be in one of the stages
+ * the target declares it may be entered from.
+ */
+async function requireListingStage(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  listingId: string,
+  target: ListingStage,
+): Promise<{ ok: true; from: ListingStage } | { ok: false; error: string }> {
+  const def = getStageDefinition(target)
+  if (!def) return { ok: false, error: `unknown_stage:${target}` }
+  return requireCurrentListingStage(supabase, listingId, def.allowedFrom, target)
 }
 
 export async function scheduleListingAppointment(params: {
@@ -386,18 +463,25 @@ export async function initiateListingAgreement(params: {
   if (!scope.ok) return { success: false, error: scope.error }
   const { userId, brokerageId } = scope
 
-  // Gate: Requires seller.decision.accepted — check lifecycle_events (activities has no listing_id)
-  const { data: decisionEvent } = await supabase
-    .from("lifecycle_events")
-    .select("id")
-    .eq("entity_id", listingId)
-    .eq("event_type", "seller.decision.accepted")
-    .limit(1)
-    .maybeSingle()
-
-  if (!decisionEvent) {
-    return { success: false, error: "Seller decision not accepted" }
-  }
+  // Gate: the seller must have ACCEPTED.
+  //
+  // This read used to look in lifecycle_events for event_type
+  // 'seller.decision.accepted' — a row nothing has ever written there.
+  // recordSellerDecision writes that string as an ACTIVITY_TYPE into `activities`
+  // (via logLifecycleActivity); the read was moved to lifecycle_events and the
+  // write was not, and the comment that used to sit here ("activities has no
+  // listing_id") records someone noticing the table was wrong without following
+  // the value. So this gate matched nothing and initiateListingAgreement refused
+  // every caller.
+  //
+  // What acceptance actually PRODUCES is the stage: recordSellerDecision
+  // transitions SELLER_DECISION → LISTING_AGREEMENT_INITIATED on accept, and
+  // → SELLER_DECLINED on decline. Reading the stage answers the question directly
+  // and cannot be desynchronised from the writer.
+  const stageGate = await requireCurrentListingStage(
+    supabase, listingId, ["LISTING_AGREEMENT_INITIATED"], "starting the listing agreement",
+  )
+  if (!stageGate.ok) return { success: false, error: stageGate.error }
 
   // Sub-event: agreement paperwork started inside LISTING_AGREEMENT_INITIATED stage — no state change
   const { error: leError } = await supabase.from("lifecycle_events").insert({
@@ -1216,18 +1300,9 @@ export async function prepareComingSoonAssets(params: {
   if (!scope.ok) return { success: false, error: scope.error }
   const { userId, brokerageId } = scope
 
-  // Gate: Requires media approved — check lifecycle_events (activities has no listing_id)
-  const { data: mediaEvent } = await supabase
-    .from("lifecycle_events")
-    .select("id")
-    .eq("entity_id", listingId)
-    .eq("event_type", KernelEvent.LISTING_STAGE_CHANGED)
-    .limit(1)
-    .maybeSingle()
-
-  if (!mediaEvent) {
-    return { success: false, error: "Media not approved" }
-  }
+  // Gate: the listing must actually be in the stage COMING_SOON_PREP is entered from.
+  const stageGate = await requireListingStage(supabase, listingId, "COMING_SOON_PREP")
+  if (!stageGate.ok) return { success: false, error: stageGate.error }
 
   // Stage transition: MEDIA_APPROVED → COMING_SOON_PREP
   const transitionResult = await transitionLifecycle({
@@ -1352,16 +1427,12 @@ export async function markMLSReady(params: {
   if (!scope.ok) return { success: false, error: scope.error }
   const { userId, brokerageId } = scope
 
-  // Gate: Requires media approved + coming soon activated — check lifecycle_events
-  const { data: gates } = await supabase
-    .from("lifecycle_events")
-    .select("event_type")
-    .eq("entity_id", listingId)
-    .in("event_type", [KernelEvent.LISTING_STAGE_CHANGED, KernelEvent.COMING_SOON_SENT])
-
-  if (!gates || gates.length < 2) {
-    return { success: false, error: "Media not approved or coming soon not activated" }
-  }
+  // Gate: the listing must actually be in the stage MLS_READY is entered from
+  // (MEDIA_APPROVED), which is only reachable through COMING_SOON_ACTIVE and
+  // MEDIA_CAPTURE — so the stage itself carries "media approved AND coming soon
+  // activated". The old two-row count could not express that and never matched.
+  const stageGate = await requireListingStage(supabase, listingId, "MLS_READY")
+  if (!stageGate.ok) return { success: false, error: stageGate.error }
 
   // Stage transition: COMING_SOON_ACTIVE → MLS_READY
   const transitionResult = await transitionLifecycle({
@@ -1426,18 +1497,10 @@ export async function approveOpenHouseMarketing(params: {
   if (!scope.ok) return { success: false, error: scope.error }
   const { userId, brokerageId } = scope
 
-  // Gate: Requires MLS ready — check lifecycle_events (activities has no listing_id)
-  const { data: mlsReady } = await supabase
-    .from("lifecycle_events")
-    .select("id")
-    .eq("entity_id", listingId)
-    .eq("event_type", KernelEvent.LISTING_STAGE_CHANGED)
-    .limit(1)
-    .maybeSingle()
-
-  if (!mlsReady) {
-    return { success: false, error: "Listing not MLS ready" }
-  }
+  // Gate: the listing must actually be MLS_READY, the stage OPEN_HOUSE_MARKETING
+  // is entered from.
+  const stageGate = await requireListingStage(supabase, listingId, "OPEN_HOUSE_MARKETING")
+  if (!stageGate.ok) return { success: false, error: stageGate.error }
 
   // Authority check
   if (role !== "agent" && role !== "team_lead") {
@@ -1503,18 +1566,12 @@ export async function submitToMLSAdmin(params: {
   if (!scope.ok) return { success: false, error: scope.error }
   const { userId, brokerageId } = scope
 
-  // Gate: Requires open house marketing approved — check lifecycle_events
-  const { data: openHouseApproved } = await supabase
-    .from("lifecycle_events")
-    .select("id")
-    .eq("entity_id", listingId)
-    .eq("event_type", KernelEvent.OPEN_HOUSE_MARKETING_STARTED)
-    .limit(1)
-    .maybeSingle()
-
-  if (!openHouseApproved) {
-    return { success: false, error: "Open house marketing not approved" }
-  }
+  // Gate: open house marketing must be approved — i.e. the listing is sitting in
+  // OPEN_HOUSE_MARKETING, the stage MLS_ACTIVE is entered from. Expressed against
+  // the target so the requirement stays tied to the stage table rather than to a
+  // hand-copied literal.
+  const stageGate = await requireListingStage(supabase, listingId, "MLS_ACTIVE")
+  if (!stageGate.ok) return { success: false, error: stageGate.error }
 
   const { error } = await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
