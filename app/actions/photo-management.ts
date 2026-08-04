@@ -9,9 +9,29 @@ import {
   enhanceListingPhoto,
   virtualStagePhoto,
   twilightConvertPhoto,
+  PHOTO_MEDIA_TYPE,
   type PhotoEnhancement,
   type StagingStyle,
 } from "@/lib/listings/photo-intelligence"
+
+/**
+ * THE PHOTO SET LIVES IN `listing_media` (m368/m369 consolidation).
+ *
+ * `listing_photos` was a duplicate of `listing_media` under different column
+ * names — photo_url/file_url, order_index/sort_order, is_hero/is_primary — and
+ * has been dropped. listing_media survived because it carries the MLS
+ * compliance/branding/approval governance (has_eho_mark,
+ * has_brokerage_attribution, has_logo_overlay, uses_approved_template,
+ * kernel_compliance_passed, is_approved) and reaches the kernel; m368 moved the
+ * photo-intelligence columns (room_type, ai_quality_score,
+ * ai_analysis_completed, ai_analyzed_at, enhancement_applied) onto it.
+ *
+ * listing_media also holds video|reel|story|graphic|floorplan|virtual_tour|
+ * document rows, so EVERY read and write in this file pins
+ * media_type = PHOTO_MEDIA_TYPE. Omitting it would hand a floorplan or a video
+ * to a photo tool and count it in the MLS photo set — a new defect, not a
+ * consolidation.
+ */
 
 /**
  * The signed-in caller's users id + brokerage. Never taken from the client —
@@ -69,14 +89,17 @@ export async function analyzePhoto(params: { photoId: string; photoUrl: string }
   try {
     // RLS-scoped visibility check — the session client can only see photos in
     // the caller's tenant; the service client below only writes to that row.
-    const { data: visible } = await supabase
-      .from("listing_photos").select("id, photo_url").eq("id", params.photoId).maybeSingle()
+    const { data: visible, error: visibleError } = await supabase
+      .from("listing_media").select("id, file_url")
+      .eq("id", params.photoId).eq("media_type", PHOTO_MEDIA_TYPE).maybeSingle()
+    // A refused read resolves as "not found"; name it instead of blaming the id.
+    if (visibleError) return { success: false, error: visibleError.message }
     if (!visible) return { success: false, error: "Photo not found" }
 
     const svc = createServiceClient()
     const analysis = await persistPhotoAnalysis(svc, {
       photoId: params.photoId,
-      photoUrl: visible.photo_url ?? params.photoUrl,
+      photoUrl: visible.file_url ?? params.photoUrl,
     })
     if (analysis.error) return { success: false, error: analysis.error }
     return {
@@ -116,7 +139,8 @@ export async function enhancePhoto(params: {
   if (!ctx) return { success: false, error: "Not authenticated" }
 
   const { data: visible, error: visibleError } = await ctx.supabase
-    .from("listing_photos").select("id").eq("id", params.photoId).maybeSingle()
+    .from("listing_media").select("id")
+    .eq("id", params.photoId).eq("media_type", PHOTO_MEDIA_TYPE).maybeSingle()
   if (visibleError) return { success: false, error: visibleError.message }
   if (!visible) return { success: false, error: "Photo not found" }
 
@@ -159,9 +183,10 @@ export async function batchEnhancePhotos(params: { listingId: string }): Promise
 
   // RLS-scoped read: only photos in the caller's tenant come back.
   const { data: photos, error } = await ctx.supabase
-    .from("listing_photos")
+    .from("listing_media")
     .select("id, ai_quality_score, enhancement_applied")
     .eq("listing_id", params.listingId)
+    .eq("media_type", PHOTO_MEDIA_TYPE)
     .eq("ai_analysis_completed", true)
 
   if (error) {
@@ -200,12 +225,19 @@ async function resolvePhotoContext(photoId: string) {
   // RLS-scoped read: the session client only sees photos in the caller's
   // tenant, so cross-tenant photo ids resolve to null here.
   const supabase = await createClient()
-  const { data: photo } = await supabase
-    .from("listing_photos")
-    .select("id, photo_url, room_type, listing_id, brokerage_id")
+  const { data: photo, error: photoError } = await supabase
+    .from("listing_media")
+    .select("id, file_url, room_type, listing_id, brokerage_id")
     .eq("id", photoId)
+    .eq("media_type", PHOTO_MEDIA_TYPE)
     .maybeSingle()
-  if (!photo?.photo_url) return null
+  if (photoError) {
+    console.error("[photo-management] photo read failed:", photoError.message)
+    return null
+  }
+  if (!photo?.file_url) return null
+  // listing_media.brokerage_id is NOT NULL, so this is belt-and-braces for a
+  // row written before the column was tightened.
   let brokerageId = photo.brokerage_id as string | null
   if (!brokerageId && photo.listing_id) {
     const { data: listing } = await supabase
@@ -229,7 +261,7 @@ export async function stageListingPhoto(params: { photoId: string; style?: Stagi
     agentUserId: user.id,
     listingId: ctx.photo.listing_id,
     photoId: ctx.photo.id,
-    photoUrl: ctx.photo.photo_url,
+    photoUrl: ctx.photo.file_url,
     roomType: ctx.photo.room_type,
     style: params.style,
   })
@@ -251,7 +283,7 @@ export async function twilightListingPhoto(params: { photoId: string }) {
     agentUserId: user.id,
     listingId: ctx.photo.listing_id,
     photoId: ctx.photo.id,
-    photoUrl: ctx.photo.photo_url,
+    photoUrl: ctx.photo.file_url,
   })
   if (!result.ok) return { success: false, error: result.error ?? "Twilight conversion failed" }
   return { success: true, stagedUrl: result.stagedUrl, assetId: result.assetId }
@@ -262,11 +294,14 @@ export async function twilightListingPhoto(params: { photoId: string }) {
 // ============================================
 
 /**
- * The MLS photo set for a listing — the `listing_photos` rows, which are a
- * DIFFERENT entity from the marketing media in `listing_media`. Every photo
- * tool in this file addresses a listing_photos id; this is how a surface gets
- * one. `photo_url` comes back so a caller holding a listing_media row can match
- * its file_url to the MLS row that was ingested from it.
+ * The MLS photo set for a listing — the `listing_media` rows with
+ * media_type='photo', in sort_order. There is no longer a second table to
+ * reconcile against: the marketing media grid and the MLS photo set are the
+ * same rows, so a listing_media id handed to any photo tool in this file now
+ * resolves.
+ *
+ * media_type is pinned: without it a floorplan, a virtual tour or a video would
+ * be counted and ordered as an MLS photo.
  */
 export async function getListingPhotoSet(listingId: string) {
   if (!isValidUUID(listingId)) return { success: false as const, error: "Invalid listing ID", photos: [] }
@@ -277,10 +312,11 @@ export async function getListingPhotoSet(listingId: string) {
   }
 
   const { data, error } = await ctx.supabase
-    .from("listing_photos")
-    .select("id, photo_url, order_index, room_type, ai_quality_score, ai_analysis_completed, enhancement_applied, is_hero")
+    .from("listing_media")
+    .select("id, file_url, sort_order, room_type, ai_quality_score, ai_analysis_completed, enhancement_applied, is_primary, usage_intent")
     .eq("listing_id", listingId)
-    .order("order_index", { ascending: true, nullsFirst: false })
+    .eq("media_type", PHOTO_MEDIA_TYPE)
+    .order("sort_order", { ascending: true, nullsFirst: false })
 
   if (error) {
     console.error("[photo-management] photo set read failed:", error.message)
@@ -314,10 +350,11 @@ export async function optimizePhotoOrder(listingId: string): Promise<{
   }
 
   const { data: photos, error: readError } = await ctx.supabase
-    .from("listing_photos")
+    .from("listing_media")
     .select("id, room_type, ai_quality_score")
     .eq("listing_id", listingId)
-    .order("order_index")
+    .eq("media_type", PHOTO_MEDIA_TYPE)
+    .order("sort_order")
 
   if (readError) {
     console.error("[photo-management] photo read failed:", readError.message)
@@ -358,9 +395,10 @@ export async function optimizePhotoOrder(listingId: string): Promise<{
 
   for (let i = 0; i < orderedPhotos.length; i++) {
     const { error: updateError } = await ctx.supabase
-      .from("listing_photos")
-      .update({ order_index: i + 1 })
+      .from("listing_media")
+      .update({ sort_order: i + 1 })
       .eq("id", orderedPhotos[i].id)
+      .eq("media_type", PHOTO_MEDIA_TYPE)
     if (updateError) {
       console.error("[photo-management] reorder write failed:", updateError.message)
       return { success: false, error: updateError.message }
@@ -414,18 +452,31 @@ function optimizePhotoSequence(
 
 /**
  * Ingest delivered photo URLs into the listing's MLS photo set, analyse each one
- * and reorder. This is what turns a photographer's delivery into `listing_photos`
- * — nothing else in the app writes that table, so without this call the MLS set
- * stays empty and every downstream reader (hero selection, readiness, direct
- * mail, ordering) has nothing to read.
+ * and reorder. This is what turns a photographer's delivery into
+ * `listing_media` photo rows, so without this call the MLS set stays empty and
+ * every downstream reader (hero selection, readiness, direct mail, ordering) has
+ * nothing to read.
  *
- * Idempotent: a URL already in the set is skipped rather than duplicated, so
+ * TWO HALVES, both preserved across the m368/m369 consolidation:
+ *   1. INGEST — a URL with no row yet becomes a new listing_media photo row.
+ *   2. ADOPT  — a URL that already exists as a public-marketing-only photo row
+ *      is promoted to usage_intent='both', which is how a marketing photo joins
+ *      the MLS set now that there is no second table to copy it into. Before the
+ *      consolidation this was a row copy from listing_media into listing_photos;
+ *      it is the same capability, expressed on the surviving table.
+ *
+ * Idempotent: a URL already in the MLS set is skipped rather than duplicated, so
  * re-running an import after a partial failure is safe.
  *
+ * GOVERNANCE: rows land under listing_media's approval defaults
+ * (approval_required=true, is_approved=false) — a vendor delivery is not
+ * self-approving marketing material. That governance is exactly why
+ * listing_media is the surviving table.
+ *
  * SCOPE NOTE: this used to take `vendorName` and `agentId`. Neither was ever
- * used — listing_photos has no vendor column and `uploaded_by` is a users FK,
- * not a name string — so both were accepted and dropped on the floor. The row's
- * uploader is the authenticated caller, which is a fact the server already has.
+ * used — there is no vendor column and `uploaded_by` is a users FK, not a name
+ * string — so both were accepted and dropped on the floor. The row's uploader is
+ * the authenticated caller, which is a fact the server already has.
  */
 export async function processVendorPhotos(params: {
   listingId: string
@@ -434,6 +485,7 @@ export async function processVendorPhotos(params: {
   success: boolean
   error?: string
   processed?: number
+  adopted?: number
   skipped?: number
   analyzed?: number
   reordered?: number
@@ -450,51 +502,77 @@ export async function processVendorPhotos(params: {
     return { success: false, error: "Listing not found" }
   }
 
-  // Existing set → dedupe by URL and find where the new photos append.
+  // Existing photo rows → dedupe by URL and find where the new photos append.
   const { data: existing, error: existingError } = await ctx.supabase
-    .from("listing_photos")
-    .select("photo_url, order_index")
+    .from("listing_media")
+    .select("id, file_url, sort_order, usage_intent")
     .eq("listing_id", params.listingId)
+    .eq("media_type", PHOTO_MEDIA_TYPE)
   if (existingError) {
     console.error("[photo-management] existing photo read failed:", existingError.message)
     return { success: false, error: existingError.message }
   }
-  const known = new Set((existing ?? []).map((p) => p.photo_url))
-  let nextIndex = (existing ?? []).reduce((max, p) => Math.max(max, p.order_index ?? 0), 0)
+  const existingRows = (existing ?? []) as Array<{ id: string; file_url: string; sort_order: number | null; usage_intent: string | null }>
+  const byUrl = new Map(existingRows.map((p) => [p.file_url, p]))
+  let nextIndex = existingRows.reduce((max, p) => Math.max(max, p.sort_order ?? 0), 0)
 
-  const inserted: Array<{ id: string; photo_url: string }> = []
+  const inserted: Array<{ id: string; file_url: string }> = []
+  const adoptedRows: Array<{ id: string; file_url: string }> = []
   let skipped = 0
   for (const photoUrl of urls) {
-    if (known.has(photoUrl)) { skipped++; continue }
+    const existingRow = byUrl.get(photoUrl)
+    if (existingRow) {
+      // ADOPT: already a photo row. If it was public-marketing only, promote it
+      // into the MLS set — that promotion IS what the old row-copy into
+      // listing_photos accomplished.
+      if (existingRow.usage_intent === "mls" || existingRow.usage_intent === "both") { skipped++; continue }
+      const { error: adoptError } = await ctx.supabase
+        .from("listing_media")
+        .update({ usage_intent: "both" })
+        .eq("id", existingRow.id)
+        .eq("media_type", PHOTO_MEDIA_TYPE)
+      if (adoptError) {
+        console.error("[photo-management] photo adoption failed:", adoptError.message)
+        return { success: false, error: adoptError.message, processed: inserted.length, adopted: adoptedRows.length }
+      }
+      existingRow.usage_intent = "both"
+      adoptedRows.push({ id: existingRow.id, file_url: existingRow.file_url })
+      continue
+    }
     nextIndex += 1
     const { data: photo, error: insertError } = await ctx.supabase
-      .from("listing_photos")
+      .from("listing_media")
       .insert({
         listing_id: params.listingId,
+        // RLS on listing_media admits brokerage_id IS NULL, so an unstamped row
+        // would be visible to every tenant. The column is NOT NULL and this is
+        // the caller's own brokerage, never a client-supplied one.
         brokerage_id: ctx.brokerageId,
-        photo_url: photoUrl,
-        order_index: nextIndex, // real column (was phantom display_order)
+        media_type: PHOTO_MEDIA_TYPE,
+        file_url: photoUrl,
+        sort_order: nextIndex,
+        usage_intent: "both", // delivered for the MLS set and for marketing
         uploaded_by: ctx.userId, // users-class FK — the authenticated importer
         ai_analysis_completed: false,
       })
-      .select("id, photo_url")
+      .select("id, file_url")
       .maybeSingle()
     // A refused INSERT resolves rather than throwing — report it instead of
     // counting a row that does not exist.
     if (insertError || !photo) {
       console.error("[photo-management] photo insert failed:", insertError?.message)
-      return { success: false, error: insertError?.message ?? "Photo could not be saved", processed: inserted.length }
+      return { success: false, error: insertError?.message ?? "Photo could not be saved", processed: inserted.length, adopted: adoptedRows.length }
     }
-    known.add(photoUrl)
-    inserted.push(photo as { id: string; photo_url: string })
+    byUrl.set(photoUrl, { id: (photo as any).id, file_url: photoUrl, sort_order: nextIndex, usage_intent: "both" })
+    inserted.push(photo as { id: string; file_url: string })
   }
 
   // Analyse what was just ingested. A vision failure on one photo must not
   // discard the import — the row is real either way and the nightly
   // photo-intelligence cron drains the analysis backlog.
   let analyzed = 0
-  for (const photo of inserted) {
-    const result = await analyzePhoto({ photoId: photo.id, photoUrl: photo.photo_url })
+  for (const photo of [...inserted, ...adoptedRows]) {
+    const result = await analyzePhoto({ photoId: photo.id, photoUrl: photo.file_url })
     if (result.success) analyzed++
   }
 
@@ -505,6 +583,7 @@ export async function processVendorPhotos(params: {
   return {
     success: true,
     processed: inserted.length,
+    adopted: adoptedRows.length,
     skipped,
     analyzed,
     reordered: ordering.success ? (ordering as { reordered?: number }).reordered ?? 0 : 0,
@@ -527,9 +606,10 @@ export async function validatePhotoQuality(listingId: string) {
 
   try {
     const { data: photos, error } = await supabase
-      .from("listing_photos")
-      .select("*")
+      .from("listing_media")
+      .select("id, room_type, ai_quality_score, is_primary")
       .eq("listing_id", listingId)
+      .eq("media_type", PHOTO_MEDIA_TYPE)
 
     // A refused read resolves rather than throwing — reporting it as "no photos
     // uploaded" would tell an agent their MLS set is empty when it is not.
@@ -575,8 +655,9 @@ export async function validatePhotoQuality(listingId: string) {
       issues.push(`${lowQualityPhotos.length} photos below quality threshold`)
     }
 
-    // Check hero photo
-    const heroPhoto = photos.find((p) => p.is_hero)
+    // Check hero photo — is_primary on a media_type='photo' row IS the MLS hero
+    // (m368 absorbed listing_photos.is_hero into it).
+    const heroPhoto = photos.find((p) => p.is_primary)
     if (!heroPhoto) {
       issues.push("No hero image selected")
     } else if (heroPhoto.ai_quality_score !== null && heroPhoto.ai_quality_score < 85) {
@@ -700,7 +781,11 @@ export async function getPhotoPerformanceStats(listingId: string) {
   const supabase = await createClient()
 
   try {
-    const { data: photos, error } = await supabase.from("listing_photos").select("*").eq("listing_id", listingId)
+    const { data: photos, error } = await supabase
+      .from("listing_media")
+      .select("id, room_type, ai_quality_score, enhancement_applied, is_primary")
+      .eq("listing_id", listingId)
+      .eq("media_type", PHOTO_MEDIA_TYPE)
     if (error) {
       console.error("Get photo stats read error:", error.message)
       return { totalPhotos: 0, avgQuality: null, roomCoverage: 0, error: error.message }
@@ -725,7 +810,7 @@ export async function getPhotoPerformanceStats(listingId: string) {
         : null,
       roomCoverage: (roomTypes.size / expectedRooms) * 100,
       enhancedCount: photos.filter((p) => p.enhancement_applied).length,
-      heroImageQuality: photos.find((p) => p.is_hero)?.ai_quality_score ?? null,
+      heroImageQuality: photos.find((p) => p.is_primary)?.ai_quality_score ?? null,
     }
   } catch (error) {
     console.error("Get photo stats error:", error)

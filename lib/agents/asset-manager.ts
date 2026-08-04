@@ -3,7 +3,7 @@
  *
  * Wave 37 — Asset Manager Agent. 7th Managed Agent kind. Reviews the
  * brokerage's full asset library each week:
- *   - listing_photos hero coverage (is_hero flag set?)
+ *   - listing_media photo hero coverage (is_primary flag set on a photo row?)
  *   - agent_avatar_assets currency (any agents missing avatar?)
  *   - asset_persona_renders gaps (assets missing per-persona variants)
  *   - content_asset_persona_performance under-performers (asset_type ×
@@ -216,9 +216,10 @@ async function buildAssetSnapshot(brokerageId: string): Promise<AssetSnapshot> {
       .eq("status", "active")
     snap.totalActiveListings = activeCount ?? 0
 
-    // Listings with NO is_hero flagged photo — the canonical hero gap
-    // signal. Done via two queries because the LEFT JOIN-NOT-EXISTS
-    // shape isn't expressible in one PostgREST call.
+    // Listings with NO is_primary flagged PHOTO — the canonical hero gap
+    // signal. is_primary on a media_type='photo' row is the MLS hero (m368
+    // absorbed listing_photos.is_hero). Done via two queries because the LEFT
+    // JOIN-NOT-EXISTS shape isn't expressible in one PostgREST call.
     const { data: activeListings } = await svc
       .from("listings")
       .select("id")
@@ -227,13 +228,22 @@ async function buildAssetSnapshot(brokerageId: string): Promise<AssetSnapshot> {
       .limit(2000)
     const listingIds = ((activeListings ?? []) as Array<{ id: string }>).map((r) => r.id)
     if (listingIds.length > 0) {
-      const { data: heroPhotos } = await svc
-        .from("listing_photos")
+      // media_type pinned: a primary VIDEO is not an MLS hero photo, and
+      // counting one would hide a real hero gap.
+      const { data: heroPhotos, error: heroError } = await svc
+        .from("listing_media")
         .select("listing_id")
         .in("listing_id", listingIds)
-        .eq("is_hero", true)
-      const heroSet = new Set(((heroPhotos ?? []) as Array<{ listing_id: string }>).map((r) => r.listing_id))
-      snap.listingsMissingHero = listingIds.filter((id) => !heroSet.has(id)).length
+        .eq("media_type", "photo")
+        .eq("is_primary", true)
+      // A refused read resolves empty, which would report EVERY active listing
+      // as missing its hero and flood the manager with invented work.
+      if (heroError) {
+        console.error("[asset-manager] hero coverage read failed:", heroError.message)
+      } else {
+        const heroSet = new Set(((heroPhotos ?? []) as Array<{ listing_id: string }>).map((r) => r.listing_id))
+        snap.listingsMissingHero = listingIds.filter((id) => !heroSet.has(id)).length
+      }
     }
 
     // Agents missing photo_url or avatar.
@@ -623,7 +633,7 @@ function buildKickoffPrompt(snap: AssetSnapshot): string {
     "",
     "  { action_type: 'request_listing_hero_photo',",
     "    action_input: { listing_id: '<uuid>' },",
-    "    rationale: 'this listing has no is_hero=true photo; the agent should pick one' }",
+    "    rationale: 'this listing has no is_primary=true photo in listing_media; the agent should pick one' }",
     "",
     "  { action_type: 'request_agent_headshot',",
     "    action_input: { agent_id: '<uuid>' },",

@@ -117,28 +117,37 @@ export async function dispatchLifecycleMail(
     return { ok: false, event: args.eventType, status: "failed", reason: "tenant_mismatch" }
   }
 
-  // Hero photo precedence (Wave 36 m156):
-  //   1. listing_photos.is_hero=true — explicit agent pick
-  //   2. listing_photos.order_index=0 — MLS default
+  // Hero photo precedence (Wave 36 m156, repointed to listing_media by m368):
+  //   1. listing_media.is_primary=true on a photo row — explicit agent pick
+  //   2. lowest listing_media.sort_order photo row — MLS default
   //   3. null → composition falls back to brand-color gradient
-  // Two parallel queries; pick the first non-null.
+  // media_type is pinned on BOTH queries: a primary video or a floorplan
+  // rendered onto a postcard as the property hero is a printed defect.
+  // brokerage_id is pinned too — svc is a service-role client, so it bypasses
+  // RLS and would otherwise happily read another tenant's photo.
   const [heroFlagged, mlsFirst] = await Promise.all([
-    svc.from("listing_photos")
-      .select("photo_url")
+    svc.from("listing_media")
+      .select("file_url")
       .eq("listing_id", args.listingId)
-      .eq("is_hero", true)
+      .eq("brokerage_id", args.brokerageId)
+      .eq("media_type", "photo")
+      .eq("is_primary", true)
       .limit(1)
       .maybeSingle(),
-    svc.from("listing_photos")
-      .select("photo_url")
+    svc.from("listing_media")
+      .select("file_url")
       .eq("listing_id", args.listingId)
-      .order("order_index", { ascending: true })
+      .eq("brokerage_id", args.brokerageId)
+      .eq("media_type", "photo")
+      .order("sort_order", { ascending: true })
       .limit(1)
       .maybeSingle(),
   ])
+  if (heroFlagged.error) console.error("[mail-reactor] hero photo read failed:", heroFlagged.error.message)
+  if (mlsFirst.error) console.error("[mail-reactor] MLS-first photo read failed:", mlsFirst.error.message)
   const propertyPhotoUrl =
-    ((heroFlagged.data?.photo_url as string | undefined) ??
-     (mlsFirst.data?.photo_url as string | undefined) ??
+    ((heroFlagged.data?.file_url as string | undefined) ??
+     (mlsFirst.data?.file_url as string | undefined) ??
      null)
 
   // Agent team_id for brand cascade — listings.team_id first, agent's

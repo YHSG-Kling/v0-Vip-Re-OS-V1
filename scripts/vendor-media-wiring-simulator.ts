@@ -154,8 +154,13 @@ function photoLayer() {
 
   // The tools resolve listing_photos ids. Feeding them listing_media ids made every
   // one of them answer "photo not found" against a row that was never on screen.
-  check("photo tools are driven from the MLS photo set, not from listing_media rows",
-    /photoSet/.test(media) && /importedUrls|photo_url/.test(media))
+  // The two tables were consolidated (m368/m369): listing_media is now the one
+  // home and listing_photos is dropped. The REQUIREMENT is unchanged — the tools
+  // must be driven from the resolved MLS photo set, not from raw rows — so this
+  // follows the capability onto the surviving column rather than pinning the
+  // retired spelling.
+  check("photo tools are driven from the MLS photo set, not from raw media rows",
+    /photoSet/.test(media) && /file_url/.test(media))
 
   check("quality validation and photo stats are on the screen",
     wiredFrom(S_MEDIA, "validatePhotoQuality", "actions/photo-management") &&
@@ -183,10 +188,15 @@ function photoLayer() {
     /export async function optimizePhotoOrder[\s\S]{0,2600}?ruleError[\s\S]{0,300}?return \{ success: false/.test(actions))
 
   console.log("\n[source · refused writes are not counted as successes]")
-  check("a refused listing_photos INSERT is reported, not tallied",
-    /export async function processVendorPhotos[\s\S]{0,2600}?insertError[\s\S]{0,300}?return \{ success: false/.test(actions))
+  check("a refused MLS-set INSERT is reported, not tallied",
+    /export async function processVendorPhotos[\s\S]{0,6000}?insertError[\s\S]{0,400}?return \{ success: false/.test(actions))
+  // The import gained a second half at consolidation: a photo already present as
+  // marketing-only is ADOPTED into the MLS set by promoting usage_intent rather
+  // than copied across tables. A refused promotion must not be tallied either.
+  check("...and so is a refused adoption of an existing marketing photo",
+    /export async function processVendorPhotos[\s\S]{0,6000}?adoptError[\s\S]{0,400}?return \{ success: false/.test(actions))
   check("the import is idempotent (an already-ingested URL is skipped, not duplicated)",
-    /export async function processVendorPhotos[\s\S]{0,2200}?known\.has\(photoUrl\)/.test(actions))
+    /export async function processVendorPhotos[\s\S]{0,4000}?byUrl[\s\S]{0,400}?skipped\+\+/.test(actions))
   check("every ingested row carries its tenant and its uploader",
     /export async function processVendorPhotos[\s\S]{0,2600}?brokerage_id:\s*ctx\.brokerageId[\s\S]{0,300}?uploaded_by:\s*ctx\.userId/.test(actions))
 }
@@ -275,14 +285,18 @@ async function liveLayer() {
   await mustHave("vendor_jobs carries the quoted and actual cost",
     "vendor_jobs", "id,assignment_id,vendor_id,job_title,status,cost_estimate,cost_actual")
 
-  // The photo columns processVendorPhotos writes and the MLS panel reads.
-  await mustHave("listing_photos accepts everything the import writes",
-    "listing_photos", "id,listing_id,brokerage_id,photo_url,order_index,uploaded_by,room_type,ai_quality_score,ai_analysis_completed,enhancement_applied,is_hero")
+  // The photo columns processVendorPhotos writes and the MLS panel reads. These
+  // moved onto listing_media at the m368/m369 consolidation; the retired table no
+  // longer exists, so probing it would fail on correct code.
+  await mustHave("listing_media accepts everything the import writes",
+    "listing_media", "id,listing_id,brokerage_id,file_url,sort_order,uploaded_by,room_type,ai_quality_score,ai_analysis_completed,enhancement_applied,is_primary,media_type,usage_intent")
   await mustHave("photo_ordering_rules accepts the rule the agent saves",
     "photo_ordering_rules", "id,agent_id,brokerage_id,rule_name,room_sequence,prioritize_high_quality,is_active")
-  // `display_order` was the phantom this file used to write instead of order_index.
-  await mustNotHave("listing_photos still has no display_order (the phantom column)",
-    "listing_photos", "display_order")
+  // `display_order` was the phantom this file used to write instead of the real
+  // ordering column. Re-asserted on the surviving table so the phantom cannot
+  // reappear there.
+  await mustNotHave("listing_media has no display_order (the phantom column)",
+    "listing_media", "display_order")
 }
 
 async function main() {

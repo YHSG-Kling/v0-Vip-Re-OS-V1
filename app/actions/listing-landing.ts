@@ -35,10 +35,13 @@ interface ListingDetails {
     profile_photo_url: string | null
   } | null
   brokerage_name: string | null
+  // View-model shape for the public page. `photo_url` is the DTO field name the
+  // hero/gallery components read; it is sourced from listing_media.file_url
+  // (media_type='photo') since the m368/m369 consolidation.
   photos: Array<{
     id: string
     photo_url: string
-    order_index: number
+    sort_order: number
   }>
   media: Array<{
     id: string
@@ -194,18 +197,28 @@ export async function getListingBySlug(slug: string): Promise<ListingDetails | n
     brokerage_name = brokerageData?.name || null
   }
 
-  // Fetch photos
-  const { data: photos } = await supabase
-    .from("listing_photos")
-    .select("id, photo_url, order_index")
+  // Fetch photos — listing_media rows of media_type='photo' (m368/m369
+  // consolidation). The pin matters: without it the gallery would render
+  // documents, floorplans and video files as photographs.
+  const { data: photos, error: photosError } = await supabase
+    .from("listing_media")
+    .select("id, photo_url:file_url, sort_order")
     .eq("listing_id", listing.id)
-    .order("order_index", { ascending: true })
+    .eq("media_type", "photo")
+    .order("sort_order", { ascending: true })
+  // A refused read resolves as an empty gallery — a public listing page that
+  // silently shows no photos is worse than one that logs why.
+  if (photosError) console.error("[listing-landing] photo read failed:", photosError.message)
 
-  // Fetch media (videos)
-  const { data: media } = await supabase
+  // Fetch NON-photo media (video, virtual tour, floorplan, ...) — the photo
+  // rows above are the same table, so excluding them here keeps the landing
+  // page from listing every photo twice.
+  const { data: media, error: mediaError } = await supabase
     .from("listing_media")
     .select("id, media_type, media_url:file_url")
     .eq("listing_id", listing.id)
+    .neq("media_type", "photo")
+  if (mediaError) console.error("[listing-landing] media read failed:", mediaError.message)
 
   return {
     id: listing.id,
@@ -359,16 +372,17 @@ export async function getSimilarListings(listingId: string, zip: string, brokera
   const listingsWithPhotos = await Promise.all(
     (data || []).map(async (listing) => {
       const { data: photo } = await supabase
-        .from("listing_photos")
-        .select("photo_url")
+        .from("listing_media")
+        .select("file_url")
         .eq("listing_id", listing.id)
-        .order("order_index", { ascending: true })
+        .eq("media_type", "photo")
+        .order("sort_order", { ascending: true })
         .limit(1)
-        .single()
+        .maybeSingle()
 
       return {
         ...listing,
-        photo_url: photo?.photo_url || null,
+        photo_url: photo?.file_url || null,
         slug: listing.mls_number || listing.id,
       }
     })

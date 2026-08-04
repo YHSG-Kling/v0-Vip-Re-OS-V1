@@ -282,8 +282,10 @@ async function checkMediaApproved(
   supabase: SupabaseClient,
   listingId: string
 ): Promise<ReadinessCheckResult> {
-  // Photo approval state lives on listing_media.is_approved (listing_photos has no
-  // approval concept). Filter to photo media for the 10-photo minimum.
+  // Photo approval state lives on listing_media.is_approved. That approval
+  // governance is precisely why listing_media survived the m368/m369
+  // consolidation and the duplicate listing_photos table was dropped.
+  // media_type is pinned so the 10-photo minimum counts photos, not documents.
   const { data: photos } = await supabase
     .from("listing_media")
     .select("id, is_approved")

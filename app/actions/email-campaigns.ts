@@ -544,9 +544,13 @@ export async function prepareListingEmailCampaign(params: {
       return { success: false, error: access.reason ?? "Email campaigns feature not available" }
     }
 
+    // NOTE: this used to embed `listing_photos(*)` off `transactions`. There is
+    // no FK from transactions to that table, so PostgREST rejected the whole
+    // select and this action threw before it ever sent. Photos are read
+    // separately below, from the listing they actually hang off.
     const { data: transaction, error: transactionError } = await supabase
       .from("transactions")
-      .select("*, listings(*), listing_photos(*)")
+      .select("*, listings(*)")
       .eq("id", params.transactionId)
       .maybeSingle()
 
@@ -558,13 +562,27 @@ export async function prepareListingEmailCampaign(params: {
     const listing = transaction.listings
 
     // MEDIA PAIRING (owner rule: nothing ships bare) — a listing email
-    // without the listing's photo is a text blast. Hero (is_hero first,
-    // else primary/first) rides at the top of the template body.
-    const photoRows = (Array.isArray(transaction.listing_photos) ? transaction.listing_photos : []) as Array<{ photo_url: string | null; is_hero: boolean | null }>
+    // without the listing's photo is a text blast. Hero (is_primary first,
+    // else primary_photo_url, else the first photo by MLS order) rides at the
+    // top of the template body.
+    //
+    // media_type is pinned to 'photo': listing_media also holds video,
+    // floorplan, virtual_tour and document rows, and emailing a PDF's URL as an
+    // <img src> ships a broken image to every recipient.
+    const { data: photoRowsRaw, error: photoError } = await supabase
+      .from("listing_media")
+      .select("file_url, is_primary")
+      .eq("listing_id", listing.id)
+      .eq("media_type", "photo")
+      .order("sort_order", { ascending: true })
+    if (photoError) {
+      console.error("[email-campaigns] listing photo read failed:", photoError.message)
+    }
+    const photoRows = (photoRowsRaw ?? []) as Array<{ file_url: string | null; is_primary: boolean | null }>
     const heroUrl =
-      photoRows.find((p) => p.is_hero && p.photo_url)?.photo_url ??
+      photoRows.find((p) => p.is_primary && p.file_url)?.file_url ??
       (listing as any).primary_photo_url ??
-      photoRows.find((p) => p.photo_url)?.photo_url ?? null
+      photoRows.find((p) => p.file_url)?.file_url ?? null
     const heroHtml = heroUrl
       ? `<img src="${heroUrl}" alt="${String(listing.address ?? "Listing").replace(/"/g, "&quot;")}" style="width:100%;max-width:640px;border-radius:8px;display:block;margin:0 auto 16px;" />`
       : ""

@@ -442,20 +442,43 @@ export async function generateListingOptimizations(transactionId: string) {
   const supabase = await createClient()
 
   try {
-    const { data: transaction } = await supabase
+    // NOTE: this used to embed `listing_photos(*)` off `transactions`. There is
+    // no FK from transactions to that table, so PostgREST rejected the whole
+    // select — `transaction` came back null and every call answered
+    // "Transaction not found". Photos are read separately below, from the
+    // listing they actually hang off.
+    const { data: transaction, error: transactionError } = await supabase
       .from("transactions")
-      .select("*, listings(*), listing_photos(*), ai_generated_content(*)")
+      .select("*, listings(*), ai_generated_content(*)")
       .eq("id", transactionId)
       .eq("brokerage_id", auth.brokerageId)
-      .single()
+      .maybeSingle()
 
+    if (transactionError) {
+      console.error("[marketing-package] transaction read failed:", transactionError.message)
+      return { success: false, error: transactionError.message }
+    }
     if (!transaction || !transaction.listings) {
       return { success: false, error: "Transaction not found" }
     }
 
     const listing = transaction.listings
-    const photos = transaction.listing_photos || []
     const content = transaction.ai_generated_content || []
+
+    // media_type pinned to 'photo' — the photo count and the average quality
+    // score below are advice the agent acts on. Counting floorplans and
+    // disclosure PDFs as photos would tell them their gallery is complete when
+    // it is not.
+    const { data: photoRows, error: photoError } = await supabase
+      .from("listing_media")
+      .select("id, ai_quality_score")
+      .eq("listing_id", listing.id)
+      .eq("media_type", "photo")
+    if (photoError) {
+      console.error("[marketing-package] listing photo read failed:", photoError.message)
+      return { success: false, error: photoError.message }
+    }
+    const photos = photoRows ?? []
 
     const prompt = `Analyze this real estate listing and provide optimization recommendations.
 

@@ -64,12 +64,20 @@ export function MediaManagerClient({
   const [busyPhotoId, setBusyPhotoId] = useState<string | null>(null)
 
   /**
-   * THE MLS PHOTO SET (`listing_photos`) — a different entity from the marketing
-   * media above (`listing_media`). Every photo tool on this screen addresses a
-   * listing_photos id; the grid holds listing_media ids. They were being used
-   * interchangeably, so each tool resolved "photo not found" against a row that
-   * was never the one on screen. The set is loaded here and matched to media by
-   * file URL, which is exactly what the import writes.
+   * THE MLS PHOTO SET — `listing_media` rows with media_type='photo'
+   * (m368/m369 consolidation).
+   *
+   * There used to be a second table, `listing_photos`, holding the same photos
+   * under different column names (photo_url/file_url, order_index/sort_order,
+   * is_hero/is_primary). The grid held listing_media ids while every photo tool
+   * resolved listing_photos ids, so each tool answered "photo not found"
+   * against a row that was never the one on screen. One table now, so the ids
+   * on this screen and the ids the tools resolve are the SAME ids.
+   *
+   * What survives from the old two-table split is `usage_intent`
+   * (mls|public_marketing|both) — that is what now distinguishes a photo that
+   * is in the MLS set from one that is marketing-only, and the Import button
+   * below is what promotes the latter into the former.
    */
   const [photoSet, setPhotoSet] = useState<any[]>([])
   const [photoSetLoading, setPhotoSetLoading] = useState(true)
@@ -109,8 +117,13 @@ export function MediaManagerClient({
    *  graphic|floorplan|virtual_tour|document. "image" is not a value that column
    *  can ever hold, so the old filter matched nothing at all. */
   const photoMedia = media.filter((m: any) => m.media_type === "photo" && (m.file_url || m.url))
-  const importedUrls = new Set(photoSet.map((p: any) => p.photo_url))
-  const notYetImported = photoMedia.filter((m: any) => !importedUrls.has(m.file_url ?? m.url))
+  /** Photos already carrying MLS usage_intent — the MLS set proper. */
+  const inMlsSetUrls = new Set(
+    photoSet
+      .filter((p: any) => p.usage_intent === "mls" || p.usage_intent === "both")
+      .map((p: any) => p.file_url),
+  )
+  const notYetImported = photoMedia.filter((m: any) => !inMlsSetUrls.has(m.file_url ?? m.url))
 
   const runPhotoTool = (photoId: string, tool: "stage" | "twilight" | "enhance") => {
     setBusyPhotoId(photoId)
@@ -138,9 +151,11 @@ export function MediaManagerClient({
 
   const canApprove = userRole === "admin" || userRole === "broker"
 
-  /** Bring approved photo media into the MLS photo set. Nothing else in the app
-   *  writes listing_photos, so until this runs the MLS set — and every reader of
-   *  it — has nothing to work from. Idempotent: already-imported URLs are skipped. */
+  /** Bring marketing photo media into the MLS photo set — promotes
+   *  usage_intent to 'both' and runs photo intelligence over the promoted rows.
+   *  It still INGESTS URLs that have no row yet, which is how a photographer's
+   *  delivery becomes photos in the first place. Idempotent: photos already
+   *  carrying MLS intent are skipped. */
   const handleImportToPhotoSet = () => {
     if (notYetImported.length === 0) { toast.error("Every photo is already in the MLS set"); return }
     startTransition(async () => {
@@ -149,8 +164,9 @@ export function MediaManagerClient({
         photoUrls: notYetImported.map((m: any) => m.file_url ?? m.url),
       })
       if (!result.success) { toast.error(result.error ?? "Import failed"); return }
+      const addedToSet = (result.processed ?? 0) + (result.adopted ?? 0)
       toast.success(
-        `${result.processed} photo${result.processed === 1 ? "" : "s"} added to the MLS set` +
+        `${addedToSet} photo${addedToSet === 1 ? "" : "s"} added to the MLS set` +
         (result.analyzed ? ` · ${result.analyzed} analyzed` : "") +
         (result.skipped ? ` · ${result.skipped} already present` : ""),
       )
@@ -192,7 +208,7 @@ export function MediaManagerClient({
     const targets = pending.length > 0 ? pending : photoSet
     startTransition(async () => {
       const results = await Promise.allSettled(
-        targets.map((p: any) => analyzePhoto({ photoId: p.id, photoUrl: p.photo_url }))
+        targets.map((p: any) => analyzePhoto({ photoId: p.id, photoUrl: p.file_url }))
       )
       const scores: Record<string, any> = {}
       results.forEach((r, i) => {
@@ -266,9 +282,9 @@ export function MediaManagerClient({
         </TabsList>
 
         <TabsContent value="media" className="mt-6">
-          {/* MLS PHOTO SET — listing_photos, the set the MLS / hero picker /
-              readiness checks / direct mail all read. Distinct from the
-              marketing media grid below. */}
+          {/* MLS PHOTO SET — the listing_media photo rows the MLS / hero picker /
+              readiness checks / direct mail all read. The grid below shows the
+              same table; this panel is the photo-intelligence view of it. */}
           <div className="mb-4 rounded-lg border p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>

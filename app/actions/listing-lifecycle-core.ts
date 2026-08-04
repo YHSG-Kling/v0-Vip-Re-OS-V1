@@ -377,17 +377,18 @@ async function evaluateLaunchBlockers(
 ): Promise<string[]> {
   const blockers: string[] = []
 
-  const [listingResult, photoCountResult, mediaCountResult] = await Promise.all([
+  // ONE photo count. Before the m368/m369 consolidation this queried two
+  // tables and took the max, because listing_photos and listing_media were
+  // duplicate homes for the same photo. There is now one home: listing_media
+  // rows with media_type='photo'. The pin is load-bearing — a listing whose
+  // only media is a floorplan and a disclosure PDF must not clear a 5-photo
+  // launch gate.
+  const [listingResult, photoCountResult] = await Promise.all([
     supabase
       .from("listings")
       .select("address, list_price, seller_contact_id")
       .eq("id", listingId)
       .maybeSingle(),
-    supabase
-      .from("listing_photos")
-      .select("id", { count: "exact", head: true })
-      .eq("listing_id", listingId),
-    // Also check listing_media table (photos stored there in some flows)
     supabase
       .from("listing_media")
       .select("id", { count: "exact", head: true })
@@ -412,15 +413,15 @@ async function evaluateLaunchBlockers(
     blockers.push("No list price set")
   }
 
-  // Count photos from both tables and take the max
-  if (photoCountResult.error && mediaCountResult.error) {
+  // A count query that FAILS resolves with { count: null, error }. Treating
+  // that null as 0 would report "0 photos uploaded" for a refused read — a
+  // blocker naming the wrong problem.
+  if (photoCountResult.error) {
     blockers.push(
       `Photo count could not be read — ${photoCountResult.error.message}. Resolve before launching.`,
     )
   } else {
-    const photoCountA = photoCountResult.error ? 0 : (photoCountResult.count ?? 0)
-    const photoCountB = mediaCountResult.error ? 0 : (mediaCountResult.count ?? 0)
-    const photoCount = Math.max(photoCountA, photoCountB)
+    const photoCount = photoCountResult.count ?? 0
     // Minimum 5 photos per spec
     if (photoCount < 5) {
       blockers.push(`Photos: need at least 5 (${photoCount} uploaded)`)
