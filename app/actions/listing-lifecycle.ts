@@ -186,6 +186,13 @@ export async function advanceListingStage(
 
   const result = await advanceListingStageService(listingId, toStage, agentId, notes)
 
+  // AUTOMATIONS FOLLOW A REAL ADVANCE, NEVER A REFUSED ONE. The service now
+  // gates on the stage table (readiness / role / allowedFrom) and reports a
+  // refusal by RETURNING { success: false } rather than throwing — firing the
+  // prep chain or queueing the MLS packet after a refusal would act on a stage
+  // the listing is not in.
+  if (!result?.success) return result
+
   // Run the canonical-stage automations (prep chain, packet) — see fireStageAutomations.
   await fireStageAutomations(listingId, toStage, user.id)
 

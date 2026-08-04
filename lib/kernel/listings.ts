@@ -30,6 +30,44 @@ export type KernelResult<T> =
 
 export type ListingStage = LifecycleListingStage
 
+/**
+ * THE TWO ENTITY SPACES A LISTING'S HISTORY IS WRITTEN INTO.
+ *
+ * `lifecycle_events` is keyed by (entity_type, entity_id) and a listing's id
+ * appears under TWO different entity_types, written by two different producers:
+ *
+ *   "listing_stage_machine"  ENTITY_MAP in lib/kernel/lifecycle.ts routes the
+ *                            listing STAGE machine here — every transition made
+ *                            through transitionLifecycle / logStageTransition
+ *                            (lib/listing-lifecycle/lifecycle-logger.ts:56).
+ *                            This is where stage history lives.
+ *
+ *   "listing"                everything else that happens TO a listing, written
+ *                            directly: createListingRecord (this file, ~line
+ *                            179), launchListing (this file, ~line 517), the
+ *                            manual stage OVERRIDE audit row
+ *                            (app/actions/listing-lifecycle.ts:165,
+ *                            "listing.stage_overridden"), seller updates, open
+ *                            houses, neighborhood reports, CMA generation,
+ *                            predictive pricing, and the compliance
+ *                            listing-auto-create chain.
+ *
+ * loadListingWorkspace read ONLY "listing", so its timeline never contained a
+ * single stage transition. Swapping it to "listing_stage_machine" would have
+ * been the mirror-image bug — it would have dropped the create, the launch and
+ * the override audit row, which are the rows a workspace most needs. BOTH are
+ * genuine producers, so the workspace reads BOTH.
+ *
+ * VERIFIED LIVE (project hrvaqgvukzxfskkcrwbt): lifecycle_events carries no
+ * CHECK on entity_type — both spellings are admissible, so neither producer was
+ * ever refused. The live table holds 284 rows across entity_type user(221),
+ * contact(49), buyer_lifecycle(8), ai_daily_briefing(3), ad_campaign(2),
+ * agent(1) — and ZERO under either listing spelling, which is what "the
+ * workspace history is empty for every listing" looks like from the database
+ * side. Reading both is what makes the next listing event visible here.
+ */
+export const LISTING_TIMELINE_ENTITY_TYPES = ["listing", "listing_stage_machine"] as const
+
 export interface CreateListingInput {
   agentId: string
   sellerContactId: string
@@ -172,8 +210,11 @@ export async function createListingRecord(
 
     if (error) return { success: false, error: error.message }
 
-    // Emit lifecycle event
-    await supabase
+    // Emit lifecycle event. `.then(() => {})` swallowed the outcome — a
+    // refused insert and a written row looked identical, and the listing's
+    // history silently began empty. Non-fatal (the listing exists either way)
+    // but never silent.
+    const { error: eventError } = await supabase
       .from("lifecycle_events")
       .insert({
         entity_type:  "listing",
@@ -183,7 +224,9 @@ export async function createListingRecord(
         metadata:     { stage: "LISTING_AGREEMENT_INITIATED", agent_id: input.agentId },
         created_at:   new Date().toISOString(),
       })
-      .then(() => {})
+    if (eventError) {
+      console.error("[createListingRecord] lifecycle_events insert failed — this listing has no creation row:", eventError.message)
+    }
 
     // Portal fan-out: the seller sees "Your listing is being prepared".
     const { fanOutKernelEvent } = await import("./event-fanout")
@@ -224,25 +267,30 @@ export async function createOrAttachSellerContact(
   try {
     const supabase = await createClient()
 
-    // Search by email first, then phone
+    // Search by email first, then phone.
+    // A FAILED dedupe read must NOT fall through to the insert below: an
+    // unchecked `{ data: existing }` turns a refused lookup into "no match",
+    // and this function's whole contract is "never create a duplicate".
     if (input.email) {
-      const { data: existing } = await supabase
+      const { data: existing, error: emailLookupError } = await supabase
         .from("contacts")
         .select("id")
         .eq("brokerage_id", input.brokerageId)
         .eq("email", input.email.toLowerCase().trim())
         .maybeSingle()
+      if (emailLookupError) return { success: false, error: `Could not check for an existing contact by email: ${emailLookupError.message}` }
       if (existing?.id) return { success: true, contactId: existing.id, created: false }
     }
 
     if (input.phone) {
       // phone_digits is a generated column — query using the phone column directly
-      const { data: existing } = await supabase
+      const { data: existing, error: phoneLookupError } = await supabase
         .from("contacts")
         .select("id")
         .eq("brokerage_id", input.brokerageId)
         .eq("phone", input.phone.trim())
         .maybeSingle()
+      if (phoneLookupError) return { success: false, error: `Could not check for an existing contact by phone: ${phoneLookupError.message}` }
       if (existing?.id) return { success: true, contactId: existing.id, created: false }
     }
 
@@ -321,19 +369,44 @@ export async function loadListingWorkspace(input: {
         .from("lifecycle_events")
         .select("*")
         .eq("entity_id", input.listingId)
-        .eq("entity_type", "listing")
+        // BOTH producers — see LISTING_TIMELINE_ENTITY_TYPES. Reading one of the
+        // two is how this timeline came back empty for every listing.
+        .in("entity_type", [...LISTING_TIMELINE_ENTITY_TYPES])
         .order("created_at", { ascending: false })
         .limit(30),
     ])
 
-    if (!listingResult.data) return { success: false, error: "Listing not found" }
+    // EVERY read is checked. supabase-js RESOLVES a refused query, so
+    // `{ data }` alone turns an RLS refusal into an empty list that reads
+    // exactly like "this listing has no history / no photos / no tasks". A
+    // failed read is now a named failure, never a quiet absence.
+    if (listingResult.error)  return { success: false, error: `Could not read the listing: ${listingResult.error.message}` }
+    if (!listingResult.data)  return { success: false, error: "Listing not found" }
+    if (mediaResult.error)    return { success: false, error: `Could not read the listing's media: ${mediaResult.error.message}` }
+    if (tasksResult.error)    return { success: false, error: `Could not read the listing's tasks: ${tasksResult.error.message}` }
+    if (timelineResult.error) return { success: false, error: `Could not read the listing's history: ${timelineResult.error.message}` }
 
-    // Derive current stage from most recent lifecycle_event or listings.lifecycle_stage
-    const latestEvent = (timelineResult.data ?? []).find(
-      (e: any) => e.event_type?.startsWith("listing_stage")
-    )
-    const currentStage = (latestEvent as any)?.metadata?.stage
-      ?? (listingResult.data as any)?.lifecycle_stage
+    // CURRENT STAGE. listings.lifecycle_stage is the column the database
+    // maintains and CHECK-constrains to the canonical stages; it is the
+    // authority (same ruling as resolveCurrentStage in
+    // app/actions/listing-lifecycle-core.ts). The event log is the FALLBACK for
+    // the case where the column is somehow empty.
+    //
+    // The old derivation could not have worked either way round: it looked for
+    // `event_type.startsWith("listing_stage")` and then read `metadata.stage`,
+    // but transitionLifecycle — the only writer of stage rows — stores
+    // event_type as `lifecycle.${eventType}` and puts the stage in
+    // `metadata.to_state`. Both halves missed.
+    const latestStageEvent = (timelineResult.data ?? []).find((e: any) => {
+      const meta = (e?.metadata ?? {}) as Record<string, unknown>
+      return typeof meta.to_state === "string" || typeof meta.stage === "string"
+    })
+    const eventStage =
+      ((latestStageEvent as any)?.metadata?.to_state as string | undefined)
+      ?? ((latestStageEvent as any)?.metadata?.stage as string | undefined)
+
+    const currentStage = ((listingResult.data as any)?.lifecycle_stage as string | null)
+      ?? eventStage
       ?? "LEAD"
 
     return {
@@ -441,7 +514,13 @@ export async function validateListingLaunchReadiness(input: {
         .eq("media_type", "photo"),
     ])
 
-    if (!listingResult.data) return { success: false, error: "Listing not found" }
+    // A launch gate that could not READ is not a gate that passed — and a
+    // failed photo COUNT would otherwise come back as `count ?? 0` and be
+    // reported to the agent as "you have no photos", sending them to re-upload
+    // media that is already there.
+    if (listingResult.error)   return { success: false, error: `Could not read the listing: ${listingResult.error.message}` }
+    if (!listingResult.data)   return { success: false, error: "Listing not found" }
+    if (mediaCountResult.error) return { success: false, error: `Could not count the listing's photos: ${mediaCountResult.error.message}` }
 
     const listing = listingResult.data
     const blockers: string[] = []
@@ -510,17 +589,21 @@ export async function launchListing(input: {
 
     // Emit lifecycle event — brokerage_id is NOT NULL (pass 5): the launch
     // event never landed without it. The updated listing row carries it.
-    await supabase
+    // `to_state` is the key transitionLifecycle uses and the key every timeline
+    // reader looks for; `stage` is kept alongside it for the older readers.
+    const { error: launchEventError } = await supabase
       .from("lifecycle_events")
       .insert({
         brokerage_id: (listing as any)?.brokerage_id ?? null,
         entity_type:  "listing",
         entity_id:    input.listingId,
         event_type:   "listing_stage_active",
-        metadata:     { mls_number: input.mlsNumber, actor: input.actorUserId },
+        metadata:     { mls_number: input.mlsNumber, actor: input.actorUserId, to_state: "MLS_ACTIVE", stage: "MLS_ACTIVE" },
         created_at:   new Date().toISOString(),
       })
-      .then(() => {})
+    if (launchEventError) {
+      console.error("[launchListing] lifecycle_events insert failed — the launch is not in the listing's history:", launchEventError.message)
+    }
 
     return { success: true, listing }
   } catch (err) {
@@ -629,13 +712,14 @@ export async function generateListingDescription(input: {
   try {
     const supabase = await createClient()
 
-    const { data: listing } = await supabase
+    const { data: listing, error: listingError } = await supabase
       .from("listings")
       .select("address, city, state, zip, list_price, bedrooms, bathrooms, sqft, property_type, showing_instructions, brokerage_id")
       .eq("id", input.listingId)
       .maybeSingle()
 
-    if (!listing) return { success: false, error: "Listing not found" }
+    if (listingError) return { success: false, error: `Could not read the listing: ${listingError.message}` }
+    if (!listing)     return { success: false, error: "Listing not found" }
 
     const { generateText } = await import("ai")
     const { resolveModel } = await import("@/lib/ai/resolve-model")
@@ -714,31 +798,38 @@ export async function createTransactionShellFromAcceptedOffer(input: {
   try {
     const supabase = await createClient()
 
-    // Validate offer is accepted
-    const { data: offer } = await supabase
+    // Validate offer is accepted. An unchecked read here would report a
+    // refused query as "Offer not found" — a different and misleading verdict.
+    const { data: offer, error: offerError } = await supabase
       .from("offers")
       .select("id, status, offer_price, contact_id")
       .eq("id", input.offerId)
       .maybeSingle()
 
+    if (offerError)                   return { success: false, error: `Could not read the offer: ${offerError.message}` }
     if (!offer)                       return { success: false, error: "Offer not found" }
     if (offer.status !== "accepted")  return { success: false, error: "Offer is not in accepted status" }
 
     // Get listing seller contact
-    const { data: listing } = await supabase
+    const { data: listing, error: listingError } = await supabase
       .from("listings")
       .select("id, seller_contact_id, address, city, state, zip, list_price")
       .eq("id", input.listingId)
       .maybeSingle()
 
+    if (listingError)                    return { success: false, error: `Could not read the listing: ${listingError.message}` }
     if (!listing)                        return { success: false, error: "Listing not found" }
     if (!listing.seller_contact_id)      return { success: false, error: "Listing has no seller contact" }
 
     // This shell is always created from OUR listing (seller side). It's DUAL when the buyer is also our
     // client (in our buyer pipeline → buyer_stage); else seller-only (outside buyer). Mirrors offer-bridge.
+    // A REFUSED read here would silently answer "not our buyer" and file a DUAL
+    // deal as seller-only — a commission-side classification made by a query
+    // failure. It is a hard stop, not a default.
     let ourBuyer = false
     if (offer.contact_id) {
-      const { data: bc } = await supabase.from("contacts").select("buyer_stage").eq("id", offer.contact_id).maybeSingle()
+      const { data: bc, error: buyerError } = await supabase.from("contacts").select("buyer_stage").eq("id", offer.contact_id).maybeSingle()
+      if (buyerError) return { success: false, error: `Could not determine whether the buyer is our client: ${buyerError.message}` }
       ourBuyer = !!(bc as { buyer_stage?: string | null } | null)?.buyer_stage
     }
 
@@ -814,7 +905,7 @@ export async function prefillListingFormFromRecord(input: {
   try {
     const supabase = await createClient()
 
-    const { data: listing } = await supabase
+    const { data: listing, error: prefillError } = await supabase
       .from("listings")
       .select(`
         id, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, property_type,
@@ -829,6 +920,11 @@ export async function prefillListingFormFromRecord(input: {
       .eq("id", input.listingId)
       .maybeSingle()
 
+    // This payload carries a seller's name, email and phone plus the brokerage's
+    // licence block. A refused read must say so — reporting it as "Listing not
+    // found" sends the agent looking for a listing that is plainly there while
+    // the form they are about to send goes out with an empty licence block.
+    if (prefillError) return { success: false, error: `Could not read the listing: ${prefillError.message}` }
     if (!listing) return { success: false, error: "Listing not found" }
 
     const seller  = (listing as any).seller  ?? {}

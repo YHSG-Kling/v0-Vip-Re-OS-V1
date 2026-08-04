@@ -651,17 +651,24 @@ export async function launchListingAction(params: {
  * and fires the kernel-event fanout the other path does not. Wiring both would give
  * one row two owners that disagree about where its audit trail lives.
  *
- * This is not an argument that this path is the worse one. It is the BETTER one on
- * governance: advanceListingStageService performs NO validation at all — no readiness
- * checks, no role authority, no stage-machine check — so today the ONLY gate on a
- * normal stage advance is the client-side check in StageAdvanceModal, which any
- * caller can skip. executeListingTransition validates server-side and logs refusals.
+ * THE GOVERNANCE GAP IS NOW CLOSED ON BOTH PATHS. advanceListingStageService used
+ * to perform NO validation at all — no readiness checks, no role authority, no
+ * stage-machine check — so the only gate on a normal advance was the client-side
+ * check in StageAdvanceModal, which any caller can skip. It now runs
+ * requireListingStageAdvance (lib/application/listing-lifecycle.ts), which reads the
+ * listing's own lifecycle_stage and hands the target's declared allowedFrom /
+ * readinessChecks / requiredRoles — straight out of LISTING_LIFECYCLE_STAGES — to the
+ * same validateStageTransition executeListingTransition uses. Both paths now refuse
+ * the same transitions for the same reasons, from the same table.
  *
- * The correct resolution is a CONSOLIDATION — advanceListingStage delegating to
- * executeListingTransition and keeping the listing_stage_history write — and that
- * belongs to app/actions/listing-lifecycle.ts + lib/application/, neither of which
- * is in this pass's scope. Reported rather than done. Until then this action stays
- * exported, correct and unwired: two writers is the one outcome worse than one.
+ * What remains is the SECOND-WRITER hazard above, which is a different problem: two
+ * paths writing one column with audit trails in two places. The correct resolution is
+ * still a CONSOLIDATION — advanceListingStage delegating to executeListingTransition
+ * and keeping the listing_stage_history write — and it is still out of scope here.
+ * Until then this action stays exported, correct and unwired: two writers is the one
+ * outcome worse than one.
+ *
+ * Proof of the gate: scripts/lifecycle-lib-defects-simulator.ts (defect d1).
  */
 export async function updateListingStageAction(params: {
   listingId: string
@@ -922,16 +929,18 @@ export async function prefillListingFormAction(listingId: string) {
  * for no new information. It is a read, so there is no second-writer hazard; the
  * objection is purely duplication.
  *
- * IT ALSO CARRIES A LATENT DEFECT that must be fixed before it is wired anywhere:
- * lib/kernel/listings.ts:321-326 reads lifecycle_events with entity_type "listing",
- * but the stage machine writes entity_type "listing_stage_machine"
- * (lib/listing-lifecycle/lifecycle-logger.ts:56). Its `timeline` is therefore always
- * empty of stage transitions and its `currentStage` derivation always falls through
- * to listings.lifecycle_stage. The fix is in lib/kernel/, which is out of scope for
- * this pass.
+ * THE LATENT DEFECT IT CARRIED IS FIXED. loadListingWorkspace read lifecycle_events
+ * with entity_type "listing" only, while the stage machine writes
+ * "listing_stage_machine" (ENTITY_MAP in lib/kernel/lifecycle.ts, via
+ * lib/listing-lifecycle/lifecycle-logger.ts:56) — so its `timeline` was always empty
+ * of stage transitions. BOTH entity types are written, by different producers, so it
+ * now reads BOTH (LISTING_TIMELINE_ENTITY_TYPES in lib/kernel/listings.ts); swapping
+ * one for the other would have dropped the create, the launch and the override audit
+ * row instead. All four of its reads are error-checked, so a refused read is no
+ * longer an empty list. Proof: scripts/lifecycle-lib-defects-simulator.ts (defect d2).
  *
  * Wire this when a listing surface exists that is NOT the lifecycle page — a mobile
- * workspace or an embedded panel — and fix the entity_type first.
+ * workspace or an embedded panel.
  */
 export async function loadListingWorkspaceAction(listingId: string) {
   const ctx = await resolveCallerContext()

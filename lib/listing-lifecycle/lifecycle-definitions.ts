@@ -408,10 +408,56 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
 ]
 
 /**
+ * THE ROLE VOCABULARY GAP, as a shared table.
+ *
+ * Every stage above declares `requiredRoles` from the four-value RequiredRole
+ * vocabulary. The live database disagrees: `users_user_type_check` admits
+ * fourteen values (admin, agent, broker, broker_owner, compliance_officer,
+ * contact, isa, lender, superadmin, support, system, tc, team_lead, vendor).
+ * Two of them are unambiguous supersets of an engine role and are translated;
+ * the rest get `null` — a named refusal rather than authority nobody granted.
+ *
+ * This lives beside the stage table because it is the same governance decision,
+ * and because a service that hand-rolls its own copy is a second vocabulary
+ * that can drift from the stages it gates.
+ */
+export const USER_TYPE_TO_LIFECYCLE_ROLE: Record<string, RequiredRole> = {
+  agent:        "agent",
+  team_lead:    "team_lead",
+  broker:       "broker",
+  broker_owner: "broker",
+  admin:        "admin",
+  superadmin:   "admin",
+}
+
+/** Map a live `users.user_type` onto the stage engine's RequiredRole, or null. */
+export function normalizeLifecycleRole(rawUserType: string | null | undefined): RequiredRole | null {
+  const key = (rawUserType ?? "").trim().toLowerCase()
+  if (!key) return null
+  return USER_TYPE_TO_LIFECYCLE_ROLE[key] ?? null
+}
+
+/**
  * Get stage definition by stage name
  */
 export function getStageDefinition(stage: ListingStage): StageDefinition | undefined {
   return LISTING_LIFECYCLE_STAGES.find((s) => s.stage === stage)
+}
+
+/**
+ * Does this stage declare that it is entered from ANY active stage?
+ *
+ * DERIVED, never hand-listed: a stage with an EMPTY `allowedFrom` that is not
+ * the first entry in LISTING_LIFECYCLE_STAGES is an exit stage the table
+ * documents as reachable from anywhere (see LISTING_CANCELLED: "can originate
+ * from any active stage — enforced at engine layer"). The first entry with an
+ * empty allowedFrom is the lifecycle's ENTRY point (LEAD), which is a different
+ * thing. Adding or reordering a stage updates this answer automatically.
+ */
+export function entersFromAnyStage(stage: ListingStage): boolean {
+  const def = getStageDefinition(stage)
+  if (!def) return false
+  return def.allowedFrom.length === 0 && getStageIndex(stage) > 0
 }
 
 /**
