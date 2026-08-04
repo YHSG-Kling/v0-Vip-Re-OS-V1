@@ -155,8 +155,12 @@ async function main() {
   check("dispatcher schedules it; CRON_MANAGER maps it to asset_manager (zero-orphan rule)",
     src("lib/kernel/cron-dispatch.ts").includes("/api/cron/photo-intelligence")
     && src("lib/kernel/manager-registry.ts").includes('"/api/cron/photo-intelligence": "asset_manager"'))
+  // The hero flag moved with the m368/m369 consolidation: on listing_media the MLS
+  // hero IS is_primary on a media_type='photo' row. The REQUIREMENT is unchanged —
+  // the sweep stays bounded, and hero fill must skip a listing that already has
+  // one — so this follows the capability rather than pinning the retired spelling.
   check("sweep is BOUNDED per run (analyzeLimit) and hero fill only fires when NO hero exists",
-    pi.includes("analyzeLimit") && pi.includes("photos.some((p) => p.is_hero)) continue"))
+    pi.includes("analyzeLimit") && pi.includes("photos.some((p) => p.is_primary)) continue"))
   check("hero fill prefers exterior_front, then quality — never a random first upload",
     pi.includes('room_type === "exterior_front"') && pi.includes("ai_quality_score ?? 0"))
 
