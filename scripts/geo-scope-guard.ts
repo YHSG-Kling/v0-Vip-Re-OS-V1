@@ -111,14 +111,15 @@ console.log("\n═══ 5. The observation row knows whose it is ═══")
   ok("the landing pass selects the page's agent", /select\("id, name, slug, landing_content, agent_id"\)/.test(m))
   ok("both passes resolve the owner ONCE per pass, not once per page —\n    a per-page read would multiply the query count by the page count",
     (m.match(/await loadPageOwners\(/g) ?? []).length === 2)
-  // THE TRAP THIS CATCHES. ai_video_projects.agent_id FKs USERS;
-  // lead_capture_forms.agent_id FKs AGENTS — the same column name, two identity
-  // classes. The observation's agent_id FKs agents, so stamping either source
-  // column straight through would raise a foreign-key violation on every reel
-  // write. Found by inserting a real row against the live schema, not by
-  // reading the column name and trusting it.
-  ok("the reel pass declares its ids are USERS-class",
-    /loadPageOwners\(supabase, pages\.map\(\(p\) => p\.agent_id \?\? ""\), "users", brokerageId\)/.test(m), MONITOR)
+  // THE TRAP THIS USED TO CATCH, and why the assertion changed. This guard was
+  // written when ai_video_projects.agent_id FKs USERS and lead_capture_forms
+  // .agent_id FKs AGENTS — the same column name, two identity classes, so the
+  // reel pass and the landing pass had to declare DIFFERENT classes for the same
+  // expression. m366 re-pointed ai_video_projects to agents(id), so both sources
+  // are agents-class now and both passes declare the same thing. The trap is
+  // gone because the ambiguity is gone, which was the point of the re-point.
+  ok("the reel pass declares its ids are AGENTS-class, like everything else\n    now that ai_video_projects.agent_id FKs agents(id)",
+    /loadPageOwners\(supabase, pages\.map\(\(p\) => p\.agent_id \?\? ""\), "agents", brokerageId\)/.test(m), MONITOR)
   ok("the landing pass declares its ids are AGENTS-class",
     /loadPageOwners\(supabase, pages\.map\(\(p\) => p\.agent_id \?\? ""\), "agents", brokerageId\)/.test(m), MONITOR)
   ok("both upserts stamp the CANONICAL agents.id, never the raw source column",

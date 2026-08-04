@@ -93,11 +93,19 @@ console.log("\n── two id spaces, resolved rather than conflated ──")
 {
   // closing_disclosure_agreement.agent_id is users(id); the three agent-scoped
   // money tables are agents(id). Keying them with the CDA's id matched nothing.
-  check("users.id → agents.id is resolved once, explicitly",
-    /agentIdByUserId/.test(list) && /\.in\("user_id", cdaUserIds\)/.test(list))
-  check("…scoped to the caller's brokerage", /\.eq\("brokerage_id", auth\.brokerageId\)\.in\("user_id", cdaUserIds\)/.test(list))
-  check("the agent-scoped reads are keyed on the RESOLVED agents.id",
-    /\.in\("agent_id", agentIds\)/.test(list) && /const agentIds = Array\.from\(new Set\(\[\.\.\.agentIdByUserId\.values\(\)\]\)\)/.test(list))
+  // INVERTED BY m366. closing_disclosure_agreement.agent_id used to FK users(id),
+  // so this list had to resolve users->agents before it could read split, cap and
+  // fees. That column now FKs agents(id) — verified live — so the CDA carries the
+  // agents id directly and the hop that existed here is gone. The single hop that
+  // REMAINS runs the other way, agents->users, and only for the display name,
+  // because names live on users.
+  check("the money reads are keyed on the agents id the CDA now carries, with no\n    users->agents hop left to get wrong",
+    /const agentIds = Array\.from\(new Set\(cdas\.map\(c => c\.agent_id\)\.filter\(Boolean\)\)\)/.test(list) &&
+    !/agentIdByUserId/.test(list))
+  check("…and the one surviving hop is brokerage-scoped",
+    /\.eq\("brokerage_id", auth\.brokerageId\)\.in\("id", agentIds\)/.test(list))
+  check("the agent-scoped reads use that same agents id",
+    (list.match(/\.in\("agent_id", agentIds\)/g) ?? []).length >= 2)
 
   // Per-row: the money lookups must not be keyed on c.agent_id any more.
   const row = /const items: CdaReviewItem\[\] = cdas\.map\(c => \{[\s\S]*?\n  \}\)/.exec(list)?.[0] ?? ""
@@ -109,8 +117,11 @@ console.log("\n── two id spaces, resolved rather than conflated ──")
     /profileByAgent\.get\(agentId\)/.test(row) &&
     /capByAgent\.get\(agentId\)/.test(row) &&
     /feeChargesByAgent\.get\(agentId\)/.test(row))
-  check("the display name comes straight off the users.id the CDA carries",
-    /const userId = c\.agent_id \?\? null/.test(row) && /nameByUserId\.get\(userId\)/.test(row))
+  // Also inverted: the CDA no longer carries a users id, so the name is reached
+  // by RESOLVING agents->users rather than reading it straight off the row.
+  check("the display name is resolved agents->users, because names live on users",
+    /const userId = agentId \? userIdByAgentId\.get\(agentId\) \?\? null : null/.test(row) &&
+    /nameByUserId\.get\(userId\)/.test(row))
   check("an agent with no agents row degrades to nulls rather than throwing",
     /agentId \? .*: null/.test(row) || /agentId \?/.test(row))
 }

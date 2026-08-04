@@ -238,9 +238,13 @@ console.log("\n═══ 4. The sites fixed in this pass stay fixed ═══")
     /getAgentLifetimeNpvRanked\(\{\s*agentId:\s*authUser\.id/.test(ltc))
 
   const rev = code(read("app/actions/ai-review-automation.ts"))
-  ok("review automation resolves agents→users for review_requests instead of\n    writing the agents id, which the foreign key rejected 100% of the time",
-    /const agentUserId = await resolveUserIdForAgentRecord\(supabase, params\.agentId\)/.test(rev) &&
-    /agent_id:\s*agentUserId/.test(rev))
+  // INVERTED BY m366. review_requests.agent_id used to FK users(id), so writing
+  // the agents id was rejected 100% of the time and the fix was to resolve
+  // agents->users. That column now FKs agents(id) — verified live — so the
+  // declared agents id goes in directly and the resolve here would REINTRODUCE
+  // the rejection it was added to cure.
+  ok("review automation writes the declared agents id to review_requests, which\n    is what that column means since m366",
+    /agent_id:\s*params\.agentId,/.test(rev) && !/agent_id:\s*agentUserId/.test(rev))
   ok("...and its brokerage lookup no longer tries BOTH id columns — the `.or()`\n    workaround existed only because the caller's class was unknown",
     !/user_id\.eq\./.test(rev) && /\.eq\("id", agentRecordId\)/.test(rev))
   ok("...and the review_requests insert error is SURFACED, not discarded — the\n    discarded error is why an FK rejection read as \"review request drafted\"",
@@ -313,10 +317,13 @@ console.log("\n═══ 4. The sites fixed in this pass stay fixed ═══")
     /assigned_by_agent_id: agentRowId,/.test(vm))
 
   const goals = code(read("app/actions/ai-agent-goals.ts"))
-  ok("the goals sync counts review_requests by the RESOLVED users id — by the\n    agents id it counted 0 and then WROTE that 0 over the agent's real progress",
-    /\.from\("review_requests"\)[\s\S]{0,160}agentUserId/.test(goals))
-  ok("...and omits the counter entirely when the users id cannot be resolved,\n    rather than clobbering a real value with a meaningless zero",
-    /agentUserId \? \{ reviews_requested/.test(goals))
+  // INVERTED BY m366, same reason: the count is keyed on the agents id now,
+  // which is what review_requests.agent_id holds. Counting by the users id
+  // would return the 0 this assertion was originally written to prevent.
+  ok("the goals sync counts review_requests by the agents id that column now\n    holds, so the number it writes is the agent's real progress",
+    /\.from\("review_requests"\)[\s\S]{0,160}\.eq\("agent_id",\s+params\.agentId\)/.test(goals))
+  ok("...and the count is still tenant-scoped, so it cannot borrow another\n    brokerage's review requests",
+    /\.from\("review_requests"\)[\s\S]{0,240}\.eq\("brokerage_id", params\.brokerageId\)/.test(goals))
 }
 
 console.log("\n═══ 5. The last eight — where the fix and the bug were one line apart ═══")
@@ -444,8 +451,13 @@ console.log("\n═══ 10. The INVERTED resolve — where the fallback was the
   const cs = code(read("lib/wizard-staging/content-staging.ts"))
   ok("stageVideoProject passes ctx.userId to createVideoProject, whose column and\n    actor context are both users-class",
     /agentId: ctx\.userId,/.test(cs) && !/agentId: agentId \?\? ctx\.userId/.test(cs))
-  ok("...and the podcast_episodes insert uses ctx.userId too — that write was\n    FK-rejected on every staged episode",
-    /\.from\("podcast_episodes"\)[\s\S]{0,160}agent_id: ctx\.userId,/.test(cs))
+  // INVERTED BY m366. podcast_episodes.agent_id used to FK users(id), so
+  // ctx.userId was the value that fit. It FKs agents(id) now, so the staging
+  // path RESOLVES users->agents first — the resolve this guard once said was
+  // unnecessary is exactly what the column requires today.
+  ok("...while the podcast_episodes insert RESOLVES an agents id, because that\n    column FKs agents(id) since m366",
+    /\.from\("podcast_episodes"\)[\s\S]{0,160}agent_id: episodeAgentId,/.test(cs) &&
+    !/\.from\("podcast_episodes"\)[\s\S]{0,160}agent_id: ctx\.userId,/.test(cs))
   ok("...while the email campaign KEEPS its agents-id resolve, because\n    email_campaigns.agent_id genuinely FKs agents — this was not a blanket sweep",
     /agentId: agentId \?\? undefined,/.test(cs) && /const agentId = await resolveAgentRowId\(svc, ctx\.userId\)/.test(cs))
 }

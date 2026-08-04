@@ -206,10 +206,20 @@ console.log("\n── the review automation resolves its tenant BEFORE it writes
   // now asserts the resolution rather than the guessing.
   check("…and it takes ONE declared id class — agents.id — instead of guessing",
     /\.eq\("id", agentRecordId\)/.test(v) && !/user_id\.eq\./.test(v))
-  check("…and the users-class columns are RESOLVED from it, not assumed: " +
-        "review_requests.agent_id and lifecycle_events.actor_user_id both FK users",
+  // SPLIT BY m366, which re-pointed review_requests.agent_id from users(id) to
+  // agents(id). This used to assert that BOTH columns were resolved to a users
+  // id — true when it was written, half-wrong now. Verified live against
+  // pg_constraint: review_requests.agent_id -> agents(id) ON DELETE CASCADE,
+  // lifecycle_events.actor_user_id -> users(id). So one takes the declared
+  // agents id straight, and the other still has to be RESOLVED. Asserting them
+  // together is what made a correct change look like a regression.
+  check("review_requests.agent_id takes the declared agents id directly, because " +
+        "that column FKs agents(id) since m366",
+    /agent_id:\s*params\.agentId,/.test(v) && !/agent_id:\s*agentUserId/.test(v))
+  check("…while lifecycle_events.actor_user_id is still RESOLVED agents->users, " +
+        "because THAT column still FKs users(id)",
     /resolveUserIdForAgentRecord\(supabase, params\.agentId\)/.test(v) &&
-    /agent_id:\s*agentUserId/.test(v) && /actor_user_id: agentUserId/.test(v))
+    /actor_user_id: agentUserId/.test(v))
   check("the producer class is a named constant, not a subsystem string",
     /const AI_NOTE_SOURCE = "ai_assistant"/.test(v))
   check("no call site still writes the subsystem into source",
