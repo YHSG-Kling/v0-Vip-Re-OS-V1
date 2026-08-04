@@ -156,15 +156,22 @@ export async function getBuyerJourneyStatus(
       'BUYER_CLOSED',
     ]
     
-    // Query activities for milestone completion dates
+    // Milestone completion dates come from lifecycle_events — the table the transition
+    // writer actually writes. This read `activities` for activity_type
+    // 'buyer.lifecycle.transitioned', a row nothing has ever produced (transitions route
+    // through transitionLifecycle() into lifecycle_events with entity_type
+    // 'buyer_lifecycle'). milestoneEvents was always empty, so EVERY milestone rendered
+    // with no completedAt: the buyer's journey showed the right steps ticked but never a
+    // single date against them.
+    //
+    // The old query also never selected `metadata`, so the .find() below tested a property
+    // it had not fetched — undefined for every row even if the rows had existed. Two
+    // independent reasons the same date could never appear.
     const { data: milestoneEvents } = await supabase
-      .from('activities')
-      .select('activity_type, created_at')
-      .eq('entity_type', 'contact')
+      .from('lifecycle_events')
+      .select('metadata, created_at')
+      .eq('entity_type', 'buyer_lifecycle')
       .eq('entity_id', contactId)
-      .in('activity_type', [
-        'buyer.lifecycle.transitioned',
-      ])
       .order('created_at', { ascending: true })
     
     const milestones = milestoneStates.map(state => {
@@ -172,12 +179,13 @@ export async function getBuyerJourneyStatus(
       const milestoneIndex = milestoneStates.indexOf(state)
       const completed = milestoneIndex <= stateIndex
       
-      // Find completion date from events
+      // Find completion date from events — the FIRST time the buyer entered this state,
+      // which is what a milestone date means (ascending order above makes find() first-wins).
       let completedAt: Date | undefined
       if (milestoneEvents) {
         const event = milestoneEvents.find(e => {
-          const metadata = e.activity_type === 'buyer.lifecycle.transitioned' && (e as any).metadata
-          return metadata && typeof metadata === 'object' && 'to_state' in metadata && metadata.to_state === state
+          const metadata = (e as { metadata?: Record<string, unknown> | null }).metadata
+          return metadata && typeof metadata === 'object' && metadata.to_state === state
         })
         if (event) {
           completedAt = new Date(event.created_at)

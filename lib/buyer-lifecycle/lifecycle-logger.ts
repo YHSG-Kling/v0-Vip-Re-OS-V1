@@ -194,45 +194,53 @@ export async function getLifecycleStatistics(
 ): Promise<LifecycleStatistics> {
   const { startDate, endDate } = options || {}
   const supabase = createServiceClient()
-  
-  // Get all buyers for brokerage
-  let contactQuery = supabase
+
+  // TWO queries, not N+1. This used to fetch every contact in the brokerage — with no
+  // limit — and then call getCurrentBuyerState(contactId) in a loop, each one its own
+  // SELECT on lifecycle_events. A brokerage with 5,000 contacts issued 5,001 round trips
+  // to render one panel. "Latest row per group" is a set operation; m367's
+  // buyer_lifecycle_current_states does it in a single DISTINCT ON pass.
+  //
+  // The two counts are deliberately separate reads because they answer different
+  // questions: totalBuyers counts every contact in the window INCLUDING those that have
+  // never transitioned, while byState can only count contacts that have a state. Deriving
+  // the total from the state rows would silently drop every never-transitioned buyer.
+  let totalQuery = supabase
     .from("contacts")
-    .select("id")
+    .select("id", { count: "exact", head: true })
     .eq("brokerage_id", brokerageId)
-  
-  if (startDate) {
-    contactQuery = contactQuery.gte("created_at", startDate.toISOString())
-  }
-  
-  if (endDate) {
-    contactQuery = contactQuery.lte("created_at", endDate.toISOString())
-  }
-  
-  const { data: contacts, error: contactError } = await contactQuery
-  
-  if (contactError || !contacts) {
-    console.error("[buyer-lifecycle] Error fetching contacts:", contactError)
+
+  if (startDate) totalQuery = totalQuery.gte("created_at", startDate.toISOString())
+  if (endDate)   totalQuery = totalQuery.lte("created_at", endDate.toISOString())
+
+  const [{ count: totalBuyers, error: countError }, { data: stateRows, error: stateError }] =
+    await Promise.all([
+      totalQuery,
+      supabase.rpc("buyer_lifecycle_current_states", {
+        p_brokerage_id: brokerageId,
+        p_start: startDate ? startDate.toISOString() : null,
+        p_end:   endDate   ? endDate.toISOString()   : null,
+      }),
+    ])
+
+  if (countError || stateError) {
+    // Report the real failure. The old loop swallowed a contacts error into a zeroed
+    // result, so a broken read and a brokerage with no buyers looked identical.
+    console.error("[buyer-lifecycle] statistics read failed:", countError?.message ?? stateError?.message)
     return {
       totalBuyers: 0,
       byState: {} as Record<BuyerState, number>,
     }
   }
-  
-  const contactIds = contacts.map((c) => c.id)
-  
-  // Get current states for all buyers
+
   const byState: Record<string, number> = {}
-  
-  for (const contactId of contactIds) {
-    const currentState = await getCurrentBuyerState(contactId)
-    if (currentState) {
-      byState[currentState] = (byState[currentState] || 0) + 1
-    }
+  for (const row of (stateRows ?? []) as Array<{ current_state: string | null }>) {
+    const state = row.current_state
+    if (state) byState[state] = (byState[state] || 0) + 1
   }
-  
+
   return {
-    totalBuyers: contactIds.length,
+    totalBuyers: totalBuyers ?? 0,
     byState: byState as Record<BuyerState, number>,
     // TODO: Calculate timing metrics from history
   }
@@ -250,29 +258,31 @@ export async function getBuyersInState(
 ): Promise<string[]> {
   const { limit = 100 } = options || {}
   const supabase = createServiceClient()
-  
-  // Get all contacts for brokerage
-  const { data: contacts, error } = await supabase
-    .from("contacts")
-    .select("id")
-    .eq("brokerage_id", brokerageId)
-    .limit(limit)
-  
-  if (error || !contacts) {
+
+  // ONE query. This was the same N+1 as the statistics reader — every contact fetched,
+  // then one lifecycle_events SELECT per contact to test its state.
+  //
+  // It also mis-read its own `limit`. The old code applied it to the CONTACTS fetched and
+  // then filtered by state afterwards, so `limit` capped how many contacts were LOOKED AT,
+  // not how many buyers came back: a brokerage with 500 contacts of which 20 are touring
+  // would ask for 100 and receive however many of the first 100 contacts happened to be
+  // touring — often a handful, sometimes zero, and never the same answer twice as contacts
+  // were added. The limit now bounds the RESULT, which is what every caller assumed.
+  const { data: stateRows, error } = await supabase.rpc("buyer_lifecycle_current_states", {
+    p_brokerage_id: brokerageId,
+    p_start: null,
+    p_end:   null,
+  })
+
+  if (error) {
+    console.error("[buyer-lifecycle] buyers-in-state read failed:", error.message)
     return []
   }
-  
-  // Filter by current state
-  const buyersInState: string[] = []
-  
-  for (const contact of contacts) {
-    const currentState = await getCurrentBuyerState(contact.id)
-    if (currentState === state) {
-      buyersInState.push(contact.id)
-    }
-  }
-  
-  return buyersInState
+
+  return ((stateRows ?? []) as Array<{ contact_id: string; current_state: string | null }>)
+    .filter((r) => r.current_state === state)
+    .slice(0, limit)
+    .map((r) => r.contact_id)
 }
 
 /**
