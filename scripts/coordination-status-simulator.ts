@@ -235,10 +235,23 @@ console.log("\n── every coordination surface uses the shared sets ──")
   }
   // The canonical coordinator surface must actually HAVE those reads — this is
   // the half that would otherwise be satisfiable by deleting the feature.
+  //
+  // FOLLOW THE CAPABILITY, NOT THE FILE. Those reads used to sit inline in
+  // page.tsx and now live in getCoordinatorDashboard, because the dashboard had
+  // to union TWO assignment sources (transactions.coordinator_id and
+  // transaction_assignments) — a TC assigned from the deal page was reaching only
+  // one of them and never appeared on their own dashboard. Pinning the assertion
+  // to page.tsx would have blocked that fix while proving nothing: what matters is
+  // that the reads exist, use the shared status sets, and are REACHED by the page.
+  // Asserting the call site is the anti-deletion half — deleting the feature now
+  // fails here just as loudly.
   {
-    const page = src("app/dashboard/coordinator/page.tsx")
+    const page   = src("app/dashboard/coordinator/page.tsx")
+    const reader = src("app/actions/multi-persona.ts")
     check("the coordinator dashboard still reads open milestones AND deadlines from the shared sets",
-      /MILESTONE_OPEN_STATUSES/.test(page) && /DEADLINE_OPEN_STATUSES/.test(page))
+      openFilterUsesSharedSet(reader, "transaction_deadlines", "DEADLINE_OPEN_STATUSES") &&
+      openFilterUsesSharedSet(reader, "transaction_milestones", "MILESTONE_OPEN_STATUSES") &&
+      /getCoordinatorDashboard\s*\(/.test(page))
   }
 
   const app = src("lib/application/transactions.ts")
