@@ -226,49 +226,20 @@ export async function archiveTransaction(transactionId: string, agentId: string)
   }
 }
 
-/**
- * Calculate commission for a transaction
- */
-export async function calculateTransactionCommission(params: {
-  transactionId: string
-  salePrice: number
-  brokerageId: string
-  commissionRate?: number
-}) {
-  try {
-    const supabase = await createClient()
-
-    // Commission Engine 8.0 will own this calculation.
-    // getDefaultCommissionStructure() provides rates — multiplication happens in engine only.
-    // TODO: wire calculateCommission({ transactionId, brokerageId, agentId }) here.
-    const grossCommission = 0
-    const agentSplit = 0
-    const brokerageSplit = 0
-
-    // NOTE: Commission Engine 8.0 owns real calculation. This stores the stub.
-    await supabase.from("commission_distributions").insert({
-      transaction_id: params.transactionId,
-      brokerage_id: params.brokerageId,
-      distribution_type: "brokerage",
-      calculation_type: "percent",
-      calculation_value: params.commissionRate || 0,
-      calculated_amount: 0, // placeholder until Engine 8.0 wires real calculation
-      source_of_funds: "brokerage",
-      cap_applied: false,
-      calculation_version: 1,
-      status: "pending",
-    })
-
-    return {
-      success: true,
-      commission: {
-        gross: grossCommission,
-        agent: agentSplit,
-        brokerage: brokerageSplit,
-        rate: params.commissionRate,
-      },
-    }
-  } catch (error) {
-    return handleError(error, "calculateTransactionCommission")
-  }
-}
+// CONSOLIDATED AWAY — calculateTransactionCommission.
+//
+// It was a self-declared placeholder: it returned gross/agent/brokerage as hard 0 and its own
+// comments said "Commission Engine 8.0 will own this calculation" and "TODO: wire
+// calculateCommission({ transactionId, brokerageId, agentId }) here". That engine is now
+// built and is the named survivor — lib/commission/engine.ts:calculateCommission, the
+// eleven-step waterfall (rate → gross → adjustments → split → cap → team → revenue share →
+// fees → validate/persist) which writes the agent_commissions summary AND its per-line
+// commission_distributions with a real commission_id. Nothing this function did is lost;
+// every part of it exists there in a form that computes actual money.
+//
+// It was also actively harmful to leave wired-able. It inserted a zero-amount distribution
+// with NO commission_id, and a row like that can never be marked paid by any path — which
+// pins the transaction's aggregate ledger status at 'pending' forever and makes the
+// tracking-drift reaper alarm on every pass without ever converging.
+//
+// It had zero callers at removal.

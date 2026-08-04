@@ -48,7 +48,7 @@ export {
   getTransactionDetails,
   getAgentTransactions,
   archiveTransaction,
-  calculateTransactionCommission,
+  // calculateTransactionCommission consolidated into lib/commission/engine.ts:calculateCommission
 } from "./transaction-management.service"
 
 // ─── COMMUNICATION ────────────────────────────────────────────────────────────

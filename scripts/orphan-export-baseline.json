@@ -683,7 +683,7 @@
     "lib/workflow/variables.ts": 1,
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1
   },
-  "census": 8842,
+  "census": 8841,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -3958,7 +3958,7 @@
     "lib/services/lead-management.service.ts": 6,
     "lib/services/platform-sync.service.ts": 1,
     "lib/services/social-publishing.service.ts": 5,
-    "lib/services/transaction-management.service.ts": 5,
+    "lib/services/transaction-management.service.ts": 4,
     "lib/showings/dispatchers.ts": 5,
     "lib/showings/showing-brief.ts": 3,
     "lib/showings/showingtime-ingest.ts": 3,

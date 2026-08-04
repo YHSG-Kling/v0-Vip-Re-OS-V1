@@ -60,7 +60,10 @@ export async function reapCommissionTrackingDrift(
     const { direction } = detectCommissionTrackingDrift({ bridgeStatus: "paid", ledgerStatus })
     if (direction === "bridge_ahead") {
       const r = await reconcileCommissionDisbursement(svc, { transactionId: txnId, brokerageId, actorUserId })
-      if (r.ledgerRowsLocked > 0) reaped++
+      // Orphan rows (referral fees and the legacy path — no commission_id) count as a heal.
+      // Counting only ledgerRowsLocked reported 'reaped: 0' on the exact drift this reaper
+      // exists to close, which reads identically to "nothing was wrong".
+      if (r.ledgerRowsLocked > 0 || r.orphanRowsLocked > 0) reaped++
     }
   }
 
