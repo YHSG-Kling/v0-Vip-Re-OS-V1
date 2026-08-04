@@ -79,6 +79,11 @@ import { OUTPUT_FORMAT_CONFIG } from "@/lib/repurpose/types"
 import type { SourceType, OutputFormat } from "@/lib/repurpose/types"
 import { toast } from "sonner"
 import { SnippetWizardPanel } from "./components/snippet-wizard-panel"
+import { getFilteredRepurposeHistory } from "@/app/actions/video-repurposing"
+import {
+  REPURPOSE_LOG_STATUSES,
+  REPURPOSE_LOG_APPROVAL_STATUSES,
+} from "@/app/actions/video-repurposing.utils"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -208,6 +213,58 @@ export function RepurposeDashboardClient({
     autoApprove: false,
   })
   
+  // History filters. The first paint comes from lib/repurpose/actions'
+  // getRepurposeHistory (unfiltered, 100 rows); narrowing it goes through
+  // getRepurposedContentLogs, which derives the tenant from the SESSION rather
+  // than trusting a brokerageId argument, and validates the status tokens
+  // against the live CHECK constraints before it queries.
+  const ALL = "__all__"
+  const [historyFilterSource, setHistoryFilterSource] = useState<string>(ALL)
+  const [historyFilterStatus, setHistoryFilterStatus] = useState<string>(ALL)
+  const [historyFilterApproval, setHistoryFilterApproval] = useState<string>(ALL)
+  const [historyFiltering, setHistoryFiltering] = useState(false)
+  const [historyFilterError, setHistoryFilterError] = useState<string | null>(null)
+  const [historyIsFiltered, setHistoryIsFiltered] = useState(false)
+
+  const applyHistoryFilters = async (
+    next?: { source?: string; status?: string; approval?: string }
+  ) => {
+    const source = next?.source ?? historyFilterSource
+    const status = next?.status ?? historyFilterStatus
+    const approval = next?.approval ?? historyFilterApproval
+
+    setHistoryFiltering(true)
+    setHistoryFilterError(null)
+    try {
+      const result = await getFilteredRepurposeHistory({
+        sourceType: source === ALL ? undefined : source,
+        status: status === ALL ? undefined : status,
+        approvalStatus: approval === ALL ? undefined : approval,
+      })
+      if (!result.success) {
+        // The server's verdict, surfaced. An empty table over a refused query
+        // reads identically to "no results", which is the failure mode this
+        // avoids.
+        setHistoryFilterError(result.error ?? "Could not load history.")
+        return
+      }
+      setHistory(result.history as unknown as HistoryItem[])
+      setHistoryIsFiltered(source !== ALL || status !== ALL || approval !== ALL)
+    } catch (err: any) {
+      setHistoryFilterError(err?.message ?? "Could not load history.")
+    } finally {
+      setHistoryFiltering(false)
+    }
+  }
+
+  const clearHistoryFilters = async () => {
+    setHistoryFilterSource(ALL)
+    setHistoryFilterStatus(ALL)
+    setHistoryFilterApproval(ALL)
+    await applyHistoryFilters({ source: ALL, status: ALL, approval: ALL })
+    setHistoryIsFiltered(false)
+  }
+
   // Execution State
   const [selectedPipeline, setSelectedPipeline] = useState<Pipeline | null>(null)
   const [selectedSource, setSelectedSource] = useState<{ type: SourceType; id: string; title: string } | null>(null)
@@ -722,13 +779,95 @@ export function RepurposeDashboardClient({
           <Card>
             <CardHeader>
               <CardTitle>Repurpose History</CardTitle>
-              <CardDescription>Recent content transformations</CardDescription>
+              <CardDescription>
+                Recent content transformations
+                {historyIsFiltered ? " · filtered" : ""}
+              </CardDescription>
             </CardHeader>
             <CardContent>
+              {/* Refine — server-side filtering of repurposed_content_log */}
+              <div className="flex flex-wrap items-end gap-3 mb-4">
+                <div className="space-y-1">
+                  <Label className="text-xs">Source</Label>
+                  <Select
+                    value={historyFilterSource}
+                    onValueChange={(v) => { setHistoryFilterSource(v); applyHistoryFilters({ source: v }) }}
+                  >
+                    <SelectTrigger className="h-8 w-[170px] text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={ALL} className="text-xs">All sources</SelectItem>
+                      {(Object.keys(SOURCE_TYPE_CONFIG) as SourceType[]).map((t) => (
+                        <SelectItem key={t} value={t} className="text-xs">
+                          {SOURCE_TYPE_CONFIG[t].label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs">Status</Label>
+                  <Select
+                    value={historyFilterStatus}
+                    onValueChange={(v) => { setHistoryFilterStatus(v); applyHistoryFilters({ status: v }) }}
+                  >
+                    <SelectTrigger className="h-8 w-[150px] text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={ALL} className="text-xs">Any status</SelectItem>
+                      {REPURPOSE_LOG_STATUSES.map((s) => (
+                        <SelectItem key={s} value={s} className="text-xs capitalize">{s}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs">Approval</Label>
+                  <Select
+                    value={historyFilterApproval}
+                    onValueChange={(v) => { setHistoryFilterApproval(v); applyHistoryFilters({ approval: v }) }}
+                  >
+                    <SelectTrigger className="h-8 w-[160px] text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={ALL} className="text-xs">Any approval</SelectItem>
+                      {REPURPOSE_LOG_APPROVAL_STATUSES.map((s) => (
+                        <SelectItem key={s} value={s} className="text-xs">{s.replace(/_/g, " ")}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {historyIsFiltered && (
+                  <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={clearHistoryFilters}>
+                    Clear
+                  </Button>
+                )}
+
+                {historyFiltering && (
+                  <span className="text-xs text-muted-foreground flex items-center gap-1.5">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Filtering…
+                  </span>
+                )}
+              </div>
+
+              {historyFilterError && (
+                <div className="mb-4 flex items-center gap-2 text-sm text-red-600">
+                  <AlertCircle className="h-4 w-4" />
+                  <span>{historyFilterError}</span>
+                </div>
+              )}
+
               {history.length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">
                   <History className="h-16 w-16 mx-auto mb-4 opacity-50" />
-                  <p>No repurposed content yet</p>
+                  <p>{historyIsFiltered ? "Nothing matches those filters" : "No repurposed content yet"}</p>
                 </div>
               ) : (
                 <Table>

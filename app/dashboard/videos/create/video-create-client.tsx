@@ -55,6 +55,7 @@ import {
 } from "../components/business-context"
 import type { VideoPurpose, RepurposeDestination, ListingVideoMode, SellerUpdateMode } from "../components/business-context"
 import { generateVideoScript } from "@/app/actions/video/generate-script"
+import { improveScript, type ScriptImprovement } from "@/app/actions/video/create-video-project"
 import { saveVideoScript, getAgentVideoProfile } from "@/app/actions/video-generation"
 import { getVoiceOptionsForGeneration } from "@/app/actions/video-voice"
 import type { GenerationVoiceOption } from "@/app/actions/video-voice.types"
@@ -224,6 +225,15 @@ export default function VideoCreatePage() {
   const [isSavingScript, setIsSavingScript] = useState(false)
   const [saveScriptMessage, setSaveScriptMessage] = useState<string | null>(null)
   const [saveScriptError, setSaveScriptError] = useState<string | null>(null)
+
+  // "Improve this script" — rewrites the script already in the box. The wizard
+  // could only ever generate a script FROM SCRATCH; there was no way to nudge
+  // one that was nearly right, so agents regenerated and lost their edits.
+  const [improvingAs, setImprovingAs] = useState<ScriptImprovement | null>(null)
+  const [improveError, setImproveError] = useState<string | null>(null)
+  // Keeps the previous draft so an unwanted rewrite is one click away from
+  // being undone — the rewrite replaces the textarea in place.
+  const [scriptBeforeImprove, setScriptBeforeImprove] = useState<string | null>(null)
 
   // Step 2: Avatar & Voice
   const [selectedAvatar, setSelectedAvatar] = useState<string>("")
@@ -847,6 +857,38 @@ export default function VideoCreatePage() {
     }
   }
 
+  // Rewrite the working script through improveScript. The action derives the
+  // brokerage and the (users-class) actor from the session — nothing here is
+  // trusted to name a tenant — and returns an explicit verdict, so a refusal or
+  // an empty model response is reported rather than silently blanking the box.
+  const handleImproveScript = async (improvement: ScriptImprovement) => {
+    if (!customScript.trim()) return
+    setImprovingAs(improvement)
+    setImproveError(null)
+    try {
+      const result = await improveScript({
+        currentScript: customScript,
+        improvement,
+      })
+      if (!result.success || !result.script) {
+        setImproveError(result.error ?? "Could not improve this script.")
+        return
+      }
+      setScriptBeforeImprove(customScript)
+      setCustomScript(result.script)
+    } catch (err: any) {
+      setImproveError(err?.message ?? "Could not improve this script.")
+    } finally {
+      setImprovingAs(null)
+    }
+  }
+
+  const handleUndoImprove = () => {
+    if (scriptBeforeImprove === null) return
+    setCustomScript(scriptBeforeImprove)
+    setScriptBeforeImprove(null)
+  }
+
   // Save the working custom script into the shared script library so it can be
   // approved and reused. Enters as `pending_review` — the library's approval
   // control decides whether it becomes selectable in this wizard.
@@ -1227,6 +1269,50 @@ export default function VideoCreatePage() {
                         rows={10}
                         className="font-mono text-sm"
                       />
+                    </div>
+
+                    {/* Improve the script that is already written, in place. */}
+                    <div className="space-y-2 rounded-lg border p-3">
+                      <div className="flex items-center gap-2">
+                        <Wand2 className="h-4 w-4 text-primary" />
+                        <span className="text-sm font-medium">Improve this script</span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {([
+                          { id: "flow",          label: "Better flow" },
+                          { id: "shorter",       label: "Make it shorter" },
+                          { id: "more_engaging", label: "More engaging" },
+                          { id: "luxury",        label: "Luxury tone" },
+                          { id: "friendly",      label: "Friendlier" },
+                        ] as { id: ScriptImprovement; label: string }[]).map((opt) => (
+                          <Button
+                            key={opt.id}
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={!!improvingAs || customScript.trim().length < 20}
+                            onClick={() => handleImproveScript(opt.id)}
+                          >
+                            {improvingAs === opt.id ? (
+                              <><Loader2 className="h-3 w-3 mr-2 animate-spin" />{opt.label}…</>
+                            ) : (
+                              opt.label
+                            )}
+                          </Button>
+                        ))}
+                        {scriptBeforeImprove !== null && !improvingAs && (
+                          <Button type="button" variant="ghost" size="sm" onClick={handleUndoImprove}>
+                            <RefreshCw className="h-3 w-3 mr-2" />
+                            Undo rewrite
+                          </Button>
+                        )}
+                      </div>
+                      {customScript.trim().length < 20 && (
+                        <p className="text-xs text-muted-foreground">
+                          Write or generate a script first — there is nothing to improve yet.
+                        </p>
+                      )}
+                      {improveError && <p className="text-xs text-destructive">{improveError}</p>}
                     </div>
 
                     {/* Save into the shared library so this script can be

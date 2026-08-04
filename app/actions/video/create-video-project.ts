@@ -15,6 +15,77 @@ import { generateAvatarVideo, getAvatarVideoStatus } from "@/app/actions/externa
 // Full lifecycle: script → generate → distribute
 // ============================================
 
+// ─── THE TENANT GATE ─────────────────────────────────────────────────────────
+//
+// Every export in this file is a "use server" function, i.e. an HTTP endpoint
+// the browser can call by name with arguments of its choosing. Several of them
+// took `brokerageId` as an ARGUMENT and filtered on it — which authenticates
+// nothing: a caller who names another tenant's brokerage_id alongside that
+// tenant's projectId matches the row and is served it.
+//
+// RLS does not save this table. ai_video_projects.brokerage_id is NULLABLE and
+// every policy on it reads
+//   (brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id())
+// so an untenanted row is readable by EVERY brokerage. The gate below compares
+// the project's brokerage_id to the CALLER'S SESSION brokerage for equality,
+// which a NULL can never satisfy, and it ignores whatever brokerageId the
+// caller passed. The argument is kept on the signatures so existing callers
+// keep compiling; it is deliberately never trusted.
+//
+// Same shape as app/actions/video.ts:assertProjectInCallerBrokerage — this file
+// cannot import that module (it is the video-kernel door, a different rail), so
+// the gate is restated rather than shared.
+
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: auth, error: authError } = await supabase.auth.getUser()
+  if (authError || !auth?.user) return { ok: false, error: "Unauthorized" }
+  const { data: profile, error: profileError } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", auth.user.id)
+    .maybeSingle()
+  if (profileError) return { ok: false, error: profileError.message }
+  if (!profile?.brokerage_id) {
+    return { ok: false, error: "Your account is not linked to a brokerage yet" }
+  }
+  return { ok: true, userId: auth.user.id, brokerageId: profile.brokerage_id as string }
+}
+
+/**
+ * Resolve a projectId to the caller's OWN brokerage, or refuse.
+ * Returns the caller identity plus the verified tenant on success.
+ *
+ * Reads through the service client on purpose: the point is to observe the
+ * row's real brokerage_id (including NULL) rather than whatever RLS is willing
+ * to show, and then compare it for equality.
+ */
+async function requireProjectInCallerBrokerage(projectId: string): Promise<
+  | { ok: true; userId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  if (!isValidUUID(projectId)) return { ok: false, error: "Invalid project ID" }
+  const caller = await requireCaller()
+  if (!caller.ok) return caller
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+  const { data: project, error } = await svc
+    .from("ai_video_projects")
+    .select("brokerage_id")
+    .eq("id", projectId)
+    .maybeSingle()
+  if (error) return { ok: false, error: error.message }
+  // Not-found and wrong-tenant answer identically so this cannot be used to
+  // enumerate project ids across tenants.
+  if (!project || project.brokerage_id !== caller.brokerageId) {
+    return { ok: false, error: "Video project not found" }
+  }
+  return { ok: true, userId: caller.userId, brokerageId: caller.brokerageId }
+}
+
 export interface CreateVideoProjectParams {
   brokerageId: string
   /**
@@ -108,12 +179,25 @@ export async function generateAIScript(params: {
   videoType: "listing_tour" | "market_update" | "agent_intro" | "tips" | "testimonial"
   tone: "professional" | "friendly" | "luxury" | "educational"
   durationSeconds: number
-  brokerageId: string
-  agentId: string
+  /** ignored — derived from the session. Kept so existing callers compile. */
+  brokerageId?: string
+  /** ignored — derived from the session. USERS-class, never agents.id. */
+  agentId?: string
   listingAddress?: string
   listingPrice?: number
   listingFeatures?: string[]
 }) {
+  // Burns paid AI inference and reads brand-voice/compliance config for a
+  // brokerage, so it authenticates before it spends. The caller-supplied
+  // brokerageId/agentId are ignored — they authenticated nothing.
+  const auth = await requireCaller()
+  if (!auth.ok) return { error: auth.error, script: "", wordCount: 0, complianceAllowed: false, complianceViolations: [auth.error] }
+  const brokerageId = auth.brokerageId
+  // USERS-class throughout: generateText's agentId, applyBrandVoice's
+  // actorUserId and evaluateOutbound's actorContext.userId are all users ids.
+  // Substituting an agents.id here would be a cross-class bug.
+  const actorUserId = auth.userId
+
   // Word count target: ~150 words per 60s
   const targetWords = Math.round((params.durationSeconds / 60) * 150)
 
@@ -161,15 +245,15 @@ Return only the script text.`
   const raw = await generateText({
     prompt,
     feature: "video_script_generation",
-    agentId: params.agentId,
-    brokerageId: params.brokerageId,
+    agentId: actorUserId,
+    brokerageId,
   })
 
   // Apply brand voice
   const withVoice = await applyBrandVoice({
     content: raw.text,
-    brokerageId: params.brokerageId,
-    actorUserId: params.agentId,
+    brokerageId,
+    actorUserId,
     actorRole: "agent",
     journeyType: "seller",
     persona: "seller",
@@ -180,9 +264,9 @@ Return only the script text.`
   const scriptContent = typeof withVoice === "string" ? withVoice : raw.text
   const compliance = await evaluateOutbound({
     actorContext: {
-      userId: params.agentId,
+      userId: actorUserId,
       role: "agent",
-      brokerageId: params.brokerageId,
+      brokerageId,
     },
     journeyType: "buyer",
     persona: "first_time",
@@ -209,12 +293,32 @@ Return only the script text.`
 
 // ─── IMPROVE EXISTING SCRIPT ────────────────────────────────────────────────
 
+export type ScriptImprovement = "flow" | "shorter" | "more_engaging" | "luxury" | "friendly"
+
+export interface ImproveScriptResult {
+  success: boolean
+  script?: string
+  wordCount?: number
+  error?: string
+}
+
 export async function improveScript(params: {
   currentScript: string
-  improvement: "flow" | "shorter" | "more_engaging" | "luxury" | "friendly"
-  brokerageId: string
-  agentId: string
-}) {
+  improvement: ScriptImprovement
+  /** ignored — derived from the session. */
+  brokerageId?: string
+  /** ignored — derived from the session. USERS-class. */
+  agentId?: string
+}): Promise<ImproveScriptResult> {
+  // Paid inference behind a browser-callable endpoint: authenticate first, and
+  // derive the tenant from the session rather than the argument.
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!params.currentScript?.trim()) {
+    return { success: false, error: "There is no script to improve yet." }
+  }
+
   const improvementPrompts: Record<string, string> = {
     flow: "Rewrite this script for better flow and pacing. Make transitions smoother.",
     shorter: "Condense this script by 30%. Keep only the most impactful points.",
@@ -230,16 +334,31 @@ ${params.currentScript}
 
 Return only the improved script text, no explanations.`
 
-  const result = await generateText({
-    prompt,
-    feature: "video_script_generation",
-    agentId: params.agentId,
-    brokerageId: params.brokerageId,
-  })
+  let result: { text: string }
+  try {
+    result = await generateText({
+      prompt,
+      feature: "video_script_generation",
+      // USERS-class id — same class generateAIScript feeds it.
+      agentId: auth.userId,
+      brokerageId: auth.brokerageId,
+    })
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : "Script rewrite failed",
+    }
+  }
+
+  const text = result?.text?.trim() ?? ""
+  if (!text) {
+    return { success: false, error: "The model returned an empty script — nothing was changed." }
+  }
 
   return {
-    script: result.text,
-    wordCount: result.text.split(/\s+/).filter(Boolean).length,
+    success: true,
+    script: text,
+    wordCount: text.split(/\s+/).filter(Boolean).length,
   }
 }
 
@@ -394,11 +513,48 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
 // hard-locks to D-ID. The error strings below said "HeyGen" too — an agent
 // whose render failed was told a vendor we do not use had failed them.
 
+/**
+ * ⚠ DELIBERATELY NOT WIRED TO ANY SURFACE — third-render-writer hazard.
+ *
+ * Two paths already start a render against the SAME ai_video_projects row and
+ * the owner has ruled they are NOT to be consolidated:
+ *
+ *   1. POST /api/did/generate-video  — writes status='generating',
+ *      provider_job_id=<D-ID talk id>, provider_metadata.provider='did'
+ *      (app/api/did/generate-video/route.ts:326). It is the path that also runs
+ *      checkBrandCompliance and injects the required verbal disclosure before
+ *      submitting (same file, ~line 191 refuses with status='failed' when the
+ *      compliance gate fails).
+ *   2. lib/kernel/video.ts:submitVideoGenerationJob via
+ *      app/actions/video.ts:submitVideoGenerationJobAction — writes
+ *      status='generating', provider_status='submitting' behind an ATOMIC slot
+ *      claim (.neq("status","generating").neq("status","submitting"),
+ *      lib/kernel/video.ts:334-340) so two clicks cannot both submit.
+ *
+ * This function would be the THIRD. It writes the identical
+ * (status='generating' + provider_job_id) shape via generateAvatarVideo →
+ * lib/did:generateVideo, which is the same D-ID talk id space — so
+ * app/api/cron/poll-did-videos (selector: status='generating' AND
+ * provider_job_id IS NOT NULL) would immediately adopt rows this created and
+ * finalize them, while this path has:
+ *   · NO compliance/disclosure gate (unlike path 1), and
+ *   · NO atomic slot claim (unlike path 2) — it stamps 'generating'
+ *     unconditionally, so it can stomp a render already in flight.
+ * Only ONE thing may claim a project's render slot, and two things already do.
+ *
+ * It is NOT deleted: it is the only render entry that returns
+ * `requiresConfiguration`, and per the governing rule there is no named
+ * duplicate that does its job MORE completely without losing that. It is
+ * hardened here (real tenant gate, errors destructured) so that its existing
+ * exposure as a browser-callable endpoint is safe, and left unreferenced.
+ */
 export async function submitAvatarVideoRender(
   projectId: string,
-  brokerageId: string
+  _brokerageId?: string  // ignored — derived from the session
 ): Promise<{ success: boolean; providerVideoId?: string; error?: string; requiresConfiguration?: boolean }> {
-  if (!isValidUUID(projectId)) return { success: false, error: "Invalid project ID" }
+  const gate = await requireProjectInCallerBrokerage(projectId)
+  if (!gate.ok) return { success: false, error: gate.error }
+  const brokerageId = gate.brokerageId
 
   const supabase = await createClient()
 
@@ -420,11 +576,18 @@ export async function submitAvatarVideoRender(
     }
   }
 
-  // Mark as generating
-  await supabase
+  // Mark as generating. supabase-js RESOLVES a refused update instead of
+  // throwing, so an un-destructured await here reported a claim that never
+  // landed and then spent money anyway.
+  const { error: claimError } = await supabase
     .from("ai_video_projects")
     .update({ status: "generating", provider_status: "pending", updated_at: new Date().toISOString() })
     .eq("id", projectId)
+    .eq("brokerage_id", brokerageId)
+  if (claimError) {
+    console.error("[create-video-project] Could not claim render slot:", claimError)
+    return { success: false, error: claimError.message }
+  }
 
   // Submit to D-ID (platform-locked engine; canonical provider_* columns)
   const result = await generateAvatarVideo({
@@ -436,7 +599,7 @@ export async function submitAvatarVideoRender(
 
   if (!result.success) {
     // Mark as failed
-    await supabase
+    const { error: failError } = await supabase
       .from("ai_video_projects")
       .update({
         status: "failed",
@@ -445,6 +608,10 @@ export async function submitAvatarVideoRender(
         updated_at: new Date().toISOString(),
       })
       .eq("id", projectId)
+      .eq("brokerage_id", brokerageId)
+    if (failError) {
+      console.error("[create-video-project] Could not record render failure:", failError)
+    }
 
     return {
       success: false,
@@ -454,7 +621,7 @@ export async function submitAvatarVideoRender(
   }
 
   // Store the D-ID job id
-  await supabase
+  const { error: jobIdError } = await supabase
     .from("ai_video_projects")
     .update({
       provider_job_id: result.videoId,
@@ -462,6 +629,13 @@ export async function submitAvatarVideoRender(
       updated_at: new Date().toISOString(),
     })
     .eq("id", projectId)
+    .eq("brokerage_id", brokerageId)
+  if (jobIdError) {
+    // The vendor render is already running; if we cannot persist its id nobody
+    // can ever finish this row, so say so rather than reporting success.
+    console.error("[create-video-project] Could not persist provider job id:", jobIdError)
+    return { success: false, error: `Render submitted but its job id could not be saved: ${jobIdError.message}` }
+  }
 
   revalidatePath("/dashboard/videos")
 
@@ -470,26 +644,52 @@ export async function submitAvatarVideoRender(
 
 // ─── POLL VIDEO STATUS ────────────────────────────────────────────────────────
 
+/**
+ * ⚠ DELIBERATELY NOT WIRED TO ANY SURFACE — competing terminal writer.
+ *
+ * app/api/cron/poll-did-videos is the canonical async finalizer for exactly the
+ * rows this would poll. Its selector is `status='generating' AND
+ * provider_job_id IS NOT NULL` and on completion it writes status='completed'
+ * (route.ts:391); on vendor error, status='failed' (route.ts:541).
+ *
+ * ai_video_projects.status has NO CHECK constraint, so "valid" is settled by
+ * the writers, and there are two vocabularies live on this table. This function
+ * writes the OTHER one: status='ready'. Wiring it would mean:
+ *   · a third writer racing the cron for the same row's terminal state, and
+ *   · a terminal token no reader on the repurpose rail understands — the
+ *     Omni-Presence source picker selects .eq("status","completed")
+ *     (app/dashboard/campaigns/repurpose/page.tsx) and
+ *     app/actions/podcast-generation.ts:getVideoProjects selects
+ *     .in("status",["completed","published"]). A project finalized as 'ready'
+ *     would be invisible to every repurposing surface AND would no longer match
+ *     the cron's 'generating' selector, so nothing would ever correct it.
+ *
+ * Not deleted (no named duplicate is reachable as a server action for a
+ * synchronous "is it done yet" read), hardened, and left unreferenced.
+ */
 export async function pollVideoStatus(
   projectId: string,
-  brokerageId: string
+  _brokerageId?: string  // ignored — derived from the session
 ): Promise<{
   status: "generating" | "ready" | "failed"
   videoUrl?: string
   thumbnailUrl?: string
   error?: string
 }> {
-  if (!isValidUUID(projectId)) return { status: "failed", error: "Invalid project ID" }
+  const gate = await requireProjectInCallerBrokerage(projectId)
+  if (!gate.ok) return { status: "failed", error: gate.error }
+  const brokerageId = gate.brokerageId
 
   const supabase = await createClient()
 
-  const { data: project } = await supabase
+  const { data: project, error: loadError } = await supabase
     .from("ai_video_projects")
     .select("provider_job_id, status, video_url, thumbnail_url, error_message")
     .eq("id", projectId)
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
 
+  if (loadError) return { status: "failed", error: loadError.message }
   if (!project) return { status: "failed", error: "Project not found" }
 
   // Already resolved
@@ -515,7 +715,7 @@ export async function pollVideoStatus(
 
   if (providerStatus === "completed" && providerResult.videoUrl) {
     // Update project to ready
-    await supabase
+    const { error: readyError } = await supabase
       .from("ai_video_projects")
       .update({
         status: "ready",
@@ -525,15 +725,23 @@ export async function pollVideoStatus(
         updated_at: new Date().toISOString(),
       })
       .eq("id", projectId)
+      .eq("brokerage_id", brokerageId)
+    if (readyError) {
+      console.error("[create-video-project] Could not persist ready status:", readyError)
+      return { status: "generating", error: readyError.message }
+    }
 
     // Emit kernel event
-    await supabase.from("lifecycle_events").insert({
+    const { error: eventError } = await supabase.from("lifecycle_events").insert({
       entity_type: "video_project",
       entity_id: projectId,
       brokerage_id: brokerageId,
       event_type: KernelEvent.VIDEO_PREVIEW_READY,
       metadata: { video_url: providerResult.videoUrl },
     })
+    if (eventError) {
+      console.error("[create-video-project] lifecycle_events insert error:", eventError)
+    }
 
     await processKernelEvent({
       event: KernelEvent.VIDEO_PREVIEW_READY,
@@ -548,7 +756,7 @@ export async function pollVideoStatus(
   }
 
   if (providerStatus === "failed") {
-    await supabase
+    const { error: failError } = await supabase
       .from("ai_video_projects")
       .update({
         status: "failed",
@@ -557,6 +765,10 @@ export async function pollVideoStatus(
         updated_at: new Date().toISOString(),
       })
       .eq("id", projectId)
+      .eq("brokerage_id", brokerageId)
+    if (failError) {
+      console.error("[create-video-project] Could not persist failed status:", failError)
+    }
 
     return { status: "failed", error: "Avatar video generation failed (D-ID)" }
   }
@@ -567,8 +779,18 @@ export async function pollVideoStatus(
 
 // ─── GET VIDEO PROJECT ────────────────────────────────────────────────────────
 
-export async function getVideoProject(projectId: string, brokerageId: string): Promise<VideoProject | null> {
-  if (!isValidUUID(projectId)) return null
+/**
+ * One video project, gated to the caller's own brokerage.
+ * WIRED: the Snippet Wizard (Omni-Presence Repurposer → Snippet Wizard tab)
+ * loads the selected source project here so the agent can see its render state
+ * and whether it carries a script BEFORE spending AI inference on suggestions.
+ */
+export async function getVideoProject(
+  projectId: string,
+  _brokerageId?: string  // ignored — derived from the session
+): Promise<VideoProject | null> {
+  const gate = await requireProjectInCallerBrokerage(projectId)
+  if (!gate.ok) return null
 
   const supabase = await createClient()
 
@@ -576,24 +798,70 @@ export async function getVideoProject(projectId: string, brokerageId: string): P
     .from("ai_video_projects")
     .select("*")
     .eq("id", projectId)
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", gate.brokerageId)
     .maybeSingle()
 
-  if (error || !data) return null
+  if (error) {
+    console.error("[create-video-project] getVideoProject read error:", error)
+    return null
+  }
+  if (!data) return null
   return data as VideoProject
+}
+
+/**
+ * The shape the Snippet Wizard actually needs — a summary the UI can render
+ * without leaking the whole row (script_content included) to the browser.
+ * `hasScript` is the load-bearing bit: generateSnippetSuggestions reads
+ * ai_video_projects.script_content and silently falls back to a generic clip
+ * when it is empty, so the agent is told first.
+ */
+export interface VideoProjectSnippetSource {
+  id: string
+  title: string
+  status: string
+  durationSeconds: number | null
+  hasScript: boolean
+  videoUrl: string | null
+}
+
+export async function getVideoProjectSnippetSource(
+  projectId: string
+): Promise<{ success: boolean; source?: VideoProjectSnippetSource; error?: string }> {
+  const gate = await requireProjectInCallerBrokerage(projectId)
+  if (!gate.ok) return { success: false, error: gate.error }
+
+  const project = await getVideoProject(projectId)
+  if (!project) return { success: false, error: "Video project not found" }
+
+  return {
+    success: true,
+    source: {
+      id: project.id,
+      title: project.title ?? "Untitled project",
+      status: project.status ?? "unknown",
+      durationSeconds: (project as unknown as { duration_seconds: number | null }).duration_seconds ?? null,
+      hasScript: !!project.script_content?.trim(),
+      videoUrl: project.video_url ?? null,
+    },
+  }
 }
 
 // ─── GET VIDEO PROJECTS (LIBRARY) ─────────────────────────────────────────────
 
-export async function getVideoProjects(brokerageId: string, agentId?: string): Promise<VideoProject[]> {
-  if (!isValidUUID(brokerageId)) return []
+export async function getVideoProjects(
+  _brokerageId?: string,  // ignored — derived from the session
+  agentId?: string        // AGENTS-class (ai_video_projects.agent_id FK agents(id))
+): Promise<VideoProject[]> {
+  const auth = await requireCaller()
+  if (!auth.ok) return []
 
   const supabase = await createClient()
 
   let query = supabase
     .from("ai_video_projects")
     .select("*")
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", auth.brokerageId)
     .order("created_at", { ascending: false })
     .limit(50)
 
@@ -602,27 +870,50 @@ export async function getVideoProjects(brokerageId: string, agentId?: string): P
   }
 
   const { data, error } = await query
-  if (error) return []
+  if (error) {
+    console.error("[create-video-project] getVideoProjects read error:", error)
+    return []
+  }
   return (data ?? []) as VideoProject[]
 }
 
 // ─── RETRY VIDEO GENERATION ─���───────────────────────────────────────────────
 
+/**
+ * ⚠ DELIBERATELY NOT WIRED TO ANY SURFACE — inherits the third-writer hazard.
+ *
+ * Its last statement is `submitAvatarVideoRender(projectId, ...)`, so it drives
+ * the SAME render path documented on that function above, with the compliance
+ * gate and the atomic slot claim both absent. It additionally NULLs
+ * provider_job_id first, which severs the row from
+ * app/api/cron/poll-did-videos — an in-flight D-ID render would be orphaned
+ * with nothing left to finalize it.
+ *
+ * The surface that would host a "Retry" button — the video board — already has
+ * its own start control on the kernel path, so wiring this would put a second
+ * start button on a surface that already has one.
+ *
+ * Not deleted: nothing else implements the retry_count ceiling. Hardened and
+ * left unreferenced.
+ */
 export async function retryVideoGeneration(
   projectId: string,
-  brokerageId: string
+  _brokerageId?: string  // ignored — derived from the session
 ): Promise<{ success: boolean; error?: string }> {
-  if (!isValidUUID(projectId)) return { success: false, error: "Invalid project ID" }
+  const gate = await requireProjectInCallerBrokerage(projectId)
+  if (!gate.ok) return { success: false, error: gate.error }
+  const brokerageId = gate.brokerageId
 
   const supabase = await createClient()
 
-  const { data: project } = await supabase
+  const { data: project, error: loadError } = await supabase
     .from("ai_video_projects")
     .select("retry_count, status")
     .eq("id", projectId)
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
 
+  if (loadError) return { success: false, error: loadError.message }
   if (!project) return { success: false, error: "Project not found" }
 
   const retryCount = (project.retry_count ?? 0) + 1
@@ -631,7 +922,7 @@ export async function retryVideoGeneration(
   }
 
   // Reset status
-  await supabase
+  const { error: resetError } = await supabase
     .from("ai_video_projects")
     .update({
       status: "draft",
@@ -643,9 +934,14 @@ export async function retryVideoGeneration(
       updated_at: new Date().toISOString(),
     })
     .eq("id", projectId)
+    .eq("brokerage_id", brokerageId)
+  if (resetError) {
+    console.error("[create-video-project] Could not reset project for retry:", resetError)
+    return { success: false, error: resetError.message }
+  }
 
   // Resubmit
-  const submitResult = await submitAvatarVideoRender(projectId, brokerageId)
+  const submitResult = await submitAvatarVideoRender(projectId)
 
   if (!submitResult.success) {
     return { success: false, error: submitResult.error }
@@ -664,18 +960,57 @@ export async function retryVideoGeneration(
 
 // ─── GET SOCIAL ACCOUNTS ─────────────────────────────────────────────────────
 
-export async function getSocialAccountsForDistribution(brokerageId: string, agentId: string) {
-  if (!isValidUUID(brokerageId)) return []
+/**
+ * The connected social accounts the caller may distribute to.
+ * WIRED: the snippet Schedule sheet (/dashboard/videos/snippets) uses this to
+ * let the agent choose WHICH connected account a snippet publishes to —
+ * scheduleSnippetToSocial already accepts and tenant-checks socialAccountId,
+ * but nothing on the surface had ever supplied one.
+ *
+ * IDENTITY CLASS. social_media_accounts.agent_id is a FK to agents(id)
+ * (pg_constraint: social_media_accounts_agent_id_fkey). Every browser caller
+ * holds a USERS id, and the old `.eq("agent_id", agentId)` compared the two
+ * classes directly — a users id can never equal an agents id, so this returned
+ * an empty list for every real caller. The users→agents resolve now happens
+ * HERE, through the identity helper, exactly once.
+ *
+ * Scope: agent-owned accounts PLUS the brokerage-wide ones (agent_id IS NULL,
+ * scope='brokerage'). The old filter hid every brokerage account even though
+ * scheduleSnippetToSocial's own gate admits them — the picker must not be
+ * narrower than what the write accepts.
+ *
+ * This does NOT publish. It lists destinations; the actual send stays on the
+ * existing consent-gated egress (social_posts → publisher cron).
+ */
+export async function getSocialAccountsForDistribution(
+  _brokerageId?: string,  // ignored — derived from the session
+  _agentId?: string       // ignored — resolved from the session, users→agents
+): Promise<Array<{ id: string; platform: string; account_name: string; is_active: boolean; scope: string | null }>> {
+  const auth = await requireCaller()
+  if (!auth.ok) return []
 
   const supabase = await createClient()
 
-  const { data } = await supabase
+  const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
+  const resolvedAgentId = await resolveAgentIdInBrokerage(supabase, auth.userId, auth.brokerageId)
+
+  let query = supabase
     .from("social_media_accounts")
-    .select("id, platform, account_name, is_active")
-    .eq("brokerage_id", brokerageId)
-    .eq("agent_id", agentId)
+    .select("id, platform, account_name, is_active, scope")
+    .eq("brokerage_id", auth.brokerageId)
     .eq("is_active", true)
     .order("platform")
 
-  return data ?? []
+  // A user with no agent profile still sees the brokerage-wide accounts.
+  query = resolvedAgentId
+    ? query.or(`agent_id.eq.${resolvedAgentId},agent_id.is.null`)
+    : query.is("agent_id", null)
+
+  const { data, error } = await query
+  if (error) {
+    console.error("[create-video-project] getSocialAccountsForDistribution read error:", error)
+    return []
+  }
+
+  return (data ?? []) as Array<{ id: string; platform: string; account_name: string; is_active: boolean; scope: string | null }>
 }

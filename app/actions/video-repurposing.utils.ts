@@ -113,3 +113,33 @@ export function validateSnippetForPlatform(
 
   return { valid: true }
 }
+
+// ─── repurposed_content_log VOCABULARY ────────────────────────────────────────
+//
+// Verified against the LIVE database, not against convention:
+//   repurposed_content_log_status_check
+//     CHECK (status IN ('generated','scheduled','published','failed'))
+//   repurposed_content_log_approval_status_check
+//     CHECK (approval_status IN ('draft','pending_review','approved','rejected'))
+//
+// These live HERE and not in app/actions/video-repurposing.ts because that file
+// carries a top-level "use server" directive, and such a module may only export
+// async functions — exporting a const array from it fails Next.js page-data
+// collection at build time (scripts/use-server-export-guard.ts is the ratchet).
+
+export const REPURPOSE_LOG_STATUSES = [
+  "generated",
+  "scheduled",
+  "published",
+  "failed",
+] as const
+
+export const REPURPOSE_LOG_APPROVAL_STATUSES = [
+  "draft",
+  "pending_review",
+  "approved",
+  "rejected",
+] as const
+
+export type RepurposeLogStatus = (typeof REPURPOSE_LOG_STATUSES)[number]
+export type RepurposeLogApprovalStatus = (typeof REPURPOSE_LOG_APPROVAL_STATUSES)[number]
