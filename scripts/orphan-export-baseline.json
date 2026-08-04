@@ -15,21 +15,21 @@
     "app/actions/ai-content-generation.tsx": 31,
     "app/actions/ai-contract-review.ts": 1,
     "app/actions/ai-direct-mail.ts": 3,
-    "app/actions/ai-document-intelligence.ts": 6,
+    "app/actions/ai-document-intelligence.ts": 1,
     "app/actions/ai-isa/engage-contact.ts": 1,
     "app/actions/ai-isa/initiate-engagement.ts": 1,
     "app/actions/ai-lead-nurturing.ts": 3,
     "app/actions/ai-listing-intake.ts": 3,
     "app/actions/ai-listing-presentation.ts": 1,
     "app/actions/ai-market-intelligence.ts": 2,
-    "app/actions/ai-marketing-automation.ts": 7,
+    "app/actions/ai-marketing-automation.ts": 3,
     "app/actions/ai-newsletter.ts": 4,
     "app/actions/ai-offer-creation.ts": 1,
     "app/actions/ai-predictions.ts": 5,
     "app/actions/ai-referral-management.ts": 1,
     "app/actions/ai-review-automation.ts": 2,
     "app/actions/ai-showing-management.ts": 1,
-    "app/actions/ai-transaction-coordinator.ts": 6,
+    "app/actions/ai-transaction-coordinator.ts": 2,
     "app/actions/ai-vendor-management.ts": 2,
     "app/actions/ai-voice-transcription.ts": 1,
     "app/actions/analytics.ts": 2,
@@ -51,7 +51,7 @@
     "app/actions/buyer-offers.ts": 1,
     "app/actions/calculators.ts": 4,
     "app/actions/calendar/calendar-sync-actions.ts": 3,
-    "app/actions/campaign-readiness.ts": 7,
+    "app/actions/campaign-readiness.ts": 1,
     "app/actions/campaign-sequences.ts": 3,
     "app/actions/cda-portal.ts": 2,
     "app/actions/ce-provider.ts": 1,
@@ -76,9 +76,8 @@
     "app/actions/data-health.ts": 1,
     "app/actions/demo-auth.ts": 3,
     "app/actions/direct-mail.ts": 3,
-    "app/actions/dotloop-integration.ts": 8,
+    "app/actions/dotloop-integration.ts": 1,
     "app/actions/education-kernel.ts": 4,
-    "app/actions/email-campaigns.ts": 5,
     "app/actions/error-handler.ts": 1,
     "app/actions/external-services.ts": 2,
     "app/actions/fb-audience-templates.ts": 1,
@@ -88,7 +87,7 @@
     "app/actions/gamification.ts": 1,
     "app/actions/inbox.ts": 2,
     "app/actions/income-engine.ts": 2,
-    "app/actions/journey-tasks.ts": 5,
+    "app/actions/journey-tasks.ts": 1,
     "app/actions/knowledge/search.ts": 1,
     "app/actions/lead-assignment/assign-lead.ts": 1,
     "app/actions/lead-intelligence.ts": 7,
@@ -99,14 +98,13 @@
     "app/actions/lifecycle-promo-policy.ts": 1,
     "app/actions/lifetime-customer-touchpoints.ts": 2,
     "app/actions/link-to-video.ts": 2,
-    "app/actions/listing-lifecycle-core.ts": 5,
     "app/actions/listing-lifecycle.ts": 2,
     "app/actions/listing-video.ts": 2,
-    "app/actions/listings-kernel.ts": 8,
+    "app/actions/listings-kernel.ts": 5,
     "app/actions/marketing-cadence-policy.ts": 1,
     "app/actions/marketing-intelligence.ts": 1,
     "app/actions/marketing-studio.ts": 2,
-    "app/actions/multi-persona.ts": 5,
+    "app/actions/multi-persona.ts": 1,
     "app/actions/negotiation-strategy.ts": 1,
     "app/actions/neighbor-notifications.ts": 1,
     "app/actions/newsletter/approve-template.ts": 2,
@@ -681,7 +679,7 @@
     "lib/workflow/variables.ts": 1,
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1
   },
-  "census": 8850,
+  "census": 8860,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -778,7 +776,7 @@
     "app/actions/ai-teammates.ts": 4,
     "app/actions/ai-tools-hub.ts": 4,
     "app/actions/ai-training-coaching.ts": 4,
-    "app/actions/ai-transaction-coordinator.ts": 8,
+    "app/actions/ai-transaction-coordinator.ts": 9,
     "app/actions/ai-transaction-documents.ts": 4,
     "app/actions/ai-vendor-management.ts": 5,
     "app/actions/ai-voice-transcription.ts": 4,
@@ -909,7 +907,7 @@
     "app/actions/document-extractions.ts": 2,
     "app/actions/document-kernel-review.ts": 6,
     "app/actions/documents.ts": 11,
-    "app/actions/dotloop-integration.ts": 12,
+    "app/actions/dotloop-integration.ts": 13,
     "app/actions/education-kernel.ts": 5,
     "app/actions/education-tutor.ts": 1,
     "app/actions/email-campaigns.ts": 10,
@@ -1709,7 +1707,9 @@
     "app/components/dashboard/listings/lifecycle/coming-soon-command-card.tsx": 1,
     "app/components/dashboard/listings/lifecycle/completed-documents-panel.tsx": 1,
     "app/components/dashboard/listings/lifecycle/decision-history-panel.tsx": 1,
+    "app/components/dashboard/listings/lifecycle/listing-description-composer.tsx": 1,
     "app/components/dashboard/listings/lifecycle/listing-forms-panel.tsx": 1,
+    "app/components/dashboard/listings/lifecycle/listing-gates-panel.tsx": 1,
     "app/components/dashboard/listings/lifecycle/listing-intelligence-card.tsx": 1,
     "app/components/dashboard/listings/lifecycle/listing-packet-panel.tsx": 1,
     "app/components/dashboard/listings/lifecycle/matching-buyers-panel.tsx": 1,
@@ -2171,7 +2171,9 @@
     "app/dashboard/coordinator/components/tc-fast-action-panel.tsx": 1,
     "app/dashboard/diagnosis/diagnosis-client.tsx": 1,
     "app/dashboard/documents/contract-review/contract-review-client.tsx": 1,
+    "app/dashboard/documents/document-actions-dialog.tsx": 1,
     "app/dashboard/documents/document-center-client.tsx": 1,
+    "app/dashboard/documents/document-workspace-panel.tsx": 1,
     "app/dashboard/documents/share-document-dialog.tsx": 1,
     "app/dashboard/financials/agent/agent-financials-client.tsx": 1,
     "app/dashboard/financials/agent/agent-net-position-card.tsx": 1,
@@ -2310,10 +2312,11 @@
     "app/dashboard/marketing/seo/components/market-trends-panel.tsx": 1,
     "app/dashboard/marketing/seo/seo-keywords-client.tsx": 1,
     "app/dashboard/marketing/studio/brand-voice/brand-voice-editor.tsx": 1,
-    "app/dashboard/marketing/studio/components/ad-os/ad-os-actions.ts": 8,
+    "app/dashboard/marketing/studio/components/ad-os/ad-os-actions.ts": 10,
     "app/dashboard/marketing/studio/components/ad-os/campaign-launcher-panel.tsx": 1,
     "app/dashboard/marketing/studio/components/ad-os/competitor-watch-panel.tsx": 1,
     "app/dashboard/marketing/studio/components/ad-os/creative-variations-panel.tsx": 1,
+    "app/dashboard/marketing/studio/components/ad-os/listing-copy-panel.tsx": 1,
     "app/dashboard/marketing/studio/components/ad-os/performance-intelligence-panel.tsx": 1,
     "app/dashboard/marketing/studio/components/ad-os/prelaunch-prediction-panel.tsx": 1,
     "app/dashboard/marketing/studio/components/ad-os/repurpose-engine-panel.tsx": 1,
@@ -2484,6 +2487,7 @@
     "app/dashboard/team-heatmap/heatmap-legend.tsx": 1,
     "app/dashboard/team-heatmap/heatmap-map.tsx": 1,
     "app/dashboard/tools/home-value/HomeValuePageBuilderClient.tsx": 1,
+    "app/dashboard/transactions/[id]/ai-coordinator-panel.tsx": 1,
     "app/dashboard/transactions/[id]/assign-lender-panel.tsx": 1,
     "app/dashboard/transactions/[id]/assign-tc-panel.tsx": 1,
     "app/dashboard/transactions/[id]/buyer-move-section.tsx": 1,
@@ -4846,6 +4850,7 @@
       "predictAndManageDeadlines",
       "generateSmartTasks",
       "draftTransactionCommunication",
+      "listTransactionCommunications",
       "monitorTransactionRisks",
       "prepareForClosing",
       "generatePostClosingPlan",
@@ -5696,6 +5701,7 @@
       "syncDotloopDocuments",
       "getDotloopSigningStatus",
       "sendForDotloopSignature",
+      "getDocumentSigningContext",
       "getDotloopDocumentStatus",
       "createDocumentShareLink",
       "accessSharedDocument",
@@ -9423,8 +9429,14 @@
     "app/components/dashboard/listings/lifecycle/decision-history-panel.tsx": [
       "DecisionHistoryPanel"
     ],
+    "app/components/dashboard/listings/lifecycle/listing-description-composer.tsx": [
+      "ListingDescriptionComposer"
+    ],
     "app/components/dashboard/listings/lifecycle/listing-forms-panel.tsx": [
       "ListingFormsPanel"
+    ],
+    "app/components/dashboard/listings/lifecycle/listing-gates-panel.tsx": [
+      "ListingGatesPanel"
     ],
     "app/components/dashboard/listings/lifecycle/listing-intelligence-card.tsx": [
       "ListingIntelligenceCard"
@@ -10822,8 +10834,14 @@
     "app/dashboard/documents/contract-review/contract-review-client.tsx": [
       "ContractReviewClient"
     ],
+    "app/dashboard/documents/document-actions-dialog.tsx": [
+      "DocumentActionsDialog"
+    ],
     "app/dashboard/documents/document-center-client.tsx": [
       "DocumentCenterClient"
+    ],
+    "app/dashboard/documents/document-workspace-panel.tsx": [
+      "DocumentWorkspacePanel"
     ],
     "app/dashboard/documents/share-document-dialog.tsx": [
       "ShareDocumentDialog"
@@ -11252,6 +11270,8 @@
     "app/dashboard/marketing/studio/components/ad-os/ad-os-actions.ts": [
       "generateMarketingInsight",
       "runPrelaunchCheck",
+      "runBatchReadinessCheck",
+      "loadReadinessHistory",
       "repurposeContent",
       "scheduleRepurposedPost",
       "analyzeCompetitorLandscape",
@@ -11267,6 +11287,9 @@
     ],
     "app/dashboard/marketing/studio/components/ad-os/creative-variations-panel.tsx": [
       "CreativeVariationsPanel"
+    ],
+    "app/dashboard/marketing/studio/components/ad-os/listing-copy-panel.tsx": [
+      "ListingCopyPanel"
     ],
     "app/dashboard/marketing/studio/components/ad-os/performance-intelligence-panel.tsx": [
       "PerformanceIntelligencePanel"
@@ -11801,6 +11824,9 @@
     ],
     "app/dashboard/tools/home-value/HomeValuePageBuilderClient.tsx": [
       "HomeValuePageBuilderClient"
+    ],
+    "app/dashboard/transactions/[id]/ai-coordinator-panel.tsx": [
+      "AiCoordinatorPanel"
     ],
     "app/dashboard/transactions/[id]/assign-lender-panel.tsx": [
       "AssignLenderPanel"
