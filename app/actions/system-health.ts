@@ -96,28 +96,84 @@ export type MessageProviderStats = {
   delivery_rate: number
 }
 
+export type MessageProviderSummary = {
+  windowHours: number
+  providers: MessageProviderStats[]
+  /**
+   * Rows in message_provider_logs that carry NEITHER sent_at NOR event_at and
+   * are therefore invisible to ANY time-windowed aggregate. Failed sends from
+   * lib/services/communication.service.tsx write sent_at: null on failure, so
+   * this count is skewed toward failures — surfacing it is the only way a
+   * delivery-rate number can be read honestly.
+   */
+  undatedExcluded: number
+}
+
+// ============================================================================
+// READ VERDICTS
+// ----------------------------------------------------------------------------
+// An observability reader must never let a REFUSED read look like a healthy
+// zero. supabase-js resolves a refused query instead of throwing, so
+// `const { data } = await ...` plus `data ?? []` renders "0 errors / 100%
+// uptime" out of an RLS denial. Every reader below reports one of three
+// states and the caller renders each differently:
+//
+//   ok          - the query ran and returned rows. The numbers are real.
+//   empty       - the query ran and returned nothing. This is an ABSENCE OF
+//                 MEASUREMENT, not a clean bill of health. `collector` names
+//                 the process that was supposed to write the rows.
+//   unavailable - the caller is not authorized, has no tenant scope, or the
+//                 query was refused. The UI must render a failure here and
+//                 must NOT render a metric.
+// ============================================================================
+
+export type HealthReadFailure = "unauthorized" | "not_scoped" | "query_failed"
+
+export type HealthRead<T> =
+  | { status: "ok"; data: T }
+  | { status: "empty"; collector: string; detail: string }
+  | { status: "unavailable"; reason: HealthReadFailure; detail: string }
+
+/** Roles allowed to read this brokerage's own operational health. */
+const HEALTH_READER_ROLES = ["superadmin", "admin", "broker"] as const
+
 // ============================================================================
 // Server Actions
 // ============================================================================
 
 export async function getServiceStatuses(): Promise<{
   services: ServiceStatus[]
-  overallStatus: "operational" | "critical" | "degraded"
+  overallStatus: "operational" | "critical" | "degraded" | "unknown"
   criticalIssues: ServiceStatus[]
   lastCheckedAt: string | null
+  /** How to read `overallStatus`. "unknown" is ONLY ever paired with empty/unavailable. */
+  readStatus: "ok" | "empty" | "unavailable"
+  readDetail: string | null
 }> {
-  const supabase = await createClient()
   const ctx = await getAgentContext()
 
-  if (!ctx) {
+  if (!ctx.isAuthenticated) {
     redirect("/login")
   }
 
   // Role gate: superadmin, admin, broker only
-  if (!["superadmin", "admin", "broker"].includes(ctx.role)) {
+  if (!HEALTH_READER_ROLES.includes(ctx.role as never)) {
     redirect("/dashboard")
   }
 
+  if (!ctx.brokerageId) {
+    return {
+      services: [],
+      overallStatus: "unknown",
+      criticalIssues: [],
+      lastCheckedAt: null,
+      readStatus: "unavailable",
+      readDetail:
+        "This session has no brokerage. service_status RLS is (brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id()), so the untenanted service catalog is never read as if it were this tenant's.",
+    }
+  }
+
+  const supabase = await createClient()
   const { data: services, error } = await supabase
     .from("service_status")
     .select("*")
@@ -128,15 +184,35 @@ export async function getServiceStatuses(): Promise<{
 
   if (error) {
     console.error("Error fetching service statuses:", error)
+    // A REFUSED read is not an operational platform. Previously this returned
+    // overallStatus "operational" from a denial — a green tick manufactured
+    // out of an error.
     return {
       services: [],
-      overallStatus: "operational",
+      overallStatus: "unknown",
       criticalIssues: [],
       lastCheckedAt: null,
+      readStatus: "unavailable",
+      readDetail: `service_status read was refused: ${error.message}`,
     }
   }
 
-  const typedServices = (services || []) as ServiceStatus[]
+  const typedServices = (services ?? []) as ServiceStatus[]
+
+  if (typedServices.length === 0) {
+    // No service is registered for this brokerage, so NOTHING has been
+    // measured. Reporting "operational" here is the defect this rail exists
+    // to prevent.
+    return {
+      services: [],
+      overallStatus: "unknown",
+      criticalIssues: [],
+      lastCheckedAt: null,
+      readStatus: "empty",
+      readDetail:
+        "No service is registered in service_status for this brokerage, so no health check has ever run against it. System status is UNKNOWN, not operational.",
+    }
+  }
 
   // Determine overall status
   const criticalDown = typedServices.filter(
@@ -146,11 +222,15 @@ export async function getServiceStatuses(): Promise<{
     (s) => s.current_status === "degraded" || s.current_status === "down"
   )
 
-  let overallStatus: "operational" | "critical" | "degraded" = "operational"
+  let overallStatus: "operational" | "critical" | "degraded" | "unknown" = "operational"
   if (criticalDown.length > 0) {
     overallStatus = "critical"
   } else if (anyDegraded) {
     overallStatus = "degraded"
+  } else if (typedServices.every((s) => s.current_status === "unknown" || !s.last_checked_at)) {
+    // Rows exist but no check has ever landed on any of them. Registered is
+    // not the same as measured.
+    overallStatus = "unknown"
   }
 
   // Get last checked timestamp
@@ -167,20 +247,37 @@ export async function getServiceStatuses(): Promise<{
     overallStatus,
     criticalIssues: criticalDown,
     lastCheckedAt,
+    readStatus: "ok",
+    readDetail:
+      lastCheckedAt === null
+        ? "Services are registered but no health check has ever recorded a timestamp against them."
+        : null,
   }
 }
 
 export async function getServiceHealthHistory(
   serviceKey: string,
   limit = 10
-): Promise<HealthCheck[]> {
-  const supabase = await createClient()
+): Promise<HealthRead<HealthCheck[]>> {
   const ctx = await getAgentContext()
 
-  if (!ctx || !["superadmin", "admin", "broker"].includes(ctx.role)) {
-    return []
+  if (!ctx.isAuthenticated || !HEALTH_READER_ROLES.includes(ctx.role as never)) {
+    return {
+      status: "unavailable",
+      reason: "unauthorized",
+      detail: "System health history is limited to broker, admin and superadmin roles.",
+    }
+  }
+  if (!ctx.brokerageId) {
+    return {
+      status: "unavailable",
+      reason: "not_scoped",
+      detail:
+        "This session has no brokerage. system_health_checks is tenant-scoped and its RLS admits untenanted rows, so it is never read without an explicit brokerage filter.",
+    }
   }
 
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from("system_health_checks")
     .select("*")
@@ -191,26 +288,51 @@ export async function getServiceHealthHistory(
 
   if (error) {
     console.error("Error fetching health history:", error)
-    return []
+    return {
+      status: "unavailable",
+      reason: "query_failed",
+      detail: `system_health_checks read was refused: ${error.message}`,
+    }
   }
 
-  return (data || []) as HealthCheck[]
+  const rows = (data ?? []) as HealthCheck[]
+  if (rows.length === 0) {
+    return {
+      status: "empty",
+      collector: "app/api/cron/health-check (scheduled 13,28,43,58 * * * * by lib/kernel/cron-dispatch.ts)",
+      detail: `No health check has ever been recorded for "${serviceKey}" under this brokerage. That is an absence of measurement, not a passing check.`,
+    }
+  }
+
+  return { status: "ok", data: rows }
 }
 
 export async function getUptimeHistory(
   serviceKey: string,
   days = 7
-): Promise<HealthCheckHistory[]> {
-  const supabase = await createClient()
+): Promise<HealthRead<HealthCheckHistory[]>> {
   const ctx = await getAgentContext()
 
-  if (!ctx || !["superadmin", "admin", "broker"].includes(ctx.role)) {
-    return []
+  if (!ctx.isAuthenticated || !HEALTH_READER_ROLES.includes(ctx.role as never)) {
+    return {
+      status: "unavailable",
+      reason: "unauthorized",
+      detail: "Uptime history is limited to broker, admin and superadmin roles.",
+    }
+  }
+  if (!ctx.brokerageId) {
+    return {
+      status: "unavailable",
+      reason: "not_scoped",
+      detail:
+        "This session has no brokerage. health_check_history is tenant-scoped and its RLS admits untenanted rows, so it is never read without an explicit brokerage filter.",
+    }
   }
 
   const startDate = new Date()
   startDate.setDate(startDate.getDate() - days)
 
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from("health_check_history")
     .select("*")
@@ -221,26 +343,58 @@ export async function getUptimeHistory(
 
   if (error) {
     console.error("Error fetching uptime history:", error)
-    return []
+    return {
+      status: "unavailable",
+      reason: "query_failed",
+      detail: `health_check_history read was refused: ${error.message}`,
+    }
   }
 
-  return (data || []) as HealthCheckHistory[]
+  const rows = (data ?? []) as HealthCheckHistory[]
+  if (rows.length === 0) {
+    return {
+      status: "empty",
+      collector: "app/api/cron/health-check (daily rollup rows keyed service_key + snapshot_date + brokerage_id)",
+      detail: `No daily uptime snapshot exists for "${serviceKey}" in the last ${days} days. Uptime is unknown here — it is not 100%.`,
+    }
+  }
+
+  return { status: "ok", data: rows }
 }
 
 export async function getResponseTimeLogs(
   serviceKeys: string[],
   hours = 24
-): Promise<ApiResponseLog[]> {
-  const supabase = await createClient()
+): Promise<HealthRead<ApiResponseLog[]>> {
   const ctx = await getAgentContext()
 
-  if (!ctx || !["superadmin", "admin", "broker"].includes(ctx.role)) {
-    return []
+  if (!ctx.isAuthenticated || !HEALTH_READER_ROLES.includes(ctx.role as never)) {
+    return {
+      status: "unavailable",
+      reason: "unauthorized",
+      detail: "API latency logs are limited to broker, admin and superadmin roles.",
+    }
+  }
+  if (!ctx.brokerageId) {
+    return {
+      status: "unavailable",
+      reason: "not_scoped",
+      detail:
+        "This session has no brokerage. api_response_logs RLS is (brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id()), so dropping the explicit filter would expose every tenant's untenanted egress telemetry.",
+    }
+  }
+  if (serviceKeys.length === 0) {
+    return {
+      status: "empty",
+      collector: "lib/agentic-os/connector-gateway.ts logApiResponse",
+      detail: "No service was selected, so no latency window was read.",
+    }
   }
 
   const startTime = new Date()
   startTime.setHours(startTime.getHours() - hours)
 
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from("api_response_logs")
     .select("*")
@@ -251,10 +405,24 @@ export async function getResponseTimeLogs(
 
   if (error) {
     console.error("Error fetching response time logs:", error)
-    return []
+    return {
+      status: "unavailable",
+      reason: "query_failed",
+      detail: `api_response_logs read was refused: ${error.message}`,
+    }
   }
 
-  return (data || []) as ApiResponseLog[]
+  const rows = (data ?? []) as ApiResponseLog[]
+  if (rows.length === 0) {
+    return {
+      status: "empty",
+      collector: "lib/agentic-os/connector-gateway.ts logApiResponse — writes brokerage_id: null on every row",
+      detail:
+        "No tenant-attributed latency samples exist. The only writer of api_response_logs records untenanted rows, so a tenant-scoped read of this table is expected to stay empty until the gateway attributes a brokerage. Read this as UNINSTRUMENTED, not as zero latency and zero errors.",
+    }
+  }
+
+  return { status: "ok", data: rows }
 }
 
 export async function getCronExecutionLogs(limit = 50): Promise<CronExecutionLog[]> {
@@ -327,71 +495,152 @@ export async function getAutomationErrors(days = 7): Promise<{
   return { errors, byWorkflow }
 }
 
-export async function getMessageProviderStats(): Promise<MessageProviderStats[]> {
-  const supabase = await createClient()
+export async function getMessageProviderStats(
+  hours = 24
+): Promise<HealthRead<MessageProviderSummary>> {
   const ctx = await getAgentContext()
 
-  if (!ctx || !["superadmin", "admin", "broker"].includes(ctx.role)) {
-    return []
+  if (!ctx.isAuthenticated || !HEALTH_READER_ROLES.includes(ctx.role as never)) {
+    return {
+      status: "unavailable",
+      reason: "unauthorized",
+      detail: "Message provider delivery stats are limited to broker, admin and superadmin roles.",
+    }
+  }
+  if (!ctx.brokerageId) {
+    return {
+      status: "unavailable",
+      reason: "not_scoped",
+      detail:
+        "This session has no brokerage. message_provider_logs RLS admits untenanted rows, so it is never read without an explicit brokerage filter.",
+    }
   }
 
   const startTime = new Date()
-  startTime.setHours(startTime.getHours() - 24)
+  startTime.setHours(startTime.getHours() - hours)
+  const since = startTime.toISOString()
 
+  const supabase = await createClient()
+
+  // COLUMN AUDIT: event_at has NO default and NO writer in this codebase sets
+  // it (all five inserters populate sent_at, which defaults to now()). The
+  // original `.gte("event_at", ...)` filter therefore excluded every row that
+  // has ever been written — a permanent zero wearing a working query. Match on
+  // EITHER timestamp so the window reflects what the writers actually record.
   const { data, error } = await supabase
     .from("message_provider_logs")
-    .select("provider_key, provider_status")
+    .select("provider_key, provider_status, sent_at, event_at")
     .eq("brokerage_id", ctx.brokerageId)
-    .gte("event_at", startTime.toISOString())
+    .or(`sent_at.gte.${since},event_at.gte.${since}`)
 
   if (error) {
     console.error("Error fetching message provider logs:", error)
-    return []
+    return {
+      status: "unavailable",
+      reason: "query_failed",
+      detail: `message_provider_logs read was refused: ${error.message}`,
+    }
   }
 
-  // Aggregate by provider
-  const stats: Record<string, { sent: number; errors: number }> = {}
-  ;(data || []).forEach((log: { provider_key: string; provider_status: string }) => {
-    if (!stats[log.provider_key]) {
-      stats[log.provider_key] = { sent: 0, errors: 0 }
+  // Rows with neither timestamp cannot fall inside ANY window. Failed sends
+  // from communication.service write sent_at: null, so this bucket skews
+  // toward failures; a delivery rate that hides it would read too clean.
+  const { count: undatedCount, error: undatedError } = await supabase
+    .from("message_provider_logs")
+    .select("id", { count: "exact", head: true })
+    .eq("brokerage_id", ctx.brokerageId)
+    .is("sent_at", null)
+    .is("event_at", null)
+
+  if (undatedError) {
+    console.error("Error counting undated message provider logs:", undatedError)
+    return {
+      status: "unavailable",
+      reason: "query_failed",
+      detail: `message_provider_logs undated-row count was refused: ${undatedError.message}`,
     }
-    stats[log.provider_key].sent++
+  }
+
+  const rows = (data ?? []) as Array<{ provider_key: string; provider_status: string | null }>
+  const undatedExcluded = undatedCount ?? 0
+
+  if (rows.length === 0 && undatedExcluded === 0) {
+    return {
+      status: "empty",
+      collector:
+        "lib/services/communication.service.tsx, lib/campaign-sequences/step-executor.ts, lib/ai-isa/direct-mail-trigger.ts, app/actions/ai-communication-hub.ts, app/actions/social-dm.ts",
+      detail: `No provider dispatch was logged for this brokerage in the last ${hours}h. Nothing was sent — this is not a 100% delivery rate.`,
+    }
+  }
+
+  // Aggregate by provider. The vocabulary actually written by the five
+  // inserters is 'sent' | 'failed'; 'error' and 'bounced' are accepted because
+  // no CHECK constrains provider_status and a webhook may widen it later.
+  const stats: Record<string, { sent: number; errors: number }> = {}
+  for (const log of rows) {
+    const key = log.provider_key
+    if (!stats[key]) stats[key] = { sent: 0, errors: 0 }
+    stats[key].sent++
     if (
       log.provider_status === "failed" ||
       log.provider_status === "error" ||
       log.provider_status === "bounced"
     ) {
-      stats[log.provider_key].errors++
+      stats[key].errors++
     }
-  })
+  }
 
-  return Object.entries(stats).map(([provider_key, s]) => ({
+  const providers = Object.entries(stats).map(([provider_key, s]) => ({
     provider_key,
     sent_count: s.sent,
     error_count: s.errors,
-    delivery_rate: s.sent > 0 ? ((s.sent - s.errors) / s.sent) * 100 : 100,
+    // Only ever computed from rows that exist. A provider with no rows is not
+    // listed at all rather than being listed at 100%.
+    delivery_rate: ((s.sent - s.errors) / s.sent) * 100,
   }))
+
+  return { status: "ok", data: { windowHours: hours, providers, undatedExcluded } }
 }
 
-export async function getSLASummary(days = 30): Promise<
-  {
-    service_key: string
-    service_name: string
-    uptime_30d: number
-    avg_response_ms: number
-    total_incidents: number
-  }[]
-> {
-  const supabase = await createClient()
+export type SLARow = {
+  service_key: string
+  service_name: string
+  uptime_30d: number
+  avg_response_ms: number
+  total_incidents: number
+}
+
+/**
+ * Single honest implementation behind BOTH getSLASummary (legacy array shape,
+ * kept for its existing panel caller) and exportSLAReport (verdict shape).
+ * Never invents a number: a service with no snapshot rows is not emitted at
+ * all rather than being emitted at 100% uptime.
+ */
+async function readSLASummary(
+  days: number
+): Promise<HealthRead<SLARow[]>> {
   const ctx = await getAgentContext()
 
-  if (!ctx || !["superadmin", "admin", "broker"].includes(ctx.role)) {
-    return []
+  if (!ctx.isAuthenticated || !HEALTH_READER_ROLES.includes(ctx.role as never)) {
+    return {
+      status: "unavailable",
+      reason: "unauthorized",
+      detail: "SLA reporting is limited to broker, admin and superadmin roles.",
+    }
+  }
+  if (!ctx.brokerageId) {
+    return {
+      status: "unavailable",
+      reason: "not_scoped",
+      detail:
+        "This session has no brokerage. health_check_history and service_status both admit untenanted rows under RLS, so neither is read without an explicit brokerage filter.",
+    }
   }
 
   const startDate = new Date()
   startDate.setDate(startDate.getDate() - days)
 
+  const supabase = await createClient()
   const { data: history, error } = await supabase
     .from("health_check_history")
     .select("service_key, uptime_pct, avg_response_ms, incidents")
@@ -400,52 +649,71 @@ export async function getSLASummary(days = 30): Promise<
 
   if (error) {
     console.error("Error fetching SLA summary:", error)
-    return []
+    return {
+      status: "unavailable",
+      reason: "query_failed",
+      detail: `health_check_history read was refused: ${error.message}`,
+    }
   }
 
-  // Get service names
-  const { data: services } = await supabase
+  // Service display names. A refused read here would silently downgrade every
+  // label to its raw key, so it is reported rather than swallowed.
+  const { data: services, error: servicesError } = await supabase
     .from("service_status")
     .select("service_key, service_name")
     .eq("brokerage_id", ctx.brokerageId)
 
-  const serviceNames: Record<string, string> = {}
-  ;(services || []).forEach((s: { service_key: string; service_name: string }) => {
-    serviceNames[s.service_key] = s.service_name
-  })
+  if (servicesError) {
+    console.error("Error fetching service names for SLA summary:", servicesError)
+    return {
+      status: "unavailable",
+      reason: "query_failed",
+      detail: `service_status read was refused: ${servicesError.message}`,
+    }
+  }
 
-  // Aggregate by service
+  const rows = (history ?? []) as Array<{
+    service_key: string
+    uptime_pct: number | null
+    avg_response_ms: number | null
+    incidents: number | null
+  }>
+
+  if (rows.length === 0) {
+    return {
+      status: "empty",
+      collector: "app/api/cron/health-check (daily health_check_history rollup)",
+      detail: `No uptime snapshot exists for this brokerage in the last ${days} days. There is no SLA to report — an empty report is not a passing one.`,
+    }
+  }
+
+  const serviceNames: Record<string, string> = {}
+  for (const s of (services ?? []) as Array<{ service_key: string; service_name: string }>) {
+    serviceNames[s.service_key] = s.service_name
+  }
+
   const aggregated: Record<
     string,
     { uptimes: number[]; responseTimes: number[]; incidents: number }
   > = {}
-  ;(
-    history || []
-  ).forEach(
-    (h: {
-      service_key: string
-      uptime_pct: number
-      avg_response_ms: number | null
-      incidents: number
-    }) => {
-      if (!aggregated[h.service_key]) {
-        aggregated[h.service_key] = { uptimes: [], responseTimes: [], incidents: 0 }
-      }
-      if (h.uptime_pct !== null) aggregated[h.service_key].uptimes.push(h.uptime_pct)
-      if (h.avg_response_ms !== null)
-        aggregated[h.service_key].responseTimes.push(h.avg_response_ms)
-      aggregated[h.service_key].incidents += h.incidents || 0
+  for (const h of rows) {
+    if (!aggregated[h.service_key]) {
+      aggregated[h.service_key] = { uptimes: [], responseTimes: [], incidents: 0 }
     }
-  )
+    if (h.uptime_pct !== null) aggregated[h.service_key].uptimes.push(Number(h.uptime_pct))
+    if (h.avg_response_ms !== null)
+      aggregated[h.service_key].responseTimes.push(h.avg_response_ms)
+    aggregated[h.service_key].incidents += h.incidents ?? 0
+  }
 
-  return Object.entries(aggregated)
+  const summary = Object.entries(aggregated)
+    // A service whose snapshots all carried a null uptime has no measured
+    // uptime. Dropping it is honest; defaulting it to 100 is not.
+    .filter(([, agg]) => agg.uptimes.length > 0)
     .map(([service_key, agg]) => ({
       service_key,
       service_name: serviceNames[service_key] || service_key,
-      uptime_30d:
-        agg.uptimes.length > 0
-          ? agg.uptimes.reduce((a, b) => a + b, 0) / agg.uptimes.length
-          : 100,
+      uptime_30d: agg.uptimes.reduce((a, b) => a + b, 0) / agg.uptimes.length,
       avg_response_ms:
         agg.responseTimes.length > 0
           ? Math.round(
@@ -454,7 +722,22 @@ export async function getSLASummary(days = 30): Promise<
           : 0,
       total_incidents: agg.incidents,
     }))
-    .sort((a, b) => a.uptime_30d - b.uptime_30d) // Sort by worst uptime first
+    .sort((a, b) => a.uptime_30d - b.uptime_30d) // worst uptime first
+
+  if (summary.length === 0) {
+    return {
+      status: "empty",
+      collector: "app/api/cron/health-check (daily health_check_history rollup)",
+      detail: `Snapshot rows exist for the last ${days} days but none carries a measured uptime value.`,
+    }
+  }
+
+  return { status: "ok", data: summary }
+}
+
+export async function getSLASummary(days = 30): Promise<SLARow[]> {
+  const result = await readSLASummary(days)
+  return result.status === "ok" ? result.data : []
 }
 
 export async function triggerManualHealthCheck(): Promise<{
@@ -493,28 +776,34 @@ export async function triggerManualHealthCheck(): Promise<{
   }
 }
 
-export async function exportSLAReport(): Promise<{
-  success: boolean
-  csvData?: string
-  error?: string
-}> {
-  const supabase = await createClient()
-  const ctx = await getAgentContext()
+export type SLAReportFile = {
+  filename: string
+  csvData: string
+  rowCount: number
+  windowDays: number
+}
 
-  if (!ctx || !["superadmin", "admin", "broker"].includes(ctx.role)) {
-    return { success: false, error: "Unauthorized" }
+export async function exportSLAReport(
+  days = 30
+): Promise<HealthRead<SLAReportFile>> {
+  const summary = await readSLASummary(days)
+
+  // An unauthorized, refused or unmeasured read must NOT produce a CSV. A
+  // downloaded file reads as an authoritative record long after the screen
+  // that produced it is gone, so only status "ok" yields bytes.
+  if (summary.status !== "ok") {
+    return summary
   }
 
-  const summary = await getSLASummary(30)
-
-  if (summary.length === 0) {
-    return { success: false, error: "No data available" }
-  }
-
-  // Generate CSV
-  const headers = ["Service", "30-Day Uptime %", "Avg Response (ms)", "Total Incidents"]
-  const rows = summary.map((s) => [
-    s.service_name,
+  const escape = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v)
+  const headers = [
+    "Service",
+    `${days}-Day Uptime %`,
+    "Avg Response (ms)",
+    "Total Incidents",
+  ]
+  const rows = summary.data.map((s) => [
+    escape(s.service_name),
     s.uptime_30d.toFixed(2),
     s.avg_response_ms.toString(),
     s.total_incidents.toString(),
@@ -522,5 +811,13 @@ export async function exportSLAReport(): Promise<{
 
   const csvData = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n")
 
-  return { success: true, csvData }
+  return {
+    status: "ok",
+    data: {
+      filename: `sla-report-${days}d-${new Date().toISOString().split("T")[0]}.csv`,
+      csvData,
+      rowCount: summary.data.length,
+      windowDays: days,
+    },
+  }
 }

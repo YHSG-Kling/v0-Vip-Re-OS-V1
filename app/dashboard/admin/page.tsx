@@ -9,6 +9,7 @@ import { RevenueProtectionRollupWidget } from './components/revenue-protection-r
 import { BrokerageIntelligenceWidget } from './components/brokerage-intelligence-widget'
 import WorkflowReportsWidget from './components/workflow-reports-widget'
 import { getBrokerageAgentLicenseStatuses } from '@/app/actions/admin/license-tracking'
+import { requirePlatformCapability } from '@/lib/platform/require-capability'
 
 // Force dynamic rendering to prevent build-time prerendering errors
 export const dynamic = 'force-dynamic'
@@ -123,11 +124,17 @@ export default async function AdminPage() {
 
   const { agents: licenseAgents } = await getBrokerageAgentLicenseStatuses(brokerageId)
 
+  // Domain Coherence is PLATFORM governance data (no brokerage_id, spans every
+  // tenant). Resolve the same capability its page and server actions enforce so
+  // a tenant admin is never shown a door that will be shut in their face.
+  const coherenceGate = await requirePlatformCapability("sentinel")
+
   return (
     <>
       <AdminDashboardClient
         brokerageId={brokerageId}
         operationalSnapshot={operationalSnapshot}
+        canReadDomainCoherence={coherenceGate.ok}
       />
       <div className="px-6 pb-6 space-y-6">
         <RevenueProtectionRollupWidget brokerageId={brokerageId} />

@@ -12,6 +12,7 @@ import {
   SyncHealthPanel,
   SystemAlertsPanel,
   OperationalImpactPanel,
+  ServiceSLAPanel,
   SchemaReadinessPanel,
 } from './components/os'
 
@@ -91,6 +92,11 @@ export default async function SystemPage() {
           <div className="space-y-6">
             <SystemAlertsPanel brokerageId={brokerageId} />
             <OperationalImpactPanel brokerageId={brokerageId} />
+            {/* Impact says WHO is affected right now. This says what the
+                providers actually delivered and how long each service has been
+                up — and, where nothing was ever collected, says exactly that
+                instead of drawing a 100% line through an empty table. */}
+            <ServiceSLAPanel brokerageId={brokerageId} />
           </div>
         </div>
 

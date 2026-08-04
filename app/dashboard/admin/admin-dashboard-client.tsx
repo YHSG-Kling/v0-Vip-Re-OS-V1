@@ -54,6 +54,12 @@ function formatCurrency(value: number): string {
 interface AdminDashboardClientProps {
   brokerageId: string
   operationalSnapshot?: OperationalSnapshot
+  /**
+   * Resolved SERVER-side from requirePlatformCapability('sentinel').
+   * Domain Coherence is platform governance data, so a tenant admin/broker must
+   * not be shown an entry point they will only be refused at.
+   */
+  canReadDomainCoherence?: boolean
 }
 
 // ── Operational health card config ────────────────────────────────────────────
@@ -71,7 +77,7 @@ const STATUS_STYLES: Record<HealthStatus, { card: string; badge: string; dot: st
   red:   { card: 'border-red-200    bg-red-50/40',    badge: 'bg-red-100    text-red-800',     dot: 'bg-red-500'   },
 }
 
-export function AdminDashboardClient({ brokerageId, operationalSnapshot }: AdminDashboardClientProps) {
+export function AdminDashboardClient({ brokerageId, operationalSnapshot, canReadDomainCoherence = false }: AdminDashboardClientProps) {
   const [stats, setStats] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -341,7 +347,9 @@ export function AdminDashboardClient({ brokerageId, operationalSnapshot }: Admin
           </Card>
         </Link>
 
-        {/* Domain Coherence CTA */}
+        {/* Domain Coherence CTA — platform staff only (the page and the server
+            actions behind it both gate on the 'sentinel' platform capability). */}
+        {canReadDomainCoherence && (
         <Link href="/dashboard/admin/domain-coherence">
           <Card className="border-foreground/10 bg-muted/30 hover:bg-muted/50 transition-colors cursor-pointer">
             <CardContent className="py-4 flex items-center justify-between gap-4">
@@ -358,6 +366,7 @@ export function AdminDashboardClient({ brokerageId, operationalSnapshot }: Admin
             </CardContent>
           </Card>
         </Link>
+        )}
 
         {/* Existing Tabs - Preserved for backward compatibility */}
         <Tabs defaultValue="overview" className="space-y-4 mt-8">
