@@ -3,6 +3,7 @@ import { createClient }             from "@/lib/supabase/server"
 import { BuyerOverviewClient }      from "./buyer-overview-client"
 import { SellerLifetimeOverview }   from "./seller-lifetime-overview"
 import { getBuyerEnabledGates }     from "@/app/actions/buyer-lifecycle-core"
+import { canBuyerSubmitOffers }     from "@/app/actions/buyer-lifecycle-core"
 import { ContactQuickActions }      from "@/components/contact/ContactQuickActions"
 import { AddressingCard }           from "@/components/contact/AddressingCard"
 import { StrategySessionCard }      from "@/components/contact/StrategySessionCard"
@@ -81,11 +82,21 @@ export default async function ContactDetailPage({ params }: PageProps) {
   }
 
   // Load minimal data for initial render + decide which view to mount
-  const [contactResult, profileResult, interestsResult, enabledGates, segmentsResult] = await Promise.all([
+  const [contactResult, profileResult, interestsResult, enabledGates, offerGate, segmentsResult] = await Promise.all([
     supabase.from("contacts").select("*").eq("id", contactId).single(),
     supabase.from("users").select("first_name, last_name").eq("id", user.id).maybeSingle(),
     supabase.from("property_interests").select("*").eq("contact_id", contactId).maybeSingle(),
     getBuyerEnabledGates(contactId),
+    // THE OFFER GATE IS DECIDED HERE, ON THE SERVER.
+    // buyer-overview-client.tsx used to import isOfferAllowed from gating-helpers and call
+    // it inside JSX — its own comment said "isOfferAllowed is async; server should
+    // pre-compute". Two things were wrong with that. It passed `currentStage` where the
+    // function takes a contactId, and it used the returned PROMISE as the condition: a
+    // promise is always truthy, so the "make an offer" path rendered OPEN for every buyer
+    // regardless of lifecycle state or financial verification. It also pulled server-only
+    // gating code (and the service-role client) into a CLIENT bundle, which is what finally
+    // broke the production build.
+    canBuyerSubmitOffers(contactId),
     // Segment memberships — written by the workflow "add to segment" step
     // (lib/workflow/adapters/segment-ops.ts). Active memberships only.
     supabase
@@ -391,6 +402,7 @@ export default async function ContactDetailPage({ params }: PageProps) {
           nextTour={buyerNextTour}
           dualAgencyListings={[]}
           enabledGates={enabledGates}
+          offerAllowed={offerGate.allowed}
         />
       ) : (
         /* Seller / lifetime / prospect — consolidated detail surface on this same route */

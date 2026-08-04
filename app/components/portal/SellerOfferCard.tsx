@@ -21,7 +21,7 @@ import {
   OFFER_STATUS_CONFIG,
   formatPrice,
   type OfferData,
-} from "@/lib/portal/resolve-seller-context"
+} from "@/lib/portal/seller-context-presentation"
 
 interface SellerOfferCardProps {
   total: number

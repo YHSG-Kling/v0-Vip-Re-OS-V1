@@ -186,6 +186,21 @@ function emittedEventStrings(): Set<string> {
     const src = readFileSync(f, "utf8")
     const re = /(?:eventType|triggerEvent):\s*"([^"]+)"/g
     while ((m = re.exec(src))) set.add(m[1])
+
+    // …and the SAME emission written through a local const. An emitter that does
+    //     const eventType = "compliance.listing_agreement_passed"
+    //     await startRun({ triggerEvent: eventType, … })
+    // is emitting exactly as much as one that inlines the string, but a literal-only
+    // scan reports the listening chain as DEAD. That false negative is not harmless:
+    // it pushes you to duplicate the string at the call site purely to satisfy the
+    // guard. Resolve the identifier against a const in the same file instead — the
+    // construct is what matters, not the spelling.
+    const viaVar = /(?:eventType|triggerEvent):\s*([A-Za-z_$][\w$]*)/g
+    while ((m = viaVar.exec(src))) {
+      const ident = m[1]
+      const decl = new RegExp(`(?:const|let|var)\\s+${ident}\\s*(?::[^=]+)?=\\s*"([^"]+)"`).exec(src)
+      if (decl) set.add(decl[1])
+    }
   }
   return set
 }

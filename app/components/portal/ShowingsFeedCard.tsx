@@ -27,7 +27,7 @@ import {
   SENTIMENT_CONFIG,
   deriveOverallSentiment,
   type ShowingFeedback,
-} from "@/lib/portal/resolve-seller-context"
+} from "@/lib/portal/seller-context-presentation"
 
 interface ShowingActivityStripProps {
   thisWeek: number
