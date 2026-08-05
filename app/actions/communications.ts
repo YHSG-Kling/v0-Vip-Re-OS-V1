@@ -225,7 +225,6 @@ export async function logCall(params: {
         duration: params.duration,
         outcome: params.outcome,
         recording_url: params.recordingUrl,
-        mock: result.mock,
       },
     })
   }
@@ -397,7 +396,6 @@ export async function publishSocialPost(params: {
         ghl_post_id: result.postId,
         platforms: params.platforms,
         scheduled_time: params.scheduledTime,
-        mock: result.mock,
       },
     })
   }
@@ -457,7 +455,6 @@ export async function scheduleAppointment(params: {
         ghl_event_id: result.eventId,
         ghl_contact_id: ghlContactId,
         meeting_type: params.meetingType,
-        mock: result.mock,
       },
     })
   }
@@ -507,7 +504,6 @@ export async function triggerAutomation(params: {
       workflow_id: params.workflowId,
       event_name: params.eventName,
       ghl_contact_id: ghlContactId,
-      mock: result.mock,
     },
   })
 

@@ -34,7 +34,18 @@ async function ghlFetch(endpoint: string, options: RequestInit = {}, configOverr
   // platform env credential, preserving every existing caller's behavior.
   const config = configOverride ?? getGHLConfig()
   if (!config) {
-    return { success: false, error: "Go High Level not configured", mock: true }
+    // THROW, do not return. This function's contract — stated two lines below —
+    // is "returns parsed data on success, throws on a non-2xx". Returning a
+    // {success:false} object here broke that contract for the seven callers that
+    // wrap the result as `{ success: true, contact: result.contact }`: they read
+    // the object as GHL data, found no such field, and reported SUCCESS with an
+    // undefined id. There was no `mock` flag on those returns, so nothing
+    // downstream could tell a fabricated success from a real one.
+    //
+    // Every caller already wraps this in try/catch and returns
+    // { success: false, error: error.message }, so throwing is what makes them
+    // all honest at once.
+    throw new Error("GHL not configured. Add GHL_API_KEY and GHL_LOCATION_ID to environment variables.")
   }
 
   // Route through the single connector-gateway (one way in/out). Behavior preserved:
@@ -168,14 +179,7 @@ export async function sendGHLSMS(params: {
 }) {
   const config = getGHLConfig()
   if (!config) {
-    // Fallback to mock for development
-    console.log("[GHL Service] Mock SMS sent to contact:", params.contactId)
-    return {
-      success: true,
-      mock: true,
-      messageId: `mock_sms_${Date.now()}`,
-      message: "SMS sent (mock mode - configure GHL for real delivery)",
-    }
+    return { success: false, error: "GHL not configured. Add GHL_API_KEY and GHL_LOCATION_ID to environment variables.", requiresConfiguration: true }
   }
 
   try {
@@ -216,13 +220,7 @@ export async function sendGHLEmail(params: {
 }) {
   const config = getGHLConfig()
   if (!config) {
-    console.log("[GHL Service] Mock email sent to contact:", params.contactId)
-    return {
-      success: true,
-      mock: true,
-      messageId: `mock_email_${Date.now()}`,
-      message: "Email sent (mock mode - configure GHL for real delivery)",
-    }
+    return { success: false, error: "GHL not configured. Add GHL_API_KEY and GHL_LOCATION_ID to environment variables.", requiresConfiguration: true }
   }
 
   try {
@@ -337,13 +335,7 @@ export interface GHLSocialPost {
 export async function createGHLSocialPost(params: GHLSocialPost) {
   const config = getGHLConfig()
   if (!config) {
-    console.log("[GHL Service] Mock social post created:", params.platforms)
-    return {
-      success: true,
-      mock: true,
-      postId: `mock_social_${Date.now()}`,
-      message: "Social post created (mock mode - configure GHL for real posting)",
-    }
+    return { success: false, error: "GHL not configured. Add GHL_API_KEY and GHL_LOCATION_ID to environment variables.", requiresConfiguration: true }
   }
 
   try {
@@ -419,12 +411,7 @@ export async function createGHLCalendarEvent(params: {
 }) {
   const config = getGHLConfig()
   if (!config) {
-    return {
-      success: true,
-      mock: true,
-      eventId: `mock_event_${Date.now()}`,
-      message: "Calendar event created (mock mode)",
-    }
+    return { success: false, error: "GHL not configured. Add GHL_API_KEY and GHL_LOCATION_ID to environment variables.", requiresConfiguration: true }
   }
 
   try {
@@ -478,11 +465,7 @@ export async function logGHLCall(params: {
 }) {
   const config = getGHLConfig()
   if (!config) {
-    return {
-      success: true,
-      mock: true,
-      callId: `mock_call_${Date.now()}`,
-    }
+    return { success: false, error: "GHL not configured. Add GHL_API_KEY and GHL_LOCATION_ID to environment variables.", requiresConfiguration: true }
   }
 
   try {
@@ -516,7 +499,7 @@ export async function triggerGHLWorkflow(params: {
 }) {
   const config = getGHLConfig()
   if (!config) {
-    return { success: true, mock: true, message: "Workflow triggered (mock)" }
+    return { success: false, error: "GHL not configured. Add GHL_API_KEY and GHL_LOCATION_ID to environment variables.", requiresConfiguration: true }
   }
 
   try {
