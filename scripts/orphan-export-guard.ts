@@ -108,6 +108,44 @@ for (const e of exportsFound) {
   if (!referenced) orphans.push(e)
 }
 
+const proofRoot = join(root, "scripts")
+const proofCorpus: string[] = []
+if (existsSync(proofRoot)) {
+  for (const f of walk(proofRoot)) {
+    try {
+      proofCorpus.push(
+        readFileSync(f, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, ""),
+      )
+    } catch { /* unreadable file contributes nothing */ }
+  }
+}
+
+/** Does any OTHER product file name this export? */
+const usedInProduct = (name: string, from: string) => {
+  const re = new RegExp(`\\b${name.replace(/\$/g, "\\$")}\\b`)
+  return files.some((f) => f !== from && re.test(codeCache.get(f)!))
+}
+
+const reachedModule = new Map<string, boolean>()
+for (const o of orphans) {
+  if (reachedModule.has(o.file)) continue
+  reachedModule.set(
+    o.file,
+    exportsFound.some((e) => e.file === o.file && usedInProduct(e.name, o.file)),
+  )
+}
+
+const cat = { proofOnly: 0, internal: 0, trulyDead: 0 }
+const deadByFile: Record<string, number> = {}
+for (const o of orphans) {
+  const re = new RegExp(`\\b${o.name.replace(/\$/g, "\\$")}\\b`)
+  const selfHits = (codeCache.get(o.file)!.match(new RegExp(re.source, "g")) ?? []).length
+  if (proofCorpus.some((p) => re.test(p))) cat.proofOnly++
+  else if (reachedModule.get(o.file) && selfHits > 1) cat.internal++
+  else { cat.trulyDead++; deadByFile[o.file] = (deadByFile[o.file] ?? 0) + 1 }
+}
+
+
 const counts: Record<string, number> = {}
 for (const o of orphans) counts[o.file] = (counts[o.file] ?? 0) + 1
 
@@ -155,9 +193,16 @@ for (const e of exportsFound) {
 }
 
 if (process.env.ORPHAN_EXPORT_BASELINE === "1") {
-  const next: Baseline = { files: counts, census: exportsFound.length, fileCensus, fileExports }
+  // trulyDead is recorded so the REAL backlog has a ratchet of its own. The
+  // per-file counts above cannot serve that purpose: a file can hold its count
+  // steady while a live internal helper turns into an unreachable one.
+  const next = {
+    files: counts, census: exportsFound.length, fileCensus, fileExports,
+    trulyDead: cat.trulyDead,
+  } as Baseline & { trulyDead: number }
   writeFileSync(baselinePath, `${JSON.stringify(next, null, 2)}\n`)
   console.log(`Baseline written: ${orphans.length} orphaned of ${exportsFound.length} exports across ${Object.keys(counts).length} files.`)
+  console.log(`  A. proof-only ${cat.proofOnly} · B. internal/live ${cat.internal} · C. referenced nowhere ${cat.trulyDead}`)
   process.exit(0)
 }
 
@@ -172,6 +217,52 @@ const baselineTotal = Object.values(baseline).reduce((a, b) => a + b, 0)
 
 console.log("\n[orphan-export guard — exported functions nothing else references]")
 console.log(`  ${exportsFound.length} exported functions scanned · ${orphans.length} unreferenced (baseline ${baselineTotal})`)
+
+const regressionsDead: string[] = []
+
+// ── WHAT "UNREFERENCED" ACTUALLY MEANS — three very different things ────────
+//
+// The single number above conflated three populations, and acting on it as if
+// it were one backlog is dangerous in BOTH directions: it invites wiring code
+// that already runs, and deleting code that is load-bearing.
+//
+//   A. PROOF-ONLY — referenced from scripts/ but from nothing in app/ or lib/.
+//      This guard deliberately excludes scripts/ from the corpus (SKIP_DIRS) so
+//      that "a simulator imports it" never counts as "the product uses it".
+//      That is the right call, and it means these have a proof standing over a
+//      capability no surface reaches yet. Real work, but a different KIND of
+//      work: the proof already describes the contract.
+//
+//   B. INTERNAL HELPER of a module the product DOES reach. The header says a
+//      same-file reference does not count, "a function that only calls itself is
+//      still orphaned" — true for a lone self-recursive function, but it also
+//      catches every exported helper that its own module's reachable entry point
+//      calls. Worked example: lib/analytics/prediction-accuracy.ts exports
+//      summarizeDomRows, which is called at line 1346 of that same file by
+//      getPredictionAccuracyReport — and THAT is imported by /dashboard/analytics
+//      and the superadmin platform page. The helper runs on every page load.
+//      Same shape in lib/kernel/client-story-drafts.ts (sellerUpdateBrief, called
+//      in-file by a runner the deal-health-scan cron invokes) and in
+//      lib/video/director-content.ts (prop builders behind
+//      resolveDirectorContentProps, imported by video-director.ts).
+//      THESE ARE LIVE. Wiring them would duplicate a call that already happens;
+//      deleting them would break a working feature. Category B is not a backlog.
+//
+//   C. REFERENCED NOWHERE — not in the product, not in a proof, not even by its
+//      own module. This is the honest burn-down list.
+//
+// Reported, not enforced, except for C: A and B move for legitimate reasons, but
+// C growing means a genuinely unreachable export was just added.
+console.log(`     A. proof-only (a simulator names it, no surface does)  ${cat.proofOnly}`)
+console.log(`     B. internal helper of a REACHED module — LIVE CODE     ${cat.internal}`)
+console.log(`     C. referenced NOWHERE — the real burn-down list        ${cat.trulyDead}`)
+if (cat.proofOnly + cat.internal + cat.trulyDead !== orphans.length) {
+  console.log(`     ! classification does not reconcile with ${orphans.length} — treat the split as unproven`)
+}
+const baselineDead = (baselineObj as any).trulyDead as number | undefined
+if (typeof baselineDead === "number" && cat.trulyDead > baselineDead) {
+  regressionsDead.push(`category C grew ${baselineDead} → ${cat.trulyDead} — a genuinely unreachable export was added`)
+}
 
 const regressions: string[] = []
 for (const [file, count] of Object.entries(counts)) {
@@ -279,6 +370,16 @@ if (lostCapability.length > 0) {
 console.log(`  census: ${exportsFound.length} exported functions (baseline ${baselineObj.census || "unset"})`)
 
 console.log("\n──────────────────────────────────────────────────")
+if (regressionsDead.length > 0) {
+  console.log("")
+  for (const r of regressionsDead) console.log(`  ✗ ${r}`)
+  console.log("\n  Category C is the honest backlog: not reachable from the product, not")
+  console.log("  named by a proof, not even used inside its own module. Wire it to the")
+  console.log("  surface it was written for. Do not delete it to make this pass.")
+  console.log(" ❌ ORPHAN_EXPORT_FAIL")
+  process.exit(1)
+}
+
 if (regressions.length > 0) {
   console.log(`  ✗ ${regressions.length} file(s) gained an unreferenced export:`)
   for (const r of regressions.slice(0, 25)) console.log(`     - ${r}`)
