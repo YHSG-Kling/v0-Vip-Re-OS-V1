@@ -13,6 +13,7 @@ import {
   getApprovalStatistics,
 } from "@/app/actions/content-approval-workflow"
 import { createClient } from "@/lib/supabase/client"
+import { ApprovalToolsPanel } from "./approval-tools-panel"
 
 interface ApprovalStats {
   total_decisions: number
@@ -159,6 +160,10 @@ export default function ContentApprovalsPage() {
             <CheckCircle2 className="h-4 w-4 mr-1.5" />
             History
           </TabsTrigger>
+          <TabsTrigger value="tools">
+            <FileText className="h-4 w-4 mr-1.5" />
+            Routing tools
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="pending" className="mt-4">
@@ -240,6 +245,10 @@ export default function ContentApprovalsPage() {
               </div>
             </Card>
           )}
+        </TabsContent>
+
+        <TabsContent value="tools" className="mt-4">
+          <ApprovalToolsPanel />
         </TabsContent>
       </Tabs>
     </div>

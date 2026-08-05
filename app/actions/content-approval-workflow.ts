@@ -260,6 +260,13 @@ export async function formatApprovalDecisionForDisplay(
   error?: string
 }> {
   try {
+    // This was the one export in the file with no gate. It reads no tenant
+    // data, but a "use server" export is a public HTTP endpoint and every
+    // other action here is gated; an ungated sibling is the seam an audit
+    // misses.
+    const auth = await getSessionAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+
     if (!decision) {
       return { success: false, error: "No decision provided" }
     }

@@ -12,6 +12,14 @@ import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
+import {
+  GENERATED_CONTENT_STATUSES,
+  type GeneratedContentStatus,
+  AB_TEST_VARIABLES,
+  type ABTestVariable,
+  type HashtagPlatform,
+  type DescriptionType,
+} from "./ai-content-generation.utils"
 
 function parseAIJsonResponse(text: string) {
   let cleanText = text.trim()
@@ -21,6 +29,49 @@ function parseAIJsonResponse(text: string) {
     cleanText = cleanText.replace(/^```\s*/, "").replace(/```\s*$/, "")
   }
   return JSON.parse(cleanText.trim())
+}
+
+/**
+ * Session-derived actor. Every write in this file that used to take an
+ * agentId FROM THE CALLER now goes through here instead: a "use server"
+ * action that trusts a caller-supplied tenant key lets any signed-in user
+ * write into any brokerage.
+ *
+ * ID SPACES — verified against the live database, do not collapse with `??`:
+ *   content_templates.agent_id            -> agents(id)
+ *   content_calendar.agent_id             -> agents(id)   NOT NULL
+ *   content_ab_tests.agent_id             -> agents(id)   NOT NULL
+ *   content_generation_logs.agent_id      -> agents(id)   NOT NULL
+ *   content_performance_tracking.agent_id -> agents(id)
+ *   hashtag_performance.agent_id          -> agents(id)   NOT NULL
+ *   seo_keywords.agent_user_id            -> users(id)    DIFFERENT SPACE
+ *   seo_keywords.created_by               -> users(id)
+ *   seo_keywords.brokerage_id             -> brokerages(id) NOT NULL
+ *
+ * brokerage_id must be stamped AT THE INSERT. Every RLS policy on the content
+ * tables reads `(brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id())`
+ * and brokerage_id is nullable, so a row written without it is readable by
+ * EVERY brokerage on the platform. ai_generated_content is stricter still:
+ * has_brokerage_access(NULL) returns false, so an unstamped insert there is
+ * refused outright and the caller sees an empty result, not an error.
+ */
+type ContentActor = { agentId: string; userId: string; brokerageId: string }
+
+async function requireContentActor(): Promise<
+  { ok: true; actor: ContentActor } | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Not authenticated" }
+  if (!ctx.brokerageId) {
+    return { ok: false, error: "No brokerage on this account — finish account setup." }
+  }
+  if (!ctx.agentId) {
+    return { ok: false, error: "No agent profile for this user yet — finish account setup." }
+  }
+  return {
+    ok: true,
+    actor: { agentId: ctx.agentId, userId: ctx.userId, brokerageId: ctx.brokerageId },
+  }
 }
 
 // ============================================
@@ -61,27 +112,49 @@ export async function updateBrandVoiceProfile(data: {
   examplePosts?: string[]
 }) {
   const supabase = await createClient()
+  const ctx = await getAgentContext()
+  const agentId = ctx.agentId ?? data.agentId
+  if (!agentId) throw new Error("No agent profile for this user yet — finish account setup.")
 
-  const { data: profile, error } = await supabase
+  const fields = {
+    tone: data.tone,
+    style: data.style,
+    preferred_words: data.keywords,
+    prohibited_words: data.avoidWords,
+    target_audience: data.targetAudience,
+    brand_personality: data.brandPersonality,
+    content_guidelines: data.contentGuidelines,
+    tone_examples: data.examplePosts,
+    updated_at: new Date().toISOString(),
+  }
+
+  // NOT .upsert(). brand_voice_profile has no unique constraint on agent_id —
+  // its only partial unique index covers (brokerage_id) WHERE agent_id IS NULL.
+  // A bare upsert therefore conflict-targets the PRIMARY KEY, and with no id
+  // supplied it can never conflict: every save INSERTED a brand-new profile.
+  // getBrandVoiceProfile then calls .maybeSingle() over the duplicates and
+  // errors out, which is why brand voice went blank after a second save.
+  const { data: existing, error: readError } = await supabase
     .from("brand_voice_profile")
-    .upsert({
-      agent_id: data.agentId,
-      tone: data.tone,
-      style: data.style,
-      preferred_words: data.keywords,
-      prohibited_words: data.avoidWords,
-      target_audience: data.targetAudience,
-      brand_personality: data.brandPersonality,
-      content_guidelines: data.contentGuidelines,
-      tone_examples: data.examplePosts,
-      updated_at: new Date().toISOString(),
-    })
-    .select()
-    .single()
+    .select("id")
+    .eq("agent_id", agentId)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (readError) throw readError
+
+  const { data: profile, error } = existing
+    ? await supabase.from("brand_voice_profile").update(fields).eq("id", existing.id).select().single()
+    : await supabase
+        .from("brand_voice_profile")
+        .insert({ ...fields, agent_id: agentId, brokerage_id: ctx.brokerageId })
+        .select()
+        .single()
 
   if (error) throw error
 
-  revalidatePath("/dashboard/content/settings")
+  revalidatePath("/settings/brand-voice")
   return profile
 }
 
@@ -89,10 +162,22 @@ export async function updateBrandVoiceProfile(data: {
 // CONTENT TEMPLATES
 // ============================================
 
-export async function getContentTemplates(filters?: { category?: string; contentType?: string }) {
+export async function getContentTemplates(filters?: { category?: string; contentType?: string }): Promise<
+  { success: true; templates: any[] } | { success: false; error: string }
+> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = await createClient()
 
-  let query = supabase.from("content_templates").select("*").eq("is_active", true).order("usage_count", { ascending: false })
+  // Scope explicitly to this brokerage. The RLS policy alone would also admit
+  // every untenanted (brokerage_id IS NULL) template on the platform.
+  let query = supabase
+    .from("content_templates")
+    .select("*")
+    .eq("brokerage_id", auth.actor.brokerageId)
+    .eq("is_active", true)
+    .order("usage_count", { ascending: false })
 
   if (filters?.category) {
     query = query.eq("category", filters.category)
@@ -103,12 +188,13 @@ export async function getContentTemplates(filters?: { category?: string; content
 
   const { data, error } = await query
 
+  // A refused read is NOT an empty library. Say so.
   if (error) {
-    console.error("Error fetching content templates:", error)
-    return []
+    console.error("[getContentTemplates] Query failed:", error)
+    return { success: false, error: error.message }
   }
 
-  return data || []
+  return { success: true, templates: data ?? [] }
 }
 
 export async function saveContentTemplate(data: {
@@ -119,43 +205,67 @@ export async function saveContentTemplate(data: {
   placeholders?: string[]
   seoGuidelines?: Record<string, unknown>
   exampleOutput?: string
-}) {
+}): Promise<{ success: true; template: any } | { success: false; error: string }> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!data.templateName?.trim()) return { success: false, error: "Template name is required" }
+  if (!data.contentType?.trim()) return { success: false, error: "Content type is required" }
+
   const supabase = await createClient()
 
   const { data: template, error } = await supabase
     .from("content_templates")
     .insert({
-      template_name: data.templateName,
+      // Tenant stamped AT THE INSERT — never patched on afterwards.
+      brokerage_id: auth.actor.brokerageId,
+      agent_id: auth.actor.agentId,
+      template_name: data.templateName.trim(),
       content_type: data.contentType,
       category: data.category,
       structure: data.structure,
       placeholders: data.placeholders,
       seo_guidelines: data.seoGuidelines,
       example_output: data.exampleOutput,
+      is_active: true,
     })
     .select()
     .single()
 
-  if (error) throw error
+  if (error) {
+    console.error("[saveContentTemplate] Insert failed:", error)
+    return { success: false, error: error.message }
+  }
 
-  revalidatePath("/dashboard/content/templates")
-  return template
+  revalidatePath("/dashboard/content")
+  return { success: true, template }
 }
 
 // ============================================
 // AI GENERATED CONTENT
 // ============================================
 
-export async function getGeneratedContent(agentId: string, filters?: { contentType?: string; status?: string }) {
-  // Return empty array for invalid UUIDs - production apps should require valid auth
-  if (!isValidUUID(agentId)) {
-    console.warn("[ai-content-generation] getGeneratedContent called with invalid UUID:", agentId)
-    return []
-  }
+export async function getGeneratedContent(filters?: {
+  contentType?: string
+  status?: string
+  limit?: number
+}): Promise<{ success: true; content: any[] } | { success: false; error: string }> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
 
   const supabase = await createClient()
 
-  let query = supabase.from("ai_generated_content").select("*").eq("agent_id", agentId).order("created_at", { ascending: false })
+  let query = supabase
+    .from("ai_generated_content")
+    .select("*")
+    .eq("agent_id", auth.actor.agentId)
+    .eq("brokerage_id", auth.actor.brokerageId)
+    // Generation-log and usage-signal rows share this table; they are
+    // bookkeeping, not drafts, and do not belong in a drafts list.
+    .not("metadata->>is_log", "eq", "true")
+    .not("metadata->>is_usage_signal", "eq", "true")
+    .order("created_at", { ascending: false })
+    .limit(filters?.limit ?? 100)
 
   if (filters?.contentType) {
     query = query.eq("content_type", filters.contentType)
@@ -167,15 +277,14 @@ export async function getGeneratedContent(agentId: string, filters?: { contentTy
   const { data, error } = await query
 
   if (error) {
-    console.error("Error fetching generated content:", error)
-    return []
+    console.error("[getGeneratedContent] Query failed:", error)
+    return { success: false, error: error.message }
   }
 
-  return data || []
+  return { success: true, content: data ?? [] }
 }
 
 export async function createGeneratedContent(data: {
-  agentId: string
   contentType: string
   platform?: string
   title?: string
@@ -185,13 +294,22 @@ export async function createGeneratedContent(data: {
   targetAudience?: string
   metadata?: Record<string, unknown>
   scheduledFor?: string
-}) {
+}): Promise<{ success: true; content: any } | { success: false; error: string }> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!data.content?.trim()) return { success: false, error: "Content cannot be empty" }
+  if (!data.contentType?.trim()) return { success: false, error: "Content type is required" }
+
   const supabase = await createClient()
 
   const { data: content, error } = await supabase
     .from("ai_generated_content")
     .insert({
-      agent_id: data.agentId,
+      agent_id: auth.actor.agentId,
+      // Without this the agc_insert policy (has_brokerage_access(brokerage_id))
+      // refuses the row outright — has_brokerage_access(NULL) is false.
+      brokerage_id: auth.actor.brokerageId,
       content_type: data.contentType,
       platform: data.platform,
       title: data.title,
@@ -199,24 +317,40 @@ export async function createGeneratedContent(data: {
       seo_keywords: data.seoKeywords,
       hashtags: data.hashtags,
       target_audience: data.targetAudience,
-      metadata: data.metadata,
+      metadata: data.metadata ?? {},
       scheduled_for: data.scheduledFor,
+      status: data.scheduledFor ? "scheduled" : "draft",
       compliance_approved: false,
     })
     .select()
     .single()
 
-  if (error) throw error
+  if (error) {
+    console.error("[createGeneratedContent] Insert failed:", error)
+    return { success: false, error: error.message }
+  }
 
   revalidatePath("/dashboard/content")
-  return content
+  return { success: true, content }
 }
 
-export async function updateContentStatus(contentId: string, status: string, publishedUrl?: string) {
+export async function updateContentStatus(
+  contentId: string,
+  status: string,
+  publishedUrl?: string
+): Promise<{ success: true; content: any } | { success: false; error: string }> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!isValidUUID(contentId)) return { success: false, error: "Invalid content ID" }
+  if (!(GENERATED_CONTENT_STATUSES as readonly string[]).includes(status)) {
+    return { success: false, error: `Unknown status "${status}"` }
+  }
+
   const supabase = await createClient()
 
   const updateData: Record<string, unknown> = {
-    status,
+    status: status as GeneratedContentStatus,
     updated_at: new Date().toISOString(),
   }
 
@@ -225,67 +359,107 @@ export async function updateContentStatus(contentId: string, status: string, pub
     updateData.published_url = publishedUrl
   }
 
-  const { data, error } = await supabase.from("ai_generated_content").update(updateData).eq("id", contentId).select().single()
+  // Tenant-scope the predicate as well as relying on RLS: agc_update admits
+  // any row this brokerage can see, and .eq("id") alone would happily target
+  // an id guessed from another workspace if the policy ever loosens.
+  const { data, error } = await supabase
+    .from("ai_generated_content")
+    .update(updateData)
+    .eq("id", contentId)
+    .eq("brokerage_id", auth.actor.brokerageId)
+    .select()
+    .maybeSingle()
 
-  if (error) throw error
+  if (error) {
+    console.error("[updateContentStatus] Update failed:", error)
+    return { success: false, error: error.message }
+  }
+  if (!data) {
+    return { success: false, error: "Content not found in your workspace" }
+  }
 
   revalidatePath("/dashboard/content")
-  return data
+  return { success: true, content: data }
 }
 
 // ============================================
 // SEO KEYWORDS
 // ============================================
 
-// pass 12: agentId here must be the auth users.id — seo_keywords.agent_user_id
-// FKs users(id) (verified live). No current callers; contract noted for future wiring.
-export async function getSEOKeywords(agentId: string) {
-  if (!isValidUUID(agentId)) {
-    return [
-      { keyword: "Miami real estate", search_volume: 12000, competition: 0.85, is_primary: true },
-      { keyword: "homes for sale Miami", search_volume: 8500, competition: 0.72, is_primary: true },
-      { keyword: "Miami luxury homes", search_volume: 5200, competition: 0.68, is_primary: false },
-    ]
-  }
+/**
+ * The AGENT-SCOPED keyword list (seo_keywords.agent_user_id = this user).
+ *
+ * Deliberately NOT merged into blog.ts:getSeoKeywords — that one is
+ * brokerage-wide (`.eq("brokerage_id", …)` only) and has no notion of an
+ * individual agent's list. The two read the same table on different axes.
+ *
+ * seo_keywords.agent_user_id FKs users(id), NOT agents(id). Passing an
+ * agents.id here is a guaranteed FK rejection on write and a silent
+ * zero-row read.
+ */
+export async function getSEOKeywords(): Promise<
+  { success: true; keywords: any[] } | { success: false; error: string }
+> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
 
   const supabase = await createClient()
 
   const { data, error } = await supabase
     .from("seo_keywords")
     .select("*")
-    .eq("agent_user_id", agentId)
+    .eq("brokerage_id", auth.actor.brokerageId)
+    .eq("agent_user_id", auth.actor.userId) // users(id) — not agents(id)
     .eq("is_active", true)
     .order("search_volume", { ascending: false })
 
   if (error) {
-    console.error("Error fetching SEO keywords:", error)
-    return []
+    console.error("[getSEOKeywords] Query failed:", error)
+    return { success: false, error: error.message }
   }
 
-  return data || []
+  return { success: true, keywords: data ?? [] }
 }
 
 export async function addSEOKeyword(data: {
-  agentId: string
   keyword: string
   searchVolume?: number
   competition?: number
   isPrimary?: boolean
-  category?: string
-}) {
+}): Promise<{ success: true; keyword: any } | { success: false; error: string }> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const kw = data.keyword?.trim()
+  if (!kw) return { success: false, error: "Keyword cannot be empty" }
+
   const supabase = await createClient()
-  const ctx = await getAgentContext()
+
+  // Same-keyword guard within this agent's own list.
+  const { data: existing, error: dupeError } = await supabase
+    .from("seo_keywords")
+    .select("id")
+    .eq("brokerage_id", auth.actor.brokerageId)
+    .eq("agent_user_id", auth.actor.userId)
+    .eq("keyword", kw)
+    .maybeSingle()
+
+  if (dupeError) {
+    console.error("[addSEOKeyword] Duplicate check failed:", dupeError)
+    return { success: false, error: dupeError.message }
+  }
+  if (existing) return { success: false, error: "You are already tracking that keyword" }
 
   const { data: keyword, error } = await supabase
     .from("seo_keywords")
     .insert({
-      agent_user_id: data.agentId,
-      brokerage_id: ctx.brokerageId,
-      created_by: ctx.userId,
-      visibility_scope: "agent",
-      keyword: data.keyword,
-      // keyword_type is a constrained enum (primary/secondary/long_tail/local/question);
-      // map the primary flag onto it. The free-form `category` has no canonical home and is dropped.
+      agent_user_id: auth.actor.userId, // users(id)
+      brokerage_id: auth.actor.brokerageId, // NOT NULL in the database
+      created_by: auth.actor.userId, // users(id)
+      visibility_scope: "agent", // CHECK member; 'private' is NOT one
+      keyword: kw,
+      // keyword_type is CHECK-constrained (primary/secondary/long_tail/local/question);
+      // map the primary flag onto it.
       keyword_type: data.isPrimary ? "primary" : "secondary",
       search_volume: data.searchVolume,
       competition: data.competition,
@@ -295,10 +469,13 @@ export async function addSEOKeyword(data: {
     .select()
     .single()
 
-  if (error) throw error
+  if (error) {
+    console.error("[addSEOKeyword] Insert failed:", error)
+    return { success: false, error: error.message }
+  }
 
-  revalidatePath("/dashboard/content/seo")
-  return keyword
+  revalidatePath("/dashboard/content")
+  return { success: true, keyword }
 }
 
 // ============================================
@@ -316,15 +493,39 @@ export async function trackContentPerformance(data: {
   saves?: number
   engagement_rate?: number
   reach?: number
-}) {
+}): Promise<{ success: true; performance: any } | { success: false; error: string }> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!isValidUUID(data.contentId)) return { success: false, error: "Invalid content ID" }
+  if (!data.platform?.trim()) return { success: false, error: "Platform is required" }
+
   const supabase = await createClient()
 
+  // The content must belong to this workspace before we attach numbers to it.
+  const { data: owner, error: ownerError } = await supabase
+    .from("ai_generated_content")
+    .select("id")
+    .eq("id", data.contentId)
+    .eq("brokerage_id", auth.actor.brokerageId)
+    .maybeSingle()
+
+  if (ownerError) {
+    console.error("[trackContentPerformance] Ownership check failed:", ownerError)
+    return { success: false, error: ownerError.message }
+  }
+  if (!owner) return { success: false, error: "Content not found in your workspace" }
+
+  // ON CONFLICT resolves against uq_content_performance_content_platform,
+  // a real unique index on (content_id, platform) — verified live.
   const { data: performance, error } = await supabase
     .from("content_performance_tracking")
     .upsert(
       {
         content_id: data.contentId,
         platform: data.platform,
+        agent_id: auth.actor.agentId,
+        brokerage_id: auth.actor.brokerageId,
         impressions: data.impressions || 0,
         clicks: data.clicks || 0,
         likes: data.likes || 0,
@@ -340,167 +541,291 @@ export async function trackContentPerformance(data: {
     .select()
     .single()
 
-  if (error) throw error
+  if (error) {
+    console.error("[trackContentPerformance] Upsert failed:", error)
+    return { success: false, error: error.message }
+  }
 
-  return performance
+  revalidatePath("/dashboard/content")
+  return { success: true, performance }
 }
 
-export async function getContentPerformanceStats(agentId: string, dateRange?: { start: string; end: string }) {
-  if (!isValidUUID(agentId)) {
+export async function getContentPerformanceStats(dateRange?: { start: string; end: string }): Promise<
+  | {
+      success: true
+      stats: {
+        totalImpressions: number
+        totalEngagement: number
+        avgEngagementRate: number
+        topPerformingContent: Array<{ contentId: string; title: string; impressions: number; engagement: number }>
+        performanceByType: Record<string, { impressions: number; engagement: number }>
+      }
+    }
+  | { success: false; error: string }
+> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const supabase = await createClient()
+
+  const { data: content, error: contentError } = await supabase
+    .from("ai_generated_content")
+    .select("id, title, content_type")
+    .eq("agent_id", auth.actor.agentId)
+    .eq("brokerage_id", auth.actor.brokerageId)
+
+  if (contentError) {
+    console.error("[getContentPerformanceStats] Content query failed:", contentError)
+    return { success: false, error: contentError.message }
+  }
+
+  const rows = content ?? []
+  if (rows.length === 0) {
     return {
-      totalImpressions: 45230,
-      totalEngagement: 3420,
-      avgEngagementRate: 7.6,
-      topPerformingContent: [],
-      performanceByType: {
-        social_post: { impressions: 32000, engagement: 2500 },
-        blog_post: { impressions: 8230, engagement: 620 },
-        email: { impressions: 5000, engagement: 300 },
+      success: true,
+      stats: {
+        totalImpressions: 0,
+        totalEngagement: 0,
+        avgEngagementRate: 0,
+        topPerformingContent: [],
+        performanceByType: {},
       },
     }
   }
 
-  const supabase = await createClient()
+  const byId = new Map<string, { id: string; title: string | null; content_type: string | null }>(
+    rows.map((c: any) => [c.id as string, c])
+  )
 
-  const { data: content } = await supabase.from("ai_generated_content").select("id").eq("agent_id", agentId)
-
-  const contentIds = content?.map((c) => c.id) || []
-
-  let query = supabase.from("content_performance_tracking").select("*").in("content_id", contentIds)
+  let query = supabase
+    .from("content_performance_tracking")
+    .select("*")
+    .in("content_id", Array.from(byId.keys()))
 
   if (dateRange) {
     query = query.gte("created_at", dateRange.start).lte("created_at", dateRange.end)
   }
 
-  const { data: performance } = await query
+  const { data: performance, error: perfError } = await query
 
-  const totalImpressions = performance?.reduce((sum, p) => sum + (p.impressions || 0), 0) || 0
-  const totalEngagement =
-    performance?.reduce((sum, p) => sum + (p.likes || 0) + (p.shares || 0) + (p.comments || 0), 0) || 0
+  if (perfError) {
+    console.error("[getContentPerformanceStats] Performance query failed:", perfError)
+    return { success: false, error: perfError.message }
+  }
+
+  const perf = performance ?? []
+  const engagementOf = (p: any) => (p.likes || 0) + (p.shares || 0) + (p.comments || 0) + (p.saves || 0)
+
+  const totalImpressions = perf.reduce((sum, p) => sum + (p.impressions || 0), 0)
+  const totalEngagement = perf.reduce((sum, p) => sum + engagementOf(p), 0)
   const avgEngagementRate =
-    performance && performance.length > 0
-      ? performance.reduce((sum, p) => sum + (p.engagement_rate || 0), 0) / performance.length
-      : 0
+    perf.length > 0 ? perf.reduce((sum, p) => sum + Number(p.engagement_rate || 0), 0) / perf.length : 0
 
-  return { totalImpressions, totalEngagement, avgEngagementRate, topPerformingContent: [], performanceByType: {} }
+  // performanceByType and topPerformingContent used to be hardcoded []/{} —
+  // the screen showed a shape with nothing in it no matter what was tracked.
+  const performanceByType: Record<string, { impressions: number; engagement: number }> = {}
+  const perContent = new Map<string, { impressions: number; engagement: number }>()
+
+  for (const p of perf) {
+    const meta = byId.get(p.content_id)
+    const type = meta?.content_type || "unknown"
+    if (!performanceByType[type]) performanceByType[type] = { impressions: 0, engagement: 0 }
+    performanceByType[type].impressions += p.impressions || 0
+    performanceByType[type].engagement += engagementOf(p)
+
+    const agg = perContent.get(p.content_id) ?? { impressions: 0, engagement: 0 }
+    agg.impressions += p.impressions || 0
+    agg.engagement += engagementOf(p)
+    perContent.set(p.content_id, agg)
+  }
+
+  const topPerformingContent = Array.from(perContent.entries())
+    .map(([contentId, agg]) => ({
+      contentId,
+      title: byId.get(contentId)?.title || "Untitled",
+      impressions: agg.impressions,
+      engagement: agg.engagement,
+    }))
+    .sort((a, b) => b.engagement - a.engagement)
+    .slice(0, 5)
+
+  return {
+    success: true,
+    stats: { totalImpressions, totalEngagement, avgEngagementRate, topPerformingContent, performanceByType },
+  }
 }
 
 // ============================================
 // HASHTAG PERFORMANCE
 // ============================================
 
-export async function getHashtagPerformance(agentId: string) {
-  if (!isValidUUID(agentId)) {
-    return [
-      { hashtag: "#MiamiRealEstate", usage_count: 45, avg_engagement: 8.2, avg_reach: 12500 },
-      { hashtag: "#LuxuryHomes", usage_count: 32, avg_engagement: 9.1, avg_reach: 15200 },
-      { hashtag: "#JustListed", usage_count: 28, avg_engagement: 7.8, avg_reach: 10800 },
-    ]
-  }
+export async function getHashtagPerformance(): Promise<
+  { success: true; hashtags: any[] } | { success: false; error: string }
+> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
 
   const supabase = await createClient()
 
   const { data, error } = await supabase
     .from("hashtag_performance")
     .select("*")
-    .eq("agent_id", agentId)
-    .order("avg_engagement", { ascending: false })
+    .eq("agent_id", auth.actor.agentId)
+    .eq("brokerage_id", auth.actor.brokerageId)
+    // avg_engagement is now actually written by trackHashtagUsage below. It
+    // previously never was, so this ORDER BY sorted every row on a NULL and
+    // the "leaderboard" was in arbitrary order.
+    .order("avg_engagement", { ascending: false, nullsFirst: false })
     .limit(20)
 
   if (error) {
-    console.error("Error fetching hashtag performance:", error)
-    return []
+    console.error("[getHashtagPerformance] Query failed:", error)
+    return { success: false, error: error.message }
   }
 
-  return data || []
+  return { success: true, hashtags: data ?? [] }
 }
 
-export async function trackHashtagUsage(data: { agentId: string; hashtag: string; engagement: number; reach: number }) {
+export async function trackHashtagUsage(data: {
+  hashtag: string
+  platform?: string
+  engagement: number
+  reach: number
+}): Promise<{ success: true; hashtag: any } | { success: false; error: string }> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const tag = data.hashtag?.trim()
+  if (!tag) return { success: false, error: "Hashtag cannot be empty" }
+  if (!Number.isFinite(data.engagement) || data.engagement < 0) {
+    return { success: false, error: "Engagement must be a non-negative number" }
+  }
+  if (!Number.isFinite(data.reach) || data.reach < 0) {
+    return { success: false, error: "Reach must be a non-negative number" }
+  }
+
+  const normalized = tag.startsWith("#") ? tag : `#${tag}`
+  const platform = data.platform?.trim() || "all"
   const supabase = await createClient()
 
-  // Get existing hashtag stats
-  const { data: existing } = await supabase
+  const { data: existing, error: readError } = await supabase
     .from("hashtag_performance")
     .select("*")
-    .eq("agent_id", data.agentId)
-    .eq("hashtag", data.hashtag)
+    .eq("agent_id", auth.actor.agentId)
+    .eq("brokerage_id", auth.actor.brokerageId)
+    .eq("hashtag", normalized)
+    .eq("platform", platform)
     .maybeSingle()
 
-  if (existing) {
-    // Update existing — engagement/reach hold running averages over posts_count.
-    const newPostsCount = (existing.posts_count || 0) + 1
-    const newEngagement =
-      ((existing.engagement || 0) * (existing.posts_count || 0) + data.engagement) / newPostsCount
-    const newReach = ((existing.reach || 0) * (existing.posts_count || 0) + data.reach) / newPostsCount
+  // A refused read here would have been silently treated as "no row exists"
+  // and turned an update into a duplicate insert.
+  if (readError) {
+    console.error("[trackHashtagUsage] Read failed:", readError)
+    return { success: false, error: readError.message }
+  }
 
-    const { error } = await supabase
+  if (existing) {
+    const priorCount = existing.posts_count || 0
+    const newPostsCount = priorCount + 1
+    // engagement/reach are INTEGER columns holding cumulative totals; the
+    // running average belongs in avg_engagement (numeric), which is what the
+    // leaderboard sorts by.
+    const newEngagement = (existing.engagement || 0) + Math.round(data.engagement)
+    const newReach = (existing.reach || 0) + Math.round(data.reach)
+
+    const { data: updated, error } = await supabase
       .from("hashtag_performance")
       .update({
         posts_count: newPostsCount,
         engagement: newEngagement,
         reach: newReach,
+        avg_engagement: newEngagement / newPostsCount,
         last_used_at: new Date().toISOString(),
       })
       .eq("id", existing.id)
+      .select()
+      .single()
 
-    if (error) throw error
-  } else {
-    // Create new
-    const { error } = await supabase.from("hashtag_performance").insert({
-      agent_id: data.agentId,
-      hashtag: data.hashtag,
-      platform: "all",
-      posts_count: 1,
-      engagement: data.engagement,
-      reach: data.reach,
-    })
+    if (error) {
+      console.error("[trackHashtagUsage] Update failed:", error)
+      return { success: false, error: error.message }
+    }
 
-    if (error) throw error
+    revalidatePath("/dashboard/content")
+    return { success: true, hashtag: updated }
   }
 
-  revalidatePath("/dashboard/content/hashtags")
+  const { data: created, error } = await supabase
+    .from("hashtag_performance")
+    .insert({
+      agent_id: auth.actor.agentId,
+      brokerage_id: auth.actor.brokerageId,
+      hashtag: normalized,
+      platform,
+      posts_count: 1,
+      engagement: Math.round(data.engagement),
+      reach: Math.round(data.reach),
+      avg_engagement: data.engagement,
+    })
+    .select()
+    .single()
+
+  if (error) {
+    console.error("[trackHashtagUsage] Insert failed:", error)
+    return { success: false, error: error.message }
+  }
+
+  revalidatePath("/dashboard/content")
+  return { success: true, hashtag: created }
 }
 
 // ============================================
 // CONTENT A/B TESTS
 // ============================================
 
-export async function createContentABTest(data: {
-  agentId: string
-  testName: string
-  contentType: string
-  variantAId: string
-  variantBId: string
-  testMetric: string
-  targetSampleSize?: number
-}) {
-  const supabase = await createClient()
+// createContentABTest lived here. It was DELETED in favour of
+// `createABTest` (below in the A/B TESTING SYSTEM section), which does the
+// same job — insert one row into content_ab_tests representing one test —
+// and additionally generates variant B with the AI variant writer instead of
+// demanding the caller already have two pieces of content.
+//
+// Ported onto the survivor BEFORE the deletion, because createABTest lacked
+// all four:
+//   1. agent_id stamping        (content_ab_tests.agent_id is NOT NULL; without
+//                                it every createABTest call died on SQLSTATE
+//                                23502 — verified live. It could never have run.)
+//   2. test_metric              (the metric the test is judged on)
+//   3. target_sample_size       (the caller-declared target, distinct from
+//                                sample_size_per_variant)
+//   4. an explicit variant-B path, so a caller that ALREADY has two pieces of
+//      content can register them directly — createContentABTest's only
+//      distinctive behaviour.
+// brokerage_id stamping was added at the same time; it was absent from both.
 
-  const { data: test, error } = await supabase
-    .from("content_ab_tests")
-    .insert({
-      agent_id: data.agentId,
-      test_name: data.testName,
-      content_type: data.contentType,
-      variant_a_id: data.variantAId,
-      variant_b_id: data.variantBId,
-      test_metric: data.testMetric,
-      target_sample_size: data.targetSampleSize || 1000,
-    })
-    .select()
-    .single()
+/**
+ * Record externally-measured results on a test.
+ *
+ * Kept alongside analyzeABTest deliberately: analyzeABTest DERIVES the winner
+ * from content_performance_tracking, while this one accepts numbers the agent
+ * measured elsewhere (a platform export, an email tool). Neither can do the
+ * other's job, so neither is a duplicate of the other.
+ */
+export async function updateABTestResults(
+  testId: string,
+  results: {
+    variantA: Record<string, unknown>
+    variantB: Record<string, unknown>
+    winner?: "A" | "B"
+  }
+): Promise<{ success: true; test: any } | { success: false; error: string }> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
 
-  if (error) throw error
+  if (!isValidUUID(testId)) return { success: false, error: "Invalid test ID" }
+  if (results.winner && results.winner !== "A" && results.winner !== "B") {
+    return { success: false, error: "Winner must be A or B" }
+  }
 
-  revalidatePath("/dashboard/content/ab-tests")
-  return test
-}
-
-export async function updateABTestResults(testId: string, results: {
-  variantA: Record<string, unknown>
-  variantB: Record<string, unknown>
-  winner?: string
-}) {
   const supabase = await createClient()
 
   const { data: test, error } = await supabase
@@ -508,18 +833,26 @@ export async function updateABTestResults(testId: string, results: {
     .update({
       variant_a_performance: results.variantA,
       variant_b_performance: results.variantB,
-      winner: results.winner,
-      status: results.winner ? "completed" : "active",
+      winner: results.winner ?? null,
+      // CHECK (status IN ('running','completed','cancelled')). This used to
+      // write "active", which the constraint refuses outright — verified live,
+      // SQLSTATE 23514. Every no-winner save was rejected.
+      status: results.winner ? "completed" : "running",
       completed_at: results.winner ? new Date().toISOString() : null,
     })
     .eq("id", testId)
+    .eq("brokerage_id", auth.actor.brokerageId)
     .select()
-    .single()
+    .maybeSingle()
 
-  if (error) throw error
+  if (error) {
+    console.error("[updateABTestResults] Update failed:", error)
+    return { success: false, error: error.message }
+  }
+  if (!test) return { success: false, error: "Test not found in your workspace" }
 
-  revalidatePath("/dashboard/content/ab-tests")
-  return test
+  revalidatePath("/dashboard/content")
+  return { success: true, test }
 }
 
 // ============================================
@@ -537,9 +870,14 @@ export async function logContentGeneration(data: {
   errorMessage?: string
 }) {
   const supabase = await createClient()
+  // Signature unchanged (this one has live external callers), but the tenant
+  // is resolved from the session: without brokerage_id the agc_insert policy
+  // refuses the row, and every generation log was being dropped silently.
+  const ctx = await getAgentContext()
 
   const { error } = await supabase.from("ai_generated_content").insert({
     agent_id: data.agentId,
+    brokerage_id: ctx.brokerageId,
     content_type: data.contentType,
     content: data.prompt,
     metadata: {
@@ -642,10 +980,14 @@ export async function generateListingDescription(params: {
     const result = parseAIJsonResponse(response.text)
     const generationTime = Date.now() - startTime
 
-    const { data: savedContent } = await supabase
+    const { data: savedContent, error: saveError } = await supabase
       .from("ai_generated_content")
       .insert({
         agent_id: params.agentId,
+        // agc_insert is has_brokerage_access(brokerage_id), and
+        // has_brokerage_access(NULL) is false — without this the row is
+        // refused and contentId comes back undefined to every caller.
+        brokerage_id: agentContext.brokerageId,
         property_id: params.propertyId,
         content_type: "listing_description",
         content_subtype: params.length,
@@ -658,6 +1000,10 @@ export async function generateListingDescription(params: {
       })
       .select()
       .single()
+
+    if (saveError) {
+      console.error("[generateListingDescription] Content insert failed:", saveError)
+    }
 
     await logContentGeneration({
       agentId: params.agentId,
@@ -1245,36 +1591,36 @@ TONE: Visual-first, authentic`,
 // ============================================
 
 export async function generateHashtags(params: {
-  agentId: string
   content: string
-  platform: "instagram" | "facebook" | "linkedin" | "twitter" | "tiktok"
+  platform: HashtagPlatform
   propertyType?: string
   location?: string
   maxHashtags?: number
-}) {
-  if (!isValidUUID(params.agentId)) {
-    return {
-      recommended_hashtags: {
-        high_reach: ["#RealEstate", "#HomesForSale", "#DreamHome"],
-        medium_reach: ["#MiamiRealEstate", "#LuxuryHomes", "#NewListing"],
-        niche: ["#MiamiLuxury", "#SouthFloridaHomes", "#ModernHome"],
-      },
-      platform_optimized_string: "#RealEstate #MiamiRealEstate #HomesForSale #LuxuryHomes #DreamHome",
-    }
-  }
+}): Promise<{ success: true; data: any } | { success: false; error: string }> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!params.content?.trim()) return { success: false, error: "Content cannot be empty" }
 
   const supabase = await createClient()
 
   try {
-    // Get historical hashtag performance
-    const { data: performanceData } = await supabase
+    // Historical hashtag performance for THIS agent feeds the prompt.
+    const { data: performanceData, error: perfError } = await supabase
       .from("hashtag_performance")
-      .select("*")
-      .eq("agent_id", params.agentId)
-      .order("avg_engagement", { ascending: false })
+      .select("hashtag, avg_engagement")
+      .eq("agent_id", auth.actor.agentId)
+      .eq("brokerage_id", auth.actor.brokerageId)
+      .order("avg_engagement", { ascending: false, nullsFirst: false })
       .limit(50)
 
-    const topPerformingHashtags = performanceData?.map((h) => h.hashtag) || []
+    // A refused history read must not masquerade as "this agent has no history".
+    if (perfError) {
+      console.error("[generateHashtags] History read failed:", perfError)
+      return { success: false, error: perfError.message }
+    }
+
+    const topPerformingHashtags = performanceData?.map((h) => h.hashtag) ?? []
 
     const prompt = `Analyze this content and generate optimal hashtag strategy for ${params.platform}:
 
@@ -1334,10 +1680,10 @@ OUTPUT FORMAT (JSON):
 
     const result = parseAIJsonResponse(response.text)
 
-    return result
+    return { success: true, data: result }
   } catch (error) {
     console.error("Generate hashtags error:", error)
-    return { success: false, error: "Failed to generate hashtags" }
+    return { success: false, error: error instanceof Error ? error.message : "Failed to generate hashtags" }
   }
 }
 
@@ -1356,14 +1702,39 @@ function getPlatformHashtagRules(platform: string): string {
 // BRAND VOICE LEARNING FROM EDITS
 // ============================================
 
-export async function learnFromEdits(params: { contentId: string; originalContent: string; editedContent: string }) {
+export async function learnFromEdits(params: {
+  contentId: string
+  originalContent: string
+  editedContent: string
+}): Promise<{ success: true; learnings: any } | { success: false; error: string }> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!isValidUUID(params.contentId)) return { success: false, error: "Invalid content ID" }
+  if (!params.originalContent?.trim() || !params.editedContent?.trim()) {
+    return { success: false, error: "Both the original and the edited text are required" }
+  }
+  if (params.originalContent.trim() === params.editedContent.trim()) {
+    return { success: false, error: "Nothing changed — there is nothing to learn from." }
+  }
+
   const supabase = await createClient()
 
   try {
-    // Get the content record to find agent_id
-    const { data: content } = await supabase.from("ai_generated_content").select("agent_id").eq("id", params.contentId).single()
+    // Confirm the piece is ours. agent_id is then taken from the SESSION, not
+    // from the row, so a caller cannot steer learnings onto another profile.
+    const { data: content, error: contentError } = await supabase
+      .from("ai_generated_content")
+      .select("id")
+      .eq("id", params.contentId)
+      .eq("brokerage_id", auth.actor.brokerageId)
+      .maybeSingle()
 
-    if (!content?.agent_id) return
+    if (contentError) {
+      console.error("[learnFromEdits] Content read failed:", contentError)
+      return { success: false, error: contentError.message }
+    }
+    if (!content) return { success: false, error: "Content not found in your workspace" }
 
     const prompt = `Analyze the differences between AI-generated content and human-edited version to learn preferences:
 
@@ -1403,32 +1774,51 @@ OUTPUT FORMAT (JSON):
 
     const learnings = parseAIJsonResponse(response.text)
 
-    // Get existing brand voice
-    const { data: brandVoice } = await supabase
+    // brand_voice_profile.agent_id FKs agents(id) — session agentId, not the
+    // users id and not a value taken off the content row.
+    const { data: brandVoice, error: voiceError } = await supabase
       .from("brand_voice_profile")
       .select("*")
-      .eq("agent_id", content.agent_id)
+      .eq("agent_id", auth.actor.agentId)
       .maybeSingle()
 
-    if (brandVoice) {
-      // Update brand voice with learnings
-      const updatedAvoidWords = [...(brandVoice.prohibited_words || []), ...(learnings.words_to_avoid || [])]
-      const updatedKeyPhrases = [...(brandVoice.key_brand_messages || []), ...(learnings.preferred_phrases || [])]
-
-      await supabase
-        .from("brand_voice_profile")
-        .update({
-          prohibited_words: Array.from(new Set(updatedAvoidWords)),
-          key_brand_messages: Array.from(new Set(updatedKeyPhrases)),
-          writing_style_notes: `${brandVoice.writing_style_notes || ""}\n${learnings.style_notes || ""}`,
-        })
-        .eq("agent_id", content.agent_id)
+    if (voiceError) {
+      console.error("[learnFromEdits] Brand voice read failed:", voiceError)
+      return { success: false, error: voiceError.message }
+    }
+    if (!brandVoice) {
+      return {
+        success: false,
+        error: "No brand voice profile yet — create one in Settings before teaching it from edits.",
+      }
     }
 
-    return learnings
+    const updatedAvoidWords = [...(brandVoice.prohibited_words || []), ...(learnings.words_to_avoid || [])]
+    const updatedKeyPhrases = [...(brandVoice.key_brand_messages || []), ...(learnings.preferred_phrases || [])]
+
+    const { error: writeError } = await supabase
+      .from("brand_voice_profile")
+      .update({
+        prohibited_words: Array.from(new Set(updatedAvoidWords)),
+        key_brand_messages: Array.from(new Set(updatedKeyPhrases)),
+        writing_style_notes: `${brandVoice.writing_style_notes || ""}\n${learnings.style_notes || ""}`.trim(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", brandVoice.id)
+
+    // Reporting "learned!" over a write the database refused is the whole
+    // failure mode this file is being audited for.
+    if (writeError) {
+      console.error("[learnFromEdits] Brand voice update failed:", writeError)
+      return { success: false, error: writeError.message }
+    }
+
+    revalidatePath("/settings/brand-voice")
+    revalidatePath("/dashboard/content")
+    return { success: true, learnings }
   } catch (error) {
     console.error("Learn from edits error:", error)
-    return null
+    return { success: false, error: error instanceof Error ? error.message : "Failed to learn from edits" }
   }
 }
 
@@ -1442,7 +1832,23 @@ export async function calculateSEOScore(params: {
   metaDescription: string
   primaryKeyword: string
   images?: Array<{ alt_text: string }>
-}) {
+}): Promise<
+  | {
+      success: true
+      score: number
+      recommendations: string[]
+      wordCount: number
+      keywordDensity: number
+      readabilityScore: number
+    }
+  | { success: false; error: string }
+> {
+  // Pure computation — no tenant data is read or written, so no actor gate.
+  // It still must not be handed junk: an empty keyword makes the density
+  // calculation divide the content into zero-length windows and score 25/25.
+  if (!params.content?.trim()) return { success: false, error: "Content cannot be empty" }
+  if (!params.primaryKeyword?.trim()) return { success: false, error: "A primary keyword is required" }
+
   let score = 0
 
   // Keyword density (25 points)
@@ -1484,7 +1890,7 @@ export async function calculateSEOScore(params: {
 
   const recommendations = generateSEORecommendations(params, score)
 
-  return { score, recommendations, wordCount, keywordDensity, readabilityScore }
+  return { success: true, score, recommendations, wordCount, keywordDensity, readabilityScore }
 }
 
 function calculateKeywordDensity(content: string, keyword: string): number {
@@ -1705,22 +2111,36 @@ OUTPUT FORMAT (JSON):
 // CONTENT CALENDAR INTEGRATION
 // ============================================
 
-export async function generateContentPlan(params: { agentId: string; month: Date; includeListings?: boolean }) {
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
-  }
+export async function generateContentPlan(params: {
+  month: Date
+  includeListings?: boolean
+}): Promise<{ success: true; data: any; scheduled: number } | { success: false; error: string }> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const month = params.month instanceof Date ? params.month : new Date(params.month)
+  if (Number.isNaN(month.getTime())) return { success: false, error: "Invalid month" }
 
   const supabase = await createClient()
 
   try {
-    // Get agent context
-    const { data: agent } = await supabase.from("users").select("*").eq("id", params.agentId).single()
-
-    const { data: listings } = await supabase
+    // THREE DIFFERENT ID SPACES in this one block. They used to all receive
+    // the same caller-supplied value:
+    //   users.id            <- the auth user
+    //   transactions.agent_id -> agents(id)
+    //   content_calendar.agent_id -> agents(id)
+    // Substituting one for another returns zero rows on read and is rejected
+    // by the FK on write.
+    const { data: listings, error: listingsError } = await supabase
       .from("transactions")
-      .select("*")
-      .eq("agent_id", params.agentId)
+      .select("id, listing_id")
+      .eq("agent_id", auth.actor.agentId) // agents(id)
       .eq("status", "active")
+
+    if (listingsError) {
+      console.error("[generateContentPlan] Listings read failed:", listingsError)
+      return { success: false, error: listingsError.message }
+    }
 
     const { data: personas } = await supabase
       .from("client_detailed_personas")
@@ -1729,12 +2149,13 @@ export async function generateContentPlan(params: { agentId: string; month: Date
 
     const { data: topContent } = await supabase
       .from("ai_generated_content")
-      .select("*, performance_score")
-      .eq("agent_id", params.agentId)
-      .order("performance_score", { ascending: false })
+      .select("metadata, performance_score")
+      .eq("agent_id", auth.actor.agentId) // agents(id)
+      .eq("brokerage_id", auth.actor.brokerageId)
+      .order("performance_score", { ascending: false, nullsFirst: false })
       .limit(10)
 
-    const topTopics = topContent?.map((c) => c.metadata?.topic || "general") || []
+    const topTopics = topContent?.map((c) => (c.metadata as any)?.topic || "general") || []
 
     const prompt = `Create 30-day content marketing plan for real estate agent.
 
@@ -1806,26 +2227,47 @@ OUTPUT FORMAT (JSON):
 
     const plan = parseAIJsonResponse(response.text)
 
-    // Save to content calendar
-    if (plan.plan && Array.isArray(plan.plan)) {
-      for (const item of plan.plan) {
-        await supabase.from("content_calendar").insert({
-          agent_id: params.agentId,
-          title: item.topic,
-          content_type: item.content_type,
-          scheduled_date: item.date,
-          platform: item.platforms?.[0],
-          status: "draft",
-          notes: item.reasoning,
-        })
+    // Save to content calendar as ONE batch insert. The per-item loop ignored
+    // every error it got, so a plan could report success having written
+    // nothing at all.
+    let scheduled = 0
+    if (Array.isArray(plan?.plan) && plan.plan.length > 0) {
+      const rows = plan.plan
+        .filter((item: any) => item?.topic && item?.content_type)
+        .map((item: any) => ({
+          agent_id: auth.actor.agentId, // agents(id), NOT NULL
+          brokerage_id: auth.actor.brokerageId, // stamped at the insert
+          title: String(item.topic),
+          content_type: String(item.content_type),
+          scheduled_date: item.date || null,
+          platform: item.platforms?.[0] ?? null,
+          status: "draft", // CHECK member
+          notes: item.reasoning ?? null,
+        }))
+
+      if (rows.length > 0) {
+        const { data: inserted, error: insertError } = await supabase
+          .from("content_calendar")
+          .insert(rows)
+          .select("id")
+
+        if (insertError) {
+          console.error("[generateContentPlan] Calendar insert failed:", insertError)
+          return { success: false, error: `Plan generated but could not be saved: ${insertError.message}` }
+        }
+        scheduled = inserted?.length ?? 0
       }
     }
 
-    revalidatePath("/dashboard/content/calendar")
-    return { success: true, data: plan }
+    if (scheduled === 0) {
+      return { success: false, error: "The planner returned no usable calendar entries — try again." }
+    }
+
+    revalidatePath("/dashboard/content")
+    return { success: true, data: plan, scheduled }
   } catch (error) {
     console.error("Generate content plan error:", error)
-    return { success: false, error: "Failed to generate content plan" }
+    return { success: false, error: error instanceof Error ? error.message : "Failed to generate content plan" }
   }
 }
 
@@ -1873,6 +2315,10 @@ export async function scheduleContent(params: {
     .from("content_calendar")
     .insert({
       agent_id: content.agent_id,
+      // content_calendar's RLS is `(brokerage_id IS NULL) OR (brokerage_id =
+      // current_user_brokerage_id())` — an unstamped calendar entry is visible
+      // to every brokerage on the platform.
+      brokerage_id: content.brokerage_id,
       content_id: params.contentId,
       title: content.metadata?.title || `${content.content_type} content`,
       content_type: content.content_type,
@@ -1897,53 +2343,118 @@ export async function scheduleContent(params: {
 // A/B TESTING SYSTEM
 // ============================================
 
+/**
+ * Create an A/B test.
+ *
+ * SURVIVOR of the createContentABTest / createABTest pair. Two modes:
+ *   · variantBId omitted  -> variant B is written by the AI variant generator
+ *     from variant A along `testVariable` (this function's original behaviour).
+ *   · variantBId supplied -> both variants are registered as-is (the behaviour
+ *     ported over from createContentABTest before it was deleted).
+ */
 export async function createABTest(params: {
   baseContentId: string
-  testVariable: "subject_line" | "opening_hook" | "cta" | "length" | "tone"
+  testVariable: ABTestVariable
   sampleSize?: number
-}) {
+  /** Ported from createContentABTest: register an existing second variant. */
+  variantBId?: string
+  /** Ported from createContentABTest: the metric the test is judged on. */
+  testMetric?: string
+  /** Ported from createContentABTest: caller-declared total sample target. */
+  targetSampleSize?: number
+  /** Ported from createContentABTest: override the generated test name. */
+  testName?: string
+}): Promise<{ success: true; test: any } | { success: false; error: string }> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(params.baseContentId)) {
     return { success: false, error: "Invalid content ID" }
+  }
+  if (!(AB_TEST_VARIABLES as readonly string[]).includes(params.testVariable)) {
+    return { success: false, error: `Unknown test variable "${params.testVariable}"` }
+  }
+  if (params.variantBId && !isValidUUID(params.variantBId)) {
+    return { success: false, error: "Invalid variant B ID" }
+  }
+  if (params.variantBId && params.variantBId === params.baseContentId) {
+    return { success: false, error: "Variant B must be different from variant A" }
   }
 
   const supabase = await createClient()
 
   try {
-    const { data: baseContent } = await supabase
+    const { data: baseContent, error: baseError } = await supabase
       .from("ai_generated_content")
       .select("*")
       .eq("id", params.baseContentId)
-      .single()
+      .eq("brokerage_id", auth.actor.brokerageId)
+      .maybeSingle()
 
+    if (baseError) {
+      console.error("[createABTest] Base content read failed:", baseError)
+      return { success: false, error: baseError.message }
+    }
     if (!baseContent) {
-      return { success: false, error: "Content not found" }
+      return { success: false, error: "Content not found in your workspace" }
     }
 
-    // Generate variant
-    const variant = await generateVariant(baseContent, params.testVariable)
+    let variantBId = params.variantBId
 
-    // Create test record
+    if (variantBId) {
+      // Explicit-variant path (ported): confirm B is ours too, or the FK
+      // to ai_generated_content would attach another tenant's row to our test.
+      const { data: variantB, error: variantError } = await supabase
+        .from("ai_generated_content")
+        .select("id")
+        .eq("id", variantBId)
+        .eq("brokerage_id", auth.actor.brokerageId)
+        .maybeSingle()
+
+      if (variantError) {
+        console.error("[createABTest] Variant B read failed:", variantError)
+        return { success: false, error: variantError.message }
+      }
+      if (!variantB) return { success: false, error: "Variant B not found in your workspace" }
+    } else {
+      const variant = await generateVariant(baseContent, params.testVariable, auth.actor)
+      if (!variant?.id) {
+        return { success: false, error: "Could not generate the B variant" }
+      }
+      variantBId = variant.id
+    }
+
     const { data: test, error } = await supabase
       .from("content_ab_tests")
       .insert({
-        test_name: `${params.testVariable} test - ${baseContent.content_type}`,
+        // content_ab_tests.agent_id is NOT NULL and FKs agents(id). Its
+        // absence here is why this function could never complete a single run.
+        agent_id: auth.actor.agentId,
+        brokerage_id: auth.actor.brokerageId,
+        test_name: params.testName?.trim() || `${params.testVariable} test - ${baseContent.content_type}`,
         content_type: baseContent.content_type,
         variant_a_id: baseContent.id,
-        variant_b_id: variant.id,
+        variant_b_id: variantBId,
         test_variable: params.testVariable,
+        test_metric: params.testMetric ?? "engagement_rate",
+        target_sample_size: params.targetSampleSize ?? 1000,
         sample_size_per_variant: params.sampleSize || 100,
+        status: "running", // CHECK member
         started_at: new Date().toISOString(),
       })
       .select()
       .single()
 
-    if (error) throw error
+    if (error) {
+      console.error("[createABTest] Insert failed:", error)
+      return { success: false, error: error.message }
+    }
 
-    revalidatePath("/dashboard/content/ab-tests")
-    return { success: true, data: test }
+    revalidatePath("/dashboard/content")
+    return { success: true, test }
   } catch (error) {
     console.error("Create A/B test error:", error)
-    return { success: false, error: "Failed to create A/B test" }
+    return { success: false, error: error instanceof Error ? error.message : "Failed to create A/B test" }
   }
 }
 
@@ -1953,7 +2464,7 @@ function getVariationSeed(content: string): number {
     (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0))
 }
 
-async function generateVariant(baseContent: any, testVariable: string) {
+async function generateVariant(baseContent: any, testVariable: string, actor: ContentActor) {
   const seed = getVariationSeed(baseContent.generated_content ?? baseContent.metadata?.subject_line ?? testVariable)
 
   const prompts: Record<string, string> = {
@@ -1995,11 +2506,14 @@ Keep same information, change how it's presented.`,
 
   const supabase = await createClient()
 
-  // Save variant
-  const { data: variant } = await supabase
+  // Save variant. brokerage_id is mandatory here: the agc_insert policy is
+  // has_brokerage_access(brokerage_id) and has_brokerage_access(NULL) is false,
+  // so an unstamped variant is refused and the test has no B side.
+  const { data: variant, error } = await supabase
     .from("ai_generated_content")
     .insert({
-      agent_id: baseContent.agent_id,
+      agent_id: actor.agentId,
+      brokerage_id: actor.brokerageId,
       content_type: baseContent.content_type,
       generated_content: response.text,
       ai_model_used: response.model,
@@ -2014,10 +2528,31 @@ Keep same information, change how it's presented.`,
     .select()
     .single()
 
+  if (error) {
+    console.error("[generateVariant] Variant insert failed:", error)
+    return null
+  }
+
   return variant
 }
 
-export async function analyzeABTest(testId: string) {
+export async function analyzeABTest(testId: string): Promise<
+  | {
+      success: true
+      data: {
+        winner: "A" | "B"
+        variantARate: number
+        variantBRate: number
+        improvement: string
+        confidence: string
+        recommendation: string
+      }
+    }
+  | { success: false; error: string }
+> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(testId)) {
     return { success: false, error: "Invalid test ID" }
   }
@@ -2025,50 +2560,111 @@ export async function analyzeABTest(testId: string) {
   const supabase = await createClient()
 
   try {
-    const { data: test } = await supabase
+    const { data: test, error: testError } = await supabase
       .from("content_ab_tests")
-      .select("*, variant_a:ai_generated_content!variant_a_id(*), variant_b:ai_generated_content!variant_b_id(*)")
+      .select("*")
       .eq("id", testId)
-      .single()
+      .eq("brokerage_id", auth.actor.brokerageId)
+      .maybeSingle()
 
+    if (testError) {
+      console.error("[analyzeABTest] Test read failed:", testError)
+      return { success: false, error: testError.message }
+    }
     if (!test) {
-      return { success: false, error: "Test not found" }
+      return { success: false, error: "Test not found in your workspace" }
+    }
+    if (!test.variant_a_id || !test.variant_b_id) {
+      return { success: false, error: "This test has no second variant to compare against" }
     }
 
-    // Get performance data
-    const performanceA = test.variant_a?.engagement_metrics || {}
-    const performanceB = test.variant_b?.engagement_metrics || {}
+    // Engagement comes from content_performance_tracking — the table
+    // trackContentPerformance writes. The previous implementation read
+    // `ai_generated_content.engagement_metrics`, a column that DOES NOT EXIST
+    // (verified live). Both sides were therefore always 0, which made
+    // `metricA > metricB` false every time and declared B the winner of every
+    // test ever analysed, at a confidence derived from a zero difference.
+    const { data: perf, error: perfError } = await supabase
+      .from("content_performance_tracking")
+      .select("content_id, engagement_rate, impressions, likes, shares, comments, saves")
+      .in("content_id", [test.variant_a_id, test.variant_b_id])
 
-    const metricA = performanceA.engagement_rate || 0
-    const metricB = performanceB.engagement_rate || 0
+    if (perfError) {
+      console.error("[analyzeABTest] Performance read failed:", perfError)
+      return { success: false, error: perfError.message }
+    }
 
-    const winner = metricA > metricB ? "A" : "B"
-    const improvement = Math.abs(metricA - metricB) / Math.min(metricA || 1, metricB || 1) * 100
+    const rows = perf ?? []
+    if (rows.length === 0) {
+      return {
+        success: false,
+        error: "No performance has been recorded for either variant yet — track results first.",
+      }
+    }
 
-    // Calculate statistical confidence (simplified)
+    const rateFor = (contentId: string) => {
+      const forVariant = rows.filter((r) => r.content_id === contentId)
+      if (forVariant.length === 0) return 0
+      const explicit = forVariant.reduce((sum, r) => sum + Number(r.engagement_rate || 0), 0)
+      if (explicit > 0) return explicit / forVariant.length
+      // Fall back to a derived rate when the platform only gave us raw counts.
+      const impressions = forVariant.reduce((sum, r) => sum + (r.impressions || 0), 0)
+      if (impressions === 0) return 0
+      const engagement = forVariant.reduce(
+        (sum, r) => sum + (r.likes || 0) + (r.shares || 0) + (r.comments || 0) + (r.saves || 0),
+        0
+      )
+      return (engagement / impressions) * 100
+    }
+
+    const metricA = rateFor(test.variant_a_id)
+    const metricB = rateFor(test.variant_b_id)
+
+    if (metricA === 0 && metricB === 0) {
+      return { success: false, error: "Both variants are still at zero engagement — nothing to compare." }
+    }
+
+    const winner: "A" | "B" = metricA >= metricB ? "A" : "B"
+    const improvement = (Math.abs(metricA - metricB) / Math.min(metricA || 1, metricB || 1)) * 100
+
     const sampleSize = test.sample_size_per_variant || 100
     const confidence = calculateConfidence(metricA, metricB, sampleSize)
+    const decided = confidence > 0.95
 
-    // Update test record
-    await supabase
+    const { error: updateError } = await supabase
       .from("content_ab_tests")
       .update({
         winner_variant: winner,
+        winner_id: winner === "A" ? test.variant_a_id : test.variant_b_id,
         confidence_level: confidence,
         results_summary: {
           variant_a_rate: metricA,
           variant_b_rate: metricB,
           improvement_percentage: improvement,
         },
-        ended_at: new Date().toISOString(),
-        declared_winner_at: confidence > 0.95 ? new Date().toISOString() : null,
+        // CHECK (status IN ('running','completed','cancelled')) — only close
+        // the test out once the confidence threshold is actually met.
+        status: decided ? "completed" : "running",
+        ended_at: decided ? new Date().toISOString() : null,
+        completed_at: decided ? new Date().toISOString() : null,
+        declared_winner_at: decided ? new Date().toISOString() : null,
       })
       .eq("id", testId)
+      .eq("brokerage_id", auth.actor.brokerageId)
 
+    // Do not report an analysis we failed to persist.
+    if (updateError) {
+      console.error("[analyzeABTest] Result write failed:", updateError)
+      return { success: false, error: updateError.message }
+    }
+
+    revalidatePath("/dashboard/content")
     return {
       success: true,
       data: {
         winner,
+        variantARate: metricA,
+        variantBRate: metricB,
         improvement: `${improvement.toFixed(1)}%`,
         confidence: `${(confidence * 100).toFixed(1)}%`,
         recommendation: generateTestRecommendation(test, winner, improvement, confidence),
@@ -2076,7 +2672,7 @@ export async function analyzeABTest(testId: string) {
     }
   } catch (error) {
     console.error("Analyze A/B test error:", error)
-    return { success: false, error: "Failed to analyze test" }
+    return { success: false, error: error instanceof Error ? error.message : "Failed to analyze test" }
   }
 }
 
@@ -2110,36 +2706,47 @@ function generateTestRecommendation(test: any, winner: string, improvement: numb
 // ============================================
 
 export async function bulkGenerateContent(params: {
-  agentId: string
   contentType: "listing_description" | "social_post" | "email" | "blog_post"
   targets: string[]
   templateId?: string
   personalizationLevel?: "high" | "medium" | "low"
-}) {
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
+}): Promise<
+  | {
+      success: true
+      data: {
+        queued: number
+        completed: number
+        failed: number
+        results: Array<{ target: string; success: boolean; data?: any; error?: string }>
+      }
+    }
+  | { success: false; error: string }
+> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const targets = (params.targets ?? []).filter((t) => isValidUUID(t))
+  if (targets.length === 0) {
+    return { success: false, error: "No valid targets to generate for" }
   }
 
-  const supabase = await createClient()
-
   try {
-    const jobs = params.targets.map((targetId, index) => ({
+    const jobs = targets.map((targetId, index) => ({
       target: targetId,
       status: "queued" as const,
       priority: calculateJobPriority(targetId, index),
     }))
 
-    const results = []
+    const results: Array<{ target: string; success: boolean; data?: any; error?: string }> = []
 
-    // Process each target
     for (const job of jobs) {
       try {
-        let result
+        let result: any
 
         switch (params.contentType) {
           case "listing_description":
             result = await generateListingDescription({
-              agentId: params.agentId,
+              agentId: auth.actor.agentId,
               propertyId: job.target,
               length: "medium",
             })
@@ -2147,7 +2754,7 @@ export async function bulkGenerateContent(params: {
 
           case "social_post":
             result = await generateSocialPost({
-              agentId: params.agentId,
+              agentId: auth.actor.agentId,
               platform: "instagram",
               postType: "general",
               context: `Property: ${job.target}`,
@@ -2157,7 +2764,7 @@ export async function bulkGenerateContent(params: {
 
           case "email":
             result = await generateEmail({
-              agentId: params.agentId,
+              agentId: auth.actor.agentId,
               emailType: "follow_up",
               contactId: job.target,
             })
@@ -2165,15 +2772,31 @@ export async function bulkGenerateContent(params: {
 
           case "blog_post":
             result = await generateBlogPost({
-              agentId: params.agentId,
+              agentId: auth.actor.agentId,
               topic: "Market update",
             })
             break
         }
 
-        results.push({ target: job.target, success: true, data: result })
+        // These generators REPORT failure, they do not throw. Pushing
+        // success:true unconditionally counted every refused generation as a
+        // completed one, so the summary said "12 completed, 0 failed" over
+        // twelve failures.
+        if (result?.success) {
+          results.push({ target: job.target, success: true, data: result })
+        } else {
+          results.push({
+            target: job.target,
+            success: false,
+            error: result?.error ?? "Generation failed",
+          })
+        }
       } catch (error) {
-        results.push({ target: job.target, success: false, error: String(error) })
+        results.push({
+          target: job.target,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        })
       }
     }
 
@@ -2188,7 +2811,7 @@ export async function bulkGenerateContent(params: {
     }
   } catch (error) {
     console.error("Bulk generate content error:", error)
-    return { success: false, error: "Failed to bulk generate content" }
+    return { success: false, error: error instanceof Error ? error.message : "Failed to bulk generate content" }
   }
 }
 
@@ -2197,27 +2820,47 @@ function calculateJobPriority(targetId: string, index: number): number {
   return Math.max(1, 10 - Math.floor(index / 10))
 }
 
-export async function generateAllListingDescriptions(agentId: string) {
-  if (!isValidUUID(agentId)) {
-    return { success: false, error: "Invalid agent ID" }
-  }
+export async function generateAllListingDescriptions(): Promise<
+  | {
+      success: true
+      data: {
+        queued: number
+        completed: number
+        failed: number
+        results: Array<{ target: string; success: boolean; data?: any; error?: string }>
+      }
+    }
+  | { success: false; error: string }
+> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
 
   const supabase = await createClient()
 
-  const { data: listings } = await supabase
+  const { data: listings, error } = await supabase
     .from("transactions")
-    .select("property_id:listing_id")
-    .eq("agent_id", agentId)
+    .select("listing_id")
+    .eq("agent_id", auth.actor.agentId) // transactions.agent_id -> agents(id)
     .eq("status", "active")
 
-  if (!listings || listings.length === 0) {
-    return { success: true, data: { queued: 0 } }
+  // "No active listings" and "the database refused the question" are not the
+  // same answer, and they must not render the same way.
+  if (error) {
+    console.error("[generateAllListingDescriptions] Transactions read failed:", error)
+    return { success: false, error: error.message }
+  }
+
+  // transactions.listing_id is ON DELETE SET NULL, so it really can be null;
+  // a null target used to be handed straight to the generator.
+  const targets = (listings ?? []).map((l) => l.listing_id).filter((id): id is string => isValidUUID(id))
+
+  if (targets.length === 0) {
+    return { success: false, error: "No active listings with a linked property to write descriptions for" }
   }
 
   return await bulkGenerateContent({
-    agentId,
     contentType: "listing_description",
-    targets: listings.map((l) => l.property_id),
+    targets,
     personalizationLevel: "high",
   })
 }
@@ -2402,14 +3045,27 @@ export async function validateThemFirstContent(content: string, contentType: str
   }
 }
 
+/**
+ * The enhanced listing-description writer.
+ *
+ * NOT a duplicate of generateListingDescription — it CALLS it. This is a
+ * decorator that adds neighborhood data, comparables, buyer-persona
+ * detection, SEO keywords and a "Them First" validation pass around the base
+ * generator. Deleting either one loses capability the other does not have.
+ */
 export async function enhancedGenerateListingDescription(params: {
   transactionId?: string
   propertyId?: string
-  agentId: string
-  descriptionType?: 'short_mls' | 'standard' | 'extended' | 'social_snippet'
-}) {
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: 'Invalid agent ID' }
+  descriptionType?: DescriptionType
+}): Promise<
+  | { success: true; contentId: string | null; description: any; validation: any; seoKeywords: any; targetPersona: any }
+  | { success: false; error: string }
+> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!params.transactionId && !params.propertyId) {
+    return { success: false, error: 'Provide a transaction or a property to describe' }
   }
 
   const supabase = await createClient()
@@ -2419,15 +3075,29 @@ export async function enhancedGenerateListingDescription(params: {
     let property: any = null
 
     if (params.transactionId && isValidUUID(params.transactionId)) {
-      const { data: transaction } = await supabase
+      const { data: transaction, error: txError } = await supabase
         .from('transactions')
         .select('*, listings(*), contacts(*)')
         .eq('id', params.transactionId)
-        .single()
+        .eq('agent_id', auth.actor.agentId)
+        .maybeSingle()
 
+      if (txError) {
+        console.error('[enhancedGenerateListingDescription] Transaction read failed:', txError)
+        return { success: false, error: txError.message }
+      }
       property = transaction?.listings
     } else if (params.propertyId && isValidUUID(params.propertyId)) {
-      const { data } = await supabase.from('listings').select('*').eq('id', params.propertyId).single()
+      const { data, error: listingError } = await supabase
+        .from('listings')
+        .select('*')
+        .eq('id', params.propertyId)
+        .maybeSingle()
+
+      if (listingError) {
+        console.error('[enhancedGenerateListingDescription] Listing read failed:', listingError)
+        return { success: false, error: listingError.message }
+      }
       property = data
     }
 
@@ -2453,10 +3123,10 @@ export async function enhancedGenerateListingDescription(params: {
     const descriptionType = params.descriptionType || 'standard'
     const length = descriptionType === 'short_mls' ? 'short' : descriptionType === 'extended' ? 'long' : 'medium'
 
-    // Generate description using existing function
+    // Generate description using the base generator
     const result = await generateListingDescription({
       propertyId: property.id,
-      agentId: params.agentId,
+      agentId: auth.actor.agentId,
       targetPersona,
       length,
       propertyDetails: {
@@ -2468,40 +3138,68 @@ export async function enhancedGenerateListingDescription(params: {
     })
 
     if (!result.success) {
-      return result
+      return { success: false, error: result.error ?? 'Failed to generate description' }
     }
 
-    // Validate "Them First" approach
-    const generatedText = result.data?.generated_content?.medium_description || result.data?.generated_content || ''
+    // CONTRACT WITH THE CALLEE. generateListingDescription returns
+    //   { success, data: <parsed AI JSON>, contentId }
+    // with contentId at the TOP level. This function used to read
+    // `result.data.contentId` and `result.data.generated_content` — neither
+    // key exists on that shape. Consequence: the metadata write below never
+    // fired even once, and the validated text was always the empty string,
+    // which scores 0.5 and fails the 0.7 gate. Every enhanced description
+    // came back "not Them-First enough" regardless of what was written.
+    const contentId: string | null = (result as any).contentId ?? null
+    const payload: any = result.data
+    const generatedText: string =
+      typeof payload === 'string'
+        ? payload
+        : payload?.medium_description ??
+          payload?.short_description ??
+          payload?.long_description ??
+          payload?.description ??
+          ''
+
+    if (!generatedText) {
+      return { success: false, error: 'The generator returned no description text' }
+    }
+
     const validation = await validateThemFirstContent(generatedText, 'listing_description')
 
-    // Update the saved content with validation results
-    if (result.data?.contentId) {
-      await supabase
+    if (contentId) {
+      const { error: metaError } = await supabase
         .from('ai_generated_content')
         .update({
           metadata: {
-            ...result.data.metadata,
             them_first_score: validation.overall_score,
             them_first_validation: validation,
             seo_keywords: keywords,
             target_persona: targetPersona,
             neighborhood_data: neighborhoodData,
           },
+          updated_at: new Date().toISOString(),
         })
-        .eq('id', result.data.contentId)
+        .eq('id', contentId)
+        .eq('brokerage_id', auth.actor.brokerageId)
+
+      if (metaError) {
+        console.error('[enhancedGenerateListingDescription] Metadata write failed:', metaError)
+        return { success: false, error: `Description written but enrichment failed: ${metaError.message}` }
+      }
     }
 
+    revalidatePath('/dashboard/content')
     return {
       success: true,
-      description: result.data,
+      contentId,
+      description: generatedText,
       validation,
       seoKeywords: keywords,
       targetPersona,
     }
   } catch (error) {
     console.error('Enhanced generate listing description error:', error)
-    return { success: false, error: 'Failed to generate description' }
+    return { success: false, error: error instanceof Error ? error.message : 'Failed to generate description' }
   }
 }
 
@@ -2533,7 +3231,6 @@ export async function calculateAICost(
 
 export async function logGenerationCost(params: {
   contentId?: string
-  agentId?: string
   model: string
   promptTokens?: number
   completionTokens?: number
@@ -2542,7 +3239,15 @@ export async function logGenerationCost(params: {
   success: boolean
   errorMessage?: string
   contentType?: string
-}) {
+}): Promise<{ success: true; cost: number } | { success: false; error: string }> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!params.model?.trim()) return { success: false, error: "Model is required" }
+  if (params.contentId && !isValidUUID(params.contentId)) {
+    return { success: false, error: "Invalid content ID" }
+  }
+
   const supabase = await createClient()
 
   const cost = await calculateAICost(
@@ -2555,8 +3260,13 @@ export async function logGenerationCost(params: {
   )
 
   const { error } = await supabase.from("content_generation_logs").insert({
-    content_id: params.contentId,
-    agent_id: params.agentId,
+    content_id: params.contentId ?? null,
+    // content_generation_logs.agent_id is NOT NULL and FKs agents(id).
+    // agentId was an OPTIONAL caller-supplied param, so every call that
+    // omitted it died on SQLSTATE 23502 — verified live — and the error was
+    // swallowed into a console line while the cost was returned as if booked.
+    agent_id: auth.actor.agentId,
+    brokerage_id: auth.actor.brokerageId,
     model_used: params.model,
     prompt_tokens: params.promptTokens || 0,
     completion_tokens: params.completionTokens || 0,
@@ -2569,102 +3279,122 @@ export async function logGenerationCost(params: {
   })
 
   if (error) {
-    console.error("Error logging generation cost:", error)
+    console.error("[logGenerationCost] Insert failed:", error)
+    return { success: false, error: error.message }
   }
 
-  return cost
+  revalidatePath("/dashboard/content")
+  return { success: true, cost }
 }
 
-export async function getMonthlyAICosts(agentId: string, month?: Date) {
-  if (!isValidUUID(agentId)) {
-    return {
-      total_cost: 45.32,
-      total_generations: 156,
-      avg_cost_per_generation: 0.29,
-      breakdown_by_model: [
-        { model: "openai/gpt-4o", cost: 28.5, count: 42 },
-        { model: "openai/gpt-4o-mini", cost: 16.82, count: 114 },
-      ],
+export async function getMonthlyAICosts(month?: Date): Promise<
+  | {
+      success: true
+      costs: {
+        total_cost: number
+        total_generations: number
+        avg_cost_per_generation: number
+        breakdown_by_model: Array<{ model: string; cost: number; count: number }>
+      }
     }
-  }
+  | { success: false; error: string }
+> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
 
   const supabase = await createClient()
-  const targetMonth = month || new Date()
+  const targetMonth = month ? new Date(month) : new Date()
+  if (Number.isNaN(targetMonth.getTime())) return { success: false, error: "Invalid month" }
+
   const startOfMonth = new Date(targetMonth.getFullYear(), targetMonth.getMonth(), 1)
-  const endOfMonth = new Date(targetMonth.getFullYear(), targetMonth.getMonth() + 1, 0)
+  // Day 0 of the NEXT month is the last day of this one, but at 00:00 — which
+  // dropped everything generated after midnight on the final day.
+  const endOfMonth = new Date(targetMonth.getFullYear(), targetMonth.getMonth() + 1, 1)
 
-  const { data: logs } = await supabase
+  const { data: logs, error } = await supabase
     .from("content_generation_logs")
-    .select("*")
-    .eq("agent_id", agentId)
+    .select("cost_usd, model_used")
+    .eq("agent_id", auth.actor.agentId)
     .gte("generated_at", startOfMonth.toISOString())
-    .lte("generated_at", endOfMonth.toISOString())
+    .lt("generated_at", endOfMonth.toISOString())
 
-  if (!logs || logs.length === 0) {
-    return {
-      total_cost: 0,
-      total_generations: 0,
-      avg_cost_per_generation: 0,
-      breakdown_by_model: [],
-    }
+  // A denied cost query is not a $0 bill.
+  if (error) {
+    console.error("[getMonthlyAICosts] Query failed:", error)
+    return { success: false, error: error.message }
   }
 
-  const totalCost = logs.reduce((sum, log) => sum + (log.cost_usd || 0), 0)
-  const totalGenerations = logs.length
+  const rows = logs ?? []
+  const totalCost = rows.reduce((sum, log) => sum + Number(log.cost_usd || 0), 0)
+  const totalGenerations = rows.length
 
-  // Group by model
-  const modelBreakdown = logs.reduce((acc: any, log) => {
+  const modelBreakdown = rows.reduce((acc: Record<string, { model: string; cost: number; count: number }>, log) => {
     const model = log.model_used || "unknown"
-    if (!acc[model]) {
-      acc[model] = { model, cost: 0, count: 0 }
-    }
-    acc[model].cost += log.cost_usd || 0
+    if (!acc[model]) acc[model] = { model, cost: 0, count: 0 }
+    acc[model].cost += Number(log.cost_usd || 0)
     acc[model].count += 1
     return acc
   }, {})
 
   return {
-    total_cost: totalCost,
-    total_generations: totalGenerations,
-    avg_cost_per_generation: totalGenerations > 0 ? totalCost / totalGenerations : 0,
-    breakdown_by_model: Object.values(modelBreakdown),
+    success: true,
+    costs: {
+      total_cost: totalCost,
+      total_generations: totalGenerations,
+      avg_cost_per_generation: totalGenerations > 0 ? totalCost / totalGenerations : 0,
+      breakdown_by_model: Object.values(modelBreakdown).sort((a, b) => b.cost - a.cost),
+    },
   }
 }
 
-export async function getContentPerformanceMetrics(agentId: string, dateRange?: { start: string; end: string }) {
-  if (!isValidUUID(agentId)) {
-    return {
-      avg_generation_time_ms: 2340,
-      approval_rate: 0.785,
-      usage_rate: 0.92,
-      content_volume: 156,
-      engagement_improvement: 0.25,
-      most_used_content_type: "social_post",
-      avg_edits_per_piece: 2.3,
-      peak_usage_hours: [9, 10, 14, 15],
+export async function getContentPerformanceMetrics(dateRange?: { start: string; end: string }): Promise<
+  | {
+      success: true
+      metrics: {
+        avg_generation_time_ms: number
+        approval_rate: number
+        usage_rate: number
+        content_volume: number
+        most_used_content_type: string
+        avg_edits_per_piece: number
+        peak_usage_hours: number[]
+      }
     }
-  }
+  | { success: false; error: string }
+> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
 
   const supabase = await createClient()
 
-  let logsQuery = supabase.from("content_generation_logs").select("*").eq("agent_id", agentId)
+  let logsQuery = supabase
+    .from("content_generation_logs")
+    .select("generation_time_ms, generated_at, content_type, success")
+    .eq("agent_id", auth.actor.agentId)
 
   if (dateRange) {
     logsQuery = logsQuery.gte("generated_at", dateRange.start).lte("generated_at", dateRange.end)
   }
 
-  const { data: logs } = await logsQuery
+  const { data: logs, error: logsError } = await logsQuery
+
+  if (logsError) {
+    console.error("[getContentPerformanceMetrics] Logs query failed:", logsError)
+    return { success: false, error: logsError.message }
+  }
 
   if (!logs || logs.length === 0) {
     return {
-      avg_generation_time_ms: 0,
-      approval_rate: 0,
-      usage_rate: 0,
-      content_volume: 0,
-      engagement_improvement: 0,
-      most_used_content_type: "none",
-      avg_edits_per_piece: 0,
-      peak_usage_hours: [],
+      success: true,
+      metrics: {
+        avg_generation_time_ms: 0,
+        approval_rate: 0,
+        usage_rate: 0,
+        content_volume: 0,
+        most_used_content_type: "none",
+        avg_edits_per_piece: 0,
+        peak_usage_hours: [],
+      },
     }
   }
 
@@ -2672,13 +3402,22 @@ export async function getContentPerformanceMetrics(agentId: string, dateRange?: 
   const avgGenerationTime = logs.reduce((sum, log) => sum + (log.generation_time_ms || 0), 0) / logs.length
 
   // Get content data for approval rate
-  const { data: content } = await supabase
+  const { data: content, error: contentError } = await supabase
     .from("ai_generated_content")
-    .select("*")
-    .eq("agent_id", agentId)
+    .select("id")
+    .eq("agent_id", auth.actor.agentId)
+    .eq("brokerage_id", auth.actor.brokerageId)
     .not("edited_at", "is", null)
 
-  const approvalRate = content ? 1 - content.length / logs.length : 0
+  if (contentError) {
+    console.error("[getContentPerformanceMetrics] Content query failed:", contentError)
+    return { success: false, error: contentError.message }
+  }
+
+  const editedCount = content?.length ?? 0
+  // Clamp: more edits than generations in the window would otherwise render a
+  // negative "approval rate".
+  const approvalRate = Math.max(0, Math.min(1, 1 - editedCount / logs.length))
 
   // Peak usage hours
   const usageHours = logs.map((log) => new Date(log.generated_at).getHours())
@@ -2699,116 +3438,186 @@ export async function getContentPerformanceMetrics(agentId: string, dateRange?: 
   }, {})
   const mostUsedType = Object.entries(typeCounts).sort((a: any, b: any) => b[1] - a[1])[0]?.[0] || "none"
 
+  // `engagement_improvement: 0.25` used to be returned here as a real metric.
+  // It was a literal — nothing computed it and nothing could. Removed rather
+  // than shipped as a number an agent might act on. Real engagement lives in
+  // getContentPerformanceStats, which reads content_performance_tracking.
   return {
-    avg_generation_time_ms: avgGenerationTime,
-    approval_rate: approvalRate,
-    usage_rate: logs.filter((l) => l.success).length / logs.length,
-    content_volume: logs.length,
-    engagement_improvement: 0.25, // Would need engagement tracking to calculate
-    most_used_content_type: mostUsedType,
-    avg_edits_per_piece: content ? content.length / logs.length : 0,
-    peak_usage_hours: peakHours,
+    success: true,
+    metrics: {
+      avg_generation_time_ms: avgGenerationTime,
+      approval_rate: approvalRate,
+      usage_rate: logs.filter((l) => l.success).length / logs.length,
+      content_volume: logs.length,
+      most_used_content_type: mostUsedType,
+      avg_edits_per_piece: editedCount / logs.length,
+      peak_usage_hours: peakHours,
+    },
   }
 }
 
 export async function trackContentUsage(params: {
-  agentId: string
   contentType: string
   aiEdited: boolean
   timeToApprove?: number
   personaTarget?: string
   performanceScore?: number
-}) {
+}): Promise<{ success: true; usageId: string } | { success: false; error: string }> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!params.contentType?.trim()) return { success: false, error: "Content type is required" }
+
   const supabase = await createClient()
 
-  // Log to analytics table (if you have one) or just track in generation_logs
-  // For now, we'll update the content record with usage metadata
-  await supabase.from("ai_generated_content").insert({
-    agent_id: params.agentId,
-    content_type: params.contentType,
-    metadata: {
-      ai_edited: params.aiEdited,
-      time_to_approve_seconds: params.timeToApprove,
-      persona_target: params.personaTarget,
-      performance_score: params.performanceScore,
-      tracked_at: new Date().toISOString(),
-    },
-    compliance_approved: false,
-  })
+  // This insert previously ran with NO brokerage_id, which the agc_insert
+  // policy (has_brokerage_access(brokerage_id)) refuses outright, AND its
+  // result was never destructured — so it returned { success: true } over a
+  // row the database had just thrown away.
+  const { data, error } = await supabase
+    .from("ai_generated_content")
+    .insert({
+      agent_id: auth.actor.agentId,
+      brokerage_id: auth.actor.brokerageId,
+      content_type: params.contentType,
+      target_persona: params.personaTarget ?? null,
+      performance_score: params.performanceScore ?? null,
+      edited_at: params.aiEdited ? new Date().toISOString() : null,
+      status: "archived",
+      metadata: {
+        ai_edited: params.aiEdited,
+        time_to_approve_seconds: params.timeToApprove,
+        persona_target: params.personaTarget,
+        performance_score: params.performanceScore,
+        tracked_at: new Date().toISOString(),
+        is_usage_signal: true,
+      },
+      compliance_approved: false,
+    })
+    .select("id")
+    .single()
 
-  return { success: true }
+  if (error) {
+    console.error("[trackContentUsage] Insert failed:", error)
+    return { success: false, error: error.message }
+  }
+
+  revalidatePath("/dashboard/content")
+  return { success: true, usageId: data.id }
 }
 
-export async function getContentInsights(agentId: string) {
-  if (!isValidUUID(agentId)) {
-    return {
-      most_used_content_type: "social_post",
-      avg_edits_per_piece: 2.3,
-      most_popular_personas: ["first_time_buyer", "investor"],
-      peak_usage_hours: [9, 10, 14, 15],
-      content_effectiveness: {
-        blog_posts: { avg_engagement: 0.45, approval_rate: 0.82 },
-        social_posts: { avg_engagement: 0.38, approval_rate: 0.91 },
-        emails: { avg_engagement: 0.52, approval_rate: 0.75 },
-      },
-      recommendations: [
-        "Your social posts have 91% approval rate - great job!",
-        "Consider creating more content between 9-11 AM for best results",
-        "First-time buyer content performs 25% better than average",
-      ],
+export async function getContentInsights(): Promise<
+  | {
+      success: true
+      insights: {
+        total_pieces: number
+        most_used_content_type: string
+        edit_rate: number
+        most_popular_personas: string[]
+        peak_usage_hours: number[]
+        recommendations: string[]
+      }
     }
-  }
+  | { success: false; error: string }
+> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
 
   const supabase = await createClient()
 
-  const { data: content } = await supabase.from("ai_generated_content").select("*").eq("agent_id", agentId).limit(500)
+  const { data: content, error } = await supabase
+    .from("ai_generated_content")
+    .select("content_type, target_persona, edited_at, created_at")
+    .eq("agent_id", auth.actor.agentId)
+    .eq("brokerage_id", auth.actor.brokerageId)
+    .order("created_at", { ascending: false })
+    .limit(500)
 
-  if (!content || content.length === 0) {
+  if (error) {
+    console.error("[getContentInsights] Query failed:", error)
+    return { success: false, error: error.message }
+  }
+
+  const rows = content ?? []
+  if (rows.length === 0) {
     return {
-      most_used_content_type: "none",
-      avg_edits_per_piece: 0,
-      most_popular_personas: [],
-      peak_usage_hours: [],
-      content_effectiveness: {},
-      recommendations: ["Start generating content to see insights!"],
+      success: true,
+      insights: {
+        total_pieces: 0,
+        most_used_content_type: "none",
+        edit_rate: 0,
+        most_popular_personas: [],
+        peak_usage_hours: [],
+        recommendations: ["Start generating content to see insights."],
+      },
     }
   }
 
-  // Analyze content types
-  const contentTypes = content.map((c) => c.content_type)
-  const typeCounts = contentTypes.reduce((acc: any, type) => {
-    acc[type] = (acc[type] || 0) + 1
+  const typeCounts = rows.reduce((acc: Record<string, number>, c) => {
+    const t = c.content_type || "unknown"
+    acc[t] = (acc[t] || 0) + 1
     return acc
   }, {})
-  const mostUsedType = Object.entries(typeCounts).sort((a: any, b: any) => b[1] - a[1])[0]?.[0] || "none"
+  const mostUsedType = Object.entries(typeCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "none"
 
-  // Analyze personas
-  const personas = content.map((c) => c.target_persona).filter(Boolean)
-  const personaCounts = personas.reduce((acc: any, p) => {
-    acc[p] = (acc[p] || 0) + 1
-    return acc
-  }, {})
+  const personaCounts = rows
+    .map((c) => c.target_persona)
+    .filter((p): p is string => Boolean(p))
+    .reduce((acc: Record<string, number>, p) => {
+      acc[p] = (acc[p] || 0) + 1
+      return acc
+    }, {})
   const topPersonas = Object.entries(personaCounts)
-    .sort((a: any, b: any) => b[1] - a[1])
+    .sort((a, b) => b[1] - a[1])
     .slice(0, 3)
-    .map((entry: any) => entry[0])
+    .map(([p]) => p)
 
-  // Generate recommendations
-  const recommendations = []
+  // avg_edits_per_piece was the literal 2.3 and peak_usage_hours the literal
+  // [9,10,14,15] — both presented as findings about this agent. Both are now
+  // actually derived from the rows above.
+  const editRate = rows.filter((c) => c.edited_at).length / rows.length
+
+  const hourCounts = rows.reduce((acc: Record<number, number>, c) => {
+    if (!c.created_at) return acc
+    const h = new Date(c.created_at).getHours()
+    if (Number.isNaN(h)) return acc
+    acc[h] = (acc[h] || 0) + 1
+    return acc
+  }, {})
+  const peakHours = Object.entries(hourCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([h]) => Number(h))
+
+  const recommendations: string[] = []
   if (typeCounts.social_post > 50) {
-    recommendations.push("You're creating lots of social content - consider diversifying with blog posts")
+    recommendations.push("You're creating a lot of social content — consider diversifying with blog posts.")
   }
   if (topPersonas.length > 0) {
-    recommendations.push(`${topPersonas[0]} content is your most common - great focus!`)
+    recommendations.push(`${topPersonas[0]} is your most-targeted persona.`)
+  }
+  if (editRate > 0.5) {
+    recommendations.push(
+      `You edit ${Math.round(editRate * 100)}% of generated pieces — run a few through "Learn from edits" to tighten your brand voice.`
+    )
+  }
+  if (peakHours.length > 0) {
+    recommendations.push(`You generate most often around ${peakHours[0]}:00.`)
+  }
+  if (recommendations.length === 0) {
+    recommendations.push("Not enough signal yet — keep generating and check back.")
   }
 
   return {
-    most_used_content_type: mostUsedType,
-    avg_edits_per_piece: 2.3, // Would need edit tracking
-    most_popular_personas: topPersonas,
-    peak_usage_hours: [9, 10, 14, 15], // Would need timestamp analysis
-    content_effectiveness: {},
-    recommendations,
+    success: true,
+    insights: {
+      total_pieces: rows.length,
+      most_used_content_type: mostUsedType,
+      edit_rate: editRate,
+      most_popular_personas: topPersonas,
+      peak_usage_hours: peakHours,
+      recommendations,
+    },
   }
 }
 
