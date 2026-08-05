@@ -6,7 +6,6 @@
 // These are thin wrappers — all business logic lives in lib/kernel/vendors.ts.
 // No direct DB calls here. Every mutation goes through the kernel.
 
-import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
 import { redirect } from "next/navigation"
 import {
@@ -65,10 +64,39 @@ export async function assignVendorToListingAction(
 }
 
 // ─── ACTION: assignVendorToTransactionAction ─────────────────────────────────
+//
+// vendor_assignments.assignment_type is CHECK-constrained, and its vocabulary is
+// NOT the vendors.category vocabulary — the column admits ten values where
+// vendors.category admits thirty-eight. A picker built from service types (the
+// obvious mistake, and what the neighbouring booking form offers: "escrow",
+// "plumber", "hvac", "roofer", "surveyor") would produce an INSERT the database
+// refuses. Read off the live constraint `vendor_assignments_assignment_type_check`
+// and enforced BEFORE the kernel is called, so an unknown value comes back as a
+// sentence rather than a 23514. Module-local: every export of a "use server"
+// module must be an async function.
+
+const VENDOR_ASSIGNMENT_TYPES = [
+  "inspector",
+  "lender",
+  "title",
+  "stager",
+  "photographer",
+  "cleaner",
+  "contractor",
+  "mover",
+  "insurance",
+  "other",
+] as const
 
 export async function assignVendorToTransactionAction(
   params: Omit<AssignVendorToTransactionInput, "brokerageId" | "agentUserId">
 ) {
+  if (!(VENDOR_ASSIGNMENT_TYPES as readonly string[]).includes(params.assignmentType)) {
+    return {
+      success: false as const,
+      error: `"${params.assignmentType}" is not an assignment type this deal ledger accepts. Choose one of: ${VENDOR_ASSIGNMENT_TYPES.join(", ")}.`,
+    }
+  }
   const { userId, brokerageId } = await resolveActor()
   return assignVendorToTransaction({ ...params, brokerageId, agentUserId: userId })
 }

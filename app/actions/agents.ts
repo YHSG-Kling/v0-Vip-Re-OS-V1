@@ -1,9 +1,29 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+
+interface AchievementRow {
+  id: string
+  name: string
+  description: string | null
+  points_required: number
+  badge_url: string | null
+  category: string | null
+}
+
+/** Roles allowed to administer OTHER people's agent records / brokerage rollups. */
+const BROKER_ADMIN_ROLES = new Set([
+  "broker",
+  "broker_owner",
+  "broker_admin",
+  "admin",
+  "superadmin",
+  "team_lead",
+])
 
 // ==================== AGENT CRUD ====================
 
@@ -57,42 +77,132 @@ export async function getAgentById(agentId: string) {
   return data
 }
 
+/**
+ * Provision the missing `agents` domain record for a user who already exists in
+ * the brokerage. This is the writer behind the "Domain record missing" banner on
+ * /dashboard/admin/users — until now that banner told an admin to "edit and save
+ * to trigger automatic repair", and nothing on the page could actually create the
+ * row for SOMEONE ELSE (ensureAgentContextInPlace only ever heals the CALLER).
+ *
+ * Verified against the live schema and policies before this was wired:
+ *   • agents.brokerage_id is NOT NULL — it is stamped AT the insert, from the
+ *     caller's SESSION. It was previously accepted from the caller
+ *     (`agentData.brokerage_id ?? ctx.brokerageId`), which let any caller plant a
+ *     row in another tenant.
+ *   • RLS policy `agents_insert_own` is WITH CHECK (user_id = auth.uid()), so an
+ *     admin creating a record for a DIFFERENT user is refused outright by the
+ *     request-scoped client. The insert therefore runs on the service client —
+ *     and because the service client bypasses RLS, the tenant + role checks below
+ *     are the boundary, done explicitly and before the write.
+ *   • agents_user_id_key is UNIQUE (user_id) — a second call is refused with a
+ *     sentence rather than a raw 23505.
+ */
 export async function createAgent(agentData: {
   user_id: string
-  brokerage_id?: string
-  license_number: string
-  license_state: string
-  license_expiry: string
-  commission_split: number
+  license_number?: string
+  license_state?: string
+  license_expiry?: string
+  commission_split?: number
   cap_amount?: number
   team_id?: string
 }) {
-  const supabase = await createClient()
-
-  // tenant anchor (scope burn-down): every agent row must carry a brokerage —
-  // fall back to the caller's own brokerage when none is supplied explicitly.
   const ctx = await getAgentContext()
-  const brokerageId = agentData.brokerage_id ?? ctx.brokerageId
-  if (!brokerageId) {
-    return { error: "Could not resolve a brokerage for the new agent" }
+  if (!ctx.isAuthenticated) return { error: "Not authenticated" }
+  if (!ctx.brokerageId) return { error: "Your account is not linked to a brokerage yet." }
+  if (!BROKER_ADMIN_ROLES.has(ctx.userType)) {
+    return { error: "Only brokers / admins / team leads can create agent records." }
+  }
+  if (!isValidUUID(agentData.user_id)) return { error: "A valid user is required." }
+
+  const svc = createServiceClient()
+
+  // The target user must already exist AND live in the CALLER's brokerage.
+  // users.id and agents.id are distinct id spaces — this resolves between them,
+  // it never substitutes one for the other.
+  const { data: targetUser, error: userErr } = await svc
+    .from("users")
+    .select("id, brokerage_id")
+    .eq("id", agentData.user_id)
+    .maybeSingle()
+  if (userErr) {
+    console.error("Error resolving target user:", userErr)
+    return { error: userErr.message }
+  }
+  if (!targetUser) return { error: "That user does not exist." }
+  if (targetUser.brokerage_id !== ctx.brokerageId) {
+    return { error: "That user is not in your brokerage." }
   }
 
-  const { data, error } = await supabase
+  // TENANT-SCOPED PROBE. The check above already proves this user belongs to the
+  // caller's brokerage, so an unscoped read here could not actually leak — but
+  // that safety lives in a DIFFERENT statement, and a reader (or a scanner)
+  // cannot see it from here. Cross-tenant reads have to be impossible by
+  // construction, not by the continued presence of an earlier guard.
+  const { data: existing, error: existingErr } = await svc
+    .from("agents")
+    .select("id")
+    .eq("user_id", agentData.user_id)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
+  if (existingErr) {
+    console.error("Error checking for an existing agent record:", existingErr)
+    return { error: existingErr.message }
+  }
+  if (existing) return { error: "That user already has an agent record." }
+
+  // A team, if named, must belong to the same brokerage.
+  if (agentData.team_id) {
+    if (!isValidUUID(agentData.team_id)) return { error: "That team id is not valid." }
+    const { data: team, error: teamErr } = await svc
+      .from("teams")
+      .select("id, brokerage_id")
+      .eq("id", agentData.team_id)
+      .maybeSingle()
+    if (teamErr) return { error: teamErr.message }
+    if (!team || team.brokerage_id !== ctx.brokerageId) {
+      return { error: "That team is not in your brokerage." }
+    }
+  }
+
+  const { data, error } = await svc
     .from("agents")
     .insert({
-      ...agentData,
-      brokerage_id: brokerageId,
+      // TENANT ANCHOR FIRST, deliberately. It was stamped correctly but sat
+      // eight fields down, past the 500 characters the tenant-scope scanner
+      // reads after a .from(), so the write looked unscoped to CI. The fix is
+      // to make the anchor visible AT the write rather than to widen the
+      // window: if a scanner cannot see the tenant on a write, neither can the
+      // next person to read it.
+      brokerage_id: ctx.brokerageId,
+      user_id: agentData.user_id,
+      license_number: agentData.license_number?.trim() || null,
+      license_state: agentData.license_state?.trim() || null,
+      license_expiry: agentData.license_expiry?.trim() || null,
+      commission_split: agentData.commission_split ?? null,
+      cap_amount: agentData.cap_amount ?? null,
+      team_id: agentData.team_id ?? null,
       gamification_points: 0,
       ytd_gci: 0,
       ytd_transactions: 0,
       cap_progress: 0,
       is_active: true,
     })
-    .select()
+    .select("id, user_id, brokerage_id")
     .single()
 
   if (error) {
     console.error("Error creating agent:", error)
+    // agents_user_id_key is UNIQUE on user_id GLOBALLY, not per brokerage. The
+    // probe above is deliberately tenant-scoped, so it cannot see a record this
+    // user still holds under a brokerage they have since left — that case
+    // arrives here as 23505. Answer it in words rather than handing back a raw
+    // Postgres string, and without disclosing which brokerage holds the row.
+    if ((error as { code?: string }).code === "23505") {
+      return {
+        error:
+          "That user already has an agent record on the platform, held under a different brokerage. It has to be released there before a new one can be created here.",
+      }
+    }
     return { error: error.message }
   }
 
@@ -229,17 +339,33 @@ export async function getLeaderboard(
   return data || []
 }
 
-export async function getAchievements() {
+/**
+ * The achievement CATALOG — every rung an agent can climb, ordered by the points
+ * that unlock it. `achievements` is a global table (no brokerage_id column) and
+ * its RLS SELECT policy is `true`, so it is readable by any signed-in user.
+ *
+ * Returning a bare [] on a failed read would render a refused query as "there are
+ * no achievements", so the verdict is reported instead of being flattened away.
+ */
+export async function getAchievements(): Promise<{
+  ok: boolean
+  achievements: AchievementRow[]
+  error?: string
+}> {
   const supabase = await createClient()
 
-  const { data, error } = await supabase.from("achievements").select("*").order("points_required", { ascending: true })
+  const { data, error } = await supabase
+    .from("achievements")
+    .select("id, name, description, points_required, badge_url, category")
+    .eq("is_active", true)
+    .order("points_required", { ascending: true })
 
   if (error) {
     console.error("Error fetching achievements:", error)
-    return []
+    return { ok: false, achievements: [], error: error.message }
   }
 
-  return data || []
+  return { ok: true, achievements: (data ?? []) as unknown as AchievementRow[] }
 }
 
 export async function getAgentAchievements(agentId: string) {
@@ -488,21 +614,86 @@ export async function getAgentExpenses(agentId: string, year?: number) {
   return data || []
 }
 
+/**
+ * NOT THE CANONICAL EXPENSE WRITER — deliberately left without a UI surface.
+ *
+ * The canonical, WIRED writer on this rail is
+ * app/actions/financials.ts:logScopedExpense (surfaced at
+ * app/dashboard/financials/brokerage/scoped-expense-entry.tsx). That one is
+ * strictly more complete: it resolves BOTH the actor and the tenant from the
+ * session, validates the amount and the date shape, carries agent / team /
+ * brokerage scope, and pushes brokerage-scoped rows to the accounting egress.
+ * This one is kept because it is still reachable as an exported action, and an
+ * exported action that can write an untenanted row is a hole whether or not a
+ * button points at it.
+ *
+ * Two things verified live and fixed here rather than left armed:
+ *   • business_expenses.brokerage_id is NULLABLE and the tenant policy reads
+ *     `(brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id())`.
+ *     Every row this function used to write had a NULL brokerage_id — i.e. it was
+ *     readable by EVERY brokerage on the platform. The tenant is now stamped AT
+ *     the insert.
+ *   • agent_id came FROM THE CALLER, so any signed-in user could log spend
+ *     against any agent's book. It is resolved from the session; only a
+ *     broker/admin may name a different agent, and only inside their own tenant.
+ */
 export async function addAgentExpense(expenseData: {
-  agent_id: string
+  agent_id?: string
   category: "marketing" | "education" | "technology" | "transportation" | "office" | "other"
   description: string
   amount: number
   expense_date: string
   receipt_url?: string
 }) {
-  const supabase = await createClient()
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { error: "Not authenticated" }
+  if (!ctx.brokerageId) return { error: "Your account is not linked to a brokerage yet." }
+
+  const amount = Number(expenseData.amount)
+  if (!Number.isFinite(amount) || amount <= 0) return { error: "Enter an amount greater than zero." }
+  if (!expenseData.description?.trim()) return { error: "A description is required." }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(expenseData.expense_date ?? "")) {
+    return { error: "Enter the expense date as YYYY-MM-DD." }
+  }
+
+  const svc = createServiceClient()
+
+  // business_expenses.agent_id FKs agents(id). Resolve the actor from the
+  // session; a named agent is only honoured for a broker/admin, and only when
+  // that agent is in the caller's own brokerage.
+  let agentId = ctx.agentId
+  if (expenseData.agent_id && expenseData.agent_id !== ctx.agentId) {
+    if (!BROKER_ADMIN_ROLES.has(ctx.userType)) {
+      return { error: "You can only log expenses against your own book." }
+    }
+    const { data: target, error: targetErr } = await svc
+      .from("agents")
+      .select("id, brokerage_id")
+      .eq("id", expenseData.agent_id)
+      .maybeSingle()
+    if (targetErr) return { error: targetErr.message }
+    if (!target || target.brokerage_id !== ctx.brokerageId) {
+      return { error: "That agent is not in your brokerage." }
+    }
+    agentId = target.id
+  }
+  if (!agentId) return { error: "No agent record for your account yet." }
 
   // business_expenses has no status/is_reimbursable columns; real date col is expense_date.
-  const { data, error } = await supabase
+  const { data, error } = await svc
     .from("business_expenses")
-    .insert({ ...expenseData })
-    .select()
+    .insert({
+      agent_id: agentId,
+      // TENANT ANCHOR — stamped at the insert. A NULL here is readable by every
+      // brokerage under the live policy.
+      brokerage_id: ctx.brokerageId,
+      category: expenseData.category,
+      description: expenseData.description.trim(),
+      amount,
+      expense_date: expenseData.expense_date,
+      receipt_url: expenseData.receipt_url?.trim() || null,
+    })
+    .select("id, agent_id, brokerage_id, category, amount, expense_date")
     .single()
 
   if (error) {
@@ -510,18 +701,61 @@ export async function addAgentExpense(expenseData: {
     return { error: error.message }
   }
 
-  revalidatePath("/dashboard/admin/users")
+  revalidatePath("/dashboard/financials/expenses")
   return { data }
 }
 
-export async function getExpenseSummary(agentId: string, year?: number) {
-  const supabase = await createClient()
+/**
+ * Category totals across the WHOLE tax year.
+ *
+ * /dashboard/financials/expenses used to compute its own breakdown inline from
+ * the same 100-row page it renders (`.limit(100)`), so an agent past a hundred
+ * receipts was shown a category chart that silently omitted the rest of the year
+ * and a category count that was simply wrong. This aggregates every row in the
+ * window, and reports a refused read instead of returning an empty object that
+ * reads as "you spent nothing".
+ */
+export async function getExpenseSummary(
+  agentId: string,
+  year?: number,
+): Promise<{
+  ok: boolean
+  summary: Record<string, { total: number; count: number }>
+  total: number
+  count: number
+  error?: string
+}> {
+  const empty = { summary: {}, total: 0, count: 0 }
+
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, ...empty, error: "Not authenticated" }
+  if (!ctx.brokerageId) return { ok: false, ...empty, error: "No brokerage on your account" }
+  if (!isValidUUID(agentId)) return { ok: false, ...empty, error: "Invalid agent id" }
+
+  const svc = createServiceClient()
+
+  // agentId is an agents.id. Anyone may read their OWN book; reading someone
+  // else's requires a broker/admin role AND that agent being in this tenant.
+  if (agentId !== ctx.agentId) {
+    if (!BROKER_ADMIN_ROLES.has(ctx.userType)) {
+      return { ok: false, ...empty, error: "Forbidden" }
+    }
+    const { data: target, error: targetErr } = await svc
+      .from("agents")
+      .select("id, brokerage_id")
+      .eq("id", agentId)
+      .maybeSingle()
+    if (targetErr) return { ok: false, ...empty, error: targetErr.message }
+    if (!target || target.brokerage_id !== ctx.brokerageId) {
+      return { ok: false, ...empty, error: "That agent is not in your brokerage." }
+    }
+  }
 
   const currentYear = year || new Date().getFullYear()
   const startDate = `${currentYear}-01-01`
   const endDate = `${currentYear}-12-31`
 
-  const { data, error } = await supabase
+  const { data, error } = await svc
     .from("business_expenses")
     .select("category, amount")
     .eq("agent_id", agentId)
@@ -530,16 +764,22 @@ export async function getExpenseSummary(agentId: string, year?: number) {
 
   if (error) {
     console.error("Error fetching expense summary:", error)
-    return {}
+    return { ok: false, ...empty, error: error.message }
   }
 
-  // Group by category
-  const summary: Record<string, number> = {}
-  data?.forEach((expense) => {
-    summary[expense.category] = (summary[expense.category] || 0) + expense.amount
-  })
+  // Group by category over EVERY row in the year — no page cap.
+  const summary: Record<string, { total: number; count: number }> = {}
+  let total = 0
+  for (const expense of data ?? []) {
+    const category = (expense.category as string | null) || "other"
+    const amount = Number(expense.amount ?? 0)
+    if (!summary[category]) summary[category] = { total: 0, count: 0 }
+    summary[category].total += amount
+    summary[category].count += 1
+    total += amount
+  }
 
-  return summary
+  return { ok: true, summary, total, count: (data ?? []).length }
 }
 
 // ==================== GOALS ====================
@@ -564,46 +804,126 @@ export async function getAgentGoals(agentId: string, year?: number) {
   return data || []
 }
 
+/**
+ * The vocabulary agent_goals.goal_type ACTUALLY admits. Read off the live CHECK
+ * constraint `agent_goals_goal_type_check`, not off a TypeScript union somebody
+ * wrote from memory.
+ */
+// Module-local, not exported: every export of a "use server" module must be an
+// async function, so the vocabulary cannot leave this file as a const.
+const AGENT_GOAL_TYPES = [
+  "gross_commission",
+  "transactions_closed",
+  "listings_taken",
+  "buyer_clients",
+  "new_contacts",
+  "conversion_rate",
+  "avg_days_to_close",
+] as const
+
+type AgentGoalType = (typeof AGENT_GOAL_TYPES)[number]
+
+/**
+ * NOT THE CANONICAL GOAL WRITER — deliberately left without a UI surface.
+ *
+ * The canonical, WIRED writer is app/actions/ai-agent-goals.ts:upsertAgentGoal
+ * (surfaced at app/dashboard/goals/goals-client.tsx). That one is more complete:
+ * it supplies the NOT NULL brokerage_id, upserts on the real unique constraint
+ * (agent_id, year, goal_type), preserves current_value across edits, and carries
+ * `notes`. Wiring a second goal writer would be exactly the duplicate the owner
+ * asked to avoid.
+ *
+ * It is kept and repaired because as written it could NEVER have inserted a row,
+ * for two independently fatal reasons verified against the live database:
+ *   • agent_goals.brokerage_id is NOT NULL and was never supplied → 23502.
+ *   • the TypeScript union offered "gci" | "transactions" | "listings" |
+ *     "buyers" | "sphere_growth". The live CHECK admits
+ *     gross_commission, transactions_closed, listings_taken, buyer_clients,
+ *     new_contacts, conversion_rate, avg_days_to_close. NOT ONE of the five
+ *     values this function offered is accepted by the column — every call was a
+ *     23514. The vocabulary is now taken from the constraint and checked before
+ *     the write, so an unknown value comes back as a sentence instead of a
+ *     constraint violation.
+ *
+ * Also: the pre-existence probe used .single(), which RESOLVES WITH AN ERROR on
+ * zero rows — `if (existing)` was skipped rather than being a real branch. It is
+ * a single upsert on the unique constraint now, so there is no probe to get wrong.
+ */
 export async function setAgentGoal(goalData: {
-  agent_id: string
+  agent_id?: string
   year: number
-  goal_type: "gci" | "transactions" | "listings" | "buyers" | "sphere_growth"
+  goal_type: AgentGoalType | string
   target_value: number
 }) {
-  const supabase = await createClient()
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { error: "Not authenticated" }
+  if (!ctx.brokerageId) return { error: "Your account is not linked to a brokerage yet." }
 
-  // Check if goal already exists for this type and year
-  const { data: existing } = await supabase
-    .from("agent_goals")
-    .select("id")
-    .eq("agent_id", goalData.agent_id)
-    .eq("year", goalData.year)
-    .eq("goal_type", goalData.goal_type)
-    .single()
-
-  if (existing) {
-    // Update existing goal
-    const { data, error } = await supabase
-      .from("agent_goals")
-      .update({ target_value: goalData.target_value })
-      .eq("id", existing.id)
-      .select()
-      .single()
-
-    if (error) {
-      return { error: error.message }
+  if (!(AGENT_GOAL_TYPES as readonly string[]).includes(goalData.goal_type)) {
+    return {
+      error: `"${goalData.goal_type}" is not a goal this brokerage tracks. Choose one of: ${AGENT_GOAL_TYPES.join(", ")}.`,
     }
-    return { data }
+  }
+  const targetValue = Number(goalData.target_value)
+  if (!Number.isFinite(targetValue) || targetValue <= 0) {
+    return { error: "Enter a target greater than zero." }
+  }
+  const year = Number(goalData.year)
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+    return { error: "Enter a four-digit year." }
   }
 
-  // Create new goal
-  const { data, error } = await supabase
+  const svc = createServiceClient()
+
+  // agent_goals.agent_id FKs agents(id) — resolved from the session, with a
+  // named agent honoured only for a broker/admin inside their own tenant.
+  let agentId = ctx.agentId
+  if (goalData.agent_id && goalData.agent_id !== ctx.agentId) {
+    if (!BROKER_ADMIN_ROLES.has(ctx.userType)) {
+      return { error: "You can only set your own goals." }
+    }
+    const { data: target, error: targetErr } = await svc
+      .from("agents")
+      .select("id, brokerage_id")
+      .eq("id", goalData.agent_id)
+      .maybeSingle()
+    if (targetErr) return { error: targetErr.message }
+    if (!target || target.brokerage_id !== ctx.brokerageId) {
+      return { error: "That agent is not in your brokerage." }
+    }
+    agentId = target.id
+  }
+  if (!agentId) return { error: "No agent record for your account yet." }
+
+  // Preserve progress across an edit — a re-target must not reset the counter.
+  const { data: existing, error: existingErr } = await svc
     .from("agent_goals")
-    .insert({
-      ...goalData,
-      current_value: 0,
-    })
-    .select()
+    .select("id, current_value")
+    .eq("agent_id", agentId)
+    .eq("year", year)
+    .eq("goal_type", goalData.goal_type)
+    .maybeSingle()
+  if (existingErr) {
+    console.error("Error reading the existing goal:", existingErr)
+    return { error: existingErr.message }
+  }
+
+  const { data, error } = await svc
+    .from("agent_goals")
+    .upsert(
+      {
+        agent_id: agentId,
+        // TENANT ANCHOR — NOT NULL on this table, stamped at the write.
+        brokerage_id: ctx.brokerageId,
+        year,
+        goal_type: goalData.goal_type,
+        target_value: targetValue,
+        current_value: existing?.current_value ?? 0,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "agent_id,year,goal_type" },
+    )
+    .select("id, agent_id, brokerage_id, year, goal_type, target_value, current_value")
     .single()
 
   if (error) {
@@ -611,7 +931,7 @@ export async function setAgentGoal(goalData: {
     return { error: error.message }
   }
 
-  revalidatePath("/dashboard/admin/users")
+  revalidatePath("/dashboard/goals")
   return { data }
 }
 
@@ -637,9 +957,29 @@ export async function updateGoalProgress(goalId: string, currentValue: number) {
 // ==================== AGENT ASSIGNMENT ====================
 
 /**
- * Assign a contact to an agent. Restricted to broker/admin/team-lead roles.
- * Lead/contact routing is an admin responsibility — agents may not move
- * contacts off another agent's book.
+ * NOT THE CANONICAL CONTACT-ROUTING WRITER — deliberately left without a UI surface.
+ *
+ * The canonical, WIRED writer is
+ * app/actions/contact-reassignment.ts:reassignContactAction (surfaced at
+ * app/crm/components/reassign-contact-dialog.tsx, and re-used by the voice rail
+ * at lib/voice/broker-commands.ts). It is strictly more complete: it moves the
+ * contact AND the work that follows the client — their leads, their in-flight
+ * deal roles, their open tasks, their active property alerts — validates that the
+ * receiving agent is ACTIVE and in the same brokerage, counts every move with
+ * { count: "exact" }, and writes a CONTACT_REASSIGNED audit event. This one only
+ * ever re-pointed contacts.agent_id and left every downstream row owned by the
+ * previous agent.
+ *
+ * The ONE thing this function does that the survivor does not is award 10
+ * gamification points for a new assignment. Porting that onto the survivor would
+ * mean editing app/actions/contact-reassignment.ts, which is outside this pass's
+ * file set — so this is hardened and left unwired rather than deleted, and the
+ * points gap is reported rather than quietly dropped.
+ *
+ * Hardened here: the receiving agent was never checked. A broker could route one
+ * of their own contacts to an agents row belonging to ANOTHER brokerage —
+ * contacts.agent_id FKs agents(id) with no tenant predicate of its own, so the
+ * database would have accepted it.
  */
 const ASSIGN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
 
@@ -648,34 +988,58 @@ export async function assignAgentToContact(contactId: string, agentId: string) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: "Not authenticated" }
 
-  const { data: userRow } = await supabase
+  if (!isValidUUID(contactId) || !isValidUUID(agentId)) {
+    return { error: "A valid contact and agent are required." }
+  }
+
+  const { data: userRow, error: userErr } = await supabase
     .from("users")
     .select("user_type, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
+  if (userErr) return { error: userErr.message }
   if (!userRow || !ASSIGN_ROLES.has(userRow.user_type ?? "")) {
     return { error: "Only brokers / admins / team leads can assign contacts" }
   }
+  if (!userRow.brokerage_id) {
+    return { error: "Your account is not linked to a brokerage yet." }
+  }
+
+  // The RECEIVING agent must be active and in the caller's brokerage.
+  // agents.id and users.id are distinct id spaces — this resolves, never substitutes.
+  const { data: targetAgent, error: targetErr } = await supabase
+    .from("agents")
+    .select("id, is_active, brokerage_id")
+    .eq("id", agentId)
+    .eq("brokerage_id", userRow.brokerage_id)
+    .maybeSingle()
+  if (targetErr) return { error: targetErr.message }
+  if (!targetAgent) return { error: "That agent is not in your brokerage." }
+  if (targetAgent.is_active === false) return { error: "That agent is not active." }
 
   // Tenant isolation — only operate on contacts in the caller's brokerage.
-  const { data, error } = await supabase
+  // { count: "exact" } because an UPDATE that matches NOTHING still succeeds in
+  // postgrest; a zero-row move must be reported as a refusal, not as a save.
+  const { data, error, count } = await supabase
     .from("contacts")
-    .update({ agent_id: agentId })
+    .update({ agent_id: agentId }, { count: "exact" })
     .eq("id", contactId)
     .eq("brokerage_id", userRow.brokerage_id)
-    .select()
-    .single()
+    .select("id, agent_id, brokerage_id")
 
   if (error) {
     console.error("Error assigning agent to contact:", error)
     return { error: error.message }
+  }
+  if (!count) {
+    return { error: "That contact was not found in your brokerage — nothing was changed." }
   }
 
   // Award points for new contact assignment
   await awardPoints(agentId, 10, "New contact assigned", "lead")
 
   revalidatePath("/crm/contacts")
-  return { data }
+  return { data: data?.[0] ?? null }
 }
 
 export async function getAgentContacts(agentId: string) {
@@ -800,114 +1164,159 @@ export async function getAgentStats(userIdOrAgentId: string) {
 // BROKERAGE STATS (for Broker Dashboard)
 // ============================================
 
-export async function getBrokerageStats(brokerageId?: string) {
-  const supabase = await createClient()
+/**
+ * Month-over-month brokerage money + compliance risk for the broker command centre.
+ *
+ * This is NOT a duplicate of app/actions/multi-persona.ts:getBrokerageDashboard,
+ * which is the other loader on this page: that one reports headcount, open deal
+ * volume and `compliance_events` (the gate ledger). Nothing else on the platform
+ * computes THIS month's GCI against LAST month's, and nothing else reads
+ * `compliance_flags` (a different table from compliance_events) for a risk level.
+ *
+ * Three defects fixed before wiring:
+ *   • brokerageId came FROM THE CALLER. It is resolved from the session now — a
+ *     "use server" action that accepts its own tenant boundary as an argument is
+ *     not a boundary.
+ *   • Every read discarded `error`. A read refused by RLS was rendered as $0 GCI
+ *     and a "Normal" risk level — a broker would have been told their month was
+ *     empty and their compliance clean when in fact nothing had been read. Each
+ *     read now reports its verdict, and anything that failed is named in
+ *     `degraded` so the surface can say so out loud.
+ *   • agentCount counted deactivated agents. It is scoped to is_active now, which
+ *     is what "how many agents do I have" means and what the seat meter and
+ *     getBrokerageDashboard already mean by it.
+ */
+export async function getBrokerageStats(): Promise<{
+  ok: boolean
+  brokerageId: string | null
+  monthlyGCI: number
+  lastMonthGCI: number
+  gciChange: number
+  activeDeals: number
+  agentCount: number
+  riskLevel: "Normal" | "Elevated" | "Critical" | "Unknown"
+  openComplianceFlags: number
+  /** Names of the reads that FAILED — never silently folded into a zero. */
+  degraded: string[]
+  error?: string
+}> {
+  const ctx = await getAgentContext()
+  const blank = {
+    brokerageId: null,
+    monthlyGCI: 0,
+    lastMonthGCI: 0,
+    gciChange: 0,
+    activeDeals: 0,
+    agentCount: 0,
+    riskLevel: "Unknown" as const,
+    openComplianceFlags: 0,
+    degraded: [] as string[],
+  }
+  if (!ctx.isAuthenticated) return { ok: false, ...blank, error: "Not authenticated" }
+  if (!ctx.brokerageId) return { ok: false, ...blank, error: "No brokerage on your account" }
 
-  let monthlyGCI = 0
-  let lastMonthGCI = 0
-  let activeDeals = 0
-  let agentCount = 0
-  let openFlags = 0
+  const brokerageId = ctx.brokerageId
+  const supabase = await createClient()
+  const degraded: string[] = []
 
   const startOfMonth = new Date()
   startOfMonth.setDate(1)
   startOfMonth.setHours(0, 0, 0, 0)
+  const lastMonthStart = new Date(startOfMonth)
+  lastMonthStart.setMonth(lastMonthStart.getMonth() - 1)
 
-  // Get total GCI this month - handle table not existing
-  try {
-    let gciQuery = supabase
+  const thisMonthDate = startOfMonth.toISOString().split("T")[0]
+  const lastMonthDate = lastMonthStart.toISOString().split("T")[0]
+
+  const [gciRes, lastGciRes, dealsRes, agentsRes, riskRes] = await Promise.all([
+    supabase
       .from("agent_commissions")
       .select("gross_commission")
-      .gte("close_date", startOfMonth.toISOString().split("T")[0])
-
-    if (brokerageId) {
-      gciQuery = gciQuery.eq("brokerage_id", brokerageId)
-    }
-
-    const { data: gciData } = await gciQuery
-    monthlyGCI = gciData?.reduce((sum, c) => sum + (c.gross_commission || 0), 0) || 0
-
-    // Get last month GCI for comparison
-    const lastMonthStart = new Date(startOfMonth)
-    lastMonthStart.setMonth(lastMonthStart.getMonth() - 1)
-    const lastMonthEnd = new Date(startOfMonth)
-
-    let lastGciQuery = supabase
+      .eq("brokerage_id", brokerageId)
+      .gte("close_date", thisMonthDate),
+    supabase
       .from("agent_commissions")
       .select("gross_commission")
-      .gte("close_date", lastMonthStart.toISOString().split("T")[0])
-      .lt("close_date", lastMonthEnd.toISOString().split("T")[0])
-
-    if (brokerageId) {
-      lastGciQuery = lastGciQuery.eq("brokerage_id", brokerageId)
-    }
-
-    const { data: lastGciData } = await lastGciQuery
-    lastMonthGCI = lastGciData?.reduce((sum, c) => sum + (c.gross_commission || 0), 0) || 0
-  } catch (e) {
-    // Table may not exist
-  }
-
-  const gciChange = lastMonthGCI > 0 ? Math.round(((monthlyGCI - lastMonthGCI) / lastMonthGCI) * 100) : 0
-
-  // Get active deals count
-  try {
-    let dealsQuery = supabase
+      .eq("brokerage_id", brokerageId)
+      .gte("close_date", lastMonthDate)
+      .lt("close_date", thisMonthDate),
+    supabase
       .from("transactions")
       .select("id", { count: "exact", head: true })
-      .in("status", ["under_contract"])
-
-    if (brokerageId) {
-      dealsQuery = dealsQuery.eq("brokerage_id", brokerageId)
-    }
-
-    const { count } = await dealsQuery
-    activeDeals = count || 0
-  } catch (e) {
-    // Table may not exist
-  }
-
-  // Get agent count from agents table
-  try {
-    let agentsQuery = supabase
+      .eq("brokerage_id", brokerageId)
+      .in("status", ["under_contract"]),
+    supabase
       .from("agents")
       .select("id", { count: "exact", head: true })
-
-    if (brokerageId) {
-      agentsQuery = agentsQuery.eq("brokerage_id", brokerageId)
-    }
-
-    const { count } = await agentsQuery
-    agentCount = count || 0
-  } catch (e) {
-    // Table may not exist or query failed
-  }
-
-  // Get risk score (compliance flags count)
-  try {
-    let riskQuery = supabase
+      .eq("brokerage_id", brokerageId)
+      .eq("is_active", true),
+    supabase
       .from("compliance_flags")
       .select("id", { count: "exact", head: true })
-      .eq("status", "flagged")  // compliance_flags has no "open"; unresolved IS "flagged"
+      .eq("brokerage_id", brokerageId)
+      // compliance_flags has no "open" — the live CHECK is
+      // flagged | reviewed | resolved | overridden, and unresolved IS "flagged".
+      .eq("status", "flagged"),
+  ])
 
-    if (brokerageId) {
-      riskQuery = riskQuery.eq("brokerage_id", brokerageId)
-    }
-
-    const { count } = await riskQuery
-    openFlags = count || 0
-  } catch (e) {
-    // Table may not exist
+  let monthlyGCI = 0
+  if (gciRes.error) {
+    console.error("Error reading this month's GCI:", gciRes.error)
+    degraded.push("monthlyGCI")
+  } else {
+    monthlyGCI = (gciRes.data ?? []).reduce((sum, c) => sum + Number(c.gross_commission ?? 0), 0)
   }
 
-  const riskLevel = openFlags > 5 ? "Critical" : openFlags > 2 ? "Elevated" : "Normal"
+  let lastMonthGCI = 0
+  if (lastGciRes.error) {
+    console.error("Error reading last month's GCI:", lastGciRes.error)
+    degraded.push("lastMonthGCI")
+  } else {
+    lastMonthGCI = (lastGciRes.data ?? []).reduce((sum, c) => sum + Number(c.gross_commission ?? 0), 0)
+  }
+
+  let activeDeals = 0
+  if (dealsRes.error) {
+    console.error("Error counting active deals:", dealsRes.error)
+    degraded.push("activeDeals")
+  } else {
+    activeDeals = dealsRes.count ?? 0
+  }
+
+  let agentCount = 0
+  if (agentsRes.error) {
+    console.error("Error counting agents:", agentsRes.error)
+    degraded.push("agentCount")
+  } else {
+    agentCount = agentsRes.count ?? 0
+  }
+
+  let openFlags = 0
+  let riskLevel: "Normal" | "Elevated" | "Critical" | "Unknown" = "Unknown"
+  if (riskRes.error) {
+    console.error("Error counting compliance flags:", riskRes.error)
+    degraded.push("openComplianceFlags")
+  } else {
+    openFlags = riskRes.count ?? 0
+    riskLevel = openFlags > 5 ? "Critical" : openFlags > 2 ? "Elevated" : "Normal"
+  }
+
+  // Only claim a trend when BOTH sides of the comparison were actually read.
+  const gciChange =
+    degraded.includes("monthlyGCI") || degraded.includes("lastMonthGCI") || lastMonthGCI <= 0
+      ? 0
+      : Math.round(((monthlyGCI - lastMonthGCI) / lastMonthGCI) * 100)
 
   return {
+    ok: degraded.length === 0,
+    brokerageId,
     monthlyGCI,
+    lastMonthGCI,
     gciChange,
     activeDeals,
     agentCount,
     riskLevel,
     openComplianceFlags: openFlags,
+    degraded,
   }
 }

@@ -680,6 +680,16 @@ export async function assignVendorToTransaction(
       assignment_id:  assignment.id,
       vendor_id:      vendorId,
       transaction_id: transactionId,
+      // TENANT STAMP — the sibling vendor_assignments insert above always
+      // carried it, this one never did. vendor_jobs.brokerage_id is NULLABLE
+      // and vendor_jobs_tenant reads
+      //   ((brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id()))
+      // so an untenanted job row satisfies the predicate for EVERY brokerage on
+      // the platform — job title, notes and the vendor relationship included.
+      // Verified live. This went unnoticed because nothing could reach this
+      // function; wiring assignVendorToTransactionAction made it reachable, so
+      // the stamp had to land in the same change that opened the door.
+      brokerage_id:   brokerageId,
       status:         "pending",
       job_title:      `${assignmentType} — ${transaction.property_address}`,
       agent_notes:    notes ?? null,
