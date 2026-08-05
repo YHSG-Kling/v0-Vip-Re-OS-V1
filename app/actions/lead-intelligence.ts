@@ -43,6 +43,7 @@ import { ZenrowsClient, BatchDataClient, PeopleDataClient } from "@/lib/external
 import { IDXBrokerClient } from "@/lib/idxbroker-client"
 import { OSINTClient } from "@/lib/osint-client"
 import { calculateLeadScore } from "@/lib/services/lead-management.service"
+import { isValidUUID } from "@/lib/validations"
 
 // Previously every function in this file (except `trackBehavior`, which is
 // a legitimate public visitor-tracking pixel) was unauthenticated. Some
@@ -81,8 +82,26 @@ export async function trackBehavior(sessionData: {
   calculator_inputs?: any
   ip_address?: string
   user_agent?: string
-  brokerage_id?: string  // optional — set by widget bootstrap on agent sites
+  brokerage_id?: string  // REQUIRED — see the tenancy note below
 }) {
+  // ── TENANCY IS NOT OPTIONAL ON THIS TABLE ───────────────────────────────
+  // behavioral_signals / site_activity / intelligence_signals_log all carry a
+  // NULLABLE brokerage_id, and their RLS policy is
+  //     (brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id())
+  // (verified live). A row written with brokerage_id NULL is therefore
+  // readable by EVERY brokerage on the platform — and the rows this function
+  // writes are a named visitor's IP address, user agent and inferred intent.
+  // The previous `?? null` stamped exactly that. Refuse instead: an untenanted
+  // behavioural row is a cross-tenant PII leak, not a slightly worse row.
+  if (!isValidUUID(sessionData.brokerage_id)) {
+    return {
+      success: false,
+      error:
+        "brokerage_id is required. An untenanted behavioural signal is readable by every brokerage under this table's RLS policy.",
+    }
+  }
+  const brokerageId = sessionData.brokerage_id
+
   try {
     const supabase = createServiceClient()
     const { generateAIJSON } = await import("./ai-generate")
@@ -90,11 +109,15 @@ export async function trackBehavior(sessionData: {
     // Detect location from IP (simplified - would use IP geolocation service)
     const location = { city: "Unknown", state: "Unknown", zip: "" }
 
-    // Get or create behavioral signal
+    // Get or create behavioral signal.
+    // Scoped by brokerage: visitor_id is a caller-minted cookie value with no
+    // uniqueness guarantee, so an unscoped lookup could attach one brokerage's
+    // visitor to another brokerage's signal row.
     const { data: signal, error: signalError } = await supabase
       .from("behavioral_signals")
       .select("*")
       .eq("visitor_id", sessionData.visitor_id)
+      .eq("brokerage_id", brokerageId)
       .maybeSingle()
 
     if (signalError && signalError.code !== "PGRST116") {
@@ -119,12 +142,12 @@ export async function trackBehavior(sessionData: {
 
       signalId = signal.id
     } else {
-      // Create new signal — stamp brokerage_id when supplied (from widget on agent site)
-      const { data: newSignal } = await supabase
+      // Create new signal — brokerage_id is stamped AT THE INSERT, never null.
+      const { data: newSignal, error: newSignalError } = await supabase
         .from("behavioral_signals")
         .insert({
           visitor_id: sessionData.visitor_id,
-          brokerage_id: sessionData.brokerage_id ?? null,
+          brokerage_id: brokerageId,
           ip_address: sessionData.ip_address,
           user_agent: sessionData.user_agent,
           city: location.city,
@@ -132,15 +155,23 @@ export async function trackBehavior(sessionData: {
           zip: location.zip,
         })
         .select()
-        .single()
+        .maybeSingle()
 
-      signalId = newSignal!.id
+      // Was `newSignal!.id` on an undestructured result: a refused insert came
+      // back as null and threw a TypeError instead of reporting the refusal.
+      if (newSignalError) {
+        console.error("[lead-intelligence] Behavioral signal insert error:", newSignalError)
+        return { success: false, error: newSignalError.message }
+      }
+      if (!newSignal) return { success: false, error: "Behavioral signal was not created" }
+
+      signalId = newSignal.id
     }
 
     // Log site activity — inherits brokerage from the signal
     await supabase.from("site_activity").insert({
       behavioral_signal_id: signalId,
-      brokerage_id: sessionData.brokerage_id ?? signal?.brokerage_id ?? null,
+      brokerage_id: brokerageId,
       page_visited: sessionData.page_visited,
       time_on_page_seconds: sessionData.time_spent,
       action_taken: sessionData.action_taken,
@@ -205,7 +236,7 @@ Investor signals: ROI calculators, rental income tools, market analysis pages`
         if ((intent.confidence as number) >= 70 && totalSessions >= 3) {
           await supabase.from("intelligence_signals_log").insert({
             lead_profile_id: signalId,
-            brokerage_id: sessionData.brokerage_id ?? signal?.brokerage_id ?? null,
+            brokerage_id: brokerageId,
             signal_type: "high_intent_behavioral",
             signal_data_json: intent,
             signal_strength: 10,
@@ -401,6 +432,35 @@ export async function getIntelligenceDashboardStats() {
   }
 }
 
+/**
+ * DELIBERATELY NOT WIRED TO ANY SURFACE. Two independent reasons, either of
+ * which is sufficient:
+ *
+ * 1. THE PARSER IS A STUB. parseNextdoorPosts (below) unconditionally returns
+ *    [] and logs "not configured". This function would therefore pay for a
+ *    premium-proxy, JS-rendered ZenRows fetch and then persist ZERO rows —
+ *    every single call, forever. The paid call is now refused up front rather
+ *    than made and thrown away.
+ * 2. NAMED, WIRED, MORE COMPLETE RIVAL: the social/forum collect lane is
+ *    lib/lead-pipeline/social-sourcer.ts (sourceReddit / sourceFacebook /
+ *    sourceInstagram / sourceCraigslist / sourceGoogle / sourceLinkedInRelocation),
+ *    driven by app/api/cron/lead-scraping/route.ts with territory resolution
+ *    (lib/lead-pipeline/scrape-territories.ts), per-vendor spend metering
+ *    (lib/vendor-governance/meter-vendor.ts:meterVendorSpend), scraper-health
+ *    escalation and the promotion gate. That lane has real normalizers and
+ *    real intent detection; this one has a `return []`.
+ *
+ * NOT DELETED. It writes social_intelligence (author_name, post_content,
+ * post_url, ai_intent_score) which the rival lane does not produce in that
+ * shape, so it is an independent twin rather than a proven port. It stays,
+ * hardened, unwired, and honest about being dark.
+ *
+ * COMPLIANCE: even with a working parser this collects named individuals'
+ * neighbourhood posts. There is no lawful-basis record for that anywhere in
+ * this codebase — no consent artifact, no legitimate-interest assessment, and
+ * social_intelligence has no subject-rights linkage. Wiring it would create
+ * profiles of people who have never transacted with the brokerage.
+ */
 export async function scrapeSocialSignalsWithZenRows(location: {
   city: string
   state: string
@@ -411,6 +471,20 @@ export async function scrapeSocialSignalsWithZenRows(location: {
   if (!auth.ok) return { success: false, error: auth.error, signals: [], count: 0 }
 
   const brokerageId = auth.brokerageId
+
+  // DARK CAPABILITY GATE — refuse BEFORE spending. parseNextdoorPosts returns
+  // [] unconditionally, so there is no outcome in which this call produces a
+  // row. Charging for a fetch whose parser is a stub is pure budget burn.
+  if (!NEXTDOOR_PARSER_IMPLEMENTED) {
+    return {
+      success: false,
+      error:
+        "Nextdoor scraping is not implemented — parseNextdoorPosts has no extraction logic, so a ZenRows fetch would cost money and yield zero signals. Use the lead-scraping pipeline (lib/lead-pipeline/social-sourcer.ts) instead.",
+      signals: [],
+      count: 0,
+      dark: true as const,
+    }
+  }
 
   try {
     const supabase = createServiceClient()
@@ -483,6 +557,13 @@ export async function scrapeSocialSignalsWithZenRows(location: {
   }
 }
 
+/**
+ * Flip this to true ONLY when parseNextdoorPosts actually extracts posts.
+ * It gates the paid ZenRows fetch above. Keeping the switch next to the stub
+ * means the two cannot drift apart.
+ */
+const NEXTDOOR_PARSER_IMPLEMENTED = false
+
 function parseNextdoorPosts(html: string, location: { city: string; state: string }): any[] {
   // Simplified parser - in production would use cheerio or similar
   const posts: any[] = []
@@ -512,45 +593,129 @@ function parseNextdoorPosts(html: string, location: { city: string; state: strin
   return []
 }
 
+function firstNumber(...values: unknown[]): number | null {
+  for (const v of values) {
+    const n = Number(v)
+    if (v !== null && v !== undefined && v !== "" && Number.isFinite(n)) return n
+  }
+  return null
+}
+
+function firstString(...values: unknown[]): string | null {
+  for (const v of values) {
+    if (typeof v === "string" && v.trim() !== "") return v.trim()
+  }
+  return null
+}
+
+/**
+ * Enrich ONE property address from public property records.
+ *
+ * ── WHAT WAS WRONG ────────────────────────────────────────────────────────
+ * This claimed in its own comment to "use BatchData API or similar" and then
+ * inserted a row of LITERAL NULLS — every attribute column hard-coded null —
+ * stamped `data_sources: ["manual_entry"]`. It was a provenance lie in both
+ * directions: nothing was entered manually and nothing was enriched. It now
+ * actually calls BatchData, and if BatchData is not configured or returns no
+ * match it writes NOTHING and says so, rather than manufacturing a row.
+ *
+ * ── WHAT IT DELIBERATELY DOES NOT WRITE ───────────────────────────────────
+ * property_intelligence carries owner_name / owner_occupied. BatchData returns
+ * them. They are NOT persisted here. Enriching a property address with public
+ * record attributes is ordinary real-estate practice; attaching a named human
+ * being to it is profiling a person who has no relationship with this
+ * brokerage and for whom no lawful basis is recorded anywhere in this
+ * codebase. If owner data is ever needed it must go through the contact-scoped
+ * path (enrichWithPropertyOwnership, below) where a contact record — and its
+ * consent flags — already exist.
+ *
+ * ── STILL NOT WIRED TO A SURFACE ──────────────────────────────────────────
+ * The only reader of property_intelligence is getAllSignalsForProfile. Until
+ * an address-entry surface exists that also records why the brokerage is
+ * enriching that address, this stays callable-but-unwired. See the report.
+ */
 export async function enrichPropertyIntelligence(propertyData: {
   address: string
   city: string
   state: string
   zip: string
+  contactId?: string
+  profileId?: string
 }) {
   // Calls paid BatchData API; require auth
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
 
+  if (!propertyData?.address?.trim()) {
+    return { success: false, error: "A property address is required" }
+  }
+
+  // DARK PROVIDER GATE — never present an unconfigured vendor as a live one.
+  if (!process.env.BATCHDATA_API_KEY) {
+    return {
+      success: false,
+      error: "BATCHDATA_API_KEY is not configured — property enrichment is dark.",
+      dark: true as const,
+    }
+  }
+
   try {
     const supabase = createServiceClient()
 
-    // Use BatchData API or similar to get property intelligence
-    // For now, creating a placeholder
-    console.log("[v0] Enriching property intelligence for:", propertyData.address)
+    const batchData = new BatchDataClient()
+    const matches = await batchData.searchByAddress(
+      propertyData.address,
+      propertyData.city,
+      propertyData.state
+    )
+    const match = (matches ?? [])[0] as Record<string, any> | undefined
 
-    const { data: property } = await supabase
+    if (!match) {
+      return {
+        success: false,
+        error: "No public property record matched that address — nothing was written.",
+      }
+    }
+
+    const building = (match.building ?? {}) as Record<string, any>
+    const lot = (match.lot ?? {}) as Record<string, any>
+    const valuation = (match.valuation ?? {}) as Record<string, any>
+    const sale = (match.sale ?? match.lastSale ?? {}) as Record<string, any>
+
+    const row: Record<string, unknown> = {
+      brokerage_id: auth.brokerageId, // stamped AT THE INSERT
+      property_address: propertyData.address,
+      city: propertyData.city,
+      state: propertyData.state,
+      zip: propertyData.zip,
+      // Property attributes only. Owner identity is deliberately absent.
+      property_type: firstString(building.propertyType, match.propertyType),
+      bedrooms: firstNumber(building.bedroomCount, match.bedrooms),
+      bathrooms: firstNumber(building.bathroomCount, match.bathrooms),
+      square_feet: firstNumber(building.totalBuildingAreaSquareFeet, match.squareFeet),
+      lot_size: firstNumber(lot.lotSizeSquareFeet, match.lotSize),
+      year_built: firstNumber(building.yearBuilt, match.yearBuilt),
+      estimated_value: firstNumber(valuation.estimatedValue, match.estimatedValue),
+      last_sale_price: firstNumber(sale.lastSaleAmount, match.lastSalePrice),
+      last_sale_date: firstString(sale.lastSaleDate, match.lastSaleDate),
+      data_sources: ["batchdata"], // honest: this is where the values came from
+    }
+    // Link the row to the reader's resolving keys when the caller has them,
+    // so it is not written into a lane nothing queries.
+    if (isValidUUID(propertyData.contactId)) row.contact_id = propertyData.contactId
+    if (isValidUUID(propertyData.profileId)) row.profile_id = propertyData.profileId
+
+    const { data: property, error: insertError } = await supabase
       .from("property_intelligence")
-      .insert({
-        brokerage_id: auth.brokerageId,
-        property_address: propertyData.address,
-        city: propertyData.city,
-        state: propertyData.state,
-        zip: propertyData.zip,
-        last_sale_date: null,
-        last_sale_price: null,
-        estimated_value: null,
-        ownership_duration_years: null,
-        property_type: null,
-        bedrooms: null,
-        bathrooms: null,
-        square_feet: null,
-        lot_size: null,
-        year_built: null,
-        data_sources: ["manual_entry"],
-      })
+      .insert(row)
       .select()
-      .single()
+      .maybeSingle()
+
+    if (insertError) {
+      console.error("[lead-intelligence] Property intelligence insert error:", insertError)
+      return { success: false, error: insertError.message }
+    }
+    if (!property) return { success: false, error: "Property intelligence was not saved" }
 
     return { success: true, property }
   } catch (error) {
@@ -1346,10 +1511,46 @@ export async function getAgentWorkloadStats() {
 // GOOGLE SEARCH INTENT ANALYSIS
 // ============================================
 
+/**
+ * Aggregate search-demand sampling for one market.
+ *
+ * This is the LEAST privacy-sensitive function in this file: it records search
+ * PHRASES and result counts, never a person. It is nonetheless NOT WIRED, for
+ * two product reasons rather than a compliance one:
+ *
+ *  1. google_search_intelligence HAS NO READER. Nothing in the codebase
+ *     queries that table (verified by search) — only this insert touches it.
+ *     Surfacing a paid scrape whose output no screen can display is not
+ *     finishing a feature, it is spending money into a void. It needs a
+ *     market-demand panel built first.
+ *  2. ZENROWS_API_KEY is not configured in this environment (the superadmin
+ *     provider board at app/dashboard/superadmin/env-providers already reports
+ *     zenrows as dark). A dark provider must be shown as dark.
+ *
+ * Hardened meanwhile: the paid loop is refused when the provider is dark, and
+ * every insert error is read instead of discarded (a whole run could fail
+ * silently and still return `{ success: true }`).
+ *
+ * SCHEMA GAP, NOT FIXED HERE: `targetLocation.id` is accepted and cannot be
+ * stored — google_search_intelligence has no market/territory column (verified
+ * live: id, brokerage_id, search_query, detected_location, related_searches,
+ * trend, potential_leads_count, scraped_at). So a sampled row cannot be traced
+ * back to the market that requested it. That needs a migration, which is out
+ * of scope for this pass; it is reported rather than papered over.
+ */
 export async function analyzeGoogleSearchIntent(targetLocation: { id: string; city: string; state: string; zip?: string }) {
   // Paid ZenRows scraping — require auth
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
+
+  // DARK PROVIDER GATE — refuse before spending, never fake a live vendor.
+  if (!process.env.ZENROWS_API_KEY) {
+    return {
+      success: false,
+      error: "ZENROWS_API_KEY is not configured — Google search-intent sampling is dark.",
+      dark: true as const,
+    }
+  }
 
   const supabase = createServiceClient()
   const zenrows = new ZenrowsClient()
@@ -1374,7 +1575,7 @@ export async function analyzeGoogleSearchIntent(targetLocation: { id: string; ci
         num: 20,
       }) as any
 
-      await supabase.from("google_search_intelligence").insert({
+      const { error: insertError } = await supabase.from("google_search_intelligence").insert({
         brokerage_id: auth.brokerageId,
         search_query: query,
         detected_location: targetLocation.city,
@@ -1383,6 +1584,13 @@ export async function analyzeGoogleSearchIntent(targetLocation: { id: string; ci
         potential_leads_count: searchData.results?.length || 0,
         scraped_at: new Date().toISOString(),
       })
+
+      // The result was discarded: a run that paid ZenRows for seven searches
+      // and persisted none of them still reported success.
+      if (insertError) {
+        console.error("[lead-intelligence] Search intelligence insert error:", insertError)
+        return { success: false, error: insertError.message, sampled: query }
+      }
     }
 
     return { success: true }
@@ -1396,36 +1604,119 @@ export async function analyzeGoogleSearchIntent(targetLocation: { id: string; ci
 // UNIFIED LEAD PROFILE CREATION
 // ============================================
 
-export async function createUnifiedLeadProfile(leadData: { source: string; email?: string; phone?: string }) {
-  // Inserts to a brokerage-scoped table — require auth and stamp brokerage_id
+/**
+ * Build (or refresh) the unified intelligence profile for ONE CONTACT the
+ * brokerage already holds.
+ *
+ * ── LAWFUL BASIS ──────────────────────────────────────────────────────────
+ * This used to take `{ source, email, phone }` straight from the caller,
+ * which made it an unbounded profiling endpoint: type any stranger's email
+ * into a "use server" action and the OS would open a behavioural profile on
+ * them. It now takes a contactId and resolves the subject FROM the contacts
+ * table INSIDE the caller's brokerage — so the only people who can be profiled
+ * are people the brokerage already lawfully holds a record for, and the
+ * subject's own consent flags travel with them (below). A contactId from
+ * another tenant is refused, not silently profiled.
+ *
+ * ── CONSENT ───────────────────────────────────────────────────────────────
+ * `ready_for_outreach` is an outbound RECOMMENDATION. It is forced to false
+ * for a contact on the global DNC list or opted out of every channel, so the
+ * profile can never advertise a contactable lead that the existing consent
+ * rail (lib/kernel/compliance.ts:evaluateOutbound) would block. Profiling does
+ * not bypass that gate — the gate still runs at send time; this just stops the
+ * UI recommending an outreach that will be refused.
+ *
+ * ── PROVENANCE ────────────────────────────────────────────────────────────
+ * Every run writes one intelligence_signals_log row (the rail's own signal
+ * ledger, brokerage-stamped) recording that an AI inference was made, on which
+ * contact, from which sources. No parallel ledger is invented.
+ *
+ * ── SCALE ─────────────────────────────────────────────────────────────────
+ * Both wired readers of confidence_score (app/crm/page.tsx and
+ * app/leads/page.tsx) render `score * 100`, i.e. they expect a 0–1 fraction.
+ * The model is asked for 0–100, so it is normalised on the way in. Writing the
+ * raw 0–100 would have rendered a 75%-confidence profile as "7500%".
+ */
+export async function createUnifiedLeadProfile(input: { contactId: string; source?: string }) {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!isValidUUID(input?.contactId)) {
+    return { success: false, error: "A contact id is required" }
+  }
+
+  await requirePermission("edit", "lead_intelligence", input.contactId)
 
   const supabase = createServiceClient()
   const { generateAIJSON } = await import("./ai-generate")
 
-  let profile = await findExistingProfile(leadData, auth.brokerageId)
+  // Resolve the SUBJECT from the caller's own tenant. contacts.id — not
+  // leads.id, not users.id, not agents.id — is what unified_lead_profile
+  // .contact_id references and what the CRM drawer passes.
+  const { data: contact, error: contactError } = await supabase
+    .from("contacts")
+    // ONE STRING LITERAL, deliberately. supabase-js derives the row type by
+    // parsing this argument at compile time, so a runtime concatenation
+    // ("a, b, " + "c") defeats the inference and the row silently degrades to
+    // GenericStringError — every field access on it then fails to typecheck.
+    .select("id, brokerage_id, email, phone, first_name, last_name, source, dnc_status, email_opt_out, sms_opt_out, phone_opt_out")
+    .eq("id", input.contactId)
+    .eq("brokerage_id", auth.brokerageId)
+    .maybeSingle()
+
+  if (contactError) {
+    console.error("[lead-intelligence] Contact read error:", contactError)
+    return { success: false, error: contactError.message }
+  }
+  if (!contact) return { success: false, error: "That contact is not in this brokerage" }
+
+  const leadSource = input.source ?? (contact.source as string | null) ?? "crm_contact"
+
+  // Existing profile for this contact, in this brokerage.
+  const { data: existing, error: existingError } = await supabase
+    .from("unified_lead_profile")
+    .select("*")
+    .eq("contact_id", contact.id)
+    .eq("brokerage_id", auth.brokerageId)
+    .maybeSingle()
+
+  if (existingError) {
+    console.error("[lead-intelligence] Profile lookup error:", existingError)
+    return { success: false, error: existingError.message }
+  }
+
+  let profile = existing
 
   if (!profile) {
-    const { data: newProfile } = await supabase
+    // DESTRUCTURE THE ERROR. This was `const { data: newProfile } = …` followed
+    // by `profile.id` — an RLS/constraint refusal came back as data:null and
+    // the next line threw a TypeError instead of reporting the refusal.
+    const { data: newProfile, error: insertError } = await supabase
       .from("unified_lead_profile")
       .insert({
         brokerage_id: auth.brokerageId,
-        lead_source: leadData.source,
+        contact_id: contact.id,
+        lead_source: leadSource,
         confidence_score: 0,
         intent_type: "unknown",
         intent_strength: "researching",
         first_detected_date: new Date().toISOString(),
-        contact_email: leadData.email,
-        contact_phone: leadData.phone,
+        contact_email: contact.email,
+        contact_phone: contact.phone,
+        enrichment_sources: ["crm_contact"],
       })
       .select()
-      .single()
+      .maybeSingle()
 
+    if (insertError) {
+      console.error("[lead-intelligence] Profile insert error:", insertError)
+      return { success: false, error: insertError.message }
+    }
+    if (!newProfile) return { success: false, error: "Profile was not created" }
     profile = newProfile
   }
 
-  const allSignals = await getAllSignalsForProfile(profile.id)
+  const allSignals = await getAllSignalsForProfile(profile.id, auth.brokerageId, contact.id)
 
   const prompt = `Analyze signals to determine real estate intent:
 
@@ -1448,48 +1739,144 @@ PROPERTY DATA: ${JSON.stringify(allSignals.property)}
 
     if (!intelligence) return { success: false, error: "No intelligence data returned" }
 
-    const intelligenceAny = intelligence as any
-    await supabase
+    const intelligenceAny = intelligence as Record<string, unknown>
+
+    // The model returns free text. Anything outside the vocabulary the rest of
+    // this rail uses (see TEMPERATURES / INTENT_TYPES / … above) is dropped
+    // rather than written, so a hallucinated "very_hot" can never reach a
+    // column the triage UI then cannot round-trip.
+    const rawScore = Number(intelligenceAny.confidence_score)
+    const score100 = Number.isFinite(rawScore) ? Math.min(Math.max(rawScore, 0), 100) : 0
+    const intentType = intelligenceAny.unified_intent
+    const intentStrength = intelligenceAny.intent_strength
+    const timeline = intelligenceAny.estimated_timeline
+
+    // Consent: never RECOMMEND outreach the consent rail would refuse outright.
+    const allChannelsClosed =
+      contact.dnc_status === true ||
+      (contact.email_opt_out === true &&
+        contact.sms_opt_out === true &&
+        contact.phone_opt_out === true)
+
+    const patch: Record<string, unknown> = {
+      confidence_score: score100 / 100, // 0–1, matching both wired readers
+      temperature: score100 > 70 ? "hot" : score100 > 40 ? "warm" : "cold",
+      ready_for_outreach: allChannelsClosed ? false : Boolean(intelligenceAny.ready_for_outreach),
+      ai_summary:
+        typeof intelligenceAny.motivation_summary === "string"
+          ? intelligenceAny.motivation_summary.slice(0, 4000)
+          : null,
+      motivation_signals: Array.isArray(intelligenceAny.key_signals)
+        ? intelligenceAny.key_signals
+        : [],
+      enrichment_sources: ["crm_contact", "ai_inference"],
+      last_analyzed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }
+    if (typeof intentType === "string" && (INTENT_TYPES as readonly string[]).includes(intentType)) {
+      patch.intent_type = intentType
+    }
+    if (
+      typeof intentStrength === "string" &&
+      (INTENT_STRENGTHS as readonly string[]).includes(intentStrength)
+    ) {
+      patch.intent_strength = intentStrength
+    }
+    if (typeof timeline === "string" && (TIMELINES as readonly string[]).includes(timeline)) {
+      patch.estimated_timeline = timeline
+    }
+
+    const { data: updated, error: updateError } = await supabase
       .from("unified_lead_profile")
-      .update({
-        confidence_score: intelligenceAny.confidence_score,
-        intent_type: intelligenceAny.unified_intent,
-        intent_strength: intelligenceAny.intent_strength,
-        estimated_timeline: intelligenceAny.estimated_timeline,
-        ready_for_outreach: intelligenceAny.ready_for_outreach,
-        temperature: intelligenceAny.confidence_score > 70 ? "hot" : intelligenceAny.confidence_score > 40 ? "warm" : "cold",
-      })
+      .update(patch)
       .eq("id", profile.id)
       .eq("brokerage_id", auth.brokerageId)
+      .select()
+      .maybeSingle()
 
-    return { success: true, profile, intelligence }
+    if (updateError) {
+      console.error("[lead-intelligence] Profile update error:", updateError)
+      return { success: false, error: updateError.message }
+    }
+    // A filtered update matching nothing is not an error to PostgREST.
+    if (!updated) return { success: false, error: "That profile was not found" }
+
+    // PROVENANCE — the rail's own signal ledger, brokerage-stamped at insert.
+    const { error: ledgerError } = await supabase.from("intelligence_signals_log").insert({
+      brokerage_id: auth.brokerageId,
+      contact_id: contact.id,
+      lead_profile_id: updated.id,
+      signal_type: "ai_unified_profile",
+      signal_data_json: {
+        lead_source: leadSource,
+        sources: ["crm_contact", "ai_inference"],
+        behavioral_rows: allSignals.behavioral.length,
+        property_rows: allSignals.property.length,
+        confidence_0_1: patch.confidence_score,
+        outreach_suppressed_by_consent: allChannelsClosed,
+        actor_user_id: auth.userId,
+      },
+      signal_strength: Math.round(score100 / 10),
+      detected_at: new Date().toISOString(),
+    })
+    if (ledgerError) {
+      // Provenance is not optional on this rail — an inference we cannot
+      // account for is reported, not quietly kept.
+      console.error("[lead-intelligence] Provenance ledger write failed:", ledgerError)
+      return { success: false, error: `Profile saved but provenance failed: ${ledgerError.message}` }
+    }
+
+    revalidatePath("/crm")
+    revalidatePath("/leads")
+    return { success: true, profile: updated, intelligence }
   } catch (error) {
     console.error("[v0] Unified profile error:", error)
     return { success: false, error: String(error) }
   }
 }
 
-async function findExistingProfile(leadData: any, brokerageId: string) {
+/**
+ * Signals feeding the unified profile.
+ *
+ * COLUMN WITH NO WRITER: this read used to filter behavioral_signals on
+ * `unified_profile_id` and property_intelligence on `profile_id`. Nothing in
+ * the codebase has ever written either column (verified by search), so both
+ * reads returned a permanent empty set and the AI prompt above was always fed
+ * "[] / []" — the profile scored on nothing while looking like it scored on
+ * evidence. Both tables also carry contact_id, which IS written, so the
+ * contact is used as the resolving key and the legacy profile keys are kept
+ * as a second lane for any row that does get stamped later.
+ */
+async function getAllSignalsForProfile(profileId: string, brokerageId: string, contactId?: string) {
+  // SERVICE CLIENT — RLS does not apply, so the tenant filter has to be here
+  // explicitly. Both tables carry a NULLABLE brokerage_id whose policy is
+  // `IS NULL OR = current_user_brokerage_id()`, which is not a boundary even
+  // for a user client.
   const supabase = createServiceClient()
 
-  if (leadData.email) {
-    const { data } = await supabase
-      .from("unified_lead_profile")
-      .select("*")
-      .eq("contact_email", leadData.email)
-      .eq("brokerage_id", brokerageId)
-      .maybeSingle()
-    if (data) return data
-  }
+  const behavioralQuery = (
+    contactId
+      ? supabase
+          .from("behavioral_signals")
+          .select("*")
+          .or(`contact_id.eq.${contactId},unified_profile_id.eq.${profileId}`)
+      : supabase.from("behavioral_signals").select("*").eq("unified_profile_id", profileId)
+  ).eq("brokerage_id", brokerageId)
 
-  return null
-}
+  const propertyQuery = (
+    contactId
+      ? supabase
+          .from("property_intelligence")
+          .select("*")
+          .or(`contact_id.eq.${contactId},profile_id.eq.${profileId}`)
+      : supabase.from("property_intelligence").select("*").eq("profile_id", profileId)
+  ).eq("brokerage_id", brokerageId)
 
-async function getAllSignalsForProfile(profileId: string) {
-  const supabase = createServiceClient()
+  const [{ data: behavioral, error: behavioralError }, { data: property, error: propertyError }] =
+    await Promise.all([behavioralQuery, propertyQuery])
 
-  const { data: behavioral } = await supabase.from("behavioral_signals").select("*").eq("unified_profile_id", profileId)
-  const { data: property } = await supabase.from("property_intelligence").select("*").eq("profile_id", profileId)
+  if (behavioralError) console.error("[lead-intelligence] Behavioral signal read error:", behavioralError)
+  if (propertyError) console.error("[lead-intelligence] Property signal read error:", propertyError)
 
   return {
     behavioral: behavioral || [],
@@ -1612,6 +1999,28 @@ Timeline: ${profile.estimated_timeline}
 // EXTERNAL BEHAVIOR TRACKING (Zillow, Realtor.com, etc.)
 // ============================================
 
+/**
+ * DELIBERATELY NOT WIRED TO ANY SURFACE.
+ *
+ * NAMED, WIRED, MORE COMPLETE RIVAL: the real-estate-site collect lane in
+ * app/api/cron/lead-scraping/route.ts —
+ * lib/lead-pipeline/scraper-parsers.ts (buildPropertySearchUrl /
+ * parsePropertySearchResults / parseBuyerSavedSearches /
+ * normalizeBatchDataRecord) feeding lib/lead-pipeline:processRawRecord, with
+ * territory resolution, per-vendor spend metering and the promotion gate. That
+ * lane is governed; this one is a bare for-loop over three scrapers.
+ *
+ * NOT DELETED — it writes external_behavior, which the rival lane does not, so
+ * it is an independent twin, not a proven port.
+ *
+ * COMPLIANCE — WHY IT MUST NOT BE WIRED AS WRITTEN: the property_intelligence
+ * insert below persists owner_name, owner_occupied, years_owned and
+ * equity_estimate. That is a financial profile of a NAMED HOMEOWNER who has no
+ * relationship with the brokerage, assembled from a location string typed into
+ * a form. There is no consent record, no legitimate-interest assessment and no
+ * subject-rights linkage for those rows anywhere in this codebase. Reporting
+ * this rather than surfacing it is the correct outcome.
+ */
 export async function scrapeExternalBehavior(targetLocation: { city: string; state: string; zip?: string }) {
   // Paid Apify + BatchData scrapers — require auth to prevent budget drain
   const auth = await requireCaller()
@@ -1651,7 +2060,11 @@ export async function scrapeExternalBehavior(targetLocation: { city: string; sta
         property_addresses_viewed: property.address ? [property.address] : [],
         location: targetLocation.city,
         detected_interest_level: "researching",
-        detected_via_zenrows: true,
+        // PROVENANCE, NOT DECORATION. This lane calls Apify (scrapeZillow /
+        // scrapeRealtorDotCom / scrapeRedfin), never ZenRows. The column was
+        // hard-coded true, which mislabelled every row's collection vendor —
+        // exactly the field a vendor audit or a subject-access request reads.
+        detected_via_zenrows: false,
         scraped_at: new Date().toISOString(),
       })
 
@@ -1680,14 +2093,27 @@ export async function scrapeExternalBehavior(targetLocation: { city: string; sta
   }
 }
 
-// Track specific user behavior on external sites (when identifiable)
+/**
+ * Attach one observed off-site activity to an EXISTING tracked visitor.
+ *
+ * NOT WIRED, AND CANNOT MEANINGFULLY BE: it requires a behavioral_signals row
+ * for the visitor, and the only producer of those rows is trackBehavior, which
+ * is itself unwired (no visitor-consent artifact — see its header). Wiring a
+ * consumer whose producer is dark would surface a control that always answers
+ * "No behavioral signal found for visitor". It is hardened and left honest.
+ *
+ * @param data.detectedViaZenrows Which vendor observed this. It is the caller's
+ * to state — it used to be hard-coded `true` regardless of who actually
+ * collected it, which is a provenance lie in a subject-access-request column.
+ */
 export async function trackExternalActivity(data: {
   visitorId: string
   source: string
   behaviorType: string
   propertyAddress?: string
-  searchCriteria?: any
+  searchCriteria?: Record<string, unknown> | null
   location: string
+  detectedViaZenrows?: boolean
 }) {
   // Behavioral signal write — require auth. Visitors don't call this directly;
   // it's called from authenticated server flows that know a visitor's UUID.
@@ -1697,37 +2123,60 @@ export async function trackExternalActivity(data: {
   const supabase = createServiceClient()
 
   try {
-    // Find or create behavioral signal
-    const { data: signal } = await supabase
+    // Resolve the visitor's signal INSIDE the caller's tenant. This is a
+    // service client, so RLS is not in play and the filter has to be explicit;
+    // without it a visitor_id guessed from another tenant would be updated.
+    const { data: signal, error: signalError } = await supabase
       .from("behavioral_signals")
       .select("*")
       .eq("visitor_id", data.visitorId)
+      .eq("brokerage_id", auth.brokerageId)
       .maybeSingle()
 
+    if (signalError) {
+      console.error("[lead-intelligence] Behavioral signal read error:", signalError)
+      return { success: false, error: signalError.message }
+    }
     if (!signal) {
       return { success: false, error: "No behavioral signal found for visitor" }
     }
 
     // Log external behavior — stamp brokerage from caller's session
-    await supabase.from("external_behavior").insert({
+    const { error: behaviorError } = await supabase.from("external_behavior").insert({
       behavioral_signal_id: signal.id,
       brokerage_id: auth.brokerageId,
       source: data.source,
       activity_type: data.behaviorType,
       property_addresses_viewed: data.propertyAddress ? [data.propertyAddress] : [],
+      // COLUMN WITH NO WRITER: external_behavior.search_criteria_json existed
+      // and nothing in the codebase ever filled it, while this function
+      // accepted a `searchCriteria` argument and silently dropped it on the
+      // floor. The caller's criteria are persisted now.
+      search_criteria_json: data.searchCriteria ?? null,
       location: data.location,
       detected_interest_level: "active",
-      detected_via_zenrows: true,
+      detected_via_zenrows: data.detectedViaZenrows === true,
       scraped_at: new Date().toISOString(),
     })
 
+    if (behaviorError) {
+      console.error("[lead-intelligence] External behavior insert error:", behaviorError)
+      return { success: false, error: behaviorError.message }
+    }
+
     // Update signal strength based on external activity
-    await supabase
+    const { error: bumpError } = await supabase
       .from("behavioral_signals")
       .update({
         intent_confidence_score: Math.min((signal.intent_confidence_score || 0) + 10, 100),
       })
       .eq("id", signal.id)
+      .eq("brokerage_id", auth.brokerageId)
+
+    if (bumpError) {
+      console.error("[lead-intelligence] Signal score update error:", bumpError)
+      return { success: false, error: bumpError.message }
+    }
 
     return { success: true, signalId: signal.id }
   } catch (error) {

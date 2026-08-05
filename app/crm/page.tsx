@@ -20,7 +20,7 @@ import { getActiveAutoPilotPlans, detectClientChurn, getConversationIntelligence
 import { generateContactInsights, draftSmartEmail } from "@/app/actions/ai-insights"
 import type { ContactInsight } from "@/app/actions/ai-insights"
 import { aiSuggestFollowUp } from "@/app/actions/ai-lead-nurturing"
-import { getUnifiedLeadProfiles, getSocialIntelligence } from "@/app/actions/lead-intelligence"
+import { getUnifiedLeadProfiles, getSocialIntelligence, createUnifiedLeadProfile } from "@/app/actions/lead-intelligence"
 import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 import { listCampaignSequences, enrollContactInSequence } from "@/app/actions/campaign-sequences"
 import { aiOptimizeReferralAsk } from "@/app/actions/ai-sphere-management"
@@ -242,6 +242,8 @@ export default function CRMPage() {
   const [contactActivityTimeline, setContactActivityTimeline] = useState<any[]>([])
   const [contactIntelligence, setContactIntelligence] = useState<ContactIntelligence | null>(null)
   const [unifiedLeadProfile, setUnifiedLeadProfile] = useState<any>(null)
+  const [unifiedProfileLoaded, setUnifiedProfileLoaded] = useState(false)
+  const [buildingProfile, setBuildingProfile] = useState(false)
   const [socialSignals, setSocialSignals] = useState<any[]>([])
   const [analyzingCallId, setAnalyzingCallId] = useState<string | null>(null)
 
@@ -419,9 +421,11 @@ export default function CRMPage() {
           .catch(() => setContactIntelligence(null))
 
         // Unified lead profile + social intelligence signals — non-blocking
+        setUnifiedProfileLoaded(false)
         getUnifiedLeadProfiles({ contact_id: contactId })
           .then((res) => setUnifiedLeadProfile(res.profiles?.[0] ?? null))
           .catch(() => setUnifiedLeadProfile(null))
+          .finally(() => setUnifiedProfileLoaded(true))
         getSocialIntelligence()
           .then((res) => setSocialSignals(res.signals ?? []))
           .catch(() => setSocialSignals([]))
@@ -941,6 +945,32 @@ export default function CRMPage() {
     setSelectedContactId(null)
     setSelectedContact(null)
     router.push("/crm", { scroll: false })
+  }
+
+  /**
+   * Build (or refresh) this contact's unified intelligence profile.
+   *
+   * unified_lead_profile has been read by this drawer since it was written and
+   * had NO writer anywhere in the product, so the Lead Profile card could never
+   * render. The action resolves the subject from the contacts table inside the
+   * caller's brokerage (the lawful basis: a contact the brokerage already
+   * holds), suppresses an outreach recommendation for a DNC/fully-opted-out
+   * contact, and writes an intelligence_signals_log provenance row per run.
+   */
+  const handleBuildLeadProfile = async () => {
+    if (!selectedContactId) return
+    setBuildingProfile(true)
+    const result = await createUnifiedLeadProfile({ contactId: selectedContactId }).catch(
+      (e: unknown) => ({ success: false as const, error: String(e) })
+    )
+    if (result.success && "profile" in result && result.profile) {
+      setUnifiedLeadProfile(result.profile)
+      toast.success("Lead intelligence profile built")
+    } else {
+      // Read the server's verdict — never close on an assumed success.
+      toast.error(("error" in result && result.error) || "Could not build the profile")
+    }
+    setBuildingProfile(false)
   }
 
   const handleAnalyzeCall = async (activity: any) => {
@@ -2469,10 +2499,19 @@ export default function CRMPage() {
                             </div>
                           )}
                           <div className="grid grid-cols-2 gap-y-1.5 gap-x-4 text-xs">
-                            {unifiedLeadProfile.urgency_level && (
+                            {/* unified_lead_profile has NO urgency_level column (verified
+                                live) — this branch read undefined and never rendered.
+                                intent_strength and estimated_timeline are the real ones. */}
+                            {unifiedLeadProfile.intent_strength && (
                               <div className="flex justify-between gap-2">
-                                <span className="text-muted-foreground">Timeline urgency</span>
-                                <span className="font-medium capitalize">{unifiedLeadProfile.urgency_level}</span>
+                                <span className="text-muted-foreground">Intent strength</span>
+                                <span className="font-medium capitalize">{unifiedLeadProfile.intent_strength}</span>
+                              </div>
+                            )}
+                            {unifiedLeadProfile.estimated_timeline && (
+                              <div className="flex justify-between gap-2">
+                                <span className="text-muted-foreground">Timeline</span>
+                                <span className="font-medium">{unifiedLeadProfile.estimated_timeline}</span>
                               </div>
                             )}
                             {unifiedLeadProfile.motivation_signals && (
@@ -2488,10 +2527,17 @@ export default function CRMPage() {
                                 </div>
                               </div>
                             )}
-                            {unifiedLeadProfile.enrichment_source && (
-                              <div className="flex justify-between gap-2">
-                                <span className="text-muted-foreground">Enrichment source</span>
-                                <Badge variant="outline" className="text-xs">{unifiedLeadProfile.enrichment_source}</Badge>
+                            {/* The column is enrichment_sourceS (text[]). The singular
+                                spelling read undefined and never rendered. */}
+                            {Array.isArray(unifiedLeadProfile.enrichment_sources) &&
+                              unifiedLeadProfile.enrichment_sources.length > 0 && (
+                              <div className="col-span-2 flex justify-between gap-2">
+                                <span className="text-muted-foreground">Enrichment sources</span>
+                                <span className="flex flex-wrap gap-1 justify-end">
+                                  {unifiedLeadProfile.enrichment_sources.map((src: string) => (
+                                    <Badge key={src} variant="outline" className="text-xs">{src}</Badge>
+                                  ))}
+                                </span>
                               </div>
                             )}
                             {unifiedLeadProfile.ready_for_outreach != null && (
@@ -2518,11 +2564,50 @@ export default function CRMPage() {
                               </div>
                             </div>
                           )}
+                          <div className="pt-1">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 text-xs"
+                              onClick={handleBuildLeadProfile}
+                              disabled={buildingProfile}
+                            >
+                              {buildingProfile ? "Re-analyzing…" : "Re-analyze profile"}
+                            </Button>
+                            {unifiedLeadProfile.last_analyzed_at && (
+                              <span className="ml-2 text-[11px] text-muted-foreground">
+                                Last analyzed {new Date(unifiedLeadProfile.last_analyzed_at).toLocaleString()}
+                              </span>
+                            )}
+                          </div>
                         </CardContent>
                       </Card>
                     )}
 
-                    {!contactIntelligence && !unifiedLeadProfile && (
+                    {/* No profile yet. This card used to say "Loading intelligence…"
+                        forever: unified_lead_profile had no writer anywhere in the
+                        product, so the read above always came back empty and the
+                        spinner text was permanent. It is an explicit action now. */}
+                    {unifiedProfileLoaded && !unifiedLeadProfile && (
+                      <Card>
+                        <CardContent className="p-6 space-y-3 text-center">
+                          <p className="text-sm text-muted-foreground">
+                            No intelligence profile has been built for this contact yet.
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            Analyzes the behavioural and property signals this brokerage
+                            already holds for this contact. The run is recorded in the
+                            intelligence signal ledger, and an outreach recommendation is
+                            suppressed for a contact on DNC or opted out of every channel.
+                          </p>
+                          <Button size="sm" onClick={handleBuildLeadProfile} disabled={buildingProfile}>
+                            {buildingProfile ? "Building…" : "Build intelligence profile"}
+                          </Button>
+                        </CardContent>
+                      </Card>
+                    )}
+
+                    {!contactIntelligence && !unifiedLeadProfile && !unifiedProfileLoaded && (
                       <Card>
                         <CardContent className="p-6 text-sm text-muted-foreground text-center">
                           Loading intelligence…

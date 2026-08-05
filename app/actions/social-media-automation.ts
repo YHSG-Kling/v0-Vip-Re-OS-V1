@@ -541,20 +541,69 @@ export async function rejectSocialPost(postId: string, _rejectorUserId?: string,
   }
 }
 
+// ============================================
+// QUEUE / DELIVERY READS
+// ============================================
+//
+// LIVE VOCABULARIES (verified against project hrvaqgvukzxfskkcrwbt).
+// These are the CHECK constraints on social_posts. A filter value outside them
+// can never match a row, so a caller passing one used to get a silent empty
+// list that reads as "you have no posts". They are rejected explicitly instead.
+//   social_posts_status_check          → draft|scheduled|publishing|published|failed|cancelled
+//   social_posts_approval_status_check → pending|approved|rejected
+//   social_posts_platform_check        → facebook|instagram|linkedin|twitter|tiktok|
+//                                        youtube|pinterest|google_business|all
+// NOTE there is NO 'pending_approval' STATUS. Approval lives in its own column.
+const SOCIAL_POST_STATUSES = [
+  "draft", "scheduled", "publishing", "published", "failed", "cancelled",
+] as const
+const SOCIAL_APPROVAL_STATUSES = ["pending", "approved", "rejected"] as const
+const SOCIAL_PLATFORMS = [
+  "facebook", "instagram", "linkedin", "twitter", "tiktok",
+  "youtube", "pinterest", "google_business", "all",
+] as const
+
 /**
- * Get social queue with filters
+ * Get social queue with filters.
+ *
+ * The brokerage is resolved FROM THE SESSION. It used to be the first
+ * positional argument, which made this a "use server" action that would read
+ * whatever tenant the browser named.
+ *
+ * Returns a verdict, not a bare array: `[]` is indistinguishable from an RLS
+ * denial, and rendering a refused read as "you have nothing scheduled" is the
+ * failure mode this rail is most prone to.
  */
-export async function getSocialQueue(
-  brokerageId: string,
-  filters?: {
-    platform?: string
-    status?: string
-    agentId?: string
-    approvalStatus?: string
+export async function getSocialQueue(filters?: {
+  platform?: string
+  status?: string
+  agentId?: string
+  approvalStatus?: string
+  limit?: number
+}): Promise<
+  | { ok: true; posts: any[] }
+  | { ok: false; error: string }
+> {
+  const ctx = await requireBrokerage()
+  if (!ctx.ok) return { ok: false, error: ctx.error }
+
+  if (filters?.platform && !(SOCIAL_PLATFORMS as readonly string[]).includes(filters.platform)) {
+    return { ok: false, error: `Unsupported platform filter: ${filters.platform}` }
   }
-) {
-  if (!isValidUUID(brokerageId)) {
-    return []
+  if (filters?.status && !(SOCIAL_POST_STATUSES as readonly string[]).includes(filters.status)) {
+    return { ok: false, error: `Unsupported status filter: ${filters.status}` }
+  }
+  if (
+    filters?.approvalStatus &&
+    !(SOCIAL_APPROVAL_STATUSES as readonly string[]).includes(filters.approvalStatus)
+  ) {
+    return { ok: false, error: `Unsupported approval filter: ${filters.approvalStatus}` }
+  }
+  if (filters?.agentId) {
+    if (!isValidUUID(filters.agentId)) return { ok: false, error: "Invalid agent id" }
+    if (!(await verifyAgentInBrokerage(filters.agentId, ctx.brokerageId))) {
+      return { ok: false, error: "That agent is not in this brokerage" }
+    }
   }
 
   const supabase = await createClient()
@@ -568,39 +617,41 @@ export async function getSocialQueue(
       social_engagement_tracking (*)
     `
     )
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", ctx.brokerageId)
     .order("scheduled_for", { ascending: true })
+    .limit(Math.min(Math.max(filters?.limit ?? 200, 1), 500))
 
-  if (filters?.platform) {
-    query = query.eq("platform", filters.platform)
-  }
-  if (filters?.status) {
-    query = query.eq("status", filters.status)
-  }
-  if (filters?.agentId && isValidUUID(filters.agentId)) {
-    query = query.eq("agent_id", filters.agentId)
-  }
-  if (filters?.approvalStatus) {
-    query = query.eq("approval_status", filters.approvalStatus)
-  }
+  if (filters?.platform) query = query.eq("platform", filters.platform)
+  if (filters?.status) query = query.eq("status", filters.status)
+  if (filters?.agentId) query = query.eq("agent_id", filters.agentId)
+  if (filters?.approvalStatus) query = query.eq("approval_status", filters.approvalStatus)
 
   const { data, error } = await query
 
   if (error) {
     console.error("[social-media-automation] Get social queue error:", error)
-    return []
+    return { ok: false, error: error.message }
   }
 
-  return data || []
+  return { ok: true, posts: data ?? [] }
 }
 
 /**
- * Get engagement data for a post
+ * Get the engagement measurement history for one post.
+ * The post is confirmed to belong to the caller's brokerage first — a bare
+ * postId over a user client leans on RLS, and social_engagement_tracking rows
+ * are only reachable through their post.
  */
-export async function getSocialEngagement(postId: string) {
-  if (!isValidUUID(postId)) {
-    return []
-  }
+export async function getSocialEngagement(postId: string): Promise<
+  | { ok: true; measurements: any[] }
+  | { ok: false; error: string }
+> {
+  const ctx = await requireBrokerage()
+  if (!ctx.ok) return { ok: false, error: ctx.error }
+  if (!isValidUUID(postId)) return { ok: false, error: "Invalid post id" }
+
+  const owned = await verifySocialPostInBrokerage(postId, ctx.brokerageId)
+  if (!owned.ok) return { ok: false, error: "Post not found" }
 
   const supabase = await createClient()
 
@@ -608,23 +659,34 @@ export async function getSocialEngagement(postId: string) {
     .from("social_engagement_tracking")
     .select("*")
     .eq("social_post_id", postId)
+    .eq("brokerage_id", ctx.brokerageId)
     .order("captured_at", { ascending: false })
 
   if (error) {
     console.error("[social-media-automation] Get engagement error:", error)
-    return []
+    return { ok: false, error: error.message }
   }
 
-  return data || []
+  return { ok: true, measurements: data ?? [] }
 }
 
 /**
- * Get publish logs for a post
+ * Get the full publish-attempt log for one post.
+ *
+ * The dashboard page preloads logs for FAILED posts only; this is the
+ * on-demand per-post history (every queue/publish/fail attempt, provider
+ * response and error), for any post in the caller's brokerage.
  */
-export async function getPublishLog(postId: string) {
-  if (!isValidUUID(postId)) {
-    return []
-  }
+export async function getPublishLog(postId: string): Promise<
+  | { ok: true; attempts: any[] }
+  | { ok: false; error: string }
+> {
+  const ctx = await requireBrokerage()
+  if (!ctx.ok) return { ok: false, error: ctx.error }
+  if (!isValidUUID(postId)) return { ok: false, error: "Invalid post id" }
+
+  const owned = await verifySocialPostInBrokerage(postId, ctx.brokerageId)
+  if (!owned.ok) return { ok: false, error: "Post not found" }
 
   const supabase = await createClient()
 
@@ -632,14 +694,15 @@ export async function getPublishLog(postId: string) {
     .from("social_publish_log")
     .select("*")
     .eq("social_post_id", postId)
+    .eq("brokerage_id", ctx.brokerageId)
     .order("created_at", { ascending: false })
 
   if (error) {
     console.error("[social-media-automation] Get publish log error:", error)
-    return []
+    return { ok: false, error: error.message }
   }
 
-  return data || []
+  return { ok: true, attempts: data ?? [] }
 }
 
 // ============================================
@@ -809,46 +872,202 @@ function getOptimalPostingTime(platform: string): string {
 // PERFORMANCE ANALYTICS
 // ============================================
 
-export async function trackPostPerformance(postId: string, brokerageId: string, metrics: any) {
-  if (!isValidUUID(postId) || !isValidUUID(brokerageId)) {
-    return { success: false, error: "Invalid IDs" }
-  }
+/** A measured engagement snapshot. Every field is optional: an unsupplied
+ *  metric is LEFT ALONE, never written as 0. Zeroing an unknown is how a
+ *  platform that does not expose "saves" ends up asserting there were none. */
+export interface PostEngagementMetrics {
+  impressions?: number | null
+  likes?: number | null
+  comments?: number | null
+  shares?: number | null
+  saves?: number | null
+  clicks?: number | null
+  leads?: number | null
+}
+
+const METRIC_COLUMNS: Array<[keyof PostEngagementMetrics, string]> = [
+  ["impressions", "impressions_count"],
+  ["likes", "likes_count"],
+  ["comments", "comments_count"],
+  ["shares", "shares_count"],
+  ["saves", "saves_count"],
+  ["clicks", "clicks_count"],
+  ["leads", "leads_generated"],
+]
+
+/**
+ * Record a measured engagement snapshot for one post.
+ *
+ * THREE THINGS WERE WRONG HERE AND ARE FIXED:
+ *  1. brokerageId came from the caller. social_engagement_tracking.brokerage_id
+ *     is NOT NULL and its RLS policy is a strict equality, but a "use server"
+ *     action must not take the tenant from the browser at all. Session now.
+ *  2. `.upsert(...)` with no onConflict. social_engagement_tracking's only
+ *     unique constraint is its PRIMARY KEY on `id` (verified live) and `id` is
+ *     never supplied, so every "upsert" INSERTED A NEW ROW. The dashboard reads
+ *     social_engagement_tracking[0] — an arbitrary one of those duplicates.
+ *     There is one current-state row per (post, platform) now, kept by an
+ *     explicit read-then-update-or-insert. No DDL required.
+ *  3. The write result was discarded and `{ success: true }` returned
+ *     unconditionally, so an RLS refusal reported as a save.
+ */
+export async function trackPostPerformance(
+  postId: string,
+  metrics: PostEngagementMetrics
+): Promise<{ success: boolean; error?: string; measurement?: any }> {
+  const ctx = await requireBrokerage()
+  if (!ctx.ok) return { success: false, error: ctx.error }
+  if (!isValidUUID(postId)) return { success: false, error: "Invalid post id" }
 
   const supabase = await createClient()
 
-  try {
-    // Get post to determine platform
-    const { data: post } = await supabase
-      .from("social_posts")
-      .select("platform")
-      .eq("id", postId)
-      .maybeSingle()
+  // Resolve platform from the post, and confirm the post is this tenant's.
+  const { data: post, error: postError } = await supabase
+    .from("social_posts")
+    .select("id, platform, brokerage_id")
+    .eq("id", postId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
 
-    await supabase.from("social_engagement_tracking").upsert({
-      social_post_id: postId,
-      brokerage_id: brokerageId,
-      platform: post?.platform || "unknown",
-      impressions_count: metrics.impressions || 0,
-      likes_count: metrics.likes || 0,
-      comments_count: metrics.comments || 0,
-      shares_count: metrics.shares || 0,
-      saves_count: metrics.saves || 0,
-      clicks_count: metrics.clicks || 0,
-      leads_generated: metrics.leads || 0,
-      captured_at: new Date().toISOString(),
-    })
+  if (postError) {
+    console.error("[social-media-automation] Track performance post read error:", postError)
+    return { success: false, error: postError.message }
+  }
+  // platform is NOT NULL on both tables; there is no honest "unknown" fallback.
+  if (!post?.platform) return { success: false, error: "Post not found" }
 
-    return { success: true }
-  } catch (error) {
-    console.error("[social-media-automation] Track performance error:", error)
-    return { success: false, error: "Failed to track performance" }
+  const patch: Record<string, unknown> = { captured_at: new Date().toISOString() }
+  for (const [key, column] of METRIC_COLUMNS) {
+    const value = metrics[key]
+    if (value === undefined || value === null) continue
+    const n = Number(value)
+    if (!Number.isFinite(n) || n < 0) {
+      return { success: false, error: `Invalid value for ${String(key)}` }
+    }
+    patch[column] = Math.round(n)
+  }
+  if (Object.keys(patch).length === 1) {
+    return { success: false, error: "No metrics supplied" }
+  }
+
+  const { data: existing, error: existingError } = await supabase
+    .from("social_engagement_tracking")
+    .select("id")
+    .eq("social_post_id", postId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .eq("platform", post.platform)
+    .order("captured_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (existingError) {
+    console.error("[social-media-automation] Track performance read error:", existingError)
+    return { success: false, error: existingError.message }
+  }
+
+  const written = existing
+    ? await supabase
+        .from("social_engagement_tracking")
+        .update(patch)
+        .eq("id", (existing as { id: string }).id)
+        .eq("brokerage_id", ctx.brokerageId)
+        .select()
+        .maybeSingle()
+    : await supabase
+        .from("social_engagement_tracking")
+        .insert({
+          social_post_id: postId,
+          brokerage_id: ctx.brokerageId,
+          platform: post.platform,
+          ...patch,
+        })
+        .select()
+        .maybeSingle()
+
+  if (written.error) {
+    console.error("[social-media-automation] Track performance write error:", written.error)
+    return { success: false, error: written.error.message }
+  }
+  // A filtered update that matched nothing is not an error to PostgREST.
+  if (!written.data) return { success: false, error: "Measurement was not saved" }
+
+  revalidatePath("/dashboard/social")
+  return { success: true, measurement: written.data }
+}
+
+/**
+ * Pull the latest REAL platform measurement for one post into the engagement
+ * table the social dashboard renders.
+ *
+ * PROVENANCE: the numbers come from social_media_analytics, which is written
+ * ONLY by lib/social/analytics-sync.ts:syncSocialAnalytics — the nightly cron
+ * (/api/cron/social-analytics-sync, 07:45 UTC) that calls each platform's own
+ * API with the tenant's stored token. Nothing here contacts a platform, invents
+ * a number, or substitutes a zero for a metric a platform did not report.
+ *
+ * Why this exists: social_engagement_tracking is what the dashboard post cards
+ * read, and its only other writer is the publish cron's initial all-zero row —
+ * so those cards showed a permanent 0/0/0/0. This projects the measured row
+ * across. `engagements` has no column of its own here and is returned for
+ * display rather than being split into fabricated likes/comments/shares.
+ */
+export async function refreshPostEngagementFromSync(postId: string): Promise<{
+  success: boolean
+  error?: string
+  reason?: "no_measurement"
+  measuredAt?: string
+  engagements?: number | null
+  measurement?: any
+}> {
+  const ctx = await requireBrokerage()
+  if (!ctx.ok) return { success: false, error: ctx.error }
+  if (!isValidUUID(postId)) return { success: false, error: "Invalid post id" }
+
+  const supabase = await createClient()
+
+  const { data: synced, error: syncedError } = await supabase
+    .from("social_media_analytics")
+    .select("impressions, engagements, clicks, measured_at")
+    .eq("post_id", postId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .order("measured_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (syncedError) {
+    console.error("[social-media-automation] Synced metric read error:", syncedError)
+    return { success: false, error: syncedError.message }
+  }
+  if (!synced) {
+    return {
+      success: false,
+      reason: "no_measurement",
+      error:
+        "No platform measurement recorded for this post yet. The analytics sync runs nightly and only covers posts published with a real platform post id.",
+    }
+  }
+
+  const result = await trackPostPerformance(postId, {
+    impressions: synced.impressions,
+    clicks: synced.clicks,
+  })
+  if (!result.success) return { success: false, error: result.error }
+
+  return {
+    success: true,
+    measuredAt: synced.measured_at as string,
+    engagements: (synced.engagements as number | null) ?? null,
+    measurement: result.measurement,
   }
 }
 
-export async function getSocialMediaAnalytics(brokerageId: string, dateRange?: { start: string; end: string }) {
-  if (!isValidUUID(brokerageId)) {
-    return null
-  }
+export async function getSocialMediaAnalytics(
+  _brokerageId?: string, // ignored — a "use server" action must not take its tenant from the browser
+  dateRange?: { start: string; end: string }
+) {
+  const ctx = await requireBrokerage()
+  if (!ctx.ok) return null
+  const brokerageId = ctx.brokerageId
 
   const supabase = await createClient()
 
