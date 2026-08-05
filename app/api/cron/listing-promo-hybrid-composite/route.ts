@@ -212,8 +212,17 @@ export async function GET(req: NextRequest) {
       results.push({ id: p.id, outcome: "completed" })
     } catch (e) {
       const msg = (e as Error).message
+      // "failed", not "error". This block already reports outcome:"failed" two
+      // lines down, but it WROTE "error" — a token no failure handler in the
+      // codebase matches. The cost of that one word: listing-promo-social-publish
+      // (`projectStatus === "failed"`) never marked the promo row failed and
+      // retried the dead project every tick forever; video-coordination never
+      // published the failure signal, so no human heard about it; the reaper
+      // treated it as neither stale nor terminal and never escalated; the m365
+      // trigger left the queue row spinning; and the board's red failure UI never
+      // rendered, so a failed render sat in the "Queued" column.
       await svc.from("ai_video_projects").update({
-        status:         "error",
+        status:         "failed",
         error_message:  msg.slice(0, 800),
         video_metadata: { ...meta, hybrid_pending: false, hybrid_error: msg.slice(0, 400) },
       }).eq("id", p.id)

@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { isValidUUID } from "@/lib/validations"
+import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-pipeline-reaper-policy"
 
 export type DistributeVideoAction =
   | "post_now"
@@ -57,7 +58,11 @@ export async function distributeVideo(
     return { success: false, error: "Video project not found" }
   }
 
-  const readyStatuses = ["ready", "completed", "preview_ready", "published"]
+  // `distributed` belongs here: without it a video could never be distributed
+  // a SECOND time, because the first success rewrote its own status out of the
+  // accepted set. `uploaded` belongs here too — an agent's own finished upload
+  // was refused with "wait for generation to complete".
+  const readyStatuses = [...VIDEO_FINISHED_STATUSES, "preview_ready"] as string[]
   if (!readyStatuses.includes(project.status)) {
     return { success: false, error: "Video is not ready for distribution. Please wait for generation to complete." }
   }

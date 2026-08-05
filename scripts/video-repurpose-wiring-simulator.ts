@@ -630,13 +630,38 @@ console.log("\n[Layer 1 · status vocabulary is one list, in a non-'use server' 
     /REPURPOSE_LOG_APPROVAL_STATUSES/.test(body(repurposeL, "getFilteredRepurposeHistory")),
   )
 
-  // The vocabulary the repurpose SOURCE PICKER reads is the D-ID cron's
-  // ('completed'), not create-video-project's ('ready'). pollVideoStatus writing
-  // 'ready' is exactly why it stays unwired — assert the reader is unchanged.
+  // THIS ASSERTION USED TO PIN THE DIVERGENCE IN PLACE. The picker read the
+  // D-ID cron's terminal token ('completed') while create-video-project's
+  // pollVideoStatus writes 'ready', and this check asserted the picker was
+  // "unchanged" — which locked in a reader that could only ever see one of the
+  // pipeline's several success tokens.
+  //
+  // That was the narrow case of a wider defect: ai_video_projects.status has
+  // five tokens meaning "this video is finished" (completed, ready, uploaded,
+  // published, distributed) and every reader that hard-coded 'completed' made
+  // the other four invisible. The worst was 'distributed' — lib/kernel/video.ts
+  // writes it on a SUCCESSFUL distribution, so succeeding removed the video
+  // from this very picker.
+  //
+  // The picker now reads the one shared VIDEO_FINISHED_STATUSES list, so the
+  // cron's token and pollVideoStatus's token are both accepted and the two can
+  // no longer disagree. Assert THAT — a reader that goes back to a single
+  // hard-coded token fails here.
   const pageL = stripCommentsOnly(load("app/dashboard/campaigns/repurpose/page.tsx"))
   check(
-    "the repurpose source picker still selects status='completed' (the D-ID cron's terminal token)",
-    /\.eq\("status",\s*"completed"\)/.test(pageL),
+    "the repurpose source picker reads the shared finished-video list, not one hard-coded token",
+    /\.in\("status",\s*VIDEO_FINISHED_STATUSES/.test(pageL) &&
+      !/\.eq\("status",\s*"completed"\)/.test(pageL),
+  )
+  // And that list must still be the single source — not re-spelled locally.
+  const policyL = stripCommentsOnly(load("lib/video/video-pipeline-reaper-policy.ts"))
+  check(
+    "VIDEO_FINISHED_STATUSES covers every success token the pipeline writes",
+    ["completed", "ready", "uploaded", "published", "distributed"].every((t) =>
+      new RegExp(`"${t}"`).test(
+        policyL.slice(policyL.indexOf("VIDEO_FINISHED_STATUSES"), policyL.indexOf("VIDEO_FINISHED_STATUSES") + 400),
+      ),
+    ),
   )
   // Tightened: pollVideoStatus also RETURNS { status: "ready" } to its caller,
   // and a bare /status: "ready"/ matched that return object — so the check

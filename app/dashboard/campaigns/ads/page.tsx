@@ -9,6 +9,7 @@ import { listAudienceTemplates } from "@/app/actions/fb-audience-templates"
 import { isVibeConfigured } from "@/lib/providers/vibe"
 import type { CtvEligibleVideo } from "./ctv-lane"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-pipeline-reaper-policy"
 
 export const dynamic = "force-dynamic"
 
@@ -108,7 +109,8 @@ export default async function AdsCampaignsPage() {
     .from("ai_video_projects")
     .select("id, title, video_url, duration_seconds, format, thumbnail_url, listing_id, created_at")
     .eq("brokerage_id", profile.brokerage_id)
-    .eq("status", "completed")
+    // Any finished asset can back a TV/streaming creative, not only `completed`.
+    .in("status", VIDEO_FINISHED_STATUSES as unknown as string[])
     .not("video_url", "is", null)
     .gte("duration_seconds", 15)
     .lte("duration_seconds", 35)

@@ -26,6 +26,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/ca
 import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
 import { Home, ArrowLeft, MapPin, DollarSign, Calendar } from "lucide-react"
+import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-pipeline-reaper-policy"
 
 export default async function ListingPage({ params }: { params: Promise<{ contactId: string }> }) {
   const { contactId } = await params
@@ -202,7 +203,7 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
     .from("ai_video_projects")
     .select("id", { count: "exact", head: true })
     .eq("contact_id", contactId)
-    .eq("status", "completed")
+    .in("status", VIDEO_FINISHED_STATUSES as unknown as string[])
   const sellerTeam = buildSellerTeamActivity({
     listingLive: listing.status === "active" || (listing as any).lifecycle_stage === "MLS_ACTIVE",
     marketingChannelsLive: marketingChannels.filter((c) => c.status === "live").length,

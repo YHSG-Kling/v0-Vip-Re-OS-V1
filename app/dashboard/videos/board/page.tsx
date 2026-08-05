@@ -92,10 +92,25 @@ const COLUMNS = [
 ]
 
 function mapStatusToColumn(status: string, providerStatus?: string): string {
-  if (status === "failed" || providerStatus === "failed") return "failed"
-  if (status === "published") return "published"
-  if (status === "preview_ready" || providerStatus === "completed") return "preview_ready"
-  if (status === "generating" || providerStatus === "generating" || providerStatus === "processing") return "generating"
+  // The catch-all below is a trap, so every terminal state must be named ABOVE
+  // it. It used to match only failed / published / preview_ready / generating,
+  // which meant `completed`, `distributed`, `ready`, `uploaded` and `error` all
+  // fell through to "pending" — a finished video and a failed render both sat in
+  // the Queued column, and the red failure UI further down never rendered.
+  if (status === "failed" || status === "error" || providerStatus === "failed") return "failed"
+  if (status === "published" || status === "distributed") return "published"
+  // A finished asset is previewable: this column is where the Play button lives.
+  if (
+    status === "completed" ||
+    status === "ready" ||
+    status === "uploaded" ||
+    status === "preview_ready" ||
+    providerStatus === "completed"
+  ) {
+    return "preview_ready"
+  }
+  if (status === "generating" || status === "rendering" || status === "remotion_pending" ||
+      providerStatus === "generating" || providerStatus === "processing") return "generating"
   return "pending"
 }
 

@@ -9,6 +9,7 @@ import { RepurposeDashboardClient } from "./repurpose-dashboard-client"
 import { VideoUrlRepurposeCard } from "./video-url-repurpose-card"
 import { NewsletterTeasersCard, type NewsletterTeaser } from "./newsletter-teasers-card"
 import { getPipelines, getRepurposeHistory } from "@/lib/repurpose/actions"
+import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-pipeline-reaper-policy"
 
 export const dynamic = "force-dynamic"
 
@@ -62,7 +63,9 @@ export default async function RepurposePage({
         .from("ai_video_projects")
         .select("id, title, video_url, status, duration_seconds, created_at")
         .eq("brokerage_id", brokerageId)
-        .eq("status", "completed")
+        // A finished video, not just a `completed` one — a distributed or
+        // uploaded asset is equally repurposable. See VIDEO_FINISHED_STATUSES.
+        .in("status", VIDEO_FINISHED_STATUSES as unknown as string[])
         .order("created_at", { ascending: false })
         .limit(20),
       supabase

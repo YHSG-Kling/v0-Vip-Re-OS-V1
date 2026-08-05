@@ -28,6 +28,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { narrowReportAgentIds, type EgressScopeKind } from "./reporting-scope"
 import type { ReportingActorContext, KernelReportingResult } from "./reporting"
 import { DEADLINE_OPEN_STATUSES, deadlineAtRisk } from "@/lib/transactions/coordination-status"
+import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-pipeline-reaper-policy"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -137,7 +138,7 @@ export async function generateAutonomyImpactReport(input: {
     const [videos, renders, docs, posts] = await Promise.all([
       scopedByUser(
         svc.from("ai_video_projects").select("id", { count: "exact", head: true })
-          .eq("brokerage_id", ctx.brokerageId).eq("status", "completed")
+          .eq("brokerage_id", ctx.brokerageId).in("status", VIDEO_FINISHED_STATUSES as unknown as string[])
           .gte("created_at", from).lte("created_at", to) as any, "agent_id",
       ),
       scopedByUser(

@@ -15,6 +15,7 @@ import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
+import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-pipeline-reaper-policy"
 
 /**
  * AI Podcast Generation Actions
@@ -1053,7 +1054,7 @@ export async function getVideoProjects() {
       .select("id, title, script_content, video_type, duration_seconds, status, created_at")
       .eq("brokerage_id", brokerageId)
       .eq("agent_id", agentId)
-      .in("status", ["completed", "published"])
+      .in("status", VIDEO_FINISHED_STATUSES as unknown as string[])
       .order("created_at", { ascending: false })
       .limit(50)
 

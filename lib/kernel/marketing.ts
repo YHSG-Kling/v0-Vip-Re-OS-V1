@@ -40,6 +40,7 @@ import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-featur
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { generateTextRouted } from "@/lib/ai/models"
+import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-pipeline-reaper-policy"
 
 // ─── RESULT CONTRACT ──────────────────────────────────────────────────────────
 
@@ -1014,7 +1015,11 @@ export async function distributeVideoAsset(params: {
   if (!project.video_url) {
     return { success: false, error: "Video is not yet generated. Preview the project first to confirm it is ready." }
   }
-  if (project.status !== "completed") {
+  // Any FINISHED asset may be distributed. Requiring exactly "completed" refused
+  // an agent's own manual upload (`uploaded`, with a real video_url) and refused
+  // a re-distribution, because a successful distribute rewrites the status to
+  // "distributed" — success locked the video out of its own feature.
+  if (!(VIDEO_FINISHED_STATUSES as readonly string[]).includes(project.status)) {
     return { success: false, error: `Video is not yet completed (current: ${project.status}).` }
   }
   // Migration 1051: AI-generated videos can't distribute until admin
