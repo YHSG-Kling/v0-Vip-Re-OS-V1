@@ -40,7 +40,7 @@ import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-featur
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { generateTextRouted } from "@/lib/ai/models"
-import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-pipeline-reaper-policy"
+import { VIDEO_FINISHED_STATUSES, VIDEO_IN_PROGRESS_STATUSES } from "@/lib/video/video-status"
 
 // ─── RESULT CONTRACT ──────────────────────────────────────────────────────────
 
@@ -68,7 +68,13 @@ export interface MarketingActorContext {
 // Loads the top-level marketing workspace summary in a single round trip.
 // Used by the canonical marketing studio page to prime the dashboard.
 //
-// Input:  ctx.brokerageId, ctx.agentId (optional filter)
+// Input:  ctx.brokerageId. NOTE: ctx.agentId is NOT applied as a filter — this
+//         summary is brokerage-wide. The per-agent cut is not implemented
+//         because the seven source tables split across two id classes
+//         (marketing_campaigns/blog_posts key on agent_user_id, a USERS id;
+//         the rest key on agent_id, an AGENTS id) and narrowing them needs a
+//         resolve, not a substitution. The header used to claim the filter
+//         existed; it never did.
 // Output: counts, recent campaigns, upcoming sends, recent blog posts, recent episodes
 // Tables: marketing_campaigns, newsletter_campaigns, blog_posts, podcast_episodes,
 //         direct_mail_campaigns, qr_codes, marketing_assets, campaign_calendar
@@ -78,7 +84,12 @@ export interface MarketingWorkspaceData {
   campaignCounts: { draft: number; live: number; ended: number }
   newsletterCounts: { draft: number; scheduled: number; sent: number; totalSubscribers: number }
   blogCounts: { draft: number; published: number }
-  videoCounts: { generating: number; completed: number }
+  /** ai_video_projects carries NINE statuses (lib/video/video-status.ts), so a
+   *  two-bucket tally has to be keyed on the canonical SETS, not on two hand-
+   *  picked tokens. Named inProgress/finished rather than generating/completed
+   *  precisely so a future reader does not assume `finished` means
+   *  status === 'completed' — a published video is finished too. */
+  videoCounts: { inProgress: number; finished: number }
   podcastCounts: { draft: number; completed: number }
   directMailCounts: { planning: number; mailed: number }
   qrCount: number
@@ -89,11 +100,9 @@ export async function loadMarketingWorkspace(
   ctx: MarketingActorContext
 ): Promise<KernelMarketingResult<MarketingWorkspaceData>> {
   const supabase = await createServiceClient()
-  const { brokerageId, agentId } = ctx
+  const { brokerageId } = ctx
 
   try {
-    const base = { brokerage_id: brokerageId }
-
     const [
       campaignRows,
       newsletterRows,
@@ -130,8 +139,38 @@ export async function loadMarketingWorkspace(
         .limit(5),
     ])
 
+    // supabase-js RESOLVES a refused read: `.data` comes back null and `.error`
+    // carries the reason. Every count below is derived from `.data`, so without
+    // this check an RLS refusal or a dropped column renders as a workspace of
+    // honest-looking ZEROS — indistinguishable from a brokerage that has not
+    // created anything yet, and impossible for the operator to notice.
+    const reads: Array<[string, { error: { message: string } | null }]> = [
+      ["marketing_campaigns", campaignRows],
+      ["newsletter_campaigns", newsletterRows],
+      ["newsletter_subscribers", subscriberCount],
+      ["blog_posts", blogRows],
+      ["ai_video_projects", videoRows],
+      ["podcast_episodes", podcastRows],
+      ["direct_mail_campaigns", mailRows],
+      ["qr_codes", qrResult],
+      ["campaign_calendar", eventRows],
+    ]
+    const failed = reads.filter(([, r]) => r.error)
+    if (failed.length > 0) {
+      return {
+        success: false,
+        error: `loadMarketingWorkspace could not read ${failed
+          .map(([t, r]) => `${t} (${r.error!.message})`)
+          .join("; ")}`,
+      }
+    }
+
     const tally = (rows: any[], key: string, val: string) =>
       (rows || []).filter((r) => r[key] === val).length
+
+    /** Count rows whose status falls in one of the canonical video sets. */
+    const tallyIn = (rows: any[], key: string, vals: readonly string[]) =>
+      (rows || []).filter((r) => vals.includes(r[key])).length
 
     return {
       success: true,
@@ -152,8 +191,11 @@ export async function loadMarketingWorkspace(
           published: tally(blogRows.data || [], "publish_status", "published"),
         },
         videoCounts: {
-          generating: tally(videoRows.data || [], "status", "generating"),
-          completed:  tally(videoRows.data || [], "status", "completed"),
+          // `generating` alone hid queued and scripting work; `completed` alone
+          // dropped every PUBLISHED video out of both buckets, so a brokerage
+          // that had shipped its whole library read as having produced nothing.
+          inProgress: tallyIn(videoRows.data || [], "status", VIDEO_IN_PROGRESS_STATUSES),
+          finished:   tallyIn(videoRows.data || [], "status", VIDEO_FINISHED_STATUSES),
         },
         podcastCounts: {
           draft:     tally(podcastRows.data || [], "status", "draft"),

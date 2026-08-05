@@ -8,20 +8,28 @@
  * content.
  *
  * Routes through the canonical kernel surface:
- *   1. createVideoProject() inserts into ai_video_projects (NOT the deprecated
- *      video_projects table — see m118 deprecation notice). The poll-did-videos
- *      cron consumes ai_video_projects, so chapter renders land in the same
- *      compositing + brand-overlay pipeline as the rest of the platform.
- *   2. Emits KernelEvent.VIDEO_GENERATION_REQUESTED on lifecycle_events (was
- *      previously the dotted "video.queued" string — caught by the kernel-
- *      event-vocab drift audit on PR #44).
- *   3. The actual provider submission is queued via the kernel/dispatcher
- *      path the rest of the app uses — no direct HeyGen call here.
+ *   1. Inserts into ai_video_projects (NOT the deprecated video_projects table —
+ *      see m118 deprecation notice), agents-class agent_id per m366.
+ *   2. SUBMITS THE RENDER — dispatchVideo() (lib/providers/dispatch.ts), the
+ *      same platform-locked D-ID + ElevenLabs egress lib/video/intro-video-
+ *      reactor.ts and app/actions/creative-playbooks.ts use — then stamps the
+ *      row with status='generating' + provider_job_id + provider_status +
+ *      provider_metadata.provider='did'. That triple IS the eligibility filter
+ *      app/api/cron/poll-did-videos selects on, so the render is now actually
+ *      polled, persisted to our Supabase bucket, brand-overlaid, and completed.
+ *      A REFUSED submission writes status='failed' + error_message on the spot;
+ *      the row is never left at 'queued' pretending to be in flight.
+ *   3. Emits KernelEvent.VIDEO_GENERATION_REQUESTED on lifecycle_events AFTER a
+ *      successful submission (was previously the dotted "video.queued" string —
+ *      caught by the kernel-event-vocab drift audit on PR #44). It is an AUDIT
+ *      RECORD ONLY: that event has five emitters and zero consumers repo-wide.
+ *      Nothing reads it, so nothing is dispatched by emitting it.
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
 import { KernelEvent } from "@/lib/kernel/events"
+import { buildComplianceSystemBlocks, postcheckScript } from "@/lib/video/script-compliance"
 
 export interface PresentationChapter {
   title: string
@@ -60,12 +68,8 @@ export async function generatePropertyChapterVideos(
   const svc = createServiceClient()
 
   // Resolve agent name for script personalization. The voice + avatar IDs
-  // live on agent_voice_profiles and are resolved at dispatch time by
+  // live on agent_voice_profiles and are resolved again at dispatch time by
   // lib/providers/dispatch.ts.
-  //
-  // Note: ai_video_projects.agent_id FKs to users.id (NOT agents.id), so we
-  // pass input.agentUserId directly. The column name is historical — the FK
-  // is the source of truth.
   let agentName = ""
   if (input.agentUserId) {
     const { data: user } = await svc
@@ -84,15 +88,69 @@ export async function generatePropertyChapterVideos(
       error: "Cannot create chapter videos — agentUserId is required (ai_video_projects.agent_id FK)",
     }
   }
-  const agentId = input.agentUserId
+  const agentUserId = input.agentUserId
+
+  // IDENTITY CLASS. m366 re-pointed ai_video_projects.agent_id at agents(id) —
+  // writing a users.id into it is a 23503 FK violation, not a mislink. The
+  // resolve is brokerage-scoped (agents.user_id + agents.brokerage_id), so it
+  // is also the tenant gate: a users.id with no agents row in THIS brokerage
+  // gets no project. agentUserId stays for dispatchVideo (users-class) and
+  // lifecycle_events.actor_user_id.
+  const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+  const agentId = await resolveUserIdToAgentRecord(agentUserId, input.brokerageId)
+  if (!agentId) {
+    return {
+      success: false,
+      videoIds: [],
+      chapterTitles: input.chapters.map((c) => c.title),
+      error: "Cannot create chapter videos — no agents record for this user in this brokerage (ai_video_projects.agent_id FKs agents.id since m366)",
+    }
+  }
+
+  // Voice + avatar pre-flight (the intro-video-reactor gate). Two reasons to
+  // read this HERE and not leave it all to dispatchVideo: (1) without a clone
+  // + avatar every chapter is a guaranteed refusal, so checking once saves N
+  // AI-Gateway script generations that can never be rendered; (2) the D-ID
+  // endpoint dispatchVideo posts to depends on it — a did_video_url source
+  // goes to /clips, a photo to /talks — and poll-did-videos reads the engine
+  // back off provider_metadata.mode. Guess it wrong and the poller GETs the
+  // wrong endpoint, takes the 404 as terminal, and fails a live render.
+  const { data: voiceProfile } = await svc
+    .from("agent_voice_profiles")
+    .select("elevenlabs_voice_id, did_photo_url, did_video_url")
+    .eq("agent_id", agentId)
+    .maybeSingle()
+  if (!voiceProfile?.elevenlabs_voice_id || (!voiceProfile.did_photo_url && !voiceProfile.did_video_url)) {
+    return {
+      success: false,
+      videoIds: [],
+      chapterTitles: input.chapters.map((c) => c.title),
+      error: "Cannot create chapter videos — the agent has no voice/avatar profile (Settings → Voice & Avatar)",
+    }
+  }
+  const didMode = voiceProfile.did_video_url ? "clip" : "talk"
+
+  const { dispatchVideo } = await import("@/lib/providers/dispatch")
 
   const videoIds: string[] = []
   const chapterTitles: string[] = []
   const failures: string[] = []
+  /** Titles of the chapters that actually reached the provider, index-aligned
+   *  with videoIds. Kept separately because the success return used to name
+   *  them with input.chapters.slice(0, videoIds.length) — a COUNT-based slice,
+   *  so a partial run (chapters 1 and 3 submitted, 2 refused) reported "1, 2":
+   *  the refused chapter named as a success and the submitted one dropped. */
+  const succeededTitles: string[] = []
 
   for (let i = 0; i < input.chapters.length; i++) {
     const chapter = input.chapters[i]
     chapterTitles.push(chapter.title)
+
+    // Held outside the try so a THROW between the insert and the provider
+    // stamp (dispatchVideo reaches ElevenLabs, Supabase storage and D-ID —
+    // any of them can throw) can still tell the truth on the row instead of
+    // abandoning it at 'queued'.
+    let projectId: string | null = null
 
     try {
       const script =
@@ -102,12 +160,27 @@ export async function generatePropertyChapterVideos(
           presentationContent: input.presentationContent,
           propertyData: input.propertyData,
           agentName,
+          brokerageId: input.brokerageId,
         }))
 
-      // Insert into the canonical ai_video_projects table. The poll-did-videos
-      // cron picks rows up by status, brand-overlay-composites them, and
-      // updates with the final URLs. Chapter videos are public-marketing
-      // listing presentations, so usage_intent='public_marketing'.
+      // Graded AFTER generation and on EVERY script — including a caller-
+      // supplied chapter.script, which skips the steered prompt entirely and is
+      // therefore the path most likely to carry a violation. Advisory by
+      // design (lib/video/script-compliance.ts): the verdict is recorded on the
+      // row, it does not refuse the render. A silent audit is the defect this
+      // module exists to prevent, so the result is persisted, not logged.
+      const complianceWarnings = await postcheckScript(
+        { userId: agentUserId, brokerageId: input.brokerageId },
+        script,
+        "seller", // a chapter reel addresses a prospective seller pre-listing-appointment
+      )
+
+      // Insert into the canonical ai_video_projects table. 'queued' is the
+      // honest state for the few lines it lasts — staged, not yet handed to a
+      // provider. The submission + provider stamp below is what makes the row
+      // visible to poll-did-videos, which then brand-overlay-composites it and
+      // writes the final URLs. Chapter videos are public-marketing listing
+      // presentations, so usage_intent='public_marketing'.
       const { data: project, error } = await svc
         .from("ai_video_projects")
         .insert({
@@ -121,6 +194,12 @@ export async function generatePropertyChapterVideos(
           duration_seconds: estimateDurationFromScript(script),
           usage_intent:     "public_marketing",
           audience_type:    "customer_facing",
+          // 'needs_review', not 'failed': the postcheck is advisory and the
+          // render proceeds. ai_video_projects_compliance_status_check admits
+          // exactly not_evaluated | passed | failed | needs_review.
+          compliance_status:       complianceWarnings?.length ? "needs_review" : "passed",
+          compliance_violations:   complianceWarnings?.length ? complianceWarnings : null,
+          compliance_evaluated_at: new Date().toISOString(),
           video_metadata: {
             chapter_index:   i,
             chapter_title:   chapter.title,
@@ -135,16 +214,98 @@ export async function generatePropertyChapterVideos(
         failures.push(chapter.title)
         continue
       }
+      projectId = project.id
+
+      // ─── SUBMIT THE RENDER ───────────────────────────────────────────────
+      // Nothing else will. VIDEO_GENERATION_REQUESTED has no consumer, so a
+      // row that is only inserted sits at 'queued' until the video reaper
+      // escalates it at 2h. This is the same egress intro-video-reactor and
+      // creative-playbooks use.
+      //
+      // contactId is deliberately NOT passed. dispatchVideo's only use of it
+      // is the de-conflict gate on the contact's EMAIL allowance — but this
+      // call renders, it does not send: no email leaves here. Spending the
+      // allowance now would suppress chapters 2..N of the SAME presentation
+      // under the over-touch cap and mark live product as failed. The touch
+      // that does reach the seller goes out through dispatchEmail later, which
+      // runs suppression + compliance + de-conflict itself. contact_id is
+      // still stamped on the project row above for attribution.
+      const submission = await dispatchVideo({
+        brokerageId:    input.brokerageId,
+        userId:         agentUserId,
+        agentId,
+        templateId:     script,
+        recipientEmail: "",
+        systemSource:   "chapter_video.listing_appt_prep",
+        metadata: {
+          ai_video_project_id: project.id,
+          chapter_index:       i,
+          presentation_id:     input.presentationId,
+        },
+      })
+
+      if (!submission.success || !submission.messageId) {
+        // HONEST REFUSAL. The provider never took the job, so the row must not
+        // sit in a state that claims a render is in flight — the reaper and the
+        // videos board would both report a lie for two hours.
+        await svc
+          .from("ai_video_projects")
+          .update({
+            status:        "failed",
+            error_message: `Render not started: ${submission.error ?? "the video provider refused the job"}`.slice(0, 800),
+          })
+          .eq("id", project.id)
+        failures.push(chapter.title)
+        continue
+      }
+
+      // Exactly what app/api/cron/poll-did-videos selects on: status='generating'
+      // AND provider_job_id IS NOT NULL AND provider_metadata->>provider='did'.
+      // `mode` is read back by that cron to choose /clips vs /talks.
+      const { error: stampError } = await svc
+        .from("ai_video_projects")
+        .update({
+          status:          "generating",
+          provider_job_id: submission.messageId,
+          provider_status: "processing",
+          video_provider:  "did",
+          provider_metadata: {
+            provider:        "did",
+            mode:            didMode,
+            talk_id:         submission.messageId,
+            chapter_index:   i,
+            presentation_id: input.presentationId ?? null,
+          },
+          error_message: null,
+        })
+        .eq("id", project.id)
+
+      if (stampError) {
+        // The D-ID job is REAL but unlinked, so it cannot be polled. The row is
+        // left at 'queued' on purpose: that is the truthful state (staged, no
+        // worker will pick it up) and the 2h reaper escalates it. Marking it
+        // 'failed' here would be a second false claim, and the job id is logged
+        // so the render can be reattached by hand.
+        console.error(
+          `[chapter-video-generator] project ${project.id} could not be linked to D-ID job ${submission.messageId}: ${stampError.message}`
+        )
+        failures.push(chapter.title)
+        continue
+      }
 
       videoIds.push(project.id)
+      succeededTitles.push(chapter.title)
 
-      // Canonical KernelEvent — the kernel notification engine picks up
-      // VIDEO_GENERATION_REQUESTED rows and routes them to the poll-did-videos
-      // submission path. Previously this emitted the dotted "video.queued"
-      // which the underscore-form KernelEvent reactor never matched.
+      // Canonical KernelEvent, emitted only once the provider has the job.
+      // AUDIT RECORD ONLY — VIDEO_GENERATION_REQUESTED has five emitters and
+      // zero consumers repo-wide; no dispatcher, cron or switch case reads it.
+      // The render moves because dispatchVideo submitted it and the stamp above
+      // made it visible to poll-did-videos, not because this row exists.
+      // (Previously this emitted the dotted "video.queued" which the
+      // underscore-form KernelEvent reactor never matched either.)
       await svc.from("lifecycle_events").insert({
         brokerage_id:  input.brokerageId,
-        actor_user_id: input.agentUserId,
+        actor_user_id: agentUserId,
         event_type:    KernelEvent.VIDEO_GENERATION_REQUESTED,
         metadata: {
           video_project_id: project.id,
@@ -159,6 +320,21 @@ export async function generatePropertyChapterVideos(
     } catch (err: unknown) {
       failures.push(chapter.title)
       console.error(`[chapter-video-generator] Chapter '${chapter.title}' failed:`, err)
+      // A project row that exists but never reached the provider stamp is not
+      // 'queued' in any useful sense — say so, so the board and the reaper are
+      // reading a fact. Best-effort: the throw is already the record of truth.
+      if (projectId) {
+        await svc
+          .from("ai_video_projects")
+          .update({
+            status:        "failed",
+            error_message: `Render not started: ${(err as Error)?.message ?? "chapter video generation threw"}`.slice(0, 800),
+          })
+          .eq("id", projectId)
+          .then(({ error: markErr }) => {
+            if (markErr) console.error(`[chapter-video-generator] could not mark project ${projectId} failed:`, markErr.message)
+          })
+      }
     }
   }
 
@@ -174,7 +350,7 @@ export async function generatePropertyChapterVideos(
   return {
     success: true,
     videoIds,
-    chapterTitles: input.chapters.slice(0, videoIds.length).map((c) => c.title),
+    chapterTitles: succeededTitles,
     error: failures.length > 0 ? `${failures.length} chapter(s) failed: ${failures.join(", ")}` : undefined,
   }
 }
@@ -184,8 +360,22 @@ async function generateChapterScript(params: {
   presentationContent?: string
   propertyData?: ChapterVideoInput["propertyData"]
   agentName: string
+  brokerageId: string
 }): Promise<string> {
-  const { chapter, presentationContent, propertyData, agentName } = params
+  const { chapter, presentationContent, propertyData, agentName, brokerageId } = params
+
+  // COMPLIANCE, PROACTIVELY. This generator was the sixth AI video-script
+  // producer and the only one not running lib/video/script-compliance.ts — the
+  // guard at scripts/video-script-compliance-guard.ts enumerates five, and this
+  // one was invisible to it because nothing here ever rendered. It renders now,
+  // so these words become spoken, customer-facing marketing.
+  //
+  // The blocks go in the SYSTEM slot rather than being graded afterwards: they
+  // carry the brokerage's brand voice, the them-first framing this prompt only
+  // gestured at in a style bullet, and the Fair Housing constraints. Steering
+  // generation cannot refuse a chapter — the alternative, hard-blocking on a
+  // post-hoc verdict, would trade a never-renders bug for a never-passes one.
+  const complianceBlocks = await buildComplianceSystemBlocks(brokerageId)
 
   const propertyContext = propertyData
     ? `Property: ${propertyData.address ?? ""}, ${propertyData.city ?? ""}, ${propertyData.state ?? ""}` +
@@ -213,7 +403,12 @@ Return only the script text — no scene directions, no headers, just what the a
 
   const { text } = await generateTextRouted({
     feature: "listing_presentation",
+    system: complianceBlocks.join("\n\n"),
     prompt,
+    // brokerageId is what meters this call against the tenant's AI fair-use
+    // budget (lib/ai/models.ts:663). Omitting it billed chapter scripts to
+    // nobody — N generations per presentation, uncounted.
+    brokerageId,
     maxTokens: 400,
     temperature: 0.7,
   })

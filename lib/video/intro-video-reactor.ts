@@ -434,11 +434,60 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
       intro_video_id:      introVideoId,
     },
   })
-  if (!submission.success) {
+  if (!submission.success || !submission.messageId) {
+    // BOTH ledgers, not just one. The ai_video_projects row was inserted above
+    // at 'queued'; leaving it there while agent_intro_videos says 'failed' is
+    // two tables disagreeing about the same render, and the videos board reads
+    // the one that still claims to be in flight.
     await svc.from("agent_intro_videos")
-      .update({ status: "failed", error_message: `dispatchVideo: ${submission.error}` })
+      .update({ status: "failed", error_message: `dispatchVideo: ${submission.error ?? "no provider job id returned"}` })
       .eq("id", introVideoId!)
+    await svc.from("ai_video_projects")
+      .update({
+        status:        "failed",
+        error_message: `Render not started: ${submission.error ?? "the video provider returned no job id"}`.slice(0, 800),
+      })
+      .eq("id", project.id)
     return { ok: false, status: "failed", reason: submission.error ?? "dispatchVideo failed" }
+  }
+
+  // ─── LINK THE RENDER TO THE POLLER ──────────────────────────────────────────
+  // Submitting is not the same as being pollable. app/api/cron/poll-did-videos
+  // selects status='generating' AND provider_job_id IS NOT NULL AND
+  // provider_metadata->>provider='did'; a row left at 'queued' with no job id
+  // matches none of it. Without this stamp D-ID renders the video and bills for
+  // it, the poller never adopts the job, video_url is never written, and
+  // app/api/cron/intro-video-email-backfill — which waits on project.video_url
+  // — never sends. The submission half was here; the submission→poll link was
+  // not, so every intro and anniversary reel rendered into a void.
+  // `mode` is read back by that cron to choose /clips vs /talks (a wrong guess
+  // makes it take a 404 as terminal on a live render).
+  const { error: stampError } = await svc
+    .from("ai_video_projects")
+    .update({
+      status:          "generating",
+      provider_job_id: submission.messageId,
+      provider_status: "processing",
+      video_provider:  "did",
+      provider_metadata: {
+        provider:       "did",
+        mode:           profile.did_video_url ? "clip" : "talk",
+        talk_id:        submission.messageId,
+        intro_video_id: introVideoId,
+        trigger:        input.trigger,
+      },
+      error_message: null,
+    })
+    .eq("id", project.id)
+
+  if (stampError) {
+    // The D-ID job is REAL but unlinked, so it cannot be polled. Left at
+    // 'queued' on purpose — that is the truthful "staged, no worker took it"
+    // state the 2h reaper owns — and the job id is logged so the render can be
+    // reattached by hand. Marking it 'failed' would be a second false claim.
+    console.error(
+      `[intro-video-reactor] project ${project.id} could not be linked to D-ID job ${submission.messageId}: ${stampError.message}`
+    )
   }
 
   await svc.from("lifecycle_events").insert({
