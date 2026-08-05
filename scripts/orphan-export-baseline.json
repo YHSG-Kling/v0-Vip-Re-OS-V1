@@ -54,7 +54,7 @@
     "app/actions/campaign-sequences.ts": 3,
     "app/actions/cda-portal.ts": 4,
     "app/actions/ce-provider.ts": 1,
-    "app/actions/communications.ts": 3,
+    "app/actions/communications.ts": 1,
     "app/actions/compliance/manage-required-docs.ts": 1,
     "app/actions/compliance-bridge-actions.ts": 2,
     "app/actions/contact-details.ts": 1,
@@ -705,6 +705,7 @@
     "lib/video/video-director.ts": 8,
     "lib/video/video-plays.ts": 2,
     "lib/video/video-qr.ts": 1,
+    "lib/video/video-status.ts": 2,
     "lib/voice/command-coverage.ts": 1,
     "lib/voice/conversation-relay.ts": 3,
     "lib/voice/deal-decision.ts": 2,
@@ -730,7 +731,7 @@
     "lib/workflow/variables.ts": 1,
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1
   },
-  "census": 8879,
+  "census": 8877,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -901,7 +902,7 @@
     "app/actions/collaborative-search.ts": 15,
     "app/actions/coming-soon-content.ts": 1,
     "app/actions/command-center.ts": 3,
-    "app/actions/communications.ts": 14,
+    "app/actions/communications.ts": 11,
     "app/actions/compliance/dashboard.ts": 1,
     "app/actions/compliance/manage-required-docs.ts": 5,
     "app/actions/compliance/seed-required-docs.ts": 1,
@@ -4029,7 +4030,6 @@
     "lib/services/contact-management.service.ts": 8,
     "lib/services/content-generation.service.ts": 2,
     "lib/services/lead-management.service.ts": 6,
-    "lib/services/platform-sync.service.ts": 1,
     "lib/services/social-publishing.service.ts": 5,
     "lib/services/transaction-management.service.ts": 4,
     "lib/showings/dispatchers.ts": 5,
@@ -4166,6 +4166,7 @@
     "lib/video/video-pipeline-reaper.ts": 1,
     "lib/video/video-plays.ts": 8,
     "lib/video/video-qr.ts": 2,
+    "lib/video/video-status.ts": 2,
     "lib/voice/a2p-registration.ts": 9,
     "lib/voice/broker-commands.ts": 3,
     "lib/voice/call-analysis.ts": 4,
@@ -5404,9 +5405,6 @@
       "getCommunicationStats",
       "getRecentCommunications",
       "addContactNote",
-      "publishSocialPost",
-      "scheduleAppointment",
-      "triggerAutomation",
       "sendNotificationToAgent",
       "notifyBrokerageAgentsAction",
       "draftTeamAnnouncementAction",
@@ -19149,9 +19147,6 @@
       "getTopLeads",
       "getLeadsNeedingAttention"
     ],
-    "lib/services/platform-sync.service.ts": [
-      "triggerGHLWorkflow"
-    ],
     "lib/services/social-publishing.service.ts": [
       "publishToSocialMedia",
       "schedulePost",
@@ -19775,6 +19770,10 @@
     "lib/video/video-qr.ts": [
       "qrDestinationForKind",
       "mintVideoQr"
+    ],
+    "lib/video/video-status.ts": [
+      "isCanonicalVideoStatus",
+      "normalizeVideoStatus"
     ],
     "lib/voice/a2p-registration.ts": [
       "validateA2pProfile",
