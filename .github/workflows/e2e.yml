@@ -22,7 +22,7 @@ jobs:
       # measured 8.45 GB and guards died with exit 134. Kept in lockstep with
       # guards.yml deliberately: the two drifting apart is how one workflow goes
       # green while the other OOMs on the same commit.
-      NODE_OPTIONS: --max-old-space-size=10240
+      NODE_OPTIONS: --max-old-space-size=12288
       # Provided via repo Secrets; empty → simulators skip the live layer (still exit 0).
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}

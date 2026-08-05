@@ -344,6 +344,58 @@ export async function prefillFormWithContext(input: {
           seller_email:      seller?.email ?? null,
           seller_phone:      seller?.phone ?? null,
         }
+
+        // ── THE HALF THAT WAS MISSING ────────────────────────────────────────
+        // A listing agreement and a seller disclosure are contracts issued under
+        // a LICENCE, and state advertising law requires the brokerage's name and
+        // licence to appear on them. The block above resolves the property and
+        // the seller and stops — so every listing form prefilled for the e-sign
+        // flow went out with the agent's licence number and the entire brokerage
+        // block blank.
+        //
+        // The listing-forms panel already READS this block to warn a human
+        // before sending (see listing-forms-panel.tsx), but a warning on screen
+        // does not fill the field: the document itself still left the licence
+        // empty, and the agent found out after the seller had signed it.
+        //
+        // prefillListingFormFromRecord already resolves exactly that block —
+        // listings → agents → users, and agents → brokerages. It is joined in
+        // here rather than duplicated, so the two cannot disagree about which
+        // agent or which brokerage a listing belongs to.
+        //
+        // TENANT SAFETY: it reads by listing id alone, which is why it is called
+        // only from inside this branch — the query above has already refused any
+        // listing outside input.brokerage_id, so the id is proven in-tenant
+        // before it is handed over.
+        //
+        // ADDITIVE BY DESIGN: it uses the RLS client rather than this function's
+        // service client, so a caller with no session (a background job) simply
+        // gets nothing back. That is logged and the property/seller fields above
+        // are left exactly as they are — a missing licence block must never cost
+        // the agent the rest of the prefill.
+        try {
+          const { prefillListingFormFromRecord } = await import("./listings")
+          const ctx = await prefillListingFormFromRecord({ listingId: input.context_id })
+          if (ctx.success) {
+            const p = ctx.prefillData
+            fields = {
+              ...fields,
+              agent_first_name:     p.agentFirstName ?? null,
+              agent_last_name:      p.agentLastName ?? null,
+              agent_email:          p.agentEmail ?? null,
+              agent_license_number: p.agentLicenseNumber ?? null,
+              agent_license_state:  p.agentLicenseState ?? null,
+              brokerage_name:       p.brokerageName ?? null,
+              brokerage_address:    p.brokerageAddress ?? null,
+              brokerage_phone:      p.brokeragePhone ?? null,
+              brokerage_license:    p.brokerageLicense ?? null,
+            }
+          } else {
+            console.error("[prefillFormWithContext] agent/brokerage prefill unavailable:", ctx.error)
+          }
+        } catch (err) {
+          console.error("[prefillFormWithContext] agent/brokerage prefill failed:", err)
+        }
       }
     } else if (input.context_type === "offer") {
       // Offer context: ONLY offer + buyer contact data

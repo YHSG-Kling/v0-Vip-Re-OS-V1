@@ -48,7 +48,7 @@ jobs:
       #
       # This raises the ceiling; it does not shrink the graph. When the peak
       # approaches 10 GB the answer is project references, not another bump.
-      NODE_OPTIONS: --max-old-space-size=10240
+      NODE_OPTIONS: --max-old-space-size=12288
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

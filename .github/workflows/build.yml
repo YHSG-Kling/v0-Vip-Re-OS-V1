@@ -35,7 +35,7 @@ jobs:
       # Single-process webpack build (no build worker — see next.config.ts). Give
       # that one process a large heap; on a 16 GB runner one process at ~10 GB +
       # OS/native overhead fits, whereas parallel workers did not.
-      NODE_OPTIONS: "--max-old-space-size=10240"
+      NODE_OPTIONS: "--max-old-space-size=12288"
       # NO max-old-space-size override: `next build` uses Turbopack (Rust), which
       # holds the heavy compile state in NATIVE memory. Reserving a large V8 old
       # space steals from that native budget and pushed total RSS past the 16 GB
