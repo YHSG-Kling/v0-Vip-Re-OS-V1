@@ -70,6 +70,9 @@ const GENVIDEO  = src("app/actions/video-generation.ts")
 const LINKVIDEO = src("app/actions/link-to-video.ts")
 const STUDIO    = src("app/components/content-studio/LinkToVideoGenerator.tsx")
 const REAPER    = src("lib/video/video-pipeline-reaper-policy.ts")
+// m374 moved the vocabulary itself here; the reaper policy only re-exports it.
+// Imported, not grepped — see the membership checks below for why.
+import { VIDEO_TERMINAL_STATUSES } from "../lib/video/video-status"
 const POLL      = src("app/api/cron/poll-did-videos/route.ts")
 
 console.log("\n── the mirror exists, at the database, where no writer can miss it ──")
@@ -98,12 +101,41 @@ console.log("\n── the mirror exists, at the database, where no writer can mi
 
 console.log("\n── the mapping matches the two vocabularies it joins ──")
 {
-  // If the reaper's terminal set grows, the mirror must learn the new member or
-  // a whole class of finished work stops reaching the queue.
-  for (const s of ["completed", "failed", "ready", "published", "distributed", "cancelled"]) {
-    check(`  '${s}' is terminal to the reaper AND mapped by the mirror`,
-      new RegExp(`"${s}"`).test(REAPER) && new RegExp(`'${s}'`).test(MIGRATION))
+  // If the terminal set grows, the mirror must learn the new member or a whole
+  // class of finished work stops reaching the queue. That intent is unchanged;
+  // both halves of it moved.
+  //
+  // WHAT MOVED. m374 collapsed 22 status spellings into 9, and the surviving
+  // terminal set is completed | published | failed. `ready` and `distributed`
+  // folded into those two, `cancelled` into `failed`, and the CHECK constraint
+  // now REFUSES all three retired spellings — so asserting the mirror maps them
+  // would demand coverage of values no writer can produce. The m365 trigger
+  // still lists them, which is harmless: dead branches over impossible inputs.
+  //
+  // WHERE IT MOVED. The list itself now lives in lib/video/video-status.ts; the
+  // reaper policy re-exports it. Reading the literals out of REAPER is why this
+  // check failed — the tokens were no longer in that file. Read the owner.
+  //
+  // VERIFIED, not assumed: m365 line 65 already maps 'published' -> 'completed',
+  // so the merge did not open a hole in the mirror.
+  // IMPORT the arrays rather than grepping the file. A token-presence check
+  // here is worthless: "published" also appears in CANONICAL_VIDEO_STATUSES and
+  // as the target of RETIRED_VIDEO_STATUS.distributed, so /"published"/ stayed
+  // true even after it was deleted from the terminal set — the first cut of
+  // this check passed under exactly that mutation. Importing asserts membership,
+  // which is the actual claim.
+  for (const s of VIDEO_TERMINAL_STATUSES) {
+    check(`  '${s}' is terminal to the vocabulary AND mapped by the mirror`,
+      new RegExp(`'${s}'`).test(MIGRATION))
   }
+  check("  the terminal set is exactly completed | published | failed",
+    [...VIDEO_TERMINAL_STATUSES].sort().join(",") === "completed,failed,published")
+  // The retired spellings must NOT come back as terminal values.
+  for (const s of ["ready", "distributed", "cancelled", "uploaded", "video_ready"]) {
+    check(`  '${s}' is retired — not a terminal status any writer can produce`,
+      !(VIDEO_TERMINAL_STATUSES as readonly string[]).includes(s))
+  }
+
   // The queue's vocabulary is what the Content Studio badge map renders.
   for (const s of ["completed", "failed", "creating_video"]) {
     check(`  the queue state '${s}' the mirror writes has a badge`,
