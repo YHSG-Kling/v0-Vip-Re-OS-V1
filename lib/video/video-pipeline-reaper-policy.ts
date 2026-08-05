@@ -18,8 +18,12 @@ export const VIDEO_STALE_HOURS: Record<string, number> = {
   // ever picked it up, `generating` means a provider has it and never finished.
   // Collapsing them would lose the reaper's ability to say which half broke —
   // which is the whole reason it escalates to a named manager.
-  queued: 2,      // staged, but no render worker ever executed it (was remotion_pending/rendering)
-  generating: 3,  // a provider has the job and never reported completion
+  queued: 2,      // staged, but no render worker ever executed it (was remotion_pending)
+  generating: 3,  // the job is in flight and never reported completion (was
+                  // rendering too, which carried a 2h threshold — folding it in
+                  // here costs that lane an hour before it escalates, and says
+                  // "in flight" rather than "never picked up". Accepted and
+                  // recorded rather than papered over.)
 }
 
 /** Non-terminal states that are BLOCKED on a human, not stalled — never reaped (already actioned). */
