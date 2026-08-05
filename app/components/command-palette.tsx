@@ -39,6 +39,7 @@ const NAV_ITEMS = [
   { label: "Goals Dashboard", href: "/dashboard/goals", icon: Activity, group: "Navigation" },
   { label: "Education Library", href: "/dashboard/education", icon: GraduationCap, group: "Navigation" },
   { label: "Referrals & Reviews", href: "/lifetime-customers?tab=referrals", icon: Users, group: "Navigation" },
+  { label: "Content OS", href: "/dashboard/content", icon: Sparkles, group: "Navigation" },
   { label: "Content Approvals", href: "/dashboard/content/approvals", icon: Shield, group: "Admin" },
   { label: "Data Health", href: "/dashboard/admin/data-health", icon: Activity, group: "Admin" },
   { label: "AI Usage & Cost", href: "/dashboard/admin/ai-usage", icon: Sparkles, group: "Admin" },
@@ -105,6 +106,17 @@ const ACTION_ITEMS = [
   { label: "View pending CDAs",           href: "/dashboard/compliance#cda-queue",                         icon: Shield,    group: "CDA" },
   { label: "Compliance violations",       href: "/dashboard/compliance?tab=violations",                    icon: AlertTriangle, group: "CDA" },
   { label: "Approval queue",              href: "/dashboard/content/approvals",                            icon: Shield,    group: "CDA" },
+  { label: "Approval routing preview",    href: "/dashboard/content/approvals",                            icon: Shield,    group: "CDA" },
+
+  // Content OS
+  { label: "Content drafts",              href: "/dashboard/content?tab=drafts",                           icon: FileText,  group: "Content" },
+  { label: "Content templates",           href: "/dashboard/content?tab=templates",                        icon: FileText,  group: "Content" },
+  { label: "Write listing descriptions",  href: "/dashboard/content?tab=listings",                         icon: Wand2,     group: "Content" },
+  { label: "SEO keywords & hashtags",     href: "/dashboard/content?tab=seo",                              icon: Search,    group: "Content" },
+  { label: "Content A/B tests",           href: "/dashboard/content?tab=experiments",                      icon: Activity,  group: "Content" },
+  { label: "Content performance & AI spend", href: "/dashboard/content?tab=performance",                   icon: BarChart3, group: "Content" },
+  { label: "Build 30-day content plan",   href: "/dashboard/content?tab=plan",                             icon: Calendar,  group: "Content" },
+  { label: "Teach my brand voice",        href: "/dashboard/content?tab=voice",                            icon: Mic,       group: "Content" },
 
   // Send / Outreach (route navigates to a template-aware composer)
   { label: "Compose with AI (voice)",     href: "/dashboard/agent?action=ai_voice",                        icon: Mic,       group: "Send" },

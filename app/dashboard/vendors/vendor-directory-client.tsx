@@ -70,7 +70,49 @@ import {
 import {
   createVendorRecordAction,
   attachVendorDeliverableAction,
+  updateVendorRecordAction,
+  assignVendorToListingAction,
+  assignVendorToTransactionAction,
+  updateVendorBookingStatusAction,
 } from "@/app/actions/vendors-kernel"
+
+/** vendor_assignments.assignment_type is CHECK-constrained to exactly these ten
+ *  values — a DIFFERENT and much shorter vocabulary than vendors.category (38
+ *  values) and than the free-text service_type on vendor_bookings. The picker
+ *  below cannot express anything outside it, and the server action re-checks the
+ *  same list before the kernel is called. */
+const VENDOR_ASSIGNMENT_TYPES = [
+  "inspector",
+  "lender",
+  "title",
+  "stager",
+  "photographer",
+  "cleaner",
+  "contractor",
+  "mover",
+  "insurance",
+  "other",
+] as const
+
+/** vendor_bookings.status transitions the kernel will accept, keyed by the
+ *  status a booking is currently in. Mirrors BOOKING_STATUS_TRANSITIONS in
+ *  lib/kernel/vendors.ts, which mirrors the live CHECK
+ *  (booked | confirmed | completed | cancelled | no_show). Offering a button for
+ *  a transition the kernel refuses would just be a guaranteed error message. */
+const BOOKING_NEXT_STATUSES: Record<string, Array<"confirmed" | "completed" | "cancelled" | "no_show">> = {
+  booked: ["confirmed", "cancelled", "no_show"],
+  confirmed: ["completed", "cancelled", "no_show"],
+  completed: [],
+  cancelled: [],
+  no_show: [],
+}
+
+const BOOKING_STATUS_LABEL: Record<string, string> = {
+  confirmed: "Confirm",
+  completed: "Mark complete",
+  cancelled: "Cancel",
+  no_show: "No-show",
+}
 
 interface Vendor {
   id: string
@@ -111,6 +153,12 @@ interface Transaction {
   stage: string
 }
 
+interface Listing {
+  id: string
+  address: string | null
+  status: string | null
+}
+
 interface Deliverable {
   id: string
   doc_name: string | null
@@ -129,6 +177,7 @@ interface VendorDirectoryClientProps {
   recentBookings: Booking[]
   pendingRatings: Booking[]
   transactions: Transaction[]
+  listings?: Listing[]
   serviceTypes: string[]
   brokerageId: string
   userRole: string
@@ -140,6 +189,7 @@ export function VendorDirectoryClient({
   recentBookings,
   pendingRatings,
   transactions,
+  listings = [],
   serviceTypes,
   brokerageId,
   userRole,
@@ -163,6 +213,44 @@ export function VendorDirectoryClient({
   const [newVendorWebsite, setNewVendorWebsite] = useState("")
   const [newVendorNotes, setNewVendorNotes] = useState("")
   const [createVendorError, setCreateVendorError] = useState("")
+
+  // Edit Vendor dialog state (updateVendorRecordAction)
+  const [editVendorOpen, setEditVendorOpen] = useState(false)
+  const [editVendor, setEditVendor] = useState<Vendor | null>(null)
+  const [editName, setEditName] = useState("")
+  const [editCategory, setEditCategory] = useState<VendorCategory | "">("")
+  const [editPhone, setEditPhone] = useState("")
+  const [editEmail, setEditEmail] = useState("")
+  const [editWebsite, setEditWebsite] = useState("")
+  const [editNotes, setEditNotes] = useState("")
+  const [editVendorError, setEditVendorError] = useState("")
+
+  // Assign to Listing dialog state (assignVendorToListingAction)
+  const [listingDialogOpen, setListingDialogOpen] = useState(false)
+  const [listingVendor, setListingVendor] = useState<Vendor | null>(null)
+  const [listingId, setListingId] = useState("")
+  const [listingServiceType, setListingServiceType] = useState("")
+  const [listingDate, setListingDate] = useState("")
+  const [listingCost, setListingCost] = useState("")
+  const [listingNotes, setListingNotes] = useState("")
+  const [listingError, setListingError] = useState("")
+  const [listingNotice, setListingNotice] = useState("")
+
+  // Assign to Transaction dialog state (assignVendorToTransactionAction)
+  const [assignDialogOpen, setAssignDialogOpen] = useState(false)
+  const [assignVendor, setAssignVendor] = useState<Vendor | null>(null)
+  const [assignTransactionId, setAssignTransactionId] = useState("")
+  const [assignType, setAssignType] = useState<string>("")
+  const [assignDate, setAssignDate] = useState("")
+  const [assignNotes, setAssignNotes] = useState("")
+  const [assignError, setAssignError] = useState("")
+  const [assignNotice, setAssignNotice] = useState("")
+
+  // Booking status transitions (updateVendorBookingStatusAction)
+  const [bookingStatuses, setBookingStatuses] = useState<Record<string, string>>({})
+  const [statusBookingId, setStatusBookingId] = useState<string | null>(null)
+  const [statusError, setStatusError] = useState("")
+  const [statusNotice, setStatusNotice] = useState("")
 
   // Attach Deliverable dialog state
   const [deliverableDialogOpen, setDeliverableDialogOpen] = useState(false)
@@ -305,6 +393,184 @@ export function VendorDirectoryClient({
       router.refresh()
     })
   }
+
+  // ─── EDIT a vendor record ────────────────────────────────────────────────
+  // A vendor could be created and never corrected — a wrong phone number or a
+  // miscategorised trade was permanent from this screen. The category picker is
+  // the same constraint-safe control the create dialog uses; the placement flags
+  // (preferred / display_priority / visible_in_portal) are deliberately NOT here,
+  // because those are sold and are written only by the premium-placement lane.
+  const openEditVendor = (vendor: Vendor) => {
+    setEditVendor(vendor)
+    setEditName(vendor.name ?? "")
+    setEditCategory((vendor.category as VendorCategory | null) ?? "")
+    setEditPhone(vendor.phone ?? "")
+    setEditEmail(vendor.email ?? "")
+    setEditWebsite(vendor.website ?? "")
+    setEditNotes(vendor.notes ?? "")
+    setEditVendorError("")
+    setEditVendorOpen(true)
+  }
+
+  const handleUpdateVendor = () => {
+    if (!editVendor) return
+    if (!editName.trim()) {
+      setEditVendorError("Vendor name is required.")
+      return
+    }
+    setEditVendorError("")
+    startTransition(async () => {
+      const result = await updateVendorRecordAction({
+        vendorId: editVendor.id,
+        patch: {
+          name: editName.trim(),
+          ...(editCategory ? { category: editCategory } : {}),
+          phone: editPhone.trim(),
+          email: editEmail.trim(),
+          website: editWebsite.trim(),
+          notes: editNotes.trim(),
+        },
+      })
+      if (!result.success) {
+        setEditVendorError(result.error ?? "Failed to update vendor.")
+        return
+      }
+      // Only now does the local list move — the dialog never closes on a refusal.
+      setVendors((prev) =>
+        prev.map((v) =>
+          v.id === editVendor.id
+            ? {
+                ...v,
+                name: editName.trim(),
+                category: editCategory || v.category,
+                phone: editPhone.trim() || null,
+                email: editEmail.trim() || null,
+                website: editWebsite.trim() || null,
+                notes: editNotes.trim() || null,
+              }
+            : v,
+        ),
+      )
+      setEditVendorOpen(false)
+      setEditVendor(null)
+      router.refresh()
+    })
+  }
+
+  // ─── BOOK a vendor against a LISTING ─────────────────────────────────────
+  const openListingDialog = (vendor: Vendor) => {
+    setListingVendor(vendor)
+    setListingServiceType(vendor.category || "")
+    setListingId("")
+    setListingDate("")
+    setListingCost("")
+    setListingNotes("")
+    setListingError("")
+    setListingNotice("")
+    setListingDialogOpen(true)
+  }
+
+  const handleAssignToListing = () => {
+    if (!listingVendor) return
+    if (!listingId || !listingServiceType.trim()) {
+      setListingError("Pick a listing and name the service.")
+      return
+    }
+    setListingError("")
+    startTransition(async () => {
+      const result = await assignVendorToListingAction({
+        vendorId: listingVendor.id,
+        listingId,
+        serviceType: listingServiceType.trim(),
+        scheduledDate: listingDate || undefined,
+        cost: listingCost ? parseFloat(listingCost) : undefined,
+        notes: listingNotes || undefined,
+      })
+      if (!result.success) {
+        setListingError(result.error ?? "Failed to book that vendor for the listing.")
+        return
+      }
+      setListingNotice("Booked against the listing — the vendor has been emailed the job details.")
+      setListingDialogOpen(false)
+      setListingVendor(null)
+      router.refresh()
+    })
+  }
+
+  // ─── ASSIGN a vendor to a TRANSACTION ────────────────────────────────────
+  // An assignment is a DIFFERENT record from a booking: it writes
+  // vendor_assignments plus a vendor_jobs row, which is what the deal screen and
+  // the vendor's own job list read. Nothing on the platform could create one.
+  const openAssignDialog = (vendor: Vendor) => {
+    setAssignVendor(vendor)
+    setAssignTransactionId("")
+    setAssignType(
+      (VENDOR_ASSIGNMENT_TYPES as readonly string[]).includes(vendor.category ?? "")
+        ? (vendor.category as string)
+        : "",
+    )
+    setAssignDate("")
+    setAssignNotes("")
+    setAssignError("")
+    setAssignNotice("")
+    setAssignDialogOpen(true)
+  }
+
+  const handleAssignToTransaction = () => {
+    if (!assignVendor) return
+    if (!assignTransactionId || !assignType) {
+      setAssignError("Pick a deal and an assignment type.")
+      return
+    }
+    setAssignError("")
+    startTransition(async () => {
+      const result = await assignVendorToTransactionAction({
+        vendorId: assignVendor.id,
+        transactionId: assignTransactionId,
+        assignmentType: assignType,
+        scheduledDate: assignDate || undefined,
+        notes: assignNotes || undefined,
+      })
+      if (!result.success) {
+        setAssignError(result.error ?? "Failed to assign that vendor to the deal.")
+        return
+      }
+      setAssignNotice("Assigned — the deal now carries a vendor job for this work.")
+      setAssignDialogOpen(false)
+      setAssignVendor(null)
+      router.refresh()
+    })
+  }
+
+  // ─── TRANSITION a booking's status ───────────────────────────────────────
+  // markBookingComplete can only ever say "completed". Confirming a booking a
+  // vendor has accepted, cancelling one, or recording a no-show had no writer on
+  // any screen — so a booking sat at "booked" forever and the no-show autopilot
+  // had nothing to read.
+  const handleBookingStatus = (
+    bookingId: string,
+    toStatus: "confirmed" | "completed" | "cancelled" | "no_show",
+  ) => {
+    setStatusBookingId(bookingId)
+    setStatusError("")
+    setStatusNotice("")
+    startTransition(async () => {
+      const result = await updateVendorBookingStatusAction({ bookingId, toStatus })
+      if (!result.success) {
+        setStatusError(result.error ?? "Could not change that booking's status.")
+        setStatusBookingId(null)
+        return
+      }
+      setBookingStatuses((prev) => ({ ...prev, [bookingId]: toStatus }))
+      setStatusNotice(`Booking is now ${toStatus.replace(/_/g, " ")}.`)
+      setStatusBookingId(null)
+      router.refresh()
+    })
+  }
+
+  /** The status the UI should believe for a booking: the one this session moved
+   *  it to, otherwise the one the server sent. */
+  const effectiveStatus = (booking: Booking) => bookingStatuses[booking.id] ?? booking.status
 
   const handleAttachDeliverable = () => {
     if (!deliverableBookingId || !deliverableUrl || !deliverableDescription) {
@@ -743,11 +1009,11 @@ export function VendorDirectoryClient({
                     )}
                   </div>
 
-                  <div className="flex gap-2 pt-2">
+                  <div className="flex flex-wrap gap-2 pt-2">
                     <Button
                       size="sm"
                       onClick={() => handleBookVendor(vendor)}
-                      className="flex-1"
+                      className="flex-1 min-w-[80px]"
                     >
                       Book
                     </Button>
@@ -759,6 +1025,34 @@ export function VendorDirectoryClient({
                     >
                       Reviews
                     </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => openEditVendor(vendor)}
+                      className="bg-transparent"
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => openAssignDialog(vendor)}
+                      className="bg-transparent"
+                      title="Create a vendor_assignments + vendor_jobs record on a deal"
+                    >
+                      Assign to deal
+                    </Button>
+                    {listings.length > 0 && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => openListingDialog(vendor)}
+                        className="bg-transparent"
+                        title="Book this vendor against a listing (pre-contract work)"
+                      >
+                        Book for listing
+                      </Button>
+                    )}
                   </div>
                 </CardContent>
               </Card>
@@ -790,6 +1084,8 @@ export function VendorDirectoryClient({
                 </div>
               ) : (
                 <div className="space-y-3">
+                  {statusError && <p className="text-sm text-destructive">{statusError}</p>}
+                  {statusNotice && <p className="text-sm text-emerald-700">{statusNotice}</p>}
                   {recentBookings.map((booking) => (
                     <div
                       key={booking.id}
@@ -798,7 +1094,7 @@ export function VendorDirectoryClient({
                       <div className="space-y-1">
                         <div className="flex items-center gap-2">
                           <span className="font-medium">{booking.vendors?.name || "Unknown Vendor"}</span>
-                          {getStatusBadge(booking.status)}
+                          {getStatusBadge(effectiveStatus(booking))}
                         </div>
                         <div className="text-sm text-muted-foreground">
                           {booking.service_type} - {booking.transactions?.property_address || "Unknown Property"}
@@ -815,8 +1111,23 @@ export function VendorDirectoryClient({
                           )}
                         </div>
                       </div>
-                      <div className="flex gap-2">
-                        {booking.status === "scheduled" && (
+                      <div className="flex flex-wrap gap-2 justify-end">
+                        {/* Full transition graph — confirm / cancel / no-show /
+                            complete, offered only where the kernel will accept
+                            them. A terminal booking shows no buttons at all. */}
+                        {(BOOKING_NEXT_STATUSES[effectiveStatus(booking)] ?? []).map((next) => (
+                          <Button
+                            key={next}
+                            size="sm"
+                            variant={next === "cancelled" || next === "no_show" ? "ghost" : "outline"}
+                            onClick={() => handleBookingStatus(booking.id, next)}
+                            disabled={isPending && statusBookingId === booking.id}
+                            className={next === "cancelled" || next === "no_show" ? "" : "bg-transparent"}
+                          >
+                            {BOOKING_STATUS_LABEL[next]}
+                          </Button>
+                        ))}
+                        {effectiveStatus(booking) === "scheduled" && (
                           <Button
                             size="sm"
                             variant="outline"
@@ -827,7 +1138,7 @@ export function VendorDirectoryClient({
                             Mark Complete
                           </Button>
                         )}
-                        {booking.status === "completed" && !booking.agent_rating && (
+                        {effectiveStatus(booking) === "completed" && !booking.agent_rating && (
                           <Button
                             size="sm"
                             onClick={() => handleRateBooking(booking)}
@@ -1445,6 +1756,252 @@ export function VendorDirectoryClient({
             </Button>
             <Button onClick={handleCreateVendor} disabled={isPending || !newVendorName.trim()}>
               {isPending ? "Creating..." : "Create Vendor"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Vendor Dialog */}
+      <Dialog open={editVendorOpen} onOpenChange={setEditVendorOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Vendor</DialogTitle>
+            <DialogDescription>
+              Correct this vendor&apos;s details. Paid directory placement is not edited here — it
+              is sold and written by the placement lane.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>
+                Name <span className="text-destructive">*</span>
+              </Label>
+              <Input value={editName} onChange={(e) => setEditName(e.target.value)} />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="edit-vendor-category">Category / Service Type</Label>
+              {/* Same CHECK-constrained picker as the create dialog — a free-text
+                  box here could only ever produce a rejected UPDATE. */}
+              <VendorCategorySelect
+                id="edit-vendor-category"
+                value={editCategory}
+                onChange={setEditCategory}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Phone</Label>
+                <Input value={editPhone} onChange={(e) => setEditPhone(e.target.value)} type="tel" />
+              </div>
+              <div className="space-y-2">
+                <Label>Email</Label>
+                <Input value={editEmail} onChange={(e) => setEditEmail(e.target.value)} type="email" />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Website</Label>
+              <Input value={editWebsite} onChange={(e) => setEditWebsite(e.target.value)} type="url" />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Notes</Label>
+              <Textarea value={editNotes} onChange={(e) => setEditNotes(e.target.value)} rows={2} />
+            </div>
+
+            {editVendorError && <p className="text-sm text-destructive">{editVendorError}</p>}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setEditVendorOpen(false)
+                setEditVendorError("")
+              }}
+              className="bg-transparent"
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleUpdateVendor} disabled={isPending || !editName.trim()}>
+              {isPending ? "Saving..." : "Save changes"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Book for Listing Dialog */}
+      <Dialog open={listingDialogOpen} onOpenChange={setListingDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Book for a Listing</DialogTitle>
+            <DialogDescription>
+              {listingVendor?.name} — pre-contract work booked against the property itself
+              (staging, photography, pre-list inspection, cleaning).
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>
+                Listing <span className="text-destructive">*</span>
+              </Label>
+              <Select value={listingId} onValueChange={setListingId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a listing" />
+                </SelectTrigger>
+                <SelectContent>
+                  {listings.map((l) => (
+                    <SelectItem key={l.id} value={l.id}>
+                      {l.address ?? "Listing"}
+                      {l.status ? ` (${l.status})` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>
+                Service Type <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                value={listingServiceType}
+                onChange={(e) => setListingServiceType(e.target.value)}
+                placeholder="e.g., staging"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Scheduled Date</Label>
+                <Input type="date" value={listingDate} onChange={(e) => setListingDate(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>Estimated Cost ($)</Label>
+                <Input
+                  type="number"
+                  value={listingCost}
+                  onChange={(e) => setListingCost(e.target.value)}
+                  placeholder="Optional"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Notes</Label>
+              <Textarea value={listingNotes} onChange={(e) => setListingNotes(e.target.value)} rows={2} />
+            </div>
+
+            {listingError && <p className="text-sm text-destructive">{listingError}</p>}
+            {listingNotice && <p className="text-sm text-emerald-700">{listingNotice}</p>}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setListingDialogOpen(false)
+                setListingError("")
+              }}
+              className="bg-transparent"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleAssignToListing}
+              disabled={isPending || !listingId || !listingServiceType.trim()}
+            >
+              {isPending ? "Booking..." : "Book for listing"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Assign to Deal Dialog */}
+      <Dialog open={assignDialogOpen} onOpenChange={setAssignDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Assign to a Deal</DialogTitle>
+            <DialogDescription>
+              {assignVendor?.name} — creates the assignment and the vendor job the deal screen and
+              the vendor&apos;s own job list read. This is a different record from a booking.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>
+                Transaction <span className="text-destructive">*</span>
+              </Label>
+              <Select value={assignTransactionId} onValueChange={setAssignTransactionId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a deal" />
+                </SelectTrigger>
+                <SelectContent>
+                  {transactions.map((txn) => (
+                    <SelectItem key={txn.id} value={txn.id}>
+                      {txn.property_address} ({txn.stage})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>
+                Assignment Type <span className="text-destructive">*</span>
+              </Label>
+              {/* vendor_assignments.assignment_type admits exactly these ten
+                  values — NOT the 38-value vendors.category vocabulary and not
+                  the free-text service types the booking form offers. */}
+              <Select value={assignType} onValueChange={setAssignType}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select an assignment type" />
+                </SelectTrigger>
+                <SelectContent>
+                  {VENDOR_ASSIGNMENT_TYPES.map((t) => (
+                    <SelectItem key={t} value={t} className="capitalize">
+                      {t.replace(/_/g, " ")}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Scheduled Date</Label>
+              <Input type="date" value={assignDate} onChange={(e) => setAssignDate(e.target.value)} />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Notes</Label>
+              <Textarea value={assignNotes} onChange={(e) => setAssignNotes(e.target.value)} rows={2} />
+            </div>
+
+            {assignError && <p className="text-sm text-destructive">{assignError}</p>}
+            {assignNotice && <p className="text-sm text-emerald-700">{assignNotice}</p>}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setAssignDialogOpen(false)
+                setAssignError("")
+              }}
+              className="bg-transparent"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleAssignToTransaction}
+              disabled={isPending || !assignTransactionId || !assignType}
+            >
+              {isPending ? "Assigning..." : "Assign to deal"}
             </Button>
           </DialogFooter>
         </DialogContent>

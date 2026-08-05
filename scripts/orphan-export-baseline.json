@@ -5,13 +5,13 @@
     "app/actions/activities.ts": 1,
     "app/actions/admin/billing.ts": 1,
     "app/actions/admin/locations.ts": 1,
-    "app/actions/agents.ts": 9,
+    "app/actions/agents.ts": 2,
     "app/actions/ai-auto-response.ts": 4,
     "app/actions/ai-calendar-management.ts": 1,
     "app/actions/ai-client-gifting.ts": 2,
     "app/actions/ai-closing-workflow.ts": 1,
     "app/actions/ai-cma.ts": 1,
-    "app/actions/ai-content-generation.tsx": 31,
+    "app/actions/ai-content-generation.tsx": 5,
     "app/actions/ai-contract-review.ts": 1,
     "app/actions/ai-direct-mail.ts": 3,
     "app/actions/ai-document-intelligence.ts": 1,
@@ -58,7 +58,6 @@
     "app/actions/contact-enrichment.ts": 2,
     "app/actions/contacts/update-channel-controls.ts": 1,
     "app/actions/contacts.ts": 1,
-    "app/actions/content-approval-workflow.ts": 4,
     "app/actions/content-compliance.ts": 2,
     "app/actions/content-generation-engine.ts": 4,
     "app/actions/content-intel/sources.ts": 1,
@@ -73,7 +72,6 @@
     "app/actions/demo-auth.ts": 3,
     "app/actions/direct-mail.ts": 3,
     "app/actions/dotloop-integration.ts": 1,
-    "app/actions/education-kernel.ts": 4,
     "app/actions/error-handler.ts": 1,
     "app/actions/external-services.ts": 2,
     "app/actions/fb-audience-templates.ts": 1,
@@ -86,7 +84,7 @@
     "app/actions/journey-tasks.ts": 1,
     "app/actions/knowledge/search.ts": 1,
     "app/actions/lead-assignment/assign-lead.ts": 1,
-    "app/actions/lead-intelligence.ts": 7,
+    "app/actions/lead-intelligence.ts": 2,
     "app/actions/lead-management.ts": 1,
     "app/actions/lead-readiness/evaluate-readiness.ts": 1,
     "app/actions/lead-signal-ingest.ts": 1,
@@ -129,7 +127,6 @@
     "app/actions/showings.ts": 1,
     "app/actions/smart-insights.ts": 1,
     "app/actions/social/generate-social-post.ts": 1,
-    "app/actions/social-media-automation.ts": 4,
     "app/actions/social-publishing.ts": 3,
     "app/actions/social-share.ts": 2,
     "app/actions/stock-video-upload.ts": 1,
@@ -151,7 +148,6 @@
     "app/actions/vendor-payments.ts": 3,
     "app/actions/vendor-portal.ts": 1,
     "app/actions/vendor-w9.ts": 1,
-    "app/actions/vendors-kernel.ts": 4,
     "app/actions/video/create-video-project.ts": 1,
     "app/actions/video-content.ts": 1,
     "app/actions/video-generation.ts": 2,
@@ -322,6 +318,7 @@
     "lib/geo/citation-scope.ts": 1,
     "lib/geo/citation-share.ts": 1,
     "lib/geo/video-landing.ts": 1,
+    "lib/goals/goal-types.ts": 1,
     "lib/identity/resolve-contact-owner.ts": 1,
     "lib/inbound-mail/resolve-user-provider.ts": 1,
     "lib/integrations/integration-status.ts": 1,
@@ -456,7 +453,7 @@
     "lib/kernel/warm-handoff.ts": 1,
     "lib/kernel/week-in-review.ts": 1,
     "lib/kernel/write-sentinel.ts": 1,
-    "lib/knowledge/embedding-service.ts": 3,
+    "lib/knowledge/embedding-service.ts": 2,
     "lib/knowledge/help-topic-categories.ts": 2,
     "lib/lead-assignment/capacity-pick.ts": 1,
     "lib/lead-assignment/default-assignment.ts": 1,
@@ -649,7 +646,7 @@
     "lib/workflow/variables.ts": 1,
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1
   },
-  "census": 8869,
+  "census": 8879,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -709,7 +706,7 @@
     "app/actions/ai-closing-workflow.ts": 5,
     "app/actions/ai-cma.ts": 4,
     "app/actions/ai-communication-hub.ts": 9,
-    "app/actions/ai-content-generation.tsx": 46,
+    "app/actions/ai-content-generation.tsx": 45,
     "app/actions/ai-contract-review.ts": 6,
     "app/actions/ai-direct-mail.ts": 11,
     "app/actions/ai-document-intelligence.ts": 7,
@@ -1080,7 +1077,7 @@
     "app/actions/smarter-this-week.ts": 1,
     "app/actions/social/generate-social-post.ts": 5,
     "app/actions/social-dm.ts": 1,
-    "app/actions/social-media-automation.ts": 16,
+    "app/actions/social-media-automation.ts": 17,
     "app/actions/social-publishing.ts": 12,
     "app/actions/social-share.ts": 3,
     "app/actions/source-analytics.ts": 7,
@@ -2016,6 +2013,7 @@
     "app/dashboard/admin/users/[userId]/commission-agreement-card.tsx": 1,
     "app/dashboard/admin/users/[userId]/staff-360-panels.tsx": 1,
     "app/dashboard/admin/users/[userId]/user-edit-form.tsx": 1,
+    "app/dashboard/admin/users/create-agent-record-button.tsx": 1,
     "app/dashboard/admin/users/edit-user-button.tsx": 1,
     "app/dashboard/admin/users/invitations/invitations-table.tsx": 1,
     "app/dashboard/admin/users/invite-user-button.tsx": 1,
@@ -2128,6 +2126,12 @@
     "app/dashboard/compliance/components/os/policy-reporting-panel.tsx": 1,
     "app/dashboard/compliance/regulatory-changes-panel.tsx": 1,
     "app/dashboard/components/vendor-bookings-panel.tsx": 1,
+    "app/dashboard/content/approvals/approval-tools-panel.tsx": 1,
+    "app/dashboard/content/content-os-client.tsx": 1,
+    "app/dashboard/content/panels/ab-testing-panel.tsx": 1,
+    "app/dashboard/content/panels/content-plan-panel.tsx": 1,
+    "app/dashboard/content/panels/performance-costs-panel.tsx": 1,
+    "app/dashboard/content/panels/seo-hashtags-panel.tsx": 1,
     "app/dashboard/coordination/coordination-dashboard-client.tsx": 1,
     "app/dashboard/coordinator/components/closing-readiness-gate.tsx": 1,
     "app/dashboard/coordinator/components/os/closing-prep-panel.tsx": 1,
@@ -2146,6 +2150,7 @@
     "app/dashboard/documents/document-center-client.tsx": 1,
     "app/dashboard/documents/document-workspace-panel.tsx": 1,
     "app/dashboard/documents/share-document-dialog.tsx": 1,
+    "app/dashboard/education/client-learning-panel.tsx": 1,
     "app/dashboard/financials/agent/agent-financials-client.tsx": 1,
     "app/dashboard/financials/agent/agent-net-position-card.tsx": 1,
     "app/dashboard/financials/agent/components/billing-summary-card.tsx": 1,
@@ -3169,6 +3174,7 @@
     "lib/geo/video-landing.ts": 10,
     "lib/gifting/gift-studio.ts": 3,
     "lib/gifting/shoppable-links.ts": 1,
+    "lib/goals/goal-types.ts": 2,
     "lib/hooks/use-media-query.ts": 1,
     "lib/hooks/use-mobile.ts": 1,
     "lib/identity/ensure-agent-context.ts": 1,
@@ -4497,7 +4503,6 @@
       "getContentPerformanceStats",
       "getHashtagPerformance",
       "trackHashtagUsage",
-      "createContentABTest",
       "updateABTestResults",
       "logContentGeneration",
       "getContentGenerationStats",
@@ -7087,6 +7092,7 @@
       "getPublishLog",
       "createListingPosts",
       "trackPostPerformance",
+      "refreshPostEngagementFromSync",
       "getSocialMediaAnalytics",
       "retryFailedPost",
       "deleteSocialPost",
@@ -10436,6 +10442,9 @@
     "app/dashboard/admin/users/[userId]/user-edit-form.tsx": [
       "UserEditForm"
     ],
+    "app/dashboard/admin/users/create-agent-record-button.tsx": [
+      "CreateAgentRecordButton"
+    ],
     "app/dashboard/admin/users/edit-user-button.tsx": [
       "EditUserButton"
     ],
@@ -10772,6 +10781,24 @@
     "app/dashboard/components/vendor-bookings-panel.tsx": [
       "VendorBookingsPanel"
     ],
+    "app/dashboard/content/approvals/approval-tools-panel.tsx": [
+      "ApprovalToolsPanel"
+    ],
+    "app/dashboard/content/content-os-client.tsx": [
+      "ContentOsClient"
+    ],
+    "app/dashboard/content/panels/ab-testing-panel.tsx": [
+      "AbTestingPanel"
+    ],
+    "app/dashboard/content/panels/content-plan-panel.tsx": [
+      "ContentPlanPanel"
+    ],
+    "app/dashboard/content/panels/performance-costs-panel.tsx": [
+      "PerformanceCostsPanel"
+    ],
+    "app/dashboard/content/panels/seo-hashtags-panel.tsx": [
+      "SeoHashtagsPanel"
+    ],
     "app/dashboard/coordination/coordination-dashboard-client.tsx": [
       "CoordinationDashboardClient"
     ],
@@ -10825,6 +10852,9 @@
     ],
     "app/dashboard/documents/share-document-dialog.tsx": [
       "ShareDocumentDialog"
+    ],
+    "app/dashboard/education/client-learning-panel.tsx": [
+      "ClientLearningPanel"
     ],
     "app/dashboard/financials/agent/agent-financials-client.tsx": [
       "AgentFinancialsClient"
@@ -14993,6 +15023,10 @@
     ],
     "lib/gifting/shoppable-links.ts": [
       "composeShoppableLinks"
+    ],
+    "lib/goals/goal-types.ts": [
+      "isAgentGoalType",
+      "isAutoSynced"
     ],
     "lib/hooks/use-media-query.ts": [
       "useMediaQuery"
@@ -19993,5 +20027,5 @@
       "reapStaleWorkflowRuns"
     ]
   },
-  "trulyDead": 362
+  "trulyDead": 308
 }

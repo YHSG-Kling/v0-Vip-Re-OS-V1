@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { getBrokerageDashboard, forecastBrokerageRevenue, trackLicenseExpirations } from "@/app/actions/multi-persona"
+import { getBrokerageStats } from "@/app/actions/agents"
 import { getRecruitingROISummary, getRecruitingCostBreakdown, getBreakEvenAnalysis } from "@/app/actions/recruiting-roi"
 import { getHighFatigueBuyers, getBrokerageFatigueAlerts } from "@/app/actions/buyer-fatigue"
 import { getSystemProviderStatus } from "@/app/actions/settings/provider-settings-actions"
@@ -116,6 +117,7 @@ export default async function BrokerageDashboard({
     providerStatusResult,
     unassignedLeadsResult,
     pendingDistributionsResult,
+    brokerageStats,
   ] = await Promise.all([
     getBrokerageDashboard(brokerageId),
     forecastBrokerageRevenue(brokerageId, 3),
@@ -182,6 +184,12 @@ export default async function BrokerageDashboard({
       .eq("status", "pending")
       .order("created_at", { ascending: true })
       .limit(20),
+    // Month-over-month GCI and the compliance-FLAG risk level. Nothing else on
+    // this page computes either: getBrokerageDashboard reports headcount, open
+    // deal volume and compliance_EVENTS (the gate ledger) — a different table
+    // from compliance_flags, and no trend at all. The tenant comes from the
+    // session inside the action, not from this page's brokerageId.
+    getBrokerageStats(),
   ])
 
   const agents = (dashboard as any).agents ?? []
@@ -498,6 +506,94 @@ export default async function BrokerageDashboard({
           recruitingROI: recruitingROI.avgROI,
         }}
       />
+
+      {/* Month-over-month money + compliance-flag risk.
+          Anything that could not actually be READ is named rather than shown as
+          a zero — a refused query used to render here as "$0 GCI this month" and
+          a "Normal" risk level, which is the most dangerous kind of wrong. */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <BarChart3 className="h-5 w-5 text-blue-600" />
+            This Month
+          </CardTitle>
+          <CardDescription>
+            Gross commission against last month, deals in contract, and open compliance flags.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {brokerageStats.error ? (
+            <p className="text-sm text-red-700">{brokerageStats.error}</p>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div>
+                  <p className="text-xs text-muted-foreground">GCI this month</p>
+                  {brokerageStats.degraded.includes("monthlyGCI") ? (
+                    <p className="text-sm font-medium text-red-700 mt-1">Could not read</p>
+                  ) : (
+                    <>
+                      <p className="text-2xl font-bold text-green-700 mt-1">
+                        ${brokerageStats.monthlyGCI.toLocaleString()}
+                      </p>
+                      {brokerageStats.gciChange !== 0 && (
+                        <p
+                          className={`text-xs mt-0.5 ${
+                            brokerageStats.gciChange > 0 ? "text-green-700" : "text-red-700"
+                          }`}
+                        >
+                          {brokerageStats.gciChange > 0 ? "+" : ""}
+                          {brokerageStats.gciChange}% vs last month
+                        </p>
+                      )}
+                    </>
+                  )}
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Deals under contract</p>
+                  <p className="text-2xl font-bold mt-1">
+                    {brokerageStats.degraded.includes("activeDeals") ? "—" : brokerageStats.activeDeals}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Active agents</p>
+                  <p className="text-2xl font-bold mt-1">
+                    {brokerageStats.degraded.includes("agentCount") ? "—" : brokerageStats.agentCount}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Compliance risk</p>
+                  <p
+                    className={`text-2xl font-bold mt-1 ${
+                      brokerageStats.riskLevel === "Critical"
+                        ? "text-red-700"
+                        : brokerageStats.riskLevel === "Elevated"
+                          ? "text-amber-700"
+                          : brokerageStats.riskLevel === "Normal"
+                            ? "text-green-700"
+                            : "text-muted-foreground"
+                    }`}
+                  >
+                    {brokerageStats.riskLevel}
+                  </p>
+                  {!brokerageStats.degraded.includes("openComplianceFlags") && (
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {brokerageStats.openComplianceFlags} open flag
+                      {brokerageStats.openComplianceFlags === 1 ? "" : "s"}
+                    </p>
+                  )}
+                </div>
+              </div>
+              {brokerageStats.degraded.length > 0 && (
+                <p className="text-xs text-red-700 mt-3">
+                  These figures are incomplete — {brokerageStats.degraded.join(", ")} could not be
+                  read. Do not treat the blanks as zeros.
+                </p>
+              )}
+            </>
+          )}
+        </CardContent>
+      </Card>
 
       {/* License Alerts */}
       {(licenseStatus.expiringLicenses.length > 0 || licenseStatus.expiredLicenses.length > 0) && (

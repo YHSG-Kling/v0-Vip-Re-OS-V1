@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Users, AlertTriangle, CheckCircle2, Building2, ArrowRight } from "lucide-react"
 import { InviteUserButton } from "./invite-user-button"
 import { EditUserButton } from "./edit-user-button"
+import { CreateAgentRecordButton } from "./create-agent-record-button"
 import { effectiveSeatLimit, parseSeatOverride, tierLabel } from "@/lib/kernel/tier-role-matrix"
 import { resolveSeatUsage } from "@/lib/kernel/seat-usage"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
@@ -141,6 +142,13 @@ export default async function AdminUsersPage() {
     return false
   }
 
+  /** Specifically the AGENTS-row gap — the one an admin can now repair in place.
+   *  A missing transaction_coordinators row is a different record with a
+   *  different writer and must not get this button. */
+  function isAgentRecordMissing(u: { id: string; user_type: string | null }) {
+    return REQUIRES_AGENTS_ROW.has(u.user_type ?? "") && !agentUserIds.has(u.id)
+  }
+
   const incompleteCount = userList.filter(u => isDomainRecordMissing(u)).length
 
   // SEAT METER — the same math the invite gate enforces (Solo 2 · Team 5 ·
@@ -192,7 +200,9 @@ export default async function AdminUsersPage() {
               {incompleteCount} account{incompleteCount !== 1 ? "s are" : " is"} missing required domain records.
             </p>
             <p className="text-xs text-amber-700 mt-0.5">
-              Edit each flagged user and save to trigger automatic repair, or they will be repaired on first login.
+              Use <strong>Create agent record</strong> on a flagged row to provision the missing
+              agents row now — an account without one cannot own contacts, deals or commissions.
+              Accounts missing a transaction-coordinator record are repaired on that user&apos;s first login.
             </p>
           </div>
         </div>
@@ -246,6 +256,16 @@ export default async function AdminUsersPage() {
                       <CheckCircle2 className="w-4 h-4 text-green-500" />
                     ) : (
                       <AlertTriangle className="w-4 h-4 text-amber-500" />
+                    )}
+                    {isAgentRecordMissing(u) && (
+                      <CreateAgentRecordButton
+                        userId={u.id}
+                        userName={
+                          [u.first_name, u.last_name].filter(Boolean).join(" ") ||
+                          u.email ||
+                          "this user"
+                        }
+                      />
                     )}
                     <EditUserButton userId={u.id} />
                   </div>

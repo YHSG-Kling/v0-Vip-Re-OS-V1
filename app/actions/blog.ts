@@ -67,7 +67,7 @@ export interface BlogPostResult {
 export async function generateBlogPost(
   userId: string,
   params: GenerateBlogPostParams
-): Promise<{ success: boolean; postId?: string; error?: string }> {
+): Promise<{ success: boolean; postId?: string; error?: string; keywordWarnings?: string[] }> {
   const supabase = await createClient()
 
   // ── 1. Feature gate ─────────────────────────────────────────────────────────
@@ -289,6 +289,9 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
   }
 
   // ── 7. Link keywords via seo_keywords + blog_post_keywords ──────────────────
+  // Collected rather than only logged: a keyword that cannot be stored is a
+  // silently incomplete blog post, and `continue` alone made that invisible.
+  const keywordFailures: string[] = []
   for (let i = 0; i < params.keywords.length; i++) {
     const keyword = params.keywords[i]
     const isPrimary = i === 0 // First keyword is primary
@@ -314,7 +317,14 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
           keyword: keyword,
           keyword_type: isPrimary ? "primary" : "secondary",
           search_intent: "informational",
-          visibility_scope: params.agentUserId ? "private" : "brokerage",
+          // "private" is NOT a member of seo_keywords_visibility_scope_check,
+          // which admits agent | team | brokerage | multi_location | platform
+          // (verified live). Every agent-scoped keyword this function tried to
+          // write was refused with SQLSTATE 23514 — and because the failure was
+          // only console.error'd and then `continue`d past, the blog post was
+          // reported as generated with its keywords silently missing. The
+          // agent-scoped spelling the constraint actually accepts is "agent".
+          visibility_scope: params.agentUserId ? "agent" : "brokerage",
           created_by: userId,
           is_active: true,
         })
@@ -323,6 +333,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
 
       if (kwError || !newKeyword) {
         console.error("[generateBlogPost] Keyword insert failed:", kwError)
+        keywordFailures.push(`${keyword}: ${kwError?.message ?? "no row returned"}`)
         continue
       }
       seoKeywordId = newKeyword.id
@@ -350,7 +361,14 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
     console.error("[blog] generateBlogPost kernel event failed (non-blocking):", err)
   })
 
-  return { success: true, postId: post.id }
+  // The post IS generated, so this is not a failure — but a caller that is told
+  // "success" while some of its keywords were refused has been misled about
+  // what it got. Name them.
+  return {
+    success: true,
+    postId: post.id,
+    ...(keywordFailures.length ? { keywordWarnings: keywordFailures } : {}),
+  }
 }
 
 // ─── updateBlogPost ───────────────────────────────────────────────────────────

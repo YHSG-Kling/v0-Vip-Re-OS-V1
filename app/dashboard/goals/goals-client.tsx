@@ -15,15 +15,13 @@ import {
   aiCoachGoalProgress,
   syncGoalCurrentValues,
 } from "@/app/actions/ai-agent-goals"
+import { AGENT_GOAL_LABELS, AGENT_GOAL_TYPES } from "@/lib/goals/goal-types"
 
-const GOAL_LABELS: Record<string, string> = {
-  transactions: "Closed Transactions",
-  gci: "Gross Commission Income ($)",
-  listings_taken: "Listings Taken",
-  buyer_clients: "Buyer Clients Signed",
-  referrals_generated: "Referrals Generated",
-  reviews_requested: "Reviews Requested",
-}
+// DERIVED, not hand-written. This list used to name six goal types of which
+// FOUR were refused by agent_goals_goal_type_check — every save of those four
+// failed with 23514 while the page reported nothing wrong. The labels now come
+// from the same constant the server validates against.
+const GOAL_LABELS: Record<string, string> = AGENT_GOAL_LABELS
 
 const STATUS_CONFIG = {
   on_track: { label: "On Track", color: "bg-green-100 text-green-700" },

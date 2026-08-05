@@ -70,6 +70,7 @@ export default async function VendorsPage() {
     preferredVendors,
     deliverables,
     placementInvoices,
+    listings,
   ] = await Promise.all([
     searchVendors({ limit: 100 }),
     getAllVendorBookings(20),
@@ -115,6 +116,18 @@ export default async function VendorsPage() {
       .order("created_at", { ascending: false })
       .limit(100)
       .then(r => (r.data || []) as PlacementInvoice[]),
+    // LISTING-level vendor work. vendor_bookings.listing_id has always existed
+    // and the kernel has always been able to write it, but every booking surface
+    // on the platform only ever offered a TRANSACTION — so pre-contract work on a
+    // listing (staging, photography, pre-list inspection, cleaning) had nowhere
+    // to be booked against the property it was for.
+    supabase
+      .from("listings")
+      .select("id, address, status")
+      .eq("brokerage_id", profile.brokerage_id)
+      .order("created_at", { ascending: false })
+      .limit(50)
+      .then(r => r.data || []),
   ])
 
   // General tenant→vendor charges (billed_to='vendor' — migration 1104). Safe
@@ -243,6 +256,7 @@ export default async function VendorsPage() {
               recentBookings={recentBookings}
               pendingRatings={pendingRatings}
               transactions={transactions}
+              listings={listings}
               serviceTypes={serviceTypes}
               brokerageId={profile.brokerage_id}
               userRole={profile.user_type ?? "agent"}

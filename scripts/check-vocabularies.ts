@@ -90,7 +90,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["disputed", "open", "overdue", "paid", "waived"],
   },
   agent_goals: {
-    goal_type: ["avg_days_to_close", "buyer_clients", "conversion_rate", "gross_commission", "listings_taken", "new_contacts", "transactions_closed"],
+    goal_type: ["avg_days_to_close", "buyer_clients", "conversion_rate", "gross_commission", "listings_taken", "new_contacts", "referrals_generated", "reviews_requested", "transactions_closed"],
   },
   agent_handoffs: {
     entity_type: ["contact", "lead", "listing", "transaction"],

@@ -45,19 +45,24 @@ export default async function ExpensesPage() {
     .limit(100)
 
   const expenseData = expenses || []
-  const totalExpenses = expenseData.reduce((sum: number, e: any) => sum + (e.amount || 0), 0)
   const mtdExpenses = expenseData.filter((e: any) => {
     const expenseMonth = new Date(e.expense_date).getMonth() + 1
     return expenseMonth === currentMonth
   }).reduce((sum: number, e: any) => sum + (e.amount || 0), 0)
 
-  const byCategory: Record<string, { total: number; count: number }> = {}
-  expenseData.forEach((e: any) => {
-    const cat = e.category || 'Other'
-    if (!byCategory[cat]) byCategory[cat] = { total: 0, count: 0 }
-    byCategory[cat].total += (e.amount || 0)
-    byCategory[cat].count += 1
-  })
+  // The category breakdown and the YTD total come from getExpenseSummary, which
+  // aggregates EVERY row in the tax year. They used to be computed inline from
+  // the same `.limit(100)` page this table renders — so an agent past a hundred
+  // receipts was shown a chart that silently omitted the rest of their year, a
+  // category count that was wrong, and a "total YTD" that was really "total of
+  // the hundred most recent". It also reports a refused read instead of folding
+  // it into a zero.
+  const { getExpenseSummary } = await import("@/app/actions/agents")
+  const summaryResult = await getExpenseSummary(expenseAgentId, currentYear)
+  const byCategory = summaryResult.summary
+  const totalExpenses = summaryResult.total
+  const summaryError = summaryResult.ok ? null : (summaryResult.error ?? "Could not read your expense totals.")
+  const truncatedTable = expenseData.length >= 100
 
   // Build action stack
   const expenseActions: FinancialAction[] = [
@@ -130,7 +135,7 @@ export default async function ExpensesPage() {
         <Card>
           <CardContent className="p-4">
             <p className="text-xs text-muted-foreground">Total Records</p>
-            <p className="text-2xl font-bold text-blue-600 mt-1">{expenseData.length}</p>
+            <p className="text-2xl font-bold text-blue-600 mt-1">{summaryResult.count}</p>
           </CardContent>
         </Card>
         <Card>
@@ -140,6 +145,14 @@ export default async function ExpensesPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* An unread total must say so rather than render as $0 spent. */}
+      {summaryError && (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
+          Your year-to-date totals could not be read: {summaryError}. The figures above and the
+          category breakdown below are not complete.
+        </div>
+      )}
 
       {/* Expense Intelligence Panel */}
       {(() => { const Panel = ExpenseIntelligencePanel as any; return <Panel expenses={expenseData} userId={user.id} /> })()}
@@ -152,7 +165,10 @@ export default async function ExpensesPage() {
               <TrendingDown className="w-5 h-5 text-orange-600" />
               Expenses by Category
             </CardTitle>
-            <CardDescription>YTD breakdown showing where you're spending</CardDescription>
+            <CardDescription>
+              YTD breakdown showing where you&apos;re spending — every expense in {currentYear},
+              not just the most recent page.
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
@@ -187,7 +203,12 @@ export default async function ExpensesPage() {
             <Receipt className="w-5 h-5 text-orange-600" />
             All Expense Records
           </CardTitle>
-          <CardDescription>Sorted by date (newest first)</CardDescription>
+          <CardDescription>
+            Sorted by date (newest first)
+            {truncatedTable
+              ? ` — showing the 100 most recent of ${summaryResult.count}; the totals above cover all of them.`
+              : ""}
+          </CardDescription>
         </CardHeader>
         <CardContent>
           {expenseData.length === 0 ? (
