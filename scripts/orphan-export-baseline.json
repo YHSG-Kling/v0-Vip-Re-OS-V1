@@ -385,7 +385,7 @@
     "lib/intelligence/skill-freshness-board.ts": 1,
     "lib/intelligence/steer-my-day.ts": 1,
     "lib/intelligence/time-to-value-radar.ts": 1,
-    "lib/kernel/ads.ts": 5,
+    "lib/kernel/ads.ts": 4,
     "lib/kernel/agent-coaching.ts": 4,
     "lib/kernel/agent-identity-resolver.ts": 3,
     "lib/kernel/agent-identity.ts": 1,
@@ -20165,5 +20165,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 375
+  "trulyDead": 374
 }

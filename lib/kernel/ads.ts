@@ -98,6 +98,14 @@ export interface SourceRule {
 export interface KernelAdsResult {
   success: boolean
   error?: string
+  /**
+   * Why this failed, when it failed. A surface has to tell an entitlement
+   * refusal ("your plan does not include this") apart from a read failure
+   * ("we could not load it") apart from genuinely-empty — they are three
+   * different states and rendering them alike is the defect this exists to
+   * prevent. Only set on failure.
+   */
+  errorKind?: "input" | "entitlement" | "read"
   campaignId?: string
   campaign?: any
   creativeId?: string
@@ -106,6 +114,8 @@ export interface KernelAdsResult {
   audience?: any
   syncRunId?: string
   syncRun?: any
+  /** loadAdsWorkspace: the whole workspace view (campaigns + audiences + performance). */
+  workspace?: AdsWorkspaceData
   /** createAdCampaign: is the ad account connected and active right now? */
   accountConnected?: boolean
   /** createAdCampaign: does a credential path for this platform exist at all? */
@@ -116,8 +126,17 @@ export interface KernelAdsResult {
 }
 
 export interface AdsWorkspaceData {
+  /** ad_campaigns rows, each with its marketing campaign name and creative variations. */
   campaigns: any[]
+  /** facebook_custom_audiences rows, each with its recent audience_sync_runs. */
   audiences: any[]
+  /**
+   * The ad_performance ROWS the summary below was computed from, newest
+   * captured_at first. The summary is not a substitute: a surface needs the
+   * rows to break spend/clicks down per campaign, and dropping them would
+   * turn a populated Performance tab into an empty one.
+   */
+  performance: any[]
   performanceSummary: {
     totalSpend: number
     totalImpressions: number
@@ -226,45 +245,99 @@ export async function loadAdsWorkspace(input: LoadAdsWorkspaceInput): Promise<Ke
   const { ctx } = input
 
   if (!ctx.brokerageId || !ctx.userId) {
-    return { success: false, error: "brokerageId and userId required" }
+    return { success: false, error: "brokerageId and userId required", errorKind: "input" }
   }
 
-  // Feature access check
-  const accessCheck = await canAccessFeature(ctx.userId, "ads_campaigns")
+  // Feature access check.
+  //
+  // canAccessFeature THROWS on its own read failures (feature_flags, users,
+  // overrides, usage) rather than returning allowed:false. An uncaught throw
+  // here would take the whole surface down with a stack trace; worse, it is a
+  // READ failure wearing an entitlement failure's clothes. Caught and labelled
+  // for what it is, so the caller can say "we could not check" instead of
+  // "your plan does not include this".
+  let accessCheck
+  try {
+    accessCheck = await canAccessFeature(ctx.userId, "ads_campaigns")
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : "Could not check ads access",
+      errorKind: "read",
+    }
+  }
   if (!accessCheck.allowed) {
-    return { success: false, error: accessCheck.reason || "Feature not available" }
+    return {
+      success: false,
+      error: accessCheck.reason || accessCheck.disabled_reason || "Feature not available",
+      errorKind: "entitlement",
+    }
   }
 
   try {
     const supabase = createServiceClient()
 
-    // Load campaigns
+    // Load campaigns.
+    //
+    // The nested marketing_campaigns / ad_creative_variations selects are not
+    // decoration: the workspace surface renders each campaign's creative
+    // variations and gates "Approve" on at least one approved creative. A bare
+    // select('*') here loads campaigns that look like they have no creatives.
+    //
+    // NOTE ON TENANCY: this runs on the SERVICE client (RLS bypassed), so the
+    // explicit brokerage_id filter below is the ONLY tenant boundary on this
+    // read. It is not optional.
     const { data: campaigns, error: campaignsError } = await supabase
       .from("ad_campaigns")
-      .select("*")
+      .select(`
+        *,
+        marketing_campaigns (campaign_name),
+        ad_creative_variations (*)
+      `)
       .eq("brokerage_id", ctx.brokerageId)
       .order("created_at", { ascending: false })
+      .limit(50)
 
     if (campaignsError) throw campaignsError
 
-    // Load audiences
+    // Load audiences with their sync-run history. Business rule 2 — audience
+    // sync failures must be VISIBLE — is only satisfiable if the runs come back
+    // with the audience; without them the surface can only say "never synced".
     const { data: audiences, error: audiencesError } = await supabase
       .from("facebook_custom_audiences")
-      .select("*")
+      .select(`
+        *,
+        audience_sync_runs (
+          id,
+          run_status,
+          records_synced,
+          records_rejected,
+          completed_at
+        )
+      `)
       .eq("brokerage_id", ctx.brokerageId)
       .order("created_at", { ascending: false })
+      .limit(50)
 
     if (audiencesError) throw audiencesError
 
-    // Load performance summary
+    // Load performance rows. Filtered by brokerage_id in its own right (the
+    // table carries the column) AND by the brokerage-filtered campaign ids —
+    // on the service client the explicit filter is the whole tenant boundary,
+    // so it is stated rather than inherited. Ordered newest-first so the
+    // surface's most-recent capture reads first.
     const campaignIds = campaigns?.map((c) => c.id) || []
     let performanceData: any[] = []
 
     if (campaignIds.length > 0) {
-      const { data: performance } = await supabase
+      const { data: performance, error: performanceError } = await supabase
         .from("ad_performance")
         .select("*")
+        .eq("brokerage_id", ctx.brokerageId)
         .in("ad_campaign_id", campaignIds)
+        .order("captured_at", { ascending: false })
+
+      if (performanceError) throw performanceError
 
       performanceData = performance || []
     }
@@ -294,6 +367,7 @@ export async function loadAdsWorkspace(input: LoadAdsWorkspaceInput): Promise<Ke
     const workspaceData: AdsWorkspaceData = {
       campaigns: campaigns || [],
       audiences: audiences || [],
+      performance: performanceData,
       performanceSummary: {
         totalSpend,
         totalImpressions,
@@ -306,11 +380,12 @@ export async function loadAdsWorkspace(input: LoadAdsWorkspaceInput): Promise<Ke
       unconnectableAdPlatforms: AD_PLATFORMS_WITHOUT_CONNECTIONS,
     }
 
-    return { success: true, campaign: workspaceData }
+    return { success: true, workspace: workspaceData }
   } catch (err) {
     return {
       success: false,
       error: err instanceof Error ? err.message : "loadAdsWorkspace failed",
+      errorKind: "read",
     }
   }
 }
