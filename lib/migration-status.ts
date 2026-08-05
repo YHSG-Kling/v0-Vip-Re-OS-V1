@@ -51,11 +51,15 @@ export const migrationStatus = {
     description: "All pages and components migrated from airtableService to supabaseService",
   },
   airtableService: {
-    status: "deprecated",
-    action: "Can be safely removed - all functionality migrated to Supabase",
+    status: "removed",
+    action:
+      "services/airtableService.ts no longer exists. All reads/writes go through services/supabaseService.ts. The only surviving mentions are in scripts/complete-migration.ts, the codemod that performed the rewrite.",
   },
   n8nService: {
-    status: "deprecated",
-    action: "Replaced with Server Actions in app/actions/workflows.ts",
+    status: "removed",
+    action:
+      "services/workflowService.ts (which also exported the n8nService alias) has been DELETED. The named survivor is app/actions/workflows.ts — every non-stub method on the shim was a lossy 1:1 pass-through to the same-named export there (triggerCMAPackage dropped beds/baths/sqft/upgrades; several hardcoded the actor as \"system\"), and the remainder returned fabricated constants.",
+    knownGap:
+      "verifyVendorInsurance was the one capability with no real implementation anywhere — the shim returned complianceScore 100 / isCompliant true unconditionally. Nothing was ported because a function returning constants has no implementation to preserve. Vendor insurance verification is an open product gap.",
   },
 } as const

@@ -29,9 +29,12 @@ export const dynamic = "force-dynamic"
 //     svc.auth.admin.listUsers() (the same admin API lib/kernel/users.ts already
 //     uses) and joined to tenants through public.users.brokerage_id — users.id
 //     IS the auth uid (require-capability queries users by auth uid).  ← CHOSEN
-//   • user_activity — rejected: no brokerage_id, and its only writers
-//     (services/workflowService.ts) log user_id 'system', so it is not per-user
-//     login evidence.
+//   • user_activity — rejected: no brokerage_id, and it is not login evidence.
+//     Its one remaining writer is services/supabaseService.ts:logUserActivity,
+//     which inserts whatever caller-supplied row it is handed and is not tied to
+//     sign-in at all. (The writer this note originally cited,
+//     services/workflowService.ts, logged user_id 'system' and has since been
+//     deleted — see lib/migration-status.ts.)
 //   • audit_log — rejected: no brokerage_id; sparse writers.
 // So "last sign-in" and "active users 7/30d" below are exactly what Supabase
 // Auth recorded — real logins, nothing synthesized. (Note: last_sign_in_at

@@ -3,6 +3,12 @@
 /**
  * Complete Migration Script: Airtable & n8n → Supabase & Server Actions
  * This script systematically replaces all legacy service calls with Supabase equivalents
+ *
+ * HISTORICAL — this codemod has already run and both of its targets are GONE.
+ * services/airtableService.ts and services/workflowService.ts (which exported the
+ * n8nService alias) no longer exist; the patterns below are kept as the record of
+ * what was rewritten, not as a rule that still has anything to match. See
+ * lib/migration-status.ts for the current state.
  */
 
 import * as fs from "fs"

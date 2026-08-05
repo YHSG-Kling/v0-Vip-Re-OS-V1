@@ -50,8 +50,30 @@ const SKIP_DIRS = new Set([
   "supabase", "coverage", "dist", "build",
 ])
 
-/** Directories whose exports are expected to be consumed by name somewhere. */
-const SCANNED_ROOTS = ["app", "lib"]
+/**
+ * Directories whose exports are expected to be consumed by name somewhere.
+ *
+ * `services/` was a blind spot: the roots were ["app", "lib"], so its live
+ * files — supabaseService.ts (14 importers, one of them lib/orchestrator/
+ * internal.ts), supabase.ts (16), aiMappingService.ts, goHighLevelService.ts —
+ * had never been measured at all. Most of the directory exports namespace
+ * OBJECTS (`export const x = {...}`), which the regexes below do not match, so
+ * only its `export function` / arrow-function exports enter the ledger: 15 of
+ * them, 12 from goHighLevelService.ts and 3 from supabase.ts.
+ *
+ * ADDING THIS ROOT RAISED THE BASELINE (8876 → 8891 scanned, 1499 → 1508
+ * unreferenced, category C 367 → 376) and that increase is a MEASUREMENT
+ * EXPANSION, not a regression: nothing was added, a directory that was always
+ * unreferenced simply became visible. The ~9 that landed in C are the
+ * zero-caller GoHighLevel reads and bulk sync — getGHLContact,
+ * searchGHLContacts, getGHLConversations, getGHLMessages, getGHLContactNotes,
+ * addGHLContactTags, removeGHLContactTags, bulkSyncContactsToGHL. They are
+ * kept, not deleted: GHL sync-out is a sanctioned capability and the read side
+ * is the platform-staff book-import direction, so these are a backlog to
+ * finish. The three that ARE wired (syncContactToGHL, logGHLCall,
+ * addGHLContactNote, getContactConversationHistory) prove the file is live.
+ */
+const SCANNED_ROOTS = ["app", "lib", "services"]
 
 function walk(dir: string, out: string[] = []): string[] {
   let entries: string[]

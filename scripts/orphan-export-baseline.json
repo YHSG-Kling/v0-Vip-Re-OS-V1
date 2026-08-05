@@ -729,9 +729,11 @@
     "lib/workflow/intelligence/proactive-checks.ts": 4,
     "lib/workflow/step-palette.ts": 1,
     "lib/workflow/variables.ts": 1,
-    "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1
+    "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
+    "services/goHighLevelService.ts": 8,
+    "services/supabase.ts": 1
   },
-  "census": 8876,
+  "census": 8891,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -4234,7 +4236,9 @@
     "lib/workflow-orchestrator/engine.ts": 4,
     "lib/workflow-orchestrator/run-dedupe.ts": 1,
     "lib/workflow-orchestrator/stale-run-policy.ts": 1,
-    "lib/workflow-orchestrator/stale-run-reaper.ts": 1
+    "lib/workflow-orchestrator/stale-run-reaper.ts": 1,
+    "services/goHighLevelService.ts": 12,
+    "services/supabase.ts": 3
   },
   "fileExports": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": [
@@ -20116,7 +20120,26 @@
     ],
     "lib/workflow-orchestrator/stale-run-reaper.ts": [
       "reapStaleWorkflowRuns"
+    ],
+    "services/goHighLevelService.ts": [
+      "syncContactToGHL",
+      "getGHLContact",
+      "searchGHLContacts",
+      "getGHLConversations",
+      "getGHLMessages",
+      "getContactConversationHistory",
+      "logGHLCall",
+      "addGHLContactTags",
+      "removeGHLContactTags",
+      "addGHLContactNote",
+      "getGHLContactNotes",
+      "bulkSyncContactsToGHL"
+    ],
+    "services/supabase.ts": [
+      "getSupabase",
+      "createBrowserClient",
+      "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 367
+  "trulyDead": 376
 }
