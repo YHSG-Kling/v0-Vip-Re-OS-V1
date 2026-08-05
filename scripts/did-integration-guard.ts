@@ -411,9 +411,22 @@ console.log("\n═══ 12. TWO RENDER LANES, ONE SLOT — the loser is decided
   const route = code("app/api/did/generate-video/route.ts")
   const kernel = code("lib/kernel/video.ts")
 
-  // The CONSTRUCT: an UPDATE guarded by the two in-flight statuses. Asserted on
-  // both lanes from one shape, so neither can drift away from the other.
-  const CLAIM = /\.neq\(\s*["']status["']\s*,\s*["']generating["']\s*\)[\s\S]{0,200}?\.neq\(\s*["']status["']\s*,\s*["']submitting["']\s*\)/
+  // The CONSTRUCT: an UPDATE targeted at ONE row and guarded by the in-flight
+  // status. Asserted on both lanes from one shape, so neither can drift away
+  // from the other.
+  //
+  // This used to require TWO predicates — .neq generating AND .neq submitting.
+  // `submitting` was never a value of ai_video_projects.status (only ever of
+  // provider_status), so the second predicate excluded a value no writer could
+  // produce: it read like extra safety and was a no-op. m374 then merged
+  // submitting → generating, making it dead twice over. Requiring it here would
+  // now pin a spelling the CHECK constraint rejects outright.
+  //
+  // What actually makes the claim atomic is the pair below: .eq("id") picks the
+  // single row, .neq("status","generating") is the guard that makes the UPDATE
+  // return zero rows when someone else already holds the slot. Delete either and
+  // this fails, which is the property worth having.
+  const CLAIM = /\.eq\(\s*["']id["']\s*,[\s\S]{0,300}?\.neq\(\s*["']status["']\s*,\s*["']generating["']\s*\)/
   ok("the kernel lane claims the render slot atomically", CLAIM.test(kernel))
   ok("the D-ID lane claims the SAME slot the SAME way — this was the defect",
     CLAIM.test(route))
