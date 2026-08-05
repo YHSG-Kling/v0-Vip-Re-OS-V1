@@ -232,7 +232,6 @@ export {
   grantPortalAccess,
   triggerComplianceChecklist,
   generateScriptContent,
-  sendNewsletterCampaign,
   retryFailedWorkflow,
   logUserActivity,
 } from "./workflows"

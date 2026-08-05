@@ -505,46 +505,6 @@ export async function generateScriptContent(
 }
 
 /**
- * Send a newsletter campaign.
- */
-export async function sendNewsletterCampaign(
-  campaignId: string,
-  _agentId?: string // ignored — derived from session
-): Promise<{ success: boolean; sentCount?: number; error?: string }> {
-  try {
-    const supabase = await createClient()
-    const ctx = await getAgentContext()
-
-    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
-    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
-
-    // newsletter_campaigns has no brokerage_id column — scope ownership via
-    // created_by = caller's user id. Brokerage-wide visibility isn't modelled
-    // on this table yet; this prevents cross-tenant send commands.
-    const svc = createServiceClient()
-    const { data: campaign } = await svc
-      .from("newsletter_campaigns")
-      .select("*")
-      .eq("id", campaignId)
-      .maybeSingle()
-    if (!campaign) return { success: false, error: "Campaign not found" }
-    if (campaign.created_by && campaign.created_by !== ctx.userId) {
-      return { success: false, error: "Forbidden" }
-    }
-
-    // Mark campaign as sent
-    await supabase
-      .from("newsletter_campaigns")
-      .update({ status: "sent", send_date: new Date().toISOString() })
-      .eq("id", campaignId)
-
-    return { success: true, sentCount: campaign.recipient_count }
-  } catch (error: any) {
-    return { success: false, error: error?.message ?? "Failed to send campaign" }
-  }
-}
-
-/**
  * Retry a failed workflow execution.
  */
 export async function retryFailedWorkflow(

@@ -67,9 +67,16 @@ import {
   createNewsletterCampaign,
   getNewsletterAnalytics,
   aiAnalyzeNewsletterPerformance,
+  // SENDING A NEWSLETTER USES THE NEWSLETTER SENDER. This screen creates rows
+  // in newsletter_campaigns (createNewsletterCampaign above) and used to send
+  // them with sendEmailCampaign, which looks the id up in email_campaigns — a
+  // DIFFERENT table. That lookup could never match, so every Send returned
+  // "Campaign not found" and no newsletter this screen created was ever
+  // sendable. sendNewsletter queries newsletter_campaigns, and returns the same
+  // { success, recipientCount } shape this screen already reads.
+  sendNewsletter,
 } from "@/app/actions/ai-newsletter"
 import {
-  sendEmailCampaign,
   scheduleEmailCampaign,
   deleteEmailCampaign,
 } from "@/app/actions/email-campaigns"
@@ -817,7 +824,7 @@ export function NewslettersClient({
 
         if (wizard.sendMode === "now") {
           // Immediately send
-          const sendResult = await sendEmailCampaign(result.newsletter.id, userId, brokerageId)
+          const sendResult = await sendNewsletter({ newsletterId: result.newsletter.id })
           if (sendResult.success) {
             toast.success(`Sent to ${(sendResult as any).recipientCount ?? 0} subscribers`)
             setCampaigns((prev) =>
@@ -891,7 +898,7 @@ export function NewslettersClient({
   async function handleSend(campaignId: string) {
     setSendingId(campaignId)
     try {
-      const result = await sendEmailCampaign(campaignId, userId, brokerageId)
+      const result = await sendNewsletter({ newsletterId: campaignId })
       if (result.success) {
         setCampaigns((prev) =>
           prev.map((c) => (c.id === campaignId ? { ...c, status: "sent" } : c))

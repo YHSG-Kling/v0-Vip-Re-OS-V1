@@ -25,7 +25,7 @@
     "app/actions/ai-listing-presentation.ts": 1,
     "app/actions/ai-market-intelligence.ts": 2,
     "app/actions/ai-marketing-automation.ts": 4,
-    "app/actions/ai-newsletter.ts": 4,
+    "app/actions/ai-newsletter.ts": 3,
     "app/actions/ai-offer-creation.ts": 1,
     "app/actions/ai-predictions.ts": 5,
     "app/actions/ai-referral-management.ts": 1,
@@ -76,6 +76,7 @@
     "app/actions/direct-mail.ts": 3,
     "app/actions/documents.ts": 1,
     "app/actions/dotloop-integration.ts": 1,
+    "app/actions/email-campaigns.ts": 1,
     "app/actions/error-handler.ts": 1,
     "app/actions/external-services.ts": 3,
     "app/actions/fb-audience-templates.ts": 1,
@@ -732,7 +733,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 8898,
+  "census": 8897,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1284,7 +1285,7 @@
     "app/actions/workflow-monitoring.ts": 4,
     "app/actions/workflow-orchestrator.ts": 7,
     "app/actions/workflow-reports.ts": 1,
-    "app/actions/workflows.ts": 14,
+    "app/actions/workflows.ts": 13,
     "app/api/accounting/sync/route.ts": 1,
     "app/api/admin/agents/sessions/route.ts": 1,
     "app/api/admin/audit-events/route.ts": 1,
@@ -8020,7 +8021,6 @@
       "grantPortalAccess",
       "triggerComplianceChecklist",
       "generateScriptContent",
-      "sendNewsletterCampaign",
       "retryFailedWorkflow",
       "logUserActivity",
       "executeWorkflow"
@@ -20165,5 +20165,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 374
+  "trulyDead": 373
 }
