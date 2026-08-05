@@ -371,11 +371,30 @@ export async function setMilestonePortalVisibility(
     return { success: false, error: "Forbidden" }
   }
 
-  // Find the most recent event for this stage — scoped to caller's brokerage
+  // Find the most recent event for this stage — scoped to caller's brokerage.
+  //
+  // THIS READ COULD NEVER MATCH. It filtered entity_type = "listing", but a
+  // STAGE is not what that entity type records. ENTITY_MAP in
+  // lib/kernel/lifecycle.ts is explicit — and carries its own warning not to
+  // merge the two:
+  //   listing               -> listings.status          (MLS status only)
+  //   listing_stage_machine -> listings.lifecycle_stage  (the stage machine)
+  // This function's `stage` argument is a lifecycle_stage, so every event it
+  // wanted was written under listing_stage_machine and it was looking at the
+  // MLS-status stream instead. Result: EVERY portal-visibility toggle returned
+  // "Event not found" and the milestone silently never became visible to the
+  // client — a control that reports a specific, plausible failure while being
+  // structurally incapable of succeeding.
+  //
+  // Both entity types are read rather than swapping to one, matching the
+  // precedent set when loadListingWorkspace hit this same split: the two
+  // streams have DIFFERENT producers, and to_state disambiguates them anyway
+  // (an MLS status can never equal a lifecycle stage), so reading both cannot
+  // mismatch and cannot miss a producer added later.
   const { data: evt, error: fetchError } = await supabase
     .from("lifecycle_events")
     .select("id, metadata")
-    .eq("entity_type", "listing")
+    .in("entity_type", ["listing_stage_machine", "listing"])
     .eq("entity_id", listingId)
     .eq("brokerage_id", callerRow.brokerage_id)
     .eq("metadata->>to_state", stage)
@@ -383,8 +402,15 @@ export async function setMilestonePortalVisibility(
     .limit(1)
     .maybeSingle()
 
-  if (fetchError || !evt) {
-    return { success: false, error: fetchError?.message ?? "Event not found" }
+  if (fetchError) {
+    // A refused read is not "no such milestone" — say which it was.
+    return { success: false, error: `Could not load the stage event: ${fetchError.message}` }
+  }
+  if (!evt) {
+    return {
+      success: false,
+      error: `No recorded transition into "${stage}" for this listing, so there is no milestone to show or hide yet.`,
+    }
   }
 
   const updatedMetadata = { ...(evt.metadata ?? {}), portal_visible: visible }

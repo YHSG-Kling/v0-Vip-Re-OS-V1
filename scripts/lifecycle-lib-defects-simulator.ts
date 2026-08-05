@@ -88,6 +88,7 @@ const F = {
   action: "app/actions/listing-lifecycle.ts",
   writerDotloop: "app/actions/dotloop-integration.ts",
   writerDocIntel: "app/actions/ai-document-intelligence.ts",
+  stagePipeline: "app/components/dashboard/listings/lifecycle/stage-pipeline.tsx",
 } as const
 
 /** Raw source, re-read every time — the negative layer rewrites these files. */
@@ -295,7 +296,7 @@ function uncheckedSupabaseStatements(src: string): string[] {
 type Outcome = { ok: boolean; detail?: string }
 interface Assertion {
   id: string
-  defect: "d1" | "d2" | "d3"
+  defect: "d1" | "d2" | "d3" | "d4"
   layer: "source" | "pure" | "live"
   what: string
   run: () => Outcome | Promise<Outcome>
@@ -316,6 +317,62 @@ const SEED_EVENT_ID_2 = "dddddddd-0000-4000-8000-00000000e102"
 const SEED_DOC_ID = "dddddddd-0000-4000-8000-00000000e301"
 
 const assertions: Assertion[] = [
+  // ══════════════════════════════════════════════════════════════════════════
+  // D4 — the portal-visibility toggle read the wrong entity space
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    id: "d4.portal-toggle-reads-the-stage-machine",
+    defect: "d4",
+    layer: "pure",
+    what: "setMilestonePortalVisibility looks for the stage event in listing_stage_machine, not the MLS-status stream — it filtered entity_type 'listing' alone, so every toggle answered 'Event not found'",
+    run: () => {
+      const body = fnBody(code(F.action), "setMilestonePortalVisibility")
+      if (!body) return { ok: false, detail: "setMilestonePortalVisibility not found" }
+      const reads = /\.in\(\s*["']entity_type["']\s*,\s*\[[^\]]*listing_stage_machine[^\]]*\]/.test(body)
+      if (!reads) return { ok: false, detail: "the stage lookup does not include listing_stage_machine" }
+      const onlyMls = /\.eq\(\s*["']entity_type["']\s*,\s*["']listing["']\s*\)/.test(body)
+      if (onlyMls) return { ok: false, detail: "still pinned to entity_type 'listing' (MLS status), which carries no lifecycle stage" }
+      return { ok: true, detail: "reads both entity spaces; to_state disambiguates" }
+    },
+    breaks: [
+      { file: F.action, find: `.in("entity_type", ["listing_stage_machine", "listing"])`, replace: `.eq("entity_type", "listing")` },
+    ],
+  },
+  {
+    id: "d4.portal-toggle-distinguishes-refusal-from-absence",
+    defect: "d4",
+    layer: "pure",
+    what: "a refused read and a genuinely missing transition are reported as DIFFERENT things, so an RLS denial never reads as 'no such milestone'",
+    run: () => {
+      const body = fnBody(code(F.action), "setMilestonePortalVisibility")
+      if (!body) return { ok: false, detail: "function not found" }
+      const refusal = /if\s*\(\s*fetchError\s*\)[\s\S]{0,200}?return/.test(body)
+      const absence = /if\s*\(\s*!\s*evt\s*\)[\s\S]{0,300}?return/.test(body)
+      if (!refusal) return { ok: false, detail: "no distinct branch on fetchError" }
+      if (!absence) return { ok: false, detail: "no distinct branch on a missing event" }
+      return { ok: true, detail: "refusal and absence answered separately" }
+    },
+    breaks: [
+      { file: F.action, find: `  if (fetchError) {`, replace: `  if (false) {` },
+    ],
+  },
+  {
+    id: "d4.portal-toggle-surfaces-the-verdict",
+    defect: "d4",
+    layer: "pure",
+    what: "the stage pipeline SHOWS the server's refusal instead of silently snapping the switch back",
+    run: () => {
+      const body = fnBody(code(F.stagePipeline), "handlePortalToggle")
+      if (!body) return { ok: false, detail: "handlePortalToggle not found" }
+      if (!/else\s*\{[\s\S]{0,300}?setError\s*\(/.test(body)) {
+        return { ok: false, detail: "no else-branch reporting the refusal to the agent" }
+      }
+      return { ok: true, detail: "refusal reaches the surface" }
+    },
+    breaks: [
+      { file: F.stagePipeline, find: `      setError(result.error ?? "Could not change portal visibility for this milestone")`, replace: `      void result` },
+    ],
+  },
   // ══════════════════════════════════════════════════════════════════════════
   // D1 — the stage gate
   // ══════════════════════════════════════════════════════════════════════════

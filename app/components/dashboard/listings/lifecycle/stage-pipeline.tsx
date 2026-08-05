@@ -130,9 +130,16 @@ export function StagePipeline({
   async function handlePortalToggle(stage: string) {
     const newVisible = !portalVisibility[stage]
     setTogglingStage(stage)
+    setError(null)
     const result = await setMilestonePortalVisibility(listingId, stage, newVisible)
     if (result.success) {
       setPortalVisibility((prev: Record<string, boolean>) => ({ ...prev, [stage]: newVisible }))
+    } else {
+      // The refusal used to be dropped on the floor: the switch snapped back and
+      // the agent was told nothing, so a milestone that never became visible to
+      // the client looked like a UI glitch rather than a server verdict. Show
+      // what the server actually said.
+      setError(result.error ?? "Could not change portal visibility for this milestone")
     }
     setTogglingStage(null)
   }
