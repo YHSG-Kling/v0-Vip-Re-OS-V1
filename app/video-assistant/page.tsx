@@ -101,14 +101,32 @@ export default function VideoAssistantPage() {
       )
       
       const results = await Promise.all(promises)
+
+      // Every variation failing used to leave the page silently empty — the
+      // agent saw an idle screen and no reason. Report the first real error,
+      // including a compliance block, which is the one refusal they can act on.
+      const failure = results.find(r => !r.success)
       const scripts = results.filter(r => r.success).map(r => r.script || "")
+
+      if (scripts.length === 0) {
+        toast.error(failure?.error ?? "Script generation failed")
+        setShowOptions(false)
+        return
+      }
+
       setGeneratedOptions(scripts)
-      
-      if (scripts.length > 0) {
-        setScriptText(scripts[0]) // Auto-select first option
+      setScriptText(scripts[0]) // Auto-select first option
+
+      // Advisory notes from the compliance gate on the selected variation.
+      const warnings = results.find(r => r.success)?.complianceWarnings
+      if (warnings?.length) {
+        toast.warning(`Compliance flagged ${warnings.length} item(s)`, {
+          description: warnings.join(" • "),
+        })
       }
     } catch (error) {
       console.error("Script generation failed:", error)
+      toast.error("Script generation failed")
     } finally {
       setGenerating(false)
     }

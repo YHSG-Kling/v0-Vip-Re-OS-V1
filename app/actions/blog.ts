@@ -195,15 +195,8 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
     persona: "first_time",
     messageType: "email",
     content: blogResult.content,
-    contact: {
-      id: "broadcast",
-      first_name: "Broadcast",
-      last_name: "Audience",
-      contact_type: "buyer",
-      tcpa_consent: true,
-      isa_reengage_allowed: false,
-      dnc_status: false,
-    },
+    // Broadcast payload — see lib/video/script-compliance.ts for why the
+    // stub contact is omitted rather than faked.
   })
 
   if (!complianceResult.allowed) {

@@ -340,15 +340,8 @@ Return ONLY the hook line text — no quotes, no labels.`
       persona:      "other",
       messageType:  "email",
       content:      hook,
-      contact: {
-        id: "broadcast_persona_hook",
-        first_name: "Subscriber",
-        last_name: "Audience",
-        contact_type: "buyer",
-        tcpa_consent: true,
-        isa_reengage_allowed: false,
-        dnc_status: false,
-      },
+      // Broadcast payload — see lib/video/script-compliance.ts for why the
+      // stub contact is omitted rather than faked.
     }).catch(() => ({ allowed: true, violations: [] as string[] }))
     if (!gate.allowed) return null
     return hook

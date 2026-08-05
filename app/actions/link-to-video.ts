@@ -8,6 +8,7 @@ import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-featur
 import { resolveProvider } from "@/lib/kernel/providers"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
+import { buildComplianceSystemBlocks, postcheckScript } from "@/lib/video/script-compliance"
 
 // Every function in this file used to be unauthenticated. Caller could
 // generate AI video scripts attributed to any organization (burning AI
@@ -98,8 +99,16 @@ export async function generateVideoScript(params: {
 
     if (!org) throw new Error("Organization not found")
 
+    // Brand voice + ThemFirst + Fair Housing, injected proactively — the same
+    // blocks the /dashboard/videos/create wizard uses. This path had the
+    // bespoke checkCompliance() pass below but nothing that told the model
+    // what the brokerage's voice is, so it generated off-brand copy and then
+    // graded it.
+    const complianceBlocks = await buildComplianceSystemBlocks(auth.brokerageId)
+
     // Use AI to generate script from URL content
     const response = await generateAIResponse({
+      system: complianceBlocks.join("\n\n"),
       prompt: `Create a 75-word engaging voiceover script for a ${params.contentCategory} video based on this URL: ${params.url}
 
 Requirements:
@@ -136,11 +145,54 @@ Return ONLY the script text, no formatting or labels.`,
 
     if (error) throw error
 
-    // Run compliance check
+    // Run compliance check (bespoke AI pass — writes compliance_flags + script_status)
     await checkCompliance(videoQueue.id)
 
+    // Kernel gate, on top of the AI pass. These two are not redundant: the AI
+    // check is a judgement call over a prompt, the kernel gate is the
+    // deterministic rule array shared with every other outbound surface, and
+    // it writes the compliance_events audit row. A deterministic Fair Housing
+    // hit is not overridable by the AI's opinion, so it forces the row back to
+    // needs_revision even if checkCompliance had just approved it.
+    const kernelWarnings = await postcheckScript(
+      { userId: auth.userId, brokerageId: auth.brokerageId },
+      response.text,
+      params.contentCategory === "property_listing" ? "seller" : "buyer",
+    )
+
+    if (kernelWarnings?.length) {
+      const { data: current } = await supabase
+        .from("video_generation_queue")
+        .select("compliance_flags")
+        .eq("id", videoQueue.id)
+        .maybeSingle()
+
+      const existingFlags = Array.isArray(current?.compliance_flags) ? current.compliance_flags : []
+      const kernelFlags = kernelWarnings.map((issue) => ({
+        severity: issue.startsWith("FairHousing:") ? "violation" : "warning",
+        issue,
+        suggestion: "Regenerate or edit the script to clear this before rendering.",
+        source: "kernel_gate",
+      }))
+      const hasViolation = kernelFlags.some((f) => f.severity === "violation")
+
+      const { error: mergeError } = await supabase
+        .from("video_generation_queue")
+        .update({
+          compliance_flags: [...existingFlags, ...kernelFlags],
+          ...(hasViolation
+            ? { compliance_check_passed: false, script_status: "needs_revision" }
+            : {}),
+        })
+        .eq("id", videoQueue.id)
+
+      if (mergeError) {
+        console.error("[link-to-video] Failed to merge kernel compliance flags:", mergeError)
+      }
+    }
+
     revalidatePath("/content-studio")
-    return { success: true, videoQueue }
+    return { success: true, videoQueue, complianceWarnings: kernelWarnings }
   } catch (error) {
     console.error("[link-to-video] Generate video script error:", error)
     return { success: false, error: "Failed to generate script" }

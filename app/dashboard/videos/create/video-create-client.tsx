@@ -218,6 +218,10 @@ export default function VideoCreatePage() {
   const [aiScriptDuration, setAiScriptDuration] = useState<number>(60)
   const [isAiGenerating, setIsAiGenerating] = useState(false)
   const [aiScriptError, setAiScriptError] = useState<string | null>(null)
+  // Advisory compliance notes from the post-generation gate. The action has
+  // always returned these; nothing displayed them, so a script that tripped
+  // brand voice or Fair Housing reached the render with no warning at all.
+  const [scriptComplianceWarnings, setScriptComplianceWarnings] = useState<string[]>([])
 
   // "Save to library" — the library's empty state sends the agent here to
   // "create your first AI-generated script", but nothing on this page ever wrote
@@ -802,6 +806,7 @@ export default function VideoCreatePage() {
       }
 
       setCustomScript(result.script!)
+      setScriptComplianceWarnings(result.complianceWarnings ?? [])
       setScriptSource("custom")
       setScriptTitle(`${selectedPurpose.replace(/_/g, " ")} — ${new Date().toLocaleDateString()}`)
       setCurrentStep(1)
@@ -847,6 +852,7 @@ export default function VideoCreatePage() {
       }
 
       setCustomScript(result.script!)
+      setScriptComplianceWarnings(result.complianceWarnings ?? [])
       if (!scriptTitle) {
         setScriptTitle(`AI Script — ${aiScriptVideoType.replace(/_/g, " ")} — ${new Date().toLocaleDateString()}`)
       }
@@ -1238,13 +1244,33 @@ export default function VideoCreatePage() {
                       </CardContent>
                     </Card>
 
-                    <Alert>
-                      <Shield className="h-4 w-4" />
-                      <AlertTitle>Script Compliance</AlertTitle>
-                      <AlertDescription>
-                        All scripts (AI and manual) are checked against Fair Housing and brand compliance before video generation.
-                      </AlertDescription>
-                    </Alert>
+                    {scriptComplianceWarnings.length > 0 ? (
+                      <Alert variant="destructive">
+                        <Shield className="h-4 w-4" />
+                        <AlertTitle>
+                          Compliance notes on this script ({scriptComplianceWarnings.length})
+                        </AlertTitle>
+                        <AlertDescription>
+                          <p className="mb-2">
+                            The script generated, but the compliance gate flagged the following.
+                            Edit the script below or regenerate before continuing.
+                          </p>
+                          <ul className="list-disc space-y-1 pl-4 text-xs">
+                            {scriptComplianceWarnings.map((warning, i) => (
+                              <li key={i}>{warning}</li>
+                            ))}
+                          </ul>
+                        </AlertDescription>
+                      </Alert>
+                    ) : (
+                      <Alert>
+                        <Shield className="h-4 w-4" />
+                        <AlertTitle>Script Compliance</AlertTitle>
+                        <AlertDescription>
+                          All scripts (AI and manual) are checked against Fair Housing and brand compliance before video generation.
+                        </AlertDescription>
+                      </Alert>
+                    )}
 
                     <div className="space-y-2">
                       <Label>Script Title</Label>

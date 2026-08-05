@@ -21,11 +21,19 @@ import {
 import { v4 as uuidv4 } from "uuid"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { createServiceClient } from "@/lib/supabase/service"
+import {
+  buildComplianceSystemBlocks,
+  precheckBriefForFairHousing,
+  postcheckScript,
+} from "@/lib/video/script-compliance"
 
 // ============================================
 // SYSTEM 4.1 – CONTENT GENERATION ENGINE
 // Server Actions (Public API)
-// Draft-only, no publishing/approval/compliance
+// Draft-only, no publishing/approval.
+// The video lane DOES run the shared compliance gate
+// (lib/video/script-compliance.ts): a Fair Housing violation in the prompt is
+// refused, and the generated script comes back with advisory warnings.
 // ============================================
 
 export interface ContentGenerationResult {
@@ -33,6 +41,8 @@ export interface ContentGenerationResult {
   content?: ContentGenerationOutput
   content_id?: string // Runtime-only UUID (not persisted)
   error?: string
+  /** Advisory compliance notes from the post-generation gate (video lane). */
+  complianceWarnings?: string[]
 }
 
 export interface BatchContentGenerationResult {
@@ -233,16 +243,41 @@ export async function generateVideo(params: {
       ? await enrichPromptWithContext(params.custom_prompt, context)
       : ""
 
+    // Compliance gate — the same one the video wizard enforces. This path
+    // (EducationEditor → generateVideo) reaches a fifth generateVideoScript,
+    // the one in lib/content-generation/content-generator.ts, which had no
+    // Fair Housing check and no brand voice anywhere in its chain.
+    //
+    // The actor is resolved above: agentId is an agents.id, userId a users.id.
+    // evaluateOutbound's actorContext wants the users.id, so pass auth.userId —
+    // these are distinct id spaces and must not be substituted for each other.
+    const actor = { userId: auth.userId, brokerageId: auth.brokerageId }
+    const brief = enrichedPrompt || params.custom_prompt
+    if (brief?.trim()) {
+      const preCheck = await precheckBriefForFairHousing(actor, brief, "buyer")
+      if (preCheck.blocked) {
+        return {
+          success: false,
+          error: `Prompt contains a Fair Housing violation: ${preCheck.reason}`,
+        }
+      }
+    }
+
+    const complianceBlocks = await buildComplianceSystemBlocks(auth.brokerageId)
+
     const content = await generateVideoScript({
       content_type: params.content_type,
       channel_intent: params.channel_intent,
       video_length_seconds: params.video_length_seconds,
-      custom_prompt: enrichedPrompt || params.custom_prompt,
+      // The generator takes a single prompt, so the guidelines lead it.
+      custom_prompt: [complianceBlocks.join("\n\n"), brief].filter(Boolean).join("\n\n"),
       target_audience: params.target_audience,
       listing_id: params.listing_id,
       contact_id: params.contact_id,
       transaction_id: params.transaction_id,
     })
+
+    const complianceWarnings = await postcheckScript(actor, content.raw_content, "buyer")
 
     const content_id = uuidv4()
 
@@ -256,6 +291,7 @@ export async function generateVideo(params: {
       success: true,
       content,
       content_id,
+      complianceWarnings,
     }
   } catch (error) {
     return handleError(error, "generateVideo")

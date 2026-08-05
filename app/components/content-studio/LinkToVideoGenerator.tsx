@@ -88,7 +88,16 @@ export default function LinkToVideoGenerator() {
       if (result.success && result.videoQueue) {
         setScript(result.videoQueue.ai_generated_script)
         setCurrentVideoId(result.videoQueue.id)
-        toast.success("Script generated successfully!")
+        // The kernel gate runs alongside the AI compliance pass. Its findings
+        // are merged into compliance_flags on the queue row, but say so here
+        // too — "generated successfully" over a flagged script is a lie.
+        if (result.complianceWarnings?.length) {
+          toast.warning(`Script generated with ${result.complianceWarnings.length} compliance note(s)`, {
+            description: result.complianceWarnings.join(" • "),
+          })
+        } else {
+          toast.success("Script generated successfully!")
+        }
         loadData()
       } else {
         toast.error(result.error || "Failed to generate script")

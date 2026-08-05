@@ -305,15 +305,8 @@ export async function scheduleSocialPost(params: {
         persona: "first_time",
         messageType: "social",
         content: processedContent,
-        contact: {
-          id: "broadcast",
-          first_name: "Broadcast",
-          last_name: "Audience",
-          contact_type: "buyer",
-          tcpa_consent: true,
-          isa_reengage_allowed: false,
-          dnc_status: false,
-        },
+        // Broadcast payload — see lib/video/script-compliance.ts for why the
+        // stub contact is omitted rather than faked.
       })
 
       if (!complianceResult.allowed) {

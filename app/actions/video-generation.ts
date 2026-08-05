@@ -11,6 +11,11 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { resolveProvider } from "@/lib/kernel/providers"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
+import {
+  buildComplianceSystemBlocks,
+  precheckBriefForFairHousing,
+  postcheckScript,
+} from "@/lib/video/script-compliance"
 import type { ScriptType, ApprovalStatus, VideoScript, ScriptVariation, VideoEventType } from "@/app/types/video-generation"
 import { VIDEO_EVENT_TYPES, PERFORMANCE_THRESHOLDS } from "@/app/types/video-generation"
 
@@ -1079,9 +1084,35 @@ export async function generateVideoScript(params: {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
 
+  // Compliance gate — same one the /dashboard/videos/create wizard enforces.
+  // This path feeds /video-assistant and the agent superpowers panel, and it
+  // used to generate agent-facing marketing copy with no Fair Housing check
+  // and no brand voice at all.
+  const actor = { userId: auth.userId, brokerageId: auth.brokerageId }
+  // personalized_seller / listing_preview address the seller side; everything
+  // else in purposeDescriptions speaks to a buyer.
+  const journeyType: "buyer" | "seller" =
+    params.purpose === "personalized_seller" || params.purpose === "listing_preview"
+      ? "seller"
+      : "buyer"
+
+  // The agent's free-text description is the only caller-authored prose here —
+  // the purpose/persona/tone keys are ours. Gate it when present.
+  if (params.description?.trim()) {
+    const preCheck = await precheckBriefForFairHousing(actor, params.description, journeyType)
+    if (preCheck.blocked) {
+      return {
+        success: false,
+        complianceBlocked: true,
+        error: `Description contains a Fair Housing violation: ${preCheck.reason}`,
+      }
+    }
+  }
+
   try {
     const { generateAIResponse } = await import("@/lib/ai")
-    
+    const complianceBlocks = await buildComplianceSystemBlocks(auth.brokerageId)
+
     const purposeDescriptions: Record<string, string> = {
       welcome: "a warm welcome message introducing yourself and your services",
       market_update: "a professional market update with current trends and statistics",
@@ -1136,18 +1167,24 @@ Return ONLY the script text, no formatting or labels.`
 
     const response = await generateAIResponse({
       prompt,
+      // Brand voice + ThemFirst + Fair Housing, injected proactively so the
+      // model complies before the advisory post-check ever runs.
+      system: complianceBlocks.join("\n\n"),
       metadata: {
         userId: auth.userId,
         brokerageId: auth.brokerageId,
         feature: "video_script_generation",
       },
     })
-    
-    console.log("[v0] Generated video script for purpose:", params.purpose, "persona:", params.persona)
-    
-    return { success: true, script: response.text.trim() }
+
+    const script = response.text.trim()
+
+    // Advisory — the agent sees what slipped through, next to a Regenerate button.
+    const complianceWarnings = await postcheckScript(actor, script, journeyType)
+
+    return { success: true, script, complianceWarnings }
   } catch (error: any) {
-    console.error("[v0] Script generation error:", error)
+    console.error("[video-generation] Script generation error:", error)
     return { success: false, error: error.message }
   }
 }

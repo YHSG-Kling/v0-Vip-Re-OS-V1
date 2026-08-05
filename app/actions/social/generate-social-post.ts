@@ -22,7 +22,6 @@ import { resolveModel } from "@/lib/ai/resolve-model"
 import { createClient } from "@/lib/supabase/server"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
-import type { KernelContact } from "@/lib/kernel/types"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -229,26 +228,23 @@ export async function generateSocialPostContent(params: {
     })
 
     // ── 5. Compliance gate — evaluateOutbound ───────────────────────────────
-    // Social posts are broadcast content (no individual contact).
-    // Use a stub KernelContact so TCPA/Authority gates pass automatically
-    // while Fair Housing (Gate 4) and Them-First (Gate 5) still run.
-    const broadcastContactStub: KernelContact = {
-      id:                   "broadcast",
-      first_name:           "Broadcast",
-      last_name:            "Audience",
-      contact_type:         "buyer",
-      tcpa_consent:         true,  // TCPA gate skipped for broadcast social
-      isa_reengage_allowed: false,
-      dnc_status:           false,
-    }
-
+    // Social posts are broadcast content (no individual contact), so `contact`
+    // is omitted: TCPA/Authority (Gates 2-3) are skipped and Fair Housing
+    // (Gate 4) and Them-First (Gate 5) still run — the intent the stub
+    // KernelContact used to express.
+    //
+    // The stub carried `id: "broadcast"`, but contacts.id and
+    // compliance_events.entity_id are both uuid, so it made the contact
+    // re-fetch AND the audit-row INSERT fail with 22P02. Neither destructures
+    // `error`, so the gate kept blocking correctly while silently never
+    // writing a compliance_events row — and COMPLIANCE_VIOLATION never fired,
+    // because that notification is guarded on the insert having succeeded.
     const complianceResult = await evaluateOutbound({
       actorContext:  { userId: params.agentId, role: "agent", brokerageId: params.brokerageId, teamId: params.teamId },
       journeyType: "buyer",
       persona: "first_time",
       messageType: "social",
       content:       object.content,
-      contact:       broadcastContactStub,
     })
 
     if (!complianceResult.allowed) {
@@ -440,29 +436,27 @@ export async function generateContextualDraft(params: {
     })
 
     // Run compliance gate for outbound content types (not internal notes).
-    // Uses a stub KernelContact so TCPA/Authority gates pass; Fair Housing
-    // and Them-First gates evaluate the generated draft text.
+    // Fair Housing and Them-First evaluate the generated draft text.
+    //
+    // `contact` is omitted: this is a draft, and all we have is a display name
+    // (params.contactName), never a resolved contacts.id — so there is no
+    // recipient whose DNC/opt-out state could be checked. The stub that used
+    // to stand in here carried `id: "contextual_draft_target"`, which is not a
+    // uuid, so it made both the contact re-fetch and the compliance_events
+    // audit INSERT fail with 22P02 without ever surfacing an error.
     const OUTBOUND_TYPES = new Set(["email", "seller_update", "referral_ask", "review_request", "message"])
 
     if (OUTBOUND_TYPES.has(params.contentType) && params.brokerageId) {
-      const stubContact: KernelContact = {
-        id:                   "contextual_draft_target",
-        first_name:           params.contactName?.split(" ")[0] ?? "Contact",
-        last_name:            params.contactName?.split(" ").slice(1).join(" ") ?? "",
-        contact_type:         "buyer",
-        tcpa_consent:         true,
-        isa_reengage_allowed: false,
-        dnc_status:           false,
-      }
+      // This was computed and then ignored — the call hardcoded "social", so
+      // an email draft was graded against the social rule set.
       const messageType = params.contentType === "email" ? "email" : "social"
 
       const compliance = await evaluateOutbound({
         actorContext: { userId: params.agentId, role: "agent", brokerageId: params.brokerageId, teamId: params.teamId },
         journeyType: "buyer",
         persona: "first_time",
-        messageType: "social",
+        messageType,
         content:      object.draft,
-        contact:      stubContact,
       })
 
       if (!compliance.allowed) {

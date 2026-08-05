@@ -531,15 +531,10 @@ ready with a fenced yard" is not.`,
         persona: "first_time",
         messageType: "email",
         content: section.content,
-        contact: {
-          id: "broadcast",
-          first_name: "Subscriber",
-          last_name: "Audience",
-          contact_type: "buyer",
-          tcpa_consent: true,
-          isa_reengage_allowed: false,
-          dnc_status: false,
-        },
+        // Broadcast payload — no individual recipient. Omitting `contact`
+        // skips the DNC/TCPA gates exactly as the stub did, and lets the
+        // compliance_events audit row insert (entity_id is uuid; a stub
+        // "broadcast" id made the write fail with 22P02, silently).
       }).catch(() => ({ allowed: true, violations: [] as string[] }))
       if (!compliance.allowed) {
         return { success: false, error: `Compliance violation in ${section.type}: ${compliance.violations.join(", ")}` }

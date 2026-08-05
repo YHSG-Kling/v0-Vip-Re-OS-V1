@@ -8,6 +8,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { dispatchVideo } from "@/lib/providers/dispatch"
 import { generateTextRouted } from "@/lib/ai/models"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { buildComplianceSystemBlocks, postcheckScript } from "@/lib/video/script-compliance"
 
 // ============================================================================
 // TYPES & CONTRACTS
@@ -43,6 +44,8 @@ export interface GenerateVideoScriptOutput {
   estimatedDuration: number
   aiConfidence: number
   scenes: Array<{ duration: number; description: string }>
+  /** Advisory compliance notes from the kernel gate — not a hard block. */
+  complianceWarnings?: string[]
 }
 
 export interface UpdateVideoGenerationSettingsInput {
@@ -222,6 +225,20 @@ export async function generateVideoScript(
     throw new Error(`Video project not found: ${input.projectId}`)
   }
 
+  // Compliance gate — this is the script that actually gets rendered and
+  // published, so it is the one that most needs the brokerage's brand voice
+  // and the Fair Housing rules. It had neither.
+  //
+  // The actor is the signed-in caller; the tenant is the project's own
+  // brokerage (already verified against the caller by
+  // generateVideoScriptAction's assertProjectInCallerBrokerage). Those are
+  // distinct id spaces and are resolved separately, never substituted.
+  const { data: { user } } = await supabase.auth.getUser()
+  const brokerageId = project.brokerage_id as string | null
+  const actor = user && brokerageId ? { userId: user.id, brokerageId } : null
+
+  const complianceBlocks = actor ? await buildComplianceSystemBlocks(actor.brokerageId) : []
+
   // Generate script using AI (using openai provider function)
   const scriptText = await generateScriptViaAI({
     title: project.title,
@@ -229,7 +246,12 @@ export async function generateVideoScript(
     strategy: input.contentStrategy,
     tone: input.tone,
     durationSeconds: input.duration,
+    complianceBlocks,
   })
+
+  const complianceWarnings = actor
+    ? await postcheckScript(actor, scriptText, "buyer")
+    : undefined
 
   const scenes = parseSceneBreakpoints(scriptText, input.duration)
   const wordCount = scriptText.split(/\s+/).length
@@ -255,6 +277,7 @@ export async function generateVideoScript(
     estimatedDuration: input.duration,
     aiConfidence: 0.92,
     scenes,
+    complianceWarnings,
   }
 }
 
@@ -673,12 +696,20 @@ async function generateScriptViaAI(params: {
   strategy: string
   tone: string
   durationSeconds: number
+  /** Brand voice + ThemFirst + Fair Housing, prepended to the prompt. */
+  complianceBlocks?: string[]
 }): Promise<string> {
   const durationLabel = params.durationSeconds >= 60
     ? `${Math.floor(params.durationSeconds / 60)}-minute`
     : `${params.durationSeconds}-second`
 
-  const prompt = `You are an expert real estate video scriptwriter creating a ${durationLabel} property video script.
+  // generateTextRouted takes a single prompt, so the guidelines lead it rather
+  // than riding in a separate system message.
+  const guidelines = params.complianceBlocks?.length
+    ? `${params.complianceBlocks.join("\n\n")}\n\n`
+    : ""
+
+  const prompt = `${guidelines}You are an expert real estate video scriptwriter creating a ${durationLabel} property video script.
 
 Title: "${params.title}"${params.description ? `\nContext: ${params.description}` : ""}
 Strategy: ${params.strategy}

@@ -3,7 +3,11 @@
 import { toLibraryScriptType } from "@/app/types/video-generation"
 import { createClient } from "@/lib/supabase/server"
 import { generateAIResponse } from "@/lib/ai/models"
-import { evaluateOutbound } from "@/lib/kernel/compliance"
+import {
+  buildComplianceSystemBlocks,
+  precheckBriefForFairHousing,
+  postcheckScript,
+} from "@/lib/video/script-compliance"
 import { isValidUUID } from "@/lib/validations"
 import {
   TONE_INSTRUCTIONS,
@@ -72,87 +76,28 @@ ${l.features?.length ? `- Key features: ${l.features.join(", ")}` : ""}
   // Brand voice is loaded here and also re-evaluated at post-generation gate.
   // The AI system prompt injects all three proactively so generated content
   // is already compliant before the post-generation check runs.
-  let brandVoiceBlock = ""
-  if (params.brandVoiceTone) {
-    brandVoiceBlock = `\nBrand voice tone: ${params.brandVoiceTone}`
-  } else {
-    // Try to load from brand_voice_profile
-    const { data: bvp } = await supabase
-      .from("brand_voice_profile")
-      .select("tone, formality_level, key_brand_messages, preferred_words, prohibited_words, tagline, mission_statement")
-      .eq("brokerage_id", params.brokerageId)
-      .eq("is_active", true)
-      .maybeSingle()
-
-    if (bvp) {
-      brandVoiceBlock = `
-Brand voice guidelines (Gate 1 — follow strictly):
-- Tone: ${bvp.tone ?? "professional"}
-- Formality: ${bvp.formality_level ?? "moderate"}
-${bvp.key_brand_messages?.length ? `- Key messages to reinforce: ${bvp.key_brand_messages.join("; ")}` : ""}
-${bvp.preferred_words?.length ? `- Preferred words/phrases: ${bvp.preferred_words.join(", ")}` : ""}
-${bvp.prohibited_words?.length ? `- NEVER use these words/phrases: ${bvp.prohibited_words.join(", ")}` : ""}
-${bvp.tagline ? `- Brand tagline (may reference): ${bvp.tagline}` : ""}
-${bvp.mission_statement ? `- Mission (may reference): ${bvp.mission_statement}` : ""}`
-    }
-  }
-
-  // ThemFirst philosophy — proactive injection (Gate 5 compliance via system prompt)
-  const themFirstBlock = `
-ThemFirst communication philosophy (Gate 5 — apply throughout):
-- Use "you" and "your" language at least 60% of the time relative to "I/me/my/we/our".
-- Focus every sentence on what the CLIENT experiences, benefits from, or discovers.
-- Avoid ego-driven phrases: "I'm the best agent", "trust me", "you'd be crazy not to".
-- Avoid false urgency: "limited time offer", "this won't last long", "don't miss out", "you need to act fast".
-- Avoid investment advice claims: "guaranteed to appreciate", "you'll make money", "great investment".
-- Frame the agent's expertise as a resource FOR the client, not a credential about the agent.`
-
-  // Fair Housing directive — proactive injection (Gate 4 compliance via system prompt)
-  const fairHousingBlock = `
-Fair Housing compliance (Gate 4 — mandatory):
-- NEVER reference or imply race, color, religion, sex, national origin, disability, or familial status.
-- NEVER use neighborhood steering language (e.g., "great schools", "safe area", "quiet neighborhood" as dog-whistles).
-- Describe properties by features, square footage, layout, and price — not by the demographics of residents.
-- Keep all language neutral and inclusive.`
+  //
+  // These three blocks used to be written out inline here, which is why the
+  // wizard was the only script generator that had them. They now live in
+  // lib/video/script-compliance.ts so the other three generators enforce the
+  // same gate instead of shipping ungated marketing copy.
+  const actor = { userId: params.userId, brokerageId: params.brokerageId }
+  const journeyType = contactType === "seller" ? ("seller" as const) : ("buyer" as const)
+  const complianceBlocks = await buildComplianceSystemBlocks(
+    params.brokerageId,
+    params.brandVoiceTone,
+  )
 
   // ── Pre-generation compliance check: Fair Housing only on description ─────────
   // We scan the brief for Fair Housing violations only — ThemFirst and Brand Voice
   // do not apply to a user's raw description input (they apply to outbound content).
-  try {
-    const preCheck = await evaluateOutbound({
-      actorContext: {
-        userId: params.userId,
-        role: "agent",
-        brokerageId: params.brokerageId,
-      },
-      journeyType: contactType === "seller" ? "seller" : "buyer",
-      persona: "first_time",
-      messageType: "social",
-      content: params.description,
-      contact: {
-        id: "broadcast",
-        first_name: "Broadcast",
-        last_name: "Audience",
-        contact_type: contactType,
-        tcpa_consent: true,
-        isa_reengage_allowed: false,
-        dnc_status: false,
-      },
-    })
-    // Only hard-block on Fair Housing violations in the description.
-    // Ignore ThemFirst, Brand Voice, and TCPA — they don't apply to raw briefs.
-    const fairHousingViolations = (preCheck.violations ?? []).filter(v =>
-      v.startsWith("FairHousing:")
-    )
-    if (fairHousingViolations.length > 0) {
-      return {
-        success: false,
-        complianceBlocked: true,
-        error: `Description contains a Fair Housing violation: ${fairHousingViolations[0]}`,
-      }
+  const preCheck = await precheckBriefForFairHousing(actor, params.description, journeyType)
+  if (preCheck.blocked) {
+    return {
+      success: false,
+      complianceBlocked: true,
+      error: `Description contains a Fair Housing violation: ${preCheck.reason}`,
     }
-  } catch {
-    // Compliance check failure is non-blocking for script generation
   }
 
   // ── Claude script generation ─────────────────────────────────────────────────
@@ -161,10 +106,8 @@ Fair Housing compliance (Gate 4 — mandatory):
   const systemPrompt = [
     typeSystemContext[params.videoType] ?? typeSystemContext.custom,
     TONE_INSTRUCTIONS[params.tone] ?? TONE_INSTRUCTIONS.professional,
-    brandVoiceBlock,
-    themFirstBlock,
+    ...complianceBlocks,
     SCRIPT_QUALITY_CHARTER,
-    fairHousingBlock,
     `Write ONLY the script content — no stage directions, no [pause] markers, no speaker labels.`,
     `Target approximately ${wordTarget} words (for a ${duration}-second video at a natural speaking pace).`,
     `Do NOT include any greeting before the script or explanation after it. Output the script only.`,
@@ -210,34 +153,7 @@ Fair Housing compliance (Gate 4 — mandatory):
   // proactively via the system prompt. Any remaining violations are surfaced as
   // advisory warnings alongside the script — not a hard block. The UI should
   // show these with a "Regenerate" option.
-  let complianceWarnings: string[] | undefined
-  try {
-    const postCheck = await evaluateOutbound({
-      actorContext: {
-        userId: params.userId,
-        role: "agent",
-        brokerageId: params.brokerageId,
-      },
-      journeyType: contactType === "seller" ? "seller" : "buyer",
-      persona: "first_time",
-      messageType: "social",
-      content: script,
-      contact: {
-        id: "broadcast",
-        first_name: "Broadcast",
-        last_name: "Audience",
-        contact_type: contactType,
-        tcpa_consent: true,
-        isa_reengage_allowed: false,
-        dnc_status: false,
-      },
-    })
-    if (!postCheck.allowed && postCheck.violations?.length) {
-      complianceWarnings = postCheck.violations
-    }
-  } catch {
-    // non-blocking
-  }
+  const complianceWarnings = await postcheckScript(actor, script, journeyType)
 
   const words = script.split(/\s+/).filter(Boolean)
   const wordCount = words.length
