@@ -13,52 +13,38 @@ export type VideoReapAction = "keep" | "escalate"
 // Tuned to the crons: director-reel-render + composition-render-queue run every 5m; poll-did-videos
 // every 2m; a healthy D-ID talk finishes in ~3-5m.
 export const VIDEO_STALE_HOURS: Record<string, number> = {
-  remotion_pending: 2,   // Director staged it but the render worker never executed it
-  generating: 3,         // D-ID job submitted but poll-did-videos never saw it complete
-  rendering: 2,          // composite enqueued but render-composition never finished it
+  // m374 renamed these onto the canonical vocabulary. The two thresholds are
+  // kept apart on purpose: `queued` means the Director staged it and no worker
+  // ever picked it up, `generating` means a provider has it and never finished.
+  // Collapsing them would lose the reaper's ability to say which half broke —
+  // which is the whole reason it escalates to a named manager.
+  queued: 2,      // staged, but no render worker ever executed it (was remotion_pending/rendering)
+  generating: 3,  // a provider has the job and never reported completion
 }
 
 /** Non-terminal states that are BLOCKED on a human, not stalled — never reaped (already actioned). */
 const BLOCKED_STATES = new Set(["awaiting_presenter_setup"])
 
 /**
- * A FINISHED video — one that exists and can be played, picked, counted or
- * distributed. This is the set every "show me the finished videos" reader must
- * use, and it is exported so those readers cannot each keep their own list.
+ * Re-exported so the many readers that already import it from this module keep
+ * working. THE LIST ITSELF LIVES IN lib/video/video-status.ts — a second copy
+ * here is precisely the drift m374 removed, and the reaper is a CONSUMER of the
+ * vocabulary, not its owner.
  *
- * WHY IT IS NOT JUST "completed": the pipeline writes four different tokens for
- * work that is genuinely done, and readers that hard-coded `completed` made the
- * other three invisible.
- *   · published / distributed are POST-terminal — they happen AFTER completed.
- *     Filtering on `completed` alone meant a successful distribution DELETED the
- *     video from every gallery and picker: lib/kernel/video.ts writes
- *     'distributed' on success, and the row instantly stopped matching. Success
- *     caused the asset to vanish.
- *   · uploaded is a manual upload that already carries a real video_url — the
- *     agent's own finished file, refused by the distribute gate with "not yet
- *     completed" seconds after they uploaded it.
- *   · ready is the poll-status lane's success token.
- *
- * Deliberately EXCLUDES audio_ready (a slideshow mid-phase, not a video) and
- * every non-terminal state.
+ * It is now ["completed","published"] rather than five tokens: ready,
+ * video_ready and uploaded all collapsed into `completed`, and `distributed`
+ * into `published`.
  */
-export const VIDEO_FINISHED_STATUSES = [
-  "completed",
-  "ready",
-  "uploaded",
-  "published",
-  "distributed",
-] as const
+export { VIDEO_FINISHED_STATUSES } from "./video-status"
+import { VIDEO_FINISHED_STATUSES as FINISHED } from "./video-status"
 
 /** Terminal states — never reaped. `error` is included because one writer
  *  (listing-promo-hybrid-composite) used to emit it instead of `failed`; it is
  *  kept here so any pre-existing row is not reaped as if it were still running. */
-const TERMINAL_STATES = new Set<string>([
-  ...VIDEO_FINISHED_STATUSES,
-  "failed",
-  "error",
-  "cancelled",
-])
+// `error` and `cancelled` were listed here because one writer emitted them
+// instead of `failed`. m374 retired both spellings and the CHECK now refuses
+// them, so the only terminal failure token is `failed`.
+const TERMINAL_STATES = new Set<string>([...FINISHED, "failed"])
 
 export interface VideoReapInput {
   status: string

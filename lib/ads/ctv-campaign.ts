@@ -19,6 +19,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { VIBE_HOME_URL } from "@/lib/providers/vibe"
+import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-status"
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -91,8 +92,10 @@ export function validateCtvCreative(facts: CreativeFacts): CtvCreativeCheck {
   const reasons: string[] = []
   const warnings: string[] = []
 
-  if (facts.status !== "completed") {
-    reasons.push(`video is not completed (status '${facts.status ?? "unknown"}') — only a fully rendered video can run on TV`)
+  // 'published' is POST-terminal and still means a rendered asset exists, so a
+  // distributed video is as eligible for TV as a merely completed one.
+  if (!facts.status || !(VIDEO_FINISHED_STATUSES as readonly string[]).includes(facts.status)) {
+    reasons.push(`video is not finished (status '${facts.status ?? "unknown"}') — only a fully rendered video can run on TV`)
   }
   if (!facts.videoUrl) {
     reasons.push("video has no rendered video_url — nothing to upload to Vibe")
@@ -177,7 +180,7 @@ export async function stageCtvCampaign(input: StageCtvCampaignInput): Promise<St
     .eq("brokerage_id", brokerageId)
   videoQuery = videoProjectId
     ? videoQuery.eq("id", videoProjectId)
-    : videoQuery.eq("listing_id", listingId!).eq("status", "completed").not("video_url", "is", null)
+    : videoQuery.eq("listing_id", listingId!).in("status", [...VIDEO_FINISHED_STATUSES]).not("video_url", "is", null)
   const { data: videos, error: videoError } = await videoQuery
     .order("created_at", { ascending: false })
     .limit(1)

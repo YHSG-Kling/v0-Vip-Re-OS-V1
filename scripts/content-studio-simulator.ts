@@ -115,7 +115,7 @@ async function main() {
     // ── Seed 1: a plain Director-staged reel — QR + B-roll + a learned WHY. ──────
     const { data: plain } = await svc.from("ai_video_projects").insert({
       brokerage_id: brokerageId, agent_id: agentUserId,
-      title: `${TAG} Just Listed`, script_content: "Just Listed", status: "remotion_pending",
+      title: `${TAG} Just Listed`, script_content: "Just Listed", status: "queued",
       video_type: "just_listed", format: "9:16", audience_type: "customer_facing",
       is_ai_generated: true, approval_status: "pending_review",
       compliance_status: "passed",
@@ -148,7 +148,7 @@ async function main() {
       const { data } = await svc.from("ai_video_projects").insert({
         brokerage_id: brokerageId, agent_id: agentUserId,
         title: `${TAG} hook v${variantIndex} (${angle})`, script_content: "Buyers Are Already Asking",
-        status: "remotion_pending", video_type: "just_listed", format: "9:16",
+        status: "queued", video_type: "just_listed", format: "9:16",
         audience_type: "customer_facing", is_ai_generated: true, approval_status: "pending_review",
         compliance_status: "passed",
         video_metadata: {

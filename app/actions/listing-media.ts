@@ -263,7 +263,7 @@ export async function createVideoProject(params: {
       video_type:          params.videoType,
       video_provider:      provider,
       ...providerCols,
-      status:              "planning",
+      status:              "draft",
       audience_type:       "customer_facing",
       provider_avatar_id:  params.avatarId ?? null,
       provider_voice_id:   params.voiceId ?? null,

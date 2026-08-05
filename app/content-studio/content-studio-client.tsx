@@ -500,7 +500,7 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
           brokerage_id: brokerageId,
           title: newVideoTitle,
           video_url: publicUrl,
-          status: "uploaded",
+          status: "completed",
           // video_type describes what the video IS (listing_tour, just_sold, …)
           // and is NULLABLE. For a file the user uploaded we do not know; the
           // adjacent video_provider already records that it arrived by upload.

@@ -9,6 +9,7 @@ import { dispatchVideo } from "@/lib/providers/dispatch"
 import { generateTextRouted } from "@/lib/ai/models"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { buildComplianceSystemBlocks, postcheckScript } from "@/lib/video/script-compliance"
+import type { CanonicalVideoStatus } from "@/lib/video/video-status"
 
 // ============================================================================
 // TYPES & CONTRACTS
@@ -26,7 +27,7 @@ export interface CreateVideoProjectInput {
 
 export interface CreateVideoProjectOutput {
   projectId: string
-  status: "setup" | "scripting" | "generating" | "ready" | "published"
+  status: CanonicalVideoStatus
   createdAt: string
 }
 
@@ -185,7 +186,7 @@ export async function createVideoProject(
         source_type: input.sourceType,
         source_id: input.sourceId,
       },
-      status: "setup",
+      status: "draft",
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })
@@ -359,8 +360,9 @@ export async function submitVideoGenerationJob(
       updated_at:      new Date().toISOString(),
     })
     .eq("id", input.projectId)
+    // One guard, not two: 'submitting' was a status NOTHING ever wrote (it was
+    // only ever a provider_status), and it collapses into 'generating' anyway.
     .neq("status", "generating")
-    .neq("status", "submitting")
     .select("id")
   if (preMarkError) {
     throw new Error(`Cannot submit video: failed to reserve project slot — ${preMarkError.message}`)
@@ -385,7 +387,7 @@ export async function submitVideoGenerationJob(
     await supabase
       .from("ai_video_projects")
       .update({
-        status:          "setup",
+        status:          "draft",
         provider_status: null,
         updated_at:      new Date().toISOString(),
       })
@@ -573,13 +575,16 @@ export async function distributeVideoProject(
     }
   }
 
-  // Mark the project distributed (posts now carry their own publish lifecycle).
-  // This was a bare await: an RLS refusal here resolves, so the project stayed
-  // in its old status while the caller was told distribution succeeded.
+  // Mark the project published (the posts now carry their own publish
+  // lifecycle). 'published' is POST-terminal and still counts as a FINISHED
+  // video — the old 'distributed' token did not, so succeeding at distribution
+  // removed the video from every gallery and picker that reads the finished set.
+  // This was also a bare await: an RLS refusal here resolves, so the project
+  // stayed in its old status while the caller was told distribution succeeded.
   const { error: statusError } = await supabase
     .from("ai_video_projects")
     .update({
-      status: "distributed",
+      status: "published",
       updated_at: new Date().toISOString(),
     })
     .eq("id", input.projectId)

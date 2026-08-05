@@ -11,7 +11,7 @@
  *
  *   commissionAvatarExplainer (here)
  *     → ai_video_projects row  (video_type='avatar_explainer',
- *                               status='remotion_pending',
+ *                               status='queued',
  *                               approval_status='pending_review')
  *     → director-reel-render cron   (D-ID submit with the tenant's ElevenLabs
  *                                    voice — submitOnly; graceful park when the
@@ -32,7 +32,9 @@
  *     compliance redraft). There is NO canned script fallback — if authoring
  *     or the compliance gate fails, the commission is BLOCKED, not faked.
  *   · Provider acceptance is the only "rendering/done" truth. No D-ID key →
- *     the job lands at status='awaiting_provider' (never a fake success);
+ *     the job PARKS (never a fake success) at status='generating' with
+ *     video_metadata.awaiting_provider='did' as the parked marker — the retired
+ *     'awaiting_provider' status collapsed into 'generating';
  *     resumeAwaitingProviderExplainers() un-parks it once the key exists.
  *   · Voice: the agent's ElevenLabs clone when configured; else the brokerage
  *     assistant voice; else a STOCK ElevenLabs voice labeled as such; else
@@ -414,7 +416,7 @@ export async function commissionAvatarExplainer(
   }
 
   // 4. Honest provider gate — no D-ID key means the job PARKS, visibly.
-  const status = readiness.didConfigured ? "remotion_pending" : "awaiting_provider"
+  const status = readiness.didConfigured ? "queued" : "generating"
   if (!readiness.didConfigured) {
     warnings.push("D-ID is not configured — the job is parked at 'awaiting provider' and will start once the platform D-ID key is set")
   }
@@ -513,9 +515,11 @@ export async function commissionAvatarExplainer(
 // ─── Un-park awaiting-provider jobs once D-ID is configured ──────────────────
 
 /**
- * Flip this brokerage's parked teammate-explainer jobs
- * (status='awaiting_provider') back onto the Director rail once DID_API_KEY
- * exists. Called best-effort from the studio readiness action so simply
+ * Flip this brokerage's parked teammate-explainer jobs back onto the Director
+ * rail once DID_API_KEY exists. 'awaiting_provider' collapsed into 'generating',
+ * which on its own would also match jobs a provider genuinely HAS, so the parked
+ * set is identified by the video_metadata.awaiting_provider marker the commission
+ * writes alongside it. Called best-effort from the studio readiness action so simply
  * opening the create surface after configuring the provider resumes them.
  * Never throws.
  */
@@ -528,10 +532,10 @@ export async function resumeAwaitingProviderExplainers(
     const svc = createServiceClient()
     const { data } = await svc
       .from("ai_video_projects")
-      .update({ status: "remotion_pending", error_message: null, updated_at: new Date().toISOString() })
+      .update({ status: "queued", error_message: null, updated_at: new Date().toISOString() })
       .eq("brokerage_id", brokerageId)
-      .eq("status", "awaiting_provider")
-      .contains("video_metadata", { lane: "avatar_explainer" })
+      .eq("status", "generating")
+      .contains("video_metadata", { lane: "avatar_explainer", awaiting_provider: "did" })
       .select("id")
     return { resumed: (data ?? []).length }
   } catch {

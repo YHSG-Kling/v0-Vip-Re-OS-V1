@@ -53,7 +53,10 @@ export async function POST(request: NextRequest) {
     await supabase
       .from("ai_video_projects")
       .update({
-        status: "audio_ready",
+        // The voiceover exists but the slideshow video does not — this row is
+        // still IN FLIGHT, not finished. provider_status keeps the finer-grained
+        // 'audio_ready' detail; ai_video_projects.status is the one vocabulary.
+        status: "generating",
         provider_status: "audio_ready",
         provider_metadata: {
           provider: "slideshow",

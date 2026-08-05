@@ -1113,7 +1113,7 @@ export async function commissionVideo(
 
   // 7. STAGE the row — mirrors createVideoProject's shape, compliance-gated,
   //    NEVER auto-publishes (approval_status stays 'pending_review'; status
-  //    'remotion_pending' so the existing composition-render cron drains it).
+  //    'queued' so the existing composition-render cron drains it).
   const now = new Date().toISOString()
   const { data: inserted, error } = await svc
     .from("ai_video_projects")
@@ -1124,7 +1124,7 @@ export async function commissionVideo(
       contact_id: opts.contactId ?? null,
       title: opts.title ?? `${hookLine} — ${format.compositionId}`,
       script_content: hookLine,
-      status: "remotion_pending",
+      status: "queued",
       video_type: videoTypeForSituation(situation.kind),
       format: formatForAspect(format.aspect),
       audience_type: situation.kind === "cma" || situation.kind === "presentation"
@@ -1469,7 +1469,7 @@ export async function commissionVideoExperiment(
         contact_id: opts.contactId ?? null,
         title: opts.title ? `${opts.title} — ${v.angle}` : `${hookLine} — ${format.compositionId} (${v.angle})`,
         script_content: hookLine,
-        status: "remotion_pending",
+        status: "queued",
         video_type: videoTypeForSituation(situation.kind),
         format: formatForAspect(format.aspect),
         audience_type: situation.kind === "cma" || situation.kind === "presentation" ? "in_house" : "customer_facing",

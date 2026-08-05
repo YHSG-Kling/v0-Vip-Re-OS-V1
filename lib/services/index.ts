@@ -28,7 +28,6 @@ export {
 
 // ─── PLATFORM SYNC ────────────────────────────────────────────────────────────
 export {
-  triggerGHLWorkflow,
 } from "./platform-sync.service"
 
 // ─── SOCIAL PUBLISHING ────────────────────────────────────────────────────────

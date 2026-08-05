@@ -233,8 +233,11 @@ export async function POST(request: NextRequest) {
         updated_at: new Date().toISOString(),
       })
       .eq("id", video_project_id)
+      // ONE predicate, not two: the claim used to also exclude status='submitting',
+      // but nothing in the codebase ever WROTE that value to ai_video_projects.status
+      // (it was only ever a provider_status), and the m374 vocabulary merges
+      // submitting → generating. The second .neq was dead either way.
       .neq("status", "generating")
-      .neq("status", "submitting")
       .select("id")
 
     if (claimError) {

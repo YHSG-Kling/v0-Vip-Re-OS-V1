@@ -23,6 +23,7 @@ import {
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
 import { createClient } from "@/lib/supabase/client"
+import { VIDEO_FINISHED_STATUSES, VIDEO_IN_PROGRESS_STATUSES } from "@/lib/video/video-status"
 
 interface VideoProject {
   id: string
@@ -82,7 +83,7 @@ export function VideosDashboard() {
       const { data: inProgress } = await supabase
         .from("ai_video_projects")
         .select("*")
-        .in("status", ["script_generating", "script_ready", "generating"])
+        .in("status", [...VIDEO_IN_PROGRESS_STATUSES])
         .order("created_at", { ascending: false })
         .limit(5)
 
@@ -90,7 +91,7 @@ export function VideosDashboard() {
       const { data: recent } = await supabase
         .from("ai_video_projects")
         .select("*")
-        .eq("status", "video_ready")
+        .in("status", [...VIDEO_FINISHED_STATUSES])
         .order("created_at", { ascending: false })
         .limit(5)
 
@@ -124,14 +125,23 @@ export function VideosDashboard() {
     }
   }
 
+  // Cases are the canonical vocabulary (lib/video/video-status). A case on a
+  // retired spelling is a branch the CHECK constraint guarantees can never run.
   function getStatusIcon(status: string) {
     switch (status) {
-      case "video_ready":
+      case "completed":
+      case "published":
         return <CheckCircle className="h-4 w-4 text-green-500" />
       case "failed":
         return <AlertCircle className="h-4 w-4 text-red-500" />
+      case "scripting":
       case "generating":
         return <Loader2 className="h-4 w-4 text-amber-500 animate-spin" />
+      case "draft":
+      case "script_ready":
+      case "queued":
+      case "awaiting_presenter_setup":
+        return <Clock className="h-4 w-4 text-blue-500" />
       default:
         return <Clock className="h-4 w-4 text-blue-500" />
     }
@@ -139,14 +149,22 @@ export function VideosDashboard() {
 
   function getStatusText(status: string) {
     switch (status) {
-      case "script_generating":
+      case "draft":
+        return "Draft"
+      case "scripting":
         return "Writing script..."
       case "script_ready":
         return "Script ready"
+      case "queued":
+        return "Queued for generation"
       case "generating":
         return "Generating video..."
-      case "video_ready":
+      case "awaiting_presenter_setup":
+        return "Waiting on presenter setup"
+      case "completed":
         return "Ready"
+      case "published":
+        return "Published"
       case "failed":
         return "Failed"
       default:

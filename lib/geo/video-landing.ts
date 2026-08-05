@@ -13,6 +13,10 @@
  * (app/v/[slug]) + llms.txt / robots / sitemap routes consume these.
  */
 
+// video-status.ts is pure constants (no DB, no server-only), so importing it
+// here keeps this module unit-testable in the simulator without egress.
+import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-status"
+
 /** AI + search crawler user-agents we explicitly welcome in robots. The
  *  whole point of GEO is to be readable by these — the opposite of the
  *  default "block the bots" posture. */
@@ -72,9 +76,18 @@ export function isPublishableRender(args: {
 
 /** The reel's lifecycle facts the auto-publish gate inspects. Mirrors the
  *  CHECK-constrained ai_video_projects vocabulary verbatim:
- *    status:            'planning'|'generating'|'completed'|'failed'|…
+ *    status:            CANONICAL_VIDEO_STATUSES (lib/video/video-status.ts) —
+ *                       'draft'|'scripting'|'script_ready'|'queued'|'generating'|
+ *                       'awaiting_presenter_setup'|'completed'|'published'|'failed'.
+ *                       'planning' used to be listed here and no longer exists
+ *                       (m374 folded it into 'draft').
  *    compliance_status: 'not_evaluated'|'passed'|'failed'|'needs_review'
  *    approval_status:   'draft'|'pending_review'|'approved'|'rejected'|'published'
+ *
+ *  NOTE the collision: approval_status ALSO has a 'published' and a 'draft'.
+ *  They are different columns with different meanings — status:'published'
+ *  means the asset went out, approval_status:'published' is a sign-off state.
+ *  The gate below reads both, so do not merge them.
  */
 export interface AutoPublishReel {
   status:            string
@@ -95,7 +108,13 @@ export interface AutoPublishReel {
  */
 export function isAutoPublishEligible(reel: AutoPublishReel): boolean {
   if (reel.isPublished) return false                  // already public — idempotent
-  if (reel.status !== "completed") return false       // render must have finished
+  // "Finished" is a SET, not one token (m374). This read used to be
+  // `status !== "completed"`, which silently re-narrowed the caller's widened
+  // SQL filter: geo-reel-autopublish selects .in("status", VIDEO_FINISHED_STATUSES)
+  // and then this gate rejected every `published` row with "reel not
+  // auto-publishable". The two halves of one decision disagreed, and the SQL
+  // half was the one that looked correct.
+  if (!(VIDEO_FINISHED_STATUSES as readonly string[]).includes(reel.status)) return false
   if (reel.complianceStatus !== "passed") return false// Fair-Housing / disclosures gate
   if (reel.approvalStatus !== "approved") return false// broker sign-off gate
   if (!reel.videoUrl) return false                    // nothing to host

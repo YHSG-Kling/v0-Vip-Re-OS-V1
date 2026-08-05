@@ -131,7 +131,7 @@ export async function narratePresentationSections(
           agent_id:    r.agent_user_id ?? pres.agent_user_id,
           brokerage_id: pres.brokerage_id,
           title:       `Section narration ${r.composition_id}`,
-          status:      "pending",
+          status:      "draft",
           provider_metadata: {
             provider: "did", target_composition_id: r.composition_id,
             target_render_id: r.id, voiceover_url: voiceoverUrl, voice_id: voiceId,

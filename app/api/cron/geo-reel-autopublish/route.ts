@@ -10,7 +10,7 @@
  * step.
  *
  * THE GATE (isAutoPublishEligible, enforced again inside publishVideoProjectLanding):
- *   ai_video_projects.status='completed'
+ *   ai_video_projects.status IN VIDEO_FINISHED_STATUSES  (completed | published)
  *     AND compliance_status='passed'      (Fair-Housing / EHO / license disclosures)
  *     AND approval_status='approved'      (broker sign-off — a public page is broadcast advertising)
  *     AND is_published=false              (idempotent — never double-publish)
@@ -27,6 +27,7 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { publishVideoProjectLanding } from "@/lib/geo/publish-video-landing"
+import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-status"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -51,7 +52,7 @@ export async function GET(req: NextRequest) {
   const { data, error } = await svc.from("ai_video_projects")
     .select("id, brokerage_id")
     .eq("is_published", false)
-    .eq("status", "completed")
+    .in("status", [...VIDEO_FINISHED_STATUSES])
     .eq("compliance_status", "passed")
     .eq("approval_status", "approved")
     .not("video_url", "is", null)

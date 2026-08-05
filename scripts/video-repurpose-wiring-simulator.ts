@@ -655,21 +655,33 @@ console.log("\n[Layer 1 · status vocabulary is one list, in a non-'use server' 
   )
   // And that list must still be the single source — not re-spelled locally.
   const policyL = stripCommentsOnly(load("lib/video/video-pipeline-reaper-policy.ts"))
+  const statusL = stripCommentsOnly(load("lib/video/video-status.ts"))
   check(
     "VIDEO_FINISHED_STATUSES covers every success token the pipeline writes",
-    ["completed", "ready", "uploaded", "published", "distributed"].every((t) =>
+    // m374 collapsed the five finished spellings into two: ready/video_ready/
+    // uploaded/preview_ready all became `completed`, and `distributed` became
+    // `published`. The list is now the CANONICAL pair, and it lives in
+    // lib/video/video-status.ts — the reaper policy only re-exports it.
+    ["completed", "published"].every((t) =>
       new RegExp(`"${t}"`).test(
-        policyL.slice(policyL.indexOf("VIDEO_FINISHED_STATUSES"), policyL.indexOf("VIDEO_FINISHED_STATUSES") + 400),
+        statusL.slice(statusL.indexOf("VIDEO_FINISHED_STATUSES"), statusL.indexOf("VIDEO_FINISHED_STATUSES") + 300),
       ),
-    ),
+    ) &&
+      // and the retired spellings must NOT have crept back into it
+      !/VIDEO_FINISHED_STATUSES[\s\S]{0,300}"(ready|uploaded|distributed|video_ready)"/.test(statusL),
   )
-  // Tightened: pollVideoStatus also RETURNS { status: "ready" } to its caller,
-  // and a bare /status: "ready"/ matched that return object — so the check
-  // survived even when the persisted WRITE was changed. Anchor on the update's
-  // neighbouring column so only the write can satisfy it.
+  // THIS ASSERTION EXISTED TO PIN A DIVERGENCE THAT IS NOW GONE. pollVideoStatus
+  // persisted `ready` while every reader looked for `completed`, and this check
+  // asserted that mismatch stayed put. m374 retired `ready` into `completed`, so
+  // the write and the readers finally agree and there is nothing left to pin.
+  //
+  // What still matters is that the PERSISTED WRITE uses a canonical token — the
+  // CHECK constraint now rejects anything else, so a regression here is a
+  // runtime insert failure, not a silent mismatch. Anchor on the update's
+  // neighbouring column so only the write, never the return object, satisfies it.
   check(
-    "pollVideoStatus still writes the OTHER token ('ready'), which is why it is unwired",
-    /status:\s*"ready",\s*provider_status:/.test(body(createL, "pollVideoStatus")),
+    "pollVideoStatus persists a canonical terminal token, not a private spelling",
+    /status:\s*"completed",\s*provider_status:/.test(body(createL, "pollVideoStatus")),
   )
 }
 

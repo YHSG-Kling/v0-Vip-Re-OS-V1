@@ -119,12 +119,12 @@ async function runHandler(
       const svc = createServiceClient()
       if (kind === "video") {
         const { error, count } = await svc.from("ai_video_projects")
-          .update({ status: "remotion_pending" }, { count: "exact" })
+          .update({ status: "queued" }, { count: "exact" })
           .eq("id", assetId)
           .eq("brokerage_id", brokerageId)
         if (error) return { status: "failed", result: { error: error.message } }
         if ((count ?? 0) === 0) return { status: "skipped", result: { reason: "video project not found or tenant mismatch" } }
-        return { status: "succeeded", result: { kind: "video", asset_id: assetId, queued_for: "remotion_pending" } }
+        return { status: "succeeded", result: { kind: "video", asset_id: assetId, queued_for: "queued" } }
       }
       if (kind === "image" || kind === "composition") {
         // m174 — queue the image for regeneration. The marketing-image-regen

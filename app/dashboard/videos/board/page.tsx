@@ -38,6 +38,11 @@ import {
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
 import { createClient } from "@/lib/supabase/client"
+import {
+  VIDEO_FINISHED_STATUSES,
+  VIDEO_IN_PROGRESS_STATUSES,
+  VIDEO_TERMINAL_STATUSES,
+} from "@/lib/video/video-status"
 import { toast } from "sonner"
 import { distributeVideo } from "@/app/actions/video/distribute-video"
 import { VideoStudioDialog } from "./video-studio-dialog"
@@ -92,25 +97,20 @@ const COLUMNS = [
 ]
 
 function mapStatusToColumn(status: string, providerStatus?: string): string {
-  // The catch-all below is a trap, so every terminal state must be named ABOVE
-  // it. It used to match only failed / published / preview_ready / generating,
-  // which meant `completed`, `distributed`, `ready`, `uploaded` and `error` all
-  // fell through to "pending" — a finished video and a failed render both sat in
-  // the Queued column, and the red failure UI further down never rendered.
-  if (status === "failed" || status === "error" || providerStatus === "failed") return "failed"
-  if (status === "published" || status === "distributed") return "published"
+  // Column ids are DISPLAY BUCKETS, not statuses. `status` is the canonical
+  // vocabulary (lib/video/video-status) and every one of its nine values is
+  // named here, because the catch-all below is a trap: it used to swallow
+  // `completed`, `distributed`, `ready`, `uploaded` and `error`, so a finished
+  // video and a failed render both sat in the Queued column and the red failure
+  // UI further down never rendered.
+  if (status === "failed" || providerStatus === "failed") return "failed"
+  if (status === "published") return "published"
   // A finished asset is previewable: this column is where the Play button lives.
-  if (
-    status === "completed" ||
-    status === "ready" ||
-    status === "uploaded" ||
-    status === "preview_ready" ||
-    providerStatus === "completed"
-  ) {
-    return "preview_ready"
-  }
-  if (status === "generating" || status === "rendering" || status === "remotion_pending" ||
+  if (status === "completed" || providerStatus === "completed") return "preview_ready"
+  if (status === "queued" || status === "generating" ||
       providerStatus === "generating" || providerStatus === "processing") return "generating"
+  // draft / scripting / script_ready / awaiting_presenter_setup — nothing has
+  // been handed to a render worker yet, which is what this column means.
   return "pending"
 }
 
@@ -191,7 +191,7 @@ export default function VideoKanbanBoard() {
         data.forEach((v: any) => {
           statusMap[v.id] = {
             video_project_id: v.id,
-            stream_status: v.provider_status || v.status || "pending",
+            stream_status: v.provider_status || v.status || "draft",
             preview_url: v.thumbnail_url ?? undefined,
             stream_url: v.video_url ?? undefined,
             error_message: v.error_message ?? undefined,
@@ -201,7 +201,7 @@ export default function VideoKanbanBoard() {
 
         // Identify videos that need polling
         const needsPolling = data
-          .filter((v: any) => ["generating", "pending"].includes(v.status) || ["generating", "processing", "pending"].includes(v.provider_status || ""))
+          .filter((v: any) => (VIDEO_IN_PROGRESS_STATUSES as readonly string[]).includes(v.status) || ["generating", "processing", "pending"].includes(v.provider_status || ""))
           .map((v: any) => v.id)
         setPollingVideoIds(new Set(needsPolling))
       }
@@ -245,7 +245,7 @@ export default function VideoKanbanBoard() {
             ...prev,
             [v.id]: {
               video_project_id: v.id,
-              stream_status: v.provider_status || v.status || "pending",
+              stream_status: v.provider_status || v.status || "draft",
               preview_url: v.thumbnail_url ?? undefined,
               stream_url: v.video_url ?? undefined,
               error_message: v.error_message ?? undefined,
@@ -277,7 +277,7 @@ export default function VideoKanbanBoard() {
             .eq("id", videoId)
             .maybeSingle()
 
-          if (data?.status === "ready" || data?.status === "failed" || data?.status === "completed") {
+          if ((VIDEO_TERMINAL_STATUSES as readonly string[]).includes(data?.status ?? "")) {
             setPollingVideoIds(prev => {
               const next = new Set(prev)
               next.delete(videoId)
@@ -310,7 +310,7 @@ export default function VideoKanbanBoard() {
       await supabase
         .from("ai_video_projects")
         .update({
-          status: "pending",
+          status: "draft",
           provider_status: "pending",
           error_message: null,
           retry_count: (video.retry_count || 0) + 1,
@@ -538,7 +538,7 @@ export default function VideoKanbanBoard() {
                                 Open Video Studio
                               </DropdownMenuItem>
                               <DropdownMenuSeparator />
-                              {(video.status === "preview_ready" || video.provider_status === "completed") && (
+                              {(video.status === "completed" || video.provider_status === "completed") && (
                                 <>
                                   <DropdownMenuItem onClick={() => setPreviewDialog({ open: true, video })}>
                                     <Eye className="mr-2 h-4 w-4" />
@@ -555,7 +555,7 @@ export default function VideoKanbanBoard() {
                                   <DropdownMenuSeparator />
                                 </>
                               )}
-                              {(video.status === "published" || video.status === "preview_ready" || video.status === "ready" || video.status === "completed") && video.video_url && (
+                              {(VIDEO_FINISHED_STATUSES as readonly string[]).includes(video.status) && video.video_url && (
                                 <>
                                   <DropdownMenuItem onClick={() => setPreviewDialog({ open: true, video })}>
                                     <Share2 className="mr-2 h-4 w-4" />

@@ -208,6 +208,10 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     approval_status: ["approved", "draft", "pending_review", "published", "rejected"],
     audience_type: ["customer_facing", "in_house"],
     compliance_status: ["failed", "needs_review", "not_evaluated", "passed"],
+    // m374. Source of truth: CANONICAL_VIDEO_STATUSES in lib/video/video-status.ts.
+    // Before m374 this column had NO CHECK and 22 spellings — five of them read
+    // by filters nothing wrote, so the panels behind them were structurally empty.
+    status: ["awaiting_presenter_setup", "completed", "draft", "failed", "generating", "published", "queued", "script_ready", "scripting"],
     usage_intent: ["both", "mls", "public_marketing"],
     video_provider: ["did", "upload"],
     video_type: ["agent_intro", "avatar_explainer", "coming_soon", "education", "just_listed", "just_sold", "listing_promo", "listing_tour", "market_update", "memory_video", "open_house_promo", "pre_appointment", "presentation_chapter", "social_reel", "testimonial", "welcome"],

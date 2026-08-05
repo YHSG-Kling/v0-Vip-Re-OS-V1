@@ -40,6 +40,7 @@ import { isLifetimeCustomerType } from '@/lib/contact-types'
 import { resolveContactChannel } from '@/lib/ai-isa/contact-channel-policy'
 import type { MessageType, Persona } from '@/lib/kernel/types'
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
+import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-status"
 
 // ── Lifecycle states where AI ISA MUST NOT engage ──────────────────────────
 const BLOCKED_LIFECYCLE_STATES = new Set([
@@ -364,7 +365,7 @@ async function dispatchContactChannel(
 
     // SITUATIONAL VIDEO, never a throwaway: instead of synthesizing a generic D-ID avatar on
     // EVERY email (wasteful + non-situational + an unplayable placeholder), surface the
-    // contact's most recent COMPLETED, broker-APPROVED situational reel — the anniversary-
+    // contact's most recent FINISHED (completed or published), broker-APPROVED situational reel — the anniversary-
     // equity / buyer-match / market reels the dedicated situation triggers render over the
     // relationship. As new situational reels render, the email shows the latest: videos
     // RECUR and stay relevant, never "once" and never a per-touch generic clip.
@@ -373,7 +374,7 @@ async function dispatchContactChannel(
       .select('video_url, thumbnail_url, completed_at')
       .eq('contact_id', contact.id)
       .eq('brokerage_id', brokerageId)
-      .eq('status', 'completed')
+      .in('status', [...VIDEO_FINISHED_STATUSES])
       .eq('approval_status', 'approved')
       .not('video_url', 'is', null)
       .gte('completed_at', new Date(Date.now() - 120 * 86_400_000).toISOString())

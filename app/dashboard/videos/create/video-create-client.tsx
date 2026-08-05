@@ -502,7 +502,7 @@ export default function VideoCreatePage() {
               ? scripts.find((s: any) => s.id === selectedScript)?.script_type
               : aiScriptVideoType,
           ),
-          status: "pending",
+          status: "draft",
           provider_status: "pending",
           provider_avatar_id: null,
           provider_voice_id: null,

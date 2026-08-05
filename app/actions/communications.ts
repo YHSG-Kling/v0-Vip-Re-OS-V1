@@ -13,9 +13,6 @@ import {
   syncContactToGHL,
   getContactConversationHistory,
   addGHLContactNote,
-  triggerGHLWorkflow,
-  createGHLSocialPost,
-  createGHLCalendarEvent,
 } from "@/services/goHighLevelService"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
@@ -363,152 +360,13 @@ export async function addContactNote(params: {
 // SOCIAL MEDIA POSTING (via GHL)
 // =====================================================
 
-export async function publishSocialPost(params: {
-  content: string
-  platforms: Array<"facebook" | "instagram" | "linkedin" | "twitter" | "tiktok" | "google">
-  mediaUrls?: string[]
-  scheduledTime?: string
-  agentId?: string  // ignored — derived from session
-}) {
-  // Auth gate — previously open. Any caller could publish content to the
-  // brokerage's connected GHL social accounts under our credentials.
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
-  const { data: u } = await supabase
-    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
-  if (!u?.brokerage_id) return { success: false, error: "Unauthorized" }
-
-  // Create post via GHL Social Planner
-  const result = await createGHLSocialPost({
-    content: params.content,
-    platforms: params.platforms,
-    mediaUrls: params.mediaUrls,
-    scheduledTime: params.scheduledTime,
-  })
-
-  // Log locally
-  if (result.success) {
-    await supabaseService.logActivity({
-      activity_type: "social_post_created",
-      description: `Social post ${params.scheduledTime ? "scheduled" : "published"} to ${params.platforms.join(", ")}`,
-      metadata: {
-        ghl_post_id: result.postId,
-        platforms: params.platforms,
-        scheduled_time: params.scheduledTime,
-      },
-    })
-  }
-
-  return result
-}
-
 // =====================================================
 // SCHEDULE APPOINTMENT (via GHL Calendar)
 // =====================================================
 
-export async function scheduleAppointment(params: {
-  contactId: string
-  calendarId: string
-  title: string
-  startTime: string
-  endTime: string
-  meetingType?: "in_person" | "video" | "phone"
-  notes?: string
-  assignedUserId?: string
-}) {
-  const contact = await supabaseService.getContactById(params.contactId)
-
-  if (!contact) {
-    return { success: false, error: "Contact not found" }
-  }
-
-  // Sync contact to GHL
-  const ghlSync = await syncContactToGHL({
-    firstName: contact.first_name,
-    lastName: contact.last_name,
-    email: contact.email || undefined,
-    phone: contact.phone || undefined,
-  })
-
-  const ghlContactId = ghlSync.contactId || params.contactId
-
-  // Create calendar event in GHL
-  const result = await createGHLCalendarEvent({
-    contactId: ghlContactId,
-    calendarId: params.calendarId,
-    title: params.title,
-    startTime: params.startTime,
-    endTime: params.endTime,
-    meetingType: params.meetingType,
-    notes: params.notes,
-    assignedUserId: params.assignedUserId,
-  })
-
-  // Log locally
-  if (result.success) {
-    await supabaseService.logActivity({
-      contact_id: params.contactId,
-      activity_type: "appointment_scheduled",
-      description: `${params.title} scheduled for ${new Date(params.startTime).toLocaleString()}`,
-      metadata: {
-        ghl_event_id: result.eventId,
-        ghl_contact_id: ghlContactId,
-        meeting_type: params.meetingType,
-      },
-    })
-  }
-
-  return result
-}
-
 // =====================================================
 // TRIGGER GHL AUTOMATION
 // =====================================================
-
-export async function triggerAutomation(params: {
-  contactId: string
-  workflowId: string
-  eventName?: string
-  eventData?: Record<string, any>
-}) {
-  const contact = await supabaseService.getContactById(params.contactId)
-
-  if (!contact) {
-    return { success: false, error: "Contact not found" }
-  }
-
-  // Sync to GHL
-  const ghlSync = await syncContactToGHL({
-    firstName: contact.first_name,
-    lastName: contact.last_name,
-    email: contact.email || undefined,
-    phone: contact.phone || undefined,
-  })
-
-  const ghlContactId = ghlSync.contactId || params.contactId
-
-  // Trigger workflow
-  const result = await triggerGHLWorkflow({
-    contactId: ghlContactId,
-    workflowId: params.workflowId,
-    eventData: params.eventData,
-  })
-
-  // Log locally
-  await supabaseService.logActivity({
-    contact_id: params.contactId,
-    activity_type: "workflow_triggered",
-    description: `GHL workflow ${params.workflowId} triggered${params.eventName ? ` (${params.eventName})` : ""}`,
-    metadata: {
-      workflow_id: params.workflowId,
-      event_name: params.eventName,
-      ghl_contact_id: ghlContactId,
-    },
-  })
-
-  return result
-}
 
 // =====================================================
 // SEND NOTIFICATION TO AGENT (Push/SMS/Email)

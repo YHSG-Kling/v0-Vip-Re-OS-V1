@@ -9,6 +9,7 @@ import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { generateAvatarVideo, getAvatarVideoStatus } from "@/app/actions/external-services"
+import { VIDEO_FINISHED_STATUSES, type CanonicalVideoStatus } from "@/lib/video/video-status"
 
 // ============================================
 // VIDEO PROJECT CREATION — ai_video_projects
@@ -149,10 +150,10 @@ export interface VideoProject {
   title: string
   script_content: string
   video_type: string
-  // 'setup' = created without a script, waiting on the scripting step (the lane
-  // inherited from lib/kernel/video.ts). ai_video_projects.status has no CHECK
-  // constraint, so this union is the only place the vocabulary is written down.
-  status: "setup" | "draft" | "generating" | "ready" | "failed" | "distributed"
+  // The m374 CHECK constraint refuses anything outside CANONICAL_VIDEO_STATUSES,
+  // so lib/video/video-status.ts — not a union kept here — is the one place the
+  // vocabulary is written down.
+  status: CanonicalVideoStatus
   provider_job_id: string | null
   provider_status: string | null
   video_url: string | null
@@ -447,9 +448,10 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
       duration_seconds: params.durationSeconds,
       captions_enabled: params.captionsEnabled,
       listing_id: params.listingId ?? null,
-      // 'setup' is the kernel shell lane's status — the project is waiting for
-      // its script. A project created WITH a script is a 'draft', as before.
-      status: params.script?.trim() ? "draft" : "setup",
+      // 'setup' (waiting on its script) and 'draft' (created with one) were two
+      // spellings of "created, nothing started"; both map to 'draft'. Whether a
+      // script exists is already readable from script_content.
+      status: "draft",
       retry_count: 0,
       video_provider: provider,
       ...providerCols,
@@ -521,8 +523,8 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
  *   2. lib/kernel/video.ts:submitVideoGenerationJob via
  *      app/actions/video.ts:submitVideoGenerationJobAction — writes
  *      status='generating', provider_status='submitting' behind an ATOMIC slot
- *      claim (.neq("status","generating").neq("status","submitting"),
- *      lib/kernel/video.ts:334-340) so two clicks cannot both submit.
+ *      claim (.neq("status","generating"), lib/kernel/video.ts) so two clicks
+ *      cannot both submit.
  *
  * This function would be the THIRD. It writes the identical
  * (status='generating' + provider_job_id) shape via generateAvatarVideo →
@@ -645,17 +647,14 @@ export async function submitAvatarVideoRender(
  * provider_job_id IS NOT NULL` and on completion it writes status='completed'
  * (route.ts:391); on vendor error, status='failed' (route.ts:541).
  *
- * ai_video_projects.status has NO CHECK constraint, so "valid" is settled by
- * the writers, and there are two vocabularies live on this table. This function
- * writes the OTHER one: status='ready'. Wiring it would mean:
- *   · a third writer racing the cron for the same row's terminal state, and
- *   · a terminal token no reader on the repurpose rail understands — the
- *     Omni-Presence source picker selects .eq("status","completed")
- *     (app/dashboard/campaigns/repurpose/page.tsx) and
- *     app/actions/podcast-generation.ts:getVideoProjects selects
- *     .in("status",["completed","published"]). A project finalized as 'ready'
- *     would be invisible to every repurposing surface AND would no longer match
- *     the cron's 'generating' selector, so nothing would ever correct it.
+ * ai_video_projects.status now has ONE vocabulary, enforced by the m374 CHECK,
+ * so HALF of this hazard is gone: this function writes status='completed', the
+ * same terminal token the cron writes and the same one the repurpose rail reads
+ * (both the Omni-Presence source picker and
+ * app/actions/podcast-generation.ts:getVideoProjects take the finished set from
+ * lib/video/video-status.ts). What remains is the other half, which is reason
+ * enough to leave it unwired: it would be a THIRD writer racing the cron for
+ * the same row's terminal state.
  *
  * Not deleted (no named duplicate is reachable as a server action for a
  * synchronous "is it done yet" read), hardened, and left unreferenced.
@@ -685,8 +684,8 @@ export async function pollVideoStatus(
   if (loadError) return { status: "failed", error: loadError.message }
   if (!project) return { status: "failed", error: "Project not found" }
 
-  // Already resolved
-  if (project.status === "ready" && project.video_url) {
+  // Already resolved — 'completed' and 'published' both mean the asset exists.
+  if ((VIDEO_FINISHED_STATUSES as readonly string[]).includes(project.status) && project.video_url) {
     return { status: "ready", videoUrl: project.video_url, thumbnailUrl: project.thumbnail_url ?? undefined }
   }
   if (project.status === "failed") {
@@ -707,11 +706,11 @@ export async function pollVideoStatus(
   const providerStatus: string = providerResult.status ?? "processing"
 
   if (providerStatus === "completed" && providerResult.videoUrl) {
-    // Update project to ready
+    // Update project to finished
     const { error: readyError } = await supabase
       .from("ai_video_projects")
       .update({
-        status: "ready",
+        status: "completed",
         provider_status: "completed",
         video_url: providerResult.videoUrl,
         completed_at: new Date().toISOString(),

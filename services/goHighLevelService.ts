@@ -171,83 +171,9 @@ export interface GHLMessage {
   type: "SMS" | "Email" | "Call" | "WhatsApp" | "GMB" | "FB" | "IG"
 }
 
-export async function sendGHLSMS(params: {
-  contactId: string
-  message: string
-  phone?: string
-  attachments?: string[]
-}) {
-  const config = getGHLConfig()
-  if (!config) {
-    return { success: false, error: "GHL not configured. Add GHL_API_KEY and GHL_LOCATION_ID to environment variables.", requiresConfiguration: true }
-  }
-
-  try {
-    const result = await ghlFetch("/conversations/messages", {
-      method: "POST",
-      body: JSON.stringify({
-        type: "SMS",
-        contactId: params.contactId,
-        message: params.message,
-        attachments: params.attachments || [],
-      }),
-    })
-
-    return {
-      success: true,
-      messageId: result.messageId || result.id,
-      conversationId: result.conversationId,
-      status: result.status,
-    }
-  } catch (error: any) {
-    console.error("[GHL Service] SMS error:", error)
-    return { success: false, error: error.message }
-  }
-}
-
 // =====================================================
 // EMAIL (via GHL)
 // =====================================================
-
-export async function sendGHLEmail(params: {
-  contactId: string
-  subject: string
-  html: string
-  text?: string
-  from?: string
-  replyTo?: string
-  attachments?: Array<{ url: string; filename: string }>
-}) {
-  const config = getGHLConfig()
-  if (!config) {
-    return { success: false, error: "GHL not configured. Add GHL_API_KEY and GHL_LOCATION_ID to environment variables.", requiresConfiguration: true }
-  }
-
-  try {
-    const result = await ghlFetch("/conversations/messages", {
-      method: "POST",
-      body: JSON.stringify({
-        type: "Email",
-        contactId: params.contactId,
-        subject: params.subject,
-        html: params.html,
-        text: params.text,
-        emailFrom: params.from,
-        emailReplyTo: params.replyTo,
-        attachments: params.attachments,
-      }),
-    })
-
-    return {
-      success: true,
-      messageId: result.messageId || result.id,
-      conversationId: result.conversationId,
-    }
-  } catch (error: any) {
-    console.error("[GHL Service] Email error:", error)
-    return { success: false, error: error.message }
-  }
-}
 
 // =====================================================
 // CONVERSATIONS / MESSAGE HISTORY
@@ -332,124 +258,9 @@ export interface GHLSocialPost {
   locationId?: string
 }
 
-export async function createGHLSocialPost(params: GHLSocialPost) {
-  const config = getGHLConfig()
-  if (!config) {
-    return { success: false, error: "GHL not configured. Add GHL_API_KEY and GHL_LOCATION_ID to environment variables.", requiresConfiguration: true }
-  }
-
-  try {
-    const result = await ghlFetch("/social-media-posting/post", {
-      method: "POST",
-      body: JSON.stringify({
-        locationId: params.locationId || config.locationId,
-        content: params.content,
-        platforms: params.platforms,
-        mediaUrls: params.mediaUrls || [],
-        scheduledTime: params.scheduledTime,
-        status: params.scheduledTime ? "scheduled" : "published",
-      }),
-    })
-
-    return {
-      success: true,
-      postId: result.id,
-      status: result.status,
-      scheduledTime: result.scheduledTime,
-    }
-  } catch (error: any) {
-    console.error("[GHL Service] Social post error:", error)
-    return { success: false, error: error.message }
-  }
-}
-
-export async function getGHLSocialPosts(params?: {
-  status?: "scheduled" | "published" | "failed"
-  platform?: string
-  limit?: number
-}) {
-  const config = getGHLConfig()
-  if (!config) {
-    return { success: false, error: "GHL not configured", posts: [] }
-  }
-
-  try {
-    let url = `/social-media-posting/posts?locationId=${config.locationId}`
-    if (params?.status) url += `&status=${params.status}`
-    if (params?.platform) url += `&platform=${params.platform}`
-    if (params?.limit) url += `&limit=${params.limit}`
-
-    const result = await ghlFetch(url)
-    return { success: true, posts: result.posts || [] }
-  } catch (error: any) {
-    return { success: false, error: error.message, posts: [] }
-  }
-}
-
-export async function deleteGHLSocialPost(postId: string) {
-  try {
-    await ghlFetch(`/social-media-posting/post/${postId}`, { method: "DELETE" })
-    return { success: true }
-  } catch (error: any) {
-    return { success: false, error: error.message }
-  }
-}
-
 // =====================================================
 // CALENDAR & APPOINTMENTS
 // =====================================================
-
-export async function createGHLCalendarEvent(params: {
-  contactId: string
-  calendarId: string
-  title: string
-  startTime: string
-  endTime: string
-  meetingType?: "in_person" | "video" | "phone"
-  notes?: string
-  assignedUserId?: string
-}) {
-  const config = getGHLConfig()
-  if (!config) {
-    return { success: false, error: "GHL not configured. Add GHL_API_KEY and GHL_LOCATION_ID to environment variables.", requiresConfiguration: true }
-  }
-
-  try {
-    const result = await ghlFetch("/calendars/events", {
-      method: "POST",
-      body: JSON.stringify({
-        locationId: config.locationId,
-        contactId: params.contactId,
-        calendarId: params.calendarId,
-        title: params.title,
-        startTime: params.startTime,
-        endTime: params.endTime,
-        appointmentType: params.meetingType || "in_person",
-        notes: params.notes,
-        assignedUserId: params.assignedUserId,
-      }),
-    })
-
-    return { success: true, eventId: result.id, event: result }
-  } catch (error: any) {
-    console.error("[GHL Service] Calendar event error:", error)
-    return { success: false, error: error.message }
-  }
-}
-
-export async function getGHLCalendars() {
-  const config = getGHLConfig()
-  if (!config) {
-    return { success: false, error: "GHL not configured", calendars: [] }
-  }
-
-  try {
-    const result = await ghlFetch(`/calendars/?locationId=${config.locationId}`)
-    return { success: true, calendars: result.calendars || [] }
-  } catch (error: any) {
-    return { success: false, error: error.message, calendars: [] }
-  }
-}
 
 // =====================================================
 // CALL TRACKING
@@ -491,30 +302,6 @@ export async function logGHLCall(params: {
 // =====================================================
 // WORKFLOWS & AUTOMATIONS
 // =====================================================
-
-export async function triggerGHLWorkflow(params: {
-  contactId: string
-  workflowId: string
-  eventData?: Record<string, any>
-}) {
-  const config = getGHLConfig()
-  if (!config) {
-    return { success: false, error: "GHL not configured. Add GHL_API_KEY and GHL_LOCATION_ID to environment variables.", requiresConfiguration: true }
-  }
-
-  try {
-    const result = await ghlFetch(`/contacts/${params.contactId}/workflow/${params.workflowId}`, {
-      method: "POST",
-      body: JSON.stringify({
-        eventData: params.eventData || {},
-      }),
-    })
-
-    return { success: true, data: result }
-  } catch (error: any) {
-    return { success: false, error: error.message }
-  }
-}
 
 // =====================================================
 // TAGS MANAGEMENT

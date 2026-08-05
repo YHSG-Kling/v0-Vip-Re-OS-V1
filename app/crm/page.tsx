@@ -31,7 +31,8 @@ import { getBuyerInsights } from "@/app/actions/buyer-insights"
 import { getBuyerFatigueScore } from "@/app/actions/buyer-fatigue"
 import { scoreLeadWithAI } from "@/app/actions/ai-lead-scoring"
 import { createPortalInviteForContact } from "@/app/actions/portal-invites"
-import { sendSMS, scheduleAppointment } from "@/app/actions/communications"
+import { sendSMS } from "@/app/actions/communications"
+import { scheduleAppointment } from "@/app/actions/ai-isa/schedule-appointment"
 import { analyzeCallTranscript, generateCallSummaryEmail } from "@/app/actions/ai-voice-transcription"
 import { AddressAutocomplete } from "@/app/components/ui/address-autocomplete"
 import { createClient } from "@/lib/supabase/client"
@@ -1379,13 +1380,27 @@ export default function CRMPage() {
                           setApptSending(true)
                           const startIso = new Date(`${apptDate}T${apptTime}`).toISOString()
                           const endIso = new Date(new Date(`${apptDate}T${apptTime}`).getTime() + 60 * 60 * 1000).toISOString()
+                          // Repointed off the GHL calendar path onto the native
+                          // scheduler. Two functions were named scheduleAppointment:
+                          // this one posted to GHL (and, unconfigured, took a mock
+                          // branch that returned success with a fabricated event id,
+                          // so this button toasted "Appointment scheduled" with no
+                          // calendar event anywhere), while ai-isa/schedule-appointment
+                          // writes a real calendar_events row, gates on role, resolves
+                          // agent + brokerage from the session, and can create a real
+                          // Zoom meeting with an honest fallback when Zoom is not
+                          // connected. The native one survives; the GHL one is gone.
                           const result = await scheduleAppointment({
                             contactId: selectedContactId,
-                            calendarId: "default",
-                            title: apptTitle,
-                            startTime: startIso,
-                            endTime: endIso,
-                            meetingType: "in_person",
+                            startAt: startIso,
+                            endAt: endIso,
+                            // Required by the native scheduler — the appointment is
+                            // stored against a real zone rather than a server guess.
+                            timezoneName: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                            // The native shape has no `title`; the agent's wording is
+                            // kept as the note rather than dropped on the floor.
+                            notes: apptTitle,
+                            meetingMode: "in_person",
                           })
                           setApptSending(false)
                           if (result.success) { toast.success("Appointment scheduled"); setApptDialogOpen(false) }
