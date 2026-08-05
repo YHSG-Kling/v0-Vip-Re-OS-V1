@@ -219,10 +219,15 @@ function supersetLayer() {
   check("the survivor can create the kernel's scriptless shell (scriptPending)",
     /interface\s+CreateVideoProjectParams[\s\S]*?\bscriptPending\?\s*:/.test(surv) &&
     /scriptPending/.test(body))
-  check("...at status 'setup', the kernel's own status for that lane",
-    /status\s*:\s*[^,\n]*["']setup["']/.test(body))
-  check("...while a script still yields 'draft', as before",
+  // m374 retired 'setup'. The LANE still has to exist — that is what this block
+  // protects — but it is now expressed in canonical values: no script yet is
+  // 'draft', a script already in hand is 'script_ready'. Asserting the old token
+  // would have pinned a spelling the CHECK constraint now rejects outright.
+  check("...at status 'draft', the canonical state for a scriptless shell",
     /status\s*:\s*[^,\n]*["']draft["']/.test(body))
+  check("...while a script in hand yields 'script_ready', not the same bucket",
+    /status\s*:\s*[^,\n]*["']script_ready["']/.test(body) &&
+    /params\.script\?\.trim\(\)\s*\?\s*["']script_ready["']/.test(body))
   check("...and an empty script is STILL an error unless scriptPending says so",
     /!\s*params\.script\??\.?trim\(\)\s*&&\s*!\s*params\.scriptPending/.test(body.replace(/\s+/g, " ")) ||
     /!params\.script\?\.trim\(\) && !params\.scriptPending/.test(body.replace(/\s+/g, " ")))

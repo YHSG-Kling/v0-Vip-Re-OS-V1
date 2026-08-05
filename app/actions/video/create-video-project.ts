@@ -448,10 +448,20 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
       duration_seconds: params.durationSeconds,
       captions_enabled: params.captionsEnabled,
       listing_id: params.listingId ?? null,
-      // 'setup' (waiting on its script) and 'draft' (created with one) were two
-      // spellings of "created, nothing started"; both map to 'draft'. Whether a
-      // script exists is already readable from script_content.
-      status: "draft",
+      // TWO LANES, TWO CANONICAL STATES. The kernel used 'setup' for a
+      // scriptless shell (POST .../script fills it in later) and 'draft' when a
+      // script came with the request. m374 retired 'setup', and collapsing both
+      // to 'draft' would have thrown the distinction away — the shell lane is
+      // the one thing the survivor had to keep in order to create everything
+      // the kernel could.
+      //
+      // It is kept using canonical values instead: no script yet is 'draft'
+      // (created, nothing started), a script already in hand is 'script_ready'
+      // (the next step is a render, not authoring). That also gives
+      // 'script_ready' its first writer — it was in the vocabulary and in the
+      // in-progress set with nothing producing it, which is how the phantom
+      // filters this whole merge removed came to exist in the first place.
+      status: params.script?.trim() ? "script_ready" : "draft",
       retry_count: 0,
       video_provider: provider,
       ...providerCols,
