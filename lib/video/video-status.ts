@@ -44,6 +44,30 @@
 //
 // Rounder numbers were available. They were not true.
 
+/**
+ * ── provider_status IS NOT THIS VOCABULARY ───────────────────────────────────
+ *
+ * ai_video_projects has a SECOND status-shaped column, provider_status, and it
+ * is deliberately NOT canonicalised. It records what the PROVIDER said, in the
+ * provider's own words: poll-did-videos writes 'done' on success and the raw
+ * D-ID status string on failure. That is its job — the provider's account of
+ * events, kept beside our account of them.
+ *
+ * So it gets no CHECK and no merge. What it needs is the rule that was missing:
+ *
+ *   NEVER GATE PRODUCT BEHAVIOUR ON provider_status.
+ *
+ * Exactly one place did. app/actions/listing-video.ts:publishVideoToPlatforms
+ * refused to publish unless provider_status === 'completed' — a token nothing
+ * writes, because D-ID's word for that is 'done'. Every D-ID-rendered listing
+ * video was therefore unpublishable through that path. (It was unreachable and
+ * fabricated its platform URLs anyway, so it was deleted in favour of
+ * lib/kernel/video.ts:distributeVideoProject.)
+ *
+ * Gate on `status`, which this module owns and the m374 CHECK enforces. Read
+ * provider_status for diagnostics and display only.
+ */
+
 /** Every value ai_video_projects.status may hold. Mirrored by the m374 CHECK. */
 export const CANONICAL_VIDEO_STATUSES = [
   "draft",

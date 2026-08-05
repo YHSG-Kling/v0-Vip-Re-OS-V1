@@ -98,7 +98,7 @@
     "app/actions/lifetime-customer-touchpoints.ts": 2,
     "app/actions/link-to-video.ts": 2,
     "app/actions/listing-lifecycle.ts": 2,
-    "app/actions/listing-video.ts": 2,
+    "app/actions/listing-video.ts": 1,
     "app/actions/listings-kernel.ts": 5,
     "app/actions/marketing-cadence-policy.ts": 1,
     "app/actions/marketing-intelligence.ts": 1,
@@ -731,7 +731,7 @@
     "lib/workflow/variables.ts": 1,
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1
   },
-  "census": 8877,
+  "census": 8876,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1025,7 +1025,7 @@
     "app/actions/listing-media.ts": 16,
     "app/actions/listing-promo-manual-trigger.ts": 1,
     "app/actions/listing-risk-agent.ts": 1,
-    "app/actions/listing-video.ts": 4,
+    "app/actions/listing-video.ts": 3,
     "app/actions/listings-kernel.ts": 14,
     "app/actions/listings.ts": 6,
     "app/actions/market-insight-actions.ts": 10,
@@ -6259,7 +6259,6 @@
     ],
     "app/actions/listing-video.ts": [
       "generateListingVideo",
-      "publishVideoToPlatforms",
       "trackVideoView",
       "getVideoProjects"
     ],
@@ -20119,5 +20118,5 @@
       "reapStaleWorkflowRuns"
     ]
   },
-  "trulyDead": 368
+  "trulyDead": 367
 }

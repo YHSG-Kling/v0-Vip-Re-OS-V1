@@ -382,56 +382,6 @@ async function validateThemFirstContent(content: string, contentType: string) {
 }
 
 // ============================================
-// PUBLISH VIDEO TO PLATFORMS
-// ============================================
-
-export async function publishVideoToPlatforms(params: {
-  projectId: string
-  platforms: ('youtube' | 'facebook' | 'instagram')[]
-}) {
-  if (!isValidUUID(params.projectId)) {
-    return { success: false, error: 'Invalid project ID' }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    const { data: project } = await supabase.from('ai_video_projects').select('*').eq('id', params.projectId).single()
-
-    if (!project || project.provider_status !== 'completed') {
-      return { success: false, error: 'Video not ready for publishing' }
-    }
-
-    const results = []
-
-    for (const platform of params.platforms) {
-      // In production, integrate with platform APIs
-      // For demo, mark as published
-      results.push({
-        platform,
-        url: `https://${platform}.com/video/${project.id}`,
-        success: true,
-      })
-    }
-
-    await supabase
-      .from('ai_video_projects')
-      .update({
-        is_published: true,
-        published_at: new Date().toISOString(),
-        provider_metadata: { distributed_via: params.platforms },
-      })
-      .eq('id', params.projectId)
-
-    revalidatePath('/dashboard/marketing/videos')
-    return { success: true, published: results }
-  } catch (error) {
-    console.error('Publish video error:', error)
-    return { success: false, error: 'Failed to publish video' }
-  }
-}
-
-// ============================================
 // TRACK VIDEO VIEW
 // ============================================
 
