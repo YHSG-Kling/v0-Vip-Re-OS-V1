@@ -49,6 +49,11 @@ import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 const DID_API_BASE = "https://api.d-id.com"
 
 export async function POST(request: NextRequest) {
+  // Set once the render slot is atomically claimed, so the catch below knows
+  // whether there is a reservation to release. Declared outside the try
+  // because a throw before the claim must NOT release someone else's slot.
+  let claimedProjectId: string | null = null
+
   try {
     const supabase = await createClient()
     const auth = await requireAuth(supabase)
@@ -197,6 +202,73 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // ─── STEP 0: CLAIM THE RENDER SLOT, ATOMICALLY, BEFORE SPENDING ──────────
+    //
+    // OWNER RULING: this path and lib/kernel/video.ts:submitVideoGenerationJob
+    // stay SEPARATE. They are not duplicates — this route carries the compliance
+    // eval, verbal-disclosure injection, avatar-asset resolution, cinematic /
+    // b-roll and video_render_log; the kernel carries the slot claim, the
+    // provider_status bookkeeping and the rollback. Neither is a superset. So
+    // this is a DEFECT FIX inside one lane, not a merge of the two.
+    //
+    // THE DEFECT: the kernel claims the slot atomically before it dispatches;
+    // this route did not claim it at all. It called ElevenLabs and then D-ID and
+    // only afterwards wrote status + provider_job_id, unconditionally. Two
+    // requests for the same project therefore BOTH spent — TTS characters and a
+    // D-ID render each — and the second overwrote the first's provider_job_id.
+    // app/api/cron/poll-did-videos keys on that column, so the first render
+    // became unpollable and could never complete: paid for, orphaned, invisible.
+    // Both paths are reachable from the SAME board (videos/board/page.tsx posts
+    // here; the Video Studio dialog calls the kernel action), so this is a
+    // double-click away, not a theoretical race.
+    //
+    // The claim is the same predicate the kernel uses, which is what makes the
+    // two lanes safe to keep separate: whichever one arrives second loses,
+    // because the loser is decided by the database, not by the caller.
+    const { data: claimed, error: claimError } = await supabase
+      .from("ai_video_projects")
+      .update({
+        status: "generating",
+        provider_status: "submitting",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", video_project_id)
+      .neq("status", "generating")
+      .neq("status", "submitting")
+      .select("id")
+
+    if (claimError) {
+      // Never spend on an unpersisted claim. A refused reservation read as
+      // success is exactly how the provider gets billed for a render nothing
+      // will ever collect.
+      console.error("[D-ID] slot claim refused:", claimError.message)
+      return NextResponse.json(
+        { error: `Could not reserve the render slot: ${claimError.message}` },
+        { status: 500 },
+      )
+    }
+    if (!claimed?.length) {
+      return NextResponse.json(
+        { error: "Video generation is already in progress for this project" },
+        { status: 409 },
+      )
+    }
+
+    claimedProjectId = video_project_id
+
+    // From here on the slot is OURS. Every failure exit below must release it,
+    // or the project stays wedged in 'generating' with no provider_job_id and
+    // the poller has nothing to chase.
+    const releaseSlot = async (errorMessage: string) => {
+      const { error: releaseError } = await supabase
+        .from("ai_video_projects")
+        .update({ status: "failed", provider_status: null, error_message: errorMessage })
+        .eq("id", video_project_id)
+      if (releaseError) {
+        console.error("[D-ID] slot release failed — project may be wedged:", releaseError.message)
+      }
+    }
+
     // ─── STEP 1: Generate voice audio via ElevenLabs ─────────────────────────
     const ttsRes = await fetch(`${appUrl}/api/elevenlabs/tts`, {
       method: "POST",
@@ -214,6 +286,9 @@ export async function POST(request: NextRequest) {
     const ttsData = await ttsRes.json()
     if (!ttsRes.ok || !ttsData.audio_url) {
       console.error("[D-ID] TTS step failed:", ttsData)
+      // The slot is claimed and nothing will ever fill it — release it, or the
+      // project sits in 'generating' forever with no provider_job_id to poll.
+      await releaseSlot("Failed to generate voice audio")
       return NextResponse.json({ error: "Failed to generate voice audio" }, { status: 500 })
     }
 
@@ -307,10 +382,9 @@ export async function POST(request: NextRequest) {
 
     if (!didRes.ok) {
       console.error("[D-ID] API error:", didData)
-      await supabase
-        .from("ai_video_projects")
-        .update({ status: "failed", error_message: didData.description ?? "D-ID error" })
-        .eq("id", video_project_id)
+      // Was an undestructured update that left provider_status stuck on
+      // 'submitting'; releaseSlot clears both and reports a refused write.
+      await releaseSlot(didData.description ?? "D-ID error")
 
       return NextResponse.json(
         { error: didData.description ?? "D-ID video generation failed" },
@@ -321,7 +395,11 @@ export async function POST(request: NextRequest) {
     const did_talk_id: string = didData.id
 
     // ─── STEP 3: Update project record ────────────────────────────────────────
-    await supabase
+    // Destructured. This is the write that hands provider_job_id to
+    // app/api/cron/poll-did-videos; if it is refused and nobody looks, the
+    // render is already running and billing at D-ID with nothing on our side
+    // able to collect it.
+    const { error: publishError } = await supabase
       .from("ai_video_projects")
       .update({
         status: "generating",
@@ -343,6 +421,20 @@ export async function POST(request: NextRequest) {
         error_message: null,
       })
       .eq("id", video_project_id)
+
+    if (publishError) {
+      // The render IS running at D-ID. We could not record its job id, so
+      // nothing can poll it — say so instead of returning success over a render
+      // the caller has already been charged for.
+      console.error("[D-ID] failed to publish provider_job_id:", publishError.message)
+      return NextResponse.json(
+        {
+          error: "The render started at D-ID but its job id could not be saved, so it cannot be tracked. Support has the talk id.",
+          did_talk_id,
+        },
+        { status: 500 },
+      )
+    }
 
     await supabase.from("video_render_log").insert({
       project_id: video_project_id,
@@ -366,6 +458,25 @@ export async function POST(request: NextRequest) {
     })
   } catch (error: any) {
     console.error("[D-ID] generate-video error:", error)
+    // A throw between the claim and the publish would otherwise wedge the
+    // project in 'generating' with no provider_job_id — no poller will ever
+    // finish it and no new render can claim the slot. Best-effort release,
+    // guarded so it cannot mask the original error.
+    if (claimedProjectId) {
+      try {
+        const svc = await createClient()
+        await svc
+          .from("ai_video_projects")
+          .update({
+            status: "failed",
+            provider_status: null,
+            error_message: error?.message ?? "Video generation failed",
+          })
+          .eq("id", claimedProjectId)
+      } catch (releaseErr) {
+        console.error("[D-ID] slot release after throw failed:", releaseErr)
+      }
+    }
     return NextResponse.json({ error: error.message ?? "Internal server error" }, { status: 500 })
   }
 }

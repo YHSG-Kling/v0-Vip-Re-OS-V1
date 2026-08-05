@@ -394,6 +394,66 @@ console.log("\n═══ 11. Both crons refuse on a TERMINAL provider error ═�
   }
 }
 
+console.log("\n═══ 12. TWO RENDER LANES, ONE SLOT — the loser is decided by the database ═══")
+{
+  // OWNER RULING: this route and lib/kernel/video.ts:submitVideoGenerationJob
+  // stay SEPARATE. They are not duplicates and neither is a superset — the
+  // route carries the compliance eval, disclosure injection, avatar resolution
+  // and render log; the kernel carries the slot claim and the rollback.
+  //
+  // Keeping two lanes onto ONE row is only safe if BOTH claim the row the same
+  // way. The kernel always did. This route did not claim at all: it called
+  // ElevenLabs, then D-ID, and only afterwards wrote status + provider_job_id
+  // unconditionally — so two clicks BOTH spent, and the second overwrote the
+  // first's job id. poll-did-videos keys on that column, so render one became
+  // unpollable forever: billed, orphaned, invisible. Both lanes hang off the
+  // same board, so this was a double-click, not a thought experiment.
+  const route = code("app/api/did/generate-video/route.ts")
+  const kernel = code("lib/kernel/video.ts")
+
+  // The CONSTRUCT: an UPDATE guarded by the two in-flight statuses. Asserted on
+  // both lanes from one shape, so neither can drift away from the other.
+  const CLAIM = /\.neq\(\s*["']status["']\s*,\s*["']generating["']\s*\)[\s\S]{0,200}?\.neq\(\s*["']status["']\s*,\s*["']submitting["']\s*\)/
+  ok("the kernel lane claims the render slot atomically", CLAIM.test(kernel))
+  ok("the D-ID lane claims the SAME slot the SAME way — this was the defect",
+    CLAIM.test(route))
+
+  // A claim nobody checks is not a claim.
+  ok("the D-ID lane refuses when the claim returns no row (409, already running)",
+    /claimed\?\.length/.test(route) && /\b409\b/.test(route))
+  // The token alone proves nothing — it survives in the destructuring even if
+  // the branch is deleted. Assert the BRANCH and that it exits.
+  ok("the D-ID lane refuses when the claim itself is REFUSED, rather than spending",
+    /if\s*\(\s*claimError\s*\)[\s\S]{0,400}?return\s+NextResponse\.json/.test(route))
+
+  // ORDERING IS THE WHOLE POINT: the claim must precede both billable calls,
+  // otherwise the second request has already paid by the time it loses.
+  const claimAt = route.indexOf(".neq(")
+  const ttsAt = route.indexOf("/api/elevenlabs/tts")
+  // The CALL, not the import — `didRequest` appears at the top of the file as an
+  // import, which sits before everything and would make this assertion pass
+  // vacuously no matter where the claim went.
+  const didAt = route.search(/await\s+didRequest\s*</)
+  ok("the claim happens BEFORE the ElevenLabs spend", claimAt !== -1 && ttsAt !== -1 && claimAt < ttsAt)
+  ok("the claim happens BEFORE the D-ID spend", claimAt !== -1 && didAt !== -1 && claimAt < didAt)
+
+  // A claim that is never released wedges the project instead of double-billing
+  // it — a different failure, not a fixed one.
+  // Both post-claim failure paths must release. Counting call sites, because a
+  // single surviving call would satisfy a bare name check while the other path
+  // silently wedges the project.
+  const releaseCalls = (route.match(/await\s+releaseSlot\s*\(/g) ?? []).length
+  ok("a claimed slot is released on EVERY post-claim failure path (TTS and D-ID)",
+    releaseCalls >= 2, `only ${releaseCalls} release call site(s)`)
+  ok("...including on a throw between the claim and the publish",
+    /catch[\s\S]{0,600}?if\s*\(\s*claimedProjectId\s*\)[\s\S]{0,400}?ai_video_projects/.test(route))
+
+  // The write that hands provider_job_id to the poller must be checked.
+  ok("the provider_job_id publish is destructured AND its failure returns an error",
+    /const\s*\{\s*error:\s*publishError\s*\}\s*=\s*await/.test(route) &&
+    /if\s*\(\s*publishError\s*\)[\s\S]{0,600}?status:\s*500/.test(route))
+}
+
 console.log(`\n${"═".repeat(70)}`)
 console.log(`D-ID INTEGRATION — ${pass} passed, ${fail} failed`)
 if (fail > 0) {

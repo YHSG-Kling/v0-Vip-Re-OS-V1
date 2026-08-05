@@ -7,6 +7,7 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { DECOMMISSIONED_PROVIDERS } from "@/lib/platform/provider-posture"
 
 // Service check configuration
 const SERVICE_CHECKS: Record<
@@ -219,6 +220,10 @@ export async function POST(request: NextRequest) {
     // surface built on top reports a clean bill of health over an empty table.
     const writeFailures: string[] = []
 
+    // Retired vendors found sitting in the ledger. Reported in the response so
+    // a resurrected row is visible rather than silently ignored.
+    const skippedDecommissioned: string[] = []
+
     // Per-provider aggregate across all checked rows (service_status is
     // per-brokerage; the notice proposal is platform-wide, so a provider only
     // counts as platform-down when NO row of it came back healthy this run).
@@ -230,6 +235,21 @@ export async function POST(request: NextRequest) {
     // Process each service
     for (const service of services || []) {
       const serviceKey = service.service_key
+
+      // A RETIRED VENDOR IS NOT A SERVICE TO MONITOR. m372 deleted the heygen
+      // and vapi rows on the owner's ruling, but a re-seed, a restored backup or
+      // a hand-inserted row could put a retired vendor back on this board — and
+      // it would poll forever as 'unknown', because a decommissioned vendor by
+      // definition has no check function. Permanently-unknown rows sitting next
+      // to real ones is what trains an operator to stop reading a health page.
+      //
+      // The set NAMES the vendor in order to EXCLUDE it, which is the same
+      // allowlist-not-ban discipline the vendor-retirement guard enforces
+      // everywhere else. Skipped rows are reported, never silently dropped.
+      if (DECOMMISSIONED_PROVIDERS.has(serviceKey)) {
+        skippedDecommissioned.push(serviceKey)
+        continue
+      }
       let checkResult: {
         status: RawCheckStatus
         responseTimeMs: number
@@ -514,7 +534,7 @@ export async function POST(request: NextRequest) {
         : {}),
       started_at: new Date(startTime).toISOString(),
       completed_at: new Date().toISOString(),
-      metadata: { results, writeFailures },
+      metadata: { results, writeFailures, skippedDecommissioned },
     })
 
     return NextResponse.json({
@@ -523,6 +543,7 @@ export async function POST(request: NextRequest) {
       durationMs,
       results,
       ...(wroteNothing ? { writeFailures } : {}),
+      ...(skippedDecommissioned.length ? { skippedDecommissioned } : {}),
     })
   } catch (error) {
     const durationMs = Date.now() - startTime

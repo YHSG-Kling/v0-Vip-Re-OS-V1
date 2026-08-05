@@ -179,6 +179,40 @@ console.log("\n═══ 5. The renamed objects agree with the live schema snaps
     stale.length === 0, stale.map((s) => s.file).join(", "))
 }
 
+console.log("\n═══ 6. The exclusion set has a CONSUMER on the monitoring rail ═══")
+{
+  // §2 proves DECOMMISSIONED_PROVIDERS still NAMES both vendors. That is
+  // necessary and it is not sufficient: a set nothing reads excludes nothing.
+  //
+  // This is not hypothetical. service_status carried live rows for both retired
+  // vendors until m372 deleted them — the health cron iterates that table one
+  // check per row, so both were polled every run and rendered on
+  // /dashboard/system as providers whose health an operator is invited to care
+  // about. Neither has a check function, so both resolved to 'unknown' forever.
+  // The set existed, was correct, and no consumer on this rail ever asked it.
+  //
+  // Asserting the CONSTRUCT, not a spelling: the cron must import the set and
+  // branch on it inside the per-service loop. A mention in a comment cannot
+  // satisfy this — code() strips comments before the scan.
+  const cron = code(read("app/api/cron/health-check/route.ts"))
+  ok("the health cron imports the exclusion set rather than re-listing vendors",
+    /import\s*\{[^}]*DECOMMISSIONED_PROVIDERS[^}]*\}\s*from/.test(cron))
+  ok("...and actually branches on it, so a resurrected ledger row is skipped",
+    /DECOMMISSIONED_PROVIDERS\.has\s*\(/.test(cron))
+  // Name-presence would pass on a declared-but-unused array. Assert it is both
+  // WRITTEN TO at the skip and READ BACK into what the run reports.
+  ok("...and the skip is REPORTED, never silent — a resurrected row must be visible",
+    /skippedDecommissioned\.push\s*\(/.test(cron) &&
+    /metadata:\s*\{[^}]*skippedDecommissioned/.test(cron))
+
+  // The migration that cleared the rows must stay in the tree; without it a
+  // fresh environment seeds the retired vendors straight back in.
+  const mig = read("supabase/migrations/m372-drop-decommissioned-provider-monitoring.sql")
+  ok("the migration that cleared the retired monitoring rows is still present",
+    /DELETE\s+FROM\s+public\.service_status/i.test(mig) &&
+    /'heygen'/.test(mig) && /'vapi'/.test(mig))
+}
+
 console.log(`\n${"═".repeat(70)}`)
 console.log(`VENDOR RETIREMENT — ${pass} passed, ${fail} failed`)
 if (fail > 0) {
