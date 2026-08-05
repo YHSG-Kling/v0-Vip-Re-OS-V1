@@ -829,50 +829,98 @@ export async function scheduleShowingFromAttendee(params: {
 
 // ─── POST-EVENT: REQUEST FEEDBACK FROM ATTENDEE ──────────────────────────────
 
+/**
+ * Ask one open-house attendee for their feedback.
+ *
+ * WHAT THIS USED TO DO, AND WHY IT COULD NOT BE WIRED AS WRITTEN. It sent
+ * nothing. It stamped `open_house_attendees.feedback_collected_at = now()` and
+ * returned success — recording that feedback had been COLLECTED at the moment
+ * it was merely REQUESTED, for a request that was never composed or dispatched.
+ * That column has a real writer already (open-house-automation.ts:submitFeedback,
+ * which stamps it alongside the rating and comments the visitor actually gave),
+ * and two screens read it as truth: this listing's post-event panel filters
+ * "awaiting feedback" on `!feedback_collected_at`, so every attendee asked would
+ * have vanished from the follow-up list having said nothing at all.
+ *
+ * MERGE, not deletion. The named rival that really sends is
+ * app/actions/open-house-automation.ts:sendFeedbackRequestToAttendee — it builds
+ * the feedback URL and calls sendFeedbackRequest, and it reads that sender's
+ * verdict instead of assuming delivery. The one thing it does NOT do is bound
+ * the tenant: it resolves the attendee through the RLS client, and the live
+ * policy on open_house_attendees is `brokerage_id IS NULL OR brokerage_id =
+ * current_user_brokerage_id()`, so an attendee row whose brokerage_id was never
+ * stamped is visible to EVERY brokerage. That check is the capability this
+ * function has and the rival lacks, so it is what survives here: the ownership
+ * proof is done first, against the true stored tenant read through the service
+ * client, and an untenanted row is refused outright rather than silently
+ * accepted. Delivery is then delegated to the sender that exists. Nothing
+ * writes a timestamp claiming feedback that has not arrived.
+ */
 export async function requestFeedbackFromAttendee(params: {
   attendeeId: string
-  eventId: string
   listingId: string
-  brokerageId?: string  // ignored — derived from session
-  agentId?: string  // ignored — derived from session
 }) {
   if (!isValidUUID(params.attendeeId)) return { success: false, error: "Invalid attendee ID" }
 
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
 
-  const supabase = await createClient()
-
-  // Verify attendee belongs to caller's brokerage
-  const { data: attendee } = await supabase
+  // Read the STORED tenant through the service client. Reading it through RLS
+  // would hand back an untenanted row without saying so, which is the whole
+  // hole this check exists to close.
+  const svc = createServiceClient()
+  const { data: attendee, error: readErr } = await svc
     .from("open_house_attendees")
-    .select("brokerage_id")
+    .select("id, brokerage_id, contact_id, feedback_collected_at")
     .eq("id", params.attendeeId)
     .maybeSingle()
-  if (!attendee || attendee.brokerage_id !== auth.brokerageId) {
-    return { success: false, error: "Forbidden" }
+
+  if (readErr) return { success: false, error: readErr.message }
+  if (!attendee) return { success: false, error: "Attendee not found" }
+  if (!attendee.brokerage_id) {
+    return {
+      success: false,
+      error: "This attendee record has no brokerage on it — it cannot be shown to belong to you",
+    }
+  }
+  if (attendee.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
+
+  if (attendee.feedback_collected_at) {
+    return { success: false, error: "This attendee has already given feedback" }
   }
 
-  const { error } = await supabase
-    .from("open_house_attendees")
-    .update({ feedback_collected_at: new Date().toISOString() })
-    .eq("id", params.attendeeId)
-    .eq("brokerage_id", auth.brokerageId)
-    .is("feedback_collected_at", null)
-
-  if (error) return { success: false, error: error.message }
+  // Delegate delivery to the sender that actually sends, and return ITS verdict.
+  const { sendFeedbackRequestToAttendee } = await import("@/app/actions/open-house-automation")
+  const sent = await sendFeedbackRequestToAttendee(params.attendeeId)
+  if (!sent.success) {
+    return { success: false, error: sent.error ?? "The feedback request was not delivered" }
+  }
 
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
-  return { success: true }
+  return { success: true, feedbackUrl: sent.feedbackUrl ?? null }
 }
 
 // ─── POST-EVENT: GENERATE AI SUMMARY ─────────────────────────────────────────
 
-export async function generateOpenHouseAISummary(params: {
-  eventId: string
-  listingId: string
-  brokerageId?: string  // ignored — derived from session
-}) {
+/**
+ * A debrief of who actually walked through the door.
+ *
+ * This reads open_house_attendees — the table endOpenHouseEvent's scoring pass
+ * writes — so it can speak for any completed event. Its neighbour
+ * open-house-automation.ts:generatePerformanceInsights reads
+ * open_house_analytics instead, and the only writer of that table is
+ * open-house-automation.ts:createOpenHouseEvent, which is NOT the create path
+ * the open-house screen uses (that is seller-open-house.ts:createOpenHouseEvent,
+ * eighty lines above). Events made through the product therefore have no
+ * analytics row and the AI insights card answers "Analytics data not found"
+ * forever. These two are not duplicates: one summarises visitors, the other
+ * grades a row that does not exist yet.
+ *
+ * The select is narrowed to the fields the summary actually says out loud —
+ * email and phone were being read and never used, which is PII fetched for
+ * nothing.
+ */
+export async function generateOpenHouseAISummary(params: { eventId: string }) {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
 
@@ -881,11 +929,17 @@ export async function generateOpenHouseAISummary(params: {
 
   const supabase = await createClient()
 
-  const { data: attendees } = await supabase
+  const { data: attendees, error: attendeeErr } = await supabase
     .from("open_house_attendees")
-    .select("name, email, phone, working_with_agent, interest_level, ai_lead_score, notes")
+    .select("name, working_with_agent, interest_level, ai_lead_score, notes")
     .eq("event_id", params.eventId)
     .eq("brokerage_id", auth.brokerageId)
+
+  // A refused read is not an empty open house. `data ?? []` would have rendered
+  // an RLS denial as "nobody came".
+  if (attendeeErr) {
+    return { success: false, error: `Could not read the attendee list: ${attendeeErr.message}` }
+  }
 
   if (!attendees?.length) {
     return { success: true, summary: "No attendees recorded for this open house event." }
@@ -923,25 +977,121 @@ export async function generateOpenHouseAISummary(params: {
 
 // ─── KIOSK: LOAD EVENT INFO (public — no auth) ───────────────────────────────
 
-export async function getOpenHouseEventPublic(eventId: string) {
+/**
+ * THE ONLY UNAUTHENTICATED READER IN THIS FILE.
+ *
+ * It is reached from /open-house/[eventId]/signin, a tablet on a hall table
+ * that anyone at the event can pick up, and it runs on the SERVICE client, so
+ * RLS is not a second line of defence — whatever this returns is public. Every
+ * field below is something a stranger standing in the doorway can already see,
+ * and everything else is deliberately absent:
+ *
+ *   NOT returned: listing_id, brokerage_id, agent_id, the agent's users.id or
+ *   email, list_price, max_attendees, the event's internal notes, and anything
+ *   at all about other attendees. The page this replaces handed its client
+ *   component the raw listing row (brokerage_id and agent_id included) plus the
+ *   agent's id and email address — all of which are serialised into the public
+ *   HTML payload.
+ *
+ * STATUS. The old filter was `.eq("status", "scheduled")`. open_house_events'
+ * live CHECK constraint is scheduled | marketing | active | completed |
+ * cancelled — so the moment an event went 'active', which is what it is DURING
+ * the open house, this returned null and the sign-in kiosk 404'd at exactly the
+ * hour it exists for. The three states below are the ones checkInAttendee will
+ * still accept a check-in for; completed and cancelled are refused by both,
+ * which is why they match.
+ *
+ * IDENTITY CLASSES. open_house_events.agent_id FKs agents(id) — verified live.
+ * The page looked that value up in `users` by id: an agents.id used in the
+ * users.id space, matching nothing, so no agent name has ever appeared on the
+ * kiosk. Resolving agents -> agents.user_id -> users is the fix; no `??`
+ * bridges the two spaces.
+ */
+export async function getOpenHouseEventPublic(eventId: string): Promise<{
+  eventId: string
+  eventDate: string
+  startTime: string | null
+  endTime: string | null
+  listing: { address: string; city: string | null; state: string | null } | null
+  brokerageName: string | null
+  branding: { appName: string | null; logoUrl: string | null; primaryColor: string | null } | null
+  agent: { displayName: string | null; photoUrl: string | null } | null
+} | null> {
   if (!isValidUUID(eventId)) return null
 
   const serviceClient = createServiceClient()
 
-  const { data: event } = await serviceClient
+  // ONE string literal — a select built by concatenation loses supabase-js's
+  // row inference and degrades every field access to GenericStringError.
+  const { data: event, error: eventErr } = await serviceClient
     .from("open_house_events")
-    .select(`
-      id, event_date, start_time, end_time, description, status,
-      listings:listing_id (
-        address, city, state, zip, list_price,
-        brokerages:brokerage_id (name)
-      )
-    `)
+    .select(
+      "id, event_date, start_time, end_time, status, brokerage_id, agent_id, listings:listing_id (address, city, state, brokerages:brokerage_id (name))"
+    )
     .eq("id", eventId)
-    .eq("status", "scheduled")
+    .in("status", ["scheduled", "marketing", "active"])
     .maybeSingle()
 
-  return event
+  if (eventErr || !event) return null
+
+  const listingRow = (event.listings ?? null) as unknown as
+    | { address: string | null; city: string | null; state: string | null; brokerages?: { name: string | null } | null }
+    | null
+
+  // Agent display identity: agents.id -> agents.user_id -> users. Name and photo
+  // only; the ids and the email stay on the server.
+  let agent: { displayName: string | null; photoUrl: string | null } | null = null
+  if (event.agent_id) {
+    const { data: agentRow } = await serviceClient
+      .from("agents")
+      .select("user_id, photo_url")
+      .eq("id", event.agent_id)
+      .maybeSingle()
+
+    if (agentRow?.user_id) {
+      const { data: userRow } = await serviceClient
+        .from("users")
+        .select("first_name, last_name")
+        .eq("id", agentRow.user_id)
+        .maybeSingle()
+
+      const displayName =
+        [userRow?.first_name, userRow?.last_name].filter(Boolean).join(" ") || null
+      agent = { displayName, photoUrl: agentRow.photo_url ?? null }
+    }
+  }
+
+  // Brokerage branding, scoped to THIS event's brokerage — never "the first
+  // settings row in the table".
+  let branding: { appName: string | null; logoUrl: string | null; primaryColor: string | null } | null = null
+  if (event.brokerage_id) {
+    const { data: settings } = await serviceClient
+      .from("global_settings")
+      .select("app_name, app_logo_url, primary_color")
+      .eq("brokerage_id", event.brokerage_id)
+      .maybeSingle()
+
+    if (settings) {
+      branding = {
+        appName: settings.app_name ?? null,
+        logoUrl: settings.app_logo_url ?? null,
+        primaryColor: settings.primary_color ?? null,
+      }
+    }
+  }
+
+  return {
+    eventId: event.id,
+    eventDate: event.event_date,
+    startTime: event.start_time ?? null,
+    endTime: event.end_time ?? null,
+    listing: listingRow?.address
+      ? { address: listingRow.address, city: listingRow.city ?? null, state: listingRow.state ?? null }
+      : null,
+    brokerageName: listingRow?.brokerages?.name ?? null,
+    branding,
+    agent,
+  }
 }
 
 // ─── INTELLIGENCE TAB: LOAD POST-EVENT DATA ──────────────────────────────────

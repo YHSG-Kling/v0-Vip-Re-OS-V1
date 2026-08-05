@@ -33,6 +33,10 @@ const REVOKE_ALLOWED_ROLES = new Set([
   "broker", "broker_admin", "admin", "superadmin", "team_lead",
 ])
 
+/** vendor_contact_assignments.scope CHECK vocabulary, verified against the live
+ *  database. Mirrors VendorAccessScope in lib/vendor/assignment-access.ts. */
+const VENDOR_ACCESS_SCOPES = ["pii_basic", "pii_full", "transaction_docs", "financial"] as const
+
 async function requireBrokerageMember(allowed: Set<string>): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string }
   | { ok: false; error: string }
@@ -73,15 +77,41 @@ export async function assignVendorToContactAction(
   const auth = await requireBrokerageMember(ASSIGN_ALLOWED_ROLES)
   if (!auth.ok) return auth
 
+  // Vocabulary gate — vendor_contact_assignments.scope carries a CHECK constraint
+  // (verified against the live schema: pii_basic | pii_full | transaction_docs |
+  // financial). A value outside it is rejected by the column, and the scope is the
+  // least-privilege dial assertVendorAssignedToContact reads, so a silent default
+  // would be a silent privilege change.
+  const scope = input.scope ?? "pii_basic"
+  if (!(VENDOR_ACCESS_SCOPES as readonly string[]).includes(scope)) {
+    return { ok: false, error: `Unknown scope — must be one of: ${VENDOR_ACCESS_SCOPES.join(", ")}` }
+  }
+  // An expiry in the past would grant access that is already dark — the vendor
+  // portal filters on expires_at, so this silently produces a dead grant.
+  let expiresAt: string | null = null
+  if (input.expiresAt) {
+    const t = Date.parse(input.expiresAt)
+    if (Number.isNaN(t)) return { ok: false, error: "Expiry date is not a valid timestamp" }
+    if (t <= Date.now()) return { ok: false, error: "Expiry must be in the future — that grant would already be expired" }
+    expiresAt = new Date(t).toISOString()
+  }
+
   const svc = createServiceClient()
 
   // Sanity: vendor + contact must belong to caller's brokerage. Refusing
-  // cross-tenant grants here even though RLS would, because failing fast at
-  // the action layer gives a clearer error message + leaves no DB noise.
-  const [{ data: vendor }, { data: contact }] = await Promise.all([
+  // cross-tenant grants here even though RLS would, because this reads through
+  // the SERVICE client, which bypasses RLS entirely — the tenant boundary on
+  // this path is these comparisons and nothing else. Errors are destructured:
+  // a refused read resolving to `data: null` would otherwise read as
+  // "vendor not found" and mask a real failure.
+  const [vendorRes, contactRes] = await Promise.all([
     svc.from("vendors").select("id, brokerage_id, access_level").eq("id", input.vendorId).maybeSingle(),
     svc.from("contacts").select("id, brokerage_id").eq("id", input.contactId).maybeSingle(),
   ])
+  if (vendorRes.error)  return { ok: false, error: vendorRes.error.message }
+  if (contactRes.error) return { ok: false, error: contactRes.error.message }
+  const vendor  = vendorRes.data
+  const contact = contactRes.data
   if (!vendor)  return { ok: false, error: "Vendor not found" }
   if (!contact) return { ok: false, error: "Contact not found" }
   if (vendor.brokerage_id  !== auth.brokerageId) return { ok: false, error: "Vendor belongs to another brokerage" }
@@ -89,11 +119,12 @@ export async function assignVendorToContactAction(
 
   // Transaction is optional but must match brokerage if provided
   if (input.transactionId) {
-    const { data: tx } = await svc
+    const { data: tx, error: txErr } = await svc
       .from("transactions")
       .select("id, brokerage_id")
       .eq("id", input.transactionId)
       .maybeSingle()
+    if (txErr) return { ok: false, error: txErr.message }
     if (!tx) return { ok: false, error: "Transaction not found" }
     if (tx.brokerage_id !== auth.brokerageId) {
       return { ok: false, error: "Transaction belongs to another brokerage" }
@@ -101,49 +132,73 @@ export async function assignVendorToContactAction(
   }
 
   // Reactivate any prior revoked assignment for this (vendor, contact, tx)
-  // OR insert fresh. The uq_vca_active unique index enforces "one active per tuple".
-  const { data: existing } = await svc
+  // OR insert fresh. The uq_vca_active unique index enforces "one active per
+  // tuple" over COALESCE(transaction_id, all-zero uuid).
+  //
+  // BUG THIS REPLACES: the lookup used `.eq("transaction_id", null)`. PostgREST
+  // renders that as `transaction_id=eq.null`, which matches NO rows — SQL NULL
+  // is never equal to anything. So for the common contact-level grant (no
+  // transaction) the reactivate branch was unreachable: every re-grant fell
+  // through to INSERT and collided with uq_vca_active, and re-granting a
+  // previously revoked vendor failed with a raw unique-violation.
+  let existingQ = svc
     .from("vendor_contact_assignments")
     .select("id, status")
+    .eq("brokerage_id", auth.brokerageId)
     .eq("vendor_id", input.vendorId)
     .eq("contact_id", input.contactId)
-    .eq("transaction_id", input.transactionId ?? null as any)
-    .maybeSingle()
+  existingQ = input.transactionId
+    ? existingQ.eq("transaction_id", input.transactionId)
+    : existingQ.is("transaction_id", null)
+  // Newest first + limit(1): uq_vca_active only constrains ACTIVE rows, so this
+  // tuple can legitimately hold several revoked rows. maybeSingle() would throw
+  // on those instead of reusing one.
+  const { data: existingRows, error: existingErr } = await existingQ
+    .order("status", { ascending: true })   // 'active' sorts before 'expired'/'revoked'
+    .order("granted_at", { ascending: false })
+    .limit(1)
+  if (existingErr) return { ok: false, error: existingErr.message }
+  const existing = existingRows?.[0] ?? null
 
   let assignmentId: string
+  let reactivated = false
 
   if (existing && existing.status === "active") {
     assignmentId = existing.id as string
   } else if (existing) {
     // Reactivate the prior revoked/expired row
-    const { error } = await svc
+    const { error, count } = await svc
       .from("vendor_contact_assignments")
       .update({
+        brokerage_id:  auth.brokerageId,
         status:        "active",
         granted_at:    new Date().toISOString(),
         assigned_by:   auth.userId,
         revoked_at:    null,
         revoked_by:    null,
         revoke_reason: null,
-        scope:         input.scope ?? "pii_basic",
-        expires_at:    input.expiresAt ?? null,
+        scope,
+        expires_at:    expiresAt,
         notes:         input.notes ?? null,
-      })
+      }, { count: "exact" })
       .eq("id", existing.id as string)
+      .eq("brokerage_id", auth.brokerageId)
     if (error) return { ok: false, error: error.message }
+    if ((count ?? 0) === 0) return { ok: false, error: "Could not reactivate the prior assignment — nothing was granted." }
     assignmentId = existing.id as string
+    reactivated = true
   } else {
     const { data: inserted, error } = await svc
       .from("vendor_contact_assignments")
       .insert({
+        brokerage_id:   auth.brokerageId,
         vendor_id:      input.vendorId,
         contact_id:     input.contactId,
         transaction_id: input.transactionId ?? null,
-        brokerage_id:   auth.brokerageId,
         assigned_by:    auth.userId,
-        scope:          input.scope ?? "pii_basic",
+        scope,
         status:         "active",
-        expires_at:     input.expiresAt ?? null,
+        expires_at:     expiresAt,
         notes:          input.notes ?? null,
       })
       .select("id")
@@ -151,6 +206,23 @@ export async function assignVendorToContactAction(
     if (error || !inserted) return { ok: false, error: error?.message ?? "Insert failed" }
     assignmentId = inserted.id as string
   }
+
+  // Granting an outside party access to a client's PII is an auditable event.
+  await svc.from("audit_log").insert({
+    after: {
+      brokerage_id:   auth.brokerageId,
+      vendor_id:      input.vendorId,
+      contact_id:     input.contactId,
+      transaction_id: input.transactionId ?? null,
+      scope,
+      expires_at:     expiresAt,
+      reactivated,
+    },
+    user_id:     auth.userId,
+    action:      "vendor_contact_access.granted",
+    entity_type: "vendor_contact_assignment",
+    entity_id:   assignmentId,
+  })
 
   revalidatePath("/dashboard/vendors")
   revalidatePath("/portal/vendor")
@@ -167,19 +239,40 @@ export async function revokeVendorContactAccessAction(params: {
   if (!auth.ok) return auth
 
   const svc = createServiceClient()
-  const { error } = await svc
+  // A REVOKE THAT MATCHED NO ROW MUST NEVER REPORT SUCCESS. postgrest resolves an
+  // UPDATE that matches zero rows as a plain success, so without count:"exact"
+  // this returned { ok: true } — and the operator walked away believing a vendor's
+  // access to a client's PII had been cut when the grant was still live. Every
+  // filter below can legitimately miss (wrong brokerage, already revoked, bad id),
+  // which is precisely why the zero case has to be loud.
+  const { error, count } = await svc
     .from("vendor_contact_assignments")
     .update({
       status:        "revoked",
       revoked_at:    new Date().toISOString(),
       revoked_by:    auth.userId,
       revoke_reason: params.reason ?? null,
-    })
+    }, { count: "exact" })
     .eq("id", params.assignmentId)
     .eq("brokerage_id", auth.brokerageId)
     .eq("status", "active")
 
   if (error) return { ok: false, error: error.message }
+  if ((count ?? 0) === 0) {
+    return {
+      ok: false,
+      error: "No ACTIVE assignment matched — access was NOT revoked. It may already be revoked, or it belongs to another brokerage.",
+    }
+  }
+
+  await svc.from("audit_log").insert({
+    after:       { brokerage_id: auth.brokerageId, assignment_id: params.assignmentId, revoke_reason: params.reason ?? null, revoked_by: auth.userId },
+    user_id:     auth.userId,
+    action:      "vendor_contact_access.revoked",
+    entity_type: "vendor_contact_assignment",
+    entity_id:   params.assignmentId,
+  })
+
   revalidatePath("/dashboard/vendors")
   revalidatePath("/portal/vendor")
   return { ok: true }

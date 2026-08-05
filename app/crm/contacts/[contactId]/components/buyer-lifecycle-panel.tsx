@@ -14,7 +14,10 @@ import {
   validateBuyerRollback,
   validateBuyerReactivation,
   checkBuyerFinancialVerification,
+  getBuyerLifecycleStatistics,
+  getBuyersInSpecificState,
 } from "@/app/actions/buyer-lifecycle-core"
+import Link from "next/link"
 import { getStateDefinition, getStateIndex, BUYER_LIFECYCLE_STATES } from "@/lib/buyer-lifecycle/lifecycle-definitions"
 import type { BuyerState } from "@/lib/buyer-lifecycle/lifecycle-definitions"
 import type { LifecycleHistoryEntry } from "@/lib/buyer-lifecycle/lifecycle-logger"
@@ -299,6 +302,18 @@ export function BuyerLifecyclePanel({ contactId, agentId, brokerageId, userRole 
   const [preflight,       setPreflight]       = useState<Preflight | null>(null)
   const [preflightLoading, setPreflightLoading] = useState(false)
 
+  // ── Brokerage-wide cohort ────────────────────────────────────────────────
+  // getBuyerLifecycleStatistics and getBuyersInSpecificState were both complete
+  // and both unreachable. Neither takes a brokerage id any more: they resolve
+  // the tenant from the session, because both read through a SERVICE-ROLE
+  // client and a caller-supplied brokerage id was therefore a read of any
+  // brokerage's buyer counts and contact ids by anyone signed in.
+  const [cohort, setCohort] = useState<
+    | { kind: "loading" }
+    | { kind: "error"; message: string }
+    | { kind: "ready"; totalBuyers: number; inThisState: number; peerContactIds: string[] }
+  >({ kind: "loading" })
+
   // ── Load all data in parallel on mount ──────────────────────────────────
   useEffect(() => {
     let cancelled = false
@@ -324,6 +339,45 @@ export function BuyerLifecyclePanel({ contactId, agentId, brokerageId, userRole 
     load()
     return () => { cancelled = true }
   }, [contactId, userRole])
+
+  // ── Load the brokerage cohort for whatever state this buyer is in ────────
+  useEffect(() => {
+    if (!currentState) {
+      setCohort({ kind: "ready", totalBuyers: 0, inThisState: 0, peerContactIds: [] })
+      return
+    }
+
+    let cancelled = false
+    const state = currentState
+    setCohort({ kind: "loading" })
+
+    async function loadCohort() {
+      const [stats, peers] = await Promise.all([
+        getBuyerLifecycleStatistics(),
+        getBuyersInSpecificState({ state, limit: 25 }),
+      ])
+      if (cancelled) return
+
+      // Both readers return a verdict. A refusal is shown as a refusal — the
+      // one thing this must never do is render "0 buyers" over a denied read.
+      if (!stats.ok) { setCohort({ kind: "error", message: stats.error }); return }
+      if (!peers.ok) { setCohort({ kind: "error", message: peers.error }); return }
+
+      setCohort({
+        kind: "ready",
+        totalBuyers: stats.statistics.totalBuyers,
+        inThisState: stats.statistics.byState?.[state] ?? 0,
+        peerContactIds: peers.contactIds.filter((id) => id !== contactId),
+      })
+    }
+
+    loadCohort().catch((err) => {
+      if (cancelled) return
+      setCohort({ kind: "error", message: err instanceof Error ? err.message : "Cohort read failed" })
+    })
+
+    return () => { cancelled = true }
+  }, [currentState, contactId])
 
   // ── Governance pre-flight for the pending transition ─────────────────────
   // Runs the validator that matches the SHAPE of the move: a move INTO
@@ -539,6 +593,75 @@ export function BuyerLifecyclePanel({ contactId, agentId, brokerageId, userRole 
             </div>
           )}
         </section>
+
+        {/* ═══ BROKERAGE COHORT ═════════════════════════════════════════════ */}
+        {currentState && (
+          <section className="rounded-lg border border-border bg-card p-5 space-y-3">
+            <h3 className="text-sm font-semibold">Everyone else at this stage</h3>
+
+            {cohort.kind === "loading" && (
+              <p className="text-sm text-muted-foreground flex items-center gap-2">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Reading your brokerage&apos;s buyer pipeline…
+              </p>
+            )}
+
+            {cohort.kind === "error" && (
+              <p className="text-sm text-amber-800">
+                The pipeline could not be read — {cohort.message}
+              </p>
+            )}
+
+            {cohort.kind === "ready" && (
+              <>
+                <p className="text-sm text-muted-foreground">
+                  <span className="font-semibold text-foreground">{cohort.inThisState}</span>
+                  {" of your brokerage's "}
+                  <span className="font-semibold text-foreground">{cohort.totalBuyers}</span>
+                  {" buyers are in "}
+                  <span className="font-medium">{currentDef?.label ?? currentState}</span>.
+                </p>
+
+                {cohort.peerContactIds.length > 0 ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    {cohort.peerContactIds.slice(0, 12).map((id) => (
+                      <Link
+                        key={id}
+                        href={`/crm/contacts/${id}`}
+                        className="rounded-full border border-border bg-muted/40 px-2.5 py-1 text-[11px] font-mono text-muted-foreground hover:text-foreground hover:border-primary/40"
+                      >
+                        {id.slice(0, 8)}
+                      </Link>
+                    ))}
+                    {cohort.peerContactIds.length > 12 && (
+                      <span className="px-1 py-1 text-[11px] text-muted-foreground">
+                        +{cohort.peerContactIds.length - 12} more
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    No other buyer of yours is at this stage right now.
+                  </p>
+                )}
+
+                {/*
+                  A zero here is not proof of an empty pipeline:
+                  lib/buyer-lifecycle/lifecycle-logger.ts:getLifecycleStatistics logs a
+                  failed read and returns a zeroed result, so the surface says what it
+                  can and cannot distinguish rather than asserting a fact it does not
+                  have.
+                */}
+                {cohort.totalBuyers === 0 && (
+                  <p className="text-[11px] text-muted-foreground">
+                    A zero total can also mean the pipeline read was refused — check the server
+                    logs before treating it as an empty brokerage.
+                  </p>
+                )}
+              </>
+            )}
+          </section>
+        )}
 
         {/* ═══ NEXT STEPS ═══════════════════════════════════════════════════ */}
         {nextStates.length > 0 && (

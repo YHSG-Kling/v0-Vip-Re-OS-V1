@@ -34,7 +34,6 @@
     "app/actions/analytics.ts": 2,
     "app/actions/assistant.ts": 3,
     "app/actions/auth.ts": 3,
-    "app/actions/billing.ts": 3,
     "app/actions/blog-cadence-policy.ts": 1,
     "app/actions/blog.ts": 3,
     "app/actions/brand-template-registry.ts": 2,
@@ -42,13 +41,11 @@
     "app/actions/buyer-broker-agreements.ts": 1,
     "app/actions/buyer-execution.ts": 4,
     "app/actions/buyer-financial.ts": 1,
-    "app/actions/buyer-lifecycle-core.ts": 3,
     "app/actions/buyer-move.ts": 1,
     "app/actions/buyer-offer/handle-multi-offer.ts": 2,
     "app/actions/buyer-offer/track-offer-lifecycle.ts": 1,
     "app/actions/buyer-offers.ts": 1,
     "app/actions/calculators.ts": 4,
-    "app/actions/calendar/calendar-sync-actions.ts": 3,
     "app/actions/campaign-sequences.ts": 3,
     "app/actions/cda-portal.ts": 2,
     "app/actions/communications.ts": 3,
@@ -77,7 +74,7 @@
     "app/actions/fb-audience-templates.ts": 1,
     "app/actions/financial-kernel.ts": 2,
     "app/actions/financials.ts": 1,
-    "app/actions/forms-kernel.ts": 3,
+    "app/actions/forms-kernel.ts": 1,
     "app/actions/gamification.ts": 1,
     "app/actions/inbox.ts": 2,
     "app/actions/income-engine.ts": 2,
@@ -115,12 +112,9 @@
     "app/actions/portal-messages.ts": 1,
     "app/actions/portal-seller.ts": 2,
     "app/actions/portal-stream.ts": 2,
-    "app/actions/privacy/data-subject-requests.ts": 3,
     "app/actions/property-buyer-matching.ts": 2,
     "app/actions/seller-coaching.ts": 1,
-    "app/actions/seller-decision-governance.ts": 3,
     "app/actions/seller-offers.ts": 2,
-    "app/actions/seller-open-house.ts": 3,
     "app/actions/seller-showing-sentiment.ts": 1,
     "app/actions/services-config.ts": 2,
     "app/actions/settings/global-settings-actions.ts": 2,
@@ -143,7 +137,6 @@
     "app/actions/twin-studio.ts": 2,
     "app/actions/user-profile.ts": 1,
     "app/actions/vendor-budget.ts": 1,
-    "app/actions/vendor-contact-access.ts": 3,
     "app/actions/vendor-invite.ts": 1,
     "app/actions/vendor-payments.ts": 3,
     "app/actions/vendor-portal.ts": 1,
@@ -646,7 +639,7 @@
     "lib/workflow/variables.ts": 1,
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1
   },
-  "census": 8879,
+  "census": 8876,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -775,7 +768,7 @@
     "app/actions/buyer-fatigue.ts": 9,
     "app/actions/buyer-financial.ts": 7,
     "app/actions/buyer-insights.ts": 2,
-    "app/actions/buyer-lifecycle-core.ts": 17,
+    "app/actions/buyer-lifecycle-core.ts": 16,
     "app/actions/buyer-move.ts": 4,
     "app/actions/buyer-offer/acknowledge-commission.ts": 1,
     "app/actions/buyer-offer/convert-to-transaction.ts": 2,
@@ -885,7 +878,7 @@
     "app/actions/fb-audience-templates.ts": 2,
     "app/actions/financial-kernel.ts": 19,
     "app/actions/financials.ts": 8,
-    "app/actions/forms-kernel.ts": 11,
+    "app/actions/forms-kernel.ts": 10,
     "app/actions/gamification.ts": 7,
     "app/actions/generate-marketing-image.ts": 1,
     "app/actions/generate-page-insight.ts": 1,
@@ -1041,7 +1034,7 @@
     "app/actions/self-heal-rollup.ts": 2,
     "app/actions/seller-cma.ts": 7,
     "app/actions/seller-coaching.ts": 3,
-    "app/actions/seller-decision-governance.ts": 18,
+    "app/actions/seller-decision-governance.ts": 15,
     "app/actions/seller-equity.ts": 1,
     "app/actions/seller-listing/execution-engine.ts": 23,
     "app/actions/seller-listing/record-lifecycle-event.ts": 1,
@@ -2002,6 +1995,7 @@
     "app/dashboard/admin/onboarding-steps/OnboardingStepsClient.tsx": 1,
     "app/dashboard/admin/phone-settings/a2p-card.tsx": 1,
     "app/dashboard/admin/phone-settings/phone-settings-client.tsx": 1,
+    "app/dashboard/admin/privacy/requests/dsar-row-actions.tsx": 1,
     "app/dashboard/admin/scrape-diagnostics/scrape-diagnostics-client.tsx": 1,
     "app/dashboard/admin/scrape-diagnostics/tenant-coverage-card.tsx": 1,
     "app/dashboard/admin/support-tickets/support-queue-client.tsx": 1,
@@ -2483,6 +2477,7 @@
     "app/dashboard/transactions/components/transaction-command-strip.tsx": 1,
     "app/dashboard/transactions/portfolio-risk-scan.tsx": 1,
     "app/dashboard/vendors/premium-placement-panel.tsx": 1,
+    "app/dashboard/vendors/vendor-access-panel.tsx": 1,
     "app/dashboard/vendors/vendor-charges-panel.tsx": 1,
     "app/dashboard/vendors/vendor-directory-client.tsx": 1,
     "app/dashboard/videos/board/video-studio-dialog.tsx": 1,
@@ -5060,7 +5055,6 @@
       "canBuyerScheduleTours",
       "canBuyerSubmitOffers",
       "getBuyerEnabledGates",
-      "isBuyerGateEnabled",
       "checkBuyerFinancialVerification",
       "getBuyerFinancialStatus",
       "recordBuyerFinancialVerification",
@@ -5786,7 +5780,6 @@
       "saveFormDraftAction",
       "loadFormDraftAction",
       "launchEsignAction",
-      "getEsignStatusAction",
       "syncEsignDocsAction",
       "recordPropertyActionAction",
       "getFormFieldsAction",
@@ -6838,11 +6831,8 @@
       "evaluateSellerDecisionReadiness",
       "checkSellerDecisionReady",
       "evaluateListingCMAQuality",
-      "checkCMAReady",
       "validateListingNetSheetValidity",
-      "checkNetSheetValid",
       "evaluateListingPresentationReadiness",
-      "checkPresentationReady",
       "validateSellerDecisionReversal",
       "logSellerDecisionTransition",
       "logCMAQuality",
@@ -10408,6 +10398,9 @@
     "app/dashboard/admin/phone-settings/phone-settings-client.tsx": [
       "PhoneSettingsClient"
     ],
+    "app/dashboard/admin/privacy/requests/dsar-row-actions.tsx": [
+      "DSARRowActions"
+    ],
     "app/dashboard/admin/scrape-diagnostics/scrape-diagnostics-client.tsx": [
       "ScrapeDiagnosticsClient"
     ],
@@ -11898,6 +11891,9 @@
     ],
     "app/dashboard/vendors/premium-placement-panel.tsx": [
       "PremiumPlacementPanel"
+    ],
+    "app/dashboard/vendors/vendor-access-panel.tsx": [
+      "VendorAccessPanel"
     ],
     "app/dashboard/vendors/vendor-charges-panel.tsx": [
       "VendorChargesPanel"
@@ -20027,5 +20023,5 @@
       "reapStaleWorkflowRuns"
     ]
   },
-  "trulyDead": 308
+  "trulyDead": 284
 }

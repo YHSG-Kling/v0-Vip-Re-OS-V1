@@ -24,7 +24,9 @@ import {
   getAgentAssignedVendors,
   getVendorReviews,
 } from "@/app/actions/vendor-marketplace"
-import { Store, FileText, Star, CheckCircle2 } from "lucide-react"
+import { Store, FileText, Star, CheckCircle2, KeyRound } from "lucide-react"
+import { VendorAccessPanel } from "./vendor-access-panel"
+import { listVendorAssignmentsForBrokerageAction } from "@/app/actions/vendor-contact-access"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 import {
@@ -188,6 +190,31 @@ export default async function VendorsPage() {
     createServiceClient(), profile.brokerage_id
   ).catch(() => new Map<string, W9Status>())
 
+  // CLIENT ACCESS GRANTS (vendor_contact_assignments). The read gate
+  // lib/vendor/assignment-access.ts has always enforced these rows; until now
+  // nothing on the platform could create one, so every vendor was locked out by
+  // an empty table rather than by a decision. The list action is brokerage-scoped
+  // server-side; the contact picker below is scoped again here.
+  const accessRes = await listVendorAssignmentsForBrokerageAction()
+  const accessAssignments = accessRes.ok ? accessRes.rows : []
+  const accessLoadError = accessRes.ok ? null : accessRes.error
+  const { data: grantableContacts } = await supabase
+    .from("contacts")
+    .select("id, first_name, last_name, email")
+    .eq("brokerage_id", profile.brokerage_id)
+    .order("last_name", { ascending: true })
+    .limit(500)
+  const contactOptions = (grantableContacts ?? []).map((c: any) => ({
+    id: c.id as string,
+    name: [c.first_name, c.last_name].filter(Boolean).join(" ") || (c.email as string) || "Unnamed contact",
+  }))
+  const vendorOptions = (preferredVendors ?? []).map((v: any) => ({
+    id: v.id as string,
+    name: (v.name as string) ?? "Unnamed vendor",
+  }))
+  const canRevokeAccess = ["broker", "broker_admin", "admin", "superadmin", "team_lead"]
+    .includes(profile.user_type ?? "")
+
   const serviceTypes = [...new Set(vendors.map(v => v.category).filter(Boolean))]
   const assignedCount = assignedVendors?.length || 0
   const pendingRatingsCount = pendingRatings?.length || 0
@@ -219,7 +246,7 @@ export default async function VendorsPage() {
       </div>
 
       <Tabs defaultValue="marketplace" className="space-y-6">
-        <TabsList className="grid w-full grid-cols-4">
+        <TabsList className="grid w-full grid-cols-5">
           <TabsTrigger value="marketplace" className="flex items-center gap-2">
             <Store className="h-4 w-4" />
             <span className="hidden sm:inline">Marketplace</span>
@@ -243,6 +270,15 @@ export default async function VendorsPage() {
             {pendingRatingsCount > 0 && (
               <span className="ml-1 inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
                 {pendingRatingsCount}
+              </span>
+            )}
+          </TabsTrigger>
+          <TabsTrigger value="client-access" className="flex items-center gap-2">
+            <KeyRound className="h-4 w-4" />
+            <span className="hidden sm:inline">Client access</span>
+            {accessAssignments.filter(a => a.status === "active").length > 0 && (
+              <span className="ml-1 inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800">
+                {accessAssignments.filter(a => a.status === "active").length}
               </span>
             )}
           </TabsTrigger>
@@ -463,6 +499,17 @@ export default async function VendorsPage() {
               )}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Tab 5: Client access grants — the write half of the vendor access model */}
+        <TabsContent value="client-access" className="space-y-4">
+          <VendorAccessPanel
+            assignments={accessAssignments}
+            vendors={vendorOptions}
+            contacts={contactOptions}
+            loadError={accessLoadError}
+            canRevoke={canRevokeAccess}
+          />
         </TabsContent>
       </Tabs>
     </div>

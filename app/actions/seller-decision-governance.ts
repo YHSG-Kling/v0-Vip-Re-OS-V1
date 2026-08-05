@@ -16,9 +16,9 @@
 "use server"
 
 import { evaluateDecisionReadiness, isDecisionReady, validateDecisionReversal } from "@/lib/seller-decision-governance/decision-readiness-engine"
-import { evaluateCMAQuality, deriveCMAQualityFromEvents, isCMAReady } from "@/lib/seller-decision-governance/cma-quality-evaluator"
-import { validateNetSheetValidity, deriveNetSheetValidityFromEvents, isNetSheetValid, emitNetSheetExpirationWarning } from "@/lib/seller-decision-governance/net-sheet-validator"
-import { evaluatePresentationReadiness, derivePresentationReadinessFromEvents, isPresentationReady } from "@/lib/seller-decision-governance/presentation-readiness"
+import { evaluateCMAQuality, deriveCMAQualityFromEvents } from "@/lib/seller-decision-governance/cma-quality-evaluator"
+import { validateNetSheetValidity, deriveNetSheetValidityFromEvents, emitNetSheetExpirationWarning } from "@/lib/seller-decision-governance/net-sheet-validator"
+import { evaluatePresentationReadiness, derivePresentationReadinessFromEvents } from "@/lib/seller-decision-governance/presentation-readiness"
 import { logDecisionTransition, logCMAQualityVerified, logNetSheetEvent, logPresentationEvent, logDecisionReversal, queryDecisionHistory } from "@/lib/seller-decision-governance/decision-logger"
 import { getAllStates, getMilestoneStates, getStateDefinition, type SellerDecisionState } from "@/lib/seller-decision-governance/decision-state-definitions"
 import { isValidUUID } from "@/lib/validations"
@@ -118,29 +118,19 @@ export async function evaluateListingCMAQuality(input: {
   }
 }
 
-/**
- * Check if CMA is ready (quick check)
- */
-export async function checkCMAReady(listingId: string) {
-  try {
-    if (!isValidUUID(listingId)) {
-      return { success: false, error: "Invalid listing ID" }
-    }
-    
-    const ready = await isCMAReady(listingId)
-    
-    return {
-      success: true,
-      data: { isReady: ready },
-    }
-  } catch (error) {
-    console.error("[v0] Error checking CMA ready:", error)
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
-    }
-  }
-}
+// CONSOLIDATED AWAY — checkCMAReady(listingId).
+//
+// Named survivor: app/actions/seller-decision-governance.ts:evaluateListingCMAQuality —
+// same module, same argument, already wired at
+// app/dashboard/listings/[id]/offers/components/seller-decision-readiness-card.tsx:190.
+//
+// This is a merge and the port is a no-op by construction. lib/seller-decision-governance
+// /cma-quality-evaluator.ts:isCMAReady IS `deriveCMAQualityFromEvents(listingId)` then
+// `evaluateCMAQuality(input)` then `.isReady` — the survivor runs exactly those two steps
+// and returns the whole result: isReady PLUS qualityScore, the four per-threshold checks,
+// and the engine's own violations and warnings. The deleted wrapper's single boolean is a
+// field of the survivor's return value, which is why the card had to invent causes
+// ("comparable analysis may be missing or outdated") that no engine ever stated.
 
 /**
  * Validate net sheet validity
@@ -186,29 +176,18 @@ export async function validateListingNetSheetValidity(input: {
   }
 }
 
-/**
- * Check if net sheet is valid (quick check)
- */
-export async function checkNetSheetValid(listingId: string) {
-  try {
-    if (!isValidUUID(listingId)) {
-      return { success: false, error: "Invalid listing ID" }
-    }
-    
-    const valid = await isNetSheetValid(listingId)
-    
-    return {
-      success: true,
-      data: { isValid: valid },
-    }
-  } catch (error) {
-    console.error("[v0] Error checking net sheet validity:", error)
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
-    }
-  }
-}
+// CONSOLIDATED AWAY — checkNetSheetValid(listingId).
+//
+// Named survivor: app/actions/seller-decision-governance.ts:validateListingNetSheetValidity —
+// same module, same argument, already wired at
+// app/dashboard/listings/[id]/offers/components/seller-decision-readiness-card.tsx:191.
+//
+// lib/seller-decision-governance/net-sheet-validator.ts:isNetSheetValid IS
+// `deriveNetSheetValidityFromEvents` then `validateNetSheetValidity` then `.isValid`. The
+// survivor runs the same two steps, returns isValid PLUS isExpired, daysRemaining and the
+// validator's warnings, and does one thing more the wrapper never did: when the sheet is
+// inside its last seven days it emits seller.net_sheet.expiration_warning. Deleting the
+// wrapper removes a boolean; nothing that only the wrapper could do exists.
 
 /**
  * Evaluate presentation readiness
@@ -242,29 +221,19 @@ export async function evaluateListingPresentationReadiness(listingId: string) {
   }
 }
 
-/**
- * Check if presentation is ready (quick check)
- */
-export async function checkPresentationReady(listingId: string) {
-  try {
-    if (!isValidUUID(listingId)) {
-      return { success: false, error: "Invalid listing ID" }
-    }
-    
-    const ready = await isPresentationReady(listingId)
-    
-    return {
-      success: true,
-      data: { isReady: ready },
-    }
-  } catch (error) {
-    console.error("[v0] Error checking presentation ready:", error)
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
-    }
-  }
-}
+// CONSOLIDATED AWAY — checkPresentationReady(listingId).
+//
+// Named survivor: app/actions/seller-decision-governance.ts:evaluateListingPresentationReadiness —
+// same module, same argument, already wired at
+// app/dashboard/listings/[id]/offers/components/seller-decision-readiness-card.tsx:192.
+//
+// lib/seller-decision-governance/presentation-readiness.ts:isPresentationReady IS
+// `derivePresentationReadinessFromEvents` then `evaluatePresentationReadiness` then
+// `.presentationReady`. The survivor returns that flag PLUS videoReady, the three
+// per-condition checks and the engine's warnings — and it keeps "no presentation data
+// found" distinct from "not ready", which the deleted wrapper collapsed into a plain
+// false. The distinction is the point: one is a finding about the listing, the other is
+// the engine saying it could not evaluate.
 
 /**
  * Validate decision reversal

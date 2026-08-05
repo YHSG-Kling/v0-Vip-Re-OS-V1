@@ -388,12 +388,20 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
         userId,
       })
       if (result && (result as any).success === false) {
-        const msg = (result as any).complianceBlocked
-          ? ((result as any).message ?? "Post held for compliance review")
-          : "Failed to queue social post"
+        // Both refusals now carry their own reason — a compliance hold, or "no
+        // connected account for this platform". Show the server's own words
+        // rather than a generic failure.
+        const msg =
+          (result as any).message ??
+          ((result as any).complianceBlocked ? "Post held for compliance review" : "Failed to queue social post")
         toast.error(msg)
       } else {
-        toast.success("Queued for social — check Social dashboard")
+        const platforms: string[] = (result as any)?.scheduledPlatforms ?? []
+        toast.success(
+          platforms.length > 0
+            ? `Queued for ${platforms.join(", ")} — check Social dashboard`
+            : "Queued for social — check Social dashboard",
+        )
       }
     } finally {
       setSendingKey(null)

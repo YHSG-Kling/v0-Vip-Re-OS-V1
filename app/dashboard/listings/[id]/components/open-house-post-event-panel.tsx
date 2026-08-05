@@ -29,7 +29,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Users, Star, MessageSquare, UserPlus, Calendar, ExternalLink, Loader2, AlertCircle } from "lucide-react"
-import { scheduleShowingFromAttendee } from "@/app/actions/seller-open-house"
+import { scheduleShowingFromAttendee, requestFeedbackFromAttendee } from "@/app/actions/seller-open-house"
 import Link from "next/link"
 
 type Attendee = {
@@ -101,26 +101,27 @@ export function OpenHousePostEventPanel({ event, attendees, listingId }: OpenHou
   const pendingFeedback = attendees.filter((a) => !hasFeedback(a))
   const totalAttended = attendees.length
 
+  /**
+   * Ask this attendee for feedback.
+   *
+   * This used to POST /api/open-house/request-feedback, which authenticates the
+   * caller but never checks that the ATTENDEE belongs to them — and the live RLS
+   * policy on open_house_attendees is `brokerage_id IS NULL OR brokerage_id =
+   * current_user_brokerage_id()`, so an untenanted attendee row is reachable from
+   * any brokerage. requestFeedbackFromAttendee proves ownership against the
+   * stored tenant first and then delegates to the same sender, so the button
+   * gained a boundary and lost nothing.
+   */
   async function handleRequestFeedback(attendeeId: string) {
     setLoadingFeedback(attendeeId)
     setError(null)
-    try {
-      const res = await fetch("/api/open-house/request-feedback", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ attendeeId }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        setError(data?.error ?? `Feedback request was not sent (HTTP ${res.status}).`)
-        return
-      }
-      setFeedbackSent((prev) => new Set([...prev, attendeeId]))
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Feedback request could not be delivered.")
-    } finally {
-      setLoadingFeedback(null)
+    const res = await requestFeedbackFromAttendee({ attendeeId, listingId })
+    setLoadingFeedback(null)
+    if (!res.success) {
+      setError(res.error ?? "The feedback request was not delivered.")
+      return
     }
+    setFeedbackSent((prev) => new Set([...prev, attendeeId]))
   }
 
   async function handleConvertToContact(attendeeId: string) {

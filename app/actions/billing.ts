@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent } from "@/lib/kernel/events"
 import { toPlanTier } from "@/lib/billing/plan-tier"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
 
 const BILLING_ADMIN_ROLES = new Set(["admin", "broker", "broker_owner", "superadmin", "super_admin"])
 
@@ -426,18 +427,38 @@ export async function cancelSubscription(subscriptionId: string) {
   return { success: true }
 }
 
-// ─── GET ALL BROKERAGES BILLING (SUPERADMIN) ─────────────────────────────────
-export async function getAllBrokeragesBilling() {
-  // SUPERADMIN gate — cross-tenant aggregate. Previously open.
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated) return []
-  const supabase = await createClient()
-  const { data: u } = await supabase
-    .from("users").select("user_type, role").eq("id", ctx.userId).maybeSingle()
-  if (!["superadmin", "super_admin"].includes(u?.user_type ?? u?.role ?? "")) {
-    return []
-  }
+// ═══════════════════════════════════════════════════════════════════════════════
+// PLATFORM (CROSS-TENANT) BILLING
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Everything below this line reads or writes ACROSS EVERY TENANT. The gate is
+// lib/platform/require-capability.ts:requirePlatformCapability — the ONE gate that
+// resolves platform_role the canonical way and answers from the capability map
+// (+ superadmin overrides). It is NOT interchangeable with a tenant-role list:
+// 'admin' and 'broker' are TENANT user_types in this schema, so a list like
+// ["superadmin","admin","broker"] hands every brokerage's broker the whole
+// platform's revenue. The previous gate here checked (user_type ?? role) against
+// two superadmin spellings — closer, but it ignored platform_role entirely, so a
+// real platform 'admin' employee was locked out while the capability-override
+// table that is supposed to govern them was never consulted.
+//
+// These three are DELIBERATELY LEFT UNWIRED — see the report. The wired, more
+// complete cross-tenant read is lib/platform/subscription-oversight.ts
+// (loadSubscriptionOversight), and the wired tier writer is
+// app/actions/superadmin/brokerage-management.ts:changeBrokerageTierAction.
 
+// ─── GET ALL BROKERAGES BILLING (PLATFORM 'billing' CAPABILITY) ──────────────
+export async function getAllBrokeragesBilling(): Promise<
+  | { ok: true; rows: any[] }
+  | { ok: false; error: string }
+> {
+  const gate = await requirePlatformCapability("billing")
+  if (!gate.ok) return { ok: false, error: gate.error ?? "Forbidden" }
+
+  const supabase = await createClient()
+  // A refused cross-tenant read must NOT come back as an empty roster — an empty
+  // platform is indistinguishable from a denied one, and "we have no customers"
+  // is the wrong thing to show a finance operator.
   const { data: brokerages, error } = await supabase
     .from("brokerages")
     .select(`
@@ -453,22 +474,19 @@ export async function getAllBrokeragesBilling() {
     `)
     .order("name", { ascending: true })
 
-  if (error) throw error
-  return brokerages || []
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, rows: brokerages ?? [] }
 }
 
-// ─── GET DELINQUENT ACCOUNTS (SUPERADMIN) ────────────────────────────────────
-export async function getDelinquentAccounts() {
-  // SUPERADMIN gate — cross-tenant financial data.
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated) return []
-  const supabase = await createClient()
-  const { data: u } = await supabase
-    .from("users").select("user_type, role").eq("id", ctx.userId).maybeSingle()
-  if (!["superadmin", "super_admin"].includes(u?.user_type ?? u?.role ?? "")) {
-    return []
-  }
+// ─── GET DELINQUENT ACCOUNTS (PLATFORM 'billing' CAPABILITY) ─────────────────
+export async function getDelinquentAccounts(): Promise<
+  | { ok: true; rows: any[] }
+  | { ok: false; error: string }
+> {
+  const gate = await requirePlatformCapability("billing")
+  if (!gate.ok) return { ok: false, error: gate.error ?? "Forbidden" }
 
+  const supabase = await createClient()
   const { data: delinquent, error } = await supabase
     .from("subscriptions")
     .select(`
@@ -482,70 +500,115 @@ export async function getDelinquentAccounts() {
     .eq("status", "past_due")
     .order("current_period_end", { ascending: true })
 
-  if (error) throw error
-  return delinquent || []
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, rows: delinquent ?? [] }
 }
 
-// ─── MANUAL TIER OVERRIDE (SUPERADMIN) ───────────────────────────────────────
+// ─── MANUAL TIER OVERRIDE (SUPERADMIN ONLY) ──────────────────────────────────
+/**
+ * Move ONE subscription onto a different subscription_tiers row.
+ *
+ * This changes what a customer is charged, so it is the strictest gate in the
+ * file: the platform 'billing' capability AND a resolved platform role of
+ * superadmin — a platform 'admin' employee holds 'billing' for reads but must
+ * not silently reprice a tenant. Records WHO (actor id + role) and WHY (a
+ * required, substantive reason) into audit_log with before/after.
+ *
+ * IDEMPOTENT-SAFE: if the subscription already sits on the requested tier the
+ * call is a no-op — it does not rewrite updated_at, does not re-run the plan_tier
+ * sync, and does not append a second audit entry claiming a change that did not
+ * happen. Callers get { changed: false } so a double-submit cannot manufacture a
+ * pricing-change history.
+ */
 export async function manualTierOverride(
   subscriptionId: string,
   newTierId: string,
   reason: string
-) {
-  const supabase = await createClient()
+): Promise<{ ok: true; changed: boolean; previousTierId: string | null } | { ok: false; error: string }> {
+  const gate = await requirePlatformCapability("billing", { requireWrite: true })
+  if (!gate.ok) return { ok: false, error: gate.error ?? "Forbidden" }
+  if (gate.role !== "superadmin") {
+    return { ok: false, error: "Forbidden — changing what a tenant is charged is superadmin-only" }
+  }
+  const actorId = gate.userId
+  if (!actorId) return { ok: false, error: "Unauthenticated" }
 
-  // Verify user is superadmin
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
-
-  const { data: profile } = await supabase
-    .from("users")
-    .select("user_type, platform_role")
-    .eq("id", user.id)
-    .maybeSingle()
-
-  if (profile?.user_type !== "superadmin" && profile?.platform_role !== "superadmin") {
-    throw new Error("Unauthorized: superadmin only")
+  const trimmedReason = (reason ?? "").trim()
+  if (trimmedReason.length < 10) {
+    return { ok: false, error: "A substantive reason (10+ chars) is required — this is the audit record for a price change" }
   }
 
-  // Look up the brokerage_id BEFORE updating so we can sync plan_tier after.
-  const { data: subRow } = await supabase
+  const supabase = await createClient()
+
+  // Read the CURRENT tier before writing: it is both the idempotency check and
+  // the `before` half of the audit entry.
+  const { data: subRow, error: subErr } = await supabase
     .from("subscriptions")
-    .select("brokerage_id")
+    .select("id, brokerage_id, tier_id")
     .eq("id", subscriptionId)
     .maybeSingle()
+  if (subErr) return { ok: false, error: subErr.message }
+  if (!subRow) return { ok: false, error: "Subscription not found" }
 
-  // Update subscription tier
-  const { error } = await supabase
+  // Refuse a tier id the catalog does not carry — subscriptions.tier_id has an FK
+  // to subscription_tiers, so a bad id would surface as an opaque 23503.
+  const { data: tierRow, error: tierErr } = await supabase
+    .from("subscription_tiers")
+    .select("id, tier_name, monthly_price_cents")
+    .eq("id", newTierId)
+    .maybeSingle()
+  if (tierErr) return { ok: false, error: tierErr.message }
+  if (!tierRow) return { ok: false, error: "Tier not found in the subscription catalog" }
+
+  const previousTierId = (subRow.tier_id as string | null) ?? null
+  if (previousTierId === newTierId) {
+    return { ok: true, changed: false, previousTierId }
+  }
+
+  const { error, count } = await supabase
     .from("subscriptions")
     .update({
       tier_id: newTierId,
       updated_at: new Date().toISOString(),
-    })
+    }, { count: "exact" })
     .eq("id", subscriptionId)
 
-  if (error) throw error
+  if (error) return { ok: false, error: error.message }
+  if ((count ?? 0) === 0) {
+    // An UPDATE matching nothing still succeeds in postgrest. Reporting a price
+    // change that never landed is how a tenant ends up billed on a tier nobody
+    // believes they are on.
+    return { ok: false, error: "No subscription row was updated — the tier was NOT changed." }
+  }
 
   // Sync brokerages.plan_tier so cap-enforcement reflects the new tier
   // immediately. Without this, checkUsageCap would still gate on the old
   // tier's limits until the next Stripe webhook fires.
-  if (subRow?.brokerage_id) {
+  if (subRow.brokerage_id) {
     const { syncBrokeragePlanTier } = await import("@/lib/billing/sync-plan-tier")
-    await syncBrokeragePlanTier(subRow.brokerage_id)
+    await syncBrokeragePlanTier(subRow.brokerage_id as string)
   }
 
-  // Log the override in audit_log
+  // Log the override in audit_log — WHO, WHY, and what it moved from/to.
   await supabase.from("audit_log").insert({
-    user_id: user.id,
+    after: {
+      brokerage_id: subRow.brokerage_id,
+      tier_id: newTierId,
+      tier_name: (tierRow as any).tier_name,
+      monthly_price_cents: (tierRow as any).monthly_price_cents,
+      reason: trimmedReason,
+      actor_platform_role: gate.role,
+    },
+    before: { tier_id: previousTierId },
+    user_id: actorId,
     action: "manual_tier_override",
     entity_type: "subscription",
     entity_id: subscriptionId,
-    after: { tier_id: newTierId, reason },
   })
 
   // Revalidate inside function to avoid module-level server dependency
   const { revalidatePath } = await import("next/cache")
   revalidatePath("/dashboard/superadmin/subscriptions")
 
-  return { success: true }
+  return { ok: true, changed: true, previousTierId }
 }

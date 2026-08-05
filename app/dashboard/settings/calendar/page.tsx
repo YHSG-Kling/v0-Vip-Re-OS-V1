@@ -1,32 +1,142 @@
-import { fetchMyProviderAccounts, syncFromProvider } from "@/app/actions/calendar/calendar-sync-actions"
+import { redirect } from "next/navigation"
+import {
+  fetchMyProviderAccounts,
+  syncFromProvider,
+  connectCalendarProvider,
+  syncEventToProvider,
+  fetchSyncLogs,
+} from "@/app/actions/calendar/calendar-sync-actions"
 import { createClient } from "@/lib/supabase/server"
-import type { CalendarProviderAccountRow } from "@/lib/kernel"
+import type { CalendarProviderAccountRow, CalendarSyncLogRow } from "@/lib/kernel"
 import { CopyToClipboardButton } from "./CopyToClipboardButton"
 
-export default async function CalendarSettingsPage() {
-  let accounts: CalendarProviderAccountRow[] = []
-  let iCalToken = ""
+/**
+ * Calendar Integrations.
+ *
+ * WHAT CHANGED (orphan burn-down). Three complete kernel capabilities reached
+ * this page from nowhere:
+ *
+ *  · connectCalendarProvider — there was NO WAY TO CONNECT A CALENDAR. The
+ *    page listed connected accounts and offered "Sync Now" and "Disconnect"
+ *    for a list that could only ever be empty, because nothing in the product
+ *    called the linker. "No connected calendars" was not a state, it was the
+ *    only state.
+ *  · fetchSyncLogs — "Recent Sync Activity" was a hard-coded sentence,
+ *    "Sync logs will appear here after the first sync". They never did: the
+ *    reader existed and had no caller. calendar_sync_logs is where the kernel
+ *    records that the provider adapter is not enabled, which is precisely the
+ *    fact an agent needs and could not see.
+ *  · syncEventToProvider — push was unreachable; only pull had a button.
+ *
+ * TWO DEFECTS FIXED WHILE WIRING:
+ *  · The iCal token was read with `.select(...).limit(1).single()` — no
+ *    brokerage filter. `.limit(1)` on a multi-tenant table returns AN ARBITRARY
+ *    BROKERAGE'S ROW, so this page could hand one brokerage another's private
+ *    feed token. It is now filtered to the caller's own brokerage_id.
+ *  · That same `.single()` THROWS on zero rows, and the throw was caught by a
+ *    try/catch wrapping the entire page, so a brokerage with no global_settings
+ *    row got "Failed to load calendar settings" for the whole screen —
+ *    including the parts that had nothing to do with settings. It is now a
+ *    maybeSingle() with its error destructured, and a missing token degrades to
+ *    a message about the token only.
+ *
+ * NOTHING ON THIS PAGE CLAIMS DELIVERY. lib/kernel/calendar-sync.ts has no
+ * provider adapter and stores no OAuth token; every push and pull writes a
+ * calendar_sync_logs row with status 'partial' and the reason. The sync history
+ * below prints that reason verbatim, so the screen and the database agree.
+ */
 
-  try {
-    const supabase = await createClient()
-    accounts = await fetchMyProviderAccounts()
+interface Props {
+  searchParams: Promise<{ error?: string; linked?: string; pushed?: string }>
+}
 
-    // Get iCal token from global_settings
-    const { data: settings } = await supabase
-      .from("global_settings")
-      .select("additional_settings")
-      .limit(1)
-      .single()
+const PROVIDER_LABEL: Record<string, string> = {
+  google_calendar: "Google Calendar",
+  outlook: "Outlook",
+}
 
-    const additionalSettings = settings?.additional_settings as Record<string, unknown> | null
-    iCalToken = typeof additionalSettings?.ical_token === "string"
-      ? additionalSettings.ical_token
-      : "generate-token-link-here"
-  } catch {
-    return <div className="text-red-600">Failed to load calendar settings</div>
+const STATUS_STYLE: Record<string, string> = {
+  success: "bg-green-100 text-green-800",
+  partial: "bg-amber-100 text-amber-800",
+  failed: "bg-red-100 text-red-800",
+}
+
+export default async function CalendarSettingsPage({ searchParams }: Props) {
+  const sp = await searchParams
+
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user?.id) {
+    return <div className="p-6 text-red-600">You must be signed in to manage calendar integrations.</div>
   }
 
-  const iCalUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/calendar/ical?token=${iCalToken}`
+  const { data: me, error: meError } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+
+  if (meError) {
+    return <div className="p-6 text-red-600">Could not resolve your brokerage: {meError.message}</div>
+  }
+  const brokerageId = me?.brokerage_id ?? null
+
+  let accounts: CalendarProviderAccountRow[] = []
+  let accountsError: string | null = null
+  try {
+    accounts = await fetchMyProviderAccounts()
+  } catch (e) {
+    accountsError = e instanceof Error ? e.message : "Connected calendars could not be read"
+  }
+
+  // Sync history per account — a refused read is shown as a refusal, never as
+  // an empty history.
+  const logsByAccount = new Map<string, { logs: CalendarSyncLogRow[]; error: string | null }>()
+  for (const account of accounts) {
+    const res = await fetchSyncLogs(account.id)
+    logsByAccount.set(
+      account.id,
+      res.ok ? { logs: res.logs, error: null } : { logs: [], error: res.error },
+    )
+  }
+
+  // Upcoming events the agent can push at a linked calendar.
+  let upcoming: Array<{ id: string; title: string | null; event_type: string; start_at: string }> = []
+  let upcomingError: string | null = null
+  if (brokerageId) {
+    const { data, error } = await supabase
+      .from("calendar_events")
+      .select("id, title, event_type, start_at")
+      .eq("brokerage_id", brokerageId)
+      .gte("start_at", new Date().toISOString())
+      .order("start_at", { ascending: true })
+      .limit(5)
+    if (error) upcomingError = error.message
+    else upcoming = data ?? []
+  }
+
+  // iCal token — scoped to the caller's brokerage, and its absence is a
+  // statement about the token, not about the page.
+  let iCalUrl: string | null = null
+  let iCalNote: string | null = null
+  if (!brokerageId) {
+    iCalNote = "Your account is not attached to a brokerage, so no feed token exists."
+  } else {
+    const { data: settings, error: settingsError } = await supabase
+      .from("global_settings")
+      .select("additional_settings")
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+
+    if (settingsError) {
+      iCalNote = `Feed token could not be read: ${settingsError.message}`
+    } else {
+      const extra = settings?.additional_settings as Record<string, unknown> | null
+      const token = typeof extra?.ical_token === "string" ? extra.ical_token : null
+      if (token) iCalUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/api/calendar/ical?token=${token}`
+      else iCalNote = "No iCalendar feed token has been generated for your brokerage yet."
+    }
+  }
 
   return (
     <div className="space-y-6 p-6">
@@ -35,86 +145,250 @@ export default async function CalendarSettingsPage() {
         <p className="text-gray-600 mt-2">Manage Google Calendar, Outlook, and iCalendar syncing</p>
       </div>
 
-      {/* Connected Accounts */}
+      {sp.error && (
+        <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+          {sp.error}
+        </div>
+      )}
+      {sp.linked === "1" && (
+        <div className="rounded border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
+          Calendar account linked. No OAuth token is stored yet and no provider adapter is enabled,
+          so sync attempts are recorded below rather than delivered.
+        </div>
+      )}
+      {sp.pushed === "1" && (
+        <div className="rounded border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+          Push recorded. Its outcome is in the sync history below — read the status there before
+          assuming the event reached the provider.
+        </div>
+      )}
+
+      {/* ── Link a calendar account ─────────────────────────────────────── */}
+      <div className="bg-white rounded-lg shadow p-4">
+        <h2 className="text-lg font-semibold text-gray-900 mb-1">Link a Calendar Account</h2>
+        <p className="text-sm text-gray-600 mb-4">
+          Registers the account so events can be queued against it. Delivery starts when a provider
+          adapter is enabled; until then every attempt is logged with the reason.
+        </p>
+        <form
+          action={async (formData: FormData) => {
+            "use server"
+            const res = await connectCalendarProvider({
+              providerType: String(formData.get("providerType") ?? ""),
+              providerAccountId: String(formData.get("providerAccountId") ?? ""),
+            })
+            if (!res.ok) redirect(`/dashboard/settings/calendar?error=${encodeURIComponent(res.error)}`)
+            redirect("/dashboard/settings/calendar?linked=1")
+          }}
+          className="flex flex-col gap-3 sm:flex-row sm:items-end"
+        >
+          <div className="flex flex-col gap-1">
+            <label htmlFor="providerType" className="text-xs font-medium text-gray-700">
+              Provider
+            </label>
+            {/* Only the two values calendar_provider_accounts_provider_type_check accepts. */}
+            <select
+              id="providerType"
+              name="providerType"
+              defaultValue="google_calendar"
+              className="border border-gray-300 rounded px-3 py-2 text-sm"
+            >
+              <option value="google_calendar">Google Calendar</option>
+              <option value="outlook">Outlook</option>
+            </select>
+          </div>
+          <div className="flex flex-col gap-1 flex-1">
+            <label htmlFor="providerAccountId" className="text-xs font-medium text-gray-700">
+              Calendar account (email address or provider calendar id)
+            </label>
+            <input
+              id="providerAccountId"
+              name="providerAccountId"
+              required
+              placeholder="you@brokerage.com"
+              className="border border-gray-300 rounded px-3 py-2 text-sm"
+            />
+          </div>
+          <button
+            type="submit"
+            className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium py-2 px-4 rounded"
+          >
+            Link Account
+          </button>
+        </form>
+      </div>
+
+      {/* ── Connected accounts ──────────────────────────────────────────── */}
       <div className="bg-white rounded-lg shadow p-4">
         <h2 className="text-lg font-semibold text-gray-900 mb-4">Connected Accounts</h2>
-        {accounts.length === 0 ? (
-          <p className="text-gray-500">No connected calendars</p>
+        {accountsError ? (
+          <p className="text-red-700 text-sm">Connected calendars could not be read — {accountsError}</p>
+        ) : accounts.length === 0 ? (
+          <p className="text-gray-500">No connected calendars. Link one above.</p>
         ) : (
           <div className="space-y-3">
-            {accounts.map((account) => (
-              <div
-                key={account.id}
-                className="border border-gray-200 rounded p-4 flex justify-between items-start"
-              >
-                <div className="flex-1">
-                  <p className="font-medium text-gray-900">{account.provider_type}</p>
-                  <p className="text-sm text-gray-600">{account.provider_account_id}</p>
-                  {account.last_sync_at && (
-                    <p className="text-xs text-gray-500">
-                      Last synced: {new Date(account.last_sync_at).toLocaleString()}
-                    </p>
-                  )}
-                  <div className="mt-2">
-                    <span
-                      className={`inline-block px-2 py-1 rounded text-xs font-medium ${
-                        account.is_active
-                          ? "bg-green-100 text-green-800"
-                          : "bg-gray-100 text-gray-800"
-                      }`}
-                    >
-                      {account.is_active ? "Active" : "Inactive"}
-                    </span>
+            {accounts.map((account) => {
+              const history = logsByAccount.get(account.id)
+              return (
+                <div key={account.id} className="border border-gray-200 rounded p-4">
+                  <div className="flex justify-between items-start">
+                    <div className="flex-1">
+                      <p className="font-medium text-gray-900">
+                        {PROVIDER_LABEL[account.provider_type] ?? account.provider_type}
+                      </p>
+                      <p className="text-sm text-gray-600">{account.provider_account_id}</p>
+                      {account.last_sync_at && (
+                        <p className="text-xs text-gray-500">
+                          Last sync attempt: {new Date(account.last_sync_at).toLocaleString()}
+                        </p>
+                      )}
+                      <div className="mt-2">
+                        <span
+                          className={`inline-block px-2 py-1 rounded text-xs font-medium ${
+                            account.is_active
+                              ? "bg-green-100 text-green-800"
+                              : "bg-gray-100 text-gray-800"
+                          }`}
+                        >
+                          {account.is_active ? "Active" : "Inactive"}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex gap-2 flex-col">
+                      <form
+                        action={async () => {
+                          "use server"
+                          await syncFromProvider(account.id)
+                        }}
+                      >
+                        <button
+                          type="submit"
+                          className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium py-1 px-3 rounded"
+                        >
+                          Sync Now
+                        </button>
+                      </form>
+                    </div>
+                  </div>
+
+                  {/* Push an upcoming event at THIS account */}
+                  <div className="mt-4 border-t border-gray-100 pt-3">
+                    <p className="text-xs font-medium text-gray-700 mb-2">Push an upcoming event</p>
+                    {upcomingError ? (
+                      <p className="text-xs text-red-700">
+                        Upcoming events could not be read — {upcomingError}
+                      </p>
+                    ) : upcoming.length === 0 ? (
+                      <p className="text-xs text-gray-500">No upcoming events on your calendar.</p>
+                    ) : (
+                      <div className="flex flex-col gap-1.5">
+                        {upcoming.map((ev) => (
+                          <div
+                            key={ev.id}
+                            className="flex items-center justify-between gap-3 rounded bg-gray-50 px-3 py-2"
+                          >
+                            <span className="text-xs text-gray-800 truncate">
+                              {ev.title ?? ev.event_type} · {new Date(ev.start_at).toLocaleString()}
+                            </span>
+                            <form
+                              action={async () => {
+                                "use server"
+                                const res = await syncEventToProvider(ev.id, account.id)
+                                if (!res.ok) {
+                                  redirect(
+                                    `/dashboard/settings/calendar?error=${encodeURIComponent(res.error)}`,
+                                  )
+                                }
+                                redirect("/dashboard/settings/calendar?pushed=1")
+                              }}
+                            >
+                              <button
+                                type="submit"
+                                className="text-xs font-medium text-blue-700 hover:text-blue-900 whitespace-nowrap"
+                              >
+                                Push
+                              </button>
+                            </form>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Sync history for THIS account — the database's own verdict */}
+                  <div className="mt-4 border-t border-gray-100 pt-3">
+                    <p className="text-xs font-medium text-gray-700 mb-2">Recent sync activity</p>
+                    {history?.error ? (
+                      <p className="text-xs text-red-700">
+                        Sync history could not be read — {history.error}
+                      </p>
+                    ) : !history || history.logs.length === 0 ? (
+                      <p className="text-xs text-gray-500">
+                        No sync has been attempted against this account yet.
+                      </p>
+                    ) : (
+                      <div className="flex flex-col gap-1.5">
+                        {history.logs.slice(0, 8).map((log) => (
+                          <div
+                            key={log.id}
+                            className="flex items-start justify-between gap-3 rounded bg-gray-50 px-3 py-2"
+                          >
+                            <div className="min-w-0">
+                              <span className="text-xs font-medium text-gray-800">
+                                {log.direction === "push" ? "Push" : "Pull"}
+                              </span>
+                              <span className="text-xs text-gray-500">
+                                {" "}
+                                · {new Date(log.started_at).toLocaleString()}
+                                {typeof log.event_count === "number" && ` · ${log.event_count} event(s)`}
+                              </span>
+                              {log.error_message && (
+                                <p className="text-xs text-gray-700 mt-0.5">{log.error_message}</p>
+                              )}
+                            </div>
+                            <span
+                              className={`shrink-0 rounded px-2 py-0.5 text-xs font-medium ${
+                                STATUS_STYLE[log.status] ?? "bg-gray-100 text-gray-800"
+                              }`}
+                            >
+                              {log.status}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
-                <div className="flex gap-2 flex-col">
-                  <form
-                    action={async () => {
-                      "use server"
-                      await syncFromProvider(account.id)
-                    }}
-                  >
-                    <button
-                      type="submit"
-                      className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium py-1 px-3 rounded"
-                    >
-                      Sync Now
-                    </button>
-                  </form>
-                  <button className="bg-red-600 hover:bg-red-700 text-white text-sm font-medium py-1 px-3 rounded">
-                    Disconnect
-                  </button>
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </div>
 
-      {/* iCal Export */}
+      {/* ── iCal export ─────────────────────────────────────────────────── */}
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
         <h3 className="font-semibold text-blue-900 mb-3">iCalendar Feed (Read-Only Export)</h3>
         <p className="text-sm text-blue-800 mb-3">
           Share your VIP OS calendar with external tools (Apple Calendar, Thunderbird, etc.)
         </p>
         <div className="bg-white rounded border border-blue-200 p-3">
-          <p className="text-xs text-gray-600 mb-2">Feed URL:</p>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              readOnly
-              value={iCalUrl}
-              className="flex-1 border border-gray-300 rounded px-3 py-2 text-xs font-mono bg-gray-50"
-            />
-            <CopyToClipboardButton text={iCalUrl} />
-          </div>
+          {iCalUrl ? (
+            <>
+              <p className="text-xs text-gray-600 mb-2">Feed URL:</p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  readOnly
+                  value={iCalUrl}
+                  className="flex-1 border border-gray-300 rounded px-3 py-2 text-xs font-mono bg-gray-50"
+                />
+                <CopyToClipboardButton text={iCalUrl} />
+              </div>
+            </>
+          ) : (
+            <p className="text-xs text-gray-700">{iCalNote}</p>
+          )}
         </div>
-      </div>
-
-      {/* Sync Status */}
-      <div className="bg-white rounded-lg shadow p-4">
-        <h3 className="font-semibold text-gray-900 mb-3">Recent Sync Activity</h3>
-        <p className="text-sm text-gray-600">Sync logs will appear here after the first sync</p>
       </div>
     </div>
   )

@@ -15,7 +15,6 @@ import {
   saveFormDraft,
   loadFormDraft,
   launchEsignEnvelope,
-  getEsignStatus,
   syncEsignDocuments,
   recordBuyerPropertyAction,
   loadBuyerSavedProperties,
@@ -145,21 +144,34 @@ export async function launchEsignAction(input: {
   })
 }
 
-// ─── ACTION: getEsignStatusAction ───────────────────────────────────────────
-
-export async function getEsignStatusAction(input: {
-  external_transaction_id: string
-}) {
-  const ctx = await resolveActorContext()
-  if (!ctx) return { success: false, error: "Unauthorized" }
-
-  return getEsignStatus({
-    brokerage_id:            ctx.brokerage_id,
-    external_transaction_id: input.external_transaction_id,
-  })
-}
+// ─── (REMOVED) getEsignStatusAction ─────────────────────────────────────────
+//
+// DELETED as an exact duplicate. The signature-status capability lives entirely
+// in lib/kernel/forms.ts:getEsignStatus; this action was a pass-through that
+// resolved the actor (session -> agents.brokerage_id) and delegated. The SAME
+// kernel function is already reached, with the SAME actor resolution, by
+//   app/api/esign/status/[transactionId]/route.ts:GET
+// which is the wired path: app/components/forms/EsignStatusTracker.tsx polls it
+// via SWR and is mounted at app/portal/[contactId]/offers/page.tsx. The route is
+// the more complete copy — identical inputs plus HTTP status semantics (401/403/
+// 500) and a live polling contract. Nothing had to be ported: the deleted body
+// held no logic of its own, only the delegating call.
 
 // ─── ACTION: syncEsignDocs ───────────────────────────────────────────────────
+//
+// DELIBERATELY LEFT UNWIRED. lib/kernel/forms.ts:syncEsignDocuments FETCHES the
+// provider's document list and explicitly "does NOT write to DB". The wired,
+// strictly more complete writer is
+//   lib/transactions/sync-from-provider.ts:syncTransactionDocumentsFromProvider
+// (+ syncAllForContact), reached from app/portal/[contactId]/documents/page.tsx:
+// same provider.syncDocuments call, plus idempotent upsert into
+// transaction_documents on (transaction_id, provider_source,
+// external_document_id), a staleness throttle, and a last_provider_sync_at stamp.
+// This wrapper is NOT deleted: it carries one capability the survivor lacks —
+// listing_id scoping, for pre-contract listing packets that have no transaction
+// row — and moving that capability onto the survivor means editing
+// lib/transactions/sync-from-provider.ts, which is outside this pass's file set.
+// An unproven port is not a port, so it stays, hardened and unwired.
 
 export async function syncEsignDocsAction(input: {
   external_transaction_id: string

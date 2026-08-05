@@ -184,14 +184,35 @@ export async function listDSARQueueAction(): Promise<
 
 // ── ADMIN: VERIFY IDENTITY ───────────────────────────────────────────────────
 
+/** The identity-proof methods this action accepts. The column carries no CHECK
+ *  constraint (verified against the live schema), so the vocabulary is enforced
+ *  HERE — otherwise a typo becomes a permanent, unreviewable audit record of how
+ *  a legal identity check was performed. */
+const DSAR_IDENTITY_METHODS = ["magic_link", "matching_user", "manual_review", "driver_license"] as const
+export type DSARIdentityMethod = (typeof DSAR_IDENTITY_METHODS)[number]
+
+/** Statuses from which a request may still be worked. 'fulfilled'/'denied'/
+ *  'withdrawn'/'expired' are terminal — verifying identity on a closed request
+ *  would rewrite the record of a legal response after the fact. */
+const DSAR_OPEN_STATUSES = ["received", "in_progress"] as const
+
 export async function verifyDSARIdentityAction(params: {
   requestId: string
-  method:    "magic_link" | "matching_user" | "manual_review" | "driver_license"
+  method:    DSARIdentityMethod
 }): Promise<{ ok: boolean; error?: string }> {
   const auth = await requireFulfillmentRole()
   if (!auth.ok) return auth
+  if (!(DSAR_IDENTITY_METHODS as readonly string[]).includes(params.method)) {
+    return { ok: false, error: `Unknown identity method — must be one of: ${DSAR_IDENTITY_METHODS.join(", ")}` }
+  }
   const svc = createServiceClient()
-  const { error } = await svc
+
+  // An UPDATE that matches nothing SUCCEEDS in postgrest. brokerage_id on this
+  // table is NULLABLE (a public submission we could not attribute lands with
+  // NULL), so `.eq("brokerage_id", ...)` silently matches zero rows for exactly
+  // the requests most likely to be mis-clicked. count:"exact" turns that into a
+  // refusal instead of a green toast over an unverified subject.
+  const { error, count } = await svc
     .from("data_subject_requests")
     .update({
       identity_verified:    true,
@@ -199,10 +220,23 @@ export async function verifyDSARIdentityAction(params: {
       identity_verified_by: auth.userId,
       identity_method:      params.method,
       status:               "in_progress",
-    })
+    }, { count: "exact" })
     .eq("id", params.requestId)
     .eq("brokerage_id", auth.brokerageId)
+    .in("status", [...DSAR_OPEN_STATUSES])
   if (error) return { ok: false, error: error.message }
+  if ((count ?? 0) === 0) {
+    return { ok: false, error: "No open request matched — it may belong to another brokerage, be unattributed, or already be closed. Nothing was verified." }
+  }
+
+  await svc.from("audit_log").insert({
+    after:       { brokerage_id: auth.brokerageId, request_id: params.requestId, identity_method: params.method, verified_by: auth.userId },
+    user_id:     auth.userId,
+    action:      "dsar.identity_verified",
+    entity_type: "data_subject_request",
+    entity_id:   params.requestId,
+  })
+
   revalidatePath("/dashboard/admin/privacy/requests")
   return { ok: true }
 }
@@ -225,14 +259,21 @@ export async function fulfillExportRequestAction(requestId: string): Promise<
   if (!auth.ok) return auth
 
   const svc = createServiceClient()
-  const { data: req } = await svc
+  const { data: req, error: reqErr } = await svc
     .from("data_subject_requests")
     .select("id, request_type, subject_email, subject_user_id, subject_contact_id, brokerage_id, identity_verified, status")
     .eq("id", requestId)
     .maybeSingle()
+  if (reqErr) return { ok: false, error: reqErr.message }
   if (!req) return { ok: false, error: "Request not found" }
   if (req.brokerage_id !== auth.brokerageId) return { ok: false, error: "Forbidden" }
+  // IDENTITY GATES THE EXPORT. This branch must stay ABOVE every read below —
+  // an export that runs before verification hands a stranger another person's
+  // file, which is the failure mode this whole lifecycle exists to prevent.
   if (!req.identity_verified) return { ok: false, error: "Verify identity before fulfilling export" }
+  if (req.status === "denied" || req.status === "withdrawn" || req.status === "expired") {
+    return { ok: false, error: `This request is ${req.status} — reopen it before exporting.` }
+  }
   if (req.request_type === "delete" || req.request_type === "opt_out_sale" || req.request_type === "opt_out_sharing") {
     return { ok: false, error: "Use fulfill-specific action for this request type" }
   }
@@ -243,15 +284,25 @@ export async function fulfillExportRequestAction(requestId: string): Promise<
   // Resolve the subject's contact ids ONCE — every record set below is scoped to
   // the SUBJECT, never the whole brokerage (a data-subject export must not leak
   // other clients' deals).
-  const subjectContactIds: string[] =
-    (await svc.from("contacts").select("id").eq("email", email).eq("brokerage_id", req.brokerage_id))
-      .data?.map((c: any) => c.id) ?? []
+  // Every read below is DESTRUCTURED for `error`. supabase-js RESOLVES a refused
+  // query, so `data ?? []` renders an RLS/permission denial as "we hold nothing
+  // on you" — the single most dangerous shape a legal export can take. Any
+  // failed source aborts the export rather than shipping a silently short bundle.
+  const failedSources: string[] = []
+  const noteFailure = (label: string, err: { message: string } | null) => {
+    if (err) failedSources.push(`${label}: ${err.message}`)
+  }
+
+  const contactIdsRes = await svc.from("contacts").select("id").eq("email", email).eq("brokerage_id", req.brokerage_id)
+  noteFailure("contacts(id)", contactIdsRes.error)
+  const subjectContactIds: string[] = contactIdsRes.data?.map((c: any) => c.id) ?? []
   const idsOrNone = subjectContactIds.length > 0 ? subjectContactIds : ["00000000-0000-0000-0000-000000000000"]
   const idList = idsOrNone.join(",")
   // communications was a writer-less legacy table (burn-down round 6 repoint) — export the WRITTEN
   // stores instead: messages (contact-scoped) + isa_outreach_log (lead-scoped; leads.contact_id).
-  const subjectLeadIds: string[] =
-    (await svc.from("leads").select("id").in("contact_id", idsOrNone)).data?.map((l: any) => l.id) ?? []
+  const leadIdsRes = await svc.from("leads").select("id").in("contact_id", idsOrNone)
+  noteFailure("leads(id)", leadIdsRes.error)
+  const subjectLeadIds: string[] = leadIdsRes.data?.map((l: any) => l.id) ?? []
   const leadIdsOrNone = subjectLeadIds.length > 0 ? subjectLeadIds : ["00000000-0000-0000-0000-000000000000"]
   const [user, contacts, messages, isaOutreach, transactions, offers, showings, consents] = await Promise.all([
     svc.from("users").select("*").eq("email", email).eq("brokerage_id", req.brokerage_id).maybeSingle(),
@@ -271,6 +322,21 @@ export async function fulfillExportRequestAction(requestId: string): Promise<
        .in("contact_id", idsOrNone),
     svc.from("contact_consent_events").select("*").in("contact_id", idsOrNone),
   ])
+
+  noteFailure("users", user.error)
+  noteFailure("contacts", contacts.error)
+  noteFailure("messages", messages.error)
+  noteFailure("isa_outreach_log", isaOutreach.error)
+  noteFailure("transactions", transactions.error)
+  noteFailure("offers", offers.error)
+  noteFailure("showings", showings.error)
+  noteFailure("contact_consent_events", consents.error)
+  if (failedSources.length > 0) {
+    return {
+      ok: false,
+      error: `Export aborted — ${failedSources.length} data source(s) could not be read, so the bundle would be incomplete: ${failedSources.join("; ")}`,
+    }
+  }
 
   const bundle = {
     generated_at:        new Date().toISOString(),
@@ -295,15 +361,32 @@ export async function fulfillExportRequestAction(requestId: string): Promise<
     ],
   }
 
-  await svc
+  const summary = `Export bundle generated with ${bundle.contact_records.length} contact(s), ${bundle.communications.length} communication(s), ${bundle.transactions.length} transaction(s).`
+  const { error: closeErr, count: closeCount } = await svc
     .from("data_subject_requests")
     .update({
       status:              "fulfilled",
       fulfilled_at:        new Date().toISOString(),
       fulfilled_by:        auth.userId,
-      response_summary:    `Export bundle generated with ${bundle.contact_records.length} contact(s), ${bundle.communications.length} communication(s), ${bundle.transactions.length} transaction(s).`,
-    })
+      response_summary:    summary,
+    }, { count: "exact" })
     .eq("id", requestId)
+    .eq("brokerage_id", auth.brokerageId)
+  if (closeErr) return { ok: false, error: `Bundle built but the request could not be closed out: ${closeErr.message}` }
+  if ((closeCount ?? 0) === 0) {
+    return { ok: false, error: "Bundle built but no request row was closed out — refusing to report a fulfilled request that is still open." }
+  }
+
+  // The 45-day clock's answer is a legal event. audit_log is the platform's
+  // existing ledger (already the record for billing overrides and retention
+  // acceptances) — write there rather than standing up a parallel privacy log.
+  await svc.from("audit_log").insert({
+    after:       { brokerage_id: auth.brokerageId, request_id: requestId, subject_email: email, summary, contact_records: bundle.contact_records.length, communications: bundle.communications.length, transactions: bundle.transactions.length },
+    user_id:     auth.userId,
+    action:      "dsar.export_fulfilled",
+    entity_type: "data_subject_request",
+    entity_id:   requestId,
+  })
 
   revalidatePath("/dashboard/admin/privacy/requests")
   return { ok: true, bundle }
@@ -379,17 +462,33 @@ export async function denyDSARRequestAction(params: {
     return { ok: false, error: "Denial reason required (10+ chars — must cite lawful basis)" }
   }
   const svc = createServiceClient()
-  const { error } = await svc
+  // Same zero-match trap as verify: refusing a legal request that was never
+  // actually marked denied is the worst possible combination — the subject is
+  // told no, the record still shows the clock running.
+  const { error, count } = await svc
     .from("data_subject_requests")
     .update({
       status:        "denied",
       denied_reason: params.reason.trim(),
       fulfilled_at:  new Date().toISOString(),
       fulfilled_by:  auth.userId,
-    })
+    }, { count: "exact" })
     .eq("id", params.requestId)
     .eq("brokerage_id", auth.brokerageId)
+    .in("status", [...DSAR_OPEN_STATUSES])
   if (error) return { ok: false, error: error.message }
+  if ((count ?? 0) === 0) {
+    return { ok: false, error: "No open request matched — it may belong to another brokerage, be unattributed, or already be closed. Nothing was denied." }
+  }
+
+  await svc.from("audit_log").insert({
+    after:       { brokerage_id: auth.brokerageId, request_id: params.requestId, denied_reason: params.reason.trim(), denied_by: auth.userId },
+    user_id:     auth.userId,
+    action:      "dsar.request_denied",
+    entity_type: "data_subject_request",
+    entity_id:   params.requestId,
+  })
+
   revalidatePath("/dashboard/admin/privacy/requests")
   return { ok: true }
 }

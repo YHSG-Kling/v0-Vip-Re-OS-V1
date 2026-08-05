@@ -2,6 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { ShieldCheck, AlertTriangle, Clock, Inbox } from "lucide-react"
 import { listDSARQueueAction } from "@/app/actions/privacy/data-subject-requests"
+import { DSARRowActions } from "./dsar-row-actions"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 
@@ -88,6 +89,7 @@ export default async function DSARQueuePage() {
                     <th className="text-right px-4 py-2 font-medium text-muted-foreground">Submitted</th>
                     <th className="text-right px-4 py-2 font-medium text-muted-foreground">Due</th>
                     <th className="text-right px-4 py-2 font-medium text-muted-foreground">Days left</th>
+                    <th className="text-right px-4 py-2 font-medium text-muted-foreground">Answer</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -114,6 +116,15 @@ export default async function DSARQueuePage() {
                         row.is_overdue ? "text-red-600" : row.days_until_due <= 7 ? "text-amber-700" : "text-muted-foreground"
                       }`}>
                         {row.is_overdue ? `${Math.abs(row.days_until_due)}d overdue` : `${row.days_until_due}d`}
+                      </td>
+                      <td className="px-4 py-2.5 text-right">
+                        <DSARRowActions
+                          requestId={row.id}
+                          subjectEmail={row.subject_email}
+                          requestType={row.request_type}
+                          status={row.status}
+                          identityVerified={row.identity_verified}
+                        />
                       </td>
                     </tr>
                   ))}
