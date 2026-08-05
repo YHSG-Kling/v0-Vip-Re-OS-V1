@@ -45,9 +45,34 @@ import { readdirSync, readFileSync, statSync, existsSync, writeFileSync } from "
 import { join, relative } from "node:path"
 
 const root = process.cwd()
-const SKIP_DIRS = new Set([
-  "node_modules", ".next", ".git", "public", "scripts", ".claude", "plugins",
-  "supabase", "coverage", "dist", "build",
+/**
+ * Vendor + build output. These nest legitimately (a package can carry its own
+ * node_modules), so they are skipped at EVERY depth.
+ */
+const SKIP_ANY_DEPTH = new Set([
+  "node_modules", ".next", ".git", "coverage", "dist", "build",
+])
+
+/**
+ * Skipped ONLY as top-level repository directories.
+ *
+ * These were previously in the same set as the vendor dirs, and walk() tested
+ * the bare directory NAME at every depth, so any nested directory that happened
+ * to share a name vanished from the corpus — as an export source AND, more
+ * damagingly, as a REFERENCE source. Four real product directories were
+ * invisible: app/actions/public (server actions), app/api/scripts (routes),
+ * app/dashboard/isa/scripts, and lib/supabase. An export whose only caller
+ * lived in one of them read as orphaned purely because the caller could not be
+ * seen — services/supabase.ts:createBrowserClient was exactly that, referenced
+ * from lib/supabase/client.ts.
+ *
+ * The intent was always to skip the top-level supabase/ migrations directory,
+ * the top-level scripts/ proof corpus (walked separately as proofRoot below),
+ * public/ assets, and the vendored .claude/ + plugins/ trees — never their
+ * same-named descendants.
+ */
+const SKIP_TOP_LEVEL = new Set([
+  "public", "scripts", ".claude", "plugins", "supabase",
 ])
 
 /**
@@ -78,8 +103,13 @@ const SCANNED_ROOTS = ["app", "lib", "services"]
 function walk(dir: string, out: string[] = []): string[] {
   let entries: string[]
   try { entries = readdirSync(dir) } catch { return out }
+  // Anchored, not by bare name. proofRoot below calls walk() STARTING inside
+  // scripts/, where atRoot is false — so the top-level skip never hides the
+  // proof corpus from itself.
+  const atRoot = dir === root
   for (const e of entries) {
-    if (SKIP_DIRS.has(e)) continue
+    if (SKIP_ANY_DEPTH.has(e)) continue
+    if (atRoot && SKIP_TOP_LEVEL.has(e)) continue
     const p = join(dir, e)
     let st
     try { st = statSync(p) } catch { continue }
@@ -288,7 +318,8 @@ const regressionsDead: string[] = []
 // that already runs, and deleting code that is load-bearing.
 //
 //   A. PROOF-ONLY — referenced from scripts/ but from nothing in app/ or lib/.
-//      This guard deliberately excludes scripts/ from the corpus (SKIP_DIRS) so
+//      This guard deliberately excludes the top-level scripts/ from the corpus
+//      (SKIP_TOP_LEVEL — anchored, so app/api/scripts is still measured) so
 //      that "a simulator imports it" never counts as "the product uses it".
 //      That is the right call, and it means these have a proof standing over a
 //      capability no surface reaches yet. Real work, but a different KIND of

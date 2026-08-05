@@ -730,10 +730,9 @@
     "lib/workflow/step-palette.ts": 1,
     "lib/workflow/variables.ts": 1,
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
-    "services/goHighLevelService.ts": 8,
-    "services/supabase.ts": 1
+    "services/goHighLevelService.ts": 8
   },
-  "census": 8891,
+  "census": 8898,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1109,6 +1108,7 @@
     "app/actions/property-alerts/alert-actions.ts": 15,
     "app/actions/property-buyer-matching.ts": 3,
     "app/actions/property-evaluation.ts": 1,
+    "app/actions/public/tos-acceptance.ts": 2,
     "app/actions/push-listing-to-seller-portal.ts": 1,
     "app/actions/push-subscriptions.ts": 3,
     "app/actions/quarterly-review.ts": 1,
@@ -1636,6 +1636,8 @@
     "app/api/recruiting/provision-agent/route.ts": 1,
     "app/api/ref/route.ts": 1,
     "app/api/referrals/thank-you-draft/route.ts": 1,
+    "app/api/scripts/create/route.ts": 1,
+    "app/api/scripts/list/route.ts": 1,
     "app/api/search/buyer-smart-search/route.ts": 1,
     "app/api/seed/users/route.ts": 1,
     "app/api/showings/feedback/[token]/route.ts": 1,
@@ -4057,6 +4059,9 @@
     "lib/storage/signed-doc-url.ts": 1,
     "lib/strategy-learning/close-strategy-loop.ts": 2,
     "lib/strategy-learning/strategy-insights.ts": 2,
+    "lib/supabase/client.ts": 1,
+    "lib/supabase/server.ts": 1,
+    "lib/supabase/service.ts": 1,
     "lib/support/support-sla.ts": 4,
     "lib/support/support-thread.ts": 3,
     "lib/teams/membership.ts": 3,
@@ -6811,6 +6816,10 @@
     "app/actions/property-evaluation.ts": [
       "evaluatePropertyAction"
     ],
+    "app/actions/public/tos-acceptance.ts": [
+      "getCurrentTosVersionAction",
+      "recordTosAcceptanceAction"
+    ],
     "app/actions/push-listing-to-seller-portal.ts": [
       "pushListingToSellerPortal"
     ],
@@ -9101,6 +9110,12 @@
     ],
     "app/api/referrals/thank-you-draft/route.ts": [
       "POST"
+    ],
+    "app/api/scripts/create/route.ts": [
+      "POST"
+    ],
+    "app/api/scripts/list/route.ts": [
+      "GET"
     ],
     "app/api/search/buyer-smart-search/route.ts": [
       "GET"
@@ -19251,6 +19266,15 @@
       "computeStrategyInsights",
       "generateStrategyInsights"
     ],
+    "lib/supabase/client.ts": [
+      "createClient"
+    ],
+    "lib/supabase/server.ts": [
+      "createClient"
+    ],
+    "lib/supabase/service.ts": [
+      "createServiceClient"
+    ],
     "lib/support/support-sla.ts": [
       "evaluateTicketSla",
       "canRateTicket",
@@ -20141,5 +20165,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 376
+  "trulyDead": 375
 }
