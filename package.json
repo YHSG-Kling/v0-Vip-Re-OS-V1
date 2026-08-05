@@ -663,6 +663,7 @@
     "test:listing-draft-gate": "tsx scripts/listing-draft-gate-simulator.ts",
     "test:listing-doc-upload": "tsx scripts/listing-document-upload-simulator.ts",
     "test:orphan-exports": "tsx scripts/orphan-export-guard.ts",
+    "orphan-exports:list": "tsx scripts/orphan-export-guard.ts --list",
     "test:referral-consolidation": "tsx scripts/referral-consolidation-simulator.ts",
     "test:dispatch-recipient-identity": "tsx scripts/dispatch-recipient-identity-simulator.ts",
     "test:touchpoint-visibility": "tsx scripts/scheduled-touchpoint-visibility-simulator.ts",

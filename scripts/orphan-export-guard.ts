@@ -228,12 +228,46 @@ for (const o of orphans) {
 
 const cat = { proofOnly: 0, internal: 0, trulyDead: 0 }
 const deadByFile: Record<string, number> = {}
+/** Category C members, kept so the backlog can actually be READ (see --list). */
+const deadExports: Array<{ file: string; name: string }> = []
 for (const o of orphans) {
   const re = new RegExp(`\\b${o.name.replace(/\$/g, "\\$")}\\b`)
   const selfHits = (useCache.get(o.file)!.match(new RegExp(re.source, "g")) ?? []).length
   if (proofCorpus.some((p) => re.test(p))) cat.proofOnly++
   else if (reachedModule.get(o.file) && selfHits > 1) cat.internal++
-  else { cat.trulyDead++; deadByFile[o.file] = (deadByFile[o.file] ?? 0) + 1 }
+  else {
+    cat.trulyDead++
+    deadByFile[o.file] = (deadByFile[o.file] ?? 0) + 1
+    deadExports.push({ file: o.file, name: o.name })
+  }
+}
+
+/**
+ * `--list` — print category C and exit WITHOUT asserting.
+ *
+ * The C number was unactionable on its own: a burn-down list you cannot read is
+ * just a number that shames you. This enumerates it, densest file first, so the
+ * work can be triaged against real candidates instead of guessed at.
+ *
+ * Read-only and assertion-free ON PURPOSE. It runs before the ratchet below and
+ * exits 0 regardless, so it can never be mistaken for a passing guard run and
+ * can never be wired into the chain as one.
+ */
+if (process.argv.includes("--list")) {
+  const byFile = new Map<string, string[]>()
+  for (const d of deadExports) {
+    if (!byFile.has(d.file)) byFile.set(d.file, [])
+    byFile.get(d.file)!.push(d.name)
+  }
+  const ordered = [...byFile.entries()].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
+  console.log(`\n[category C — referenced NOWHERE] ${cat.trulyDead} exports across ${ordered.length} files\n`)
+  for (const [file, names] of ordered) {
+    console.log(`  ${file}  (${names.length})`)
+    for (const n of names.sort()) console.log(`      ${n}`)
+  }
+  console.log(`\nNOT AN ASSERTION — this is the backlog, not a verdict. Wire these to the`)
+  console.log(`surface they were written for; do not delete them to move the number.`)
+  process.exit(0)
 }
 
 
