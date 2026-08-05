@@ -83,6 +83,45 @@ function code(f: string): string {
 const codeCache = new Map<string, string>()
 for (const f of files) codeCache.set(f, code(f))
 
+/**
+ * A CALL SITE, NOT A MENTION.
+ *
+ * code() strips comments, so prose in a /* *\/ block never counted as a use.
+ * STRING LITERALS survived it, and that hole was load-bearing: 240 exports were
+ * classed "referenced" on the strength of a name appearing inside a string, 231
+ * of them inside the narrative `what:` fields of lib/kernel/manager-registry.ts.
+ * One of those passages literally reads "NOTHING WAS DELETED: addAgentExpense,
+ * setAgentGoal and assignAgentToContact each have a named more-complete
+ * survivor" — so the registry's own record of retiring three functions was the
+ * only thing keeping them off the burn-down list. Documentation was masquerading
+ * as wiring.
+ *
+ * String-DISPATCH is not affected, and that was checked before this landed:
+ * workflows.ts `handlers[toolName]` and manager-signals.ts `SIGNAL_HANDLERS[...]`
+ * look up tables whose VALUES are assigned in code, so the string is the key and
+ * the function is still named executably. Same for lib/orchestrator/internal.ts,
+ * which reaches its targets as `m.handleVideoGenerated` — a property access, not
+ * a string.
+ *
+ * Contents are blanked but the quotes are kept, so nothing downstream that
+ * counts or slices this text shifts.
+ *
+ * DELIBERATELY NOT APPLIED TO proofCorpus below: a proof legitimately names the
+ * capability it stands over inside a string (a needs: [...] list, a table of
+ * expected symbols). Stripping there would collapse category A into C and
+ * report proven-but-unwired work as dead — the exact misread this guard exists
+ * to prevent.
+ */
+function callSites(src: string): string {
+  return src
+    .replace(/`(?:\\.|[^`\\])*`/g, "``")
+    .replace(/"(?:\\.|[^"\\\n])*"/g, '""')
+    .replace(/'(?:\\.|[^'\\\n])*'/g, "''")
+}
+
+const useCache = new Map<string, string>()
+for (const f of files) useCache.set(f, callSites(codeCache.get(f)!))
+
 interface ExportRef { file: string; name: string }
 
 const exportsFound: ExportRef[] = []
@@ -103,7 +142,7 @@ for (const e of exportsFound) {
   let referenced = false
   for (const f of files) {
     if (f === e.file) continue
-    if (re.test(codeCache.get(f)!)) { referenced = true; break }
+    if (re.test(useCache.get(f)!)) { referenced = true; break }
   }
   if (!referenced) orphans.push(e)
 }
@@ -123,7 +162,7 @@ if (existsSync(proofRoot)) {
 /** Does any OTHER product file name this export? */
 const usedInProduct = (name: string, from: string) => {
   const re = new RegExp(`\\b${name.replace(/\$/g, "\\$")}\\b`)
-  return files.some((f) => f !== from && re.test(codeCache.get(f)!))
+  return files.some((f) => f !== from && re.test(useCache.get(f)!))
 }
 
 const reachedModule = new Map<string, boolean>()
@@ -139,7 +178,7 @@ const cat = { proofOnly: 0, internal: 0, trulyDead: 0 }
 const deadByFile: Record<string, number> = {}
 for (const o of orphans) {
   const re = new RegExp(`\\b${o.name.replace(/\$/g, "\\$")}\\b`)
-  const selfHits = (codeCache.get(o.file)!.match(new RegExp(re.source, "g")) ?? []).length
+  const selfHits = (useCache.get(o.file)!.match(new RegExp(re.source, "g")) ?? []).length
   if (proofCorpus.some((p) => re.test(p))) cat.proofOnly++
   else if (reachedModule.get(o.file) && selfHits > 1) cat.internal++
   else { cat.trulyDead++; deadByFile[o.file] = (deadByFile[o.file] ?? 0) + 1 }
