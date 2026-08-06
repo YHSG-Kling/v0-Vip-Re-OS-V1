@@ -50,7 +50,7 @@
     "app/actions/buyer-offer/handle-multi-offer.ts": 2,
     "app/actions/buyer-offer/track-offer-lifecycle.ts": 1,
     "app/actions/buyer-offers.ts": 1,
-    "app/actions/calculators.ts": 4,
+    "app/actions/calculators.ts": 3,
     "app/actions/campaign-sequences.ts": 3,
     "app/actions/cda-portal.ts": 4,
     "app/actions/ce-provider.ts": 1,
@@ -733,7 +733,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 8906,
+  "census": 8904,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -881,7 +881,7 @@
     "app/actions/buyer-offers.ts": 10,
     "app/actions/buyer-portal-matches.ts": 1,
     "app/actions/buyer-property-search.ts": 3,
-    "app/actions/calculators.ts": 15,
+    "app/actions/calculators.ts": 13,
     "app/actions/calendar/calendar-sync-actions.ts": 5,
     "app/actions/call-review-actions.ts": 2,
     "app/actions/campaign-bundles.ts": 4,
@@ -5262,9 +5262,7 @@
       "calculateAffordability",
       "calculateRentVsBuy",
       "saveCalculation",
-      "shareCalculation",
       "getSavedCalculations",
-      "getSharedCalculation",
       "emailCalculationResults"
     ],
     "app/actions/calendar/calendar-sync-actions.ts": [
@@ -20189,5 +20187,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 371
+  "trulyDead": 370
 }

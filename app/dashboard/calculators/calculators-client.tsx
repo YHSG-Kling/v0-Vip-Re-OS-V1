@@ -13,13 +13,12 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Loader2, Save, Share2, Copy, Check, Plus, Trash2 } from "lucide-react"
+import { Loader2, Save, Plus, Trash2 } from "lucide-react"
 import {
   calculateSellerNet,
   compareMortgageScenarios,
   calculateRentVsBuy,
   saveCalculation,
-  shareCalculation,
 } from "@/app/actions/calculators"
 // One persisted identity for every tool on this page. Each tab used to mint its
 // own `crypto.randomUUID()` per mount, so a saved calculation was filed under an
@@ -593,12 +592,8 @@ function RentVsBuyTab({ brokerageId }: { brokerageId: string }) {
   const [visitorId] = useState(getOrCreateVisitorId)
   const [isPending, startTransition] = useTransition()
   const [isSaving, startSaveTransition] = useTransition()
-  const [isSharing, startShareTransition] = useTransition()
   const [result, setResult] = useState<RentVsBuyResult | null>(null)
-  const [savedId, setSavedId] = useState<string | null>(null)
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
-  const [shareUrl, setShareUrl] = useState<string | null>(null)
-  const [copied, setCopied] = useState(false)
 
   const [rentAmount, setRentAmount] = useState("")
   const [homePrice, setHomePrice] = useState("")
@@ -624,12 +619,24 @@ function RentVsBuyTab({ brokerageId }: { brokerageId: string }) {
         brokerageId,
       })
       setResult(res)
-      setSavedId(null)
       setSaveMsg(null)
-      setShareUrl(null)
     })
   }
 
+  /**
+   * Save only. The Share button that sat beside this was REMOVED on the owner's
+   * ruling: "not sure why we would need to share a calculator, sharing property
+   * listings yes". Listing sharing already exists at
+   * /dashboard/listings/[id]/share — that is the capability that was wanted.
+   *
+   * It was also broken and unsafe in three ways, which is why nothing is lost:
+   *   · the URL it produced, /tools/shared/{token}, had NO ROUTE — every link an
+   *     agent copied and sent to a client 404'd.
+   *   · tool_shares RLS requires brokerage membership, so even with a route the
+   *     recipient (a client, by definition not a member) could never read it.
+   *   · the token was `Date.now()` plus ~24 bits of Math.random() — guessable —
+   *     and the shared payload carried the saver's email address.
+   */
   function handleSave() {
     if (!result) return
     startSaveTransition(async () => {
@@ -638,32 +645,8 @@ function RentVsBuyTab({ brokerageId }: { brokerageId: string }) {
         calculationData: result,
         visitorId,
       })
-      if (res.success) {
-        setSavedId(res.savedId ?? null)
-        setSaveMsg(saveMessageWithRetrievalCaveat(res.message ?? "Saved."))
-      } else {
-        setSaveMsg("Save failed.")
-      }
+      setSaveMsg(res.success ? saveMessageWithRetrievalCaveat(res.message ?? "Saved.") : "Save failed.")
     })
-  }
-
-  function handleShare() {
-    if (!savedId) return
-    startShareTransition(async () => {
-      const res = await shareCalculation({ calculationId: savedId })
-      if (res.success) {
-        setShareUrl(res.shareUrl ?? null)
-      } else {
-        setSaveMsg("Failed to create share link.")
-      }
-    })
-  }
-
-  function copyShareUrl() {
-    if (!shareUrl) return
-    navigator.clipboard.writeText(shareUrl)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
   }
 
   const canCalculate =
@@ -835,35 +818,16 @@ function RentVsBuyTab({ brokerageId }: { brokerageId: string }) {
             </Card>
           )}
 
-          {/* Save + Share */}
+          {/* Save. Sharing a CALCULATION was removed — see the note on
+              handleSave below. Sharing a property LISTING is the wanted
+              capability and lives at /dashboard/listings/[id]/share. */}
           <div className="flex flex-wrap items-center gap-3">
             <Button variant="outline" onClick={handleSave} disabled={isSaving}>
               {isSaving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
               Save
             </Button>
-            {savedId && (
-              <Button variant="outline" onClick={handleShare} disabled={isSharing}>
-                {isSharing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Share2 className="h-4 w-4 mr-2" />}
-                Share
-              </Button>
-            )}
             {saveMsg && <p className="text-sm text-muted-foreground">{saveMsg}</p>}
           </div>
-
-          {shareUrl && (
-            <Card className="bg-muted/40">
-              <CardContent className="p-4">
-                <p className="text-sm font-medium mb-2">Share Link</p>
-                <div className="flex items-center gap-2">
-                  <Input value={shareUrl} readOnly className="text-xs font-mono" />
-                  <Button variant="outline" size="icon" onClick={copyShareUrl}>
-                    {copied ? <Check className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4" />}
-                  </Button>
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">Anyone with this link can view the calculation.</p>
-              </CardContent>
-            </Card>
-          )}
         </>
       )}
     </div>

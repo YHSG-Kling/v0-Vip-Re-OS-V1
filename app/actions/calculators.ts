@@ -713,9 +713,9 @@ export async function calculateHomeValue(
               : null,
         adjusted_price: Math.round(a.adjustedPrice),
         total_adjustment: Math.round(a.totalAdjustment),
-        // The comp finder searches within a radius but returns no per-comp
-        // distance. Unknown, not zero.
-        distance_miles: null,
+        // Real per-comp distance when the provider published one (RentCast
+        // does); null when it did not — unknown, not zero.
+        distance_miles: a.comp.distanceMiles ?? null,
         citation: a.comp.citation ?? null,
       }
     })
@@ -996,41 +996,29 @@ export async function saveCalculation(data: {
   }
 }
 
-export async function shareCalculation(data: { calculationId: string; shareWithEmail?: string }) {
-  const supabase = await createClient()
+// shareCalculation and getSharedCalculation were REMOVED here.
+//
+// Owner ruling: "not sure why we would need to share a calculator, sharing
+// property listings yes". Listing sharing already exists at
+// /dashboard/listings/[id]/share — that is the capability that was wanted.
+//
+// This is a capability REMOVAL on an explicit owner decision, not an orphan
+// swept up for the census count. Nothing was lost, because the feature never
+// worked and could not have been made to work safely as built:
+//   · shareCalculation minted /tools/shared/{token}. That route DOES NOT EXIST.
+//     Every link an agent copied and sent to a client 404'd.
+//   · getSharedCalculation read through the SESSION client, and tool_shares RLS
+//     requires has_brokerage_access(). The recipient of a share link is a client
+//     — by definition not a brokerage member — so the reader could never have
+//     returned the row it was written to fetch.
+//   · the token was `share_${Date.now()}_${Math.random().toString(36).substring(7)}`
+//     — roughly 24 bits of entropy over a guessable timestamp — and the payload
+//     it fronted carried the saver's email address. Too weak to be a bearer
+//     credential for a public page.
+//
+// Saving a calculation is UNAFFECTED and still works (saveCalculation +
+// getSavedCalculations, keyed by the persisted visitor id in lib/tools/visitor-id).
 
-  try {
-    // Generate unique share link
-    const shareToken = `share_${Date.now()}_${Math.random().toString(36).substring(7)}`
-
-    const { data: share, error } = await supabase
-      .from("tool_shares")
-      .insert({
-        calculation_id: data.calculationId,
-        share_token: shareToken,
-        shared_with_email: data.shareWithEmail || null,
-      })
-      .select()
-      .single()
-
-    if (error) {
-      console.error("[v0] Error creating share link:", error)
-      return { success: false, error: "Failed to create share link" }
-    }
-
-    const shareUrl = `${process.env.NEXT_PUBLIC_APP_URL || "https://yourdomain.com"}/tools/shared/${shareToken}`
-
-    return {
-      success: true,
-      shareUrl,
-      shareToken,
-      message: "Share link created! Anyone with this link can view the calculation.",
-    }
-  } catch (error) {
-    console.error("[v0] Error in shareCalculation:", error)
-    return { success: false, error: "Failed to create share link" }
-  }
-}
 
 export async function getSavedCalculations(visitorId: string) {
   const supabase = await createClient()
@@ -1058,44 +1046,6 @@ export async function getSavedCalculations(visitorId: string) {
   }
 }
 
-export async function getSharedCalculation(shareToken: string) {
-  const supabase = await createClient()
-
-  try {
-    const { data: share, error: shareError } = await supabase
-      .from("tool_shares")
-      .select(
-        `
-        *,
-        saved_calculations(*)
-      `,
-      )
-      .eq("share_token", shareToken)
-      .maybeSingle()
-
-    if (shareError || !share) {
-      return { success: false, error: "Share link not found or expired" }
-    }
-
-    // Track view
-    await supabase
-      .from("tool_shares")
-      .update({
-        view_count: (share.view_count || 0) + 1,
-        last_viewed_at: new Date().toISOString(),
-      })
-      .eq("id", share.id)
-
-    return {
-      success: true,
-      calculation: share.saved_calculations,
-      sharedBy: share.saved_calculations?.user_name || "Anonymous",
-    }
-  } catch (error) {
-    console.error("[v0] Error in getSharedCalculation:", error)
-    return { success: false, error: "Failed to load shared calculation" }
-  }
-}
 
 export async function emailCalculationResults(data: {
   calculationId: string
@@ -1115,25 +1065,37 @@ export async function emailCalculationResults(data: {
       return { success: false, error: "Calculation not found" }
     }
 
-    // Send calculation results via email
+    // saved_calculations columns are tool_name and calculation_data_json. This
+    // read used calculation.tool_type and calculation.results — NEITHER exists
+    // on the table, so both were undefined and the email rendered a heading of
+    // "Your undefined Results" over a body of `undefined`.
     const { sendCalculatorResults } = await import("@/lib/services/communication.service")
     const emailResult = await sendCalculatorResults({
       email: data.recipientEmail,
-      calculationType: calculation.tool_type,
-      results: calculation.results,
+      calculationType: calculation.tool_name,
+      results: calculation.calculation_data_json,
       calculationId: data.calculationId,
     })
 
-    // Track the email request
-    await supabase.from("tool_shares").insert({
+    // Only record the send AFTER the provider accepted it — a tracking row for
+    // an email that never left is a false delivery record.
+    if (!emailResult.success) {
+      return { success: false, error: "The email provider refused the message." }
+    }
+
+    const { error: trackError } = await supabase.from("tool_shares").insert({
       calculation_id: data.calculationId,
       shared_with_email: data.recipientEmail,
       share_token: `email_${Date.now()}`,
       sent_at: new Date().toISOString(),
     })
+    if (trackError) {
+      // The email DID go out; say so rather than reporting a failure.
+      console.error("[calculators] emailCalculationResults: send tracking failed:", trackError.message)
+    }
 
     return {
-      success: emailResult.success,
+      success: true,
       message: `Calculation emailed to ${data.recipientEmail}`,
     }
   } catch (error) {
