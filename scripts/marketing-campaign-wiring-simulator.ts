@@ -591,7 +591,9 @@ const CHECKS: Check[] = [
     file: "studio",
     name: "the email_campaigns the create dialog writes are rendered back on the same tab",
     assert: (s) => /emailCampaigns\.map\(/.test(s) && /setEmailCampaigns\(/.test(s),
-    mutate: (raw) => replaceOnce(raw, "{emailCampaigns.map((c) => (", "{[].map((c: any) => ("),
+    // Anchor follows the row body: it became a block (`=> {`) rather than an
+    // expression (`=> (`) when each row gained its Schedule + Delete controls.
+    mutate: (raw) => replaceOnce(raw, "{emailCampaigns.map((c) => {", "{[].map((c: any) => {"),
   },
   {
     id: "surface/email-save-reports-server-verdict",

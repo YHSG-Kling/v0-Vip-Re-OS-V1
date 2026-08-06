@@ -1318,6 +1318,75 @@ export async function getNewsletters(_agentId?: string /* ignored — derived fr
   }
 }
 
+/**
+ * Delete a newsletter campaign.
+ *
+ * The newsletter list's Delete button called deleteEmailCampaign, which queries
+ * `email_campaigns` by a `newsletter_campaigns` id — so it answered "Campaign
+ * not found" every time and nothing on this screen could ever be deleted. That
+ * is the third button on one screen pointed at the wrong table (Send and
+ * Schedule were the other two): every action was written against the email
+ * campaign lane while the list itself renders newsletter campaigns.
+ *
+ * Guards mirror deleteEmailCampaign — uuid, session brokerage ownership, and a
+ * refusal on anything already sent — plus 'sending', because a campaign the
+ * cron is mid-loop on must not have its row pulled out from under it.
+ *
+ * Hard delete is correct here: every child FK (newsletter_sections,
+ * newsletter_scheduled_sends, newsletter_local_content, newsletter_video_renders)
+ * is ON DELETE CASCADE, and the sent-campaign refusal means no delivery record
+ * can be destroyed by it.
+ */
+export async function deleteNewsletterCampaign(newsletterId: string) {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const sessionBrokerageId = ctx.brokerageId
+
+    if (!isValidUUID(newsletterId)) {
+      return { success: false, error: "Invalid newsletter ID" }
+    }
+
+    const supabase = await createClient()
+
+    const { data: existing, error: existingError } = await supabase
+      .from("newsletter_campaigns")
+      .select("id, status, brokerage_id")
+      .eq("id", newsletterId)
+      .maybeSingle()
+
+    if (existingError) {
+      return { success: false, error: `Could not read the newsletter: ${existingError.message}` }
+    }
+    if (!existing) return { success: false, error: "Newsletter not found" }
+    if (existing.brokerage_id !== sessionBrokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+    if (existing.status === "sent") {
+      return { success: false, error: "Cannot delete a sent newsletter — its delivery record has to survive." }
+    }
+    if (existing.status === "sending") {
+      return { success: false, error: "This newsletter is being sent right now — wait for it to finish." }
+    }
+
+    const { error } = await supabase
+      .from("newsletter_campaigns")
+      .delete()
+      .eq("id", newsletterId)
+      .eq("brokerage_id", sessionBrokerageId)
+
+    if (error) {
+      return { success: false, error: `Failed to delete the newsletter: ${error.message}` }
+    }
+
+    return { success: true }
+  } catch (error) {
+    return handleError(error, "deleteNewsletterCampaign")
+  }
+}
+
 // Backward compatibility aliases — wrapped because "use server" rejects `const = fn`
 export async function createNewsletter(...args: Parameters<typeof createNewsletterCampaign>) {
   return createNewsletterCampaign(...args)

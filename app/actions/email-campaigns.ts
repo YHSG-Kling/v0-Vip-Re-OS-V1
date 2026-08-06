@@ -418,6 +418,29 @@ export async function sendEmailCampaign(campaignId: string, _actorUserId?: strin
 }
 
 // ─── SCHEDULE ─────────────────────────────────────────────────────────────────
+//
+// WHY scheduleEmailCampaign AND deleteEmailCampaign HAVE NO CALLERS (read this
+// before "cleaning them up", and before wiring them to anything).
+//
+// Their only caller used to be app/newsletters/newsletters-client.tsx, which
+// passed a `newsletter_campaigns` id into actions that query `email_campaigns`.
+// Different table, different id space — so the list's Schedule and Delete
+// buttons answered "Campaign not found" on every click, exactly as its Send
+// button did before it was repointed. All three now call the newsletter lane
+// (scheduleExistingNewsletter / deleteNewsletterCampaign / sendNewsletter).
+//
+// That leaves these two correct but unwired, and they must NOT be deleted:
+//   · They are not duplicates of the newsletter actions. `email_campaigns` is a
+//     separate, live table with its own drain — the send-email-campaigns cron
+//     every 15 min — which consumes exactly the status='scheduled' + send_date
+//     that scheduleEmailCampaign writes.
+//   · They are the same shape of orphan as sendEmailCampaign: the manual
+//     counterpart to a live autonomous lane, waiting on an email-campaign
+//     management surface that has not been built yet.
+//
+// The work to finish is that surface. Do not satisfy the orphan count by
+// pointing these at newsletters again — that is the defect this comment exists
+// to stop from coming back.
 
 export async function scheduleEmailCampaign(
   campaignId: string,

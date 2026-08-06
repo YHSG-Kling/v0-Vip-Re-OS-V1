@@ -253,6 +253,11 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
     avgOpenRate: number | null
   } | null>(null)
   const [emailCampaignsError, setEmailCampaignsError] = useState<string | null>(null)
+  // Per-row schedule pickers, keyed by campaign id, so opening one row's
+  // scheduler does not clobber another's half-entered time.
+  const [emailScheduleDrafts, setEmailScheduleDrafts] = useState<Record<string, string>>({})
+  const [schedulingEmailCampaignId, setSchedulingEmailCampaignId] = useState<string | null>(null)
+  const [deletingEmailCampaignId, setDeletingEmailCampaignId] = useState<string | null>(null)
   const [editingEmailCampaign, setEditingEmailCampaign] = useState<any | null>(null)
   const [emailEditorDraft, setEmailEditorDraft] = useState({
     campaignName: "",
@@ -503,6 +508,72 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
       setAiComposeTopic(campaign.campaign_name ?? "")
     } finally {
       setIsLoadingEmailCampaign(false)
+    }
+  }
+
+  // SCHEDULE / DELETE for email_campaigns.
+  //
+  // These two actions existed and were correct, but their only caller was the
+  // NEWSLETTER list, which passed a `newsletter_campaigns` id into actions that
+  // query `email_campaigns` — so both answered "Campaign not found" on every
+  // click. The newsletter list now calls the newsletter lane, which left these
+  // reachable from nowhere. This is the surface they were written for: the list
+  // right here already renders email_campaigns rows.
+  //
+  // This does NOT breach surface/studio-does-not-send. That rule keeps EGRESS
+  // off this screen — no sendEmailCampaign, no dispatchEmail, no sendCampaignNow.
+  // Scheduling performs no send: it writes status='scheduled' + send_date, and
+  // the send-email-campaigns cron does the delivery through the consent-gated
+  // dispatcher. Scheduling IS the consent-gated path. Deleting sends nothing.
+  async function scheduleEmailCampaignRow(campaignId: string) {
+    const when = emailScheduleDrafts[campaignId]
+    if (!when) {
+      toast({ title: "Pick a send date and time first", variant: "destructive" })
+      return
+    }
+    setSchedulingEmailCampaignId(campaignId)
+    try {
+      const { scheduleEmailCampaign } = await import("@/app/actions/email-campaigns")
+      // Second argument is ignored server-side (identity comes from the session).
+      const res = await scheduleEmailCampaign(campaignId, "", new Date(when).toISOString())
+      if (!res.success) {
+        // The server's refusal, verbatim — never an optimistic "Scheduled!".
+        toast({
+          title: "Could not schedule campaign",
+          description: (res as any).error ?? "Unknown error",
+          variant: "destructive",
+        })
+        return
+      }
+      setEmailScheduleDrafts((prev) => {
+        const next = { ...prev }
+        delete next[campaignId]
+        return next
+      })
+      toast({ title: "Campaign scheduled — the send cron will deliver it" })
+      await loadEmailCampaigns()
+    } finally {
+      setSchedulingEmailCampaignId(null)
+    }
+  }
+
+  async function deleteEmailCampaignRow(campaignId: string) {
+    setDeletingEmailCampaignId(campaignId)
+    try {
+      const { deleteEmailCampaign } = await import("@/app/actions/email-campaigns")
+      const res = await deleteEmailCampaign(campaignId)
+      if (!res.success) {
+        toast({
+          title: "Could not delete campaign",
+          description: (res as any).error ?? "Unknown error",
+          variant: "destructive",
+        })
+        return
+      }
+      toast({ title: "Campaign deleted" })
+      await loadEmailCampaigns()
+    } finally {
+      setDeletingEmailCampaignId(null)
     }
   }
 
@@ -2344,9 +2415,13 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                         <Mail className="h-5 w-5 text-violet-600" />
                         Email Campaigns
                       </CardTitle>
+                      {/* This used to read "send or schedule from the newsletter
+                          manager". That manager works on newsletter_campaigns and
+                          could never reach these rows — the instruction sent people
+                          to a screen that would answer "Campaign not found". */}
                       <CardDescription>
-                        Drafts you create here. Compose with AI, then send or schedule from
-                        the newsletter manager — every send rides the consent-gated dispatcher.
+                        Drafts you create here. Compose with AI, then schedule the send —
+                        the delivery cron sends it through the consent-gated dispatcher.
                       </CardDescription>
                     </div>
                     <Button
@@ -2396,35 +2471,82 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                     </p>
                   ) : (
                     <div className="space-y-2">
-                      {emailCampaigns.map((c) => (
-                        <div
-                          key={c.id}
-                          className="flex items-center justify-between gap-3 p-3 rounded-lg bg-muted/50"
-                        >
-                          <div className="min-w-0">
-                            <p className="font-medium truncate">{c.campaign_name}</p>
-                            <p className="text-sm text-muted-foreground truncate">
-                              {c.subject_line}
-                              {c.send_date ? ` · ${format(new Date(c.send_date), "MMM d, yyyy")}` : ""}
-                            </p>
+                      {emailCampaigns.map((c) => {
+                        // A campaign already sent or mid-send is not editable,
+                        // reschedulable or deletable — rewinding it would hand it
+                        // back to the cron and send it twice.
+                        const inFlight = c.status === "sent" || c.status === "sending"
+                        return (
+                          <div key={c.id} className="p-3 rounded-lg bg-muted/50 space-y-2">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="font-medium truncate">{c.campaign_name}</p>
+                                <p className="text-sm text-muted-foreground truncate">
+                                  {c.subject_line}
+                                  {c.send_date ? ` · ${format(new Date(c.send_date), "MMM d, yyyy")}` : ""}
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <Badge className={getStatusColor(c.status || "draft")}>{c.status || "draft"}</Badge>
+                                <Badge variant="outline" className="text-xs capitalize">
+                                  {(c.approval_status || "pending").replace("_", " ")}
+                                </Badge>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  aria-label={`Edit ${c.campaign_name}`}
+                                  disabled={isLoadingEmailCampaign || inFlight}
+                                  onClick={() => openEmailCampaignEditor(c.id)}
+                                >
+                                  <Edit className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  aria-label={`Delete ${c.campaign_name}`}
+                                  disabled={deletingEmailCampaignId === c.id || inFlight}
+                                  onClick={() => deleteEmailCampaignRow(c.id)}
+                                >
+                                  {deletingEmailCampaignId === c.id ? (
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                  ) : (
+                                    <Trash2 className="h-4 w-4" />
+                                  )}
+                                </Button>
+                              </div>
+                            </div>
+                            {!inFlight && (
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Input
+                                  type="datetime-local"
+                                  aria-label={`Send date and time for ${c.campaign_name}`}
+                                  className="h-8 w-auto text-xs"
+                                  value={emailScheduleDrafts[c.id] ?? ""}
+                                  onChange={(e) =>
+                                    setEmailScheduleDrafts((prev) => ({ ...prev, [c.id]: e.target.value }))
+                                  }
+                                />
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-8"
+                                  disabled={
+                                    schedulingEmailCampaignId === c.id || !emailScheduleDrafts[c.id]
+                                  }
+                                  onClick={() => scheduleEmailCampaignRow(c.id)}
+                                >
+                                  {schedulingEmailCampaignId === c.id ? (
+                                    <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                                  ) : (
+                                    <Clock className="h-3.5 w-3.5 mr-1.5" />
+                                  )}
+                                  {c.status === "scheduled" ? "Reschedule" : "Schedule"}
+                                </Button>
+                              </div>
+                            )}
                           </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            <Badge className={getStatusColor(c.status || "draft")}>{c.status || "draft"}</Badge>
-                            <Badge variant="outline" className="text-xs capitalize">
-                              {(c.approval_status || "pending").replace("_", " ")}
-                            </Badge>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              aria-label={`Edit ${c.campaign_name}`}
-                              disabled={isLoadingEmailCampaign || c.status === "sent" || c.status === "sending"}
-                              onClick={() => openEmailCampaignEditor(c.id)}
-                            >
-                              <Edit className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   )}
                 </CardContent>

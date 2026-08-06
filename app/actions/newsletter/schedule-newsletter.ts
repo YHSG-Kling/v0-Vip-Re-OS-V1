@@ -171,3 +171,139 @@ export async function scheduleNewsletter(input: ScheduleNewsletterInput) {
     message: 'Newsletter scheduled successfully',
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SCHEDULE A NEWSLETTER THAT ALREADY EXISTS
+//
+// scheduleNewsletter above CREATES a campaign from wizard input. The newsletter
+// LIST has its own Schedule button, and it was calling scheduleEmailCampaign —
+// which queries `email_campaigns` by a `newsletter_campaigns` id, so it returned
+// "Campaign not found" every time. That is the same wrong-table defect the Send
+// button carried; this is its other half.
+//
+// There is no drop-in: scheduleNewsletter takes wizard-shaped input and inserts
+// a new row, which is not what "schedule the campaign I am looking at" means.
+// So this is the missing sibling — same terminal ledger, same governance, keyed
+// by an existing campaign id.
+//
+// WHAT MAKES A SEND ACTUALLY HAPPEN (verified against the cron, not assumed):
+// app/api/cron/publish-newsletters queries
+//   newsletter_campaigns
+//     .eq("approval_status","approved").in("status",["scheduled"])
+//     .lte("send_date", now)
+// so all three must be true. newsletter_scheduled_sends is the LEDGER the
+// analytics reads join on — not the queue. Both sides are written here for the
+// same reason scheduleNewsletter writes both.
+//
+// APPROVAL IS NOT GRANTED HERE. An unapproved campaign is refused with the
+// reason, never auto-approved — scheduling is not an approval authority, and
+// silently flipping approval_status would turn this button into a bypass of the
+// review gate.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function scheduleExistingNewsletter(input: {
+  newsletterId: string
+  scheduledSendTime: Date | string
+}): Promise<{ success: boolean; error?: string; scheduledFor?: string; ledgerWarning?: string }> {
+  const supabase = await createClient()
+
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  const { isValidUUID } = await import('@/lib/validations')
+  if (!isValidUUID(input.newsletterId)) {
+    return { success: false, error: 'Invalid newsletter id' }
+  }
+
+  const { data: userData, error: userError } = await supabase
+    .from('users')
+    .select('brokerage_id')
+    .eq('id', user.id)
+    .maybeSingle()
+  if (userError) return { success: false, error: `Could not read your account: ${userError.message}` }
+  if (!userData?.brokerage_id) return { success: false, error: 'User has no brokerage assigned' }
+  const brokerageId: string = userData.brokerage_id
+
+  // Same pure validator the wizard runs client-side, re-run server-side as the
+  // authority — a client can post any time it likes.
+  const scheduleTime = validateScheduleTime(input.scheduledSendTime)
+  if (!scheduleTime.valid || !scheduleTime.iso) {
+    return { success: false, error: scheduleTime.reason }
+  }
+
+  const { data: campaign, error: campaignReadError } = await supabase
+    .from('newsletter_campaigns')
+    .select('id, brokerage_id, agent_id, status, approval_status, campaign_name, subject_line')
+    .eq('id', input.newsletterId)
+    .eq('brokerage_id', brokerageId)
+    .maybeSingle()
+  if (campaignReadError) {
+    return { success: false, error: `Could not read the newsletter: ${campaignReadError.message}` }
+  }
+  if (!campaign) {
+    return { success: false, error: 'Newsletter not found in your brokerage' }
+  }
+
+  // Do not re-schedule something already in flight or delivered — rewinding
+  // status would hand it back to the cron and send it twice.
+  if (campaign.status === 'sending') {
+    return { success: false, error: 'This newsletter is being sent right now — it cannot be rescheduled.' }
+  }
+  if (campaign.status === 'sent') {
+    return { success: false, error: 'This newsletter has already been sent. Duplicate it to send again.' }
+  }
+
+  if (campaign.approval_status !== 'approved') {
+    return {
+      success: false,
+      error:
+        `This newsletter is "${campaign.approval_status ?? 'draft'}" and the send cron only picks up approved campaigns. ` +
+        `Get it approved first — scheduling does not approve it.`,
+    }
+  }
+
+  const { error: updateError } = await supabase
+    .from('newsletter_campaigns')
+    .update({ status: 'scheduled', send_date: scheduleTime.iso })
+    .eq('id', campaign.id)
+    .eq('brokerage_id', brokerageId)
+  if (updateError) {
+    return { success: false, error: `Failed to schedule the newsletter: ${updateError.message}` }
+  }
+
+  // Ledger row so the analytics joins (ai-newsletter.ts uses !inner on
+  // newsletter_id) can see this send. agent_id here is agents-class: prefer the
+  // campaign's own, and resolve — never substitute the users id, which would be
+  // a foreign-key violation on a different id space.
+  let agentRecordId: string | null = campaign.agent_id ?? null
+  if (!agentRecordId) {
+    const { resolveAgentIdInBrokerage } = await import('@/lib/kernel/agent-identity')
+    agentRecordId = await resolveAgentIdInBrokerage(supabase, user.id, brokerageId)
+  }
+
+  const subjectLine = campaign.subject_line ?? campaign.campaign_name ?? 'Newsletter'
+  const { error: ledgerError } = await supabase
+    .from('newsletter_scheduled_sends')
+    .insert({
+      brokerage_id: brokerageId,
+      newsletter_id: campaign.id,
+      agent_id: agentRecordId,
+      subject_line: subjectLine,
+      scheduled_send_time: scheduleTime.iso,
+      send_status: 'scheduled',
+    })
+
+  // The campaign row is what the cron drains, so the send IS scheduled even if
+  // the ledger write failed. Say so rather than reporting a clean success or a
+  // false failure.
+  if (ledgerError) {
+    console.error('[scheduleExistingNewsletter] ledger row failed:', ledgerError.message)
+    return {
+      success: true,
+      scheduledFor: scheduleTime.iso,
+      ledgerWarning: 'Scheduled, but it will not appear in newsletter analytics until the send record is repaired.',
+    }
+  }
+
+  return { success: true, scheduledFor: scheduleTime.iso }
+}

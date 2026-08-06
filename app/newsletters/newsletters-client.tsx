@@ -75,13 +75,14 @@ import {
   // sendable. sendNewsletter queries newsletter_campaigns, and returns the same
   // { success, recipientCount } shape this screen already reads.
   sendNewsletter,
+  // Schedule and Delete carried the SAME wrong-table defect Send did — all
+  // three called the email_campaigns lane with a newsletter_campaigns id, so
+  // every one of them answered "Campaign not found". These are the newsletter
+  // -lane counterparts.
+  deleteNewsletterCampaign,
 } from "@/app/actions/ai-newsletter"
-import {
-  scheduleEmailCampaign,
-  deleteEmailCampaign,
-} from "@/app/actions/email-campaigns"
 import { fetchLocalNews, setupLocalNewsSource, recordNewsletterLocalContent } from "@/app/actions/newsletter/fetch-local-news"
-import { scheduleNewsletter } from "@/app/actions/newsletter/schedule-newsletter"
+import { scheduleNewsletter, scheduleExistingNewsletter } from "@/app/actions/newsletter/schedule-newsletter"
 import { listTemplates } from "@/app/actions/newsletter/list-templates"
 import { computeSeoScore } from "@/lib/newsletter/seo-score"
 import { validateScheduleTime } from "@/lib/newsletter/schedule-time"
@@ -920,17 +921,28 @@ export function NewslettersClient({
       return
     }
     try {
-      const result = await scheduleEmailCampaign(campaignId, userId, scheduleDate)
+      const result = await scheduleExistingNewsletter({
+        newsletterId: campaignId,
+        scheduledSendTime: scheduleDate,
+      })
       if (result.success) {
         setCampaigns((prev) =>
           prev.map((c) =>
-            c.id === campaignId ? { ...c, status: "scheduled", send_date: scheduleDate } : c
+            c.id === campaignId
+              ? { ...c, status: "scheduled", send_date: result.scheduledFor ?? scheduleDate }
+              : c
           )
         )
-        toast.success("Campaign scheduled")
+        // A scheduled send whose ledger row failed still goes out — say which
+        // half succeeded rather than a flat "Scheduled".
+        if (result.ledgerWarning) {
+          toast.warning(result.ledgerWarning)
+        } else {
+          toast.success("Newsletter scheduled — the send cron will deliver it")
+        }
         setScheduleDate("")
       } else {
-        toast.error((result as any).error ?? "Failed to schedule campaign")
+        toast.error(result.error ?? "Failed to schedule newsletter")
       }
     } catch {
       toast.error("Unexpected error scheduling campaign")
@@ -940,12 +952,12 @@ export function NewslettersClient({
   async function handleDelete(campaignId: string) {
     setDeletingId(campaignId)
     try {
-      const result = await deleteEmailCampaign(campaignId)
+      const result = await deleteNewsletterCampaign(campaignId)
       if (result.success) {
         setCampaigns((prev) => prev.filter((c) => c.id !== campaignId))
-        toast.success("Campaign deleted")
+        toast.success("Newsletter deleted")
       } else {
-        toast.error((result as any).error ?? "Failed to delete campaign")
+        toast.error((result as any).error ?? "Failed to delete newsletter")
       }
     } catch {
       toast.error("Unexpected error deleting campaign")
