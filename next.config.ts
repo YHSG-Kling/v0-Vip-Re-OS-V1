@@ -114,29 +114,6 @@ const nextConfig: NextConfig = {
     // JS heap). A SINGLE-process build holds one module graph bounded by the heap
     // cap (NODE_OPTIONS below) — the lowest-peak-memory config, which fits. Left
     // OFF (default). Slower, but it completes on a constrained runner.
-    //
-    // THE COMPILE PHASE WAS HARDENED ABOVE; THE PAGE-DATA PHASE WAS NOT, and
-    // that is where the build kept dying. Three runs in a row on the same head
-    // compiled cleanly (7.8–8.3 min, only the pre-existing broll-picker
-    // dynamic-import warning) and were then killed ~40s into
-    //
-    //     Collecting page data using 3 workers ...
-    //
-    // with "The runner has received a shutdown signal" — the runner process
-    // itself terminated, not a compile or page-data error. Three workers is
-    // Next's default of (cores - 1) on a 4-core runner, and each is a full Node
-    // process loading server chunks of an app this size, so peak RSS at that
-    // moment is roughly three times one worker's — which is what the host
-    // reclaims the runner for. `npm run build` was OOM-killed locally in the
-    // same phase on a 16 GB box at a 12 GB heap cap.
-    //
-    // next/dist/build/index.js:311 takes this as a DIRECT override of the
-    // worker count when it differs from the default. One worker makes the
-    // page-data phase serial and bounds it to a single heap — the same trade
-    // already made for the compile phase two comments up: slower, but it
-    // finishes on a constrained runner instead of dying at minute eight.
-    // Raise it if the build ever moves to a larger runner.
-    cpus: 1,
   },
   // Skip bundling for packages that ship platform-specific native binaries
   // or otherwise can't be analysed by Turbopack. They get plain Node
