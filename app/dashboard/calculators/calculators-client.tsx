@@ -21,6 +21,11 @@ import {
   saveCalculation,
   shareCalculation,
 } from "@/app/actions/calculators"
+// One persisted identity for every tool on this page. Each tab used to mint its
+// own `crypto.randomUUID()` per mount, so a saved calculation was filed under an
+// id that died with the component — unreadable by anything, including the
+// retrieval action written for it.
+import { getOrCreateVisitorId, isVisitorIdPersistent } from "@/lib/tools/visitor-id"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -50,10 +55,22 @@ function fmtPct(n: number) {
   return n.toFixed(2) + "%"
 }
 
+/**
+ * The server's save message, plus the one thing the server cannot know: whether
+ * THIS browser will still have the visitor id on the next visit. Every save
+ * message promises the calculation can be retrieved later; where storage is
+ * blocked (private mode, cookies off) that promise is false, and the caveat has
+ * to come from the browser or not at all.
+ */
+function saveMessageWithRetrievalCaveat(message: string): string {
+  if (isVisitorIdPersistent()) return message
+  return `${message} Note: this browser is blocking local storage, so this calculation will not be findable after you close the tab.`
+}
+
 // ─── Seller Net Sheet Tab ─────────────────────────────────────────────────────
 
 function SellerNetTab({ brokerageId }: { brokerageId: string }) {
-  const [visitorId] = useState(() => crypto.randomUUID())
+  const [visitorId] = useState(getOrCreateVisitorId)
   const [isPending, startTransition] = useTransition()
   const [isSaving, startSaveTransition] = useTransition()
   const [result, setResult] = useState<SellerNetResult | null>(null)
@@ -107,7 +124,7 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
         calculationData: result,
         visitorId,
       })
-      setSaveMsg(res.success ? (res.message ?? "Saved.") : "Save failed.")
+      setSaveMsg(res.success ? saveMessageWithRetrievalCaveat(res.message ?? "Saved.") : "Save failed.")
     })
   }
 
@@ -314,7 +331,7 @@ const DEFAULT_SCENARIOS: MortgageScenario[] = [
 ]
 
 function MortgageTab({ brokerageId: _brokerageId }: { brokerageId: string }) {
-  const [visitorId] = useState(() => crypto.randomUUID())
+  const [visitorId] = useState(getOrCreateVisitorId)
   const [isPending, startTransition] = useTransition()
   const [isSaving, startSaveTransition] = useTransition()
   const [result, setResult] = useState<MortgageResult | null>(null)
@@ -366,7 +383,7 @@ function MortgageTab({ brokerageId: _brokerageId }: { brokerageId: string }) {
         calculationData: result,
         visitorId,
       })
-      setSaveMsg(res.success ? (res.message ?? "Saved.") : "Save failed.")
+      setSaveMsg(res.success ? saveMessageWithRetrievalCaveat(res.message ?? "Saved.") : "Save failed.")
     })
   }
 
@@ -573,7 +590,7 @@ function MortgageTab({ brokerageId: _brokerageId }: { brokerageId: string }) {
 // ─── Rent vs Buy Tab ──────────────────────────────────────────────────────────
 
 function RentVsBuyTab({ brokerageId }: { brokerageId: string }) {
-  const [visitorId] = useState(() => crypto.randomUUID())
+  const [visitorId] = useState(getOrCreateVisitorId)
   const [isPending, startTransition] = useTransition()
   const [isSaving, startSaveTransition] = useTransition()
   const [isSharing, startShareTransition] = useTransition()
@@ -623,7 +640,7 @@ function RentVsBuyTab({ brokerageId }: { brokerageId: string }) {
       })
       if (res.success) {
         setSavedId(res.savedId ?? null)
-        setSaveMsg(res.message ?? "Saved.")
+        setSaveMsg(saveMessageWithRetrievalCaveat(res.message ?? "Saved."))
       } else {
         setSaveMsg("Save failed.")
       }
