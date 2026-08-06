@@ -44,7 +44,7 @@
     "app/actions/brand-template-registry.ts": 2,
     "app/actions/brokerage-cda-setup.ts": 1,
     "app/actions/buyer-broker-agreements.ts": 1,
-    "app/actions/buyer-execution.ts": 4,
+    "app/actions/buyer-execution.ts": 3,
     "app/actions/buyer-financial.ts": 1,
     "app/actions/buyer-move.ts": 1,
     "app/actions/buyer-offer/handle-multi-offer.ts": 2,
@@ -572,7 +572,7 @@
     "lib/notifications/brokerage-admins.ts": 1,
     "lib/notifications/buyer-preferences.ts": 1,
     "lib/notifications/platform-staff.ts": 1,
-    "lib/offers/closing-cost-accuracy.ts": 10,
+    "lib/offers/closing-cost-accuracy.ts": 9,
     "lib/offers/net-sheet-calc.ts": 2,
     "lib/offers/offer-target.ts": 1,
     "lib/offers/public-record-preload.ts": 1,
@@ -683,7 +683,7 @@
     "lib/transactions/sync-from-provider.ts": 1,
     "lib/transactions/transaction-status.ts": 3,
     "lib/usage.ts": 3,
-    "lib/validations/index.ts": 12,
+    "lib/validations/index.ts": 11,
     "lib/vendor-governance/vendor-policy.ts": 1,
     "lib/vendors/billing-calculator.ts": 3,
     "lib/vendors/credit-calculator.ts": 3,
@@ -733,7 +733,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 8897,
+  "census": 8906,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -818,7 +818,7 @@
     "app/actions/ai-listing-presentation.ts": 4,
     "app/actions/ai-market-intelligence.ts": 4,
     "app/actions/ai-marketing-automation.ts": 8,
-    "app/actions/ai-newsletter.ts": 14,
+    "app/actions/ai-newsletter.ts": 15,
     "app/actions/ai-offer-creation.ts": 12,
     "app/actions/ai-predictions.ts": 24,
     "app/actions/ai-property-matching.ts": 4,
@@ -1054,7 +1054,7 @@
     "app/actions/newsletter/fetch-local-news.ts": 3,
     "app/actions/newsletter/get-seo-score.ts": 1,
     "app/actions/newsletter/list-templates.ts": 1,
-    "app/actions/newsletter/schedule-newsletter.ts": 1,
+    "app/actions/newsletter/schedule-newsletter.ts": 2,
     "app/actions/newsletter/update-template.ts": 1,
     "app/actions/notification-actions.ts": 2,
     "app/actions/notifications.ts": 4,
@@ -1155,6 +1155,7 @@
     "app/actions/settings/public-site-links.ts": 1,
     "app/actions/settings/reputation-preferences.ts": 2,
     "app/actions/settings/revenue-share-setting.ts": 2,
+    "app/actions/settings/showing-financial-gate-setting.ts": 2,
     "app/actions/settings/update-email-template.ts": 1,
     "app/actions/settings/update-global-settings.ts": 1,
     "app/actions/settings/update-notification-rules.ts": 1,
@@ -1249,7 +1250,7 @@
     "app/actions/vendor-premium-placement.ts": 2,
     "app/actions/vendor-requests.ts": 1,
     "app/actions/vendor-respa.ts": 1,
-    "app/actions/vendor-verification.ts": 6,
+    "app/actions/vendor-verification.ts": 7,
     "app/actions/vendor-w9.ts": 2,
     "app/actions/vendors-kernel.ts": 6,
     "app/actions/video/create-video-project.ts": 10,
@@ -2450,6 +2451,7 @@
     "app/dashboard/settings/components/os/settings-command-strip.tsx": 1,
     "app/dashboard/settings/components/os/setup-completeness-panel.tsx": 1,
     "app/dashboard/settings/components/os/user-access-panel.tsx": 1,
+    "app/dashboard/settings/components/showing-financial-gate-panel.tsx": 1,
     "app/dashboard/settings/embeds/embed-editor.tsx": 1,
     "app/dashboard/settings/embeds/embeds-list-client.tsx": 1,
     "app/dashboard/settings/integrations/integrations-client.tsx": 1,
@@ -2967,6 +2969,7 @@
     "lib/buyer-execution/governance-guards.ts": 5,
     "lib/buyer-execution/multi-party-updates.ts": 5,
     "lib/buyer-execution/rollback-handler.ts": 9,
+    "lib/buyer-execution/showing-financial-policy.ts": 1,
     "lib/buyer-execution/voice-assistant-integration.ts": 1,
     "lib/buyer-lifecycle/extensions/contact-lifecycle-sync.ts": 10,
     "lib/buyer-lifecycle/extensions/expiration-handler.ts": 7,
@@ -3615,7 +3618,7 @@
     "lib/kernel/users.ts": 9,
     "lib/kernel/vendor-categories.ts": 2,
     "lib/kernel/vendor-coverage-forecast.ts": 4,
-    "lib/kernel/vendor-doc-compliance.ts": 5,
+    "lib/kernel/vendor-doc-compliance.ts": 4,
     "lib/kernel/vendor-no-show-autopilot.ts": 4,
     "lib/kernel/vendor-orchestration.ts": 7,
     "lib/kernel/vendor-price-intelligence.ts": 3,
@@ -4070,6 +4073,7 @@
     "lib/testimonials/testimonial-policy.ts": 1,
     "lib/them-first/empathy-library.ts": 3,
     "lib/them-first/validator.ts": 1,
+    "lib/tools/visitor-id.ts": 2,
     "lib/training/objection-scenarios.ts": 1,
     "lib/transactions/auto-execute-offer.ts": 1,
     "lib/transactions/buyer-move.ts": 8,
@@ -4115,7 +4119,7 @@
     "lib/usage/log-media-usage.ts": 1,
     "lib/usage.ts": 4,
     "lib/utils.ts": 1,
-    "lib/validations/index.ts": 15,
+    "lib/validations/index.ts": 14,
     "lib/vendor/assignment-access.ts": 1,
     "lib/vendor-governance/attribution.ts": 2,
     "lib/vendor-governance/budget-eval.ts": 3,
@@ -4130,6 +4134,7 @@
     "lib/vendor-tracking.ts": 1,
     "lib/vendors/billing-calculator.ts": 3,
     "lib/vendors/credit-calculator.ts": 3,
+    "lib/vendors/insurance-posture.ts": 2,
     "lib/vendors/premium-placement.ts": 3,
     "lib/vendors/rank.ts": 3,
     "lib/vendors/vendor-scope.ts": 7,
@@ -4812,6 +4817,7 @@
       "aiAnalyzeNewsletterPerformance",
       "manageSubscribers",
       "getNewsletters",
+      "deleteNewsletterCampaign",
       "createNewsletter",
       "generateNewsletterContent",
       "queueNewsletterForContact",
@@ -6460,7 +6466,8 @@
       "listTemplates"
     ],
     "app/actions/newsletter/schedule-newsletter.ts": [
-      "scheduleNewsletter"
+      "scheduleNewsletter",
+      "scheduleExistingNewsletter"
     ],
     "app/actions/newsletter/update-template.ts": [
       "updateTemplate"
@@ -7119,6 +7126,10 @@
     "app/actions/settings/revenue-share-setting.ts": [
       "getRevenueShareSetting",
       "setRevenueShareEnabled"
+    ],
+    "app/actions/settings/showing-financial-gate-setting.ts": [
+      "getShowingFinancialGateSetting",
+      "setShowingFinancialGateRequired"
     ],
     "app/actions/settings/update-email-template.ts": [
       "updateEmailTemplate"
@@ -7803,6 +7814,7 @@
       "approveVendor",
       "rejectVendor",
       "setVendorComplianceCredential",
+      "recordVendorInsuranceAction",
       "setVendorTierPricing",
       "requestVendorInfo"
     ],
@@ -11602,6 +11614,9 @@
     "app/dashboard/settings/components/os/user-access-panel.tsx": [
       "UserAccessPanel"
     ],
+    "app/dashboard/settings/components/showing-financial-gate-panel.tsx": [
+      "ShowingFinancialGatePanel"
+    ],
     "app/dashboard/settings/embeds/embed-editor.tsx": [
       "EmbedEditor"
     ],
@@ -13673,6 +13688,9 @@
       "handleBuyerDisengagement",
       "getRollbackHistory",
       "hasRecentRollbacks"
+    ],
+    "lib/buyer-execution/showing-financial-policy.ts": [
+      "guardShowingFinancialGate"
     ],
     "lib/buyer-execution/voice-assistant-integration.ts": [
       "handleBuyerVoiceRequest"
@@ -17004,7 +17022,6 @@
       "runVendorCoverageForecastAll"
     ],
     "lib/kernel/vendor-doc-compliance.ts": [
-      "daysUntil",
       "evaluateCredential",
       "evaluateVendorCompliance",
       "runVendorDocCompliance",
@@ -19307,6 +19324,10 @@
     "lib/them-first/validator.ts": [
       "validateThemFirstContent"
     ],
+    "lib/tools/visitor-id.ts": [
+      "getOrCreateVisitorId",
+      "isVisitorIdPersistent"
+    ],
     "lib/training/objection-scenarios.ts": [
       "getScenarioByKey"
     ],
@@ -19497,7 +19518,6 @@
     ],
     "lib/validations/index.ts": [
       "isValidUUID",
-      "requireValidUUID",
       "isValidEmail",
       "isValidPhone",
       "isValidURL",
@@ -19570,6 +19590,10 @@
       "calculateCreditsForOperation",
       "calculateMonthlyUsageEstimate",
       "recommendPlanByUsage"
+    ],
+    "lib/vendors/insurance-posture.ts": [
+      "daysUntil",
+      "readVendorInsurance"
     ],
     "lib/vendors/premium-placement.ts": [
       "offerPremiumPlacement",
@@ -20165,5 +20189,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 373
+  "trulyDead": 371
 }

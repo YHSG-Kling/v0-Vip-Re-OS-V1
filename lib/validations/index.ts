@@ -9,8 +9,8 @@
 // isValidUUID is the workhorse — 116 call sites — with validatePhone,
 // validateEmail, validateContact and validateTransactionData also in use.
 //
-// The remaining exports (isValidDate, isValidURL, requireValidUUID,
-// validateArray, validateContentLength, validateHashtags, validateProperty,
+// The remaining exports (isValidDate, isValidURL, validateArray,
+// validateContentLength, validateHashtags, validateProperty,
 // validateUUIDArray) have no callers. They show up on the category-C
 // burn-down list, so the tempting move is to "wire them" by replacing the
 // hand-rolled checks scattered through the codebase. DO NOT. Those inline
@@ -44,12 +44,13 @@ export function isValidUUID(value: string | null | undefined): value is string {
   return UUID_REGEX.test(value)
 }
 
-export function requireValidUUID(value: string | null | undefined, fieldName = "ID"): string {
-  if (!isValidUUID(value)) {
-    throw new Error(`Invalid ${fieldName} format. Expected UUID.`)
-  }
-  return value
-}
+// requireValidUUID lived here and was REMOVED as a duplicate of
+// lib/errors/index.ts throwIfInvalidUUID (keep-one). Both were unwired and had
+// the same signature; the survivor throws a typed ValidationError carrying the
+// value and field name, which createErrorResponse and handleError already
+// render, whereas this one threw a bare Error and lost that context. Nothing it
+// did is missing there. Do not reintroduce a second thrower here — import
+// throwIfInvalidUUID from lib/errors.
 
 // Email Validation
 export function isValidEmail(email: string | null | undefined): boolean {

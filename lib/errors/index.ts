@@ -2,8 +2,41 @@
 // SHARED ERROR HANDLING
 // Central error handling module for consistent error management
 // ============================================
+//
+// WHAT IS ADOPTED HERE, AND THE DISPOSITION OF WHAT IS NOT (audited, not assumed)
+//
+// handleError is the workhorse; AppError and its subclasses, logError,
+// createErrorResponse / createSuccessResponse and handleAction are all in use.
+//
+// Four exports have no callers and show up on the category-C burn-down list:
+// asyncErrorBoundary, retryAsync, throwIfEmpty, throwIfNotInArray. They were
+// audited before being left alone, and the finding is that NONE has a named
+// duplicate and none has an adoption site waiting for it:
+//
+//   · retryAsync is an IN-PROCESS retry (sleep + exponential backoff on a single
+//     call). lib/errors/auto-retry.ts looks like its twin and is NOT: it is a
+//     durable, DB-backed retry ledger for automation errors, and its own header
+//     explains why — Vercel serverless cannot sleep across a long delay, so it
+//     stores next_retry_at for the retry-errors cron to pick up. Different
+//     problem, different lifetime. A sweep for hand-rolled in-process backoff
+//     (Math.pow(2, attempt) and friends) found only that durable ladder and the
+//     webhook delivery ladder, both also DB-backed. So there is nothing for
+//     retryAsync to consolidate today.
+//   · asyncErrorBoundary duplicates what handleAction already does for the
+//     call sites that need it; it wraps rather than being wrapped, so adopting
+//     it would mean rewriting call sites that are already correct.
+//   · throwIfEmpty / throwIfNotInArray are generic and unclaimed.
+//
+// So these are speculative utilities. Under the standing rule they are NOT
+// deleted — the orphan count is never by itself a reason to remove code — but
+// they are also not something to adopt on sight. If one is genuinely needed,
+// take it AND keep whatever extra strictness the caller already had.
 
 import { ERROR_MESSAGES } from "../constants"
+// The canonical UUID pattern lives in lib/validations, which owns UUID checking
+// (isValidUUID is on 116 call sites). This file used to declare an 11th copy of
+// the same regex inline.
+import { UUID_REGEX } from "../validations"
 
 // ============================================
 // CUSTOM ERROR CLASSES
@@ -216,9 +249,19 @@ export async function handleAction<T>(
 // VALIDATION ERROR HELPERS
 // ============================================
 
+/**
+ * KEEP-ONE (this is the survivor). lib/validations/index.ts previously exported
+ * requireValidUUID doing the same job with the same signature; both were unwired.
+ * This one wins because it throws a typed ValidationError carrying the offending
+ * value and field name, which createErrorResponse and handleError already know
+ * how to render — requireValidUUID threw a bare Error, losing that. Nothing it
+ * did is missing here, so it was removed rather than left as a second answer to
+ * the same question.
+ *
+ * The regex is IMPORTED, not re-declared. This file used to inline its own copy;
+ * lib/validations owns the canonical one.
+ */
 export function throwIfInvalidUUID(value: string | null | undefined, fieldName = "ID"): string {
-  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
   if (!value || !UUID_REGEX.test(value)) {
     throw new ValidationError(`Invalid ${fieldName} format. Expected UUID.`, { value, fieldName })
   }
