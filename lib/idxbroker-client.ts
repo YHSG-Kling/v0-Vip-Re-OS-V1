@@ -128,21 +128,24 @@ export class IDXBrokerClient {
     }
   }
 
-  async getProperties(filters: { city?: string; minPrice?: number; maxPrice?: number; status?: string } = {}) {
-    if (!this.apiKey) {
-      console.error("[IDXBroker] API key not configured — returning empty property list")
-      return []
-    }
-
-    try {
-      const response = await this.request<any>("/clients/featured")
-      if (!response.ok) return []
-      return response.data ?? []
-    } catch (error) {
-      console.error("[IDXBroker] Properties fetch error:", error)
-      return []
-    }
-  }
+  // getProperties(filters) was REMOVED — it was a degenerate duplicate of
+  // searchActiveListings below. It advertised {city, minPrice, maxPrice, status}
+  // and applied NONE of them: its whole body hit `/clients/featured` and returned
+  // the raw wire rows. So every caller — whatever it asked for — got the same
+  // array of the brokerage's featured ACTIVE listings. Two calls with different
+  // filters were indistinguishable, and `status: "sold"` returned active listings
+  // whose `soldPrice` field does not exist, so callers rendered `$undefined`.
+  //
+  // searchActiveListings serves the SAME endpoint but normalizes the rows into
+  // NormalizedIdxListing and really does filter (city/state/zip/price/beds/baths/
+  // limit). It is the survivor; every former getProperties caller now uses it.
+  //
+  // What this client CANNOT do, and no rewrite of it will: return SOLD comparable
+  // sales. IDX Broker's per-MLS search endpoint needs account-specific MLS ids and
+  // field mappings provisioned per brokerage, so a bare API key reaches only the
+  // brokerage's own IDX-enabled active/featured set. Sold/market figures come from
+  // the `market_data` observation table (writer: lib/intelligence/market-insight-
+  // generator.ts) or the CMA engine (lib/cma/ai-cma-orchestrator.ts) — never from here.
 
   /**
    * Normalized active-listing search for the external-listings router.

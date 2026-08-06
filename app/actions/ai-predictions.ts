@@ -1317,18 +1317,18 @@ Generate PERFECT search criteria based on learned behavior:
 
     const aiMatch = analysis.data
 
-    // Search IDX with AI-optimized criteria
-    const searchQuery = {
-      minPrice: aiMatch.optimalSearchCriteria?.price_min,
-      maxPrice: aiMatch.optimalSearchCriteria?.price_max,
-      bedrooms: aiMatch.optimalSearchCriteria?.bedrooms_min,
-      bathrooms: aiMatch.optimalSearchCriteria?.bathrooms_min,
-    }
-
-    const properties = await idxClient.getProperties(searchQuery)
+    // Search IDX with AI-optimized criteria. searchActiveListings ACTUALLY applies
+    // these filters (the removed getProperties advertised them and ignored them all,
+    // so every buyer got the same unfiltered featured list).
+    const properties = await idxClient.searchActiveListings({
+      priceMin: aiMatch.optimalSearchCriteria?.price_min ?? undefined,
+      priceMax: aiMatch.optimalSearchCriteria?.price_max ?? undefined,
+      bedroomsMin: aiMatch.optimalSearchCriteria?.bedrooms_min ?? undefined,
+      bathroomsMin: aiMatch.optimalSearchCriteria?.bathrooms_min ?? undefined,
+    })
 
     // Score each property against learned preferences
-    const scoredProperties = properties.map((prop: any) => {
+    const scoredProperties = properties.map((prop) => {
       let matchScore = 50 // Base score
       const reasons: string[] = []
 
@@ -1359,10 +1359,17 @@ Generate PERFECT search criteria based on learned behavior:
         }
       })
 
-      // Check price alignment with actual budget
+      // Check price alignment with actual budget. NormalizedIdxListing calls this
+      // `price` (the raw feed's listPrice/listingPrice/price collapse into it), and
+      // it is nullable — a listing with no published price is not "in budget".
+      const budgetMin = aiMatch.learnedPreferences?.actualBudgetRange?.min
+      const budgetMax = aiMatch.learnedPreferences?.actualBudgetRange?.max
       if (
-        prop.listPrice >= aiMatch.learnedPreferences?.actualBudgetRange?.min &&
-        prop.listPrice <= aiMatch.learnedPreferences?.actualBudgetRange?.max
+        prop.price != null &&
+        typeof budgetMin === "number" &&
+        typeof budgetMax === "number" &&
+        prop.price >= budgetMin &&
+        prop.price <= budgetMax
       ) {
         matchScore += 10
         reasons.push("Within your actual budget sweet spot")
@@ -1607,31 +1614,59 @@ export async function predictWinningOffer(data: {
   const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
   const idxClient = new IDXBrokerClient()
 
-  // Get property intelligence
-  const property = await (idxClient.getProperties as any)({ ids: [data.propertyMlsId] }).then((r: any) => r?.[0])
+  // Get property intelligence. This used to call getProperties({ ids: [mlsId] }) —
+  // the `ids` filter was ignored, so it received EVERY featured listing and took
+  // [0]: an unrelated property, whose address and figures were then fed to the
+  // offer prompt as if they were this one's. Now we pull the feed and RESOLVE the
+  // MLS id against it; no match means no property record, not a substitute one.
+  const feed = await idxClient.searchActiveListings({ limit: 200 })
+  const property =
+    feed.find((l) => l.mlsNumber === data.propertyMlsId || l.externalId === data.propertyMlsId) ?? null
 
-  const { data: insights } = await supabase
+  const { data: insights, error: insightsError } = await supabase
     .from("property_smart_insights")
     .select("*")
     .eq("property_mls_id", data.propertyMlsId)
     .maybeSingle()
 
-  const prompt = `You are an AI real estate strategist. Predict the winning offer amount:
+  if (insightsError) {
+    console.error("[v0] predictWinningOffer: property_smart_insights read refused:", insightsError.message)
+  }
+  const smartInsights = insightsError ? null : insights
 
-Property: ${property?.address || "Unknown"}
+  const domKnown = typeof smartInsights?.days_on_market === "number"
+  const reductionsKnown = typeof smartInsights?.price_reduction_count === "number"
+
+  const prompt = `You are an AI real estate strategist. Predict the winning offer amount.
+
+Work ONLY from the facts below. Where a fact is marked "not available", say the
+recommendation is uncertain on that axis — do NOT assume a value for it.
+
+Property: ${
+    property
+      ? `${property.address}${property.city ? `, ${property.city}` : ""}${property.state ? `, ${property.state}` : ""}`
+      : `MLS ${data.propertyMlsId} — not present in this brokerage's IDX feed, so no property record, address or listing detail is available`
+  }
+${property?.bedrooms != null || property?.bathrooms != null || property?.squareFeet != null
+    ? `Property Facts: ${[
+        property.bedrooms != null ? `${property.bedrooms} bd` : null,
+        property.bathrooms != null ? `${property.bathrooms} ba` : null,
+        property.squareFeet != null ? `${property.squareFeet} sqft` : null,
+      ].filter(Boolean).join(" / ")}`
+    : "Property Facts: not available"}
 List Price: $${data.listPrice.toLocaleString()}
-Days on Market: ${insights?.days_on_market || 0}
-Price Reductions: ${insights?.price_reduction_count || 0}
-Market Position: ${insights?.market_position || "unknown"}
+Days on Market: ${domKnown ? smartInsights!.days_on_market : "not available"}
+Price Reductions: ${reductionsKnown ? smartInsights!.price_reduction_count : "not available"}
+Market Position: ${smartInsights?.market_position ?? "not available"}
 
-Competition Indicators:
-- Property Views (last 7 days): ${property?.viewCount || 0}
-- Showing Requests: ${property?.showingCount || 0}
-- Other Offers: ${property?.offerCount || 0}
+Competition Indicators: NOT AVAILABLE. The IDX feed exposes no view counts, no
+showing counts and no competing-offer counts, and nothing else in this system
+records them. Do not estimate competition — state that it is unknown and give the
+strategy a wider band because of it.
 
 Seller Signals:
-- Motivated? ${insights?.days_on_market > 60 ? "YES (60+ DOM)" : "Unknown"}
-- Price Reduction Frequency: ${insights?.price_reduction_count || 0}
+- Motivated? ${domKnown ? (smartInsights!.days_on_market > 60 ? "YES (60+ days on market)" : "No DOM-based signal") : "not available (days on market unknown)"}
+- Price Reduction Frequency: ${reductionsKnown ? smartInsights!.price_reduction_count : "not available"}
 
 Predict the winning offer strategy:
 
@@ -1808,16 +1843,38 @@ export async function predictMarketShift(data: { city: string; state: string }) 
   const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
   const idxClient = new IDXBrokerClient()
 
-  // Get current inventory
-  const currentListings = await idxClient.getProperties({ city: data.city, status: "active" })
+  // Get current inventory. This is the BROKERAGE'S OWN IDX-enabled active listings
+  // in the city, not the whole market's inventory — the prompt below says so.
+  const currentListings = await idxClient.searchActiveListings({ city: data.city, state: data.state })
 
-  const prompt = `You are a real estate market economist AI. Predict market shifts:
+  // Average DOM over the listings that actually report one. The previous expression
+  // divided by `(length || 1)`, so an empty feed produced a confident "Average DOM: 0"
+  // — a fabricated market fact. No reported DOM now reads as unavailable.
+  const domValues = currentListings
+    .map((l) => l.daysOnMarket)
+    .filter((d): d is number => typeof d === "number")
+  const avgDom =
+    domValues.length > 0
+      ? Math.round(domValues.reduce((sum, d) => sum + d, 0) / domValues.length)
+      : null
+
+  const prompt = `You are a real estate market economist AI. Predict market shifts.
 
 Market: ${data.city}, ${data.state}
 
-Current Snapshot:
-- Active Listings: ${currentListings?.length || 0}
-- Average DOM: ${currentListings?.reduce((sum: number, p: any) => sum + (p.daysOnMarket || 0), 0) / (currentListings?.length || 1)}
+Current Snapshot — SCOPE WARNING: this count is this brokerage's own IDX-enabled
+active listings in the city, NOT total market inventory. Do not present it as the
+market's inventory level or compute market share from it.
+- Brokerage active listings in ${data.city}: ${currentListings.length}
+- Average days on market across those listings: ${
+    avgDom != null
+      ? `${avgDom} (from ${domValues.length} of ${currentListings.length} listings that report DOM)`
+      : "not available — no listing in this feed reports days on market"
+  }
+
+No independent inventory, absorption or price-history series is available to this
+call. Where your prediction would depend on one, say what you would need rather
+than asserting a figure.
 
 Predict for next 90 days:
 
@@ -1917,53 +1974,97 @@ export async function findMarketArbitrage(data: { city: string; state: string; a
   const idxClient = new IDXBrokerClient()
   const batchData = new BatchDataClient()
 
-  // Get all active listings
-  const activeListings = await idxClient.getProperties({
-    city: data.city,
-    status: "active",
-  })
+  // Get all active listings the brokerage's IDX feed carries for this city.
+  const activeListings = await idxClient.searchActiveListings({ city: data.city })
 
-  // Get recent sales for comparison
-  const recentSales = await idxClient.getProperties({
-    city: data.city,
-    status: "sold",
-  })
+  // The sold side. This used to be a SECOND getProperties call with status:"sold"
+  // — which returned the IDENTICAL array as the active call, and the prompt then
+  // rendered `SOLD $${sale.soldPrice}` (a field active listings do not have) as
+  // "SOLD $undefined" for every row, while telling the model the same properties
+  // were simultaneously the current inventory AND the recent sales.
+  //
+  // IDX cannot serve sold comps from a bare API key. The real recent-sales
+  // observation is the market_data table (writer: lib/intelligence/
+  // market-insight-generator.ts). It may legitimately have no row for this city
+  // yet — in that case the prompt below says there is no benchmark, rather than
+  // inventing one.
+  const { data: marketRow, error: marketError } = await supabase
+    .from("market_data")
+    .select("median_sale_price, sold_listings_30d, avg_days_on_market, list_to_sale_ratio, data_date")
+    .eq("city", data.city)
+    .eq("state", data.state)
+    .order("data_date", { ascending: false })
+    .limit(1)
+    .maybeSingle()
 
-  const prompt = `You are an AI investment analyzer. Find underpriced properties:
+  if (marketError) {
+    console.error("[v0] findMarketArbitrage: market_data read refused:", marketError.message)
+  }
+  const soldBenchmark = marketError ? null : marketRow
 
-Active Listings: ${activeListings?.length || 0}
-Recent Sales: ${recentSales?.length || 0}
+  const soldBenchmarkBlock = soldBenchmark
+    ? `Recent-sales benchmark for ${data.city}, ${data.state} (observed ${soldBenchmark.data_date}):
+- Median sale price: ${soldBenchmark.median_sale_price != null ? `$${Number(soldBenchmark.median_sale_price).toLocaleString()}` : "not available"}
+- Homes sold in last 30 days: ${soldBenchmark.sold_listings_30d ?? "not available"}
+- Average days on market: ${soldBenchmark.avg_days_on_market ?? "not available"}
+- List-to-sale ratio: ${soldBenchmark.list_to_sale_ratio ?? "not available"}
+
+This is an AREA-LEVEL benchmark, not a set of individual comparable sales. You
+cannot adjust it for a specific property's condition, lot or finish level.`
+    : `Recent-sales benchmark: NOT AVAILABLE. No recent-sales observation exists for
+${data.city}, ${data.state}, and this system holds NO individual sold comparables —
+the IDX feed serves active listings only.
+
+Therefore: do NOT claim any listing is "below comparable sales", do not state an
+estimated market value, and do not produce a profit or ROI figure — every one of
+those requires sold data you do not have. Scope your analysis to what LIST PRICES
+ALONE can support: relative price-per-square-foot within this list, unusually long
+days on market, and outliers versus the rest of this same list. Say plainly in
+"marketInsights" that no recent-sales benchmark was available and that the
+opportunities are list-price-relative only.`
+
+  const listingBlock =
+    activeListings.length > 0
+      ? activeListings
+          .slice(0, 20)
+          .map((listing) => {
+            const ppsf =
+              listing.price != null && listing.squareFeet
+                ? `$${Math.round(listing.price / listing.squareFeet)}`
+                : "not available"
+            return `
+${listing.address || "(address not published)"}${listing.mlsNumber ? ` [MLS ${listing.mlsNumber}]` : ""}: ${listing.price != null ? `$${listing.price.toLocaleString()}` : "list price not available"}
+${listing.bedrooms ?? "?"}bd/${listing.bathrooms ?? "?"}ba, ${listing.squareFeet != null ? `${listing.squareFeet} sqft` : "sqft not available"}
+DOM: ${listing.daysOnMarket ?? "not available"}
+Price/sqft: ${ppsf}
+`
+          })
+          .join("\n")
+      : "(no active listings returned for this city — there is nothing to analyze)"
+
+  const prompt = `You are an AI investment analyzer. Find underpriced properties.
+
+SCOPE: the listings below are this brokerage's own IDX-enabled active listings in
+${data.city}, not the whole market. Never assert a fact you were not given.
+
+Active listings supplied: ${activeListings.length}
 
 Analyze active listings:
-${activeListings
-  ?.slice(0, 20)
-  .map(
-    (listing: any) => `
-${listing.address}: $${listing.listPrice?.toLocaleString()}
-${listing.bedrooms}bd/${listing.bathrooms}ba, ${listing.sqft} sqft
-DOM: ${listing.daysOnMarket}
-Price/sqft: $${Math.round((listing.listPrice || 0) / (listing.sqft || 1))}
-`,
-  )
-  .join("\n")}
+${listingBlock}
 
-Compare to recent sales:
-${recentSales
-  ?.slice(0, 10)
-  .map(
-    (sale: any) => `
-${sale.address}: SOLD $${sale.soldPrice?.toLocaleString()}
-${sale.bedrooms}bd/${sale.bathrooms}ba, ${sale.sqft} sqft
-Price/sqft: $${Math.round((sale.soldPrice || 0) / (sale.sqft || 1))}
-`,
-  )
-  .join("\n")}
+${soldBenchmarkBlock}
 
-Find TOP 10 arbitrage opportunities:
-- Priced 10%+ below comparable sales
-- In appreciating neighborhoods
-- Show seller motivation (high DOM, price reductions)
-- Hidden value potential (needs cosmetics only)
+Find up to 10 opportunities, using ONLY what is above:
+- Priced low relative to the other listings here${soldBenchmark ? " and to the area median sale price" : ""}
+- Show seller motivation (high days on market)
+- Return an empty "opportunities" array if the data above does not support any.
+- Leave any numeric field you cannot derive from the data above as null. Do not guess.
+
+Shape only — every value below is illustrative. Fill each field from the data
+above or set it to null. "estimatedValue", "belowMarket", "belowMarketPercent",
+"investIn", "sellAt", "profit" and "roi" are only fillable when a recent-sales
+benchmark was supplied; otherwise they are null. Never quote a property's
+condition or renovation need — nothing above reports it.
 
 {
   "opportunities": [
@@ -1971,33 +2072,32 @@ Find TOP 10 arbitrage opportunities:
       "mlsId": "...",
       "address": "123 Oak St",
       "listPrice": 385000,
-      "estimatedValue": 425000,
-      "belowMarket": 40000,
-      "belowMarketPercent": 9.4,
+      "estimatedValue": null,
+      "belowMarket": null,
+      "belowMarketPercent": null,
       "reasoning": [
-        "Recent comps sold $420-430k",
-        "Listed 60 days - seller motivated",
-        "Needs cosmetic updates only ($15k)",
-        "Neighborhood appreciating 8%/year"
+        "Lowest price/sqft of the listings supplied",
+        "Listed 60 days - longest days on market in this set"
       ],
       "investmentPotential": {
         "buyAt": 385000,
-        "investIn": 15000,
-        "sellAt": 440000,
-        "profit": 40000,
-        "roi": 10.4,
-        "timeline": "6 months"
+        "investIn": null,
+        "sellAt": null,
+        "profit": null,
+        "roi": null,
+        "timeline": null
       },
-      "buyerTypes": ["investor", "handy_buyer", "first_time_with_vision"],
-      "urgency": "high",
-      "competitionLevel": "low",
-      "actionRequired": "Make offer this week before market catches on"
+      "buyerTypes": ["investor", "first_time_with_vision"],
+      "urgency": "medium",
+      "competitionLevel": "unknown",
+      "actionRequired": "Tour before advising an offer - no sold comparables available"
     }
   ],
   "marketInsights": {
-    "total_mispriced": 15,
-    "avg_opportunity": 8.2,
-    "best_neighborhoods": ["Oak Hills - 3 opportunities", "Riverside - 2 opportunities"]
+    "total_mispriced": 0,
+    "avg_opportunity": null,
+    "data_limitations": "State here exactly which inputs were unavailable (e.g. no recent-sales benchmark, no condition data, brokerage-only listing set).",
+    "best_neighborhoods": []
   }
 }`
 
@@ -2014,11 +2114,24 @@ Find TOP 10 arbitrage opportunities:
     for (const opp of arbitrage.opportunities || []) {
       // ai_insights has no insight_data column → fold the payload into estimated_impact
       // (jsonb). entity_id is uuid; opp.mlsId is an MLS string → keep it in the payload, not entity_id.
+      //
+      // "% Below Market" is only sayable when a recent-sales benchmark existed.
+      // Without one the model returns nulls, and the title/description must not
+      // render "null% Below Market" / "$undefined below market value" as if a
+      // comparison had been made.
+      const belowPct = typeof opp.belowMarketPercent === "number" ? opp.belowMarketPercent : null
+      const belowAmt = typeof opp.belowMarket === "number" ? opp.belowMarket : null
       await supabase.from("ai_insights").insert({
         insight_type: "opportunity",
         entity_type: "property",
-        insight_title: `Hidden Gem: ${opp.belowMarketPercent}% Below Market`,
-        insight_description: `${opp.address} - $${opp.belowMarket?.toLocaleString()} below market value`,
+        insight_title:
+          belowPct != null
+            ? `Hidden Gem: ${belowPct}% Below Market`
+            : `Possible Value: ${opp.address ?? "listing"} (no sold comparables available)`,
+        insight_description:
+          belowAmt != null
+            ? `${opp.address} - $${belowAmt.toLocaleString()} below market value`
+            : `${opp.address ?? "Listing"} - flagged on list price alone; no recent-sales benchmark was available for ${data.city}, ${data.state}, so no below-market figure can be stated.`,
         actionable_steps: [opp.actionRequired],
         priority: opp.urgency === "high" ? "critical" : "high",
         estimated_impact: {
@@ -2055,8 +2168,14 @@ Find TOP 10 arbitrage opportunities:
           ],
           priority: "high",
           estimated_impact: {
-            avg_profit_per_deal: arbitrage.marketInsights?.avg_opportunity || 0,
+            // null, not 0 — without a recent-sales benchmark there is no
+            // per-deal figure, and a stored 0 reads as a measured zero.
+            avg_profit_per_deal:
+              typeof arbitrage.marketInsights?.avg_opportunity === "number"
+                ? arbitrage.marketInsights.avg_opportunity
+                : null,
             total_opportunities: arbitrage.opportunities?.length || 0,
+            recent_sales_benchmark_available: soldBenchmark != null,
           },
         })
       }
@@ -2508,49 +2627,62 @@ export async function competitiveIntelligence(data: { agentId: string; marketAre
   const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
   const idxClient = new IDXBrokerClient()
 
-  const listings = await idxClient.getProperties({
-    city: data.marketArea,
-    status: "active",
-  })
+  const listings = await idxClient.searchActiveListings({ city: data.marketArea })
 
-  const prompt = `Analyze competitive landscape:
+  const listingBlock =
+    listings.length > 0
+      ? listings
+          .slice(0, 25)
+          .map((l) => {
+            const ppsf =
+              l.price != null && l.squareFeet ? `$${Math.round(l.price / l.squareFeet)}/sqft` : "price/sqft not available"
+            return `- ${l.address || "(address not published)"}: ${l.price != null ? `$${l.price.toLocaleString()}` : "list price not available"}, ${l.bedrooms ?? "?"}bd/${l.bathrooms ?? "?"}ba, ${l.squareFeet != null ? `${l.squareFeet} sqft` : "sqft not available"}, DOM ${l.daysOnMarket ?? "not available"}, ${ppsf}`
+          })
+          .join("\n")
+      : "(none returned)"
 
-Market: ${data.marketArea}
-Active Listings: ${listings?.length || 0}
+  const prompt = `Analyze what can be analyzed about the competitive position in ${data.marketArea}.
 
-Find:
-1. Most active competitor agents
-2. Overpriced listings (steal buyers)
-3. Underpriced listings (steal for investors)
-4. Market share by agent
-5. Competitor strategies
-Output Example:
+WHAT THIS DATA IS — read before answering. The listings below come from ONE source:
+this brokerage's OWN IDX-enabled active listings. They are not the market's
+listings, and they are not competitors' listings. Nothing here names an agent,
+attributes a listing to a brokerage, counts total market inventory, or reports any
+sold price.
+
+Consequences you MUST honour:
+- You CANNOT identify competitor agents. Return "competitorRankings": [].
+- You CANNOT compute market share. Return "marketShare": null wherever it appears.
+- You CANNOT call a listing overpriced or underpriced: that needs sold comparable
+  sales, and there are none here. Only relative statements within this same set of
+  listings are supportable (e.g. "highest price/sqft of the 12 listings supplied").
+- Put every one of these gaps in "dataLimitations" so the reader sees what the
+  answer is missing rather than assuming it was considered.
+
+Brokerage active listings supplied: ${listings.length}
+${listingBlock}
+
+Output shape — illustrative values only; use null / [] wherever the data above
+does not support a value:
 {
-  "competitorRankings": [
-    {
-      "agent": "Jane Smith",
-      "activeListings": 8,
-      "marketShare": 12.5,
-      "avgDaysOnMarket": 28,
-      "pricingStrategy": "aggressive",
-      "threat_level": "high"
-    }
+  "competitorRankings": [],
+  "marketShare": null,
+  "listingSetObservations": [
+    {"address": "...", "observation": "Highest price/sqft in the supplied set", "basis": "relative_to_supplied_listings_only"}
   ],
   "opportunities": {
-    "overpriced_listings": [
-      {"address": "...", "overpriced_by": 25000, "strategy": "Show comparable sales"}
-    ],
-    "steal_deals": [
-      {"address": "...", "underpriced_by": 15000, "perfect_for": "Investor clients"}
-    ]
+    "overpriced_listings": [],
+    "steal_deals": []
   },
   "marketGaps": [
-    "No agents specializing in military buyers",
-    "Luxury market underserved"
+    "Only state a gap that follows from the supplied listings (e.g. no listing in this set under $300k)"
   ],
   "recommendations": [
-    "Target military buyer niche",
-    "Undercut competitor pricing by 2%"
+    "Actions that do not depend on competitor or sold data"
+  ],
+  "dataLimitations": [
+    "Listings are this brokerage's own IDX feed, not the market",
+    "No agent attribution, so no competitor ranking or market share",
+    "No sold comparable sales, so no over/underpricing judgement"
   ]
 }`
 

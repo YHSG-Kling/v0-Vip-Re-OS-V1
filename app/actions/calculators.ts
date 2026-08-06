@@ -216,78 +216,136 @@ Respond with JSON:
 // NEIGHBORHOOD COMPARISON TOOL
 // ============================================
 
+/**
+ * Compare neighborhoods from the data this product actually holds.
+ *
+ * What this used to do: call IDX getProperties({ city, status: "sold" }) INSIDE the
+ * per-neighborhood map. That function ignored every filter, so all three
+ * neighborhoods received the same array of the brokerage's featured ACTIVE
+ * listings, and median_price was averaged over `p.soldPrice` — a field active
+ * listings do not carry — so it was always 0. Everything else on the row was a
+ * hardcoded constant (school_rating 7, crime_rating "B", walkability 50, a 20
+ * minute commute, "Family-friendly suburban area", and canned pros/cons). Those
+ * were invented facts about real neighborhoods, handed to an AI that then told
+ * families where to live. They are gone.
+ *
+ * What replaces them: the market_data observation table (writer:
+ * lib/intelligence/market-insight-generator.ts) for sale-side figures, and the IDX
+ * feed for a real active-listing count. Fields with no source are null and are
+ * named in `unavailable` so the prompt — and any UI — can say "not available"
+ * instead of showing a default that looks measured.
+ *
+ * market_data may legitimately have no row yet. That is a null, not a fallback.
+ */
 export async function compareNeighborhoods(neighborhoods: string[], city: string, state: string) {
   const supabase = await createClient()
   const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
   const idxClient = new IDXBrokerClient()
+  const idxConfigured = idxClient.isConfigured()
+
+  // A neighborhood entered as a 5-digit ZIP can be matched exactly; a NAMED
+  // neighborhood cannot — neither market_data nor the IDX feed carries a
+  // neighborhood boundary, so the best available geography is the city.
+  const asZip = (s: string) => (/^\d{5}$/.test(s.trim()) ? s.trim() : null)
 
   const comparison = await Promise.all(
     neighborhoods.map(async (neighborhood) => {
-      // Get market stats from IDX
-      const marketStats = await idxClient.getProperties({
-        city,
-        status: "sold",
-      })
+      const zip = asZip(neighborhood)
 
-      // pass 14: neighborhood_guides was a PHANTOM table with no writer anywhere —
-      // the read always errored and every branch below already carries honest
-      // defaults. The dead read is removed; guideData stays null by construction.
-      const guideData: any = null
+      let query = supabase
+        .from("market_data")
+        .select(
+          "median_sale_price, avg_days_on_market, months_of_inventory, price_trend_pct_1yr, market_type, data_date",
+        )
+        .order("data_date", { ascending: false })
+        .limit(1)
+      query = zip ? query.eq("zip_code", zip) : query.eq("city", city).eq("state", state)
 
-      const soldProperties = marketStats || []
-      const medianPrice =
-        soldProperties.length > 0
-          ? soldProperties.reduce((sum: number, p: any) => sum + (p.soldPrice || 0), 0) / soldProperties.length
-          : 0
+      const { data: marketRow, error: marketError } = await query.maybeSingle()
+      if (marketError) {
+        console.error("[v0] compareNeighborhoods: market_data read refused:", marketError.message)
+      }
+      const market = marketError ? null : marketRow
+
+      // Real active-listing count. This is the brokerage's IDX-enabled active
+      // listings, not total market inventory — `active_listings_source` says so.
+      // With no IDX key the search returns [], which would read as a measured
+      // zero, so an unconfigured client yields null instead.
+      const listings = idxConfigured
+        ? await idxClient.searchActiveListings(zip ? { zipCode: zip, state } : { city, state })
+        : null
+
+      const unavailable: string[] = [
+        // No source in this system for any of these. They are not defaulted.
+        "school_rating",
+        "crime_rating",
+        "walkability_score",
+        "commute_to_downtown",
+        "vibe",
+        "pros",
+        "cons",
+      ]
+      if (!market) {
+        unavailable.push(
+          "median_sale_price",
+          "avg_days_on_market",
+          "months_of_inventory",
+          "price_trend_pct_1yr",
+          "market_type",
+        )
+      }
+      if (listings == null) unavailable.push("active_listings")
 
       return {
         name: neighborhood,
-        median_price: Math.round(medianPrice),
-        active_listings: 0, // Would need active listings query
-        price_trend: guideData?.price_trend || "stable",
-        school_rating: guideData?.school_rating || 7,
-        crime_rating: guideData?.crime_rating || "B",
-        walkability_score: guideData?.walkability_score || 50,
-        commute_to_downtown: guideData?.commute_minutes || 20,
-        vibe: guideData?.vibe_description || "Family-friendly suburban area",
-        pros: guideData?.pros || ["Good schools", "Safe streets", "Parks nearby"],
-        cons: guideData?.cons || ["Longer commute", "Limited nightlife"],
+        // The geography the numbers below actually describe.
+        resolved_scope: zip
+          ? `ZIP ${zip}`
+          : `${city}, ${state} — city-wide; no neighborhood-level data source exists, so these figures are NOT specific to "${neighborhood}"`,
+        median_sale_price: market?.median_sale_price ?? null,
+        avg_days_on_market: market?.avg_days_on_market ?? null,
+        months_of_inventory: market?.months_of_inventory ?? null,
+        price_trend_pct_1yr: market?.price_trend_pct_1yr ?? null,
+        market_type: market?.market_type ?? null,
+        market_data_as_of: market?.data_date ?? null,
+        active_listings: listings?.length ?? null,
+        active_listings_source: listings == null ? null : "brokerage_idx_feed",
+        unavailable,
       }
     }),
   )
 
-  const prompt = `You are a neighborhood expert. Compare these neighborhoods:
+  const prompt = `You are a neighborhood analyst. Compare these areas using ONLY the
+data below.
 
 ${JSON.stringify(comparison, null, 2)}
 
-Provide unbiased analysis for different buyer types:
-- Young families (schools, safety, parks)
-- Empty nesters (low maintenance, walkability, amenities)
-- First-time buyers (affordability, appreciation potential)
-- Investors (rental demand, price trends)
+RULES — the data is deliberately sparse and you must not paper over it:
+- Any field listed in that entry's "unavailable" array has NO source in this
+  system. Do not estimate it, do not infer it from the area's name, and do not
+  reason from it. School quality, crime, walkability, commute times and
+  neighborhood "vibe" are unavailable for every entry.
+- A "resolved_scope" that says city-wide means the figures describe the whole
+  city, not that named neighborhood. Say so rather than attributing them to the
+  neighborhood.
+- "active_listings" counts one brokerage's IDX-enabled listings, not total market
+  inventory. Never compute market share or absorption from it.
+- If two entries resolved to the same scope, their figures are identical by
+  construction and cannot distinguish them. Say that instead of picking a winner.
+- If the data cannot support a recommendation for a buyer type, set "best_fit" to
+  null and use "reasoning" to state exactly what would be needed.
 
-Respond with JSON:
+Respond with JSON (illustrative values; null wherever unsupported):
 {
   "recommendations": {
-    "young_families": {
-      "best_fit": "Oak Hills",
-      "reasoning": "Top-rated schools, low crime, family amenities"
-    },
-    "empty_nesters": {
-      "best_fit": "Downtown District",
-      "reasoning": "Walkable, low maintenance condos, cultural amenities"
-    },
-    "first_time_buyers": {
-      "best_fit": "Riverside",
-      "reasoning": "Most affordable with good appreciation potential"
-    },
-    "investors": {
-      "best_fit": "University District",
-      "reasoning": "Strong rental demand, consistent appreciation"
-    }
+    "young_families": {"best_fit": null, "reasoning": "School, crime and park data are unavailable, which is what this comparison turns on."},
+    "empty_nesters": {"best_fit": null, "reasoning": "..."},
+    "first_time_buyers": {"best_fit": "...", "reasoning": "Lowest median sale price of the areas with data"},
+    "investors": {"best_fit": "...", "reasoning": "..."}
   },
-  "overall_winner": "Oak Hills",
-  "best_value": "Riverside"
+  "overall_winner": null,
+  "best_value": null,
+  "data_limitations": ["List every field you could not use and why it mattered"]
 }`
 
   try {
@@ -297,8 +355,9 @@ Respond with JSON:
       success: true,
       comparison,
       ai_recommendations: aiSummary.data?.recommendations,
-      overall_winner: aiSummary.data?.overall_winner,
-      best_value: aiSummary.data?.best_value,
+      overall_winner: aiSummary.data?.overall_winner ?? null,
+      best_value: aiSummary.data?.best_value ?? null,
+      data_limitations: aiSummary.data?.data_limitations ?? null,
     }
   } catch (error) {
     console.error("[v0] Error in compareNeighborhoods:", error)
@@ -547,88 +606,149 @@ function generateVisitorId(): string {
 // HOME VALUE CALCULATOR (Public, No Gate)
 // ============================================
 
-export async function calculateHomeValue(address: string, visitorId?: string) {
+/**
+ * Public home-value estimate, grounded in the real CMA engine.
+ *
+ * The comps used to come from IDX `getProperties({ status:"sold", address,
+ * proximity:true })` — a call that could not work: none of those filters were
+ * read, and IDX cannot serve sold comparables from a bare API key at all. The
+ * prompt then rendered every "comp" as `Sold $undefined` and asked a chat model
+ * to produce an estimated_value, a price per sqft, a rental estimate and a list
+ * of renovation ROIs from that. All of it was invented.
+ *
+ * Comps now come from lib/cma/ai-cma-orchestrator.runAiCma — grounded comp
+ * sourcing with citations, state appraiser-guideline adjustments applied per comp,
+ * and a value range derived from the ADJUSTED prices. Same engine the seller
+ * home-value lane uses (app/actions/home-value.ts generateAIValuation), so the
+ * product has one valuation method rather than two.
+ *
+ * runAiCma is brokerage-scoped and its adjustment rates are state-specific, so
+ * `brokerageId` and `state` are required inputs. They are NOT derivable from an
+ * address string and are not substituted from any other id space — the caller
+ * must supply them.
+ */
+export async function calculateHomeValue(
+  address: string,
+  opts: {
+    /** Required by runAiCma — the brokerage the CMA is run under. */
+    brokerageId: string
+    /** Required — 2-letter. runAiCma's adjustment rates are per state. */
+    state: string
+    city?: string | null
+    zipCode?: string | null
+    /** Subject facts, when the caller collected them. Unknown stays null. */
+    bedrooms?: number | null
+    bathrooms?: number | null
+    squareFeet?: number | null
+    yearBuilt?: number | null
+    propertyType?: "single_family" | "condo" | "townhouse" | null
+    visitorId?: string
+  },
+) {
   const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
   const { BatchDataClient } = await import("@/lib/batchdata-client")
+  const { runAiCma } = await import("@/lib/cma/ai-cma-orchestrator")
 
   const idxClient = new IDXBrokerClient()
   const batchData = new BatchDataClient()
 
-  const vid = visitorId || generateVisitorId()
+  const vid = opts.visitorId || generateVisitorId()
 
   try {
-    // Get property details and comparables
-    const [property, comps, propertyData] = await Promise.all([
+    const [property, propertyData, cma] = await Promise.all([
       idxClient.searchProperties(address),
-      (idxClient.getProperties as any)({ status: "sold", address, proximity: true }),
-      batchData.searchByAddress(address, "", ""),
+      batchData.searchByAddress(address, opts.city ?? "", opts.state),
+      runAiCma({
+        mode: "standard",
+        brokerageId: opts.brokerageId,
+        subject: {
+          address,
+          city: opts.city ?? null,
+          state: opts.state,
+          zip: opts.zipCode ?? null,
+          propertyType: opts.propertyType ?? null,
+          sqftLiving: opts.squareFeet ?? null,
+          bedrooms: opts.bedrooms ?? null,
+          // Callers supply one bathroom count, not a full/half split.
+          fullBaths: opts.bathrooms ?? null,
+          halfBaths: null,
+          yearBuilt: opts.yearBuilt ?? null,
+        },
+      }),
     ])
 
-    // AI-powered valuation
-    const prompt = `You are a real estate valuation expert. Calculate home value:
-
-Subject Property: ${address}
-${JSON.stringify(property?.[0] || {})}
-
-Comparable Sales (Recent):
-${comps
-  ?.slice(0, 10)
-  .map(
-    (c: any) => `
-${c.address}: Sold $${c.soldPrice?.toLocaleString()} - ${c.bedrooms}bd/${c.bathrooms}ba, ${c.sqft} sqft
-`,
-  )
-  .join("\n")}
-
-Property Intelligence:
-${JSON.stringify(propertyData?.[0] || {})}
-
-Provide comprehensive valuation:
-
-{
-  "estimated_value": 465000,
-  "value_range": {"low": 455000, "high": 475000},
-  "confidence": "high",
-  "key_factors": [
-    "Recent comp sold $468k on same street",
-    "Property has updated kitchen (+$15k value)",
-    "Market appreciating 6% annually"
-  ],
-  "market_conditions": "balanced",
-  "days_on_market_prediction": 28,
-  "price_per_sqft": 245,
-  "rental_income_estimate": 2800,
-  "equity_potential": "If owned 5 years, estimated $85k appreciation",
-  "value_boosting_improvements": [
-    {"improvement": "Kitchen remodel", "cost": 25000, "value_added": 35000, "roi": 1.4},
-    {"improvement": "Bathroom upgrade", "cost": 15000, "value_added": 18000, "roi": 1.2}
-  ],
-  "neighborhood_trends": "Appreciating 2% above city average",
-  "comparable_analysis": "Your home is priced competitively with recent sales",
-  "selling_recommendation": "Good time to sell - market balanced with low inventory"
-}`
-
-    const valuation = await generateAIJSON(prompt)
-
-    if (!valuation.data) {
-      throw new Error("Valuation failed")
-    }
-
-    // Track usage anonymously
+    // Track usage anonymously regardless of whether comps were found.
     await trackToolUsage({
       tool: "home_value",
       visitorId: vid,
-      inputs: { address },
-      location: property?.[0]?.city,
+      inputs: { address, city: opts.city ?? null, state: opts.state, zipCode: opts.zipCode ?? null },
+      location: opts.city ?? undefined,
+    })
+
+    // No comp survived → there is no value to show. Say that; do not fall back to
+    // a number no sale supports.
+    if (cma.estimatedValueMid <= 0 || cma.adjustedComps.length === 0) {
+      return {
+        success: false,
+        error:
+          "We could not find enough recent comparable sales near this address to produce a value estimate. A local agent can walk the property and give you a figure grounded in real recent sales.",
+        visitorId: vid,
+      }
+    }
+
+    const comparables = cma.adjustedComps.map((a) => {
+      const sqft = a.comp.sqftLiving ?? null
+      return {
+        address: a.comp.address,
+        sale_price: Math.round(a.comp.salePrice),
+        sale_date: a.comp.saleDate,
+        beds: a.comp.bedrooms ?? null,
+        baths: (a.comp.fullBaths ?? 0) + (a.comp.halfBaths ?? 0) * 0.5 || null,
+        sqft,
+        price_per_sqft:
+          a.comp.pricePerSqft != null
+            ? Math.round(a.comp.pricePerSqft)
+            : sqft && sqft > 0
+              ? Math.round(a.comp.salePrice / sqft)
+              : null,
+        adjusted_price: Math.round(a.adjustedPrice),
+        total_adjustment: Math.round(a.totalAdjustment),
+        // The comp finder searches within a radius but returns no per-comp
+        // distance. Unknown, not zero.
+        distance_miles: null,
+        citation: a.comp.citation ?? null,
+      }
     })
 
     return {
       success: true,
       property: property?.[0],
-      valuation: valuation.data,
-      comparables: comps?.slice(0, 5),
+      propertyIntelligence: propertyData?.[0],
+      valuation: {
+        estimated_value: Math.round(cma.estimatedValueMid),
+        value_range: { low: Math.round(cma.estimatedValueLow), high: Math.round(cma.estimatedValueHigh) },
+        // runAiCma reports 0..1; expose it as 0-100 like the seller lane does.
+        confidence_score: Math.round(cma.confidenceScore * 100),
+        methodology: "ai_cma",
+        narrative: cma.aiNarrative,
+        citations: cma.citations,
+        state_guidelines_used: cma.stateGuidelinesUsed,
+        generated_at: cma.generatedAt,
+      },
+      comparables,
+      // Everything the previous version asserted and could not know — rental
+      // income, renovation ROIs, days-on-market prediction, neighborhood trend —
+      // is absent rather than invented.
+      unavailable: [
+        "rental_income_estimate",
+        "days_on_market_prediction",
+        "value_boosting_improvements",
+        "neighborhood_trends",
+      ],
+      disclaimers: cma.disclaimers,
       visitorId: vid,
-      disclaimer: "This is an estimated market value based on comparable sales and market data. Not an official appraisal.",
+      disclaimer:
+        "This is an estimated market value based on adjusted comparable sales. Not an official appraisal.",
     }
   } catch (error) {
     console.error("[v0] Home value calculation error:", error)
