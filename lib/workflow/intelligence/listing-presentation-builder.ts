@@ -64,6 +64,13 @@ export interface ListingPresentationInput {
   contactId:       string | null
   appointmentId?:  string | null
   appointmentAt?:  string | null
+  /**
+   * The listing this appointment is for, when there is one. Used to load the
+   * seller's recorded improvements (property_upgrades) so the CMA narrative
+   * accounts for what the seller has done to the home since buying it — the
+   * last clause of the owner's CMA ruling. Tenant-anchored on read.
+   */
+  listingId?:      string | null
   propertyAddress: string
   state:           string                                    // 2-letter
   city?:           string | null
@@ -320,6 +327,19 @@ export async function buildListingPresentation(
     const effectiveSqft      = input.sqft      ?? propertyEnrichment?.sqft      ?? null
     const effectiveYearBuilt = input.yearBuilt ?? propertyEnrichment?.yearBuilt ?? null
 
+    // 0c. Seller-reported improvements since purchase — the last clause of the
+    //     CMA ruling. Already stored on property_upgrades; loaded here so the CMA
+    //     narrative and the appraiser packet describe the SAME upgrade list.
+    const sellerUpgrades = input.listingId
+      ? await (async () => {
+          const { loadSellerUpgradesForListing } = await import("@/lib/cma/seller-upgrades")
+          return loadSellerUpgradesForListing({
+            listingId: input.listingId as string,
+            brokerageId: input.brokerageId,
+          })
+        })()
+      : []
+
     // 1. Run CMA (existing infrastructure) — now feeds enriched fields when available
     const cma = await runAiCma({
       mode: "standard",
@@ -336,6 +356,7 @@ export async function buildListingPresentation(
         sqftLiving: effectiveSqft,
         yearBuilt:  effectiveYearBuilt,
         propertyType: "single_family",
+        sellerUpgrades,
       } as any,
     })
 

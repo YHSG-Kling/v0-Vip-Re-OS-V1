@@ -1,28 +1,37 @@
 /**
  * PERPLEXITY COMP FINDER
  *
- * Tier-1 (free / cheap) comp source for the AI-CMA flow. Uses Perplexity
- * Sonar's web-search grounding to look up recent sales near the subject
- * property from public sources (Redfin, Zillow, Realtor.com, county records).
- *
- * Per the agent's CMA workflow:
- *   - 3 closest closed comps (sold within last 6 months, within 1 mile)
+ * Uses Perplexity Sonar's web-search grounding to look up recent sales near a
+ * subject property from public sources (Redfin, Zillow, Realtor.com, county
+ * records), returning:
+ *   - 3 closest closed comps (sold within last N months, within R miles)
  *   - 1 pending comp
  *   - 1 active comp
  *
- * Returns structured comp data ready for adjustment computation. Citations
- * preserved for audit/disclaimer.
+ * ─── STATUS: NOT A CMA COMP SOURCE ──────────────────────────────────────────
+ * This is NO LONGER reachable from lib/cma/ai-cma-orchestrator.runAiCma, and it
+ * is not a fallback there either. The owner's ruling on the CMA is explicit:
+ * the comp SOURCE is RentCast by default and the connected IDX feed when the
+ * brokerage has one; AI may ASSIST the CMA (the narrative) but may not be where
+ * the comparables come from. A model reading listing sites and reporting sales
+ * is exactly "AI as the comp source", so runAiCma sources through
+ * lib/cma/comp-provider.ts instead, and degrades to "no comps" — visibly, with
+ * a reason — rather than falling back here.
  *
- * Cost: ~$0.005-0.015 per CMA (Perplexity Sonar at $1/M input tokens, $1/M
- * output tokens, ~3-5k tokens per call). vs $0.30-1.00/CMA for paid AVM.
+ * It is KEPT, not deleted, and it is still WIRED: lib/kernel/appraiser-packet.ts
+ * builds the appraiser packet's comparable-sales section from it (its own
+ * radius/window fallback ladder). That lane predates the CMA ruling and was not
+ * in scope for this change — it is flagged for the owner rather than quietly
+ * re-pointed or quietly removed.
  *
- * Premium upgrade: agents click "Pull Premium CMA" before a listing
- * appointment to bypass this and use BatchData/HouseCanary directly. See
- * lib/cma/premium-comp-finder.ts (different path).
+ * Cost: ~$0.005-0.015 per call (Perplexity Sonar at $1/M input tokens, $1/M
+ * output tokens, ~3-5k tokens per call).
  */
 
 import { generateTextRouted } from "@/lib/ai/models"
-import type { CompFeatures } from "./state-adjustment-rates"
+import type { ScoredComp } from "./comp-types"
+
+export type { ScoredComp } from "./comp-types"
 
 export interface PerplexityCompFinderInput {
   subjectAddress: string
@@ -52,15 +61,6 @@ export interface PerplexityCompFinderResult {
   searchQuery: string
   rawAnalysis: string
   arvMode: boolean
-}
-
-export interface ScoredComp extends CompFeatures {
-  address: string
-  status: "closed" | "pending" | "active"
-  daysOnMarket?: number | null
-  pricePerSqft?: number | null
-  similarityScore: number  // 0..1 — Perplexity's similarity rating
-  citation?: string | null  // source URL
 }
 
 /**
@@ -255,5 +255,10 @@ function toScoredComp(c: RawComp): ScoredComp {
       c.sale_price && c.sqft && c.sqft > 0 ? Math.round(c.sale_price / c.sqft) : null,
     similarityScore: c.similarity_score ?? 0.5,
     citation: c.citation ?? null,
+    // No web-search result carries a computed distance from the subject, and
+    // the model is not asked to estimate one — unknown, never 0.
+    distanceMiles: null,
+    sourceProvider: "perplexity",
+    priceBasis: (c.status ?? "closed") === "closed" ? "closed_sale" : "list_price",
   }
 }

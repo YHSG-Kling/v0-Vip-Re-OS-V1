@@ -22,6 +22,12 @@ import { sendNotificationToAgent } from "@/app/actions/communications"
 import { supabaseService } from "@/services/supabaseService"
 import { getChainsByTrigger } from "@/lib/workflow-orchestrator/chains"
 import { startRun as engineStartRun } from "@/lib/workflow-orchestrator/engine"
+// ONE "finished reel in an email" block — shared with the pre-listing section
+// drip (lib/listing-presentation/section-drip.ts) so the campaign-asset embed
+// and the chapter-reel email cannot drift into two different-looking emails for
+// the same product. Moved to lib/video/video-thumbnail-embed.ts; this module is
+// far too heavy for the drip cron to import.
+import { videoThumbnailEmbed } from "@/lib/video/video-thumbnail-embed"
 
 interface ProcessingResult {
   success: boolean
@@ -558,28 +564,6 @@ async function handleCreditStatusUpdated(event: Event): Promise<ProcessingResult
       processing_time_ms: Date.now() - startTime,
     }
   }
-}
-
-/**
- * The owner's stated delivery shape for a finished reel: an email carrying a
- * THUMBNAIL that links to the video in our Supabase bucket (video_url is the
- * persisted bucket URL by the time this event fires — poll-did-videos downloads
- * the D-ID render into the bucket before emitting). Falls back to a button when
- * the render produced no thumbnail, because a bare URL in an email body is the
- * thing this shape exists to avoid.
- *
- * Extracted so the campaign-asset embed and the chapter-reel email cannot drift
- * into two different-looking emails for the same product.
- */
-function videoThumbnailEmbed(videoUrl: string, thumbnailUrl?: string | null): string {
-  return (
-    `\n\n<div style="margin:24px 0;text-align:center">` +
-    `<a href="${videoUrl}" target="_blank">` +
-    (thumbnailUrl
-      ? `<img src="${thumbnailUrl}" alt="Watch video" style="max-width:480px;width:100%;border-radius:8px"/>`
-      : `<span style="display:inline-block;padding:14px 28px;background:#2563eb;color:#fff;border-radius:6px;font-weight:600">Watch the video</span>`) +
-    `</a></div>\n`
-  )
 }
 
 async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {

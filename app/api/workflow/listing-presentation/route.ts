@@ -4,8 +4,9 @@
  * On-demand listing presentation builder. Agent presses "Prepare for
  * appointment now" and gets the same artifact the daily cron would produce.
  *
- * Body: { appointmentId?: string, propertyAddress: string, state: string,
- *         city?, zip?, contactId?, bedrooms?, bathrooms?, sqft?, yearBuilt? }
+ * Body: { appointmentId?: string, listingId?: string, propertyAddress: string,
+ *         state: string, city?, zip?, contactId?, bedrooms?, bathrooms?, sqft?,
+ *         yearBuilt? }
  *
  * Returns: { presentationId, cmaSnapshot, netSheet, marketingPlan, slideDeck,
  *            packetDocumentId }
@@ -22,6 +23,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   const body = await req.json().catch(() => ({})) as {
     appointmentId?: string
+    listingId?: string
     propertyAddress?: string
     state?: string
     city?: string
@@ -47,6 +49,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     agentUserId:  user.id,
     contactId:    body.contactId ?? null,
     appointmentId: body.appointmentId ?? null,
+    // A listing id from a request body is not proof of tenancy — the upgrade
+    // read is anchored on the caller's OWN resolved brokerageId, so a foreign
+    // listing id simply returns nothing.
+    listingId:    body.listingId ?? null,
     propertyAddress: body.propertyAddress,
     state:        body.state,
     city:         body.city ?? null,

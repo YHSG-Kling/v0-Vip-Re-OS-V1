@@ -114,17 +114,34 @@ export interface RentcastListing {
 async function getApiKey(brokerageId: string): Promise<string | null> {
   // Brokerage-level credential takes precedence
   const svc = createServiceClient()
-  const { data: cred } = await svc
+  const { data: cred, error: credError } = await svc
     .from("integration_credentials")
     .select("api_key, is_active")
     .eq("brokerage_id", brokerageId)
     .eq("provider_name", "rentcast")
     .maybeSingle()
 
+  // A refused read is NOT "the tenant has no key" — say so rather than silently
+  // dropping a paying tenant onto the platform key.
+  if (credError) console.error("[rentcast] integration_credentials read refused:", credError.message)
   if (cred?.is_active && cred.api_key) return cred.api_key
 
   // Platform-level fallback (single shared key across all brokerages)
   return process.env.RENTCAST_API_KEY ?? null
+}
+
+/**
+ * Does a RentCast key resolve for this brokerage (tenant row, else platform env)?
+ *
+ * Every RentCast reader below returns an EMPTY result both when the vendor is
+ * unconfigured and when the vendor simply has no coverage for the address — two
+ * very different facts that a caller must be able to tell apart. The CMA comp
+ * provider asks this so its "no comparables" outcome can say WHICH it was
+ * instead of leaving a silent empty behind. Credential read only; no egress,
+ * nothing to meter.
+ */
+export async function isRentcastConfigured(brokerageId: string): Promise<boolean> {
+  return !!(await getApiKey(brokerageId))
 }
 
 // ---------------------------------------------------------------------------

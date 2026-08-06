@@ -34,6 +34,16 @@ export interface NormalizedIdxListing {
    * the second.
    */
   mlsNumber: string | null
+  /**
+   * The feed's own status label for the row, VERBATIM (`propStatus` — e.g.
+   * "Active", "Pending", "Contingent"), lowercased. Not normalized to our
+   * vocabulary here: this is what the MLS said, and the CMA's comp provider is
+   * the only reader that has to decide what "pending" means for a comp set.
+   *
+   * Kept separate from `propertyType`, which used to fall back to `propStatus`
+   * and so occasionally reported a STATUS where a caller expected a TYPE.
+   */
+  status: string | null
 }
 
 export class IDXBrokerClient {
@@ -156,6 +166,13 @@ export class IDXBrokerClient {
    * IDX-enabled active/featured listings (`/clients/featured`) — the set the agent
    * has rights to surface — and narrow client-side by the caller's filters. Returns
    * a normalized shape; callers map to their own listing type.
+   *
+   * The rows are the brokerage's FEATURED set, which is overwhelmingly (but not
+   * by contract) live inventory — a feed that leaves a home featured after it
+   * goes under contract will return it here. `NormalizedIdxListing.status`
+   * carries the feed's own `propStatus` verbatim so a caller that needs to tell
+   * active from pending can, instead of assuming. No status FILTER is applied
+   * here: that would change what every existing caller receives.
    */
   async searchActiveListings(filters: {
     city?: string
@@ -200,10 +217,14 @@ export class IDXBrokerClient {
       bathrooms:  num(r.totalBaths ?? r.bathrooms ?? r.baths),
       squareFeet: num(r.sqFt ?? r.sqft ?? r.acres),
       yearBuilt:  num(r.yearBuilt),
-      propertyType: str(r.idxPropType ?? r.propType ?? r.propStatus),
+      // propStatus was in this fallback chain and is NOT a property type — a row
+      // with no idxPropType/propType reported "Active" as its property type. It
+      // has its own field now.
+      propertyType: str(r.idxPropType ?? r.propType),
       daysOnMarket: num(r.daysOnMarket ?? r.dom),
       photoUrl:   str(r.image?.["0"]?.url ?? r.image?.[0]?.url ?? r.thumbnail ?? r.photoURL),
       mlsNumber:  str(r.mlsID ?? r.mlsNumber ?? r.listingID),
+      status:     str(r.propStatus ?? r.status)?.toLowerCase() ?? null,
     }))
 
     // Client-side narrowing.

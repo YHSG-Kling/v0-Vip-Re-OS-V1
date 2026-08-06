@@ -266,7 +266,7 @@
     "lib/charts/cma-reel-data.ts": 1,
     "lib/charts/explainer-diagram.ts": 3,
     "lib/charts/geometry.ts": 3,
-    "lib/cma/customer-facing-guard.ts": 2,
+    "lib/cma/customer-facing-guard.ts": 3,
     "lib/commission/adjustment-vocabulary.ts": 1,
     "lib/commission/cda-discrepancy.ts": 3,
     "lib/commission/finalization.ts": 1,
@@ -534,7 +534,7 @@
     "lib/lifetime-customer-npv/current.ts": 1,
     "lib/listing-lifecycle/recordable-events.ts": 1,
     "lib/listing-presentation/prelisting-delivery.ts": 3,
-    "lib/listing-presentation/section-drip.ts": 1,
+    "lib/listing-presentation/section-drip.ts": 4,
     "lib/listing-presentation/section-narration-orchestrator.ts": 1,
     "lib/listing-presentation/section-narration.ts": 1,
     "lib/listing-presentation/section-render.ts": 1,
@@ -733,7 +733,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 8904,
+  "census": 8915,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -3027,10 +3027,12 @@
     "lib/charts/explainer-diagram.ts": 5,
     "lib/charts/geometry.ts": 10,
     "lib/cma/ai-cma-engine.ts": 1,
-    "lib/cma/ai-cma-orchestrator.ts": 1,
-    "lib/cma/customer-facing-guard.ts": 4,
+    "lib/cma/ai-cma-orchestrator.ts": 2,
+    "lib/cma/comp-provider.ts": 1,
+    "lib/cma/customer-facing-guard.ts": 6,
     "lib/cma/net-sheet-math.ts": 1,
     "lib/cma/perplexity-comp-finder.ts": 1,
+    "lib/cma/seller-upgrades.ts": 1,
     "lib/cma/state-adjustment-rates.ts": 3,
     "lib/commission/adjustment-vocabulary.ts": 4,
     "lib/commission/cda-discrepancy.ts": 6,
@@ -3727,7 +3729,7 @@
     "lib/listing-lifecycle/stage-automations.ts": 1,
     "lib/listing-lifecycle/transition-validator.ts": 5,
     "lib/listing-presentation/prelisting-delivery.ts": 5,
-    "lib/listing-presentation/section-drip.ts": 3,
+    "lib/listing-presentation/section-drip.ts": 7,
     "lib/listing-presentation/section-narration-orchestrator.ts": 2,
     "lib/listing-presentation/section-narration.ts": 2,
     "lib/listing-presentation/section-render.ts": 2,
@@ -3937,7 +3939,7 @@
     "lib/property/neighborhood-scoring.ts": 4,
     "lib/property/property-evaluation.ts": 1,
     "lib/property/rentcast-normalize.ts": 2,
-    "lib/property/rentcast.ts": 6,
+    "lib/property/rentcast.ts": 7,
     "lib/property/resolve-property-facts.ts": 4,
     "lib/property-alerts/alert-cadence.ts": 1,
     "lib/property-alerts/alert-engine.ts": 2,
@@ -4180,6 +4182,7 @@
     "lib/video/video-plays.ts": 8,
     "lib/video/video-qr.ts": 2,
     "lib/video/video-status.ts": 2,
+    "lib/video/video-thumbnail-embed.ts": 1,
     "lib/voice/a2p-registration.ts": 9,
     "lib/voice/broker-commands.ts": 3,
     "lib/voice/call-analysis.ts": 4,
@@ -14011,11 +14014,17 @@
       "scoreAllComps"
     ],
     "lib/cma/ai-cma-orchestrator.ts": [
-      "runAiCma"
+      "runAiCma",
+      "describeCompProvenance"
+    ],
+    "lib/cma/comp-provider.ts": [
+      "sourceCompsForCma"
     ],
     "lib/cma/customer-facing-guard.ts": [
       "findSuggestedPriceLeaks",
       "scrubSuggestedPriceKeys",
+      "containsPriceAmount",
+      "redactPriceAmounts",
       "filterPricingSlides",
       "buildSellerSafeCma"
     ],
@@ -14024,6 +14033,9 @@
     ],
     "lib/cma/perplexity-comp-finder.ts": [
       "findCompsViaPerplexity"
+    ],
+    "lib/cma/seller-upgrades.ts": [
+      "loadSellerUpgradesForListing"
     ],
     "lib/cma/state-adjustment-rates.ts": [
       "getStateAdjustmentRates",
@@ -17575,7 +17587,11 @@
     ],
     "lib/listing-presentation/section-drip.ts": [
       "planPresentationSections",
+      "planChapterReelSections",
+      "composeSectionEmail",
       "materializePresentationSections",
+      "attachChapterReelsToSections",
+      "resolveSectionReel",
       "deliverDueSections"
     ],
     "lib/listing-presentation/section-narration-orchestrator.ts": [
@@ -18658,6 +18674,7 @@
       "normalizeRentcastMarketStats"
     ],
     "lib/property/rentcast.ts": [
+      "isRentcastConfigured",
       "searchRentcastSaleListings",
       "getRentcastListingStatus",
       "searchRentcastRentalListings",
@@ -19823,6 +19840,9 @@
     "lib/video/video-status.ts": [
       "isCanonicalVideoStatus",
       "normalizeVideoStatus"
+    ],
+    "lib/video/video-thumbnail-embed.ts": [
+      "videoThumbnailEmbed"
     ],
     "lib/voice/a2p-registration.ts": [
       "validateA2pProfile",

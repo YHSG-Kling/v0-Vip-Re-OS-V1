@@ -271,14 +271,16 @@ export const listingApptPrepChain: WorkflowChain = {
           return { success: false, error: "No presentation in previous step output" }
         }
 
+        const chapters = presentation.chapters?.length
+          ? presentation.chapters
+          : DEFAULT_CHAPTERS
+
         const result = await activeExecutors.generateChapterVideos({
           brokerageId: ctx.brokerageId,
           agentUserId: ctx.agentUserId ?? null,
           contactId: ctx.contactId ?? null,
           presentationId: presentation.presentationId,
-          chapters: presentation.chapters?.length
-            ? presentation.chapters
-            : DEFAULT_CHAPTERS,
+          chapters,
           presentationContent: presentation.content,
           propertyData: ctx.metadata.property_data,
         })
@@ -291,7 +293,14 @@ export const listingApptPrepChain: WorkflowChain = {
           success: true,
           output: {
             videoIds: result.videoIds,
+            // chapterTitles is index-aligned with videoIds (succeededTitles in
+            // chapter-video-generator) — a partial run reports the chapters that
+            // actually reached the provider, not the first N requested.
             chapterTitles: result.chapterTitles,
+            // The chapters AS SENT, so enroll_drip can read each reel's `focus`
+            // and land it on the section it is the on-camera version of. The
+            // generator's return carries titles only.
+            chapters,
           },
         }
       },
@@ -299,7 +308,20 @@ export const listingApptPrepChain: WorkflowChain = {
     },
 
     // -----------------------------------------------------------------------
-    // 4. Enroll contact in pre-appointment drip — one chapter per touchpoint
+    // 4. Enroll the chapter reels in the pre-appointment SECTION DRIP.
+    //
+    //    This step used to write one activities row per chapter with
+    //    activity_type='scheduled_video_touchpoint' and its own hand-rolled
+    //    "spread evenly between now and the appointment" arithmetic. NOTHING
+    //    consumed those rows — no cron, no reactor, no dispatcher — so the
+    //    seller never received a single chapter reel, and the schedule was a
+    //    second, competing timetable next to the one that actually delivers.
+    //
+    //    There is now exactly ONE scheduler (planPresentationSections) and ONE
+    //    delivery path (deliverDueSections → dispatchEmail): each reel is linked
+    //    to a section of the seller's pre-listing drip and goes out as its own
+    //    email with the reel embedded as a clickable thumbnail, spaced across
+    //    the window that ends before the listing appointment.
     // -----------------------------------------------------------------------
     {
       key: "enroll_drip",
@@ -319,52 +341,60 @@ export const listingApptPrepChain: WorkflowChain = {
 
         const svc = createServiceClient()
 
-        // Distribute video touchpoints evenly between now and appointment date
-        const apptTime = new Date(apptDate).getTime()
-        const now = Date.now()
-        const totalSpan = Math.max(apptTime - now, 24 * 60 * 60 * 1000) // min 24h
-        const count = videos.videoIds.length
-        const interval = totalSpan / (count + 1) // leave a gap before appt
+        // The presentation the reels belong to. Prefer the one this run just
+        // produced; fall back to the newest presentation already on file for
+        // this seller (the listing-presentation-prep cron builds one too). A
+        // RESOLVE, never a substitution — if neither yields a real row there is
+        // nothing to attach to and the step says so.
+        const presentationId = await resolveDripPresentation(svc, {
+          candidateId: ctx.previousStepOutputs.generate_presentation?.presentationId,
+          brokerageId: ctx.brokerageId,
+          contactId:   ctx.contactId,
+          agentUserId: ctx.agentUserId ?? null,
+          appointmentAt: apptDate,
+        })
+        if (!presentationId) {
+          return {
+            success: false,
+            error:
+              "No listing_presentations row to drip against — the presentation step returned no persisted id and this seller has none on file",
+          }
+        }
 
-        const touchpoints = videos.videoIds.map((videoId: string, i: number) => ({
-          contact_id: ctx.contactId,
-          brokerage_id: ctx.brokerageId,
-          touchpoint_type: "video",
-          subject: videos.chapterTitles?.[i] ?? `Chapter ${i + 1}`,
-          metadata: {
-            video_id: videoId,
-            chapter_index: i,
-            chapter_title: videos.chapterTitles?.[i],
-            chain_run_id: ctx.runId,
-          },
-          scheduled_for: new Date(now + interval * (i + 1)).toISOString(),
-          status: "scheduled",
-        }))
+        // Idempotent: creates the seller-safe section set + its schedule if the
+        // presentation does not have one yet, no-ops if it does.
+        const { materializePresentationSections, attachChapterReelsToSections } =
+          await import("@/lib/listing-presentation/section-drip")
+        const materialized = await materializePresentationSections(presentationId, svc)
+        if (!materialized.ok) {
+          return { success: false, error: `Could not materialize drip sections: ${materialized.error}` }
+        }
 
-        // Use the activities table as the touchpoint store — every activity
-        // shows on the contact's CRM timeline automatically.
-        const { error } = await svc.from("activities").insert(
-          touchpoints.map((t: typeof touchpoints[number]) => ({
-            contact_id: t.contact_id,
-            brokerage_id: t.brokerage_id,
-            agent_user_id: ctx.agentUserId,
-            activity_type: "scheduled_video_touchpoint",
-            description: `Pre-listing chapter video: ${t.subject}`,
-            metadata: t.metadata,
-            scheduled_for: t.scheduled_for,
-          }))
-        )
+        // Carry each chapter's focus through so a reel lands on the section it
+        // is the on-camera version of (credibility → credibility, and so on).
+        const chapters: Array<{ title: string; focus?: string }> = videos.chapters ?? []
+        const focusByTitle = new Map<string, string | undefined>()
+        for (const c of chapters) if (!focusByTitle.has(c.title)) focusByTitle.set(c.title, c.focus)
 
-        if (error) {
-          return { success: false, error: error.message }
+        const reels = (videos.videoIds as string[]).map((videoId, i) => {
+          const title = videos.chapterTitles?.[i] ?? `Chapter ${i + 1}`
+          return { videoId, title, focus: focusByTitle.get(title) ?? null, chapterIndex: i }
+        })
+
+        const attached = await attachChapterReelsToSections(presentationId, reels, svc)
+        if (!attached.ok) {
+          return { success: false, error: `Could not attach chapter reels to the drip: ${attached.error}` }
         }
 
         return {
           success: true,
           output: {
-            touchpointsScheduled: touchpoints.length,
-            firstTouchAt: touchpoints[0].scheduled_for,
-            lastTouchAt: touchpoints[touchpoints.length - 1].scheduled_for,
+            presentationId,
+            sectionsMaterialized: materialized.inserted,
+            reelsAttached:        attached.attached,
+            newSectionsCreated:   attached.newSections,
+            // Never silently dropped — an unplaced reel is reported on the step.
+            reelsUnattached:      attached.unattached,
           },
         }
       },
@@ -560,6 +590,72 @@ export const listingApptPrepChain: WorkflowChain = {
       },
     },
   ],
+}
+
+/**
+ * Resolve the listing_presentations row the chapter reels drip against, and make
+ * sure it carries what the drip needs (contact, appointment time, sending agent).
+ *
+ * Two sources, in order, because two producers exist:
+ *   1. the id this run's generate_presentation step returned, and
+ *   2. the newest presentation already on file for this seller — the
+ *      listing-presentation-prep cron (buildListingPresentation) builds one for
+ *      every appointment in the next 24h.
+ * Both are scoped to the run's brokerage. Returns null rather than inventing a
+ * row: with no presentation there is no section timetable to attach reels to.
+ */
+async function resolveDripPresentation(
+  svc: ReturnType<typeof createServiceClient>,
+  args: {
+    candidateId?: unknown
+    brokerageId: string
+    contactId: string
+    agentUserId: string | null
+    appointmentAt: string
+  },
+): Promise<string | null> {
+  const { isValidUUID } = await import("@/lib/validations")
+  type PresRow = { id: string; contact_id: string | null; appointment_at: string | null; agent_user_id: string | null }
+  let row: PresRow | null = null
+
+  if (typeof args.candidateId === "string" && isValidUUID(args.candidateId)) {
+    const { data, error } = await svc
+      .from("listing_presentations")
+      .select("id, contact_id, appointment_at, agent_user_id")
+      .eq("id", args.candidateId)
+      .eq("brokerage_id", args.brokerageId)
+      .maybeSingle()
+    if (error) console.error(`[listing-appt-prep] presentation ${args.candidateId} unreadable: ${error.message}`)
+    row = (data as PresRow | null) ?? null
+  }
+
+  if (!row) {
+    const { data, error } = await svc
+      .from("listing_presentations")
+      .select("id, contact_id, appointment_at, agent_user_id")
+      .eq("brokerage_id", args.brokerageId)
+      .eq("contact_id", args.contactId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (error) console.error(`[listing-appt-prep] presentation lookup for contact ${args.contactId} failed: ${error.message}`)
+    row = (data as PresRow | null) ?? null
+  }
+  if (!row) return null
+
+  // Fill only what is MISSING. contact_id/appointment_at drive the drip's
+  // recipient and its timetable; agent_user_id (users class — the column FKs
+  // users.id) is the from-address the section emails send as.
+  const patch: Record<string, unknown> = {}
+  if (!row.contact_id) patch.contact_id = args.contactId
+  if (!row.appointment_at) patch.appointment_at = new Date(args.appointmentAt).toISOString()
+  if (!row.agent_user_id && args.agentUserId) patch.agent_user_id = args.agentUserId
+  if (Object.keys(patch).length > 0) {
+    const { error } = await svc.from("listing_presentations").update(patch).eq("id", row.id)
+    if (error) console.error(`[listing-appt-prep] could not complete presentation ${row.id}: ${error.message}`)
+  }
+
+  return row.id
 }
 
 const DEFAULT_CHAPTERS = [

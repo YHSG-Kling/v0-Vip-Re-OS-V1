@@ -98,6 +98,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       contactId:       apptAny.metadata?.contact_id ?? null,
       appointmentId:   appt.id,
       appointmentAt:   apptAny.start_at,
+      // The listing this appointment is on — carries the seller's recorded
+      // upgrades into the CMA. Only set when the appointment really is a
+      // listing appointment (the same guard the address read above uses).
+      listingId:       apptAny.entity_type === "listing" ? (apptAny.entity_id ?? null) : null,
       propertyAddress,
       state,
       city,

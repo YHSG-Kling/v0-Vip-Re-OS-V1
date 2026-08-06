@@ -53,12 +53,13 @@ export interface SellerComp {
   price_per_sqft: number
   sale_date: string
   /**
-   * Null when the comp source cannot attribute a distance. The comp finder
-   * searches WITHIN a radius but does not return per-comp distance, so this is
-   * unknown rather than zero — the UI must show "—", never a made-up number.
+   * Miles from the subject, WHEN THE COMP PROVIDER REPORTS ONE. RentCast — the
+   * platform comp source — publishes a real per-comp `distance`, so this is now
+   * populated for RentCast-sourced comps. Null still means the provider gave no
+   * distance, and the UI must show "—" for it, never a made-up number.
    */
   distance_miles: number | null
-  /** Source URL the comp was grounded in, when the finder returned one. */
+  /** Source URL / provider attribution for the comp, when one exists. */
   citation?: string | null
 }
 
@@ -729,9 +730,9 @@ async function generateAIValuation(propertyData: {
           a.comp.pricePerSqft ?? (sqft > 0 ? a.comp.salePrice / sqft : 0)
         ),
         sale_date: a.comp.saleDate,
-        // The comp finder searches within a radius but returns no per-comp
-        // distance. Unknown, not zero.
-        distance_miles: null,
+        // Real per-comp distance when the provider published one (RentCast
+        // does); null — rendered "—" — when it did not.
+        distance_miles: a.comp.distanceMiles ?? null,
         citation: a.comp.citation ?? null,
       }
     })

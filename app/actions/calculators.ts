@@ -1077,22 +1077,28 @@ export async function emailCalculationResults(data: {
       calculationId: data.calculationId,
     })
 
-    // Only record the send AFTER the provider accepted it — a tracking row for
-    // an email that never left is a false delivery record.
     if (!emailResult.success) {
       return { success: false, error: "The email provider refused the message." }
     }
 
-    const { error: trackError } = await supabase.from("tool_shares").insert({
-      calculation_id: data.calculationId,
-      shared_with_email: data.recipientEmail,
-      share_token: `email_${Date.now()}`,
-      sent_at: new Date().toISOString(),
-    })
-    if (trackError) {
-      // The email DID go out; say so rather than reporting a failure.
-      console.error("[calculators] emailCalculationResults: send tracking failed:", trackError.message)
-    }
+    // THE tool_shares TRACKING WRITE WAS REMOVED — verdict: delete the dead write.
+    //
+    // Removing the calculator share feature left getSharedCalculation gone, and
+    // it was the only reader tool_shares ever had. This insert was the last
+    // writer, which made tool_shares a WRITE-ONLY table: a row recorded for a
+    // send that no surface, report or export ever consults. The orphan-writes
+    // guard flagged exactly that and asked for a verdict.
+    //
+    // Building a reader was not an option — the owner ruled calculator sharing
+    // out — and repointing it would mean inventing a consumer for a record
+    // nobody asked for. The send itself is NOT untracked: sendCalculatorResults
+    // goes through the shared email service, which is where an outbound message
+    // belongs on the record. A bespoke second ledger for one tool was always the
+    // odd one out.
+    //
+    // tool_shares now has no reader and no writer anywhere in the tree. Dropping
+    // the table is a migration and a separate decision; it is deliberately NOT
+    // done here on my own authority.
 
     return {
       success: true,
