@@ -31,7 +31,10 @@ export async function executeAITool(
         break
         
       case "affordability_calculator":
-        result = await calculateAffordability(params.income, params.downPayment, params.location)
+        // The form's own four fields — income, debt, downPayment, rate. The old
+        // call passed params.location, which this form does not collect, and
+        // dropped debt and rate entirely.
+        result = await runAffordabilityTool(params)
         break
         
       case "neighborhood_research":
@@ -253,54 +256,124 @@ Be concise, objective, and helpful.
 // =====================================================
 // AFFORDABILITY CALCULATOR
 // =====================================================
+//
+// This case used to run a SECOND, weaker affordability model defined right here.
+// app/actions/calculators.ts calculateAffordability is the survivor — it is
+// strictly more capable and it matches the fields this tool's own form already
+// collects. The local copy is deleted. What it got wrong:
+//
+//   · It took (income, downPayment, location) while the form collects income,
+//     debt, downPayment and RATE. The buyer's monthly debt and the real interest
+//     rate were typed in and thrown away; it assumed zero debt and hardcoded 7%.
+//   · `location` is not a field on this form at all, so it was always undefined —
+//     the prompt asked the model what to expect "in the undefined market".
+//   · The form's inputs are text ("$120,000", "$500", "6.5%" — its own
+//     placeholders). `"$120,000" / 12` is NaN, so every figure it produced was
+//     NaN and the narrative quoted $NaN.
+//   · It returned an OBJECT while this screen renders results as text, so the
+//     panel showed "[object Object]".
+//   · Its single 43% DTI ignored property tax, insurance, PMI and HOA when
+//     solving for max price, so the number it did aim at was too high anyway.
+//
+// The survivor applies front-end 28% AND back-end 36% DTI against real debts,
+// and solves for max price carrying tax + insurance + PMI + HOA. The AI narrative
+// stays — it is this tool's value-add — but it now explains REAL figures instead
+// of generating them.
 
-async function calculateAffordability(income: number, downPayment: number, location: string) {
-  // Standard lending ratios
-  const maxDTI = 0.43 // 43% debt-to-income ratio
-  const estimatedTaxRate = 0.012 // 1.2% annual property tax
-  const estimatedInsurance = 1200 // annual
-  const estimatedHOA = 0 // monthly
-  
-  const maxMonthlyPayment = (income / 12) * maxDTI
-  const estimatedRate = 0.07 // 7% interest rate assumption
-  
-  // Calculate max loan amount
-  const monthlyRate = estimatedRate / 12
-  const numPayments = 360 // 30-year mortgage
-  
-  const maxLoanAmount = maxMonthlyPayment * 
-    ((1 - Math.pow(1 + monthlyRate, -numPayments)) / monthlyRate)
-  
-  const maxHomePrice = maxLoanAmount + downPayment
-  
-  const prompt = `
-Based on these financials:
-- Annual Income: $${income.toLocaleString()}
-- Down Payment: $${downPayment.toLocaleString()}
-- Location: ${location}
-- Max Home Price: $${maxHomePrice.toLocaleString()}
+/** "6.5%" / "6.5" → 6.5. Returns null rather than guessing. */
+function parseRatePercent(v: unknown): number | null {
+  if (typeof v === "number") return Number.isFinite(v) && v >= 0 ? v : null
+  if (typeof v !== "string") return null
+  const cleaned = v.replace(/[%\s]/g, "")
+  if (cleaned === "" || !/^\d+(\.\d+)?$/.test(cleaned)) return null
+  const n = Number(cleaned)
+  return Number.isFinite(n) ? n : null
+}
 
-Provide friendly, actionable advice for a homebuyer:
-1. What price range should they focus on?
-2. Monthly payment estimate (including taxes, insurance)
-3. Tips for improving buying power
-4. What to expect in the ${location} market
+async function runAffordabilityTool(params: {
+  income?: unknown
+  debt?: unknown
+  downPayment?: unknown
+  rate?: unknown
+}): Promise<string> {
+  const { parseMoney } = await import("@/lib/offers/closing-cost-accuracy")
 
-Be encouraging and practical. 2-3 paragraphs.
-`
-  
+  const annualIncome = parseMoney(params.income)
+  const downPayment = parseMoney(params.downPayment)
+  const interestRate = parseRatePercent(params.rate)
+  // Debt is the one genuinely optional field — blank means no monthly debts,
+  // which is a real answer. An UNREADABLE value is not the same thing and is
+  // refused below rather than silently treated as zero.
+  const debtRaw = typeof params.debt === "string" ? params.debt.trim() : params.debt
+  const monthlyDebts = debtRaw === "" || debtRaw == null ? 0 : parseMoney(debtRaw)
+
+  const missing: string[] = []
+  if (annualIncome == null) missing.push("annual income")
+  if (downPayment == null) missing.push("down payment")
+  if (interestRate == null) missing.push("interest rate")
+  if (monthlyDebts == null) missing.push("monthly debt")
+
+  if (missing.length > 0) {
+    // No figure at all beats a figure built on NaN.
+    return `I could not read ${missing.join(", ")}. Enter ${missing.length === 1 ? "it" : "them"} as a plain amount — for example 120000 or $120,000 for income, and 6.5 or 6.5% for the rate — and run it again.`
+  }
+
+  const { calculateAffordability } = await import("@/app/actions/calculators")
+  const affordability = await calculateAffordability({
+    annualIncome: annualIncome!,
+    monthlyDebts: monthlyDebts!,
+    downPayment: downPayment!,
+    interestRate: interestRate!,
+  })
+
+  const b = affordability.monthlyBreakdown
+  const h = affordability.hiddenCosts
+  const money = (n: number) => `$${Math.round(n).toLocaleString()}`
+
+  const figures = `Maximum home price: ${money(affordability.maxHomePrice)}
+Down payment: ${money(affordability.downPayment)}
+Loan amount: ${money(affordability.loanAmount)}
+
+Estimated monthly payment: ${money(b.total)}
+  Principal & interest: ${money(b.principal_interest)}
+  Property tax: ${money(b.property_tax)}
+  Insurance: ${money(b.insurance)}
+  PMI: ${money(b.pmi)}
+  HOA: ${money(b.hoa)}
+
+Costs beyond the payment:
+  Estimated closing costs: ${money(h.closing_costs)}
+  Monthly maintenance budget: ${money(h.maintenance_budget)}
+  Estimated utilities: ${money(h.utilities_estimate)}`
+
+  // The narrative EXPLAINS the numbers above; it does not produce them.
+  const prompt = `You are advising a homebuyer. These figures were already
+calculated from their real inputs — annual income ${money(annualIncome!)}, monthly
+debts ${money(monthlyDebts!)}, down payment ${money(downPayment!)}, interest rate
+${interestRate}%:
+
+${figures}
+
+Write 2-3 short paragraphs that:
+1. Explain what price range they should realistically shop in and why.
+2. Point out which part of the monthly payment will surprise them most.
+3. Give concrete ways to increase their buying power.
+
+Use ONLY the figures above. Do not recalculate them, do not introduce different
+numbers, and do not comment on any specific city or market — no location was
+provided.`
+
   const { text } = await generateText({
     model: "openai/gpt-4o-mini",
     prompt,
     temperature: 0.7,
   })
-  
-  return {
-    maxHomePrice: Math.round(maxHomePrice),
-    maxMonthlyPayment: Math.round(maxMonthlyPayment),
-    downPayment,
-    recommendations: text,
-  }
+
+  const notes = affordability.recommendations?.length
+    ? `\n\nWhat to watch:\n${affordability.recommendations.map((r) => `• ${r}`).join("\n")}`
+    : ""
+
+  return `${figures}\n\n${text}${notes}`
 }
 
 // =====================================================
