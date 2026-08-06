@@ -3,6 +3,38 @@
 // SHARED VALIDATION UTILITIES
 // Central validation module for consistent data validation across all actions
 // ============================================
+//
+// WHAT IS ACTUALLY ADOPTED, AND WHY THE REST SHOULD NOT BE (audited, not assumed)
+//
+// isValidUUID is the workhorse — 116 call sites — with validatePhone,
+// validateEmail, validateContact and validateTransactionData also in use.
+//
+// The remaining exports (isValidDate, isValidURL, requireValidUUID,
+// validateArray, validateContentLength, validateHashtags, validateProperty,
+// validateUUIDArray) have no callers. They show up on the category-C
+// burn-down list, so the tempting move is to "wire them" by replacing the
+// hand-rolled checks scattered through the codebase. DO NOT. Those inline
+// checks are STRICTER, and swapping them for these would be a regression
+// dressed up as consolidation:
+//
+//   · lib/transactions/earnest-terms.ts pairs an ISO_DATE regex WITH
+//     Date.parse. isValidDate would accept "12/31/2025" — V8 parses it
+//     happily — and a contract date is not a place to widen the accepted
+//     format.
+//   · lib/transactions/buyer-move.ts normalises to UTC midnight before
+//     parsing, so a timezone cannot shift a closing date across a day.
+//   · app/actions/tenant-webhooks.ts returns the REASON a URL was rejected;
+//     isValidURL returns a bare boolean, so the operator would lose the
+//     message that tells them what to fix.
+//   · lib/kernel/regulatory-watcher.ts and content-intel-scan.ts are not
+//     validating at all — they extract a hostname for dedup and happen to
+//     use the same try/catch shape.
+//
+// So these are speculative utilities with no named duplicate. Under the
+// standing rule they are NOT deleted (an unwired capability is work to
+// finish, and the orphan number alone is never the reason to remove code) —
+// but they are also not something to adopt on sight. If one is ever genuinely
+// needed, take it AND keep the caller's extra strictness.
 
 // UUID Validation
 export const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
