@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { requireActiveBBA } from "@/lib/buyer-broker/gate"
+import { guardShowingFinancialGate } from "@/lib/buyer-execution/showing-financial-policy"
 
 export async function requestShowing(data: {
   contactId: string
@@ -84,6 +85,21 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
       if (!gate.allowed) {
         return { success: false, error: gate.reason ?? "BBA gate failed", errorCode: "bba_required" }
       }
+    }
+
+    // ── Buyer financial gate — TENANT SETTING (m377) ───────────────────────
+    // Off by default and for every existing brokerage, in which case this
+    // returns immediately and nothing about this path changes. When a brokerage
+    // has opted in, the buyer must be financially verified before a showing is
+    // set. The refusal carries the gate's OWN reason so "your lender hasn't
+    // confirmed financials yet" never arrives looking like a server error.
+    const finGate = await guardShowingFinancialGate({
+      contactId:   data.contactId,
+      brokerageId: brokerageId,
+      userId:      authUserId,
+    })
+    if (finGate.blocked) {
+      return { success: false, error: finGate.reason, errorCode: finGate.errorCode }
     }
 
     // Build a readable message from preferred dates and notes
@@ -373,8 +389,27 @@ export async function createShowing(params: {
     const supabase = await createClient()
 
     // brokerage_id + requested_date/start/end are NOT NULL on showing_requests.
-    const { data: c } = await supabase
+    const { data: c, error: contactErr } = await supabase
       .from("contacts").select("brokerage_id").eq("id", params.contactId).maybeSingle()
+    if (contactErr) {
+      console.error("Error loading contact for createShowing:", contactErr)
+      return { success: false, error: contactErr.message }
+    }
+
+    // ── Buyer financial gate — TENANT SETTING (m377) ───────────────────────
+    // No-op unless this brokerage opted in. When it did, an agent creating the
+    // showing directly is the same "setting a showing" moment the owner named,
+    // so it is gated exactly like the buyer-initiated request path.
+    const { data: { user: creator } } = await supabase.auth.getUser()
+    const finGate = await guardShowingFinancialGate({
+      contactId:   params.contactId,
+      brokerageId: c?.brokerage_id ?? null,
+      userId:      creator?.id ?? null,
+    })
+    if (finGate.blocked) {
+      return { success: false, error: finGate.reason, errorCode: finGate.errorCode }
+    }
+
     const startTime = `${params.scheduledTime}:00`
     const [eh, em] = params.scheduledTime.split(":").map(Number)
     const endTotal = eh * 60 + em + 30

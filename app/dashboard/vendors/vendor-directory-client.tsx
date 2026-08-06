@@ -56,6 +56,8 @@ import {
   Plus,
   Paperclip,
   Package,
+  ShieldCheck,
+  ShieldAlert,
 } from "lucide-react"
 import {
   searchVendors,
@@ -75,6 +77,12 @@ import {
   assignVendorToTransactionAction,
   updateVendorBookingStatusAction,
 } from "@/app/actions/vendors-kernel"
+import { recordVendorInsuranceAction } from "@/app/actions/vendor-verification"
+import {
+  readVendorInsurance,
+  type InsurancePosture,
+  type InsuranceRecord,
+} from "@/lib/vendors/insurance-posture"
 
 /** vendor_assignments.assignment_type is CHECK-constrained to exactly these ten
  *  values — a DIFFERENT and much shorter vocabulary than vendors.category (38
@@ -114,6 +122,17 @@ const BOOKING_STATUS_LABEL: Record<string, string> = {
   no_show: "No-show",
 }
 
+/** Badge styling per insurance posture. Grey is reserved for the two states we
+ *  genuinely do not know ("never" / "no_expiry") — colouring an unknown green or
+ *  red would be the same fabricated verdict the server action refuses to make. */
+const INSURANCE_BADGE: Record<InsurancePosture, string> = {
+  verified:  "bg-green-100 text-green-800 border-green-200",
+  expiring:  "bg-amber-100 text-amber-900 border-amber-300",
+  expired:   "bg-red-100 text-red-800 border-red-300",
+  no_expiry: "bg-muted text-muted-foreground border-transparent",
+  never:     "bg-muted text-muted-foreground border-transparent",
+}
+
 interface Vendor {
   id: string
   name: string
@@ -124,6 +143,8 @@ interface Vendor {
   notes: string | null
   rating: number | null
   brokerage_id: string | null
+  /** m376 credential bag — the certificate of insurance lives under `.insurance`. */
+  compliance_credentials?: Record<string, InsuranceRecord | null | undefined> | null
   vendor_rating?: {
     avg_agent_rating: number | null
     avg_client_rating: number | null
@@ -224,6 +245,22 @@ export function VendorDirectoryClient({
   const [editWebsite, setEditWebsite] = useState("")
   const [editNotes, setEditNotes] = useState("")
   const [editVendorError, setEditVendorError] = useState("")
+
+  // Insurance dialog state (recordVendorInsuranceAction). The certificate of
+  // insurance was previously recordable ONLY from the approval queue, which
+  // lists status='pending' vendors — so once a vendor was approved, or once the
+  // nightly sweep suspended them for a lapse, there was NOWHERE in the product
+  // to record the renewal. This is that surface.
+  const [insuranceDialogOpen, setInsuranceDialogOpen] = useState(false)
+  const [insuranceVendor, setInsuranceVendor] = useState<Vendor | null>(null)
+  const [insCarrier, setInsCarrier] = useState("")
+  const [insPolicyNumber, setInsPolicyNumber] = useState("")
+  const [insCoverage, setInsCoverage] = useState("")
+  const [insEffective, setInsEffective] = useState("")
+  const [insExpiry, setInsExpiry] = useState("")
+  const [insUrl, setInsUrl] = useState("")
+  const [insuranceError, setInsuranceError] = useState("")
+  const [insuranceNotice, setInsuranceNotice] = useState("")
 
   // Assign to Listing dialog state (assignVendorToListingAction)
   const [listingDialogOpen, setListingDialogOpen] = useState(false)
@@ -453,6 +490,73 @@ export function VendorDirectoryClient({
       )
       setEditVendorOpen(false)
       setEditVendor(null)
+      router.refresh()
+    })
+  }
+
+  // ─── RECORD a vendor's CERTIFICATE OF INSURANCE ──────────────────────────
+  // Pre-fills from whatever is already on file so an admin can see the policy
+  // they are replacing rather than typing blind into an empty form.
+  const openInsuranceDialog = (vendor: Vendor) => {
+    const current = readVendorInsurance(vendor.compliance_credentials, new Date())
+    setInsuranceVendor(vendor)
+    setInsCarrier(current.carrier ?? "")
+    setInsPolicyNumber(current.policyNumber ?? "")
+    setInsCoverage(current.coverageAmount != null ? String(current.coverageAmount) : "")
+    setInsEffective(current.effectiveDate ?? "")
+    setInsExpiry(current.expiry ?? "")
+    setInsUrl(current.certificateUrl ?? "")
+    setInsuranceError("")
+    setInsuranceNotice("")
+    setInsuranceDialogOpen(true)
+  }
+
+  const handleRecordInsurance = () => {
+    if (!insuranceVendor) return
+    setInsuranceError("")
+    setInsuranceNotice("")
+    startTransition(async () => {
+      const result = await recordVendorInsuranceAction({
+        vendorId: insuranceVendor.id,
+        carrier: insCarrier.trim(),
+        policyNumber: insPolicyNumber.trim(),
+        coverageAmount: Number(insCoverage),
+        effectiveDate: insEffective,
+        expiry: insExpiry,
+        certificateUrl: insUrl.trim() || undefined,
+      })
+      // READ THE OUTCOME. A refusal (not an admin, vendor outside your
+      // brokerage, a date the CHECK rejects) leaves the dialog open showing the
+      // server's own words, and the list is NOT moved — the badge must never
+      // claim a certificate that was not stored.
+      if (!result.success) {
+        setInsuranceError(result.error)
+        return
+      }
+      // The verdict below is the server's, computed from the row it read back.
+      setInsuranceNotice(result.status.detail)
+      setVendors((prev) =>
+        prev.map((v) =>
+          v.id === insuranceVendor.id
+            ? {
+                ...v,
+                compliance_credentials: {
+                  ...(v.compliance_credentials ?? {}),
+                  insurance: {
+                    carrier: result.status.carrier,
+                    policy_number: result.status.policyNumber,
+                    coverage_amount: result.status.coverageAmount,
+                    effective_date: result.status.effectiveDate,
+                    expiry: result.status.expiry,
+                    url: result.status.certificateUrl,
+                    verified_at: result.status.verifiedAt,
+                    verified_by: result.status.verifiedBy,
+                  },
+                },
+              }
+            : v,
+        ),
+      )
       router.refresh()
     })
   }
@@ -964,7 +1068,11 @@ export function VendorDirectoryClient({
 
           {/* Vendor Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {vendors.map((vendor) => (
+            {vendors.map((vendor) => {
+              // Computed on every render from the STORED expiry — the bench
+              // ages by itself. Nothing writes a "compliant" flag anywhere.
+              const insurance = readVendorInsurance(vendor.compliance_credentials, new Date())
+              return (
               <Card key={vendor.id} className="hover:shadow-md transition-shadow">
                 <CardHeader className="pb-2">
                   <div className="flex items-start justify-between">
@@ -979,6 +1087,30 @@ export function VendorDirectoryClient({
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {renderStars(vendor.rating)}
+
+                  {/* INSURANCE POSTURE — four distinguishable states, never a
+                      claim: green only when a stored expiry is still more than
+                      60 days out, amber inside the reminder window, red once it
+                      has passed, and grey when we have simply never checked. */}
+                  <div className="flex items-center gap-2">
+                    <Badge
+                      className={`text-[11px] border ${INSURANCE_BADGE[insurance.posture]}`}
+                      title={insurance.detail}
+                    >
+                      {insurance.posture === "expired" && <ShieldAlert className="h-3 w-3 mr-1" />}
+                      {insurance.posture === "expiring" && <ShieldAlert className="h-3 w-3 mr-1" />}
+                      {insurance.posture === "verified" && <ShieldCheck className="h-3 w-3 mr-1" />}
+                      {insurance.label}
+                    </Badge>
+                    {insurance.coverageAmount != null && (
+                      <span className="text-[11px] text-muted-foreground">
+                        ${insurance.coverageAmount.toLocaleString()} limit
+                      </span>
+                    )}
+                  </div>
+                  {(insurance.posture === "expired" || insurance.posture === "expiring") && (
+                    <p className="text-[11px] text-muted-foreground leading-snug">{insurance.detail}</p>
+                  )}
 
                   {vendor.vendor_rating && (
                     <div className="text-xs text-muted-foreground">
@@ -1035,6 +1167,15 @@ export function VendorDirectoryClient({
                     </Button>
                     <Button
                       size="sm"
+                      variant={insurance.posture === "expired" ? "destructive" : "outline"}
+                      onClick={() => openInsuranceDialog(vendor)}
+                      className={insurance.posture === "expired" ? "" : "bg-transparent"}
+                      title="Record this vendor's certificate of insurance — carrier, policy, limit and expiry"
+                    >
+                      Insurance
+                    </Button>
+                    <Button
+                      size="sm"
                       variant="outline"
                       onClick={() => openAssignDialog(vendor)}
                       className="bg-transparent"
@@ -1056,7 +1197,8 @@ export function VendorDirectoryClient({
                   </div>
                 </CardContent>
               </Card>
-            ))}
+              )
+            })}
           </div>
 
           {vendors.length === 0 && (
@@ -1828,6 +1970,128 @@ export function VendorDirectoryClient({
             </Button>
             <Button onClick={handleUpdateVendor} disabled={isPending || !editName.trim()}>
               {isPending ? "Saving..." : "Save changes"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Certificate of Insurance Dialog — recordVendorInsuranceAction */}
+      <Dialog open={insuranceDialogOpen} onOpenChange={setInsuranceDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Certificate of Insurance</DialogTitle>
+            <DialogDescription>
+              {insuranceVendor?.name} — record the liability certificate. The expiry you enter is the
+              date every compliance verdict is computed from: once it passes, the nightly sweep
+              suspends this vendor off the bench automatically.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            {/* What is on file right now, stated before anything is changed. */}
+            {insuranceVendor && (() => {
+              const current = readVendorInsurance(insuranceVendor.compliance_credentials, new Date())
+              return (
+                <div className="rounded border p-2 text-xs space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground">On file:</span>
+                    <Badge className={`text-[11px] border ${INSURANCE_BADGE[current.posture]}`}>
+                      {current.label}
+                    </Badge>
+                  </div>
+                  <p className="text-muted-foreground leading-snug">{current.detail}</p>
+                </div>
+              )
+            })()}
+
+            <div className="space-y-2">
+              <Label>
+                Carrier <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                value={insCarrier}
+                onChange={(e) => setInsCarrier(e.target.value)}
+                placeholder="e.g. Travelers, Hartford"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>
+                Policy number <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                value={insPolicyNumber}
+                onChange={(e) => setInsPolicyNumber(e.target.value)}
+                placeholder="As printed on the certificate"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>
+                Coverage limit (USD) <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                type="number"
+                min={0}
+                step={1}
+                value={insCoverage}
+                onChange={(e) => setInsCoverage(e.target.value)}
+                placeholder="1000000"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>
+                  Effective <span className="text-destructive">*</span>
+                </Label>
+                <Input type="date" value={insEffective} onChange={(e) => setInsEffective(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>
+                  Expires <span className="text-destructive">*</span>
+                </Label>
+                <Input type="date" value={insExpiry} onChange={(e) => setInsExpiry(e.target.value)} />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Certificate link</Label>
+              <Input
+                value={insUrl}
+                onChange={(e) => setInsUrl(e.target.value)}
+                placeholder="https://… (optional)"
+              />
+            </div>
+
+            {insuranceError && <p className="text-sm text-destructive">{insuranceError}</p>}
+            {insuranceNotice && <p className="text-sm text-green-700">{insuranceNotice}</p>}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setInsuranceDialogOpen(false)
+                setInsuranceError("")
+                setInsuranceNotice("")
+              }}
+              className="bg-transparent"
+            >
+              Close
+            </Button>
+            <Button
+              onClick={handleRecordInsurance}
+              disabled={
+                isPending ||
+                !insCarrier.trim() ||
+                !insPolicyNumber.trim() ||
+                !insCoverage.trim() ||
+                !insEffective ||
+                !insExpiry
+              }
+            >
+              {isPending ? "Verifying..." : "Record & verify"}
             </Button>
           </DialogFooter>
         </DialogContent>

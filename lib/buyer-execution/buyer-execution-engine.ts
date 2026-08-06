@@ -323,20 +323,71 @@ export async function logBuyerExecutionEvent(params: {
 }): Promise<{ success: boolean; error?: string }> {
   const { contactId, eventType, userId, source, metadata } = params
   const supabase = createServiceClient()
-  
+
+  // activities.brokerage_id is NOT NULL with no default, and this insert never
+  // supplied it — so EVERY call to this function has been failing on a not-null
+  // violation and writing nothing. It went unnoticed because the one caller that
+  // would have surfaced it (checkBuyerCanPerformAction) was itself unreachable,
+  // and the rest await this and drop the result. m377 makes this the audit trail
+  // for a gate that refuses customer bookings, so it has to actually write.
+  //
+  // The tenant comes off the CONTACT the event is about — that is the entity the
+  // row is filed under, so it is the row whose tenancy the activity inherits.
+  const { data: contact, error: contactError } = await supabase
+    .from('contacts')
+    .select('brokerage_id')
+    .eq('id', contactId)
+    .maybeSingle()
+
+  if (contactError) {
+    console.error('[buyer-execution] Error resolving tenant for event:', contactError)
+    return { success: false, error: contactError.message }
+  }
+
+  const brokerageId = (contact as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+  if (!brokerageId) {
+    const msg = `Cannot log ${eventType}: contact ${contactId} has no brokerage_id`
+    console.error('[buyer-execution]', msg)
+    return { success: false, error: msg }
+  }
+
+  // agent_user_id is an FK to users.id. Callers reach us with whatever id they
+  // have, and on the buyer-portal lane that is the BUYER's auth id, which has no
+  // users row — distinct id spaces, never interchangeable. An unresolvable actor
+  // is recorded as no actor (the column is nullable) rather than taking the whole
+  // audit row down with an FK violation.
+  let actorUserId: string | null = null
+  if (userId) {
+    const { data: actor, error: actorError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('id', userId)
+      .maybeSingle()
+    if (actorError) {
+      console.error('[buyer-execution] Error resolving actor user:', actorError)
+    } else if (actor) {
+      actorUserId = (actor as { id: string }).id
+    }
+  }
+
   // Agent task (correct location, no changes) — type: dynamic buyer lifecycle event
   const { error } = await supabase.from('activities').insert({
     activity_type: eventType,
     entity_type: 'contact',
     entity_id: contactId,
-    agent_user_id: userId,
+    contact_id: contactId,
+    brokerage_id: brokerageId,
+    agent_user_id: actorUserId,
     metadata: {
       ...metadata,
       source,
+      // When the actor could not be resolved to a users row, say so in the
+      // record instead of quietly presenting the event as actorless.
+      ...(userId && !actorUserId ? { unresolved_actor_id: userId } : {}),
       timestamp: new Date().toISOString(),
     }
   })
-  
+
   if (error) {
     console.error('[buyer-execution] Error logging event:', error)
     return { success: false, error: error.message }

@@ -41,7 +41,9 @@ export default async function VendorApprovalsPage() {
   const [{ data: pending }, { data: settingsRow }] = await Promise.all([
     supabase
       .from("vendors")
-      .select("id, name, category, email, phone, website, ai_verification_score, verification_flags")
+      // compliance_credentials (m376) so the approver can see whether liability
+      // coverage is actually live before putting this vendor in front of a client.
+      .select("id, name, category, email, phone, website, ai_verification_score, verification_flags, compliance_credentials")
       .eq("brokerage_id", profile.brokerage_id)
       .eq("status", "pending")
       .order("ai_verification_score", { ascending: false, nullsFirst: false })

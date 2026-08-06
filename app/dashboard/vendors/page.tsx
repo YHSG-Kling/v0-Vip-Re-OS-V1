@@ -93,7 +93,11 @@ export default async function VendorsPage() {
     // placement changed nothing about where the vendor appeared.
     supabase
       .from("vendors")
-      .select("id, name, phone, email, website, category, notes, rating, brokerage_id, preferred, display_priority, visible_in_portal")
+      // compliance_credentials carries the certificate of insurance (m376). The
+      // directory reads it so the bench itself distinguishes insured / expiring
+      // / lapsed / never-checked — before an agent refers the vendor to a client,
+      // not the morning after the nightly sweep suspends them.
+      .select("id, name, phone, email, website, category, notes, rating, brokerage_id, preferred, display_priority, visible_in_portal, compliance_credentials")
       .eq("brokerage_id", profile.brokerage_id)
       .order("display_priority", { ascending: false })
       .order("rating", { ascending: false, nullsFirst: false })

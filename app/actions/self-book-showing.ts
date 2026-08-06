@@ -8,18 +8,33 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { loadBookableSlots, bookShowingSlot } from "@/lib/kernel/self-book"
+import { guardShowingFinancialGate } from "@/lib/buyer-execution/showing-financial-policy"
 import type { FreeSlot } from "@/lib/providers/calendar/free-slots"
 
-async function authorizeForContact(contactId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+/**
+ * Authorizes the caller AND hands back the two ids the financial gate needs, so
+ * neither is re-derived (or worse, guessed) downstream: the CONTACT's brokerage
+ * — the tenant whose policy governs this booking — and the caller's auth id.
+ */
+async function authorizeForContact(contactId: string): Promise<
+  { ok: true; brokerageId: string | null; authUserId: string } | { ok: false; error: string }
+> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthorized" }
   const svc = createServiceClient()
-  const { data: contact } = await svc.from("contacts").select("email, brokerage_id").eq("id", contactId).maybeSingle()
+  const { data: contact, error: contactError } = await svc.from("contacts").select("email, brokerage_id").eq("id", contactId).maybeSingle()
+  if (contactError) return { ok: false, error: contactError.message }
   if (!contact) return { ok: false, error: "Not found" }
-  if (user.email && (contact as any).email && user.email.toLowerCase() === (contact as any).email.toLowerCase()) return { ok: true }
-  const { data: u } = await svc.from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
-  if ((u as any)?.brokerage_id === (contact as any).brokerage_id || (u as any)?.user_type === "superadmin") return { ok: true }
+  const brokerageId = ((contact as any).brokerage_id ?? null) as string | null
+  if (user.email && (contact as any).email && user.email.toLowerCase() === (contact as any).email.toLowerCase()) {
+    return { ok: true, brokerageId, authUserId: user.id }
+  }
+  const { data: u, error: userError } = await svc.from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
+  if (userError) return { ok: false, error: userError.message }
+  if ((u as any)?.brokerage_id === (contact as any).brokerage_id || (u as any)?.user_type === "superadmin") {
+    return { ok: true, brokerageId, authUserId: user.id }
+  }
   return { ok: false, error: "Forbidden" }
 }
 
@@ -37,5 +52,20 @@ export async function bookShowingSlotAction(params: { listingId: string; contact
 > {
   const auth = await authorizeForContact(params.contactId)
   if (!auth.ok) return auth
+
+  // ── Buyer financial gate — TENANT SETTING (m377) ─────────────────────────
+  // Self-booking is the path where a buyer schedules a showing with no human in
+  // the loop at all, so it is precisely the one a brokerage that requires
+  // financial verification means to cover. Off by default: unless this brokerage
+  // opted in, this returns without running the gate and the flow is unchanged.
+  const finGate = await guardShowingFinancialGate({
+    contactId:   params.contactId,
+    brokerageId: auth.brokerageId,
+    userId:      auth.authUserId,
+  })
+  if (finGate.blocked) {
+    return { ok: false, error: finGate.reason, errorCode: finGate.errorCode }
+  }
+
   return bookShowingSlot(createServiceClient(), params)
 }

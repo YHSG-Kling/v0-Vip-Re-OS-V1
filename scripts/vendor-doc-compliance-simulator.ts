@@ -21,6 +21,7 @@ import {
   evaluateCredential,
   evaluateVendorCompliance,
   LICENSE_GRACE_DAYS,
+  readVendorInsurance,
 } from "../lib/kernel/vendor-doc-compliance"
 
 let pass = 0, fail = 0
@@ -51,6 +52,56 @@ function pureLayer() {
   const soon = evaluateVendorCompliance({ insurance: { expiry: iso(20) }, license: { expiry: iso(6) } }, NOW)
   check("two upcoming expiries → two reminders, no suspend", soon.reminders.length === 2 && !soon.shouldSuspend)
   check("empty bag → nothing", evaluateVendorCompliance(null, NOW).credentials.length === 0)
+
+  // ── m376 · INSURANCE VERIFICATION POSTURE ───────────────────────────────
+  // The four states a human must be able to tell apart on the bench, plus the
+  // two "we do not know" states that must NEVER be rounded to a verdict.
+  console.log("\n[readVendorInsurance · pure — the posture a broker reads]")
+  const coi = (expiryDays: number) => ({
+    insurance: {
+      carrier: "Acme Mutual", policy_number: "GL-1", coverage_amount: 1_000_000,
+      effective_date: "2026-01-01", expiry: iso(expiryDays),
+      verified_at: "2026-06-01T00:00:00.000Z", verified_by: "00000000-0000-0000-0000-000000000000",
+    },
+  })
+  check("no credential bag at all → never (not 'verified', not 'expired')",
+    readVendorInsurance(null, NOW).posture === "never")
+  check("bag with no insurance key → never",
+    readVendorInsurance({ license: { expiry: iso(400) } }, NOW).posture === "never")
+  check("expiry 400d out → verified", readVendorInsurance(coi(400), NOW).posture === "verified")
+  check("expiry 45d out → expiring (inside the widest reminder window)",
+    readVendorInsurance(coi(45), NOW).posture === "expiring")
+  check("expiry 3d out → expiring", readVendorInsurance(coi(3), NOW).posture === "expiring")
+  check("expiry 1d PAST → expired", readVendorInsurance(coi(-1), NOW).posture === "expired")
+  check("a certificate with NO expiry → no_expiry, never 'verified'",
+    readVendorInsurance({ insurance: { carrier: "Acme Mutual" } }, NOW).posture === "no_expiry")
+  // THE EXACT HAZARD m376's date CHECK exists to stop. Date.parse returns NaN
+  // for these, daysUntil returns null, and the posture is "no_expiry" — which is
+  // honest for a reader but is ALSO what evaluateCredential reads as "nothing to
+  // act on". A lapsed vendor stored this way would never be suspended, so the
+  // fix has to be at the database, not here.
+  check("an UNPARSEABLE expiry → no_expiry, never 'verified'",
+    readVendorInsurance({ insurance: { expiry: "soon" } }, NOW).posture === "no_expiry" &&
+    readVendorInsurance({ insurance: { expiry: "" } }, NOW).posture === "no_expiry")
+  // Note the near-miss: "12/31/2025" IS parseable by V8 (US ordering), so it
+  // reads as expired rather than unknown — but a locale that reads it as
+  // 12 Mar would disagree. m376 refuses it at the column so the ambiguity is
+  // never stored in the first place.
+  check("an AMBIGUOUS locale date is refused by the column, not relied on here",
+    /12\/31\/2025/.test(src("supabase/migrations/m376-vendor-insurance-verification.sql")))
+  check("the certificate fields are carried through for display",
+    readVendorInsurance(coi(400), NOW).carrier === "Acme Mutual" &&
+    readVendorInsurance(coi(400), NOW).coverageAmount === 1_000_000 &&
+    readVendorInsurance(coi(400), NOW).policyNumber === "GL-1")
+  check("the detail line always names the DATE the verdict came from",
+    readVendorInsurance(coi(-1), NOW).detail.includes(iso(-1)))
+  check("a certificate nobody confirmed says so out loud",
+    readVendorInsurance({ insurance: { expiry: iso(400) } }, NOW).detail.includes("Never confirmed"))
+  // The posture and the automation must agree about a lapse — one screen saying
+  // "insured" while the nightly sweep suspends the vendor is the drift class.
+  check("posture 'expired' and evaluateVendorCompliance.shouldSuspend agree",
+    readVendorInsurance(coi(-1), NOW).posture === "expired" &&
+    evaluateVendorCompliance(coi(-1) as any, NOW).shouldSuspend)
 }
 
 function sourceLayer() {
@@ -62,6 +113,34 @@ function sourceLayer() {
   check("setVendorComplianceCredential is admin-gated + writes the jsonb", /setVendorComplianceCredential/.test(act) && /requireAdmin\(\)/.test(act) && /compliance_credentials: bag/.test(act))
   const ui = src("app/dashboard/admin/vendor-approvals/approval-client.tsx")
   check("the approval UI records insurance/license expiry via the action", /setVendorComplianceCredential\(v\.id, "insurance"/.test(ui) && /setVendorComplianceCredential\(v\.id, "license"/.test(ui))
+  // m376 — the full certificate of insurance, and the surface it reaches.
+  check("recordVendorInsuranceAction is admin-gated and brokerage-scoped on BOTH the read and the write",
+    /recordVendorInsuranceAction/.test(act) && /requireAdmin\(\)/.test(act) &&
+    (act.match(/\.eq\("brokerage_id", brokerageId\)/g) ?? []).length >= 2)
+  check("…it NEVER fabricates a verdict — the status is computed from the row it read back",
+    /\.select\("id, compliance_credentials"\)/.test(act) &&
+    /readVendorInsurance\(\(saved as any\)\.compliance_credentials/.test(act))
+  check("…every supabase call in it destructures its error",
+    /const \{ data: vendor, error: readErr \}/.test(act) && /if \(readErr\)/.test(act) &&
+    /const \{ data: saved, error: writeErr \}/.test(act) && /if \(writeErr\)/.test(act))
+  check("…it stamps verified_by from the SESSION user (users.id), never a substituted id space",
+    /verified_by: userId/.test(act))
+  check("…and it does not silently reactivate a suspended vendor",
+    !/status: "active"/.test(act.slice(act.indexOf("recordVendorInsuranceAction"))))
+  const dir = src("app/dashboard/vendors/vendor-directory-client.tsx")
+  check("the vendor directory records insurance via the action and READS the outcome",
+    /recordVendorInsuranceAction\(/.test(dir) && /if \(!result\.success\)/.test(dir) && /setInsuranceError\(result\.error\)/.test(dir))
+  check("the vendor list distinguishes verified / expiring / expired / never on every card",
+    /readVendorInsurance\(vendor\.compliance_credentials/.test(dir) && /INSURANCE_BADGE\[insurance\.posture\]/.test(dir))
+  check("…and the page actually selects the column the badge reads",
+    /compliance_credentials/.test(src("app/dashboard/vendors/page.tsx")))
+  check("the approval queue shows the posture and surfaces a refusal",
+    /readVendorInsurance\(v\.compliance_credentials/.test(ui) && /errors\[v\.id\]/.test(ui) && /catch \(e\)/.test(ui))
+  const mig = src("supabase/migrations/m376-vendor-insurance-verification.sql")
+  check("m376 pins the credential vocabulary so a typo cannot downgrade a hard suspend",
+    /vendors_compliance_credentials_shape/.test(mig) && /'license' - 'insurance' - 'certification' - 'bond'/.test(mig))
+  check("m376 forces every stored date to be parseable", /\^\\d\{4\}-\\d\{2\}-\\d\{2\}/.test(mig))
+  check("m376 RAISEs if it did not achieve its goal", /RAISE EXCEPTION 'm376 FAILED/.test(mig))
   const cron = src("app/api/cron/vendor-orchestration/route.ts")
   check("the daily vendor cron runs document-expiry compliance", /runVendorDocComplianceAll/.test(cron))
   const reg = src("lib/kernel/manager-registry.ts")

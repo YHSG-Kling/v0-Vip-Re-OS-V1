@@ -14,6 +14,7 @@ import {
 import { IsaAutoRespondSettings } from "@/app/components/isa/IsaAutoRespondSettings"
 import { VoiceAccessSettings } from "@/app/components/settings/VoiceAccessSettings"
 import { LeadRoutingPanel } from "./components/lead-routing-panel"
+import { ShowingFinancialGatePanel } from "./components/showing-financial-gate-panel"
 
 interface ProviderData {
   id: string
@@ -214,6 +215,13 @@ export function SettingsControlOSClient({
             contact no rule matches, which is most of them, and it used to be
             hardcoded. Broker + admin only, which is already this page's gate. */}
         <LeadRoutingPanel />
+
+        {/* Showing Requirements — whether the buyer financial gate applies before
+            a showing is set or scheduled (m377). Off for every brokerage until a
+            broker turns it on here; the engine that enforces it was already built
+            and, until m377, ran on no path at all. Broker + admin only, which is
+            already this page's gate. */}
+        <ShowingFinancialGatePanel />
       </div>
     </div>
   )
