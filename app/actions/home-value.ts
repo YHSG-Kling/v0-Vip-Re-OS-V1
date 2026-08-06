@@ -3,7 +3,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
-import { gatewayChatJSON } from "@/lib/ai/gateway-chat"
 import { createPortalInviteForContact } from "./portal-invites"
 import { CONTACT_SOURCE_HOME_VALUE } from "@/lib/campaigns/contact-sources"
 import { autoEnrollContact } from "@/lib/campaign-sequences/auto-enroll"
@@ -44,23 +43,45 @@ interface HomeValueFormData {
   }
 }
 
+/** A comparable sale as the seller-facing result page renders it. */
+export interface SellerComp {
+  address: string
+  sale_price: number
+  beds: number
+  baths: number
+  sqft: number
+  price_per_sqft: number
+  sale_date: string
+  /**
+   * Null when the comp source cannot attribute a distance. The comp finder
+   * searches WITHIN a radius but does not return per-comp distance, so this is
+   * unknown rather than zero — the UI must show "—", never a made-up number.
+   */
+  distance_miles: number | null
+  /** Source URL the comp was grounded in, when the finder returned one. */
+  citation?: string | null
+}
+
 interface AIValuationResponse {
   estimated_value_low: number
   estimated_value_mid: number
   estimated_value_high: number
   confidence_score: number
-  market_trend: "appreciating" | "stable" | "depreciating"
+  /**
+   * "unknown" is a real answer. It means no market_data row covers this
+   * property's ZIP/city yet — which is the truth before a market pull has run.
+   * Asserting "stable" in that state is a fabrication the seller cannot check.
+   */
+  market_trend: "appreciating" | "stable" | "depreciating" | "unknown"
   ai_narrative: string
-  comps: Array<{
-    address: string
-    sale_price: number
-    beds: number
-    baths: number
-    sqft: number
-    price_per_sqft: number
-    sale_date: string
-    distance_miles: number
-  }>
+  comps: SellerComp[]
+  /**
+   * What actually produced the number, stored to home_value_estimates.methodology:
+   *   ai_cma                 — adjusted comparable sales (runAiCma found comps)
+   *   sqft_regional_average  — no comps available; sqft × a conservative regional
+   *                            rate. NOT a CMA, and labelled so on the record.
+   */
+  methodology: "ai_cma" | "sqft_regional_average"
 }
 
 // ============================================================================
@@ -360,7 +381,9 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
       }).then(() => {}, () => {})
     }
 
-    // Step 5: Generate AI estimate using Claude
+    // Step 5: Generate the estimate from adjusted comparable sales (runAiCma).
+    // brokerageId is required — it is what meters the comp pull against the
+    // tenant. contactId lets the CMA engine attribute the run to this seller.
     const aiValuation = await generateAIValuation({
       propertyAddress,
       city,
@@ -371,10 +394,21 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
       squareFeet,
       yearBuilt,
       condition,
+      propertyType: propertyType ?? null,
+      brokerageId: resolvedBrokerageId,
+      contactId,
+      supabase,
     })
 
     // Step 6: INSERT home_value_estimates
-    const estimatedEquity = aiValuation.estimated_value_mid * 0.3 // Default assumption
+    //
+    // estimated_equity stays NULL. It used to be written as mid × 0.3 — a flat
+    // "default assumption" that every seller holds 30% equity. The form never
+    // asks for a mortgage balance, so equity is not derivable from anything on
+    // this record, and a made-up number sitting in a column named
+    // estimated_equity is exactly the kind of value a later reader treats as
+    // measured. Nothing reads it today; when a real payoff figure is collected,
+    // fill it from that.
 
     const { error: estimateError } = await supabase
       .from("home_value_estimates")
@@ -386,9 +420,11 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
         estimated_value_low: aiValuation.estimated_value_low,
         estimated_value_mid: aiValuation.estimated_value_mid,
         estimated_value_high: aiValuation.estimated_value_high,
-        estimated_equity: estimatedEquity,
+        estimated_equity: null,
         confidence_score: aiValuation.confidence_score,
-        methodology: "ai_cma",
+        // The method that actually produced the number — 'ai_cma' only when
+        // adjusted comparable sales backed it.
+        methodology: aiValuation.methodology,
         comps_json: aiValuation.comps,
         market_trend: aiValuation.market_trend,
         ai_narrative: aiValuation.ai_narrative,
@@ -559,6 +595,77 @@ export async function getHomeValueResult(requestId: string) {
 // AI Valuation Generation
 // ============================================================================
 
+/** Seller-facing condition wording → the 1-5 grade the adjustment engine uses. */
+const CONDITION_GRADE: Record<string, number> = {
+  excellent: 5,
+  good:      4,
+  fair:      3,
+  poor:      2,
+}
+
+/** runAiCma only adjusts against these three; anything else has no rate table. */
+function cmaPropertyType(raw: string | null | undefined): "single_family" | "condo" | "townhouse" | null {
+  return raw === "single_family" || raw === "condo" || raw === "townhouse" ? raw : null
+}
+
+/**
+ * Market direction from the market_data OBSERVATION, never from a model's guess.
+ * Narrowest geography first (ZIP, then city+state) and only rows carrying a
+ * 1-year price trend. No row → "unknown", which the result page renders as
+ * "Market trend not yet available" rather than inventing a direction.
+ */
+async function resolveMarketTrend(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  where: { zipCode?: string | null; city?: string | null; state?: string | null }
+): Promise<AIValuationResponse["market_trend"]> {
+  const read = async (col: "zip_code" | "city", value: string) => {
+    let q = supabase
+      .from("market_data")
+      .select("price_trend_pct_1yr")
+      .eq(col, value)
+      .not("price_trend_pct_1yr", "is", null)
+      .order("data_date", { ascending: false })
+      .limit(1)
+    if (col === "city" && where.state) q = q.eq("state", where.state)
+    const { data, error } = await q.maybeSingle()
+    if (error) {
+      console.error("[home-value] market_data read refused:", error.message)
+      return null
+    }
+    return data?.price_trend_pct_1yr ?? null
+  }
+
+  const pct = (where.zipCode ? await read("zip_code", where.zipCode) : null)
+    ?? (where.city ? await read("city", where.city) : null)
+
+  if (pct == null) return "unknown"
+  // ±1% over a year is noise, not a direction.
+  if (pct > 1) return "appreciating"
+  if (pct < -1) return "depreciating"
+  return "stable"
+}
+
+/**
+ * SELLER VALUATION — adjusted comparable sales, or an honestly-labelled fallback.
+ *
+ * This used to ask a chat model to "Provide exactly 3 comparable sales" and wrote
+ * whatever came back into home_value_estimates.comps_json, which the public result
+ * page renders as "N similar properties recently sold near you" — addresses, sale
+ * prices and sale dates that no transaction ever produced, shown to a homeowner as
+ * fact. It also stamped methodology:'ai_cma' while doing nothing of the kind.
+ *
+ * The real CMA engine already existed: lib/cma/ai-cma-orchestrator.runAiCma —
+ * grounded comp sourcing with citations, state appraiser-guideline adjustment
+ * rates applied per comp deterministically, a value range derived from the
+ * ADJUSTED prices, confidence from comp count + similarity + spread, and its own
+ * disclaimers. It is what the workflow AVM/CMA adapter and the listing-presentation
+ * builder already use. This lane now uses it too, so there is one valuation
+ * method in the product instead of two.
+ *
+ * When no comps come back the range would be zero, so we fall back to sqft × a
+ * conservative regional rate — the SAME arithmetic as before, but returned with
+ * comps: [] and methodology:'sqft_regional_average' so the record says what it is.
+ */
 async function generateAIValuation(propertyData: {
   propertyAddress: string
   city: string
@@ -569,53 +676,85 @@ async function generateAIValuation(propertyData: {
   squareFeet: number
   yearBuilt: number
   condition: string
+  propertyType?: string | null
+  brokerageId: string
+  contactId?: string | null
+  agentUserId?: string | null
+  supabase: Awaited<ReturnType<typeof createClient>>
 }): Promise<AIValuationResponse> {
-  // Routed through the Vercel AI Gateway (single egress, single key rotation, healer-observable).
-  // Direct @anthropic-ai/sdk calls bypassed the gateway entirely — no cost metering, no rate-limit
-  // pool, no automatic model-deprecation healing.
-  const prompt = `Property: ${propertyData.propertyAddress}, ${propertyData.city}, ${propertyData.state} ${propertyData.zipCode}
-Beds: ${propertyData.bedrooms}, Baths: ${propertyData.bathrooms}, Sq Ft: ${propertyData.squareFeet}
-Year Built: ${propertyData.yearBuilt}, Condition: ${propertyData.condition}
-
-Provide a conservative property valuation estimate based on typical market data for this ZIP code.
-Return ONLY valid JSON with this exact structure:
-{
-  "estimated_value_low": number,
-  "estimated_value_mid": number,
-  "estimated_value_high": number,
-  "confidence_score": number (0-100),
-  "market_trend": "appreciating" | "stable" | "depreciating",
-  "ai_narrative": "string (2-3 paragraphs analyzing this property's value)",
-  "comps": [
-    {
-      "address": "string",
-      "sale_price": number,
-      "beds": number,
-      "baths": number,
-      "sqft": number,
-      "price_per_sqft": number,
-      "sale_date": "YYYY-MM-DD",
-      "distance_miles": number
-    }
-  ]
-}
-
-Provide exactly 3 comparable sales. Be conservative with estimates. The narrative should be professional and informative.`
+  const marketTrend = await resolveMarketTrend(propertyData.supabase, {
+    zipCode: propertyData.zipCode,
+    city: propertyData.city,
+    state: propertyData.state,
+  })
 
   try {
-    const result = await gatewayChatJSON<AIValuationResponse>({
-      model:     "anthropic/claude-sonnet-4-20250514",
-      maxTokens: 2000,
-      messages: [
-        { role: "system", content: "You are a real estate market analyst. Generate conservative property valuation estimates. Respond with ONLY valid JSON, no markdown formatting." },
-        { role: "user",   content: prompt },
-      ],
+    const { runAiCma } = await import("@/lib/cma/ai-cma-orchestrator")
+    const cma = await runAiCma({
+      mode: "standard",
+      brokerageId: propertyData.brokerageId,
+      agentUserId: propertyData.agentUserId ?? null,
+      contactId: propertyData.contactId ?? null,
+      subject: {
+        address: propertyData.propertyAddress,
+        city: propertyData.city,
+        state: propertyData.state,
+        zip: propertyData.zipCode,
+        propertyType: cmaPropertyType(propertyData.propertyType),
+        sqftLiving: propertyData.squareFeet || null,
+        bedrooms: propertyData.bedrooms || null,
+        // The seller form collects one bathroom count, not a full/half split.
+        fullBaths: propertyData.bathrooms || null,
+        halfBaths: null,
+        yearBuilt: propertyData.yearBuilt || null,
+        conditionGrade: CONDITION_GRADE[propertyData.condition] ?? null,
+      },
     })
-    if (!result.ok || !result.data) throw new Error(result.error ?? "No JSON valuation from AI")
-    return result.data
+
+    // A zero mid means no comp survived — there is nothing to show a seller.
+    if (cma.estimatedValueMid <= 0 || cma.adjustedComps.length === 0) {
+      throw new Error("no comparable sales returned")
+    }
+
+    const comps: SellerComp[] = cma.adjustedComps.map((a) => {
+      const baths = (a.comp.fullBaths ?? 0) + (a.comp.halfBaths ?? 0) * 0.5
+      const sqft = a.comp.sqftLiving ?? 0
+      return {
+        address: a.comp.address,
+        sale_price: Math.round(a.comp.salePrice),
+        beds: a.comp.bedrooms ?? 0,
+        baths,
+        sqft,
+        price_per_sqft: Math.round(
+          a.comp.pricePerSqft ?? (sqft > 0 ? a.comp.salePrice / sqft : 0)
+        ),
+        sale_date: a.comp.saleDate,
+        // The comp finder searches within a radius but returns no per-comp
+        // distance. Unknown, not zero.
+        distance_miles: null,
+        citation: a.comp.citation ?? null,
+      }
+    })
+
+    return {
+      estimated_value_low: cma.estimatedValueLow,
+      estimated_value_mid: cma.estimatedValueMid,
+      estimated_value_high: cma.estimatedValueHigh,
+      // runAiCma reports confidence 0..1; this column stores 0-100.
+      confidence_score: Math.round(cma.confidenceScore * 100),
+      market_trend: marketTrend,
+      ai_narrative: [cma.aiNarrative, ...cma.disclaimers].filter(Boolean).join("\n\n"),
+      comps,
+      methodology: "ai_cma",
+    }
   } catch (error) {
-    console.error("Error generating AI valuation:", error)
-    // Return fallback estimate based on typical price per sqft
+    console.error("[home-value] CMA unavailable, falling back to regional sqft rate:", error)
+    // No comparable sales could be sourced. Same arithmetic as before — sqft ×
+    // a conservative regional rate — but returned with NO comps and labelled
+    // sqft_regional_average, because calling this a CMA on the stored record
+    // was the lie that let three invented sales reach a homeowner's screen.
+    // confidence_score is 35, not the old 60: this is the weakest method we
+    // have, and the number should say so.
     const pricePerSqft = 200 // Conservative default
     const baseValue = propertyData.squareFeet * pricePerSqft
 
@@ -623,11 +762,12 @@ Provide exactly 3 comparable sales. Be conservative with estimates. The narrativ
       estimated_value_low: Math.round(baseValue * 0.9),
       estimated_value_mid: Math.round(baseValue),
       estimated_value_high: Math.round(baseValue * 1.1),
-      confidence_score: 60,
-      market_trend: "stable",
+      confidence_score: 35,
+      market_trend: marketTrend,
       ai_narrative:
-        "This estimate is based on regional averages. For a more accurate assessment, we recommend scheduling an in-person consultation with a local real estate expert who can evaluate your property's unique features and current market conditions.",
+        "We could not find enough recent comparable sales near your home to build a comparative market analysis, so this range is based on a regional average price per square foot — it does not account for your home's condition, upgrades, lot or location within the neighborhood. A local agent can walk the property and give you a figure grounded in real recent sales.",
       comps: [],
+      methodology: "sqft_regional_average",
     }
   }
 }

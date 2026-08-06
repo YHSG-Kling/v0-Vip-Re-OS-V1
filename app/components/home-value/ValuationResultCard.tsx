@@ -42,12 +42,17 @@ export function ValuationResultCard({
     })
   }
 
+  // The badge names the method that actually produced the number. A range built
+  // from a regional $/sqft rate is NOT a CMA and must not wear that badge —
+  // "AI CMA" is a claim the seller reads as "you looked at real sales nearby".
   const methodologyLabel =
     methodology === "ai_cma"
       ? "AI CMA"
       : methodology === "housecanary"
         ? "HouseCanary"
-        : "Manual"
+        : methodology === "sqft_regional_average"
+          ? "Regional Average"
+          : "Manual"
 
   // Calculate position of mid value on range bar
   const range = estimatedValueHigh - estimatedValueLow
@@ -124,7 +129,9 @@ export function ValuationResultCard({
                       : "text-muted-foreground"
                 }`}
               >
-                {marketTrend.charAt(0).toUpperCase() + marketTrend.slice(1)}
+                {marketTrend === "unknown" || !marketTrend
+                  ? "Not yet available"
+                  : marketTrend.charAt(0).toUpperCase() + marketTrend.slice(1)}
               </span>
             </div>
             <p className="text-xs text-muted-foreground">Market Trend</p>

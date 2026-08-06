@@ -19,7 +19,15 @@ interface Comp {
   sqft: number
   price_per_sqft: number
   sale_date: string
-  distance_miles: number
+  /**
+   * Null when the comp source could not attribute a distance. The comp finder
+   * searches WITHIN a radius but returns no per-comp distance, so this column
+   * shows "—" rather than a number nobody measured. Older rows written before
+   * the CMA repoint may still carry a value.
+   */
+  distance_miles: number | null
+  /** Source the sale was grounded in, when the finder returned one. */
+  citation?: string | null
 }
 
 interface CompsTableProps {
@@ -94,7 +102,21 @@ export function CompsTable({ comps }: CompsTableProps) {
                   <TableCell className="font-medium">
                     <div className="flex items-center gap-2">
                       <MapPin className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <span className="truncate max-w-[200px]">{comp.address}</span>
+                      {/* Linked to its source when the comp finder returned one,
+                          so the seller can check the sale rather than take it
+                          on faith. */}
+                      {comp.citation ? (
+                        <a
+                          href={comp.citation}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="truncate max-w-[200px] underline underline-offset-2 hover:text-primary"
+                        >
+                          {comp.address}
+                        </a>
+                      ) : (
+                        <span className="truncate max-w-[200px]">{comp.address}</span>
+                      )}
                     </div>
                   </TableCell>
                   <TableCell className="text-right font-semibold">
@@ -115,7 +137,7 @@ export function CompsTable({ comps }: CompsTableProps) {
                     </div>
                   </TableCell>
                   <TableCell className="text-right text-muted-foreground">
-                    {comp.distance_miles.toFixed(1)} mi
+                    {comp.distance_miles != null ? `${comp.distance_miles.toFixed(1)} mi` : "—"}
                   </TableCell>
                 </TableRow>
               ))}

@@ -97,10 +97,14 @@ export default async function HomeValueResultPage({ params }: PageProps) {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               Market Trend
+              {/* "unknown" is a real state: no market_data row covers this
+                  ZIP or city yet. Say so instead of labelling it Stable. */}
               <Badge className={marketTrendColor}>
                 <span className="flex items-center gap-1">
                   {marketTrendIcon}
-                  {estimate.marketTrend.charAt(0).toUpperCase() + estimate.marketTrend.slice(1)}
+                  {estimate.marketTrend === "unknown" || !estimate.marketTrend
+                    ? "Not yet available"
+                    : estimate.marketTrend.charAt(0).toUpperCase() + estimate.marketTrend.slice(1)}
                 </span>
               </Badge>
             </CardTitle>
@@ -115,9 +119,22 @@ export default async function HomeValueResultPage({ params }: PageProps) {
                     </p>
                     <p className="text-sm text-muted-foreground">Avg $/Sq Ft</p>
                   </div>
+                  {/* Average distance is only shown when the comps actually
+                      carry one. The comp finder searches within a radius but
+                      does not return per-comp distance, so summing nulls here
+                      produced NaN — and before that, a number no one measured. */}
                   <div className="p-4 rounded-lg bg-muted/50">
                     <p className="text-2xl font-bold text-foreground">
-                      {Math.round(estimate.comps.reduce((sum: number, c: any) => sum + c.distance_miles, 0) / estimate.comps.length * 10) / 10} mi
+                      {(() => {
+                        const withDistance = estimate.comps.filter(
+                          (c: any) => typeof c.distance_miles === "number"
+                        )
+                        if (withDistance.length === 0) return "—"
+                        const avg =
+                          withDistance.reduce((sum: number, c: any) => sum + c.distance_miles, 0) /
+                          withDistance.length
+                        return `${Math.round(avg * 10) / 10} mi`
+                      })()}
                     </p>
                     <p className="text-sm text-muted-foreground">Avg Distance</p>
                   </div>

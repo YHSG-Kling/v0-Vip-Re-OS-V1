@@ -696,8 +696,14 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     category: ["brand", "certification", "general", "license", "tech_stack", "training"],
   },
   home_value_estimates: {
-    market_trend: ["appreciating", "depreciating", "stable"],
-    methodology: ["ai_cma", "attom", "housecanary", "manual"],
+    // m378 added "unknown": no market_data row covers the property's ZIP/city,
+    // so the direction is genuinely not known. The lane used to default to
+    // "stable" — an assertion the seller cannot check.
+    market_trend: ["appreciating", "depreciating", "stable", "unknown"],
+    // m378 added "sqft_regional_average": no comparable sale could be sourced,
+    // so the range is sqft × a regional rate. That is not a CMA, and it used to
+    // be stamped "ai_cma" anyway.
+    methodology: ["ai_cma", "attom", "housecanary", "manual", "sqft_regional_average"],
   },
   inbound_call_classifications: {
     classification: ["business_general", "cooperating_agent", "existing_contact", "real_estate_buyer", "real_estate_investor", "real_estate_seller", "unknown", "vendor"],
