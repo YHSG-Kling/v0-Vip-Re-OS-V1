@@ -21,9 +21,6 @@ import { generateSmartSuggestion } from "@/app/actions/assistant"
 import { sendNotificationToAgent } from "@/app/actions/communications"
 import { supabaseService } from "@/services/supabaseService"
 import { getChainsByTrigger } from "@/lib/workflow-orchestrator/chains"
-// The canonical finished set (completed | published), not two inlined tokens —
-// re-spelling them here is the drift the m374 vocabulary merge removed.
-import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-status"
 import { startRun as engineStartRun } from "@/lib/workflow-orchestrator/engine"
 
 interface ProcessingResult {
@@ -793,116 +790,6 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
       }
     } catch (repurposeErr) {
       console.error("[handleVideoGenerated] Repurpose draft distribution failed:", repurposeErr)
-    }
-
-    // ── 4c. PRESENTATION CHAPTER REELS → ONE seller email for the whole set ──
-    // Chapter reels were routed by NONE of the branches above: presentation_chapter
-    // is absent from personalVideoTypes / listingAttachTypes / socialVideoTypes,
-    // and the projects carry no marketing_campaign_id, so a completed chapter had
-    // no delivery at all — it finished, notified the agent, and stopped.
-    //
-    // The set is the unit, not the chapter. A presentation is N reels; drafting on
-    // each completion would put N separate emails in front of one seller. So every
-    // chapter checks whether its SIBLINGS are done and only the last one to finish
-    // composes the email — the others fall through silently.
-    if (video_type === "presentation_chapter" && contact_id && agentId) {
-      try {
-        const { data: thisProject } = await svc
-          .from("ai_video_projects")
-          .select("video_metadata")
-          .eq("id", video_id)
-          .maybeSingle()
-        const presentationId =
-          (thisProject?.video_metadata as { presentation_id?: string } | null)?.presentation_id ?? null
-
-        // No presentation_id ⇒ this chapter is not part of an identifiable set,
-        // so there is no set to wait for and nothing to group. Skip rather than
-        // guess: a wrong grouping key would either spam or silently drop.
-        if (presentationId) {
-          const { data: siblings, error: siblingsError } = await svc
-            .from("ai_video_projects")
-            .select("id, title, status, video_url, thumbnail_url, video_metadata")
-            .eq("brokerage_id", event.brokerage_id)
-            .eq("video_type", "presentation_chapter")
-            .filter("video_metadata->>presentation_id", "eq", presentationId)
-
-          if (siblingsError) {
-            console.error("[handleVideoGenerated] chapter sibling read failed:", siblingsError.message)
-          } else {
-            const rows = siblings ?? []
-            // 'failed' counts as settled — one refused chapter must not hold the
-            // other four hostage forever. Still in flight (draft/queued/
-            // generating/…) means wait.
-            const settled = rows.filter(
-              (r) => r.status === "failed" || (VIDEO_FINISHED_STATUSES as readonly string[]).includes(r.status),
-            )
-            const deliverable = rows
-              .filter((r) => (VIDEO_FINISHED_STATUSES as readonly string[]).includes(r.status) && r.video_url)
-              .sort(
-                (a, b) =>
-                  (((a.video_metadata as { chapter_index?: number } | null)?.chapter_index) ?? 0) -
-                  (((b.video_metadata as { chapter_index?: number } | null)?.chapter_index) ?? 0),
-              )
-
-            if (settled.length === rows.length && deliverable.length > 0) {
-              // IDEMPOTENCY. Two chapters can finish in the same poll batch and
-              // both observe a complete set. trigger_event carries the
-              // presentation id so the second one finds the first one's draft.
-              const triggerKey = `video.generated:presentation:${presentationId}`
-              const { data: existing } = await svc
-                .from("ai_message_drafts")
-                .select("id")
-                .eq("brokerage_id", event.brokerage_id)
-                .eq("trigger_event", triggerKey)
-                .limit(1)
-
-              if (!existing?.length) {
-                const { data: contact } = await svc
-                  .from("contacts")
-                  .select("first_name, email")
-                  .eq("id", contact_id)
-                  .maybeSingle()
-
-                if (contact?.email) {
-                  const greeting = contact.first_name ?? "there"
-                  const body =
-                    `Hi ${greeting},` +
-                    `\n\nAhead of our appointment I recorded a short video for each part of what I'll be walking you through. ` +
-                    `Watch them whenever it suits you — each thumbnail opens its video.\n` +
-                    deliverable
-                      .map((r) => `\n<p style="margin:20px 0 0"><strong>${r.title}</strong></p>` +
-                        videoThumbnailEmbed(r.video_url as string, r.thumbnail_url))
-                      .join("") +
-                    `\n<p>See you at the appointment.</p>`
-
-                  const { error: draftError } = await svc.from("ai_message_drafts").insert({
-                    brokerage_id:    event.brokerage_id,
-                    agent_user_id:   agentId,
-                    contact_id,
-                    listing_id:      listing_id ?? null,
-                    channel:         "email",
-                    trigger_event:   triggerKey,
-                    context_summary: `${deliverable.length} listing-presentation chapter video${deliverable.length === 1 ? "" : "s"} ready to send`,
-                    draft_subject:   "A few short videos before our appointment",
-                    draft_body:      body,
-                    status:          "pending",
-                  })
-                  // A DRAFT, not a send: this is customer-facing marketing to a
-                  // seller and the agent reviews it from the unified inbox, the
-                  // same posture as every other contact-facing video branch here.
-                  if (draftError) {
-                    console.error("[handleVideoGenerated] chapter email draft insert failed:", draftError.message)
-                  } else {
-                    summary.push(`drafted chapter-reel email (${deliverable.length} chapters)`)
-                  }
-                }
-              }
-            }
-          }
-        }
-      } catch (chapterErr) {
-        console.error("[handleVideoGenerated] Chapter reel delivery failed:", chapterErr)
-      }
     }
 
     // ── 5. Always notify the agent ──────────────────────────────────────────
