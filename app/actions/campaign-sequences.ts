@@ -82,6 +82,22 @@ export async function listCampaignSequences(
 
 // ─── Get sequence with steps ──────────────────────────────────────────────────
 
+/**
+ * The sequence, its steps and (optionally) its enrollments — the read behind the
+ * sequence detail + builder pages.
+ *
+ * TENANT GATE. This is the widest read in the file: it returns the sequence, every
+ * step INCLUDING subject + body message copy, and up to 200 enrollments joined to
+ * `contacts(first_name, last_name, email)` — contact PII. It ran on the
+ * RLS-bypassing service client with no auth gate and no brokerage predicate, and
+ * as a "use server" export it is a public HTTP endpoint, so one sequence uuid
+ * returned another brokerage's campaign copy and its contacts' names and email
+ * addresses.
+ *
+ * The gate below is the same one `getSequenceSteps` in this file already applies
+ * to the narrower steps-only read; this brings the wider read up to it. Callers
+ * are server components that pass only an id, so the signature is unchanged.
+ */
 export async function getCampaignSequence(
   sequenceId: string,
   options?: { includeEnrollments?: boolean }
@@ -91,11 +107,21 @@ export async function getCampaignSequence(
   enrollments: SequenceEnrollment[]
   error?: string
 }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { sequence: null, steps: [], enrollments: [], error: "Not authenticated" }
+  }
+
   const service = createServiceClient()
   const includeEnrollments = options?.includeEnrollments ?? true
 
   const [seqRes, stepsRes, enrollRes] = await Promise.all([
-    service.from("campaign_sequences").select("*").eq("id", sequenceId).maybeSingle(),
+    service
+      .from("campaign_sequences")
+      .select("*")
+      .eq("id", sequenceId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle(),
     service
       .from("campaign_sequence_steps")
       .select("*")
@@ -106,12 +132,20 @@ export async function getCampaignSequence(
           .from("sequence_enrollments")
           .select(`*, contact:contacts(first_name, last_name, email)`)
           .eq("sequence_id", sequenceId)
+          .eq("brokerage_id", ctx.brokerageId)
           .order("enrolled_at", { ascending: false })
           .limit(200)
       : Promise.resolve({ data: null, error: null }),
   ])
 
   if (seqRes.error) return { sequence: null, steps: [], enrollments: [], error: seqRes.error.message }
+
+  // The three reads run in parallel, so the steps and enrollments queries fire
+  // before the brokerage predicate on the sequence has been evaluated. If the
+  // sequence is not this caller's, refuse HERE — returning `sequence: null`
+  // alongside populated steps and enrollments would leak exactly the message
+  // copy and contact PII the gate above exists to protect.
+  if (!seqRes.data) return { sequence: null, steps: [], enrollments: [], error: "Sequence not found" }
 
   const enrollments = ((enrollRes.data ?? []) as SequenceEnrollment[])
 
@@ -395,37 +429,59 @@ export async function reorderSequenceSteps(
 
 // ─── Campaign Operations ──────────────────────────────────────────────────────
 
+/**
+ * Launch (or re-launch) a sequence: verify it has steps, then flip is_active.
+ *
+ * This is also the survivor of the former `resumeCampaignSequence`, whose entire
+ * body was `return launchCampaignSequence(sequenceId)` — resuming a paused
+ * sequence and launching one are the same write, so there was nothing to merge.
+ * Removed rather than kept as a second public endpoint onto the same mutation.
+ */
 export async function launchCampaignSequence(sequenceId: string): Promise<{ success: boolean; error?: string }> {
+  // Tenant gate: service client bypasses RLS, so we must verify the sequence
+  // belongs to the caller's brokerage before mutating. This gate was missing —
+  // it activates a sequence, i.e. it starts sending real messages to real
+  // contacts, and a bare sequence uuid was enough to start any brokerage's.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
   const service = createServiceClient()
-  
+
+  const { data: existing, error: readError } = await service
+    .from("campaign_sequences")
+    .select("brokerage_id")
+    .eq("id", sequenceId)
+    .maybeSingle()
+  if (readError) return { success: false, error: readError.message }
+  if (!existing) return { success: false, error: "Sequence not found" }
+  if (existing.brokerage_id !== ctx.brokerageId) {
+    return { success: false, error: "Forbidden: sequence in another brokerage" }
+  }
+
   // Check if sequence has at least one step
   const { data: steps } = await service
     .from("campaign_sequence_steps")
     .select("id")
     .eq("sequence_id", sequenceId)
     .limit(1)
-  
+
   if (!steps || steps.length === 0) {
     return { success: false, error: "Cannot launch sequence without steps" }
   }
-  
+
   const { error } = await service
     .from("campaign_sequences")
-    .update({ 
-      is_active: true, 
-      updated_at: new Date().toISOString() 
+    .update({
+      is_active: true,
+      updated_at: new Date().toISOString()
     })
     .eq("id", sequenceId)
+    .eq("brokerage_id", ctx.brokerageId)
 
   if (error) return { success: false, error: error.message }
   revalidatePath("/dashboard/campaigns/sequences")
   revalidatePath(`/dashboard/campaigns/sequences/${sequenceId}`)
   return { success: true }
-}
-
-
-export async function resumeCampaignSequence(sequenceId: string): Promise<{ success: boolean; error?: string }> {
-  return launchCampaignSequence(sequenceId)
 }
 
 
@@ -465,14 +521,47 @@ export async function enrollContactInSequence(params: {
 }
 
 export async function cancelEnrollment(enrollmentId: string, sequenceId: string): Promise<{ success: boolean; error?: string }> {
+  // Tenant gate: service client bypasses RLS, so we must verify the enrollment
+  // belongs to the caller's brokerage before mutating.
+  //
+  // This function had NO gate at all while every other service-client mutation
+  // in this file (deleteCampaignSequence, updateCampaignSequence, …) carries the
+  // comment above. As a "use server" export it is a public endpoint, so an
+  // enrollment uuid was enough to cancel any brokerage's enrollment — pulling a
+  // contact out of a nurture sequence with no trace of who did it.
+  //
+  // It also took `sequenceId` purely for revalidatePath and never checked the
+  // enrollment was IN that sequence; the row's own sequence_id is authoritative
+  // and is what gets confirmed below.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
   const service = createServiceClient()
-  const { error } = await service
+  const { data: existing, error: readError } = await service
+    .from("sequence_enrollments")
+    .select("id, brokerage_id, sequence_id")
+    .eq("id", enrollmentId)
+    .maybeSingle()
+
+  // A refused read is not "no rows" — fail closed rather than reporting a
+  // cancellation that never happened.
+  if (readError) return { success: false, error: readError.message }
+  if (!existing) return { success: false, error: "Enrollment not found" }
+  if (existing.brokerage_id !== ctx.brokerageId) {
+    return { success: false, error: "Forbidden: enrollment in another brokerage" }
+  }
+
+  const { data: updated, error } = await service
     .from("sequence_enrollments")
     .update({ status: "cancelled" })
     .eq("id", enrollmentId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
-  revalidatePath(`/dashboard/campaigns/sequences/${sequenceId}`)
+  if (!updated?.length) return { success: false, error: "Enrollment not cancelled" }
+
+  revalidatePath(`/dashboard/campaigns/sequences/${existing.sequence_id ?? sequenceId}`)
   return { success: true }
 }
 

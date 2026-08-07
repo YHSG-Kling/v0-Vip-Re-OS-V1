@@ -19,6 +19,7 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { resolveWriteContext } from '@/lib/kernel/identity'
 import { collectError } from '@/lib/errors/collect-error'
 import {
   generatePersonalizedEmail,
@@ -770,17 +771,53 @@ async function tryVoiceDrop(
 /**
  * toggleContactAIISA — agent toggle from contact detail view.
  * Enables or pauses AI ISA automation on a specific contact.
+ *
+ * THIS IS AN OUTBOUND-AUTOMATION SWITCH, so who may flip it matters as much as
+ * what it writes. It is exported from a `"use server"` module, i.e. it is a
+ * reachable HTTP endpoint, and it previously had **no authentication at all**:
+ * it opened a service-role client (RLS bypassed) and then took `brokerageId`
+ * AND `actorId` straight from the caller. Three separate problems:
+ *
+ *   · Any anonymous caller holding a contactId + brokerageId pair could set
+ *     `ai_outreach_paused = false` and `isa_reengage_allowed = true` —
+ *     RE-ARMING automated email/SMS outreach on a contact an agent had
+ *     deliberately paused. That is the wrong direction on a suppression-
+ *     adjacent flag.
+ *   · `isa_reengage_marked_by` is an accountability column and `actorId` is
+ *     also stamped on the emitted lifecycle event. Both were whatever the
+ *     caller said, so the audit trail could be forged to name any user.
+ *   · RLS was no defence here. The `contacts` UPDATE policies are properly
+ *     restrictive (agent-owns / broker-in-brokerage / platform-admin, verified
+ *     live) but `createServiceClient()` bypasses all of them.
+ *
+ * Both identity inputs now come from the session and the caller's copies are
+ * ignored — the same convention the rest of this repo uses for `agent_id?`.
+ * The tenant scope on the UPDATE is therefore session-derived, which is what
+ * makes it a real boundary rather than a caller-chosen one.
  */
 export async function toggleContactAIISA(params: {
   contactId: string
-  brokerageId: string
+  /** ignored — the tenant is the authenticated caller's */
+  brokerageId?: string
   enabled: boolean
-  actorId: string
+  /** ignored — the actor is the authenticated caller */
+  actorId?: string
 }): Promise<{ success: boolean; error?: string }> {
-  const supabase = createServiceClient()
-  const { contactId, brokerageId, enabled, actorId } = params
+  const ctx = await resolveWriteContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) {
+    return { success: false, error: 'Unauthorized' }
+  }
+  const brokerageId = ctx.brokerageId
+  const actorId = ctx.userId
 
-  const { error } = await supabase
+  const supabase = createServiceClient()
+  const { contactId, enabled } = params
+
+  // .select('id') so a no-op update is distinguishable from a successful one:
+  // without it, targeting a contact in ANOTHER brokerage matches zero rows and
+  // still returns error === null, which would report success for a write that
+  // never happened.
+  const { data: updated, error } = await supabase
     .from('contacts')
     .update({
       ai_outreach_paused: !enabled,
@@ -791,8 +828,12 @@ export async function toggleContactAIISA(params: {
     })
     .eq('id', contactId)
     .eq('brokerage_id', brokerageId)
+    .select('id')
 
   if (error) return { success: false, error: error.message }
+  if (!updated || updated.length === 0) {
+    return { success: false, error: 'Contact not found in your brokerage' }
+  }
 
   await emitLifecycleEvent({
     eventType: enabled ? 'AI_ISA_ENABLED_ON_CONTACT' : 'AI_ISA_PAUSED_ON_CONTACT',

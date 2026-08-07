@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity"
 import { generateObject } from "@/lib/ai/generate"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { openai } from "@ai-sdk/openai"
@@ -340,11 +341,41 @@ Provide:
 // language and transcribed_at — there is no separate "processing/completed"
 // status column. We therefore fetch the audio, transcribe synchronously, and
 // insert a single row when we have the final text. Failures don't write a row.
+//
+// ⚠️ AUTH IS LOAD-BEARING HERE, AND IT WAS ABSENT. This export had no gate at
+// all. Two things happen before any row is written, both driven entirely by
+// caller-supplied input:
+//
+//   1. a server-side GET of `params.audioUrl` — an ARBITRARY caller-chosen URL,
+//      fetched with `auth: none` (SSRF), and
+//   2. an OpenAI Whisper transcription of whatever came back — real, unmetered
+//      spend on the platform's key.
+//
+// The only thing standing between an anonymous request and both of those was the
+// incidental RLS on the voice_calls lookup. That is not a gate, it is a side
+// effect. The explicit session gate below is, and the lookup is now additionally
+// scoped to the caller's brokerage so the id cannot be borrowed either.
+//
+// STILL OPEN (needs an owner decision, see docs/orphan-burndown-slice2.md):
+//   · `audioUrl` remains unvalidated, so an AUTHENTICATED caller still gets an
+//     arbitrary server-side fetch. There is no SSRF/allowlist helper anywhere in
+//     this repo today and every other `asset-download` call site passes a
+//     provider-returned URL rather than a user-supplied one — this is the only
+//     one that takes it from the caller. It wants a host allowlist (the storage
+//     bucket + the telephony provider) or a signed-URL requirement.
+//   · There is no usage cap or metering on the Whisper call. Compare
+//     app/api/elevenlabs/voice-clone/route.ts, which wraps its provider spend in
+//     checkUsageCap() + logMediaUsage(); this path bills nobody and caps nothing.
 export async function transcribeAudio(params: {
   voiceCallId: string
   audioUrl: string
   language?: string
 }) {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Not authenticated" }
+  }
+
   const supabase = await createClient()
 
   try {
@@ -353,6 +384,7 @@ export async function transcribeAudio(params: {
       .from("voice_calls")
       .select("id, brokerage_id")
       .eq("id", params.voiceCallId)
+      .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle()
 
     if (lookupErr || !voiceCall) {

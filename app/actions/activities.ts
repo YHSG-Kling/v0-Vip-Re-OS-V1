@@ -2,6 +2,31 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+
+/**
+ * The two readers below are `"use server"` exports, i.e. public HTTP endpoints,
+ * and both took the agent whose activities to return **from the caller**.
+ * `getPendingFollowups` embeds `contacts(first_name, last_name, phone, email)`,
+ * so an anonymous caller iterating agent ids was reading contact PII out of any
+ * brokerage. Neither had any caller, so nothing depended on the loose behaviour.
+ *
+ * They now resolve the agent from the SESSION and refuse a mismatch. Callers may
+ * still pass the id (that is how the surfaces are written) — it just has to be
+ * their own. Platform staff acting-as a tenant are covered because
+ * getAgentContext() already returns the impersonated agentId.
+ */
+async function resolveOwnAgentId(
+  requestedAgentId: string,
+): Promise<{ ok: true; agentId: string } | { ok: false; error: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthenticated" }
+  if (!ctx.agentId) return { ok: false, error: "No agent profile for this user" }
+  if (requestedAgentId && requestedAgentId !== ctx.agentId) {
+    return { ok: false, error: "Forbidden — you can only read your own activities" }
+  }
+  return { ok: true, agentId: ctx.agentId }
+}
 
 // ─── Log Activity ────────────────────────────────────────────────────────────
 export async function logActivity(data: {
@@ -102,12 +127,15 @@ export async function getAgentActivities(
   options?: { limit?: number; status?: string }
 ): Promise<{ activities: any[]; error?: string }> {
   try {
+    const actor = await resolveOwnAgentId(agentId)
+    if (!actor.ok) return { activities: [], error: actor.error }
+
     const supabase = await createClient()
 
     let query = supabase
       .from("activities")
       .select("*")
-      .eq("agent_id", agentId)
+      .eq("agent_id", actor.agentId)
       .order("created_at", { ascending: false })
 
     if (options?.status) {
@@ -138,6 +166,9 @@ export async function getPendingFollowups(
   limit: number = 10
 ): Promise<{ followups: any[]; error?: string }> {
   try {
+    const actor = await resolveOwnAgentId(agentId)
+    if (!actor.ok) return { followups: [], error: actor.error }
+
     const supabase = await createClient()
 
     const { data, error } = await supabase
@@ -152,7 +183,7 @@ export async function getPendingFollowups(
           email
         )
       `)
-      .eq("agent_id", agentId)
+      .eq("agent_id", actor.agentId)
       .eq("status", "pending")
       .in("activity_type", ["followup", "callback", "reminder", "task"])
       .order("scheduled_at", { ascending: true, nullsFirst: false })

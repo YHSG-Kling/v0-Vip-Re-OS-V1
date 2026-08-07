@@ -324,6 +324,24 @@ export async function getShowings(contactId: string) {
   }
 }
 
+/**
+ * The SELLER-SIDE verdict on a showing request.
+ *
+ * Deliberately NOT folded into the generic `updateShowing(id, updates: any)`
+ * below: this one carries two things that generic patch does not, and both are
+ * load-bearing —
+ *   · a status union that matches the live `showing_requests_status_check`
+ *     exactly (pending | approved | needs_reschedule | denied | cancelled,
+ *     verified against the database), so a typo cannot reach Postgres; and
+ *   · the `seller_approved` / `seller_approved_at` stamping that is the actual
+ *     record of the seller having said yes. Nothing else writes those columns.
+ *
+ * Silent-write fixed: this used to run the UPDATE with no `.select()`, so a row
+ * that RLS refused, or an id that did not exist, matched zero rows, came back
+ * with `error === null`, and was reported to the caller as `{ success: true }`.
+ * A seller could be told their approval was recorded when nothing was written.
+ * It now asks for the affected rows back and refuses when there are none.
+ */
 export async function updateShowingStatus(
   showingId: string,
   status: "pending" | "approved" | "needs_reschedule" | "denied" | "cancelled",
@@ -332,7 +350,7 @@ export async function updateShowingStatus(
   try {
     const supabase = await createClient()
 
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("showing_requests")
       .update({
         status, // CHECK: pending|approved|needs_reschedule|denied|cancelled
@@ -341,10 +359,15 @@ export async function updateShowingStatus(
         updated_at: new Date().toISOString(),
       })
       .eq("id", showingId)
+      .select("id")
 
     if (error) {
       console.error("[v0] Error updating showing status:", error)
       return { success: false, error: error.message }
+    }
+
+    if (!data || data.length === 0) {
+      return { success: false, error: "Showing not found, or you do not have access to it." }
     }
 
     return { success: true }

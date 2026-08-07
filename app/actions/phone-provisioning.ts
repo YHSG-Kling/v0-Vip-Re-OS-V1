@@ -102,14 +102,24 @@ export async function autoProvisionAgentPhone(params: {
 
   const svc = createServiceClient()
 
-  // Resolve agent's auth user_id (tenant_phone_numbers uses agent_user_id, not agent_id)
-  const { data: agent } = await svc
+  // Resolve agent's auth user_id (tenant_phone_numbers uses agent_user_id, not
+  // agent_id). The agents.id is CALLER-SUPPLIED, so it is resolved AND
+  // tenant-checked — same gate purchaseBrokerageNumberAction applies. Without
+  // it a broker of tenant A could buy a Twilio number on A's bill and bind it
+  // to an agent of tenant B, taking over that agent's inbound call routing.
+  const { data: agent, error: agentErr } = await svc
     .from("agents")
-    .select("user_id")
+    .select("user_id, brokerage_id")
     .eq("id", params.agentId)
     .maybeSingle()
+  if (agentErr) {
+    return { success: false, error: "Could not verify agent — refusing to provision" }
+  }
   if (!agent?.user_id) {
     return { success: false, error: "Agent not found" }
+  }
+  if (agent.brokerage_id !== ctx.brokerageId) {
+    return { success: false, error: "Agent belongs to a different brokerage" }
   }
   const agentUserId = agent.user_id
 
@@ -173,14 +183,24 @@ export async function manuallyAddAgentPhone(params: {
 
   const svc = createServiceClient()
 
-  // Resolve auth user_id for this agent
-  const { data: agent } = await svc
+  // Resolve auth user_id for this agent. Tenant-checked for the same reason as
+  // autoProvisionAgentPhone — and here the stakes are higher: the very next
+  // statement DEACTIVATES whatever active number the target agent already has.
+  // Un-scoped, a broker of tenant A could silently cut over another tenant's
+  // agent line to a number A controls.
+  const { data: agent, error: agentErr } = await svc
     .from("agents")
-    .select("user_id")
+    .select("user_id, brokerage_id")
     .eq("id", params.agentId)
     .maybeSingle()
+  if (agentErr) {
+    return { success: false, error: "Could not verify agent — refusing to add number" }
+  }
   if (!agent?.user_id) {
     return { success: false, error: "Agent not found" }
+  }
+  if (agent.brokerage_id !== ctx.brokerageId) {
+    return { success: false, error: "Agent belongs to a different brokerage" }
   }
   const agentUserId = agent.user_id
 

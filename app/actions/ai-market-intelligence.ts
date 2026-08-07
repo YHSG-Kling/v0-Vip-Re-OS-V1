@@ -244,7 +244,20 @@ Provide:
 }
 
 /**
- * Get real-time market alerts for an agent's focus areas
+ * Get real-time market alerts for an agent's focus areas.
+ *
+ * The `requireCaller()` gate below is NEW and is the whole point of this note.
+ * Three of the four exports in this file (generateMarketReport,
+ * predictPropertyPrice) call it as their first act; this one did not — and it
+ * is a `"use server"` export, so it was an anonymously reachable endpoint that
+ * ran a `generateObject` model call on every hit. Unauthenticated, unmetered,
+ * unbounded AI spend: a loop against this URL bills the platform until someone
+ * notices the invoice. The gate it needed already existed one screen up.
+ *
+ * The agent read is now tenant-anchored too. `params.agentId` was previously
+ * only UUID-shape-checked and then used to read another row's
+ * `specializations`; it is now required to be an agent of the caller's own
+ * brokerage.
  */
 export async function getMarketAlerts(params: {
   agentId: string
@@ -254,15 +267,28 @@ export async function getMarketAlerts(params: {
     return { success: false, error: "Invalid agent ID" }
   }
 
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = await createClient()
 
   try {
-    // Get agent's focus areas
-    const { data: agentProfile } = await supabase
+    // Get agent's focus areas — tenant anchor: the named agent must be in the
+    // caller's brokerage. Destructure the error: a refused read must not look
+    // like "this agent has no specializations" and then still spend on a model.
+    const { data: agentProfile, error: agentErr } = await supabase
       .from("agents")
       .select("specializations")
       .eq("id", params.agentId)
-      .single()
+      .eq("brokerage_id", auth.brokerageId)
+      .maybeSingle()
+
+    if (agentErr) {
+      return { success: false, error: "Could not load that agent." }
+    }
+    if (!agentProfile) {
+      return { success: false, error: "Agent not found in your brokerage" }
+    }
 
     // Get recent market changes
     const { data: recentChanges } = await supabase

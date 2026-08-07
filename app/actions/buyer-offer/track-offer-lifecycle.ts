@@ -41,11 +41,27 @@ export async function getOfferLifecycleState(
 
     const supabase = createServiceClient();
 
-    // Get all lifecycle events for this offer (keyed by notes JSON containing offer_id)
+    // THE OFFER KEY. This read used to say `.eq("entity_type", "contact")` and
+    // filter by NOTHING else — the offerId was never applied. It therefore
+    // returned every buyer.offer.* activity in the entire database (service
+    // client, so across all tenants), took the most recent one, and reported it
+    // as "the current state of THIS offer". Every offer on the platform read
+    // back the same state — whatever the last offer event anywhere happened to
+    // be — and every caller that gates on this (submitOffer, withdrawOffer,
+    // recordSellerResponse, markOfferExpired, canBuyerSubmitOffer,
+    // checkDuplicateOffer, getBuyerActiveOffers, and the multi-offer banner the
+    // buyer actually sees) inherited it.
+    //
+    // The canonical key is the one lib/buyer-offer/status-sync.ts already reads:
+    // entity_type='offer' + entity_id=<offer id>. The writers below now stamp
+    // it, which also means offers.status can finally sync — syncOfferStatus and
+    // getCurrentOfferStatus query exactly this shape and so had never once
+    // matched a row written by this file.
     const { data: events, error } = await supabase
       .from("activities")
       .select("activity_type, notes, created_at, agent_id")
-      .eq("entity_type", "contact")
+      .eq("entity_type", "offer")
+      .eq("entity_id", offerId)
       .in("activity_type", [
         "buyer.offer.draft.created",
         "buyer.offer.submitted",
@@ -125,7 +141,8 @@ export async function submitOffer(
       description: `Offer ${offerId} submitted`,
       notes: JSON.stringify({ offer_id: offerId, previous_state: "DRAFT", new_state: "PENDING" }),
       status: "completed",
-      entity_type: "contact",
+      entity_type: "offer",
+      entity_id: offerId,
     });
 
     if (error) throw error;
@@ -171,7 +188,8 @@ export async function withdrawOffer(
       description: reason,
       notes: JSON.stringify({ offer_id: offerId, previous_state: stateResult.data.current_state, new_state: "WITHDRAWN", reason }),
       status: "completed",
-      entity_type: "contact",
+      entity_type: "offer",
+      entity_id: offerId,
     });
 
     if (error) throw error;
@@ -220,7 +238,8 @@ export async function recordSellerResponse(
       description: notes ?? `Seller responded: ${response}`,
       notes: JSON.stringify({ offer_id: offerId, previous_state: "PENDING", new_state: response, response_type: response }),
       status: "completed",
-      entity_type: "contact",
+      entity_type: "offer",
+      entity_id: offerId,
     });
 
     if (error) throw error;
@@ -270,7 +289,8 @@ export async function markOfferExpired(
       description: "Offer expired: deadline passed",
       notes: JSON.stringify({ offer_id: offerId, previous_state: "PENDING", new_state: "EXPIRED", expiration_reason: "deadline_passed" }),
       status: "completed",
-      entity_type: "contact",
+      entity_type: "offer",
+      entity_id: offerId,
     });
 
     if (error) throw error;

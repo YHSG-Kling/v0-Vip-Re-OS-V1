@@ -171,22 +171,34 @@ export async function createAIAgentTemplate(params: {
   return { success: true as const, agent: mapTemplateRow(data) }
 }
 
+/**
+ * The ONE AI-agent-template toggle.
+ *
+ * Absorbed `toggleAIAgentTemplateStatus`, which was a second, unwired copy of
+ * this with no `getAgentContext()` check and no brokerage scope — and which
+ * could never have worked anyway: it wrote a column named `enabled`, and
+ * `ai_agent_templates` has no such column (the live column is `is_active`,
+ * verified against the database). Its only genuine difference was returning
+ * the updated row, which is ported here as an additive `template` field.
+ */
 export async function toggleAIAgentTemplate(agentId: string, active: boolean) {
   const supabase = await createClient()
   const { brokerageId } = await getAgentContext()
   if (!brokerageId) return { success: false as const, error: "Not authenticated" }
 
   // Brokerage-scoped so a user can only toggle their own templates (global templates stay read-only here).
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("ai_agent_templates")
-    .update({ is_active: active })
+    .update({ is_active: active, updated_at: new Date().toISOString() })
     .eq("id", agentId)
     .eq("brokerage_id", brokerageId)
+    .select()
+    .maybeSingle()
 
   if (error) throw error
 
   revalidatePath("/settings/services")
-  return { success: true as const }
+  return { success: true as const, template: data ?? null }
 }
 
 // ============================================================================
@@ -233,15 +245,44 @@ export async function createPlaybook(params: {
   return { success: true, playbook: data }
 }
 
+/**
+ * The ONE playbook toggle.
+ *
+ * Absorbed `togglePlaybookStatus`, an unwired byte-for-byte sibling whose only
+ * difference was returning the updated row — ported here as `playbook`.
+ *
+ * The `getAgentContext()` check is NEW and is the point of the merge. Neither
+ * copy authenticated, and this is a `"use server"` export, so both were
+ * reachable anonymously. RLS was the only thing standing behind them, and the
+ * live `plan_tasks_tenant_update` policy is
+ * `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()` — that
+ * first clause hands every NULL-tenant row to anon. Requiring a session closes
+ * the anonymous path without narrowing which rows a signed-in user may toggle,
+ * so nothing that works today stops working.
+ *
+ * ROOT CAUSE LEFT FOR THE OWNER, deliberately not fixed here because it is
+ * outside this orphan's blast radius: `createPlaybook` above never sets
+ * `brokerage_id`, so every playbook this product creates lands with
+ * `brokerage_id IS NULL` and therefore lands in that permissive RLS branch.
+ * Scoping this toggle by brokerage today would make every existing playbook
+ * untoggleable — the fix belongs at the writer, plus a backfill.
+ */
 export async function togglePlaybook(playbookId: string, active: boolean) {
   const supabase = await createClient()
+  const { brokerageId } = await getAgentContext()
+  if (!brokerageId) return { success: false as const, error: "Not authenticated" }
 
-  const { error } = await supabase.from("plan_tasks").update({ active }).eq("id", playbookId)
+  const { data, error } = await supabase
+    .from("plan_tasks")
+    .update({ active })
+    .eq("id", playbookId)
+    .select()
+    .maybeSingle()
 
   if (error) throw error
 
   revalidatePath("/settings/services")
-  return { success: true }
+  return { success: true as const, playbook: data ?? null }
 }
 
 // ============================================================================
@@ -290,34 +331,24 @@ export async function deleteStageRule(ruleId: string) {
   return { success: true }
 }
 
-export async function toggleAIAgentTemplateStatus(templateId: string, enabled: boolean) {
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("ai_agent_templates")
-    .update({ enabled, updated_at: new Date().toISOString() })
-    .eq("id", templateId)
-    .select()
-    .single()
-
-  if (error) throw error
-
-  revalidatePath("/settings/services")
-  return { success: true, template: data }
-}
-
-export async function togglePlaybookStatus(playbookId: string, enabled: boolean) {
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("plan_tasks")
-    .update({ active: enabled })
-    .eq("id", playbookId)
-    .select()
-    .single()
-
-  if (error) throw error
-
-  revalidatePath("/settings/services")
-  return { success: true, playbook: data }
-}
+// toggleAIAgentTemplateStatus and togglePlaybookStatus were REMOVED here, AFTER
+// merging — not because nothing called them.
+//
+// Both were second copies of a toggle that already exists above:
+//   toggleAIAgentTemplateStatus → survivor toggleAIAgentTemplate
+//   togglePlaybookStatus        → survivor togglePlaybook
+//
+// What each loser carried that its survivor did not, and where it went:
+//   · "returns the updated row" — a real, if small, capability. PORTED onto
+//     both survivors as an additive `template` / `playbook` field, so no
+//     existing caller's return shape breaks.
+//   · toggleAIAgentTemplateStatus additionally wrote a column named `enabled`.
+//     That is NOT a capability, it is a bug: `ai_agent_templates` has no
+//     `enabled` column (live schema — the flag is `is_active`), so PostgREST
+//     would refuse the write and the `if (error) throw error` right below it
+//     would throw. This function could never have succeeded. Nothing to port.
+//
+// What they carried that was worth deleting rather than keeping: neither
+// authenticated and neither scoped by tenant, while both were exported from a
+// `"use server"` module — i.e. two anonymously reachable write endpoints onto
+// another tenant's AI agents and playbooks. The surviving pair authenticates.

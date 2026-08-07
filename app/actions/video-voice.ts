@@ -95,30 +95,14 @@ export async function getVoiceProfiles(agentId: string) {
   return data || []
 }
 
-/**
- * Get a single voice profile by ID
- */
-export async function getVoiceProfileById(profileId: string) {
-  if (!isValidUUID(profileId)) return null
-
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("agent_voice_profiles")
-    .select(`
-      *,
-      voice_clone_training(*)
-    `)
-    .eq("id", profileId)
-    .single()
-
-  if (error) {
-    console.error("[video-voice] Error fetching voice profile:", error)
-    return null
-  }
-
-  return data
-}
+// getVoiceProfileById(profileId) was REMOVED (slice-3 orphan burn-down).
+// The profile is a SINGLETON per agent (UNIQUE index on agent_voice_profiles
+// .agent_id — see createVoiceProfile below), so getVoiceProfiles(agentId)
+// already returns that one profile with its training rows embedded, scoped by
+// agent. The by-id variant added no data, was scoped by nothing (a bare
+// .eq("id", …) any caller could aim at another tenant's profile), and its
+// voice_clone_training(*) pulled provider_response / brokerage_id into a client
+// component. Nothing to merge — see docs/orphan-burndown-slice3.md.
 
 /**
  * Open the agent's voice profile for a fresh capture.
@@ -366,29 +350,12 @@ export async function setDefaultVoiceProfile(
   return profile
 }
 
-/**
- * Get the default voice profile for an agent
- */
-export async function getDefaultVoiceProfile(agentId: string) {
-  if (!isValidUUID(agentId)) return null
-
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("agent_voice_profiles")
-    .select("*")
-    .eq("agent_id", agentId)
-    .eq("is_default", true)
-    .eq("training_status", "ready")
-    .maybeSingle()
-
-  if (error) {
-    console.error("[video-voice] Error fetching default voice profile:", error)
-    return null
-  }
-
-  return data
-}
+// getDefaultVoiceProfile(agentId) was REMOVED (slice-3 orphan burn-down).
+// Survivor: getVoiceOptionsForGeneration(agentId).defaultVoiceClone below, which
+// is the one the video-create surface actually reads — and which is STRICTER:
+// it additionally requires elevenlabs_voice_id IS NOT NULL, so it cannot hand a
+// renderer a profile that is training_status='ready' but has no speakable voice
+// id. Nothing to merge — see docs/orphan-burndown-slice3.md.
 
 // ============================================
 // VOICE CLONE TRAINING
@@ -660,82 +627,26 @@ export async function updateTrainingJobStatus(
   return { voiceProfileId: job.voice_profile_id, brokerageId: job.brokerage_id ?? null }
 }
 
-/**
- * Get training job status
- */
-export async function getTrainingJobStatus(trainingId: string) {
-  if (!isValidUUID(trainingId)) return null
-
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("voice_clone_training")
-    .select("*")
-    .eq("id", trainingId)
-    .single()
-
-  if (error) {
-    console.error("[video-voice] Error fetching training job:", error)
-    return null
-  }
-
-  return data
-}
-
+// getTrainingJobStatus(trainingId) was REMOVED (slice-3 orphan burn-down).
+// The capture surface polls by re-calling getVoiceProfiles(agentId), which
+// embeds voice_clone_training(id, status, sample_manifest, started_at,
+// completed_at, error_message) — every field voice-client.tsx reads. The
+// removed action added only select("*") columns the client must not see
+// (provider_response, brokerage_id, training_job_id) and no tenant scope.
+//
 // ============================================
-// HELPER: Resolve agents.id from users.id
+// IDENTITY: resolve agents.id from the SESSION, not from a caller-supplied id
 // ============================================
-
-/**
- * Get the agents.id for a given users.id
- * CRITICAL: Use this when you have user context but need to write to agent_voice_profiles
- */
-export async function resolveAgentIdFromUserId(userId: string): Promise<string | null> {
-  if (!isValidUUID(userId)) return null
-
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("user_id", userId)
-    .maybeSingle()
-
-  if (error) {
-    console.error("[video-voice] Error resolving agent ID:", error)
-    return null
-  }
-
-  return data?.id ?? null
-}
-
-/**
- * Get agent with brokerage info from user ID
- */
-export async function getAgentContext(userId: string): Promise<{
-  agentId: string
-  brokerageId: string
-} | null> {
-  if (!isValidUUID(userId)) return null
-
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("agents")
-    .select("id, brokerage_id")
-    .eq("user_id", userId)
-    .maybeSingle()
-
-  if (error || !data) {
-    console.error("[video-voice] Error getting agent context:", error)
-    return null
-  }
-
-  return {
-    agentId: data.id,
-    brokerageId: data.brokerage_id,
-  }
-}
+// resolveAgentIdFromUserId(userId) and a second, file-local getAgentContext(userId)
+// were REMOVED here. Survivor: lib/identity/get-agent-context.ts:getAgentContext(),
+// which resolves the AUTHENTICATED session (never a caller-supplied users.id) and
+// carries strictly more: user_role_assignments, the users.user_type/role priority
+// chain, brokerageId, and the platform-staff act-as (impersonation) seam. The two
+// removed helpers were the same `agents.select(id[, brokerage_id]).eq("user_id", …)`
+// query with an id handed in by the caller — i.e. an unauthenticated users.id →
+// agents.id + brokerage_id oracle. The local one also SHADOWED the canonical name,
+// which is why the export census never flagged it.
+// See docs/orphan-burndown-slice3.md.
 
 // ============================================
 // INTEGRATION: Get selectable voices for video generation

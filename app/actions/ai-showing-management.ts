@@ -131,10 +131,18 @@ ${addressList}`,
   }
 }
 
-// Alias for backward compatibility — wrapped because "use server" rejects `const = fn`
-export async function aiOptimizeTourRoute(...args: Parameters<typeof optimizeTourRoute>) {
-  return optimizeTourRoute(...args)
-}
+// aiOptimizeTourRoute was REMOVED here. It was a pure alias —
+// `return optimizeTourRoute(...args)`, nothing else — kept "for backward
+// compatibility" with a caller that no longer exists anywhere in the tree.
+//
+// Survivor: optimizeTourRoute directly above, which is what everything actually
+// calls (app/crm/contacts/[contactId]/tours/components/tour-confirm-tab.tsx,
+// tour-plan-tab.tsx, and the app/actions/index.ts barrel).
+//
+// Compared both bodies before deleting, per the rule: the alias forwarded every
+// argument and the whole return value and added nothing — no auth, no
+// validation, no reshaping. There was genuinely nothing to merge. It was also a
+// second public HTTP endpoint onto a paid model call, for no benefit.
 
 interface ShowingRequest {
   propertyId: string

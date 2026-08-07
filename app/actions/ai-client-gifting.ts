@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity"
 import { generateObject } from "@/lib/ai/generate"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
@@ -127,13 +128,27 @@ Recommend:
 // AI BULK GIFT PLANNING
 // ============================================================================
 
+/**
+ * Plan a bulk gifting round across the agent's sphere.
+ *
+ * `agentId` is no longer taken from the caller. This is a "use server" export —
+ * a public HTTP endpoint — and it did two expensive things on a caller-supplied
+ * agents.id with no auth gate: it read that agent's whole sphere joined to
+ * `transactions(purchase_price, close_date)` (client names + what they paid),
+ * and it then spent real tokens on gpt-4o planning gifts against a
+ * caller-chosen `totalBudget`. Derived from the session now; `ctx.agentId` is
+ * `agents.id`, which is the space `contacts.agent_id` and `client_gifts.agent_id`
+ * both reference (confirmed against the live FKs).
+ */
 export async function aiPlanBulkGifting(params: {
-  agentId: string
+  /** Ignored — derived from the session. */
+  agentId?: string
   occasion: "holiday" | "client_appreciation" | "anniversary_batch"
   totalBudget: number
 }) {
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.agentId) {
+    return { success: false, error: "Not authenticated" }
   }
 
   const supabase = await createClient()
@@ -146,7 +161,7 @@ export async function aiPlanBulkGifting(params: {
         id, first_name, last_name, contact_type,
         transactions(purchase_price, close_date)
       `)
-      .eq("agent_id", params.agentId)
+      .eq("agent_id", ctx.agentId)
       .in("contact_type", [LIFETIME_CUSTOMER_TYPE, "sphere", "referral_partner"])
 
     if (!contacts || contacts.length === 0) {
@@ -331,13 +346,22 @@ Generate the note and a shorter version for cards.`,
 // GIFT TRACKING & ANALYTICS
 // ============================================================================
 
-export async function getGiftAnalytics(params: { agentId: string; year?: number }) {
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
+/**
+ * Gift spend + ROI for the year.
+ *
+ * Scope comes from the session, not the caller: this returns what an agent spent
+ * on whom — gift costs joined to `contacts(first_name, last_name)` — and it ran
+ * with no auth gate on a caller-supplied agents.id, so one uuid read another
+ * agent's client list and their gifting budget.
+ */
+export async function getGiftAnalytics(params?: { agentId?: string; year?: number }) {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.agentId) {
+    return { success: false, error: "Not authenticated" }
   }
 
   const supabase = await createClient()
-  const year = params.year || new Date().getFullYear()
+  const year = params?.year || new Date().getFullYear()
 
   try {
     const { data: gifts } = await supabase
@@ -347,7 +371,7 @@ export async function getGiftAnalytics(params: { agentId: string; year?: number 
         contacts(first_name, last_name),
         referrals:contacts(referrals!referred_contact_id(id))
       `)
-      .eq("agent_id", params.agentId)
+      .eq("agent_id", ctx.agentId)
       .gte("created_at", `${year}-01-01`)
       .lte("created_at", `${year}-12-31`)
 

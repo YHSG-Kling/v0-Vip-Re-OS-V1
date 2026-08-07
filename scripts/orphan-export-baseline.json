@@ -30,7 +30,6 @@
     "app/actions/ai-predictions.ts": 5,
     "app/actions/ai-referral-management.ts": 1,
     "app/actions/ai-review-automation.ts": 2,
-    "app/actions/ai-showing-management.ts": 1,
     "app/actions/ai-transaction-coordinator.ts": 2,
     "app/actions/ai-vendor-management.ts": 2,
     "app/actions/ai-voice-transcription.ts": 1,
@@ -51,7 +50,7 @@
     "app/actions/buyer-offer/track-offer-lifecycle.ts": 1,
     "app/actions/buyer-offers.ts": 1,
     "app/actions/calculators.ts": 3,
-    "app/actions/campaign-sequences.ts": 3,
+    "app/actions/campaign-sequences.ts": 2,
     "app/actions/cda-portal.ts": 4,
     "app/actions/ce-provider.ts": 1,
     "app/actions/communications.ts": 1,
@@ -73,7 +72,7 @@
     "app/actions/cron-kernel.ts": 1,
     "app/actions/data-health.ts": 1,
     "app/actions/demo-auth.ts": 3,
-    "app/actions/direct-mail.ts": 3,
+    "app/actions/direct-mail.ts": 1,
     "app/actions/documents.ts": 1,
     "app/actions/dotloop-integration.ts": 1,
     "app/actions/email-campaigns.ts": 1,
@@ -128,7 +127,6 @@
     "app/actions/seller-listing/execution-engine.ts": 1,
     "app/actions/seller-offers.ts": 2,
     "app/actions/seller-showing-sentiment.ts": 1,
-    "app/actions/services-config.ts": 2,
     "app/actions/settings/global-settings-actions.ts": 2,
     "app/actions/showings.ts": 1,
     "app/actions/smart-insights.ts": 1,
@@ -161,7 +159,6 @@
     "app/actions/video-content.ts": 1,
     "app/actions/video-generation.ts": 2,
     "app/actions/video-repurposing.ts": 3,
-    "app/actions/video-voice.ts": 4,
     "app/actions/voice-avatar-settings.ts": 1,
     "app/actions/voice-tenancy.ts": 1,
     "app/components/heartbeat/heartbeat-card.tsx": 1,
@@ -530,7 +527,6 @@
     "lib/lead-pipeline/subscription-gate.ts": 1,
     "lib/lead-pipeline/tavily-sourcer.ts": 1,
     "lib/lead-scoring/behavioral-events.ts": 1,
-    "lib/lead-storage.ts": 2,
     "lib/lifetime-customer-npv/current.ts": 1,
     "lib/listing-lifecycle/recordable-events.ts": 1,
     "lib/listing-presentation/prelisting-delivery.ts": 3,
@@ -733,7 +729,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 8923,
+  "census": 8910,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -825,7 +821,7 @@
     "app/actions/ai-referral-management.ts": 5,
     "app/actions/ai-reply-coach.ts": 4,
     "app/actions/ai-review-automation.ts": 6,
-    "app/actions/ai-showing-management.ts": 11,
+    "app/actions/ai-showing-management.ts": 10,
     "app/actions/ai-sphere-management.ts": 6,
     "app/actions/ai-teammates.ts": 4,
     "app/actions/ai-tools-hub.ts": 4,
@@ -887,7 +883,7 @@
     "app/actions/campaign-bundles.ts": 4,
     "app/actions/campaign-presets.ts": 2,
     "app/actions/campaign-readiness.ts": 9,
-    "app/actions/campaign-sequences.ts": 15,
+    "app/actions/campaign-sequences.ts": 14,
     "app/actions/career-tier.ts": 1,
     "app/actions/cda-portal-list.ts": 1,
     "app/actions/cda-portal.ts": 16,
@@ -955,7 +951,7 @@
     "app/actions/direct-mail-settings.ts": 4,
     "app/actions/direct-mail-size-prefs.ts": 2,
     "app/actions/direct-mail-variants-settings.ts": 3,
-    "app/actions/direct-mail.ts": 15,
+    "app/actions/direct-mail.ts": 13,
     "app/actions/dispatch-showing.ts": 1,
     "app/actions/document-center.ts": 2,
     "app/actions/document-extractions.ts": 2,
@@ -1139,7 +1135,7 @@
     "app/actions/seller-showings.ts": 13,
     "app/actions/seller-updates.ts": 5,
     "app/actions/sequence-step-ai.ts": 2,
-    "app/actions/services-config.ts": 12,
+    "app/actions/services-config.ts": 10,
     "app/actions/settings/create-commission-structure.ts": 1,
     "app/actions/settings/create-email-template.ts": 1,
     "app/actions/settings/delete-commission-structure.ts": 1,
@@ -1262,7 +1258,7 @@
     "app/actions/video-landing.ts": 3,
     "app/actions/video-repurposing.ts": 13,
     "app/actions/video-repurposing.utils.ts": 3,
-    "app/actions/video-voice.ts": 12,
+    "app/actions/video-voice.ts": 7,
     "app/actions/video.ts": 8,
     "app/actions/voice-access.ts": 3,
     "app/actions/voice-assistant/core/dispatch-command.ts": 1,
@@ -3714,7 +3710,6 @@
     "lib/lead-readiness/readiness-evaluator.ts": 2,
     "lib/lead-readiness/readiness-logger.ts": 2,
     "lib/lead-scoring/behavioral-events.ts": 3,
-    "lib/lead-storage.ts": 2,
     "lib/learning-router/composer.ts": 1,
     "lib/learning-router/milestone-gated-modules.ts": 1,
     "lib/learning-router/resolve-agent-learning-context.ts": 1,
@@ -4904,7 +4899,6 @@
       "createTour",
       "updateTour",
       "optimizeTourRoute",
-      "aiOptimizeTourRoute",
       "aiScheduleShowing",
       "aiOptimizeShowingRoute",
       "aiSendShowingConfirmation",
@@ -5317,7 +5311,6 @@
       "deleteSequenceStep",
       "reorderSequenceSteps",
       "launchCampaignSequence",
-      "resumeCampaignSequence",
       "enrollContactInSequence",
       "cancelEnrollment",
       "getSequenceSteps",
@@ -5738,7 +5731,6 @@
     "app/actions/direct-mail.ts": [
       "createMailCampaign",
       "getMailCampaigns",
-      "getMailCampaign",
       "updateMailCampaign",
       "deleteMailCampaign",
       "addRecipients",
@@ -5748,7 +5740,6 @@
       "getTrackingRecords",
       "logResponse",
       "getResponses",
-      "getResponseSummary",
       "sendCampaign",
       "getCampaignQrScans"
     ],
@@ -7061,9 +7052,7 @@
       "togglePlaybook",
       "getStageRules",
       "createStageRule",
-      "deleteStageRule",
-      "toggleAIAgentTemplateStatus",
-      "togglePlaybookStatus"
+      "deleteStageRule"
     ],
     "app/actions/settings/create-commission-structure.ts": [
       "createCommissionStructure"
@@ -7913,16 +7902,11 @@
     ],
     "app/actions/video-voice.ts": [
       "getVoiceProfiles",
-      "getVoiceProfileById",
       "createVoiceProfile",
       "updateVoiceProfileSamples",
       "setDefaultVoiceProfile",
-      "getDefaultVoiceProfile",
       "startVoiceCloneTraining",
       "updateTrainingJobStatus",
-      "getTrainingJobStatus",
-      "resolveAgentIdFromUserId",
-      "getAgentContext",
       "getVoiceOptionsForGeneration"
     ],
     "app/actions/video.ts": [
@@ -17490,10 +17474,6 @@
       "summarizeBehavioralEvents",
       "priorityTier"
     ],
-    "lib/lead-storage.ts": [
-      "insertLead",
-      "checkLeadExists"
-    ],
     "lib/learning-router/composer.ts": [
       "pickLearningModulesForActor"
     ],
@@ -20242,5 +20222,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 367
+  "trulyDead": 354
 }

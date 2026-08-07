@@ -165,31 +165,14 @@ export async function getMailCampaigns(brokerageId: string) {
   }
 }
 
-/**
- * Retrieves a single campaign by ID.
- */
-export async function getMailCampaign(campaignId: string) {
-  try {
-    if (!isValidUUID(campaignId)) {
-      return { success: false, error: "Invalid campaign ID" }
-    }
-
-    const supabase = await createClient()
-
-    const { data, error } = await supabase
-      .from("direct_mail_campaigns")
-      .select("*")
-      .eq("id", campaignId)
-      .maybeSingle()
-
-    if (error) throw error
-    if (!data) return { success: false, error: "Campaign not found" }
-
-    return { success: true, campaign: data }
-  } catch (error) {
-    return handleError(error, "getMailCampaign")
-  }
-}
+// getMailCampaign(campaignId) was REMOVED (slice-3 orphan burn-down).
+// Survivor: getMailCampaigns(brokerageId) above — the reader both live surfaces
+// use (app/dashboard/campaigns/mail/mail-dashboard.tsx and
+// app/dashboard/marketing/studio/marketing-studio-client.tsx), selecting the same
+// columns and scoped by brokerage_id. One campaign is a .find() on a list those
+// surfaces already hold. The removed by-id variant carried NO tenant filter at
+// all — a bare .eq("id", …) leaning entirely on RLS. Nothing to merge.
+// See docs/orphan-burndown-slice3.md.
 
 /**
  * Updates a campaign. Only allowed when status is 'planning'.
@@ -397,27 +380,77 @@ export async function removeRecipient(recipientId: string) {
 // ─── TRACKING ─────────────────────────────────────────────────────────────────
 
 /**
- * Tracks delivery status from Lob webhook or batch update.
+ * Records a Lob delivery event onto mail_tracking — the row the Tracking tab
+ * (app/dashboard/campaigns/mail/components/tracking-tab.tsx, via
+ * getTrackingRecords below) reads.
+ *
+ * PROVIDER-TRUTH INGEST, NOT A UI ACTION. This lives in a "use server" module,
+ * so it is an HTTP endpoint. It used to be an anonymous one that took
+ * `brokerageId` and a free-form `deliveryPayload` from whoever called it, which
+ * meant anyone could forge "delivered" / "returned_to_sender" events against any
+ * brokerage's campaign — on the most expensive touch the platform makes, and the
+ * one a broker is most likely to be asked to prove. Two things changed:
+ *
+ *   1. SHARED-SECRET GATE. Same posture as the real Lob receiver
+ *      (app/api/webhooks/lob-events/route.ts): LOB_WEBHOOK_SECRET must be set
+ *      and must match. Unset = REFUSE — never silently open.
+ *   2. THE TENANT IS RESOLVED, NOT ACCEPTED. brokerage_id comes off the campaign
+ *      row. A campaign that cannot be read is a REFUSAL, not a NULL tenant: the
+ *      read destructures `error`, and a refused read is not "no such campaign".
+ *
+ * NOT YET WIRED. The Lob receiver reconciles into the outcomes ledger
+ * (ingestProviderTruth) and mirrors terminal status onto the campaign, but it
+ * does not write mail_tracking — so the Tracking tab renders empty for every
+ * campaign. Finishing this is one call from that route's POST handler, after
+ * ingestProviderTruth, with the campaign resolved from `lob_order_id`. See
+ * docs/orphan-burndown-slice3.md for the exact shape.
  */
-export async function trackDelivery(params: TrackDeliveryParams) {
+export async function trackDelivery(params: TrackDeliveryParams & { webhookSecret?: string }) {
   try {
     if (!isValidUUID(params.campaignId)) {
       return { success: false, error: "Invalid campaign ID" }
     }
 
+    // Provider-truth ingest is not callable by a browser. Unset secret = refuse.
+    const secret = process.env.LOB_WEBHOOK_SECRET
+    if (!secret || params.webhookSecret !== secret) {
+      return {
+        success: false,
+        error:
+          "Refused — trackDelivery records PROVIDER truth and is callable only by the Lob receiver with LOB_WEBHOOK_SECRET.",
+      }
+    }
+
     const supabase = await createClient()
+
+    // Resolve the tenant from the campaign. Never take it from the caller, and
+    // never let a refused read become a NULL brokerage_id on an inserted row.
+    const { data: campaign, error: campaignError } = await supabase
+      .from("direct_mail_campaigns")
+      .select("id, brokerage_id")
+      .eq("id", params.campaignId)
+      .maybeSingle()
+
+    if (campaignError) {
+      return { success: false, error: `Cannot verify campaign tenancy: ${campaignError.message}` }
+    }
+    if (!campaign?.brokerage_id) {
+      return { success: false, error: "Campaign not found, or has no brokerage — refusing to record delivery" }
+    }
+
+    const payload = (params.deliveryPayload ?? {}) as Record<string, string>
 
     const { data, error } = await supabase
       .from("mail_tracking")
       .insert({
-        brokerage_id: params.brokerageId,
+        brokerage_id: campaign.brokerage_id,
         campaign_id: params.campaignId,
         batch_id: params.batchId,
         tracking_payload: params.deliveryPayload,
-        provider_delivery_status: (params.deliveryPayload as Record<string, string>)?.status ?? "unknown",
-        mailed_at: (params.deliveryPayload as Record<string, string>)?.mailed_at ?? null,
-        delivered_at: (params.deliveryPayload as Record<string, string>)?.delivered_at ?? null,
-        returned_at: (params.deliveryPayload as Record<string, string>)?.returned_at ?? null,
+        provider_delivery_status: payload?.status ?? "unknown",
+        mailed_at: payload?.mailed_at ?? null,
+        delivered_at: payload?.delivered_at ?? null,
+        returned_at: payload?.returned_at ?? null,
       })
       .select()
       .maybeSingle()
@@ -525,36 +558,12 @@ export async function getResponses(campaignId: string) {
   }
 }
 
-/**
- * Retrieves response summary counts by type for a campaign.
- */
-export async function getResponseSummary(campaignId: string) {
-  try {
-    if (!isValidUUID(campaignId)) {
-      return { success: false, error: "Invalid campaign ID" }
-    }
-
-    const supabase = await createClient()
-
-    const { data, error } = await supabase
-      .from("direct_mail_responses")
-      .select("response_type")
-      .eq("campaign_id", campaignId)
-
-    if (error) throw error
-
-    // Count by type
-    const summary: Record<string, number> = {}
-    for (const row of data || []) {
-      const type = row.response_type ?? "unknown"
-      summary[type] = (summary[type] || 0) + 1
-    }
-
-    return { success: true, summary }
-  } catch (error) {
-    return handleError(error, "getResponseSummary")
-  }
-}
+// getResponseSummary(campaignId) was REMOVED (slice-3 orphan burn-down).
+// Survivor: getResponses(campaignId) directly above — the reader the Responses
+// tab uses. It returns the same rows (same table, same filter) with strictly
+// more on them, response_type included; the per-type counts this action computed
+// are a reduce() over data the surface already has in hand. Nothing to merge.
+// See docs/orphan-burndown-slice3.md.
 
 // ─── SEND CAMPAIGN ────────────────────────────────────────────────────────────
 

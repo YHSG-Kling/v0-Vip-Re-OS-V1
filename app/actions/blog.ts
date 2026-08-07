@@ -600,9 +600,22 @@ export async function publishToWordPress(
 }
 
 // ─── getBlogPosts ──────────���────────────────────────────�����─────────────────────
+//
+// The FILTERED, reusable counterpart to the inline read in
+// app/dashboard/marketing/blog/page.tsx (BlogDashboardPage), which loads the
+// unfiltered first page server-side. That page is the survivor for the plain
+// list; this action exists for the filters it does NOT have (publish status,
+// agent, date range) — the refresh path the dashboard client still needs.
+//
+// TENANT NOW COMES FROM THE SESSION, NOT THE CALLER. It used to take
+// `brokerageId: string` and feed it straight into `.eq("brokerage_id", …)` with
+// no auth gate at all. In a "use server" module every export is a public HTTP
+// endpoint, so that was an unauthenticated cross-tenant read: any brokerage's
+// entire blog inventory — including unpublished drafts — for anyone who could
+// guess a brokerage uuid. The page it duplicates always scoped to the signed-in
+// user's brokerage; this one now does the same, the same way.
 
 export async function getBlogPosts(
-  brokerageId: string,
   filters?: {
     publishStatus?: string
     agentUserId?: string
@@ -625,12 +638,17 @@ export async function getBlogPosts(
   }>
   error?: string
 }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Not authenticated" }
+  }
+
   const supabase = await createClient()
 
   let query = supabase
     .from("blog_posts")
     .select("id, title, slug, excerpt, publish_status, category, seo_score, created_at, published_at, agent_user_id")
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", ctx.brokerageId)
     .order("created_at", { ascending: false })
 
   if (filters?.publishStatus) {
@@ -657,6 +675,16 @@ export async function getBlogPosts(
 }
 
 // ─── getBlogPostById ──────────────────────────────────────────────────────────
+//
+// Action-layer twin of the inline read in app/dashboard/marketing/blog/[id]/page.tsx
+// (BlogEditorPage). That page is the survivor and it was ALWAYS correct:
+// `.eq("id", postId).eq("brokerage_id", userData.brokerage_id)`.
+//
+// This copy had `.eq("id", postId)` and NOTHING ELSE — no auth gate, no tenant
+// predicate — while returning the post's FULL BODY, its keyword strategy and its
+// SEO audit log. As a "use server" export that is a public endpoint, so any post
+// uuid read any brokerage's unpublished content. The missing `.eq("brokerage_id",
+// …)` is restored below, derived from the session exactly as the page derives it.
 
 export async function getBlogPostById(postId: string): Promise<{
   success: boolean
@@ -686,15 +714,21 @@ export async function getBlogPostById(postId: string): Promise<{
   }
   error?: string
 }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Not authenticated" }
+  }
+
   const supabase = await createClient()
 
-  // Fetch post
+  // Fetch post — scoped to the caller's brokerage, like the editor page.
   const { data: post, error: postError } = await supabase
     .from("blog_posts")
     .select(
       "id, brokerage_id, title, slug, excerpt, content, featured_image_url, publish_status, seo_score, wordpress_post_id, created_at, published_at"
     )
     .eq("id", postId)
+    .eq("brokerage_id", ctx.brokerageId)
     .maybeSingle()
 
   if (postError || !post) {
@@ -807,8 +841,19 @@ export async function addSeoKeyword(
 }
 
 // ─── getSeoKeywords ───────────────────────────────────────────────────────────
+//
+// NOT a duplicate of app/actions/ai-content-generation.tsx:getSEOKeywords — that
+// file's own comment records the split deliberately: it reads the AGENT-scoped
+// list (`.eq("agent_user_id", …)`), this one reads the BROKERAGE-wide list. Same
+// table, different axes; both are wanted. Kept.
+//
+// What was wrong was the scope's SOURCE: `brokerageId` arrived from the caller
+// with no auth gate, making a brokerage's whole keyword strategy — the SEO
+// targets it is spending on — readable by anyone with the uuid. Derived from the
+// session now, matching how the agent-scoped sibling gets its scope from
+// requireContentActor().
 
-export async function getSeoKeywords(brokerageId: string): Promise<{
+export async function getSeoKeywords(): Promise<{
   success: boolean
   keywords?: Array<{
     id: string
@@ -824,6 +869,11 @@ export async function getSeoKeywords(brokerageId: string): Promise<{
   }>
   error?: string
 }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Not authenticated" }
+  }
+
   const supabase = await createClient()
 
   const { data, error } = await supabase
@@ -831,7 +881,7 @@ export async function getSeoKeywords(brokerageId: string): Promise<{
     .select(
       "id, keyword, keyword_type, search_intent, target_location, search_volume, competition, difficulty_score, priority_score, is_active"
     )
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", ctx.brokerageId)
     .order("priority_score", { ascending: false, nullsFirst: false })
 
   if (error) {

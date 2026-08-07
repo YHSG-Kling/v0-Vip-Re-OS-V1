@@ -253,36 +253,88 @@ async function validateContact(contact: { email?: string; phone?: string; first_
 }
 
 // Purge invalid contacts
+/** Roles allowed to run a bulk destructive purge of contact records. */
+const PURGE_ALLOWED_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin"])
+
+/**
+ * Bulk soft-delete every contact this brokerage's health scan marked Invalid.
+ *
+ * THIS IS THE MOST DESTRUCTIVE EXPORT IN THE FILE and it used to be the least
+ * guarded one: a `"use server"` export taking NO arguments, with NO
+ * authentication, NO role check and NO tenant scope. Anyone who could reach the
+ * action soft-deleted every Invalid-flagged contact in EVERY brokerage, then
+ * deleted the matching data_health_logs rows — destroying the only record of
+ * which contacts had been purged and why. A no-argument endpoint is not a small
+ * one; it is the one an attacker does not even have to guess parameters for.
+ *
+ * It also reported the wrong thing on failure: `const { data: invalidLogs }`
+ * never destructured `error`, so a refused read returned
+ * `{ success: true, deletedCount: 0, message: "No invalid contacts to purge" }`
+ * — telling an operator the data is clean when in fact nothing could be read.
+ *
+ * Now: authenticated, broker/admin only, scoped to the caller's own brokerage on
+ * every one of the three statements, and a read it cannot perform is a refusal.
+ */
 export async function purgeInvalidContacts() {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) {
+    return { success: false, error: "Unauthenticated", deletedCount: 0 }
+  }
+  if (!ctx.brokerageId) {
+    return { success: false, error: "Brokerage not configured", deletedCount: 0 }
+  }
+  if (!PURGE_ALLOWED_ROLES.has(ctx.userType)) {
+    return { success: false, error: "Forbidden — only a broker or admin can purge contacts", deletedCount: 0 }
+  }
+  // A read-only act-as grant must not be able to bulk-delete a tenant's contacts.
+  if (ctx.isImpersonating && ctx.impersonationMode !== "full") {
+    return { success: false, error: "Read-only session — purge refused", deletedCount: 0 }
+  }
+
   const supabase = await createClient()
-  
+
   try {
-    // Get all invalid contact IDs
-    const { data: invalidLogs } = await supabase
+    // Get the invalid contact IDs FOR THIS BROKERAGE.
+    const { data: invalidLogs, error: readError } = await supabase
       .from("data_health_logs")
       .select("contact_id")
+      .eq("brokerage_id", ctx.brokerageId)
       .eq("validation_status", "Invalid")
-    
+
+    // A refused read is NOT "nothing to purge". Say so instead of reporting clean.
+    if (readError) {
+      return {
+        success: false,
+        error: `Cannot read the health log, so nothing was purged: ${readError.message}`,
+        deletedCount: 0,
+      }
+    }
+
     if (!invalidLogs || invalidLogs.length === 0) {
       return { success: true, deletedCount: 0, message: "No invalid contacts to purge" }
     }
-    
+
     const contactIds = invalidLogs.map(l => l.contact_id).filter(Boolean)
-    
-    // Soft delete contacts (mark as deleted)
+    if (contactIds.length === 0) {
+      return { success: true, deletedCount: 0, message: "No invalid contacts to purge" }
+    }
+
+    // Soft delete contacts (mark as deleted) — brokerage-scoped.
     const { error } = await supabase
       .from("contacts")
       .update({ deleted_at: new Date().toISOString() })
+      .eq("brokerage_id", ctx.brokerageId)
       .in("id", contactIds)
-    
+
     if (error) throw error
-    
-    // Remove the health logs for purged contacts
+
+    // Remove the health logs for purged contacts — same scope.
     await supabase
       .from("data_health_logs")
       .delete()
+      .eq("brokerage_id", ctx.brokerageId)
       .in("contact_id", contactIds)
-    
+
     return { success: true, deletedCount: contactIds.length }
   } catch (error) {
     console.error("Failed to purge invalid contacts:", error)

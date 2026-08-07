@@ -3,7 +3,7 @@
 import { createServiceClient } from "@/lib/supabase/service";
 import { isValidUUID } from "@/lib/validations";
 import { getOfferLifecycleState } from "./track-offer-lifecycle";
-import { evaluateOfferLimit } from "@/lib/offers/multi-offer-rules";
+import { evaluateOfferLimit, limitProximity } from "@/lib/offers/multi-offer-rules";
 
 /**
  * System 7.1A Domain 2: Multi-Offer Management
@@ -54,6 +54,21 @@ export async function canBuyerSubmitOffer(
     }
 
     const verdict = evaluateOfferLimit(pendingCount);
+
+    // Emit the governance signal this module was built to raise. limitProximity
+    // is the pure classifier and its values are exactly emitMultiOfferEvent's
+    // event vocabulary — the two halves were written for each other and simply
+    // never joined up, so "approaching_limit" / "at_limit" had no emitter.
+    // Best-effort: an alert that cannot be recorded must never fail the gate.
+    const proximity = limitProximity(pendingCount);
+    if (proximity !== "clear") {
+      await emitMultiOfferEvent(
+        contactId,
+        proximity === "at_limit" ? "at_limit" : "approaching_limit",
+        { pending_count: pendingCount, max_pending: 3 },
+      ).catch(() => {});
+    }
+
     return {
       success: true,
       can_submit: verdict.can_submit,
@@ -102,6 +117,13 @@ export async function checkDuplicateOffer(
     for (const offer of offers) {
       const stateResult = await getOfferLifecycleState(offer.id);
       if (stateResult.success && stateResult.data && !stateResult.data.is_terminal) {
+        // The third event this module defines and never raised. Best-effort.
+        await emitMultiOfferEvent(contactId, "duplicate_attempted", {
+          listing_id: listingId,
+          existing_offer_id: offer.id,
+          existing_state: stateResult.data.current_state,
+        }).catch(() => {});
+
         return {
           success: true,
           has_duplicate: true,

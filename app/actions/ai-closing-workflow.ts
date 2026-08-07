@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { resolveWriteContext } from "@/lib/kernel/identity"
 import { generateObject } from "@/lib/ai/generate"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
@@ -232,23 +233,55 @@ export async function completeChecklistItem(params: {
 // AI MILESTONE TRACKING
 // ============================================================================
 
+/**
+ * AI deal-health read on a transaction's closing progress.
+ *
+ * The `resolveWriteContext()` gate is NEW. This is a `"use server"` export and
+ * it had no authentication: it accepted `transactionId`, `agentId` AND
+ * `brokerageId` from the caller, UUID-shape-checked them, ran a `generateObject`
+ * model call, and then INSERTed a `transaction_timeline` row stamped with the
+ * caller's own `brokerage_id` and `performed_by`. So it was, in one endpoint:
+ *   · unauthenticated, unmetered AI spend anyone could loop; and
+ *   · a way to write a forged audit line into another tenant's deal timeline,
+ *     attributed to any user id the caller chose.
+ *
+ * Both identity inputs now come from the session, and the transaction must
+ * belong to the caller's brokerage before a single token is spent — the tenant
+ * check is deliberately BEFORE the model call, not after.
+ *
+ * NOTE FOR THE OWNER: the other exports in this file
+ * (`aiGenerateClosingChecklist`, `getClosingChecklist`, `completeChecklistItem`,
+ * `getClosingPrepSummary`) have the SAME shape — caller-supplied
+ * agentId/brokerageId, no session check — and `aiGenerateClosingChecklist` also
+ * spends on a model. They are wired, so hardening them is a change with real
+ * callers behind it and is left as a deliberate, separate decision rather than
+ * smuggled in here.
+ */
 export async function aiTrackClosingMilestones(params: {
   transactionId: string
-  agentId: string
-  brokerageId: string
+  /** ignored — the actor is the authenticated caller */
+  agentId?: string
+  /** ignored — the tenant is the authenticated caller's */
+  brokerageId?: string
 }) {
-  if (
-    !isValidUUID(params.transactionId) ||
-    !isValidUUID(params.agentId) ||
-    !isValidUUID(params.brokerageId)
-  ) {
+  if (!isValidUUID(params.transactionId)) {
     return { success: false, error: "Invalid IDs" }
   }
+
+  const ctx = await resolveWriteContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) {
+    return { success: false, error: "Unauthorized" }
+  }
+  const brokerageId = ctx.brokerageId
+  const actorUserId = ctx.userId
 
   const supabase = await createClient()
 
   try {
-    const { data: transaction } = await supabase
+    // Tenant-anchored, and the error is destructured: a refused read must not
+    // fall through to "Transaction not found" and it must certainly not fall
+    // through to a paid model call.
+    const { data: transaction, error: txErr } = await supabase
       .from("transactions")
       .select(`
         *,
@@ -256,7 +289,12 @@ export async function aiTrackClosingMilestones(params: {
         closing_checklist_items(completed, required)
       `)
       .eq("id", params.transactionId)
-      .single()
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+
+    if (txErr) {
+      return { success: false, error: "Could not load that transaction." }
+    }
 
     if (!transaction) {
       return { success: false, error: "Transaction not found" }
@@ -296,17 +334,33 @@ Assess:
 4. Is there a delay risk?`,
     })
 
-    // Record a timeline entry for the analysis
-    await supabase
+    // Record a timeline entry for the analysis.
+    //
+    // performed_by is a users.id, not an agents.id — every other writer in the
+    // repo puts `user.id` / `ctx.userId` there (transaction-compliance.ts:79,
+    // dotloop-integration.ts:343, and see the explicit note at
+    // dotloop-integration.ts:1447 about a contacts id having once landed in this
+    // column). This used to write `params.agentId`. agents.id and users.id are
+    // disjoint id spaces, so that stamped a meaningless actor on every row.
+    // ctx.userId is the resolved authenticated user — the right space, resolved
+    // rather than substituted.
+    const { error: timelineErr } = await supabase
       .from("transaction_timeline")
       .insert({
         transaction_id: params.transactionId,
-        brokerage_id:   params.brokerageId,
+        brokerage_id:   brokerageId,
         activity_type:  "ai_closing_analysis",
         description:    analysis.summary,
-        performed_by:   params.agentId,
+        performed_by:   actorUserId,
         metadata:       { riskLevel: analysis.riskLevel, onTrack: analysis.onTrack },
       })
+
+    // The analysis is still returned — the model call already happened and the
+    // caller should get what it paid for — but a dropped audit line is logged
+    // rather than swallowed, which is what an undestructured insert did before.
+    if (timelineErr) {
+      console.error("[aiTrackClosingMilestones] timeline insert failed:", timelineErr.message)
+    }
 
     return { success: true, data: analysis }
   } catch (error) {

@@ -1047,22 +1047,89 @@ export async function getSavedCalculations(visitorId: string) {
 }
 
 
+/**
+ * Email a saved calculation back to the visitor who saved it.
+ *
+ * THIS IS A PUBLIC LANE AND IT USED TO BE AN OPEN EMAIL RELAY. It is exported
+ * from a `"use server"` module, so it is a reachable HTTP endpoint, and it had
+ * NO authentication of any kind. It read `saved_calculations` by a
+ * caller-supplied `calculationId` and then sent that row's contents to a
+ * caller-supplied `recipientEmail`. Two consequences, both live:
+ *
+ *   1. OPEN RELAY. Any anonymous caller could send mail from the platform's
+ *      sending domain to any address they chose, with attacker-influenced
+ *      content (the calculation body). That is a deliverability/reputation
+ *      incident waiting to happen, not a theoretical one.
+ *   2. PII EXFILTRATION. The row carries user_email and user_name. RLS does
+ *      NOT stop this read: the live SELECT policy is
+ *      `is_platform_admin() OR brokerage_id IS NULL OR has_brokerage_access(...)`
+ *      and saveCalculation() above never sets brokerage_id — so EVERY row in
+ *      this table is anon-readable by that second clause. Verified against the
+ *      live schema, not assumed.
+ *
+ * The fix keeps the lane public (requiring a login would defeat a lead-magnet
+ * calculator) but binds both ends to something the caller must already hold:
+ *
+ *   · The row is fetched scoped by `visitorId`, the same opaque per-visitor
+ *     secret getSavedCalculations() already treats as the retrieval key. You
+ *     cannot act on a calculation whose visitor id you do not have.
+ *   · The destination is NOT the caller's to choose. It is the address recorded
+ *     ON THE ROW at save time. A supplied recipientEmail is accepted only when
+ *     it matches that address, so the parameter can stay for call-site clarity
+ *     without being an injection point.
+ *
+ * A row saved without an email address cannot be mailed at all, and says so.
+ */
 export async function emailCalculationResults(data: {
   calculationId: string
-  recipientEmail: string
+  /** The visitor secret the calculation was saved under — required, and the
+   *  only thing standing between this endpoint and the whole table. */
+  visitorId: string
+  /** Optional. When present it must equal the address recorded on the row;
+   *  it can never redirect the send. */
+  recipientEmail?: string
   recipientName?: string
 }) {
   const supabase = await createClient()
 
   try {
-    const { data: calculation } = await supabase
+    if (!data.visitorId?.trim()) {
+      return { success: false, error: "Calculation not found" }
+    }
+
+    // Destructure the error. supabase-js RESOLVES a refused query, so
+    // `const { data }` alone turns a refusal into an indistinguishable
+    // "no rows" — and this path decides whether to send mail.
+    const { data: calculation, error: readErr } = await supabase
       .from("saved_calculations")
-      .select("*")
+      .select("id, tool_name, calculation_data_json, user_email, user_name")
       .eq("id", data.calculationId)
+      .eq("visitor_id", data.visitorId.trim())
       .maybeSingle()
+
+    if (readErr) {
+      console.error("[calculators.emailCalculationResults] read refused:", readErr.message)
+      return { success: false, error: "Could not load that calculation." }
+    }
 
     if (!calculation) {
       return { success: false, error: "Calculation not found" }
+    }
+
+    // The destination is the address on the record, never the caller's.
+    const onRecord = (calculation.user_email ?? "").trim().toLowerCase()
+    if (!onRecord) {
+      return {
+        success: false,
+        error: "This calculation was saved without an email address, so there is nowhere to send it.",
+      }
+    }
+    const asked = (data.recipientEmail ?? "").trim().toLowerCase()
+    if (asked && asked !== onRecord) {
+      return {
+        success: false,
+        error: "A calculation can only be emailed to the address it was saved with.",
+      }
     }
 
     // saved_calculations columns are tool_name and calculation_data_json. This
@@ -1071,7 +1138,7 @@ export async function emailCalculationResults(data: {
     // "Your undefined Results" over a body of `undefined`.
     const { sendCalculatorResults } = await import("@/lib/services/communication.service")
     const emailResult = await sendCalculatorResults({
-      email: data.recipientEmail,
+      email: onRecord,
       calculationType: calculation.tool_name,
       results: calculation.calculation_data_json,
       calculationId: data.calculationId,
@@ -1102,7 +1169,7 @@ export async function emailCalculationResults(data: {
 
     return {
       success: true,
-      message: `Calculation emailed to ${data.recipientEmail}`,
+      message: `Calculation emailed to ${onRecord}`,
     }
   } catch (error) {
     console.error("[v0] Error in emailCalculationResults:", error)

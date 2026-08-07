@@ -19,17 +19,54 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
  * Maintains backward compatibility for existing components
  */
 
+/**
+ * Move a contact to a new pipeline stage, and record that it happened.
+ *
+ * Relationship to `updateContact` (which is the same `updateContactService`
+ * passthrough): the stage write itself is shared, so that part is a duplicate.
+ * What is NOT duplicated — and is the reason this function survives rather than
+ * folding into `updateContact` — is the **stage-change audit row**. A stage move
+ * is the one contact edit that means something later (pipeline reporting,
+ * conversion timing), so it gets an `activities` entry with the agent's note.
+ *
+ * THE AUDIT ROW HAD NEVER ONCE BEEN WRITTEN. The insert omitted `brokerage_id`,
+ * which is NOT NULL with **no default** on `activities` — verified against the
+ * live database, where the exact former payload fails with:
+ *
+ *   23502: null value in column "brokerage_id" of relation "activities"
+ *          violates not-null constraint
+ *
+ * and the result was never destructured, so the error was discarded and the
+ * function returned the successful stage update either way. Every stage change
+ * ever made reported a note recorded that does not exist. Fixed rather than
+ * ported as-is: the intent (audit the move) was right, the implementation was
+ * not.
+ *
+ * `agentId` is no longer taken from the caller. This is a "use server" export,
+ * i.e. a public endpoint, and the service's ownership check is
+ * `.eq("agent_id", params.agentId)` — comparing the contact against whatever id
+ * the caller supplied, which checks nothing. It now comes from the session.
+ * `agents.id` and `users.id` are disjoint spaces here; `ctx.agentId` is
+ * `agents.id`, which is what both `contacts.agent_id` and `activities.agent_id`
+ * reference (confirmed against the live FKs).
+ */
 export async function updateContactStage(params: {
   contactId: string
   newStage: string
-  agentId: string
+  /** Ignored — derived from the session. Kept so existing callers still typecheck. */
+  agentId?: string
   notes?: string
 }) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.agentId || !ctx.brokerageId) {
+      return { success: false, error: "Not authenticated" }
+    }
+
     // Update contact stage using consolidated service
     const result = await updateContactService({
       contactId: params.contactId,
-      agentId: params.agentId,
+      agentId: ctx.agentId,
       updates: { stage: params.newStage } as any
     })
 
@@ -39,7 +76,11 @@ export async function updateContactStage(params: {
 
     if (params.notes) {
       const supabase = await createClient()
-      await supabase.from("activities").insert({
+      const { error: activityError } = await supabase.from("activities").insert({
+        brokerage_id:  ctx.brokerageId,   // NOT NULL, no default — the omission that broke this
+        entity_type:   "contact",         // NOT NULL (defaults to 'unknown' — name it properly)
+        entity_id:     params.contactId,
+        agent_id:      ctx.agentId,       // agents.id
         contact_id:    params.contactId,
         activity_type: "stage_change",
         title:         `Stage changed to ${params.newStage}`,
@@ -47,6 +88,14 @@ export async function updateContactStage(params: {
         outcome:       "completed",
         status:        "completed",
       })
+      // The stage HAS moved at this point, so don't claim the whole operation
+      // failed — but don't claim the note was recorded when it wasn't, either.
+      if (activityError) {
+        return {
+          ...result,
+          warning: `Stage updated, but the change note was not recorded: ${activityError.message}`,
+        }
+      }
     }
 
     revalidatePath("/crm/contacts")
