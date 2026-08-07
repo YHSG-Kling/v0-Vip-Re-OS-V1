@@ -6,21 +6,8 @@
  * This file preserves existing function signatures for backward compatibility.
  */
 
-import { dispatchSms, dispatchEmail } from "@/lib/providers/dispatch"
-import { createServiceClient } from "@/lib/supabase/service"
-import { createTransfer } from "@/lib/providers/payment"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
-/** Resolve the brokerage for the consent/de-confliction gate — given, else from the contact. */
-async function resolveBrokerageId(contactId?: string, given?: string): Promise<string> {
-  if (given) return given
-  if (!contactId) return ""
-  try {
-    const svc = createServiceClient()
-    const { data } = await svc.from("contacts").select("brokerage_id").eq("id", contactId).maybeSingle()
-    return (data as any)?.brokerage_id ?? ""
-  } catch { return "" }
-}
 
 // ─── AVATAR / EXPLAINER VIDEO ─────────────────────────────────────────────────
 // BUSINESS RULE (platform-locked): the avatar/explainer-video engine is D-ID +
@@ -98,65 +85,63 @@ export async function getAvatarVideoStatus(videoId: string) {
   }
 }
 
-// TWILIO SMS — delegates to lib/providers/messaging
-export async function sendTwilioSMS(params: {
-  to: string
-  message: string
-  contactId?: string
-  brokerageId?: string
-}) {
-  try {
-    // Route through the gate (consent/opt-out/DNC/quiet-hours/de-confliction) — no raw send.
-    const brokerageId = await resolveBrokerageId(params.contactId, params.brokerageId)
-    return await dispatchSms({
-      brokerageId, to: params.to, message: params.message,
-      contactId: params.contactId, systemSource: "external_services",
-    })
-  } catch (error: any) {
-    console.error("[External Services] Twilio error:", error)
-    return { success: false, error: error.message }
-  }
-}
-
-// SENDGRID EMAIL — delegates to lib/providers/messaging
-export async function sendSendGridEmail(params: {
-  to: string
-  subject: string
-  html: string
-  text?: string
-  from?: string
-  contactId?: string
-  brokerageId?: string
-}) {
-  try {
-    // Route through the gate (suppression/consent/de-confliction) — no raw send.
-    const brokerageId = await resolveBrokerageId(params.contactId, params.brokerageId)
-    return await dispatchEmail({
-      brokerageId, to: params.to, subject: params.subject, html: params.html, text: params.text,
-      // No invented sender — see lib/providers/outbound-sender. Undefined lets
-      // sendEmail resolve and refuse, rather than this layer guessing.
-      from: params.from ?? (await import("@/lib/providers/outbound-sender"))
-        .formatSenderOrUndefined(await (await import("@/lib/providers/outbound-sender"))
-          .resolveOutboundSender(createServiceClient() as any, brokerageId)),
-      contactId: params.contactId, channelPurpose: "transactional", systemSource: "external_services",
-    })
-  } catch (error: any) {
-    console.error("[External Services] SendGrid error:", error)
-    return { success: false, error: error.message }
-  }
-}
-
-// STRIPE — delegates to lib/providers/payment
-export async function createStripeTransfer(params: {
-  amount: number
-  destinationAccountId: string
-  description?: string
-  transactionId?: string
-}) {
-  try {
-    return await createTransfer(params)
-  } catch (error: any) {
-    console.error("[External Services] Stripe error:", error)
-    return { success: false, error: error.message }
-  }
-}
+// ─── THREE PUBLIC ENDPOINTS REMOVED — sendTwilioSMS / sendSendGridEmail /
+//     createStripeTransfer ─────────────────────────────────────────────────────
+//
+// COMPARED AGAINST THEIR SURVIVORS FIRST, capability by capability. Nothing was
+// dropped on a "no caller" rationale; what each one carried is accounted for
+// below.
+//
+// WHY THEY HAD TO GO AT ALL. This file is "use server", so every export is a
+// publicly reachable endpoint, and the file has no authentication anywhere in
+// it — no getAgentContext, no auth.getUser, no session read. These three also
+// had no caller in the product; they were backward-compat shims (see the header)
+// for callers that no longer exist. createStripeTransfer was the sharp one: a
+// passthrough taking `amount` and `destinationAccountId` FROM THE CALLER, with
+// no gate at all — an unauthenticated endpoint that moves money to an arbitrary
+// Stripe account.
+//
+// ── createStripeTransfer → lib/providers/payment.ts::createTransfer
+//    Body was literally `return await createTransfer(params)`. Nothing to merge.
+//
+// ── sendSendGridEmail → lib/providers/dispatch.ts::dispatchEmail
+//    Its one apparent extra was resolving the outbound sender before delegating.
+//    REDUNDANT, established from the survivor's own contract rather than by
+//    inspection: DispatchEmailParams.from is optional BY DESIGN — "undefined
+//    means resolve it downstream, and sendEmail then walks the tenant credential
+//    / platform env cascade and REFUSES if neither yields a real address." The
+//    shim computed that same value one layer earlier and, via
+//    formatSenderOrUndefined, produced `undefined` in exactly the case where the
+//    survivor refuses. Same outcome, earlier. Nothing to merge.
+//
+// ── sendTwilioSMS → lib/providers/dispatch.ts::dispatchSms
+//    dispatchSms IS the gate (autonomy, suppression, DNC, quiet hours, opt-out,
+//    de-confliction). The shim added only the brokerageId resolution below.
+//
+// ── resolveBrokerageId — THE ONE REAL CAPABILITY THE SURVIVOR LACKS, AND THE
+//    ONE THING THAT WAS DELIBERATELY *NOT* PORTED AS WRITTEN.
+//
+//    DispatchActorContext declares `brokerageId: string` "(always required)", so
+//    deriving the tenant from contacts.brokerage_id when the caller has only a
+//    contactId is genuinely something dispatch cannot do. That much is worth
+//    having. The implementation was not: it returned "" on EVERY failure path —
+//    no contactId, refused read, missing row, thrown error — and handed that ""
+//    to the compliance gate as the tenant.
+//
+//    That is not a lost convenience, it is a compliance bypass.
+//    checkSuppression scopes the suppression list with
+//    `.eq('brokerage_id', params.brokerageId)` on a uuid column, so "" raises
+//    22P02, and that read did not destructure its error: the failure became null
+//    rows and the function returned { suppressed: false }. It FAILED OPEN, on
+//    precisely the gate dispatch documents as the one that catches LIST-ONLY
+//    suppressions the contact-flag gate misses.
+//
+//    So the class was fixed at the gate instead of the convenience being moved:
+//    lib/kernel/compliance/check-suppression.ts now destructures both of its
+//    reads and refuses to send when it cannot read consent. No future caller can
+//    reproduce this by passing a blank or unresolvable tenant. If a caller ever
+//    genuinely needs contact-derived tenancy, it belongs on the dispatch lane as
+//    a resolver that returns null and forces a refusal — never "".
+//
+// generateAvatarVideo and getAvatarVideoStatus REMAIN — they have real consumers
+// (EducationEditor, video-generation, create-video-project) and are untouched.

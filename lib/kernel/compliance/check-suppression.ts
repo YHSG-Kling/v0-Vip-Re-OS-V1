@@ -34,13 +34,26 @@ export async function checkSuppression(
 
   // ── 1. Check contact flags ────────────────────────────────────────────────
   if (params.contactId) {
-    const { data: contact } = await supabase
+    const { data: contact, error: contactError } = await supabase
       .from('contacts')
       .select(
         'email_unsubscribed, email_opt_out, sms_unsubscribed, sms_opt_out, dnc_status, call_stop_flag'
       )
       .eq('id', params.contactId)
       .maybeSingle()
+
+    // FAIL CLOSED, same reasoning as the suppression-list read below: an
+    // unreadable contact is "we do not know whether they opted out", and the
+    // only safe rendering of that is "do not send". Previously the error was
+    // not destructured, so a refused read looked exactly like a contact with
+    // every consent flag clear.
+    if (contactError) {
+      console.error("[checkSuppression] contact consent read refused:", contactError.message)
+      return {
+        suppressed: true,
+        reason: `Contact consent flags unreadable — refusing to send (${contactError.message})`,
+      }
+    }
 
     if (contact) {
       if (params.channel === 'email') {
@@ -79,7 +92,29 @@ export async function checkSuppression(
       query = query.or(orClauses.join(','))
     }
 
-    const { data: suppressionRows } = await query.limit(1)
+    const { data: suppressionRows, error: suppressionError } = await query.limit(1)
+
+    // FAIL CLOSED. This read used to be `const { data } = await query` — the
+    // error was never destructured, so a REFUSED query produced null rows and
+    // fell through to `{ suppressed: false }`. A suppression check that cannot
+    // read the suppression list must not report "not suppressed"; that is the
+    // one answer it is certain it does not have.
+    //
+    // This was reachable, not theoretical. brokerage_id is a uuid column, and
+    // callers reached this with brokerageId = "" (app/actions/external-services
+    // resolveBrokerageId returned "" on every failure path). `.eq('brokerage_id','')`
+    // is 22P02 `invalid input syntax for type uuid` — so the query errored, the
+    // error was swallowed, and the send proceeded. The contact-flag gate above
+    // still caught flag-based opt-outs, but this is the gate dispatch documents
+    // as the one that catches LIST-ONLY entries the flag gate misses, so a
+    // recipient on the suppression list and nowhere else was sent to.
+    if (suppressionError) {
+      console.error("[checkSuppression] suppression list read refused:", suppressionError.message)
+      return {
+        suppressed: true,
+        reason: `Suppression list unreadable — refusing to send (${suppressionError.message})`,
+      }
+    }
 
     if (suppressionRows && suppressionRows.length > 0) {
       return {

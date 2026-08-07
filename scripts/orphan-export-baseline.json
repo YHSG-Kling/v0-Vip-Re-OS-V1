@@ -78,7 +78,6 @@
     "app/actions/dotloop-integration.ts": 1,
     "app/actions/email-campaigns.ts": 1,
     "app/actions/error-handler.ts": 1,
-    "app/actions/external-services.ts": 3,
     "app/actions/fb-audience-templates.ts": 1,
     "app/actions/financial-kernel.ts": 2,
     "app/actions/financials.ts": 1,
@@ -734,7 +733,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 8926,
+  "census": 8923,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -969,7 +968,7 @@
     "app/actions/embed-widgets.ts": 6,
     "app/actions/error-handler.ts": 6,
     "app/actions/exception-center.ts": 5,
-    "app/actions/external-services.ts": 5,
+    "app/actions/external-services.ts": 2,
     "app/actions/fb-audience-templates.ts": 2,
     "app/actions/financial-kernel.ts": 19,
     "app/actions/financials.ts": 8,
@@ -5847,10 +5846,7 @@
     ],
     "app/actions/external-services.ts": [
       "generateAvatarVideo",
-      "getAvatarVideoStatus",
-      "sendTwilioSMS",
-      "sendSendGridEmail",
-      "createStripeTransfer"
+      "getAvatarVideoStatus"
     ],
     "app/actions/fb-audience-templates.ts": [
       "listAudienceTemplates",
@@ -20246,5 +20242,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 370
+  "trulyDead": 367
 }
