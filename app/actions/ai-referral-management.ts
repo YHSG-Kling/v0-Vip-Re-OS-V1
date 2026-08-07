@@ -336,8 +336,35 @@ Consider:
 /**
  * AI-powered referral program analytics
  */
-export async function analyzeReferralProgram(agentId: string) {
+/**
+ * @param requestedAgentId IGNORED for scoping — kept only so existing call
+ *        shapes still compile. The agent is resolved from the SESSION.
+ *
+ * WHY. This is a "use server" export, so it is a public HTTP endpoint, and it
+ * authenticated nothing: it took agentId from the caller, read that agent's
+ * referrals joined to FULL contact rows (`referring_contact:contacts!...(*)` —
+ * every PII column) plus their transactions, and then billed a claude-sonnet-4
+ * call. Anyone could enumerate agent ids to pull another brokerage's referral
+ * book and charge the platform's AI budget to do it.
+ *
+ * A caller-supplied actor id on a server action is the defect this whole file's
+ * neighbours were remediated for; the param is not honoured rather than removed,
+ * so nothing breaks and nothing can pass an identity in either.
+ */
+export async function analyzeReferralProgram(requestedAgentId?: string) {
   try {
+    const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.agentId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    // Refuse rather than silently analysing someone else's book: a caller that
+    // asked for a DIFFERENT agent wanted something it is not entitled to, and
+    // quietly returning its own data would hide that.
+    if (requestedAgentId && requestedAgentId !== ctx.agentId) {
+      return { success: false, error: "Forbidden" }
+    }
+    const agentId = ctx.agentId
     if (!isValidUUID(agentId)) {
       return { success: false, error: "Invalid agent ID" }
     }

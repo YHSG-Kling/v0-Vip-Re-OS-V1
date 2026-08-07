@@ -171,7 +171,20 @@ export async function POST(request: NextRequest) {
         .select("id, agent_id")
         .eq("id", twin_id)
         .maybeSingle()
-      if (!twin) {
+      // OWNERSHIP CHECK. requireAuth establishes WHO is calling but says nothing
+      // about whether this twin is theirs, and `agent_id` was selected above and
+      // then never compared — so any authenticated agent could bind a voice
+      // clone onto another agent's twin (an IDOR on a voice identity, and it
+      // spends the victim's ElevenLabs quota to do it).
+      //
+      // app/actions/twin-studio.ts::attachVoiceToTwin — the server action that
+      // does the same job — has always had this guard
+      // (`twin.agent_id !== ctx.agentId`). This route is the survivor the UI
+      // actually calls, and it was the one missing it.
+      //
+      // 404 rather than 403, deliberately: a distinct "forbidden" would confirm
+      // that a twin id exists, which is itself the enumeration this closes.
+      if (!twin || twin.agent_id !== auth.agentId) {
         return NextResponse.json({ error: "Twin not found" }, { status: 404 })
       }
       await supabase
