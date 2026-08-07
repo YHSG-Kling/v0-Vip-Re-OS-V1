@@ -80,10 +80,43 @@ export async function getTransactionDelays(transactionId: string) {
   return { delays, updates: updates ?? [] }
 }
 
+/**
+ * Mark a transaction's logged delays as having been communicated to the client.
+ *
+ * NOT a duplicate of the `void supabase…update(…)` inside `logTransactionDelay`
+ * above, even though the write is the same: that one only fires when a delay is
+ * being logged *and* `notifyClient` is set. This is the standalone case — the
+ * agent phoned the client about a delay that was already on file. That is a real
+ * distinct operation, so it is kept rather than folded in.
+ *
+ * 🚨 It had NO auth gate, NO tenant scope, and returned the raw PostgREST
+ * response. `communicated_to_client` is a COMPLIANCE ASSERTION — the record of
+ * whether the client was actually told their closing is slipping. An ungated
+ * write keyed on nothing but `transaction_id` let that record be flipped to true
+ * for any transaction, which is the one thing a transparency ledger must not
+ * allow: it does not hide a delay, it manufactures proof that the delay was
+ * disclosed.
+ */
 export async function markDelaysCommunicated(transactionId: string) {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
   const supabase = await createClient()
-  return supabase
+
+  const { data, error } = await supabase
     .from("timeline_transparency")
     .update({ communicated_to_client: true })
     .eq("transaction_id", transactionId)
+    // Tenant anchor — logTransactionDelay always stamps brokerage_id on this row.
+    .eq("brokerage_id", ctx.brokerageId)
+    .select("transaction_id")
+
+  if (error) return { success: false, error: error.message }
+  // Zero rows means there is no delay record for this transaction in the caller's
+  // brokerage. Claiming success would assert a disclosure against nothing.
+  if (!data?.length) return { success: false, error: "No delay record found for this transaction" }
+
+  return { success: true }
 }

@@ -17,6 +17,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { revalidatePath } from "next/cache"
 
 export interface NeighborNotificationCampaign {
@@ -285,9 +286,25 @@ export async function launchNeighborNotification(params: {
 /**
  * Read campaigns for a listing
  */
+/**
+ * Read campaigns for a listing — the caller's own brokerage only.
+ *
+ * GATED + TENANT-SCOPED (was neither). `"use server"`, no session, and
+ * `.eq("listing_id", …)` as the only predicate: a listing uuid returned another
+ * brokerage's neighbour-notification campaign posture, including whether seller
+ * permission was granted and how many neighbours had already been mailed. Only
+ * the table's RLS stood in the way, and this file's other three exports run on
+ * `createServiceClient()` — one refactor away from bypassing it entirely.
+ *
+ * `brokerage_id` is a real column on `neighbor_notification_campaigns` (verified
+ * live), so the predicate is always valid.
+ */
 export async function listNeighborCampaignsForListing(
   listingId: string
 ): Promise<NeighborNotificationCampaign[]> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return []
+
   const supabase = await createClient()
 
   const { data, error } = await supabase
@@ -298,6 +315,7 @@ export async function listNeighborCampaignsForListing(
         "max_neighbors, search_radius_meters, created_at"
     )
     .eq("listing_id", listingId)
+    .eq("brokerage_id", ctx.brokerageId)
     .order("created_at", { ascending: false })
 
   if (error || !data) return []

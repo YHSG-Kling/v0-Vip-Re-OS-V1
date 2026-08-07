@@ -269,9 +269,30 @@ export async function markInvoicePaid(params: {
   const verify = await verifyInvoiceInCallerBrokerage(params.invoiceId, ctx.brokerageId)
   if (!verify.ok) return { success: false, error: "Forbidden" }
 
+  // 🐛 NOT IDEMPOTENT — this minted a fresh PAYOUT CLAIM on every call.
+  //
+  // `status` was already being selected by verifyInvoiceInCallerBrokerage and then
+  // never read. It has to be read, because the insert below writes a
+  // `vendor_earnings` row with status 'available', `vendor_earnings` has NO unique
+  // index on invoice_id (verified live — only the pkey and two non-unique indexes),
+  // and `initiateVendorPayout` pays out whatever is 'available'. So calling this
+  // twice on one invoice — a double-clicked button, a retried request, or a TC
+  // marking paid an invoice the client had already paid online through
+  // confirmVendorInvoiceCheckout (which mints its own earnings row via
+  // recordDirectCollectionEarnings) — doubled the vendor's payable balance against a
+  // single collected invoice. Real money, out the door, on a duplicate row.
+  //
+  // Two guards, because they catch different paths: the status check catches the
+  // repeat of THIS action, and the earnings-existence check catches the
+  // cross-path collision with the direct-collection lane, which leaves the invoice
+  // 'paid' by a route that never touched this function.
+  if (verify.status === "paid") {
+    return { success: true, invoiceId: params.invoiceId }
+  }
+
   const svc = createServiceClient()
 
-  const { error: updateErr } = await svc
+  const { data: updated, error: updateErr } = await svc
     .from("vendor_invoices")
     .update({
       status: "paid",
@@ -281,8 +302,12 @@ export async function markInvoicePaid(params: {
     })
     .eq("id", params.invoiceId)
     .eq("brokerage_id", ctx.brokerageId)
+    .select("id")
 
   if (updateErr) return { success: false, error: updateErr.message }
+  // Zero rows means the invoice moved out from under us between the verify and the
+  // write. It must not report a payment it did not record.
+  if (!updated?.length) return { success: false, error: "Invoice not found" }
 
   // A tenant→vendor CHARGE (billed_to='vendor') is money flowing vendor→brokerage —
   // marking it paid must NOT mint vendor earnings (that would offer the vendor a payout
@@ -291,12 +316,33 @@ export async function markInvoicePaid(params: {
     return { success: true, invoiceId: params.invoiceId }
   }
 
+  // Never mint a second payout claim for an invoice that already has one.
+  // `error` is destructured deliberately: supabase-js resolves a refused read, and
+  // treating a refusal as "no earnings yet" here would mint the duplicate this
+  // guard exists to prevent. A refused read fails CLOSED — no earnings row.
+  const { data: existingEarnings, error: earningsReadErr } = await svc
+    .from("vendor_earnings")
+    .select("id")
+    .eq("invoice_id", params.invoiceId)
+    .limit(1)
+
+  if (earningsReadErr) {
+    return {
+      success: false,
+      error: "Invoice marked paid, but the earnings record could not be verified. Please re-check before paying out.",
+    }
+  }
+
+  if (existingEarnings?.length) {
+    return { success: true, invoiceId: params.invoiceId }
+  }
+
   // Create earnings record so the vendor sees the payment. The platform does NOT take a cut of a
   // vendor's client invoice — vendors are billed separately for platform use — so the vendor keeps the
   // full amount (platform_fee 0, net = gross).
   const gross = verify.total_amount ?? 0
 
-  await svc.from("vendor_earnings").insert({
+  const { error: earningsErr } = await svc.from("vendor_earnings").insert({
     vendor_id: verify.vendor_id,
     brokerage_id: ctx.brokerageId,
     invoice_id: params.invoiceId,
@@ -305,6 +351,15 @@ export async function markInvoicePaid(params: {
     net_amount: gross,
     status: "available",
   })
+
+  // The insert result was previously discarded entirely, so a failed earnings write
+  // reported a fully successful payment and the vendor was simply never credited.
+  if (earningsErr) {
+    return {
+      success: false,
+      error: `Invoice marked paid, but the vendor earnings record failed to save: ${earningsErr.message}`,
+    }
+  }
 
   return { success: true, invoiceId: params.invoiceId }
 }
@@ -579,6 +634,45 @@ export async function getVendorEarningsSummary(
 // completeStripeConnectOnboarding — called from the return URL to mark complete
 // ---------------------------------------------------------------------------
 
+/**
+ * ORPHAN (no caller) — KEPT DELIBERATELY. It is the only implementation that can
+ * turn `stripe_onboarding_complete` back OFF.
+ *
+ * Survivor for the "flip the flag on" half: `app/api/billing/webhook/route.ts`,
+ * the `account.updated` branch → `lib/connections/vendor-stripe.ts:
+ * setStripeOnboardingByAccount`. That path is wired and works, so this is not the
+ * only writer and cannot simply be "wired" as the missing one.
+ *
+ * But it is NOT redundant, because the webhook branch is
+ *     if (details_submitted && charges_enabled) setStripeOnboardingByAccount(..., true)
+ * — it only ever sets TRUE. This function computes the same boolean and passes it
+ * through, so it also DEMOTES. That matters on a money path: when Stripe later
+ * restricts a connected account (expired documents, failed verification,
+ * `charges_enabled` goes false), the webhook leaves the flag true forever, and
+ * `initiateVendorPayout` hard-gates on exactly that flag before calling
+ * `stripe.transfers.create()`. So the payout lane keeps transferring to a
+ * destination that can no longer receive, on a stale flag.
+ *
+ * It is also the synchronous confirmation for a vendor returning from Stripe's
+ * hosted flow — webhooks are eventually consistent, and Connect events have to be
+ * separately enabled on the endpoint for that branch to ever fire.
+ *
+ * Correctly gated (`requireVendorActor(vendorId)` — the caller must BE this vendor).
+ *
+ * → HANDOFF (survivor fix, one line, outside this slice): in
+ *   `app/api/billing/webhook/route.ts` `case "account.updated"`, pass the computed
+ *   boolean instead of gating on it:
+ *     const complete = Boolean(account.details_submitted && account.charges_enabled)
+ *     await setStripeOnboardingByAccount(supabase, account.id, complete)
+ *
+ * → HANDOFF (wiring, outside this slice): `initiateStripeConnectOnboarding` sets
+ *   `return_url: ${appUrl}/vendor/settings?stripe=complete`, but the surface that
+ *   STARTS onboarding is `app/vendor/earnings/stripe-connect.tsx`, and
+ *   `app/vendor/settings/page.tsx` is a bare `redirect('/settings/general')` that
+ *   drops the query string. So the vendor lands somewhere else entirely and nothing
+ *   reads `?stripe=complete`. Point `return_url` at the earnings surface and have it
+ *   call this on that param.
+ */
 export async function completeStripeConnectOnboarding(vendorId: string): Promise<{
   success: boolean
   error?: string

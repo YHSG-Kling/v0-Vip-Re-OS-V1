@@ -8,6 +8,7 @@ import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
 import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 /**
  * AI CALENDAR & SCHEDULING MANAGEMENT
@@ -910,22 +911,36 @@ Create a balanced weekly plan that:
  */
 export async function createDeadlineEventsFromMilestones(params: {
   transactionId: string
-  brokerageId: string
+  /** Ignored — derived from the session. */
+  brokerageId?: string
 }) {
   try {
-    const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return { success: false, error: "Unauthorized" }
+    // TENANT SCOPE (added). The auth check here was real but stopped at "someone
+    // is signed in": `brokerageId` then came from the CALLER and was written
+    // straight into `calendar_events.brokerage_id`. So any signed-in user could
+    // read another transaction's milestone titles, dates and descriptions
+    // (`transaction_id` was the only predicate) and mint system-generated
+    // deadline events **inside a brokerage they do not belong to** — events that
+    // then show up on that tenant's calendar as if the OS had produced them.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const brokerageId = ctx.brokerageId
 
-    if (!isValidUUID(params.transactionId) || !isValidUUID(params.brokerageId)) {
+    const supabase = await createClient()
+
+    if (!isValidUUID(params.transactionId)) {
       return { success: false, error: "Invalid IDs" }
     }
 
-    // Fetch pending milestones with target dates
+    // Fetch pending milestones with target dates — scoped to the caller's tenant.
+    // `transaction_milestones.brokerage_id` is a real column (verified live).
     const { data: milestones, error: mErr } = await supabase
       .from("transaction_milestones")
       .select("id, title, milestone_type, target_date, description")
       .eq("transaction_id", params.transactionId)
+      .eq("brokerage_id", brokerageId)
       .eq("status", "pending")
       .not("target_date", "is", null)
 
@@ -953,7 +968,7 @@ export async function createDeadlineEventsFromMilestones(params: {
       const { error: insertErr } = await supabase
         .from("calendar_events")
         .insert({
-          brokerage_id: params.brokerageId,
+          brokerage_id: brokerageId,
           entity_type: "transaction_milestone",
           entity_id: milestone.id,
           event_type: "deadline",

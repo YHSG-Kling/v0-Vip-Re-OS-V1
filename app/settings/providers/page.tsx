@@ -7,9 +7,6 @@ import {
   saveProviderOverride,
   type ProviderOverrideRow,
 } from '@/app/actions/settings/provider-settings-actions'
-import {
-  setPlatformVideoProvider,
-} from '@/app/actions/settings/global-settings-actions'
 
 // ─── PROVIDER CATALOGUES ──────────────────────────────────────────────────────
 
@@ -65,11 +62,6 @@ export default function ProviderSettingsPage() {
   const [savedChannel, setSavedChannel] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
 
-  // Platform video provider state (superadmin only) — engine is locked to D-ID.
-  const [providerSaving, setProviderSaving] = useState(false)
-  const [providerSaved, setProviderSaved] = useState(false)
-  const [providerError, setProviderError] = useState<string | null>(null)
-
   useEffect(() => {
     void (async () => {
       try {
@@ -123,22 +115,6 @@ export default function ProviderSettingsPage() {
     })
   }
 
-  async function savePlatformProvider() {
-    setProviderSaving(true)
-    setProviderError(null)
-    setProviderSaved(false)
-    try {
-      // Platform video engine is permanently D-ID + ElevenLabs.
-      await setPlatformVideoProvider('did')
-      setProviderSaved(true)
-      setTimeout(() => setProviderSaved(false), 2500)
-    } catch (err) {
-      setProviderError(err instanceof Error ? err.message : 'Save failed')
-    } finally {
-      setProviderSaving(false)
-    }
-  }
-
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -170,7 +146,8 @@ export default function ProviderSettingsPage() {
           <div>
             <h2 className="text-base font-semibold text-gray-900">Platform Video &amp; Voice Provider</h2>
             <p className="mt-0.5 text-sm text-gray-500">
-              Select the video generation stack used by all agents on this platform. The unchosen provider will be hidden from all user UI.
+              The video generation stack used by all agents on this platform. It is platform-locked,
+              so this card is informational — there is nothing to choose and nothing to save.
             </p>
           </div>
           <div className="space-y-3">
@@ -192,18 +169,19 @@ export default function ProviderSettingsPage() {
             </p>
           </div>
 
-          <div className="flex items-center gap-3 pt-1">
-            <button
-              type="button"
-              disabled={providerSaving}
-              onClick={savePlatformProvider}
-              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
-            >
-              {providerSaving ? 'Saving…' : 'Save Provider Settings'}
-            </button>
-            {providerSaved && <span className="text-sm text-green-600 font-medium">Saved</span>}
-            {providerError && <span className="text-sm text-red-600">{providerError}</span>}
-          </div>
+          {/* The "Save Provider Settings" button that used to sit here called
+              `setPlatformVideoProvider('did')` — a server action whose entire body
+              discarded its argument and returned void. It then rendered "Saved",
+              so a superadmin was told a platform setting had been written when
+              nothing had been. Both the no-op and the button are gone; there is no
+              vendor choice on this card to persist.
+
+              Platform-level video config that IS settable — whether the video
+              channel is enabled platform-wide — lives on the superadmin platform
+              console (`lib/platform/platform-providers.ts:setPlatformProviderOverride`,
+              surfaced by PlatformProvidersPanel), which writes real
+              `provider_overrides` rows at scope_type='superadmin'. The VENDOR stays
+              locked to D-ID + ElevenLabs there too. */}
         </div>
       )}
 

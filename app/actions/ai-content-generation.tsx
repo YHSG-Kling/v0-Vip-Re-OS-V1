@@ -3858,24 +3858,40 @@ export async function saveDescriptionToListing(params: {
 
   const supabase = await createClient()
 
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Not authenticated" }
+  // TENANT SCOPE (added). Being signed in was the only check: `auth.getUser()`
+  // established *that* someone was authenticated and nothing more, then both
+  // writes keyed on a caller-supplied id with no brokerage predicate. Any signed-in
+  // user of any brokerage could therefore overwrite ANY listing's
+  // `public_remarks` — the MLS-facing marketing copy for a property they have
+  // nothing to do with — and flip any `ai_generated_content` row to
+  // `compliance_approved: true`. The second one is the worse of the pair: it is a
+  // compliance attestation, and it was settable by a stranger.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
 
-  // 1. Write the approved text to the listing's public_remarks field
-  const { error: listingError } = await supabase
+  // 1. Write the approved text to the listing's public_remarks field.
+  //    `.select("id")` makes the scope enforceable: a scoped UPDATE that matches
+  //    nothing is a successful no-op in postgrest, so without reading back the
+  //    affected row this would report success while writing nothing.
+  const { data: updatedListing, error: listingError } = await supabase
     .from("listings")
     .update({
       public_remarks: params.approvedText.trim(),
       updated_at: new Date().toISOString(),
     })
     .eq("id", params.listingId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .select("id")
 
   if (listingError) {
     console.error("[saveDescriptionToListing] Failed to update listing:", listingError)
     return { success: false, error: listingError.message }
   }
+  if (!updatedListing || updatedListing.length === 0) {
+    return { success: false, error: "Listing not found in your brokerage" }
+  }
 
-  // 2. Mark the ai_generated_content record as approved
+  // 2. Mark the ai_generated_content record as approved — same scope.
   await supabase
     .from("ai_generated_content")
     .update({
@@ -3884,6 +3900,7 @@ export async function saveDescriptionToListing(params: {
       updated_at: new Date().toISOString(),
     })
     .eq("id", params.contentId)
+    .eq("brokerage_id", ctx.brokerageId)
 
   revalidatePath(`/dashboard/listings/${params.listingId}`)
   revalidatePath(`/dashboard/listings/${params.listingId}/lifecycle`)

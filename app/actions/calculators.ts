@@ -597,9 +597,23 @@ async function trackToolUsage(data: {
   }
 }
 
-// Generate or retrieve anonymous visitor ID
+// Generate an anonymous visitor ID.
+//
+// This id is not decoration: `saved_calculations` rows are filed under it and
+// `getSavedCalculations` reads them BACK by it, so it is the only credential
+// standing between an anonymous caller and someone else's saved calculation
+// (including the email address they saved it with). It was
+// `visitor_${Date.now()}_${Math.random().toString(36).substring(7)}` —
+// a guessable millisecond timestamp plus ~5-6 base-36 characters. That is the
+// same too-weak-to-be-a-bearer-credential shape the calculator share token was
+// removed for. Now a v4 uuid, matching lib/tools/visitor-id.ts, which is what the
+// browser side already mints.
 function generateVisitorId(): string {
-  return `visitor_${Date.now()}_${Math.random().toString(36).substring(7)}`
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID()
+  }
+  // Node 18 without the global; never the timestamp shape.
+  return `visitor-${Array.from({ length: 4 }, () => Math.random().toString(36).slice(2, 10)).join("")}`
 }
 
 // ============================================
@@ -623,15 +637,39 @@ function generateVisitorId(): string {
  * product has one valuation method rather than two.
  *
  * runAiCma is brokerage-scoped and its adjustment rates are state-specific, so
- * `brokerageId` and `state` are required inputs. They are NOT derivable from an
- * address string and are not substituted from any other id space — the caller
- * must supply them.
+ * a brokerage and a `state` are required inputs. `state` is not derivable from an
+ * address string and is not substituted from any other id space — the caller must
+ * supply it.
+ *
+ * 🚨 THE BROKERAGE IS NO LONGER THE CALLER'S TO NAME.
+ * This is a `"use server"` export, i.e. a public HTTP endpoint, and it is
+ * deliberately unauthenticated (a lead-magnet calculator that demanded a login
+ * would not be one). It used to take `brokerageId` as a raw uuid parameter and
+ * hand it to `runAiCma`, which calls `sourceCompsForCma` — PAID comparable-sales
+ * providers — and then an LLM for the narrative. So any anonymous caller could
+ * run unlimited paid comp lookups and model calls **attributed to any brokerage
+ * whose uuid they had**. The brokerage is now RESOLVED, never asserted:
+ *
+ *   1. from the session when the caller is signed in (the dashboard calculators);
+ *   2. otherwise from `agentSlug` — `agents.public_slug`, the same public handle
+ *      /home-value/[agentSlug] already personalises itself from. A public handle
+ *      is a thing the visitor legitimately holds; a tenant uuid is not.
+ *   3. neither → refused.
+ *
+ * 🚩 STILL OPEN (needs an owner decision, deliberately not guessed): even with the
+ * brokerage pinned to a real public surface, this endpoint has NO RATE LIMIT. One
+ * script pointed at one agent's slug can still burn that brokerage's comp-provider
+ * quota and model spend. There is no rate-limit helper in this repo to reach for.
+ * The sibling public lane (submitHomeValueRequest) has the same exposure.
  */
 export async function calculateHomeValue(
   address: string,
   opts: {
-    /** Required by runAiCma — the brokerage the CMA is run under. */
-    brokerageId: string
+    /**
+     * The agent's `public_slug`. Required on public surfaces; ignored when the
+     * caller is authenticated (the session's brokerage wins).
+     */
+    agentSlug?: string
     /** Required — 2-letter. runAiCma's adjustment rates are per state. */
     state: string
     city?: string | null
@@ -654,13 +692,36 @@ export async function calculateHomeValue(
 
   const vid = opts.visitorId || generateVisitorId()
 
+  // ── Resolve the brokerage this CMA (and its paid provider spend) runs under ──
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const session = await getAgentContext()
+  let brokerageId: string | null =
+    session.isAuthenticated && session.brokerageId ? session.brokerageId : null
+
+  if (!brokerageId && opts.agentSlug?.trim()) {
+    const { getAgentBySlug } = await import("@/app/actions/home-value")
+    const agent = await getAgentBySlug(opts.agentSlug.trim())
+    // getAgentBySlug returns null both for "no such slug" and for a refused read
+    // — either way there is no brokerage, and this must fail closed rather than
+    // proceed against a guessed one.
+    brokerageId = agent?.brokerage_id ?? null
+  }
+
+  if (!brokerageId) {
+    return {
+      success: false,
+      error: "This calculator must be opened from an agent's page.",
+      visitorId: vid,
+    }
+  }
+
   try {
     const [property, propertyData, cma] = await Promise.all([
       idxClient.searchProperties(address),
       batchData.searchByAddress(address, opts.city ?? "", opts.state),
       runAiCma({
         mode: "standard",
-        brokerageId: opts.brokerageId,
+        brokerageId,
         subject: {
           address,
           city: opts.city ?? null,
@@ -1020,14 +1081,42 @@ export async function saveCalculation(data: {
 // getSavedCalculations, keyed by the persisted visitor id in lib/tools/visitor-id).
 
 
+/**
+ * Retrieve the calculations saved under a visitor id.
+ *
+ * ORPHAN — no caller yet. Not a duplicate: it is the read half of
+ * `saveCalculation`, and nothing else reads `saved_calculations`. The reason it
+ * has no caller is recorded in lib/tools/visitor-id.ts — the calculators screen
+ * used to mint a throwaway id per component, so there was never an id to call
+ * this with. That half is fixed (`getOrCreateVisitorId()` persists one id per
+ * browser); the missing piece is now purely UI. See the handoff in
+ * docs/orphan-burndown-w2s2.md.
+ *
+ * Public by design (these are the no-login lead-magnet calculators), so the
+ * visitor id IS the credential — and RLS does not help: the live SELECT policy on
+ * saved_calculations is
+ * `is_platform_admin() OR brokerage_id IS NULL OR has_brokerage_access(...)`, and
+ * saveCalculation never sets brokerage_id, so every row is anon-readable by that
+ * middle clause. Two consequences handled here:
+ *   · an empty/blank id is refused outright, so this can never degrade into
+ *     `.eq("visitor_id", "")` matching rows saved with a missing id;
+ *   · the columns are enumerated instead of `select("*")`. user_email and
+ *     user_name are deliberately NOT returned — a retrieval panel does not need
+ *     them, and returning them turned a guessed visitor id into a PII disclosure
+ *     rather than just a calculation disclosure.
+ */
 export async function getSavedCalculations(visitorId: string) {
   const supabase = await createClient()
+
+  if (!visitorId?.trim()) {
+    return { success: false, calculations: [] }
+  }
 
   try {
     const { data, error } = await supabase
       .from("saved_calculations")
-      .select("*")
-      .eq("visitor_id", visitorId)
+      .select("id, tool_name, calculation_data_json, created_at")
+      .eq("visitor_id", visitorId.trim())
       .order("created_at", { ascending: false })
       .limit(50)
 

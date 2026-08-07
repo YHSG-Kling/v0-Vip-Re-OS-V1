@@ -248,9 +248,29 @@ export async function POST(request: NextRequest) {
       // ─── STRIPE CONNECT: ACCOUNT UPDATED (onboarding complete) ───────────────
       case "account.updated": {
         const account = event.data.object as Stripe.Account
-        if (account.details_submitted && account.charges_enabled) {
-          await setStripeOnboardingByAccount(supabase, account.id, true)
-        }
+        // PASS the computed boolean, do not GATE on it. This branch used to be
+        // `if (details_submitted && charges_enabled) set(..., true)` — it could
+        // only ever promote. When Stripe later RESTRICTS a connected account
+        // (expired verification documents, failed KYC, charges_enabled flipping
+        // back to false) that fires another account.updated with the flag false,
+        // and the old shape simply ignored it: `stripe_onboarding_complete`
+        // stayed true forever.
+        //
+        // That is a money defect, not a cosmetic one. `initiateVendorPayout`
+        // hard-gates on `connect.onboardingComplete` immediately before
+        // `stripe.transfers.create()`, so a stale-true flag kept the payout lane
+        // transferring to a destination that can no longer receive.
+        //
+        // Merged from app/actions/vendor-payments.ts:completeStripeConnectOnboarding,
+        // which computed the same boolean and passed it through — the only
+        // implementation in the tree that could DEMOTE. (Orphan burn-down w2s2:
+        // the orphan held the correct behaviour and the wired survivor held the
+        // hole — the same shape as the voice-clone ownership guard in wave 1.)
+        await setStripeOnboardingByAccount(
+          supabase,
+          account.id,
+          Boolean(account.details_submitted && account.charges_enabled),
+        )
         break
       }
 

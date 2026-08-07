@@ -2,54 +2,144 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
+import { resolveWriteContext } from "@/lib/kernel/identity"
+import { isValidUUID } from "@/lib/validations"
+
+// ============================================
+// TENANT GATE (w2s3)
+// ============================================
+//
+// This module is `"use server"`, so every export is a public HTTP endpoint,
+// and every one of them takes the subject id (`agentId` / `contactId`) FROM
+// THE CALLER. Before this pass nothing in the file authenticated at all —
+// the two writers below (`aggregateValueDelivered`, `trackLeadValueJourney`)
+// would upsert a row keyed on whatever `agent_id` / `contact_id` the caller
+// named.
+//
+// `agents.id` and `users.id` are DISJOINT id spaces in this schema, so the
+// gate resolves the caller's agent row rather than substituting one id for
+// the other.
+
+/**
+ * Authenticate, then prove the named agent is inside the caller's brokerage.
+ * Returns the resolved brokerage so writers can stamp the tenant column.
+ * Fails CLOSED — a refused read is rejected, not read as "no such agent".
+ */
+async function authorizeAgent(
+  agentId: string,
+): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {
+  if (!isValidUUID(agentId)) return { ok: false, error: "Invalid agent ID" }
+
+  const ctx = await resolveWriteContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from("agents")
+    .select("id, brokerage_id")
+    .eq("id", agentId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
+
+  if (error) return { ok: false, error: "Could not verify agent scope" }
+  if (!data) return { ok: false, error: "Agent not found in your brokerage" }
+  return { ok: true, brokerageId: ctx.brokerageId }
+}
 
 // ============================================
 // VALUE METRICS AGGREGATION
 // ============================================
 
 export async function aggregateValueDelivered(agentId: string, date: Date) {
-  const supabase = await createClient()
-  const dateStr = date.toISOString().split("T")[0]
+  const gate = await authorizeAgent(agentId)
+  if (!gate.ok) return { success: false, error: gate.error, data: null, totalValue: 0 }
+  const { brokerageId } = gate
 
-  // Pull from multiple sources (would need actual tracking tables)
+  const supabase = await createClient()
+
+  // One window for all three reads. The previous version built a different
+  // window per source: two used a date-only upper bound (a string, compared
+  // against timestamptz) and the third used `date`'s actual time-of-day, so
+  // a call made at 14:00 counted messages over a 24h window ending at 14:00
+  // the next day while counting tool sessions over the calendar day.
+  const dayStart = new Date(date)
+  dayStart.setUTCHours(0, 0, 0, 0)
+  const dayEnd = new Date(dayStart.getTime() + 86400000)
+  const dateStr = dayStart.toISOString().split("T")[0]
+  const startIso = dayStart.toISOString()
+  const endIso = dayEnd.toISOString()
+
   const [toolUsage, educationalContent, helpfulResponses] = await Promise.all([
     // Tool usage (from public tools if exists)
     // tool_usage_sessions has no date/email_captured columns — filter the day via
     // created_at range (timestamptz).
+    // tenant anchor: unfiltered, this counted EVERY brokerage's tool sessions
+    // into this agent's value metric.
     supabase
       .from("tool_usage_sessions")
-      .select("*")
-      .gte("created_at", dateStr)
-      .lt("created_at", new Date(new Date(dateStr).getTime() + 86400000).toISOString().slice(0, 10)),
+      // `session_id` does NOT exist on this table (verified live) — the old
+      // `select("*")` + `t.visitor_id || t.session_id` fallback silently read
+      // undefined. Selecting it explicitly would now be a hard column error.
+      .select("visitor_id")
+      .eq("brokerage_id", brokerageId)
+      .gte("created_at", startIso)
+      .lt("created_at", endIso),
 
     // Educational content downloads
     // pass 14: educational_content_downloads was a PHANTOM table — the real
     // download ledger is document_downloads (downloaded_at timestamptz).
-    supabase.from("document_downloads").select("*").gte("downloaded_at", dateStr).lt("downloaded_at", new Date(new Date(dateStr).getTime() + 86400000).toISOString().slice(0, 10)),
+    // tenant anchor: same cross-tenant leak as tool_usage_sessions above.
+    supabase
+      .from("document_downloads")
+      .select("id")
+      .eq("brokerage_id", brokerageId)
+      .gte("downloaded_at", startIso)
+      .lt("downloaded_at", endIso),
 
     // Helpful AI responses (from messages)
     supabase
       .from("messages")
-      .select("*")
+      .select("conversation_id")
       // tenant anchor (scope burn-down): this is a per-agent value metric —
       // count only the AI responses sent on this agent's conversations.
       .eq("agent_id", agentId)
       .eq("sender_type", "ai")
-      .gte("created_at", dateStr)
-      .lt("created_at", new Date(date.getTime() + 86400000).toISOString()),
+      .gte("created_at", startIso)
+      .lt("created_at", endIso),
   ])
+
+  // supabase-js RESOLVES a refused query, so `.data` would be null and every
+  // count would fall to 0 — and this function would then UPSERT those zeros
+  // as the authoritative daily record for the agent. A partial read must not
+  // be written as a complete day.
+  const readError =
+    toolUsage.error?.message ??
+    educationalContent.error?.message ??
+    helpfulResponses.error?.message
+  if (readError) {
+    return {
+      success: false,
+      error: `Could not read the day's value sources — ${readError}`,
+      data: null,
+      totalValue: 0,
+    }
+  }
+
+  const toolRows = toolUsage.data ?? []
+  const downloadRows = educationalContent.data ?? []
+  const messageRows = helpfulResponses.data ?? []
 
   // Calculate value in dollars
   const valueCalculation = {
-    free_tools_used_count: toolUsage.data?.length || 0,
-    guides_downloaded_count: educationalContent.data?.length || 0,
-    questions_answered_count: helpfulResponses.data?.length || 0,
+    free_tools_used_count: toolRows.length,
+    guides_downloaded_count: downloadRows.length,
+    questions_answered_count: messageRows.length,
     personalized_reports_sent: 0, // Would track CMAs sent
 
     // Value calculations
-    free_tools_value: (toolUsage.data?.length || 0) * 50, // $50 per tool use
-    guides_value: (educationalContent.data?.length || 0) * 100, // $100 per guide
-    help_value: (helpfulResponses.data?.length || 0) * 25, // $25 per answer
+    free_tools_value: toolRows.length * 50, // $50 per tool use
+    guides_value: downloadRows.length * 100, // $100 per guide
+    help_value: messageRows.length * 25, // $25 per answer
     reports_value: 0, // $500 per CMA
   }
 
@@ -60,30 +150,39 @@ export async function aggregateValueDelivered(agentId: string, date: Date) {
     valueCalculation.reports_value
 
   // Get unique recipients
-  const uniqueRecipients = new Set([
-    ...(toolUsage.data?.map((t: any) => t.visitor_id || t.session_id) || []),
-    ...(helpfulResponses.data?.map((m: any) => m.conversation_id) || []),
-  ])
+  const uniqueRecipients = new Set(
+    [
+      ...toolRows.map((t: any) => t.visitor_id),
+      ...messageRows.map((m: any) => m.conversation_id),
+    ].filter(Boolean),
+  )
 
-  // Store aggregated value
+  // Store aggregated value.
+  // onConflict matches the live constraint `value_delivered_daily_agent_id_date_key
+  // UNIQUE (agent_id, date)` (verified against project hrvaqgvukzxfskkcrwbt).
   const { data, error } = await supabase
     .from("value_delivered_daily")
     .upsert(
       {
         date: dateStr,
         agent_id: agentId,
+        brokerage_id: brokerageId, // tenant stamp — column existed but was never set
         ...valueCalculation,
         total_value_delivered_dollars: total_value_delivered,
         recipients_count: uniqueRecipients.size,
         cost_to_deliver: 0, // Calculate actual costs
       },
-      { onConflict: "date,agent_id" },
+      { onConflict: "agent_id,date" },
     )
     .select()
     .single()
 
+  if (error) {
+    return { success: false, error: error.message, data: null, totalValue: total_value_delivered }
+  }
+
   return {
-    success: !error,
+    success: true,
     data,
     totalValue: total_value_delivered,
   }
@@ -177,11 +276,29 @@ export async function calculateTrustCapital(agentId: string, periodDays: number 
 // ============================================
 
 export async function trackLeadValueJourney(contactId: string) {
+  if (!isValidUUID(contactId)) return null
+
+  const ctx = await resolveWriteContext()
+  if (!ctx.isAuthenticated) return null
+
   const supabase = await createClient()
 
-  const { data: contact } = await supabase.from("contacts").select("*, transactions(*)").eq("id", contactId).single()
+  // Tenant anchor: the read is what authorises the write below, so it is
+  // scoped to the caller's brokerage. Without `.eq("brokerage_id", …)` this
+  // endpoint upserted a `lead_value_journey` row for any contact id in any
+  // brokerage that the caller could guess.
+  // `.maybeSingle()` rather than `.single()`: `.single()` returns an error
+  // (PGRST116) for the zero-row case, which the un-destructured `{ data }`
+  // then flattened into the same `null` as a genuine read failure.
+  const { data: contact, error: contactError } = await supabase
+    .from("contacts")
+    .select("id, created_at, transactions(*)")
+    .eq("id", contactId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
 
-  if (!contact) return null
+  // Fail closed — a refused read is not "no such contact".
+  if (contactError || !contact) return null
 
   // Calculate value received (simplified - would need actual tracking)
   const toolsUsed: string[] = [] // Track from tool_usage_sessions
@@ -208,6 +325,7 @@ export async function trackLeadValueJourney(contactId: string) {
     .upsert(
       {
         contact_id: contactId,
+        brokerage_id: ctx.brokerageId, // tenant stamp — column existed but was never set
         first_interaction_date: firstInteraction.toISOString().split("T")[0],
         total_value_received: valueReceived,
         touchpoints_count: 0, // Track from interactions

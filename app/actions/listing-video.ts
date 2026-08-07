@@ -385,18 +385,66 @@ async function validateThemFirstContent(content: string, contentType: string) {
 // TRACK VIDEO VIEW
 // ============================================
 
-export async function trackVideoView(projectId: string) {
+/**
+ * Bump a listing video's view counter.
+ *
+ * DELIBERATELY UNAUTHENTICATED — a listing video is watched by prospects on
+ * public/portal surfaces who have no agent session, so requiring one would
+ * defeat the metric. What is enforced instead:
+ *
+ *  1. The project must EXIST and be genuinely watchable (`video_url` set).
+ *     `public.increment` is SECURITY DEFINER with a hard (table, column)
+ *     allow-list (verified live), so it bypasses RLS entirely and would
+ *     otherwise happily increment any `ai_video_projects` row id — including
+ *     drafts and rows in other brokerages — and its silence/failure would
+ *     also confirm or deny that a given uuid exists.
+ *  2. The rpc error is destructured. Previously the whole call was
+ *     fire-and-forget, so a broken counter looked identical to a working one.
+ *
+ * KNOWN GAP, deliberately left: there is no per-viewer dedupe, so a caller in
+ * a loop can still inflate `view_count` on a real, published video. Closing
+ * that needs a `video_views(project_id, viewer_fingerprint, viewed_at)` ledger
+ * with a unique index on (project_id, viewer_fingerprint, day) and the counter
+ * derived from it — a migration plus a fingerprint source, neither of which
+ * exists yet. Recorded rather than half-built.
+ */
+export async function trackVideoView(
+  projectId: string,
+): Promise<{ success: boolean; error?: string }> {
   if (!isValidUUID(projectId)) {
-    return
+    return { success: false, error: 'Invalid project ID' }
   }
 
   const supabase = await createClient()
 
-  await supabase.rpc('increment', {
+  const { data: project, error: lookupError } = await supabase
+    .from('ai_video_projects')
+    .select('id, video_url')
+    .eq('id', projectId)
+    .maybeSingle()
+
+  // Fail closed: a refused read is not "no such video".
+  if (lookupError) {
+    return { success: false, error: 'Could not verify the video' }
+  }
+  // Same response for "absent" and "not yet rendered" so the endpoint is not
+  // an existence oracle over the uuid space.
+  if (!project?.video_url) {
+    return { success: false, error: 'Video not available' }
+  }
+
+  const { error: incrementError } = await supabase.rpc('increment', {
     table_name: 'ai_video_projects',
     row_id: projectId,
     column_name: 'view_count',
   })
+
+  if (incrementError) {
+    console.error('trackVideoView: increment failed', incrementError)
+    return { success: false, error: 'Could not record the view' }
+  }
+
+  return { success: true }
 }
 
 // ============================================

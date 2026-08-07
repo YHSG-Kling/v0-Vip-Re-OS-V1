@@ -290,16 +290,36 @@ export async function getCommunicationStats(params?: { agentId?: string; startDa
   }
 }
 
+/**
+ * Recent message history for a contact.
+ *
+ * GATED + TENANT-SCOPED (was neither). `"use server"` makes this a public HTTP
+ * endpoint and it had no session: `.eq("contact_id", contactId)` was the only
+ * predicate, so a contact uuid returned **the full bodies of every SMS and email
+ * exchanged with that person** — the most sensitive read in this file. The
+ * `messages` table's own RLS was the sole barrier, which is precisely the
+ * assumption this codebase has already been burned by; the app layer now states
+ * the invariant too, so a future swap to a service client cannot silently open it.
+ *
+ * `limit` is clamped — it went straight into `.limit()`.
+ */
 export async function getRecentCommunications(contactId: string, limit = 20) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized", communications: [] }
+    }
+
+    const capped = Math.min(Math.max(Math.trunc(limit) || 20, 1), 200)
     const supabase = await createClient()
 
     const { data, error } = await supabase
       .from("messages")
       .select("*")
       .eq("contact_id", contactId)
+      .eq("brokerage_id", ctx.brokerageId)
       .order("created_at", { ascending: false })
-      .limit(limit)
+      .limit(capped)
 
     if (error) throw error
 

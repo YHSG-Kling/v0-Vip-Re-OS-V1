@@ -452,34 +452,36 @@ export async function deleteKnowledgeArticle(id: string) {
 // RPC, instead of the read-modify-write that lost a vote whenever two people
 // rated the same article at once.
 
-/**
- * Increment view count for an article
- */
-export async function trackArticleView(id: string) {
-  const supabase = await createClient()
-
-  const { error } = await supabase.rpc('increment', {
-    row_id: id,
-    table_name: 'knowledge_articles',
-    column_name: 'view_count',
-  })
-
-  if (error) {
-    // Fallback to manual increment
-    const { data: article } = await supabase
-      .from('knowledge_articles')
-      .select('view_count')
-      .eq('id', id)
-      .single()
-
-    if (article) {
-      await supabase
-        .from('knowledge_articles')
-        .update({ view_count: (article.view_count || 0) + 1 })
-        .eq('id', id)
-    }
-  }
-}
+// trackArticleView was a DUPLICATE of the view bump inside
+// app/actions/support.ts:getHelpArticle, which is what the Help centre actually
+// calls — exactly the same relationship rateArticle had with voteArticleHelpful
+// above, in the same file, resolved the same way.
+//
+// The survivor is strictly better on every axis, so there was nothing to merge:
+//   · it is AUTHENTICATED (getAgentContext + isAuthenticated). This one had no
+//     gate at all, and as a "use server" export that made it a public,
+//     anonymous, unbounded view-count inflation primitive for any article uuid.
+//   · it is TENANT-CHECKED (`data.brokerage_id !== ctx.brokerageId → null`) and
+//     published-only. This one bumped any id, in any brokerage, in any status.
+//   · its bump is COUPLED to an article actually being read and returned, which
+//     is what a view count is supposed to mean. This one counted a view that
+//     nobody had.
+//
+// The one thing this version had that the survivor does not is the
+// read-modify-write fallback below the RPC — and that is a defect, not a
+// capability: it is the same lost-update race that got rateArticle's version
+// replaced, and it ran on the session client, where knowledge_articles UPDATE is
+// admin-gated, so it would have silently done nothing anyway. Per the rule, the
+// implementation was not ported.
+//
+// public.increment is allowlisted server-side (verified live: it raises unless
+// the (table, column) pair is one of four counters), so the generic RPC this used
+// was not itself an "increment any column anywhere" hole. That question, raised in
+// docs/orphan-burndown-slice3.md, is now answered and closed.
+//
+// ⚠️ CENSUS: this is a deliberate capability collapse with the survivor named
+// (app/actions/support.ts:getHelpArticle). scripts/orphan-export-baseline.json
+// must be re-baselined for it, the same way resumeCampaignSequence was.
 
 // ============================================================================
 // Help Topic Actions (Admin)

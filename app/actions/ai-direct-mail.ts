@@ -740,20 +740,59 @@ export async function submitToPrintFulfillment(params: {
 // ============================================
 // 8. TRACK CAMPAIGN RESPONSES
 // ============================================
+/**
+ * Record a response against a mailed piece, addressed by its printed tracking id.
+ *
+ * GATED (was not) — this is the `trackDelivery` class. `"use server"` makes it a
+ * public endpoint, and its only key was `tracking_id`, a low-entropy string
+ * minted as `dm-<Date.now()>-<9 base36 chars>` and *printed on the mail piece*.
+ * Anyone holding or guessing one could post unlimited "qr_scan" / "call" /
+ * "form_submission" rows against another brokerage's paid campaign. Those rows
+ * are the numerator of the response-rate and cost-per-response figures
+ * `getDirectMailAnalytics` and `aiAnalyzeCampaignPerformance` report, so the
+ * hole was a write into someone else's marketing P&L, not just noise.
+ *
+ * Now: authenticated, and the campaign must belong to the caller's own brokerage.
+ * The tenant id passed to `logResponse` still comes from the campaign row (never
+ * from the caller), and it is now cross-checked against the session.
+ *
+ * NOTE for whoever wires this: the anonymous QR path does NOT come through here —
+ * `/api/qr/scan?slug=…` records scans on its own and is the surface built for
+ * untrusted visitors. This action is the operator-side logger (an agent recording
+ * "this seller called off the postcard"), which is why gating it is correct
+ * rather than restrictive. If a genuinely public response sink is ever needed, it
+ * belongs in a route handler with its own rate limiting and a high-entropy token,
+ * not on a server action.
+ */
 export async function trackCampaignResponse(params: {
   trackingId: string
   responseType: "qr_scan" | "call" | "website_visit" | "form_submission"
   metadata?: any
 }) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Not signed in" }
+    }
+
+    if (typeof params.trackingId !== "string" || params.trackingId.trim().length === 0) {
+      return { success: false, error: "Invalid tracking ID" }
+    }
+
     const supabase = await createClient()
 
-    const { data: campaign } = await supabase
+    const { data: campaign, error: campaignError } = await supabase
       .from("direct_mail_campaigns")
       .select("id, brokerage_id")
       .eq("tracking_id", params.trackingId)
+      .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle()
 
+    // A refused read is not "no such campaign". Report it rather than letting a
+    // blocked query look like a bad tracking id.
+    if (campaignError) {
+      return { success: false, error: `Could not look up the campaign: ${campaignError.message}` }
+    }
     if (!campaign) {
       return { success: false, error: "Campaign not found" }
     }
@@ -789,10 +828,30 @@ export async function trackCampaignResponse(params: {
 // ============================================
 // 9. GET CAMPAIGN ANALYTICS
 // ============================================
-export async function getDirectMailAnalytics(params: { agentId: string; campaignId?: string }) {
+/**
+ * Per-campaign spend / response / cost-per-response for the calling agent.
+ *
+ * GATED + SESSION-SCOPED (was neither). This is a `"use server"` export, so a
+ * public HTTP endpoint, and it authenticated nothing: it filtered on a
+ * caller-supplied `agent_id` and handed back that agent's whole paid-mail book —
+ * campaign names, quantities, per-piece and total spend, response counts. One
+ * uuid read another brokerage's marketing budget.
+ *
+ * `agentId` is now ignored and derived from the session, matching the already
+ * remediated sibling `getDirectMailCampaigns` in this file. The brokerage
+ * predicate is added too: a mismatched uuid is a *valid* query that returns zero
+ * rows, so tenant scope has to be stated, not assumed from the agent id.
+ */
+export async function getDirectMailAnalytics(params: {
+  /** Ignored — derived from the session. */
+  agentId?: string
+  campaignId?: string
+}) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not signed in" }
+    if (!ctx.agentId || !ctx.brokerageId) {
+      return { success: false, error: "No agent profile is attached to this account" }
     }
 
     const supabase = await createClient()
@@ -800,13 +859,22 @@ export async function getDirectMailAnalytics(params: { agentId: string; campaign
     let query = supabase
       .from("direct_mail_campaigns")
       .select("*, responses:direct_mail_responses(count)")
-      .eq("agent_id", params.agentId)
+      .eq("agent_id", ctx.agentId)
+      .eq("brokerage_id", ctx.brokerageId)
 
     if (params.campaignId) {
+      if (!isValidUUID(params.campaignId)) {
+        return { success: false, error: "Invalid campaign ID" }
+      }
       query = query.eq("id", params.campaignId)
     }
 
-    const { data: campaigns } = await query
+    // Destructure `error`: supabase-js RESOLVES a refused read, so `{ data }`
+    // alone reports a blocked query as "this agent has no campaigns".
+    const { data: campaigns, error } = await query
+    if (error) {
+      return { success: false, error: `Could not read campaigns: ${error.message}` }
+    }
 
  const analytics = campaigns?.map((c) => {
   const responseCount = c.responses?.[0]?.count || 0
@@ -837,14 +905,36 @@ export async function getDirectMailAnalytics(params: { agentId: string; campaign
 // ============================================
 // 10. AI CAMPAIGN PERFORMANCE ANALYZER
 // ============================================
-export async function aiAnalyzeCampaignPerformance(params: { agentId: string; brokerageId: string }) {
+/**
+ * AI read of the calling agent's direct-mail performance.
+ *
+ * GATED + SESSION-SCOPED (was neither). `canAccessFeature(params.agentId, …)` is
+ * an *entitlement* check, not an authentication check — it answers "is this
+ * agent's plan allowed direct mail", which a caller satisfies simply by naming an
+ * agent whose plan is. With that as the only barrier the endpoint would, for any
+ * uuid supplied by anyone: read that agent's entire paid-mail history including
+ * spend and response rows, serialise the whole thing into a prompt, and bill a
+ * gpt-4o-mini call to the platform. Unauthenticated AI spend on top of an
+ * unauthenticated cross-tenant read.
+ *
+ * `agentId`/`brokerageId` are now ignored and derived from the session; the
+ * entitlement gate is kept and now runs against the *resolved* agent.
+ */
+export async function aiAnalyzeCampaignPerformance(params?: {
+  /** Ignored — derived from the session. */
+  agentId?: string
+  /** Ignored — derived from the session. */
+  brokerageId?: string
+}) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not signed in" }
+    if (!ctx.agentId || !ctx.brokerageId) {
+      return { success: false, error: "No agent profile is attached to this account" }
     }
 
-    // ── Kernel Gate: canAccessFeature ──
-    const access = await canAccessFeature(params.agentId, "direct_mail")
+    // ── Kernel Gate: canAccessFeature (entitlement, on the RESOLVED agent) ──
+    const access = await canAccessFeature(ctx.agentId, "direct_mail")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Direct mail feature not available" }
     }
@@ -852,11 +942,22 @@ export async function aiAnalyzeCampaignPerformance(params: { agentId: string; br
     const supabase = await createClient()
 
     // Get all campaigns with responses
-    const { data: campaigns } = await supabase
+    const { data: campaigns, error: campaignsError } = await supabase
       .from("direct_mail_campaigns")
       .select("*, responses:direct_mail_responses(*)")
-      .eq("agent_id", params.agentId)
+      .eq("agent_id", ctx.agentId)
+      .eq("brokerage_id", ctx.brokerageId)
       .not("mailing_date", "is", null)
+
+    // Do not pay for a model call on a read that was refused — a blocked query
+    // and an empty campaign list are the same shape here, and only one of them
+    // is worth analysing.
+    if (campaignsError) {
+      return { success: false, error: `Could not read campaigns: ${campaignsError.message}` }
+    }
+    if (!campaigns || campaigns.length === 0) {
+      return { success: false, error: "No mailed campaigns yet — nothing to analyse." }
+    }
 
     const { object: analysis } = await generateObject({
       model: resolveModel("openai/gpt-4o-mini"),

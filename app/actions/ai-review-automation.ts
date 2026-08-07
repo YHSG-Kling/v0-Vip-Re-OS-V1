@@ -64,6 +64,71 @@ async function resolveNoteBrokerageId(
  */
 const AI_NOTE_SOURCE = "ai_assistant"
 
+/** Roles that may act FOR another agent, and only inside their own brokerage. */
+const SUPERVISOR_ROLES = new Set([
+  "broker", "broker_admin", "admin", "superadmin", "team_lead", "tc", "transaction_coordinator",
+])
+
+/**
+ * Session gate for this file's actions.
+ *
+ * Every export here is `"use server"` — a publicly reachable HTTP endpoint — and
+ * every one of them takes `agentId` (an `agents.id`) FROM THE CALLER. Ungated,
+ * a single guessed uuid was enough to (a) read another brokerage's contact
+ * record joined to its transactions and interactions, (b) spend the platform's
+ * model budget on a gpt-4o call, and (c) write `ai_assistant_notes` and
+ * `lifecycle_events` rows into that tenant's ledger. None of those three needed
+ * a session.
+ *
+ * RESOLUTION, NOT SUBSTITUTION. `agents.id` and `users.id` are disjoint id
+ * spaces here, so the agent record is resolved from the session
+ * (`ctx.agentId` IS `agents.id`) rather than coerced from the user id. A
+ * caller-supplied agentId is honoured only when it resolves to an `agents` row
+ * inside the caller's OWN brokerage and the caller holds a supervising role —
+ * which is what lets a broker or TC act for one of their agents without letting
+ * anyone act for a stranger's.
+ *
+ * The `agents` probe destructures `error`: supabase-js RESOLVES a refused read,
+ * so `const { data }` alone would turn "RLS said no" into "no such agent" —
+ * identical shapes, opposite meanings. Both outcomes fail closed, but a refusal
+ * is reported as a refusal rather than laundered into a 404.
+ */
+async function requireAgentScope(
+  supabase: { from: (t: string) => any },
+  requestedAgentId?: string,
+): Promise<
+  | { ok: true; agentId: string; brokerageId: string; userId: string }
+  | { ok: false; error: string }
+> {
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
+
+  if (!requestedAgentId || requestedAgentId === ctx.agentId) {
+    if (!ctx.agentId) return { ok: false, error: "Caller has no agent record" }
+    return { ok: true, agentId: ctx.agentId, brokerageId: ctx.brokerageId, userId: ctx.userId }
+  }
+
+  if (!isValidUUID(requestedAgentId)) return { ok: false, error: "Invalid agent ID" }
+  if (!SUPERVISOR_ROLES.has(ctx.userType)) return { ok: false, error: "Forbidden" }
+
+  const { data: target, error } = await supabase
+    .from("agents")
+    .select("id, brokerage_id")
+    .eq("id", requestedAgentId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
+  if (error) return { ok: false, error: "Could not verify that agent record" }
+  if (!target) return { ok: false, error: "Forbidden" }
+
+  return {
+    ok: true,
+    agentId: target.id as string,
+    brokerageId: ctx.brokerageId,
+    userId: ctx.userId,
+  }
+}
+
 // ============================================================================
 // AI REVIEW REQUEST TIMING
 // ============================================================================
@@ -384,21 +449,35 @@ Generate:
 // AI NEGATIVE REVIEW RECOVERY
 // ============================================================================
 
+/**
+ * Draft a service-recovery plan for a negative review.
+ *
+ * GATED (was not). Before this pass the endpoint authenticated nothing: it took
+ * `agentId` and `clientId` straight from the caller, pulled the whole contact row
+ * plus every transaction and interaction attached to it, fed that PII into a
+ * gpt-4o call on the platform's budget, and then wrote a note and a lifecycle
+ * event into whatever brokerage the agent id happened to belong to. The agent
+ * scope now comes from the session (see `requireAgentScope`) and the client
+ * lookup is pinned to the caller's own brokerage.
+ */
 export async function aiCreateRecoveryPlan(params: {
   reviewId: string
-  agentId: string
+  /** Optional. Honoured only for an agent inside the caller's own brokerage. */
+  agentId?: string
   reviewText: string
   rating: number
   clientId?: string
 }) {
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
-  }
-
   const supabase = await createClient()
 
+  const gate = await requireAgentScope(supabase, params.agentId)
+  if (!gate.ok) return { success: false, error: gate.error }
+  const agentId = gate.agentId
+
   try {
-    // Get client history if available
+    // Get client history if available — pinned to the caller's brokerage. Both
+    // ids arrive from the caller, so without the tenant predicate one uuid read
+    // a stranger's contact record and its whole deal history back out.
     let clientHistory = null
     if (params.clientId && isValidUUID(params.clientId)) {
       const { data } = await supabase
@@ -409,7 +488,8 @@ export async function aiCreateRecoveryPlan(params: {
           interactions(*)
         `)
         .eq("id", params.clientId)
-        .single()
+        .eq("brokerage_id", gate.brokerageId)
+        .maybeSingle()
       clientHistory = data
     }
 
@@ -457,11 +537,12 @@ Create a comprehensive recovery plan including:
 7. Success metrics`,
     })
 
-    // brokerage_id is NOT NULL on BOTH writes below (the note and the event), so
-    // it is resolved once, before either, from the agent row.
-    const brokerageId = await resolveNoteBrokerageId(supabase, params.agentId)
+    // brokerage_id is NOT NULL on BOTH writes below (the note and the event).
+    // It now comes from the SESSION gate, which is authoritative, rather than
+    // from whatever brokerage a caller-supplied agent id pointed at.
+    const brokerageId = gate.brokerageId
     // lifecycle_events.actor_user_id FKs users — the agents id was rejected there.
-    const agentUserId = await resolveUserIdForAgentRecord(supabase, params.agentId)
+    const agentUserId = await resolveUserIdForAgentRecord(supabase, agentId)
 
     // review_recovery_plans table does not exist in live schema.
     // Persist recovery plan to ai_assistant_notes.
@@ -582,22 +663,37 @@ Also provide:
 // AI REVIEW MONITORING ALERTS
 // ============================================================================
 
+/**
+ * Persist a review-monitoring configuration for an agent.
+ *
+ * GATED (was not). It previously took `agentId` from the caller with no session
+ * at all and wrote a config note into that agent's brokerage — an unauthenticated
+ * write into an arbitrary tenant's ledger.
+ */
 export async function aiSetupReviewMonitoring(params: {
-  agentId: string
+  /** Optional. Honoured only for an agent inside the caller's own brokerage. */
+  agentId?: string
   platforms: string[]
   alertThreshold: number
 }) {
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
-  }
-
   const supabase = await createClient()
+
+  const gate = await requireAgentScope(supabase, params.agentId)
+  if (!gate.ok) return { success: false, error: gate.error }
+  const agentId = gate.agentId
+
+  if (!Array.isArray(params.platforms) || params.platforms.length === 0) {
+    return { success: false, error: "Pick at least one platform to monitor" }
+  }
+  if (!Number.isFinite(params.alertThreshold) || params.alertThreshold < 1 || params.alertThreshold > 5) {
+    return { success: false, error: "Alert threshold must be a star rating between 1 and 5" }
+  }
 
   try {
     // review_monitoring_config does not exist in the live schema.
     // Persist settings as an agent ai_assistant_notes entry so config survives.
     const config = {
-      agent_id:            params.agentId,
+      agent_id:            agentId,
       platforms:           params.platforms,
       alert_threshold:     params.alertThreshold,
       notification_email:  true,
@@ -609,8 +705,9 @@ export async function aiSetupReviewMonitoring(params: {
 
     // brokerage_id is NOT NULL — without it the config was never stored, so the
     // "configured" message below was the only trace the setting ever existed.
-    const brokerageId = await resolveNoteBrokerageId(supabase, params.agentId)
-    const agentUserId = await resolveUserIdForAgentRecord(supabase, params.agentId)
+    // The tenant now comes from the session gate, not from the caller's agent id.
+    const brokerageId = gate.brokerageId
+    const agentUserId = await resolveUserIdForAgentRecord(supabase, agentId)
     if (!brokerageId || !agentUserId) {
       return { success: false, error: "Could not resolve the agent's brokerage; monitoring was not saved." }
     }

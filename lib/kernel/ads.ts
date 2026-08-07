@@ -872,12 +872,19 @@ export async function previewAdCreative(input: PreviewAdCreativeInput): Promise<
       return { success: false, error: "Campaign not found" }
     }
 
-    // Load creative variations
+    // Load creative variations.
+    // `.order("created_at")` merged from lib/ads/ad-creator.ts:getCampaignCreatives
+    // (orphan burn-down w2s2). Without it Postgres returns A/B variations in no
+    // guaranteed order, so the same campaign could render its variations in a
+    // different sequence on each load — the one capability the orphan had that
+    // this survivor lacked. Generation order is the meaningful order for A/B
+    // variants: "variation 1" is the first thing the model produced.
     let query = supabase
       .from("ad_creative_variations")
       .select("*")
       .eq("ad_campaign_id", campaignId)
       .eq("brokerage_id", ctx.brokerageId)
+      .order("created_at", { ascending: true })
 
     if (creativeVariationId) {
       query = query.eq("id", creativeVariationId)

@@ -299,11 +299,38 @@ export async function generateBrochureContent(params: {
       .single()
     if (!listing) return { success: false, error: "Listing not found in your brokerage" }
 
+    // TENANT SCOPE + narrowed projection. The listing read above was already
+    // pinned to the caller's brokerage; this one was not, so a caller-supplied
+    // `agentId` selected `*` from ANY brokerage's `agents` row and the contact
+    // details off it were written into the brochure and into the model prompt.
+    // Only the four identity fields are ever used, so only those are selected —
+    // `select("*")` on a table this wide is how columns nobody intended to
+    // expose end up in an LLM context window.
+    //
+    // IDENTITY LIVES ON `users`, NOT `agents`. Verified against the live schema:
+    // `agents` has no first_name / last_name / email / phone at all — the name
+    // and email are on `users` (reached via agents.user_id) and the phone is
+    // `agents.phone_mobile` / `phone_office`. The original `select("*")` hid
+    // this: every `agent?.first_name` resolved to `undefined`, so the brochure's
+    // agent section has always been built from "undefined undefined" with no
+    // phone and no email, and the prompt said so to the model. This is the same
+    // embed shape the rest of the tree already uses (see
+    // app/actions/ai-listing-packet.ts and app/actions/home-value.ts).
+    //
+    // `.single()` → `.maybeSingle()`: a missing agent is an answer, not a throw.
     const { data: agent } = await supabase
       .from("agents")
-      .select("*")
+      .select("phone_mobile, phone_office, users(first_name, last_name, email)")
       .eq("id", params.agentId)
-      .single()
+      .eq("brokerage_id", auth.brokerageId)
+      .maybeSingle()
+
+    // The embed comes back as an object (or an array, depending on how PostgREST
+    // resolves the relationship), so normalise before reading.
+    const agentUser = (Array.isArray(agent?.users) ? agent?.users[0] : agent?.users) as
+      | { first_name?: string | null; last_name?: string | null; email?: string | null }
+      | undefined
+    const agentName = [agentUser?.first_name, agentUser?.last_name].filter(Boolean).join(" ")
 
     const { object: brochure } = await generateObject({
       model: resolveModel("openai/gpt-4o"),
@@ -346,7 +373,15 @@ Listing:
 ${JSON.stringify(listing || {}, null, 2)}
 
 Agent:
-${JSON.stringify({ name: `${agent?.first_name} ${agent?.last_name}`, phone: agent?.phone, email: agent?.email }, null, 2)}
+${JSON.stringify(
+  {
+    name:  agentName || "the listing agent",
+    phone: agent?.phone_mobile ?? agent?.phone_office ?? null,
+    email: agentUser?.email ?? null,
+  },
+  null,
+  2,
+)}
 
 Brochure Type: ${params.brochureType}
 

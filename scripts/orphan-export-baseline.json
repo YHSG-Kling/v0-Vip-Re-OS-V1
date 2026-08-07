@@ -85,7 +85,6 @@
     "app/actions/inbox.ts": 2,
     "app/actions/income-engine.ts": 2,
     "app/actions/journey-tasks.ts": 1,
-    "app/actions/knowledge/search.ts": 1,
     "app/actions/lead-assignment/assign-lead.ts": 1,
     "app/actions/lead-import/import-actions.ts": 1,
     "app/actions/lead-intelligence.ts": 6,
@@ -127,7 +126,6 @@
     "app/actions/seller-listing/execution-engine.ts": 1,
     "app/actions/seller-offers.ts": 2,
     "app/actions/seller-showing-sentiment.ts": 1,
-    "app/actions/settings/global-settings-actions.ts": 2,
     "app/actions/showings.ts": 1,
     "app/actions/smart-insights.ts": 1,
     "app/actions/social/generate-social-post.ts": 1,
@@ -146,7 +144,7 @@
     "app/actions/transaction-stage-machine.ts": 1,
     "app/actions/transaction-transparency.ts": 1,
     "app/actions/transactions.ts": 1,
-    "app/actions/twin-studio.ts": 2,
+    "app/actions/twin-studio.ts": 1,
     "app/actions/user-profile.ts": 1,
     "app/actions/vendor-budget.ts": 1,
     "app/actions/vendor-invite.ts": 2,
@@ -174,7 +172,6 @@
     "app/routes-compatibility.ts": 1,
     "app/settings/email-templates/template-preview.tsx": 1,
     "lib/ads/ad-creative-engine.ts": 3,
-    "lib/ads/ad-creator.ts": 1,
     "lib/ads/ad-lead-intake.ts": 2,
     "lib/ads/ad-manager.ts": 2,
     "lib/ads/ad-monitor.ts": 2,
@@ -729,7 +726,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 8910,
+  "census": 8904,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -987,7 +984,7 @@
     "app/actions/journey-tasks.ts": 9,
     "app/actions/kb-search.ts": 1,
     "app/actions/kernel-bridges.ts": 2,
-    "app/actions/knowledge/search.ts": 17,
+    "app/actions/knowledge/search.ts": 16,
     "app/actions/lead-acquisition.ts": 1,
     "app/actions/lead-assignment/assign-lead.ts": 3,
     "app/actions/lead-governance/govern-lead.ts": 1,
@@ -1140,7 +1137,7 @@
     "app/actions/settings/create-email-template.ts": 1,
     "app/actions/settings/delete-commission-structure.ts": 1,
     "app/actions/settings/get-global-settings.ts": 1,
-    "app/actions/settings/global-settings-actions.ts": 9,
+    "app/actions/settings/global-settings-actions.ts": 6,
     "app/actions/settings/integrations.ts": 5,
     "app/actions/settings/list-commission-structures.ts": 1,
     "app/actions/settings/list-email-templates.ts": 1,
@@ -1232,7 +1229,7 @@
     "app/actions/transaction-transparency.ts": 3,
     "app/actions/transactions.ts": 58,
     "app/actions/twin-studio-upload.ts": 3,
-    "app/actions/twin-studio.ts": 10,
+    "app/actions/twin-studio.ts": 9,
     "app/actions/usage-overview.ts": 1,
     "app/actions/user-profile.ts": 6,
     "app/actions/vendor-billing.ts": 3,
@@ -2753,7 +2750,7 @@
     "app/workflows/workflows-content.tsx": 1,
     "lib/academy/quiz.ts": 3,
     "lib/ads/ad-creative-engine.ts": 4,
-    "lib/ads/ad-creator.ts": 7,
+    "lib/ads/ad-creator.ts": 6,
     "lib/ads/ad-engagement-decay.ts": 1,
     "lib/ads/ad-lead-intake.ts": 3,
     "lib/ads/ad-manager.ts": 4,
@@ -5997,7 +5994,6 @@
       "createKnowledgeArticle",
       "updateKnowledgeArticle",
       "deleteKnowledgeArticle",
-      "trackArticleView",
       "getHelpTopicsAdmin",
       "createHelpTopic",
       "updateHelpTopic",
@@ -7068,9 +7064,6 @@
     ],
     "app/actions/settings/global-settings-actions.ts": [
       "fetchGlobalSettings",
-      "updateSettings",
-      "getPlatformVideoProvider",
-      "setPlatformVideoProvider",
       "fetchWidgetScope",
       "updateWidgetScope",
       "fetchWidgetAgentsAndTeams",
@@ -7699,7 +7692,6 @@
       "approveTwin",
       "rejectTwin",
       "createTwinDraft",
-      "attachVoiceToTwin",
       "finalizeTwin"
     ],
     "app/actions/usage-overview.ts": [
@@ -12567,8 +12559,7 @@
       "approveCreativeVariation",
       "rejectCreativeVariation",
       "launchAdCampaign",
-      "updateCampaignStatus",
-      "getCampaignCreatives"
+      "updateCampaignStatus"
     ],
     "lib/ads/ad-engagement-decay.ts": [
       "computeEngagementDecay"
@@ -20222,5 +20213,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 354
+  "trulyDead": 349
 }

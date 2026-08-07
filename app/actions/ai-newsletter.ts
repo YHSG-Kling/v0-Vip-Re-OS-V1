@@ -14,7 +14,7 @@ import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
-import { isValidUUID } from "@/lib/validations"
+import { isValidUUID, isValidEmail } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
@@ -1256,19 +1256,46 @@ export async function manageSubscribers(params: {
       return { success: false, error: "No agent profile for this user in this brokerage — subscribers have no owner to file under." }
     }
 
+    // The live UNIQUE is `newsletter_subscribers_brokerage_id_email_key
+    // (brokerage_id, email)` — on the RAW email column. Without normalising,
+    // "Bob@Example.com" and "bob@example.com" are two accepted rows for one
+    // person, and that person then receives every newsletter twice. Normalise
+    // before the constraint sees it.
+    const email = String(params.email ?? "").trim().toLowerCase()
+    if (!isValidEmail(email)) {
+      return { success: false, error: "Enter a valid email address" }
+    }
+
     const supabase = await createClient()
 
     if (params.action === "add") {
+      // `source` has a live CHECK constraint; a value outside the vocabulary is
+      // a 23514 the caller would see as an opaque database error.
+      const ALLOWED_SOURCES = [
+        "manual", "import", "form", "open_house", "qr_scan",
+        "portal", "auto_lead_capture", "auto_contact", "auto_lifetime",
+      ]
+      const source = ALLOWED_SOURCES.includes(params.source ?? "") ? params.source! : "manual"
+
       const { data, error } = await supabase.from("newsletter_subscribers").insert({
-        email: params.email,
+        email,
         agent_id: sessionAgentId,
         brokerage_id: sessionBrokerageId,
         subscribed_at: new Date().toISOString(),
-        source: params.source || "manual",
+        source,
         status: "subscribed",
       })
 
-      if (error) throw error
+      if (error) {
+        // 23505 = the (brokerage_id, email) UNIQUE. That is the ordinary
+        // "already on the list" case — including someone who UNSUBSCRIBED.
+        // Re-subscribing an opt-out must be a deliberate act, so this reports
+        // the state rather than flipping the row back to 'subscribed'.
+        if ((error as { code?: string }).code === "23505") {
+          return { success: false, error: "That email is already on this brokerage's list." }
+        }
+        throw error
+      }
       revalidatePath("/content-studio")
 
       return { success: true, subscriber: data }
@@ -1278,7 +1305,7 @@ export async function manageSubscribers(params: {
       const { error } = await supabase
         .from("newsletter_subscribers")
         .update({ status: "unsubscribed", unsubscribed_at: new Date().toISOString() })
-        .eq("email", params.email)
+        .eq("email", email)
         .eq("agent_id", sessionAgentId)
         .eq("brokerage_id", sessionBrokerageId)
 
@@ -1513,10 +1540,24 @@ export async function manageSubscriberBatch(params: {
       return { success: false, error: "No agent profile for this user in this brokerage — subscribers have no owner to file under." }
     }
 
+    // `contactIds` is a caller-supplied array driving one round trip per entry
+    // (a scope read plus a write). Unbounded, this endpoint is an amplification
+    // primitive: one request becomes arbitrarily many sequential queries. Cap
+    // it and de-duplicate — the same id twice was two round trips for one row.
+    const MAX_BATCH = 500
+    const requestedIds = Array.isArray(params.contactIds) ? params.contactIds : []
+    if (requestedIds.length > MAX_BATCH) {
+      return {
+        success: false,
+        error: `Select ${MAX_BATCH} contacts or fewer per batch (received ${requestedIds.length}).`,
+      }
+    }
+    const contactIds = Array.from(new Set(requestedIds))
+
     const supabase = await createClient()
     let affected = 0
 
-    for (const contactId of params.contactIds) {
+    for (const contactId of contactIds) {
       if (!isValidUUID(contactId)) continue
 
       // Verify the contact belongs to the session brokerage before mutating subscription

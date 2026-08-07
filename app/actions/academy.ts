@@ -235,8 +235,21 @@ export async function addTemplateFeedback(data: {
   return { success: true }
 }
 
+/**
+ * Feedback on a marketplace template.
+ *
+ * GATED (was not). Lower stakes than this slice's other findings — the academy
+ * marketplace is deliberately cross-brokerage, so there is no tenant predicate to
+ * add and none is claimed here. But the rows carry free-text comments written by
+ * named users, and `"use server"` made reading them an anonymous HTTP endpoint.
+ * Requiring a session matches its write-side sibling `addTemplateFeedback`
+ * directly above, which has always required one.
+ */
 export async function getTemplateFeedback(templateId: string) {
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return []
+
   // template_feedback.user_id FKs auth.users (not public.users) — no embeddable
   // public.users relationship, so select the row only.
   const { data, error } = await supabase

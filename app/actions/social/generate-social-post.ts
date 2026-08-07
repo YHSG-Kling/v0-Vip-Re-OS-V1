@@ -269,15 +269,48 @@ export async function generateSocialPostContent(params: {
  * Call this AFTER saving the social_post row to stamp brand_compliance_passed.
  * Uses checkBrandCompliance from lib/kernel/brand-compliance.ts which also
  * verifies approved hashtags, prohibited language, and logo compliance.
+ *
+ * GATED + SESSION-SCOPED (was neither). This is a **compliance stamp**, not a
+ * read: `checkBrandCompliance` writes `brand_compliance_passed` on the post, and
+ * that flag is exactly what `app/actions/social-share.ts:canAgentSharePost` and
+ * `shareListingPost` consult before letting a post go out under the brokerage's
+ * name. As a `"use server"` export with no session and a caller-supplied
+ * `brokerageId`, it let anyone run another tenant's brand rules against another
+ * tenant's post — including evaluating a post against a *different* brokerage's
+ * ruleset, which is how a post gets stamped compliant under rules that were never
+ * meant to apply to it.
+ *
+ * `brokerageId` is now ignored and derived from the session, and the post must
+ * belong to that brokerage before it is evaluated. On a refused lookup this fails
+ * CLOSED — `passed: false` — because the alternative in a compliance gate is
+ * stamping something nobody checked.
  */
 export async function stampPostBrandCompliance(params: {
   postId: string
-  brokerageId: string
+  /** Ignored — derived from the session. */
+  brokerageId?: string
 }): Promise<{ passed: boolean; violations: string[] }> {
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { passed: false, violations: ["Not authenticated"] }
+  }
+
+  const supabase = await createClient()
+  const { data: post, error } = await supabase
+    .from("social_posts")
+    .select("id")
+    .eq("id", params.postId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
+
+  if (error) return { passed: false, violations: ["Could not verify this post"] }
+  if (!post)  return { passed: false, violations: ["Post not found in your brokerage"] }
+
   return checkBrandCompliance({
     contentType: "social_post",
     contentId:   params.postId,
-    brokerageId: params.brokerageId,
+    brokerageId: ctx.brokerageId,
   })
 }
 

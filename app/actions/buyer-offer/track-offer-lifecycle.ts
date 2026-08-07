@@ -1,5 +1,6 @@
 "use server";
 
+import { createClient } from "@/lib/supabase/server";
 import { createServiceClient } from "@/lib/supabase/service";
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { isValidUUID } from "@/lib/validations";
@@ -26,6 +27,59 @@ export interface OfferLifecycleState {
     reason?: string;
   }>;
   is_terminal: boolean;
+}
+
+/**
+ * Session gate for offer lifecycle transitions.
+ *
+ * NOT EXPORTED — this module is `"use server"`, so exporting it would mint
+ * another public endpoint. It answers one question: is the caller a signed-in
+ * member of the brokerage that owns this offer, and what is that brokerage?
+ *
+ * The tenant is taken from `offers.brokerage_id`, never from the caller. That is
+ * the whole point: every writer in this file used to derive `activities.brokerage_id`
+ * from a caller-supplied `userId`, which means the audit row for a state change
+ * could be filed under the wrong tenant — or under `null`, because `?? null`
+ * accepted a user id that resolved to nothing.
+ *
+ * Both reads destructure `error`. supabase-js resolves a refused query, so
+ * `const { data }` alone would render "RLS refused" and "no such offer"
+ * identically; in a gate that must fail closed, and it must not be reported as
+ * a 404.
+ */
+async function requireOfferActor(offerId: string): Promise<
+  | { ok: true; userId: string; brokerageId: string; responseDeadline: string | null }
+  | { ok: false; error: string }
+> {
+  const authClient = await createClient();
+  const { data: { user } } = await authClient.auth.getUser();
+  if (!user) return { ok: false, error: "Unauthenticated" };
+
+  const svc = createServiceClient();
+  const [callerRes, offerRes] = await Promise.all([
+    svc.from("users").select("brokerage_id").eq("id", user.id).maybeSingle(),
+    svc.from("offers").select("id, brokerage_id, response_deadline").eq("id", offerId).maybeSingle(),
+  ]);
+
+  if (callerRes.error) return { ok: false, error: "Could not verify the caller" };
+  if (offerRes.error)  return { ok: false, error: "Could not read the offer" };
+
+  const callerBrokerageId = (callerRes.data?.brokerage_id ?? null) as string | null;
+  if (!callerBrokerageId) return { ok: false, error: "Brokerage not configured" };
+
+  const offer = offerRes.data;
+  if (!offer) return { ok: false, error: "Offer not found" };
+  const offerBrokerageId = (offer.brokerage_id ?? null) as string | null;
+  if (!offerBrokerageId || offerBrokerageId !== callerBrokerageId) {
+    return { ok: false, error: "Forbidden" };
+  }
+
+  return {
+    ok: true,
+    userId: user.id,
+    brokerageId: offerBrokerageId,
+    responseDeadline: (offer.response_deadline ?? null) as string | null,
+  };
 }
 
 /**
@@ -252,15 +306,58 @@ export async function recordSellerResponse(
 }
 
 /**
- * Mark offer as expired
+ * Mark offer as expired (PENDING → EXPIRED)
+ *
+ * GATED, TENANT-SCOPED FROM THE OFFER, AND THE DEADLINE IS NOW ACTUALLY CHECKED.
+ *
+ * This is `"use server"`, so a public HTTP endpoint, and it authenticated
+ * nothing while running on `createServiceClient()` — RLS not in play. Three
+ * separate defects rode on that:
+ *
+ *  1. **Anyone could kill any live offer.** The only inputs were an offer uuid
+ *     and a `systemUserId`, neither checked against a session. `EXPIRED` is a
+ *     terminal state in this machine (`is_terminal`), so the buyer's offer —
+ *     real money, a real deadline — became unrespondable, and
+ *     `getOfferLifecycleState` is what `submitOffer`, `withdrawOffer`,
+ *     `recordSellerResponse`, `canBuyerSubmitOffer` and the buyer-facing
+ *     multi-offer banner all gate on.
+ *  2. **The tenant of the audit row came from the caller.** `brokerage_id` was
+ *     read off whatever `users` row the caller named, so the expiry event could
+ *     be filed under a brokerage that has nothing to do with the offer — or
+ *     under `null`, since `?? null` silently accepted a nonexistent user. It now
+ *     comes from `offers.brokerage_id`, which is the only authority on which
+ *     tenant the offer belongs to.
+ *  3. **"deadline_passed" was asserted, never verified.** The notes payload has
+ *     always claimed `expiration_reason: "deadline_passed"` without once looking
+ *     at `offers.response_deadline`. An offer with three days left could be
+ *     expired on the spot and the audit trail would say the deadline had passed.
+ *     The check is now real: no deadline, or a deadline in the future, is a
+ *     refusal.
+ *
+ * `systemUserId` is ignored — the actor is the session's user. The name says
+ * "system", but a `"use server"` export is not a system channel; a scheduled job
+ * that needs to run this without a session should call it through a route
+ * handler holding a service credential, not by naming a user id over HTTP.
  */
 export async function markOfferExpired(
   offerId: string,
-  systemUserId: string
+  /** Ignored — the actor is derived from the session. */
+  _systemUserId?: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
     if (!isValidUUID(offerId)) {
       return { success: false, error: "Invalid offer ID" };
+    }
+
+    const gate = await requireOfferActor(offerId);
+    if (!gate.ok) return { success: false, error: gate.error };
+
+    // The reason recorded has to be the reason that happened.
+    if (!gate.responseDeadline) {
+      return { success: false, error: "This offer has no response deadline, so it cannot expire on one" };
+    }
+    if (new Date(gate.responseDeadline).getTime() > Date.now()) {
+      return { success: false, error: "The response deadline has not passed yet" };
     }
 
     // Check current state
@@ -275,19 +372,26 @@ export async function markOfferExpired(
 
     // Emit expiration event
     const supabase = createServiceClient();
-    const { data: sysUserRow } = await supabase.from("users").select("brokerage_id").eq("id", systemUserId).maybeSingle();
     const { error } = await supabase.from("activities").insert({
-      brokerage_id: sysUserRow?.brokerage_id ?? null,
-      // IDENTITY CLASS. activities.agent_id FKs agents(id) and systemUserId is
-      // a users id — it is looked up in `users` on the line above. The three
-      // sibling writes in this file (submitted, withdrawn, response) already
-      // resolve it; this fourth one was missed, so every EXPIRED offer failed
-      // to record its lifecycle event while the other three recorded fine.
-      agent_id: await resolveAgentId(supabase as any, systemUserId),
+      // From the OFFER, not from a caller-supplied user id.
+      brokerage_id: gate.brokerageId,
+      // IDENTITY CLASS. activities.agent_id FKs agents(id) and the session gives
+      // a users id — they are disjoint spaces, so it is RESOLVED, never
+      // substituted. The three sibling writes in this file (submitted,
+      // withdrawn, response) already resolve it; this fourth one was missed, so
+      // every EXPIRED offer failed to record its lifecycle event while the other
+      // three recorded fine.
+      agent_id: await resolveAgentId(supabase as any, gate.userId),
       activity_type: "buyer.offer.expired",
       title: "Offer expired",
       description: "Offer expired: deadline passed",
-      notes: JSON.stringify({ offer_id: offerId, previous_state: "PENDING", new_state: "EXPIRED", expiration_reason: "deadline_passed" }),
+      notes: JSON.stringify({
+        offer_id: offerId,
+        previous_state: "PENDING",
+        new_state: "EXPIRED",
+        expiration_reason: "deadline_passed",
+        response_deadline: gate.responseDeadline,
+      }),
       status: "completed",
       entity_type: "offer",
       entity_id: offerId,

@@ -198,18 +198,80 @@ export async function enrichContact(
   }
 }
 
+/** Upper bound on one batch. Each id costs a PeopleData call + an OSINT call. */
+const ENRICH_BATCH_MAX = 200
+
 /**
  * Enrich multiple contacts (for imports/bulk operations)
+ *
+ * GATED, TENANT-FILTERED AND CAPPED (was none of the three).
+ *
+ * `"use server"` makes this a public HTTP endpoint, and it took an **unbounded
+ * caller-supplied array of contact ids** with no session. Every id costs a
+ * `PeopleDataClient.enrich` call *and* an `OSINTClient.searchPerson` call — paid,
+ * per-lookup, third-party vendor spend — and writes the result (emails, phones,
+ * addresses, inferred life events like divorce / bankruptcy / death in family)
+ * onto the contact row. So an anonymous caller could bill the platform for
+ * arbitrarily many external lookups, and point them at other tenants' contacts.
+ * The 500 ms sleep between ids meant one request could also occupy a server
+ * worker indefinitely.
+ *
+ * Three fixes, in order of importance:
+ *  - **Session gate**, matching this file's `getUnenrichedContacts` /
+ *    `getContactsNeedingLifeChangeCheck` tenant-anchor idiom.
+ *  - **Tenant filter before spending anything.** The ids are resolved against
+ *    `contacts` scoped to the caller's brokerage, and only survivors are
+ *    enriched. This is a resolve, not a trust: ids that do not belong to the
+ *    caller are counted as `failed` rather than silently dropped, so a caller
+ *    fishing with foreign uuids gets no signal about whether they exist.
+ *  - **Cap.** At most `ENRICH_BATCH_MAX` ids per call.
+ *
+ * The read destructures `error` — a refused lookup must not be mistaken for "none
+ * of these contacts are yours", because here that difference is the difference
+ * between refusing and spending money.
  */
 export async function enrichContactsBatch(
   contactIds: string[],
   options: { source?: "manual" | "auto" | "ghl_sync" | "import" } = {},
-): Promise<{ success: number; failed: number; skipped: number }> {
+): Promise<{ success: number; failed: number; skipped: number; error?: string }> {
   let success = 0
   let failed = 0
   let skipped = 0
 
-  for (const contactId of contactIds) {
+  if (!Array.isArray(contactIds) || contactIds.length === 0) {
+    return { success: 0, failed: 0, skipped: 0 }
+  }
+  if (contactIds.length > ENRICH_BATCH_MAX) {
+    return {
+      success: 0, failed: 0, skipped: 0,
+      error: `Batch too large — enrich at most ${ENRICH_BATCH_MAX} contacts at a time`,
+    }
+  }
+
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: 0, failed: 0, skipped: 0, error: "Unauthorized" }
+  }
+
+  const requested = [...new Set(contactIds.filter((id) => typeof id === "string" && id.length > 0))]
+
+  const supabase = await createClient()
+  const { data: ownRows, error: scopeError } = await supabase
+    .from("contacts")
+    .select("id")
+    .eq("brokerage_id", ctx.brokerageId)
+    .in("id", requested)
+
+  if (scopeError) {
+    return { success: 0, failed: 0, skipped: 0, error: "Could not verify those contacts; nothing was enriched" }
+  }
+
+  const ownIds = new Set((ownRows ?? []).map((r) => r.id as string))
+  // Anything the caller asked for that is not theirs is a failure, not a skip —
+  // and it costs no vendor call.
+  failed += requested.length - ownIds.size
+
+  for (const contactId of ownIds) {
     const result = await enrichContact(contactId, options)
     if (result.success) {
       if (result.enriched) {
@@ -432,15 +494,85 @@ export async function getRecentLifeChanges(agentId?: string, daysBack = 7): Prom
 }
 
 /**
- * Mark life change as notified
- * Note: Life events are now stored in contact_enrichment_data.life_events JSONB
- * This function is a no-op placeholder for backward compatibility
+ * Mark a detected life change as notified.
+ *
+ * FINISHED (was a no-op that reported success). It used to log the id and return
+ * `{ success: true }` without touching anything — so the caller's "we've told the
+ * agent about this" state was never recorded, and every subsequent render
+ * re-surfaced the same divorce/bankruptcy/relocation notification forever, while
+ * the endpoint reported that it had been handled. A function that claims a write
+ * it did not perform is worse than one that refuses.
+ *
+ * Two things blocked finishing it, and both were wrong beliefs rather than real
+ * obstacles:
+ *
+ *  - The old comment said life events live in `contact_enrichment_data.life_events`.
+ *    **There is no `contact_enrichment_data` table** (checked live). They live in
+ *    `contacts.life_events`, a jsonb array — which is where `enrichContact` and
+ *    `checkContactLifeChanges` in this same file actually write them.
+ *  - It took a `changeId`, but the array elements this codebase writes are
+ *    `{ type, details, detected_at, confidence }` — **there is no id on them**.
+ *    The de-duplication in `checkContactLifeChanges` keys on `event.event`, i.e.
+ *    the event *type* is the identity of an element for a given contact. So the
+ *    signature is now `(contactId, eventType)`, which is the key that exists
+ *    rather than one that does not. The export was orphaned, so nothing had to
+ *    change to accommodate this.
+ *
+ * Read-modify-write on a jsonb array is not atomic. That is acceptable here — the
+ * only field being set is an idempotent `notified_at` marker, so a lost update
+ * re-shows one notification rather than corrupting anything — but it is stated
+ * rather than left to be discovered.
  */
-export async function markLifeChangeNotified(changeId: string): Promise<{ success: boolean }> {
-  // Life events are stored in JSONB within contact_enrichment_data
-  // Marking individual events as notified would require updating the JSONB array
-  // For now, return success as this is typically called after displaying the notification
-  console.log("[ContactEnrichment] markLifeChangeNotified called for:", changeId)
+export async function markLifeChangeNotified(
+  contactId: string,
+  eventType: string,
+): Promise<{ success: boolean; error?: string }> {
+  if (!contactId || !eventType) {
+    return { success: false, error: "contactId and eventType are required" }
+  }
+
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
+  const supabase = await createClient()
+
+  // Tenant-scoped read. `error` is destructured because a refused read and a
+  // missing contact are the same shape, and only one of them should be reported
+  // as "no such contact".
+  const { data: contact, error: readError } = await supabase
+    .from("contacts")
+    .select("life_events")
+    .eq("id", contactId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
+
+  if (readError) return { success: false, error: "Could not read the contact" }
+  if (!contact) return { success: false, error: "Contact not found" }
+
+  const rawEvents: unknown = contact.life_events
+  const events: any[] = Array.isArray(rawEvents) ? rawEvents : []
+  let matched = false
+  const updated = events.map((e) => {
+    if (e?.type !== eventType || e?.notified_at) return e
+    matched = true
+    return { ...e, notified_at: new Date().toISOString() }
+  })
+
+  if (!matched) {
+    // Already notified, or no such event — either way there is nothing to write.
+    // Say so instead of reporting a write that did not happen.
+    return { success: false, error: "No un-notified life event of that type on this contact" }
+  }
+
+  const { error: writeError } = await supabase
+    .from("contacts")
+    .update({ life_events: updated })
+    .eq("id", contactId)
+    .eq("brokerage_id", ctx.brokerageId)
+
+  if (writeError) return { success: false, error: writeError.message }
   return { success: true }
 }
 

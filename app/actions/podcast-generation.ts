@@ -1021,7 +1021,17 @@ export async function createDistributionChannel(channelName: string) {
 
 // Get video scripts library for episode sourcing
 export async function getVideoScriptsLibrary() {
-  const { brokerageId } = await getAgentContext()
+  // `getAgentContext()` never throws: an unauthenticated caller gets the safe
+  // default, whose `brokerageId` is NULL. `.eq("brokerage_id", null)` is not the
+  // no-op it looks like — postgrest renders it as `brokerage_id=eq.null`, which
+  // Postgres tries to cast to uuid and rejects with 22P02. The error was then
+  // routed into the `catch` and reported as a generic failure, so an
+  // unauthenticated call and a real database problem looked identical. Refuse
+  // explicitly instead.
+  const { isAuthenticated, brokerageId } = await getAgentContext()
+  if (!isAuthenticated || !brokerageId) {
+    return { success: false, error: "Unauthorized", scripts: [] }
+  }
   const supabase = await createClient()
 
   try {
@@ -1091,7 +1101,15 @@ export async function getPodcastEpisode(episodeId: string) {
 
 // Get real podcast analytics aggregated from podcast_analytics_events + podcast_episodes
 export async function getPodcastAnalytics() {
-  const { brokerageId } = await getAgentContext()
+  // Same null-brokerage trap as getVideoScriptsLibrary above — and worse here,
+  // because the first read is a `head: true` COUNT whose result was destructured
+  // as `const { count }` with no `error`. A refused or malformed count resolves
+  // to `count: null`, which `?? 0` then renders as a confident "0 plays".
+  // A number nobody could compute is not zero.
+  const { isAuthenticated, brokerageId } = await getAgentContext()
+  if (!isAuthenticated || !brokerageId) {
+    return { success: false, error: "Unauthorized", totalPlays: 0, totalListenMinutes: 0, episodeStats: [] }
+  }
   const supabase = await createClient()
 
   try {

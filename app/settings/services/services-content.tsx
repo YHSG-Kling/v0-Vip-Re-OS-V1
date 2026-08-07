@@ -747,7 +747,16 @@ function PlaybookCard({ playbook }: { playbook: any }) {
   const handleToggle = (checked: boolean) => {
     startTransition(async () => {
       try {
-        await togglePlaybook(playbook.id, checked)
+        // togglePlaybook reports failure BY RETURN, not by throwing, so the
+        // try/catch below never sees a refused toggle. Discarding the result
+        // meant router.refresh() ran anyway and the switch looked like it had
+        // worked — the action told the truth and the screen did not pass it on.
+        // Same shape as ToggleAIAgentTemplate above.
+        const r = await togglePlaybook(playbook.id, checked)
+        if (!r?.success) {
+          toast.error((r as any)?.error ?? "The playbook was not toggled.")
+          return
+        }
         router.refresh()
       } catch (err) {
         console.error("[v0] Error toggling playbook:", err)

@@ -193,7 +193,16 @@ export async function deleteTwin(twinId: string): Promise<{ ok: boolean; error?:
   return { ok: true }
 }
 
-/** Update a twin's display label and personality. */
+/**
+ * Update a twin's display label and personality — the "edit an existing twin"
+ * path, as distinct from finalizeTwin() which is the wizard's last step.
+ *
+ * NOT WIRED YET. TwinCard already carries a `canEdit` prop but only renders
+ * Set-default and Delete; there is no rename / edit-personality affordance.
+ * Wiring it is a UI change in
+ * app/dashboard/settings/twin-studio/components/twin-card.tsx (outside this
+ * slice's file set). The endpoint is hardened in place meanwhile.
+ */
 export async function updateTwinDetails(params: {
   twinId: string
   label?: string
@@ -203,21 +212,50 @@ export async function updateTwinDetails(params: {
   if (!ctx.isAuthenticated || !ctx.agentId) return { ok: false, error: "Unauthorized" }
   const supabase = createServiceClient()
 
-  const { data: twin } = await supabase
+  // `error` destructured so a refused read is distinguishable from a genuine
+  // miss. Both still refuse — this gate must fail closed — but a swallowed
+  // read error should not be reported to the user as "your twin is gone".
+  const { data: twin, error: twinError } = await supabase
     .from("agent_avatar_assets")
     .select("agent_id")
     .eq("id", params.twinId)
     .maybeSingle()
 
+  if (twinError) return { ok: false, error: "Could not verify the twin — nothing was changed" }
   if (!twin || twin.agent_id !== ctx.agentId) {
     return { ok: false, error: "Twin not found" }
   }
 
   const update: Record<string, any> = { updated_at: new Date().toISOString() }
-  if (params.label !== undefined) update.label = params.label
-  if (params.personality !== undefined) update.personality = params.personality
 
-  await supabase.from("agent_avatar_assets").update(update).eq("id", params.twinId)
+  // Bounds match the siblings that write the same columns. Without them this
+  // was the unbounded back door to both: createTwinDraft caps label at 64, and
+  // `personality` is a free-text SYSTEM-PROMPT ADDENDUM injected into every
+  // conversation this twin fronts — an unbounded value is both a prompt-
+  // injection surface and an unbounded per-turn token cost on every AI call
+  // that loads it.
+  if (params.label !== undefined) {
+    const label = params.label.trim()
+    if (!label) return { ok: false, error: "Give the twin a name" }
+    update.label = label.slice(0, 64)
+  }
+  if (params.personality !== undefined) {
+    const personality = params.personality.trim()
+    if (personality.length > 2000) {
+      return {
+        ok: false,
+        error: "Keep the personality note under 2000 characters — it is added to every conversation.",
+      }
+    }
+    update.personality = personality || null
+  }
+
+  const { error: updateError } = await supabase
+    .from("agent_avatar_assets")
+    .update(update)
+    .eq("id", params.twinId)
+  if (updateError) return { ok: false, error: updateError.message }
+
   revalidatePath("/dashboard/settings/twin-studio")
   return { ok: true }
 }
@@ -297,8 +335,11 @@ export async function rejectTwin(params: {
 //   1. createTwinDraft   — inserts a 'pending' row with the look only
 //   2. /api/did/create-avatar (extended in this commit) — kicks off D-ID
 //      processing for the look on that twin row
-//   3. attachVoiceToTwin — once the user records/uploads, kicks off ElevenLabs
-//      voice clone and stores voice_id on the same row
+//   3. POST /api/elevenlabs/voice-clone { twin_id } — once the user records or
+//      uploads, creates the real ElevenLabs clone (usage-capped + metered) and
+//      stores voice_id / voice_sample_url on the same row. This is the ONE
+//      voice-binding path; the duplicate `attachVoiceToTwin` action that also
+//      wrote those columns was removed in w2s3 (see the note below).
 //   4. finalizeTwin      — sets personality + flips approval per brokerage
 //      policy + optionally promotes to default
 // ──────────────────────────────────────────────────────────────────────────
@@ -342,33 +383,24 @@ export async function createTwinDraft(params: {
   return { ok: true, twinId: data.id }
 }
 
-export async function attachVoiceToTwin(params: {
-  twinId: string
-  voiceId: string
-  voiceSampleUrl: string
-}): Promise<{ ok: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.agentId) return { ok: false, error: "Unauthorized" }
-  const supabase = createServiceClient()
-
-  const { data: twin } = await supabase
-    .from("agent_avatar_assets")
-    .select("agent_id")
-    .eq("id", params.twinId)
-    .maybeSingle()
-  if (!twin || twin.agent_id !== ctx.agentId) return { ok: false, error: "Twin not found" }
-
-  await supabase
-    .from("agent_avatar_assets")
-    .update({
-      voice_id: params.voiceId,
-      voice_sample_url: params.voiceSampleUrl,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", params.twinId)
-
-  return { ok: true }
-}
+// attachVoiceToTwin was REMOVED here (orphan burn-down w2s3).
+//
+// SURVIVOR: app/api/elevenlabs/voice-clone/route.ts — the `twin_id` branch.
+// It is the path the wizard actually calls, it writes the SAME three columns
+// (voice_id, voice_sample_url, updated_at) on the same row, and it carries the
+// ownership guard that was merged onto it FROM this function (the route's own
+// comment names it as the source).
+//
+// Nothing was lost: the route is strictly richer — it creates the real
+// ElevenLabs clone, enforces the usage cap, returns an honest 503 when the key
+// is unset, and meters the spend via logMediaUsage('voice_clones_created').
+//
+// It was also actively harmful to keep as a second door. This function let a
+// caller write an ARBITRARY voiceId string onto their twin without going
+// through the clone route at all — binding a voice id nobody in this brokerage
+// paid to create, with no cap check and no `voice_clones_created` meter line.
+// The metering bypass is the reason this is a deletion and not a "harmless
+// duplicate".
 
 export async function finalizeTwin(params: {
   twinId: string

@@ -10,6 +10,7 @@
 
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { createClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import {
   loadAudienceDefinitions,
   syncAudience as kernelSyncAudience,
@@ -24,22 +25,59 @@ import type {
   LoadAudiencesParams,
 } from "@/lib/ads/facebook-audience-sync-types"
 
+// ─── SESSION GATE ─────────────────────────────────────────────────────────────
+// Every export in this file is a "use server" action, i.e. a public HTTP endpoint.
+// Each one used to take `userId`, `brokerageId` and `agentId` **from the caller**
+// and hand them to lib/kernel/ads.ts, which runs on the SERVICE client (RLS
+// bypassed) and scopes purely on `ctx.brokerageId`. A caller-supplied brokerage id
+// was therefore enough to read, create, sync or delete any tenant's ad audiences —
+// including a sync, which uploads that tenant's consented contacts (email + phone)
+// to Meta/Google under the caller's chosen audience.
+//
+// The tenant is now resolved from the session. The `userId` parameter and the
+// `brokerageId` / `agentId` fields on the params objects are RETAINED but IGNORED
+// so existing call sites keep type-checking (house pattern in this repo).
+//
+// NOT exported — a "use server" module may only export async functions, and this
+// is an internal gate, not an endpoint.
+async function resolveAdsActor(): Promise<
+  { ok: true; ctx: AdsActorContext } | { ok: false; error: string }
+> {
+  const session = await getAgentContext()
+  if (!session.isAuthenticated) {
+    return { ok: false, error: "Not authenticated" }
+  }
+  if (!session.brokerageId) {
+    return { ok: false, error: "No brokerage on this account" }
+  }
+  // agentId is deliberately OMITTED when the session has none (brokers/admins have
+  // no `agents` row). It is never back-filled from users.id — agents.id and users.id
+  // are disjoint id spaces — and never coerced to "" (an empty uuid literal raises
+  // 22P02). None of the kernel ads commands reached from this file read ctx.agentId.
+  const ctx = {
+    brokerageId: session.brokerageId,
+    userId: session.userId,
+    ...(session.agentId ? { agentId: session.agentId } : {}),
+  } as AdsActorContext
+  return { ok: true, ctx }
+}
+
 // ─── createFacebookAudience ───────────────────────────────────────────────────
 
 export async function createFacebookAudience(
-  userId: string,
+  _userId: string,
   params: CreateAudienceParams
 ): Promise<{ success: boolean; audienceId?: string; error?: string }> {
+  // ── 0. Session gate — tenant comes from the session, never the caller ───────
+  const actor = await resolveAdsActor()
+  if (!actor.ok) return { success: false, error: actor.error }
+  const ctx = actor.ctx
+  const userId = ctx.userId
+
   // ── 1. Feature gate ─────────────────────────────────────────────────────────
   const accessCheck = await canAccessFeature(userId, "ads_audiences")
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature access denied" }
-  }
-
-  const ctx: AdsActorContext = {
-    brokerageId: params.brokerageId,
-    agentId: params.agentId,
-    userId,
   }
 
   // ── 2. Delegate to kernel createAudienceSegment ──────────────────────────────
@@ -65,7 +103,7 @@ export async function createFacebookAudience(
 // ─── syncFacebookAudience ─────────────────────────────────────────────────────
 
 export async function syncFacebookAudience(
-  userId: string,
+  _userId: string,
   params: SyncAudienceParams
 ): Promise<{
   success: boolean
@@ -74,16 +112,16 @@ export async function syncFacebookAudience(
   recordsRejected?: number
   error?: string
 }> {
+  // ── 0. Session gate — this uploads consented contact PII to an ad platform ──
+  const actor = await resolveAdsActor()
+  if (!actor.ok) return { success: false, error: actor.error }
+  const ctx = actor.ctx
+  const userId = ctx.userId
+
   // ── 1. Feature gate ─────────────────────────────────────────────────────────
   const accessCheck = await canAccessFeature(userId, "ads_audiences")
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature access denied" }
-  }
-
-  const ctx: AdsActorContext = {
-    brokerageId: params.brokerageId,
-    agentId: params.agentId,
-    userId,
   }
 
   // ── 2. Delegate to kernel syncAudience ───────────────────────────────────────
@@ -109,19 +147,19 @@ export async function syncFacebookAudience(
 // ─── loadFacebookAudiences ────────────────────────────────────────────────────
 
 export async function loadFacebookAudiences(
-  userId: string,
+  _userId: string,
   params: LoadAudiencesParams
 ): Promise<{ success: boolean; audiences?: any[]; error?: string }> {
+  // ── 0. Session gate — was an unauthenticated cross-tenant read ──────────────
+  const actor = await resolveAdsActor()
+  if (!actor.ok) return { success: false, error: actor.error }
+  const ctx = actor.ctx
+  const userId = ctx.userId
+
   // ── 1. Feature gate ─────────────────────────────────────────────────────────
   const accessCheck = await canAccessFeature(userId, "ads_audiences")
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature access denied" }
-  }
-
-  const ctx: AdsActorContext = {
-    brokerageId: params.brokerageId,
-    agentId: params.agentId,
-    userId,
   }
 
   // ── 2. Delegate to kernel loadAudienceDefinitions ────────────────────────────
@@ -175,10 +213,17 @@ export async function syncAudience(
  * Table written: facebook_custom_audiences
  */
 export async function approveAudience(
-  userId: string,
+  _userId: string,
   audienceId: string,
-  brokerageId: string
+  _brokerageId: string
 ): Promise<{ success: boolean; error?: string }> {
+  // Session gate — approval flips an audience live on Meta. Tenant and actor come
+  // from the session; the caller-supplied ids are ignored.
+  const actor = await resolveAdsActor()
+  if (!actor.ok) return { success: false, error: actor.error }
+  const userId = actor.ctx.userId
+  const brokerageId = actor.ctx.brokerageId
+
   // Feature gate
   const accessCheck = await canAccessFeature(userId, "ads_audiences")
   if (!accessCheck.allowed) {
@@ -226,10 +271,17 @@ export async function approveAudience(
  * Table written: facebook_custom_audiences
  */
 export async function deleteAudience(
-  userId: string,
+  _userId: string,
   audienceId: string,
-  brokerageId: string
+  _brokerageId: string
 ): Promise<{ success: boolean; error?: string }> {
+  // Session gate — soft-deletes an audience. Tenant and actor come from the
+  // session; the caller-supplied ids are ignored.
+  const actor = await resolveAdsActor()
+  if (!actor.ok) return { success: false, error: actor.error }
+  const userId = actor.ctx.userId
+  const brokerageId = actor.ctx.brokerageId
+
   // Feature gate
   const accessCheck = await canAccessFeature(userId, "ads_audiences")
   if (!accessCheck.allowed) {
@@ -287,22 +339,26 @@ export async function deleteAudience(
 // embedded in loadAudienceDefinitions results via the joined audience_sync_runs.
 
 export async function getAudienceSyncHistory(
-  userId: string,
+  _userId: string,
   params: { brokerageId: string; agentId: string; audienceId: string }
 ): Promise<{ success: boolean; runs?: any[]; error?: string }> {
+  // ── 0. Session gate — was an unauthenticated cross-tenant read ──────────────
+  const actor = await resolveAdsActor()
+  if (!actor.ok) return { success: false, error: actor.error }
+  const ctx = actor.ctx
+  const userId = ctx.userId
+
   // ── 1. Feature gate ─────────────────────────────────────────────────────────
   const accessCheck = await canAccessFeature(userId, "ads_audiences")
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature access denied" }
   }
 
-  const ctx: AdsActorContext = {
-    brokerageId: params.brokerageId,
-    agentId: params.agentId,
-    userId,
-  }
-
   // ── 2. Load all audiences (includes embedded sync_runs) ──────────────────────
+  // The list is brokerage-scoped by the kernel, so the `.find` below IS the
+  // ownership check: an audience id from another tenant simply is not in the list
+  // and the function returns "Audience not found". Kept deliberately — a direct
+  // audience_sync_runs read keyed on audienceId alone would need its own gate.
   const result = await loadAudienceDefinitions({ ctx })
 
   if (!result.success) {

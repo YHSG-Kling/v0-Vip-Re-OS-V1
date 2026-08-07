@@ -7,6 +7,7 @@ import { gatewayChat } from "@/lib/ai/gateway-chat"
 import { KernelEvent }         from "@/lib/kernel/events"
 import { isValidUUID }         from "@/lib/validations"
 import { resolveAgentId }      from "@/lib/kernel/agent-identity"
+import { requireContactAccess } from "@/lib/portal/require-contact-access"
 
 // ─── startOfferDraft ─────────────────────────────────────────────────────────
 // Emits lifecycle_event for buyer.offer.draft_started on page mount.
@@ -603,10 +604,39 @@ export async function sendOfferForESign(
 
 // ─── GET OFFERS ───────────────────────────────────────────────────────────────
 
+/**
+ * 🚨 WAS AN UNAUTHENTICATED CROSS-TENANT READ OF LIVE OFFER TERMS.
+ *
+ * This is a `"use server"` export — a public HTTP endpoint. It ran on
+ * `createServiceClient()` (RLS bypassed) with **no authentication of any kind**,
+ * and took BOTH the contact id and the brokerage id from the caller, so
+ * `.eq("brokerage_id", brokerageId)` scoped it to whatever tenant the caller
+ * named. It returns a buyer's complete negotiating position: `offer_price`,
+ * `earnest_money`, `financing_type`, `contingencies`, `buyer_notes`,
+ * `property_address` and the closing date.
+ *
+ * In this domain that is not ordinary PII — a competing bidder who learns another
+ * buyer's price, contingencies and financing wins the house. It is the single
+ * most commercially damaging read in the offers lane.
+ *
+ * Gated with `requireContactAccess(contactId)`, which is the right shape for this
+ * surface rather than a plain staff gate: it allows **the buyer themselves**
+ * (portal) OR **staff in the contact's own brokerage**, and — the important part —
+ * it returns the `brokerageId` resolved FROM THE CONTACT ROW. The tenant can no
+ * longer be asserted by the caller. The `brokerageId` parameter is retained and
+ * ignored (house pattern) so any future call site keeps type-checking.
+ */
 export async function getBuyerOffers(
   contactId: string,
-  brokerageId: string
+  _brokerageId?: string
 ): Promise<{ success: boolean; offers?: any[]; error?: string }> {
+  if (!isValidUUID(contactId)) {
+    return { success: false, error: "Invalid contact ID" }
+  }
+
+  const access = await requireContactAccess(contactId)
+  if (!access.ok) return { success: false, error: access.error }
+
   const supabase = createServiceClient()
 
   const { data, error } = await supabase
@@ -618,7 +648,8 @@ export async function getBuyerOffers(
       earnest_money, contingencies, buyer_notes
     `)
     .eq("contact_id", contactId)
-    .eq("brokerage_id", brokerageId)
+    // Tenant anchor comes from the contact row via the gate, never the caller.
+    .eq("brokerage_id", access.brokerageId)
     .order("created_at", { ascending: false })
 
   if (error) return { success: false, error: error.message }

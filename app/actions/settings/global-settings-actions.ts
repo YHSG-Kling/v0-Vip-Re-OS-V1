@@ -5,7 +5,6 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import {
   getGlobalSettings,
-  updateGlobalSettings,
   type GlobalSettingsRow,
 } from "@/lib/kernel"
 
@@ -26,46 +25,59 @@ export async function fetchGlobalSettings(): Promise<GlobalSettingsRow> {
   return await getGlobalSettings({ userId: user.id })
 }
 
-export async function updateSettings(
-  updates: Partial<
-    Pick<
-      GlobalSettingsRow,
-      | "app_name"
-      | "app_logo_url"
-      | "primary_color"
-      | "secondary_color"
-      | "font_family"
-      | "fiscal_year_start"
-      | "timezone"
-      | "date_format"
-      | "currency_symbol"
-      | "email_notifications_enabled"
-      | "sms_notifications_enabled"
-      | "push_notifications_enabled"
-    >
-  >
-): Promise<void> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user?.id) {
-    throw new Error("Unauthorized")
-  }
-
-  await updateGlobalSettings({ userId: user.id, updates })
-}
-
-// BUSINESS RULE (platform-locked): the avatar/explainer video engine is D-ID +
-// ElevenLabs ONLY. HeyGen is not selectable — this always resolves to "did".
-export async function getPlatformVideoProvider(): Promise<"did"> {
-  return "did"
-}
-
-// HeyGen is not a selectable provider. The setter is a no-op kept for call-site
-// compatibility; the platform video engine is permanently D-ID.
-export async function setPlatformVideoProvider(_provider: "did"): Promise<void> {
-  return
-}
+// ─── REMOVED in the orphan burn-down (w2s3) ─────────────────────────────────
+//
+// `updateSettings(updates)` — MERGED-THEN-DELETED.
+// SURVIVOR: app/actions/settings/update-global-settings.ts:updateGlobalSettings
+// — the action the settings UI actually calls (BrandingForm,
+// GeneralSettingsForm, NotificationChannelsCard).
+//
+// Nothing needed merging: the survivor writes the same twelve fields, delegates
+// to the same kernel function, returns `{ error }` instead of throwing, and
+// translates the kernel's "Forbidden" into a real sentence.
+//
+// It was deleted rather than left because it was a MASS-ASSIGNMENT hole. Its
+// only restriction on which columns could be written was the TypeScript
+// `Partial<Pick<GlobalSettingsRow, …>>` signature — and types are erased at
+// runtime. A `"use server"` export receives whatever the caller POSTs, and this
+// function passed that object straight through to
+// `updateGlobalSettings({ updates })`, which spreads it into
+// `.update({ ...params.updates })`. So any column on `global_settings` was
+// writable, including the secrets the kernel's own comment says must never be
+// written here — verified live on hrvaqgvukzxfskkcrwbt: `smtp_host`,
+// `smtp_username`, `smtp_password`, `airtable_api_key`, `ghl_api_key`,
+// `zapier_api_key`. Pointing a brokerage's SMTP credentials at another relay is
+// a mail-interception primitive.
+//
+// The survivor is safe from the same input because it copies field-by-field out
+// of a runtime `ALLOWED_FIELDS` const. That allow-list is the actual control;
+// the type never was.
+//
+// `getPlatformVideoProvider()` / `setPlatformVideoProvider()` — DELETED.
+// BUSINESS RULE (unchanged, platform-locked): the avatar/explainer video engine
+// is D-ID + ElevenLabs ONLY; HeyGen is not selectable. The getter was a public
+// HTTP endpoint whose entire body was `return "did"` — a network round-trip to
+// learn a compile-time constant — and the setter was a public no-op that
+// accepted a provider argument and silently discarded it, which is precisely
+// the "reports success, changes nothing" class this audit exists to remove.
+// `getPlatformVideoProvider` had no caller — its only mentions in the tree are
+// prose in `lib/kernel/video.ts` and `lib/video/intro-video-reactor.ts` restating
+// the rule, and both files already hard-code D-ID structurally.
+//
+// `setPlatformVideoProvider` DID have one live caller, and it is the reason the
+// no-op mattered: `app/settings/providers/page.tsx` called it from a
+// "Save Provider Settings" button and then rendered "Saved". A superadmin was
+// told a platform setting had been persisted when the function had discarded its
+// argument and written nothing. That button and its handler were removed with
+// this deletion — the card is platform-locked and offers no vendor choice, so
+// there was never anything for it to save.
+//
+// Platform video config that IS settable — channel enablement platform-wide —
+// lives at `lib/platform/platform-providers.ts:setPlatformProviderOverride`,
+// which writes real `provider_overrides` rows at scope_type='superadmin'. The
+// VENDOR remains locked to D-ID + ElevenLabs there as well.
+//
+// The rule is unchanged; two dead endpoints and one lying button are gone.
 
 export async function fetchWidgetScope(): Promise<WidgetScope | null> {
   const supabase = await createClient()

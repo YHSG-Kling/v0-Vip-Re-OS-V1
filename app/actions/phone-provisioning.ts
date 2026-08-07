@@ -81,6 +81,10 @@ interface ProvisionResult {
   phoneNumber?: string
   twilioSid?: string
   error?: string
+  /** Did the number's Twilio webhooks get pointed at our AI voice lane? */
+  bound?: boolean
+  /** Honest note when the number exists/bills but the webhook bind failed. */
+  bindNote?: string
 }
 
 /**
@@ -146,18 +150,61 @@ export async function autoProvisionAgentPhone(params: {
     agentId: params.agentId,
     eventSource: "tenant_action",
     eventNotes: "Auto-provisioned via brokerage setting",
+    // A purchased number that is never bound has no VoiceUrl/SmsUrl pointing at
+    // our AI lane — it rings into nothing. This path was the ONLY tenant
+    // purchase lane that left it off, so every auto-provisioned agent number
+    // cost real Twilio money and then could not answer a call. The sibling
+    // purchaseBrokerageNumberAction has always set it; the two are now
+    // consistent.
+    bindToVoiceLane: true,
     // Tenant purchase → enforce the plan's phone bundle (metered overage past
     // the included count; blocked only at the runaway hard cap).
     enforceTenantAllowance: true,
   })
   if (!result.ok) return { success: false, error: result.error }
-  return { success: true, phoneNumber: result.phoneNumber, twilioSid: result.twilioSid ?? undefined }
+  return {
+    success: true,
+    phoneNumber: result.phoneNumber,
+    twilioSid: result.twilioSid ?? undefined,
+    // Honest: a bind failure never undoes a real purchase, so it is reported
+    // rather than swallowed — the number exists and is billing either way.
+    bound: result.bound,
+    bindNote: result.bindNote,
+  }
 }
 
 /**
  * Manually add an existing phone number (BYO). Used when auto-provisioning
  * is OFF or for ports-in. Caller passes the phone number + optional Twilio
  * SID if the brokerage already owns it.
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * SECURITY — why this path proves ownership (w2s3)
+ *
+ * This endpoint takes a phone number as a FREE STRING from the caller and,
+ * before this pass, wrote it straight into `tenant_phone_numbers` with no
+ * proof that the brokerage owned it and no check that anyone else already
+ * had it. `tenant_phone_numbers` has **no unique constraint** on
+ * `phone_number` or `phone_digits` (verified live on hrvaqgvukzxfskkcrwbt —
+ * only pkey, the brokerage FK, and two CHECKs).
+ *
+ * Both inbound routing paths resolve the tenant from the dialled number by
+ *   `.eq("phone_digits", digits).eq("is_active", true).maybeSingle()`
+ * (`lib/voice/twilio-voice.ts:resolveInboundContext`,
+ *  `lib/voice/sms-inbound.ts`), and both do `const { data: num }` with no
+ * `error` destructure. `.maybeSingle()` ERRORS when more than one row
+ * matches, so `num` comes back undefined and the resolver returns `null`.
+ *
+ * So any authenticated agent — this action deliberately allows a plain agent
+ * to add their own number, the lowest-privilege role — could insert a row
+ * claiming a phone number already active for a DIFFERENT brokerage and
+ * blackhole that brokerage's inbound calls and SMS. If the victim's row was
+ * later deactivated, the attacker's row became the sole match and inherited
+ * the routing.
+ *
+ * Two guards close it: a global active-number collision check (fails closed),
+ * and a real ownership proof against the brokerage's resolved Twilio account.
+ * ─────────────────────────────────────────────────────────────────────────
  */
 export async function manuallyAddAgentPhone(params: {
   agentId: string
@@ -176,12 +223,53 @@ export async function manuallyAddAgentPhone(params: {
     return { success: false, error: "You can only add a number for your own profile" }
   }
 
-  const cleaned = params.phoneNumber.replace(/[^\d+]/g, "")
-  if (cleaned.length < 10) {
-    return { success: false, error: "Phone number is too short" }
+  // Normalise once. `phone_digits` is the column both inbound resolvers key
+  // on, so it — not the display string — is what must be unique.
+  const digits = String(params.phoneNumber ?? "").replace(/\D/g, "")
+  if (digits.length < 10 || digits.length > 15) {
+    return { success: false, error: "Enter a valid phone number" }
   }
+  // E.164 for the display column and for the Twilio lookup below.
+  const cleaned = digits.length === 10 ? `+1${digits}` : `+${digits}`
 
   const svc = createServiceClient()
+
+  // GUARD 1 — global collision. Deliberately NOT scoped to the caller's
+  // brokerage: the whole point is that another tenant may already hold this
+  // number, and that is precisely the case that must be refused.
+  const { data: collision, error: collisionErr } = await svc
+    .from("tenant_phone_numbers")
+    .select("id, brokerage_id")
+    .eq("phone_digits", digits)
+    .eq("is_active", true)
+    .limit(1)
+
+  // Fails CLOSED. A refused read is not "nobody has it" — treating it that
+  // way is how this guard would become decorative.
+  if (collisionErr) {
+    return { success: false, error: "Could not verify the number is free — nothing was added" }
+  }
+  if (collision && collision.length > 0) {
+    const owner = (collision[0] as any).brokerage_id
+    // Do not disclose which other tenant holds it.
+    return {
+      success: false,
+      error:
+        owner === ctx.brokerageId
+          ? "That number is already active on your account"
+          : "That number is already in use on this platform",
+    }
+  }
+
+  // GUARD 2 — ownership proof. A BYO/ported number is only legitimately
+  // yours if it actually sits in the Twilio account this brokerage resolves
+  // to (BYO → tenant subaccount → platform master). Ask Twilio rather than
+  // trusting the caller-supplied SID, and take the SID from the answer.
+  const ownership = await verifyNumberOwnedByTenant(svc, ctx.brokerageId, cleaned)
+  if (!ownership.ok) {
+    return { success: false, error: ownership.error }
+  }
+  const verifiedSid = ownership.twilioSid
 
   // Resolve auth user_id for this agent. Tenant-checked for the same reason as
   // autoProvisionAgentPhone — and here the stakes are higher: the very next
@@ -213,18 +301,46 @@ export async function manuallyAddAgentPhone(params: {
 
   // Insert the new one — number_source CHECK allows (byoc_twilio|ported)
   // only, the two sources this OS actually produces, so manual = byoc_twilio.
-  const { error } = await svc.from("tenant_phone_numbers").insert({
-    agent_user_id: agentUserId,
-    brokerage_id: ctx.brokerageId,
-    scope_type: "agent",
-    phone_number: cleaned,
-    phone_digits: cleaned.replace(/\D/g, ""),
-    twilio_number_sid: params.twilioSid ?? null,
-    number_source: params.source === "ported_in" ? "ported" : "byoc_twilio",
-    is_active: true,
-  })
+  // `.select("id")` because the row id is the handle bindNumberToTwilioLane
+  // needs; without it the number is registered but never answers.
+  const { data: inserted, error } = await svc
+    .from("tenant_phone_numbers")
+    .insert({
+      agent_user_id: agentUserId,
+      brokerage_id: ctx.brokerageId,
+      scope_type: "agent",
+      phone_number: cleaned,
+      phone_digits: digits,
+      // The SID Twilio confirmed, not the one the caller claimed.
+      twilio_number_sid: verifiedSid,
+      number_source: params.source === "ported_in" ? "ported" : "byoc_twilio",
+      is_active: true,
+    })
+    .select("id")
+    .single()
 
   if (error) return { success: false, error: error.message }
+
+  // Point the number's VoiceUrl / SmsUrl / StatusCallback at our AI lane.
+  // Without this the row exists, the UI says the agent has a number, and
+  // every call to it goes wherever its old webhooks pointed. Best-effort and
+  // reported honestly — a bind failure does not undo a real registration.
+  let bound = false
+  let bindNote: string | undefined
+  const numberRowId = (inserted as { id?: string } | null)?.id
+  if (numberRowId) {
+    const { bindNumberToTwilioLane } = await import("@/lib/voice/twilio-voice")
+    const bind = await bindNumberToTwilioLane(svc, numberRowId).catch((err: any) => ({
+      ok: false as const,
+      error: String(err?.message ?? err),
+    }))
+    bound = bind.ok
+    if (!bind.ok) {
+      bindNote = `Number saved, but pointing it at the AI lane failed: ${bind.error}`
+    }
+  } else {
+    bindNote = "Number saved, but the row id was not returned — bind it from its row later"
+  }
 
   await logPhoneNumberEvent(svc, {
     brokerageId: ctx.brokerageId,
@@ -232,10 +348,59 @@ export async function manuallyAddAgentPhone(params: {
     phoneNumber: cleaned,
     eventType: params.source === "ported_in" ? "ported_in" : "manually_added",
     source: "tenant_action",
-    twilioSid: params.twilioSid,
+    twilioSid: verifiedSid ?? undefined,
   })
 
-  return { success: true, phoneNumber: cleaned, twilioSid: params.twilioSid }
+  return { success: true, phoneNumber: cleaned, twilioSid: verifiedSid ?? undefined, bound, bindNote }
+}
+
+/**
+ * Prove the brokerage actually owns `phoneNumber` by looking it up in the
+ * Twilio account this tenant resolves to (BYO → tenant subaccount → platform
+ * master, via the canonical resolver). Returns Twilio's own SID for the
+ * number so nothing downstream has to trust a caller-supplied one.
+ *
+ * Honest about a not-configured carrier: it REFUSES rather than waving the
+ * number through, because "we can't check" must not mean "it's yours".
+ */
+async function verifyNumberOwnedByTenant(
+  svc: any,
+  brokerageId: string,
+  e164: string,
+): Promise<{ ok: true; twilioSid: string | null } | { ok: false; error: string }> {
+  const { resolveTenantTwilioCreds } = await import("@/lib/voice/twilio-tenancy")
+  const creds = await resolveTenantTwilioCreds(svc, brokerageId)
+  if (!creds) {
+    return {
+      ok: false,
+      error: "Telephony isn't connected yet, so number ownership can't be verified — nothing was added.",
+    }
+  }
+
+  const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+  const res = await callConnector<{ incoming_phone_numbers?: Array<Record<string, any>> }>({
+    connector: "twilio",
+    baseUrl: "https://api.twilio.com",
+    path: `/2010-04-01/Accounts/${creds.accountSid}/IncomingPhoneNumbers.json`,
+    method: "GET",
+    query: { PhoneNumber: e164, PageSize: "1" },
+    auth: { style: "basic", username: creds.accountSid, password: creds.authToken },
+  })
+
+  if (!res.ok) {
+    return { ok: false, error: `Could not verify the number with the carrier (${res.status ?? "—"}) — nothing was added.` }
+  }
+
+  const match = (res.data?.incoming_phone_numbers ?? [])[0]
+  if (!match) {
+    return {
+      ok: false,
+      error:
+        "That number isn't in your telephony account. Numbers must be owned by your brokerage before they can be added.",
+    }
+  }
+
+  return { ok: true, twilioSid: (match.sid as string) ?? null }
 }
 
 // ─── Tenant-facing "Add a Number": allowance status → search → purchase ──────

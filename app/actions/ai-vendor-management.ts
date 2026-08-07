@@ -1,6 +1,27 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+
+// ── AUTH GATE ────────────────────────────────────────────────────────────────
+// 🚨 Every AI export in this file was reachable with NO session at all.
+// `transitionBookingStatus` below does `auth.getUser()` and refuses — that is the
+// file's own house pattern — but `getVendorRecommendations`,
+// `analyzeVendorPerformance`, `coordinateVendors` and `requestVendorReview` all
+// skipped it. Each of the four is a `"use server"` export, i.e. a public HTTP
+// endpoint, and each one calls a model on the platform's key. `isValidUUID()` is
+// input validation, not authorization.
+//
+// NOT exported — a "use server" module may only export async functions, and this
+// is an internal gate, not an endpoint.
+async function requireVendorCaller(): Promise<
+  { ok: true; userId: string; brokerageId: string } | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  if (!ctx.brokerageId) return { ok: false, error: "No brokerage on this account" }
+  return { ok: true, userId: ctx.userId, brokerageId: ctx.brokerageId }
+}
 
 // ── Vendor booking lifecycle ─────────────────────────────────────────────────
 
@@ -60,6 +81,12 @@ export async function getVendorRecommendations(params: {
   urgency?: "standard" | "rush" | "emergency"
   requirements?: string[]
 }) {
+  // Not an orphan, but the same hole: anonymous AI spend plus a cross-tenant read
+  // of every vendor's email and phone. Gate added; `agentId` is still used as the
+  // data filter it has always been (booked_by), only the anonymity is closed.
+  const auth = await requireVendorCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid agent ID" }
   }
@@ -72,6 +99,9 @@ export async function getVendorRecommendations(params: {
       .from("vendors")
       .select("id, name, category, email, phone, website, rating, notes, brokerage_id")
       .ilike("category", `%${params.serviceType}%`)
+      // The row already carried brokerage_id and it was selected but never used
+      // to filter — so this returned every brokerage's vendor contact list.
+      .eq("brokerage_id", auth.brokerageId)
 
     // Get agent's past vendor usage via vendor_assignments
     const { data: pastJobs } = await supabase
@@ -181,6 +211,11 @@ export async function analyzeVendorPerformance(params: {
   vendorId?: string
   timeframe?: "30_days" | "90_days" | "6_months" | "1_year"
 }) {
+  // Not an orphan; gated for the same reason as its siblings above — it was an
+  // anonymous gpt-4o call over another agent's booking history and spend.
+  const auth = await requireVendorCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid agent ID" }
   }
@@ -296,6 +331,14 @@ export async function coordinateVendors(params: {
     notes?: string
   }[]
 }) {
+  // 🚨 Was an ANONYMOUS gpt-4o endpoint. `params.services` is caller-authored free
+  // text (`serviceType`, `notes`) that gets JSON.stringify'd straight into the
+  // prompt below — so before this gate, anyone on the internet had an unmetered
+  // gpt-4o proxy on the platform's key, plus a cross-tenant read of any listing's
+  // address and any vendor's phone and email on the way past.
+  const auth = await requireVendorCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(params.agentId) || !isValidUUID(params.listingId)) {
     return { success: false, error: "Invalid IDs" }
   }
@@ -303,12 +346,22 @@ export async function coordinateVendors(params: {
   const supabase = await createClient()
 
   try {
-    // Get listing details
-    const { data: listing } = await supabase
+    // Get listing details. `error` is destructured: supabase-js resolves a refused
+    // query, and the old code interpolated `listing?.address || "N/A"` into the
+    // prompt — so a refused or cross-tenant read still SPENT the gpt-4o call,
+    // planning against "N/A".
+    const { data: listing, error: listingErr } = await supabase
       .from("listings")
-      .select("id, address, city, state")
+      .select("id, address, city, state, brokerage_id")
       .eq("id", params.listingId)
       .maybeSingle()
+
+    if (listingErr) return { success: false, error: "Could not load that listing." }
+    // listings.brokerage_id is nullable, so compare explicitly and refuse an
+    // untenanted row rather than filtering on it — an unprovable owner fails closed.
+    if (!listing || listing.brokerage_id !== auth.brokerageId) {
+      return { success: false, error: "Listing not found" }
+    }
 
     // Get vendor details (use vendors table)
     const vendorIds = params.services
@@ -319,6 +372,8 @@ export async function coordinateVendors(params: {
       .from("vendors")
       .select("id, name, category, phone, email")
       .in("id", vendorIds)
+      // Vendor phone/email is contact PII — never return another tenant's.
+      .eq("brokerage_id", auth.brokerageId)
 
     const { object: coordination } = await generateObject({
       model: "openai/gpt-4o",
@@ -402,6 +457,11 @@ export async function requestVendorReview(params: {
   agentId: string
   jobId: string
 }) {
+  // 🚨 Was anonymous: a bare job uuid returned another tenant's vendor name and
+  // the transaction's PROPERTY ADDRESS, and spent a model call doing it.
+  const auth = await requireVendorCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   if (!isValidUUID(params.agentId) || !isValidUUID(params.jobId)) {
     return { success: false, error: "Invalid IDs" }
   }
@@ -409,10 +469,10 @@ export async function requestVendorReview(params: {
   const supabase = await createClient()
 
   try {
-    const { data: job } = await supabase
+    const { data: job, error: jobErr } = await supabase
       .from("vendor_jobs")
       .select(`
-        id, job_title, status,
+        id, job_title, status, brokerage_id,
         vendor_id,
         vendors:vendor_id(name, category),
         vendor_assignments:assignment_id(
@@ -423,7 +483,13 @@ export async function requestVendorReview(params: {
       .eq("id", params.jobId)
       .maybeSingle()
 
-    if (!job) {
+    // A refused read is not "no rows" — both fail closed, before any spend.
+    if (jobErr) {
+      return { success: false, error: "Could not load that job." }
+    }
+    // vendor_jobs.brokerage_id is nullable, so this compares explicitly and
+    // refuses an untenanted row instead of filtering on a column that may be NULL.
+    if (!job || (job as any).brokerage_id !== auth.brokerageId) {
       return { success: false, error: "Job not found" }
     }
 
@@ -431,7 +497,13 @@ export async function requestVendorReview(params: {
     const propertyAddress = (job as any).vendor_assignments?.transactions?.property_address || "N/A"
 
     const { text: reviewRequest } = await generateText({
-      feature: "unspecified",
+      // Was `feature: "unspecified"` with no userId/brokerageId, so this model
+      // call was logged against nobody. generateTextRouted takes all three for
+      // usage logging; routing behaviour is unchanged (an unknown feature key
+      // falls back to the same default row "unspecified" resolved to).
+      feature: "vendor_review_request",
+      userId: auth.userId,
+      brokerageId: auth.brokerageId,
       prompt: `Generate a professional review request for a vendor:
 
 Vendor: ${vendorName}

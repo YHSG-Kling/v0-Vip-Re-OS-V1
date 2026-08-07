@@ -90,6 +90,29 @@ export async function updateMyProspectVoice(params: {
   return error ? { success: false, error: error.message } : { success: true }
 }
 
+/**
+ * Choose which of the agent's OWN twins fronts their self-view (morning brief,
+ * assistant chat, their own avatar call). Pass null to clear back to their
+ * default clone.
+ *
+ * OWNERSHIP IS ENFORCED, not assumed. `assistant_avatar_id` is read by
+ * `lib/voice/voice-resolver.ts:resolveSelfAvatar`, which returns it verbatim as
+ * the D-ID avatar to render. Before this pass the value was a free string
+ * written with the SERVICE client, so an agent could point it at ANOTHER
+ * agent's `did_avatar_id` and have that person's face render as their
+ * assistant — and spend D-ID budget doing it. That directly contradicts this
+ * platform's own standing rule that nobody else's face is ever used as a
+ * fallback or a substitute.
+ *
+ * (Contact-facing surfaces are unaffected either way — `resolveContactFacing`
+ * always uses the agent's own clone — but self-view is still this agent's
+ * identity, and the twin it names still belongs to someone.)
+ *
+ * NOT WIRED: the settings panel
+ * (app/dashboard/settings/assistant/listening-preferences-panel.tsx) wires the
+ * two voice actions but has no avatar control, so the avatar half of this
+ * module has no surface. Adding the picker is a UI change outside this slice.
+ */
 export async function updateMyAssistantAvatar(params: {
   assistantAvatarId: string | null
 }): Promise<{ success: boolean; error?: string }> {
@@ -99,9 +122,38 @@ export async function updateMyAssistantAvatar(params: {
   }
 
   const svc = createServiceClient()
+
+  const requested = params.assistantAvatarId?.trim() || null
+
+  if (requested) {
+    if (!ctx.agentId) {
+      return { success: false, error: "Only an agent can choose an assistant avatar" }
+    }
+
+    // The chosen avatar must be one of THIS agent's own twins, and one that is
+    // actually usable — a pending or rejected twin would render nothing (or
+    // render an unapproved likeness).
+    const { data: owned, error: ownedError } = await svc
+      .from("agent_avatar_assets")
+      .select("id")
+      .eq("agent_id", ctx.agentId)
+      .eq("did_avatar_id", requested)
+      .eq("status", "ready")
+      .eq("approval_status", "approved")
+      .limit(1)
+
+    // Fail CLOSED — a refused read is not "you own it".
+    if (ownedError) {
+      return { success: false, error: "Could not verify that avatar — nothing was changed" }
+    }
+    if (!owned || owned.length === 0) {
+      return { success: false, error: "Pick one of your own approved twins" }
+    }
+  }
+
   const { error } = await svc
     .from("agents")
-    .update({ assistant_avatar_id: params.assistantAvatarId })
+    .update({ assistant_avatar_id: requested })
     .eq("user_id", ctx.userId)
 
   return error ? { success: false, error: error.message } : { success: true }

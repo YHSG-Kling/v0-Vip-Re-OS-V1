@@ -331,8 +331,48 @@ export async function triggerReviewSequence(payload: any) {
   return triggerReviewSequenceService(payload)
 }
 
+/**
+ * 🚨 THIS SENDS AN SMS, AND IT WAS AN ANONYMOUS ENDPOINT.
+ *
+ * `"use server"` export → public HTTP endpoint. Neither this wrapper nor
+ * `lib/application/listing-lifecycle.ts:sendReviewRequestService` had any auth
+ * gate. The service reads `review_requests` by a caller-supplied uuid joined to
+ * `contact:contacts(*)` — the FULL contact record, phone number included — and
+ * then dispatches an SMS to that number. So a bare request uuid was enough to
+ * (a) read another brokerage's client PII and (b) make the platform text that
+ * client. `dispatchSms` still applies consent/DNC/quiet-hours, which bounds the
+ * abuse but does not authorize the caller.
+ *
+ * `completeListingTask` immediately above already does `auth.getUser()`, and
+ * `getListingTasks`'s service carries its own `callerBrokerageId` gate — the file
+ * header's contract is "validate → authenticate → delegate". This one skipped the
+ * middle step. Gated here, at the endpoint, and scoped: the request must belong to
+ * the caller's brokerage before the service is allowed to touch it.
+ */
 export async function sendReviewRequest(requestId: string, platform: string) {
   if (!requestId || !platform) throw new Error("requestId and platform are required")
+
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
+  const supabase = await createClient()
+  const { data: reviewRequest, error: readError } = await supabase
+    .from("review_requests")
+    .select("id, brokerage_id")
+    .eq("id", requestId)
+    .maybeSingle()
+
+  // A refused read is not "no rows" — both fail closed, before anything is sent.
+  if (readError) return { success: false, error: "Could not load that review request" }
+  // review_requests.brokerage_id is nullable, so compare explicitly and refuse an
+  // untenanted row: an unprovable owner must not authorize an outbound message.
+  if (!reviewRequest || reviewRequest.brokerage_id !== ctx.brokerageId) {
+    return { success: false, error: "Review request not found" }
+  }
+
   return sendReviewRequestService(requestId, platform)
 }
 
