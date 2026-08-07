@@ -265,7 +265,13 @@ export default async function ClientVendorsPage({
           </CardHeader>
           <CardContent className="space-y-5">
             {Array.from(byCategory.entries()).map(([category, vendors]) => (
-              <div key={category}>
+              // The category heading carries an anchor id so another surface can
+              // link a client straight to a vendor's SPOT here — e.g. the deal's
+              // Hazard Insurance panel deep-links to #vendor-category-insurance.
+              // Linking here rather than reproducing vendor contact details
+              // elsewhere is deliberate: this page is where the RESPA / AfBA
+              // acknowledgment gate lives, and it must not be stepped around.
+              <div key={category} id={`vendor-category-${category}`} className="scroll-mt-24">
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
                   {category}
                 </h3>

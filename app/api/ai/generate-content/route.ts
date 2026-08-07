@@ -1,6 +1,12 @@
 import { createClient } from "@/lib/supabase/server"
 import { generateAIResponse } from "@/lib/ai"
-import { logContentGeneration } from "@/app/actions/ai-content-generation"
+// Repointed from the deleted logContentGeneration onto its survivor. The old
+// one buried model/tokens/elapsed/success in ai_generated_content.metadata,
+// a table with no column for any of them, so nothing could ever read them
+// back. logGenerationCost writes content_generation_logs, where each of those
+// is a typed column, and books the real cost. See the CONSOLIDATION note in
+// app/actions/ai-content-generation.tsx.
+import { logGenerationCost } from "@/app/actions/ai-content-generation"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 export async function POST(request: Request) {
@@ -74,16 +80,23 @@ Target Contact Profile:
 
     const generationTime = Date.now() - startTime
 
-    // Log generation
-    await logContentGeneration({
-      agentId,
+    // Log generation. `model` is the real model id — the old call passed the
+    // literal "email_generation" as a MODEL NAME when response.model was
+    // falsy, which is a feature label, not a model, and would have polluted
+    // the per-model cost breakdown with a row nothing prices.
+    const genLog = await logGenerationCost({
       contentType,
       prompt,
-      model: response.model || "email_generation",
-      tokensUsed: (response.tokensUsed?.input || 0) + (response.tokensUsed?.output || 0),
-      generationTime,
+      model: response.model,
+      promptTokens: response.tokensUsed?.input,
+      completionTokens: response.tokensUsed?.output,
+      totalTokens: response.tokensUsed?.total,
+      generationTimeMs: generationTime,
       success: true,
     })
+    if (!genLog.success) {
+      console.error("[api/ai/generate-content] Generation log failed:", genLog.error)
+    }
 
     // Extract hashtags if social post
     let hashtags: string[] = []

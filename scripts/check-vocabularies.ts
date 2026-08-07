@@ -296,7 +296,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["dismissed", "expired", "open", "superseded"],
   },
   brokerage_required_documents: {
-    classification: ["addendum", "agency_disclosure", "appraisal_report", "closing_disclosure", "commission_agreement", "counter_offer", "disclosure", "earnest_money_receipt", "hoa_documents", "id_document", "inspection_report", "lender_letter", "listing_agreement", "other", "pre_approval_letter", "preliminary_closing_statement", "proof_of_funds", "seller_broker_agreement", "signed_contract", "title_report", "wire_instructions"],
+    classification: ["addendum", "agency_disclosure", "appraisal_report", "closing_disclosure", "commission_agreement", "counter_offer", "disclosure", "earnest_money_receipt", "hoa_documents", "id_document", "inspection_report", "insurance_binder", "lender_letter", "listing_agreement", "other", "pre_approval_letter", "preliminary_closing_statement", "proof_of_funds", "seller_broker_agreement", "signed_contract", "title_report", "wire_instructions"],
     deal_type: ["buyer", "dual", "seller"],
     scope_type: ["agent", "brokerage", "multi_location", "platform", "team"],
   },
@@ -632,7 +632,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["approved", "cancelled", "pending", "rejected", "submitted"],
   },
   documents: {
-    classification: ["addendum", "agency_disclosure", "appraisal_report", "closing_disclosure", "commission_agreement", "counter_offer", "disclosure", "earnest_money_receipt", "hoa_documents", "id_document", "inspection_report", "lender_letter", "listing_agreement", "other", "pre_approval_letter", "preliminary_closing_statement", "proof_of_funds", "seller_broker_agreement", "signed_contract", "title_report", "wire_instructions"],
+    classification: ["addendum", "agency_disclosure", "appraisal_report", "closing_disclosure", "commission_agreement", "counter_offer", "disclosure", "earnest_money_receipt", "hoa_documents", "id_document", "inspection_report", "insurance_binder", "lender_letter", "listing_agreement", "other", "pre_approval_letter", "preliminary_closing_statement", "proof_of_funds", "seller_broker_agreement", "signed_contract", "title_report", "wire_instructions"],
     classification_confidence: ["high", "low", "medium"],
     status: ["archived", "cancelled", "complete", "declined", "draft", "draft_ready", "generating", "needs_agent_input", "pending_signature", "review", "signed"],
   },
@@ -1459,7 +1459,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["cancelled", "completed", "overdue", "pending"],
   },
   transaction_pending_actions: {
-    action_type: ["appraisal_not_ordered", "cda_missing", "clear_to_close_late", "contract_followup_check", "em_not_received", "financing_deadline_close", "inspection_overdue", "inspection_window_closing", "lender_condition_stale", "title_commitment_late", "walkthrough_unscheduled", "wire_instructions_missing"],
+    action_type: ["appraisal_not_ordered", "cda_missing", "clear_to_close_late", "contract_followup_check", "em_not_received", "financing_deadline_close", "hazard_insurance_unbound", "inspection_overdue", "inspection_window_closing", "lender_condition_stale", "title_commitment_late", "walkthrough_unscheduled", "wire_instructions_missing"],
     severity: ["high", "low", "medium", "urgent"],
     status: ["dismissed", "open", "resolved", "superseded"],
     suggested_recipient: ["agent", "buyer", "co_agent", "escrow", "inspector", "lender", "seller", "title"],
@@ -1474,7 +1474,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["cancelled", "completed", "in_progress", "pending"],
   },
   transaction_vendor_services: {
-    status: ["approved", "cancelled", "completed", "in_progress", "ordered", "pending_approval", "quote_requested", "scheduled"],
+    // "bound" (m385) — the buyer's hazard policy is actually in force, which is
+    // NOT the same as "approved" (client accepted a quote). A lender will not fund on the latter.
+    status: ["approved", "bound", "cancelled", "completed", "in_progress", "ordered", "pending_approval", "quote_requested", "scheduled"],
   },
   transactions: {
     commission_final_source: ["cd_uploaded", "cda_signed"],

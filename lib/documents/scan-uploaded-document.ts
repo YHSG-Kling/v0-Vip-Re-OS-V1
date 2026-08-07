@@ -127,6 +127,17 @@ Per-classification extracted_fields shape:
                            figure not explicitly stated — never estimate.)
   seller_broker_agreement → { seller_name, brokerage_name, commission_rate, effective_date, expires_at }
   preliminary_closing_statement → { closing_date, seller_proceeds, total_seller_costs, title_company }
+  insurance_binder      → { carrier, policy_number, coverage_amount, annual_premium,
+                            effective_date, expiry, insured_name, property_address }
+                          (the BUYER'S hazard / homeowner's policy binder or
+                           declarations page — the evidence of coverage a lender
+                           requires before funding. NOT a vendor's own certificate
+                           of liability insurance, which is a different subject.
+                           coverage_amount is the DWELLING coverage as a number,
+                           effective_date and expiry are yyyy-mm-dd. Use null for
+                           anything not explicitly stated — never estimate a
+                           coverage figure or infer an expiry from the effective
+                           date.)
   other                 → { document_type_guess }
 
 Now classify this document content:

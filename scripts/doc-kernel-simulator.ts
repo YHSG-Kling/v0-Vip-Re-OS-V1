@@ -2983,7 +2983,13 @@ async function main() {
           "social_publish_log.publish_status": ["queued","published","failed","cancelled"],
           "transaction_compliance_log.status": ["pending","pass","fail","waived","needs_review"],
           "transaction_documents.status": ["missing","requested","uploaded","under_review","approved","rejected","pending_signature"],
-          "transaction_vendor_services.status": ["ordered","scheduled","in_progress","completed","cancelled","quote_requested","pending_approval","approved"],
+          // "bound" added by m385 — the buyer's hazard policy is IN FORCE, which is
+          // not the same as "approved" (the client accepted a quote). A lender will
+          // not fund on the latter. NOTE: this inline table is a THIRD copy of a
+          // vocabulary that also lives in the live CHECK and in
+          // scripts/check-vocabularies.ts. Three copies drift by construction —
+          // when you widen a CHECK, all three have to move together.
+          "transaction_vendor_services.status": ["ordered","scheduled","in_progress","completed","cancelled","quote_requested","pending_approval","approved","bound"],
           "transactions.status": ["lead","qualifying","active","under_contract","closing","closed","lost","archived"],
           "vendor_assignments.status": ["pending","confirmed","in_progress","completed","cancelled"],
           "wealth_advisor_recommendations.status": ["open","reviewed","presented","converted","dismissed","stale"],

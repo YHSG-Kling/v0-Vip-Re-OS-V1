@@ -27,6 +27,13 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { runDealAutopsy } from "@/lib/kernel/deal-autopsy"
 import { resolveMilestoneIdentity } from "./milestone-identity"
+import {
+  readHazardInsurance,
+  hazardSeverity,
+  hazardReminderHeadline,
+  HAZARD_EVIDENCE_LEAD_DAYS,
+  type HazardServiceRow,
+} from "./hazard-insurance"
 
 type Severity = "low" | "medium" | "high" | "urgent"
 type Recipient = "buyer" | "seller" | "lender" | "inspector" | "title" | "escrow" | "co_agent" | "agent"
@@ -59,6 +66,8 @@ interface TransactionContext {
   propertyAddress:     string | null
   /** Resolved from transaction_milestones where milestone_type='earnest_money_due' */
   earnestMoneyDueAt:   string | null
+  /** transactions.deal_type — 'buyer' | 'seller' | 'dual' | null on legacy rows. */
+  dealType:            string | null
 }
 
 interface TransactionEvidence {
@@ -86,6 +95,16 @@ interface TransactionEvidence {
     completed_at:    string | null
     target_date:     string | null
   }>
+  /** transaction_vendor_services rows with service_type='insurance_quote' (m385). */
+  insuranceServices: HazardServiceRow[]
+  /**
+   * FALSE when the insurance read was REFUSED. An empty array and a refused
+   * query are indistinguishable in supabase-js (both resolve), and here they
+   * mean opposite things: "this buyer has no coverage on file" versus "we could
+   * not look". Opening an urgent closing alarm on the second would be a
+   * fabricated finding, so the detector abstains instead.
+   */
+  insuranceEvidenceAvailable: boolean
 }
 
 // Match a milestone by its CANONICAL identity (milestone_type for catalog/journey
@@ -253,6 +272,63 @@ function detectTitleCommitmentLate(ctx: TransactionContext, ev: TransactionEvide
   }
 }
 
+/**
+ * HAZARD / HOMEOWNER'S INSURANCE NOT BOUND (m385).
+ *
+ * The lead-time reminder the owner asked for, riding the closing-prerequisite
+ * engine that already exists rather than a second one beside it. A lender wants
+ * evidence of coverage roughly 7-10 days before funding, so this opens at
+ * HAZARD_EVIDENCE_LEAD_DAYS (10) and escalates inside 7.
+ *
+ * BUYER SIDE ONLY, decided from two independent signals so a NULL deal_type on a
+ * legacy row cannot silently mute it AND a seller-side deal cannot silently
+ * acquire it:
+ *   · transactions.deal_type is 'buyer' or 'dual' (we represent the buyer), OR
+ *   · the deal carries the hazard_insurance_bound milestone, which only the
+ *     BUYER journey seeds (lib/transactions/milestone-catalog.ts).
+ * Neither present → the detector stays silent. That is honest: on a seller-side
+ * deal the buyer's coverage is not ours to chase.
+ *
+ * The verdict itself comes from the shared pure evaluator, so what the cron acts
+ * on and what the agent's panel renders can never disagree.
+ */
+function detectHazardInsuranceUnbound(ctx: TransactionContext, ev: TransactionEvidence): DetectedAction | null {
+  // Never raise an alarm off a read we could not perform.
+  if (!ev.insuranceEvidenceAvailable) return null
+  if (!ctx.closeDate) return null
+  const daysToClose = daysBetween(today(), ctx.closeDate)
+  if (daysToClose > HAZARD_EVIDENCE_LEAD_DAYS || daysToClose < 0) return null
+
+  const milestone = ev.milestones.find((m) => isMilestone(m, "hazard_insurance_bound"))
+  const buyerSide =
+    ctx.dealType === "buyer" || ctx.dealType === "dual" || milestone != null
+  if (!buyerSide) return null
+
+  // An explicitly completed milestone is the agent asserting the step is done.
+  // Honour it — the panel is where the evidence gets argued, not the cron.
+  if (milestone?.status === "completed" || milestone?.completed_at) return null
+
+  const status = readHazardInsurance({
+    service: ev.insuranceServices[0] ?? null,
+    closeDate: ctx.closeDate,
+    now: new Date(),
+  })
+  if (!status.blocksClosing) return null
+
+  return {
+    actionType:         "hazard_insurance_unbound",
+    severity:           hazardSeverity(status),
+    dueDate:            status.evidenceDueDate ?? ctx.closeDate,
+    headline:           hazardReminderHeadline(status),
+    detail:
+      `${status.detail} The lender needs the binder or declarations page on file by ` +
+      `${status.evidenceDueDate ?? "the lead-time date"} to fund on ${ctx.closeDate}. ` +
+      `Recommend an insurance vendor from the brokerage marketplace on the transaction's Hazard Insurance panel.`,
+    suggestedRecipient: "buyer",
+    bucketKey:          `hazard_insurance:${ctx.closeDate}`,
+  }
+}
+
 const DETECTORS: Array<(c: TransactionContext, e: TransactionEvidence) => DetectedAction | null> = [
   detectAppraisalNotOrdered,
   detectInspectionWindow,
@@ -262,6 +338,7 @@ const DETECTORS: Array<(c: TransactionContext, e: TransactionEvidence) => Detect
   detectWireInstructionsMissing,
   detectCDAMissing,
   detectTitleCommitmentLate,
+  detectHazardInsuranceUnbound,
 ]
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -282,7 +359,7 @@ export async function runClosingOrchestration(opts?: { limit?: number }): Promis
   // itself) — we resolve it per-transaction from the milestones evidence pull.
   const { data: txns } = await svc
     .from("transactions")
-    .select("id, brokerage_id, agent_id, contract_date, close_date, property_address")
+    .select("id, brokerage_id, agent_id, contract_date, close_date, property_address, deal_type")
     .not("status", "in", "(closed,cancelled,terminated)")
     .not("contract_date", "is", null)
     .order("close_date", { ascending: true, nullsFirst: false })
@@ -297,17 +374,35 @@ export async function runClosingOrchestration(opts?: { limit?: number }): Promis
 
   for (const t of txns as any[]) {
     // Pull evidence in parallel
-    const [inspectionsRes, lenderRes, titleRes, milestonesRes] = await Promise.all([
+    const [inspectionsRes, lenderRes, titleRes, milestonesRes, insuranceRes] = await Promise.all([
       svc.from("transaction_inspections").select("inspection_type, status, scheduled_date, completed_date").eq("transaction_id", t.id),
       svc.from("transaction_lenders").select("appraisal_ordered_date, appraisal_completed_date, clear_to_close_date, underwriting_status").eq("transaction_id", t.id).maybeSingle(),
       svc.from("transaction_title_escrow").select("earnest_money_received_date, title_commitment_date, closing_scheduled_date").eq("transaction_id", t.id).maybeSingle(),
       svc.from("transaction_milestones").select("milestone_type, milestone_name, status, completed_at, target_date").eq("transaction_id", t.id),
+      // m385 — the deal's hazard-insurance engagement(s). Tenant-scoped on top of
+      // the transaction id: transaction_vendor_services carries its own
+      // brokerage_id and this sweep runs with the service client.
+      svc.from("transaction_vendor_services")
+        .select("id, service_type, status, vendor_name, vendor_id, quote_amount, cost, policy")
+        .eq("transaction_id", t.id)
+        .eq("brokerage_id", t.brokerage_id)
+        .eq("service_type", "insurance_quote")
+        .order("created_at", { ascending: false }),
     ])
+    // A REFUSED read RESOLVES with data:null, which is indistinguishable from an
+    // empty result — and here those mean opposite things. Destructure the error
+    // and carry "we could not look" as its own fact rather than letting it read
+    // as "this buyer has no coverage".
+    if (insuranceRes.error) {
+      console.error(`[closing-orchestration] insurance evidence read failed for ${t.id}:`, insuranceRes.error.message)
+    }
     const evidence: TransactionEvidence = {
       inspections: inspectionsRes.data ?? [],
       lender:      lenderRes.data ?? null,
       titleEscrow: titleRes.data ?? null,
       milestones:  milestonesRes.data ?? [],
+      insuranceServices: ((insuranceRes.data ?? []) as unknown as HazardServiceRow[]),
+      insuranceEvidenceAvailable: !insuranceRes.error,
     }
 
     // Derive earnest-money due date from milestones; column doesn't exist on
@@ -323,6 +418,7 @@ export async function runClosingOrchestration(opts?: { limit?: number }): Promis
       closeDate:         t.close_date,
       propertyAddress:   t.property_address,
       earnestMoneyDueAt: emMile?.target_date ?? null,
+      dealType:          t.deal_type ?? null,
     }
 
     // Run all detectors

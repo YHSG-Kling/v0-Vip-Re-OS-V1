@@ -84,7 +84,6 @@
     "app/actions/brand-template-registry.ts:batchGetBrandRequirementsAction",
     "app/actions/brokerage-cda-setup.ts:updateCdaTemplateAction",
     "app/actions/buyer-broker-agreements.ts:createBBADraftAction",
-    "app/actions/buyer-execution.ts:checkBuyerCanPerformAction",
     "app/actions/buyer-execution.ts:getBuyerUpdateHistory",
     "app/actions/buyer-execution.ts:handleBuyerVoiceAssistant",
     "app/actions/buyer-execution.ts:logBuyerAction",

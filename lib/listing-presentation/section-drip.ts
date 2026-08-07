@@ -240,8 +240,14 @@ export interface SectionEmailInput {
   step:            number
   totalSteps:      number
   portalUrl:       string
-  /** The reel this email exists to carry. Null when no finished reel is attached. */
-  reel:            { videoUrl: string; thumbnailUrl: string | null } | null
+  /**
+   * The reel this email exists to carry. Null when no finished reel is attached.
+   *
+   * `reviewPending` decides how the reel travels, never WHETHER it travels — the
+   * owner's ruling is that "the videos must go out with the channel", closed
+   * autonomously with no human gate. See the embed decision in composeSectionEmail.
+   */
+  reel:            { videoUrl: string; thumbnailUrl: string | null; reviewPending?: boolean } | null
   /** Seller-safe note from the section body (e.g. the CMA valuation deferral). */
   note?:           string | null
 }
@@ -266,7 +272,27 @@ export function composeSectionEmail(input: SectionEmailInput): ComposedSectionEm
     ? `A short video from ${input.agentName} before we meet about ${addr}.`
     : `${input.agentName} on ${title.toLowerCase()}, before we meet about ${addr}.`
 
-  const embed = input.reel ? videoThumbnailEmbed(input.reel.videoUrl, input.reel.thumbnailUrl) : ""
+  // HOW THE REEL TRAVELS — the owner's ruling, in two parts.
+  //
+  //   "the videos must go out with the channel so close the loop on this
+  //    autonomously"  → the video ALWAYS accompanies the send. Nothing here
+  //    waits for a human, and a reel is never dropped for being unreviewed.
+  //   "Thumbnail - c" → where the reel's script postcheck has not returned a
+  //    clean 'passed', the section still goes and the video still goes, but as a
+  //    PLAIN LINK rather than an embedded thumbnail image.
+  //
+  // The reason the thumbnail is the part that gives: a rendered frame is the one
+  // artifact nothing in this system can inspect. redactPriceAmounts protects the
+  // subject and the body, and the compositions are built price-free, but no check
+  // can read a number burned into an image. A link carries the same video without
+  // putting an unverifiable picture in front of a seller pre-appointment. An
+  // outright 'failed' postcheck is refused earlier, in resolvePlayableVideo.
+  const reviewPending = input.reel?.reviewPending === true
+  const embed = input.reel
+    ? reviewPending
+      ? `<p style="margin:16px 0"><a href="${escapeAttr(input.reel.videoUrl)}" style="color:#0F172A;font-weight:600">▶ Watch the short video on ${escapeHtml(title.toLowerCase())}</a></p>`
+      : videoThumbnailEmbed(input.reel.videoUrl, input.reel.thumbnailUrl)
+    : ""
   const lede = input.reel
     ? `I recorded a short video on <strong>${escapeHtml(title.toLowerCase())}</strong> so you can see how I'll approach ${escapeHtml(addr)} before we ever sit down together.`
     : `Here's the next piece of the plan for ${escapeHtml(addr)}: <strong>${escapeHtml(title.toLowerCase())}</strong>.`
@@ -817,7 +843,9 @@ async function sendSectionEmail(
     step:            s.section_order + 1,
     totalSteps:      Math.max(ctx.sectionCount, s.section_order + 1),
     portalUrl,
-    reel:            reel.state === "ready" ? { videoUrl: reel.videoUrl, thumbnailUrl: reel.thumbnailUrl } : null,
+    reel:            reel.state === "ready"
+      ? { videoUrl: reel.videoUrl, thumbnailUrl: reel.thumbnailUrl, reviewPending: reel.reviewPending }
+      : null,
     note:            bodyNote,
   })
 

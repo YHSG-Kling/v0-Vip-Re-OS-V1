@@ -733,7 +733,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 8915,
+  "census": 8924,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -793,7 +793,7 @@
     "app/actions/ai-closing-workflow.ts": 5,
     "app/actions/ai-cma.ts": 4,
     "app/actions/ai-communication-hub.ts": 9,
-    "app/actions/ai-content-generation.tsx": 45,
+    "app/actions/ai-content-generation.tsx": 43,
     "app/actions/ai-contract-review.ts": 6,
     "app/actions/ai-direct-mail.ts": 11,
     "app/actions/ai-document-intelligence.ts": 7,
@@ -1228,6 +1228,7 @@
     "app/actions/tour-planner.ts": 13,
     "app/actions/transaction-compliance.ts": 6,
     "app/actions/transaction-document-signatures.ts": 4,
+    "app/actions/transaction-hazard-insurance.ts": 2,
     "app/actions/transaction-inspections.ts": 11,
     "app/actions/transaction-milestones.ts": 8,
     "app/actions/transaction-stage-machine.ts": 4,
@@ -1844,9 +1845,9 @@
     "app/components/heartbeat/sphere-resonance-card.tsx": 1,
     "app/components/heartbeat/wealth-advisor-card.tsx": 1,
     "app/components/home-value/AddressSearchForm.tsx": 1,
-    "app/components/home-value/AppointmentBookingCard.tsx": 1,
     "app/components/home-value/CompsTable.tsx": 1,
     "app/components/home-value/EquityCalculator.tsx": 1,
+    "app/components/home-value/ListingAppointmentCard.tsx": 1,
     "app/components/home-value/ValuationResultCard.tsx": 1,
     "app/components/isa/IsaAutoRespondSettings.tsx": 1,
     "app/components/layout/app-shell.tsx": 1,
@@ -1898,6 +1899,7 @@
     "app/components/portal/DealTeamCard.tsx": 1,
     "app/components/portal/DocumentUploadDialog.tsx": 1,
     "app/components/portal/FitBadge.tsx": 2,
+    "app/components/portal/HomeValueReportCard.tsx": 1,
     "app/components/portal/LessonCard.tsx": 2,
     "app/components/portal/LessonDetailDrawer.tsx": 1,
     "app/components/portal/ListingStatsCard.tsx": 1,
@@ -2568,6 +2570,7 @@
     "app/dashboard/transactions/[id]/closing-watchtower-section.tsx": 1,
     "app/dashboard/transactions/[id]/components/transaction-form-esign-flow.tsx": 1,
     "app/dashboard/transactions/[id]/financing-pit-stop-section.tsx": 1,
+    "app/dashboard/transactions/[id]/hazard-insurance-section.tsx": 1,
     "app/dashboard/transactions/[id]/lender-status-request-button.tsx": 1,
     "app/dashboard/transactions/[id]/transaction-detail-client.tsx": 1,
     "app/dashboard/transactions/closing-concierge/actions.ts": 5,
@@ -3272,6 +3275,8 @@
     "lib/gifting/gift-studio.ts": 3,
     "lib/gifting/shoppable-links.ts": 1,
     "lib/goals/goal-types.ts": 2,
+    "lib/home-value/listing-appointment.ts": 1,
+    "lib/home-value/report-email.ts": 1,
     "lib/hooks/use-media-query.ts": 1,
     "lib/hooks/use-mobile.ts": 1,
     "lib/identity/ensure-agent-context.ts": 1,
@@ -3728,6 +3733,7 @@
     "lib/listing-lifecycle/rollback-cascade.ts": 6,
     "lib/listing-lifecycle/stage-automations.ts": 1,
     "lib/listing-lifecycle/transition-validator.ts": 5,
+    "lib/listing-presentation/generate-ai-presentation.ts": 1,
     "lib/listing-presentation/prelisting-delivery.ts": 5,
     "lib/listing-presentation/section-drip.ts": 7,
     "lib/listing-presentation/section-narration-orchestrator.ts": 2,
@@ -4100,6 +4106,7 @@
     "lib/transactions/earnest-terms.ts": 4,
     "lib/transactions/final-compliance-check.ts": 2,
     "lib/transactions/gift-order-trigger.ts": 1,
+    "lib/transactions/hazard-insurance.ts": 3,
     "lib/transactions/milestone-auto-trigger.ts": 1,
     "lib/transactions/milestone-catalog.ts": 3,
     "lib/transactions/milestone-identity.ts": 2,
@@ -4168,6 +4175,7 @@
     "lib/video/multilingual-reel.ts": 4,
     "lib/video/persona-overlay.ts": 1,
     "lib/video/persona-variant-post-pass.ts": 1,
+    "lib/video/playable-video.ts": 1,
     "lib/video/presenter-media.ts": 1,
     "lib/video/promo-composition.ts": 4,
     "lib/video/reel-brand.ts": 2,
@@ -4610,8 +4618,6 @@
       "getHashtagPerformance",
       "trackHashtagUsage",
       "updateABTestResults",
-      "logContentGeneration",
-      "getContentGenerationStats",
       "generateListingDescription",
       "generateSocialPost",
       "generateEmail",
@@ -5918,8 +5924,8 @@
       "convertValuationRequestToContact",
       "submitHomeValueRequest",
       "getHomeValueResult",
-      "getAvailableAgentSlots",
-      "scheduleHomeValuationAppt",
+      "getListingAppointmentSlots",
+      "scheduleSellerListingAppointment",
       "getAgentBySlug",
       "savePageConfig",
       "getPageConfig",
@@ -7591,6 +7597,10 @@
       "resendDocumentForSignature",
       "getTransactionSignatureStatuses",
       "getUnsignedDocumentBlockers"
+    ],
+    "app/actions/transaction-hazard-insurance.ts": [
+      "getTransactionHazardInsuranceAction",
+      "recordHazardPolicyAction"
     ],
     "app/actions/transaction-inspections.ts": [
       "scheduleInspectionAction",
@@ -9761,14 +9771,14 @@
     "app/components/home-value/AddressSearchForm.tsx": [
       "AddressSearchForm"
     ],
-    "app/components/home-value/AppointmentBookingCard.tsx": [
-      "AppointmentBookingCard"
-    ],
     "app/components/home-value/CompsTable.tsx": [
       "CompsTable"
     ],
     "app/components/home-value/EquityCalculator.tsx": [
       "EquityCalculator"
+    ],
+    "app/components/home-value/ListingAppointmentCard.tsx": [
+      "ListingAppointmentCard"
     ],
     "app/components/home-value/ValuationResultCard.tsx": [
       "ValuationResultCard"
@@ -9925,6 +9935,9 @@
     "app/components/portal/FitBadge.tsx": [
       "fitBadgeStyle",
       "FitBadge"
+    ],
+    "app/components/portal/HomeValueReportCard.tsx": [
+      "HomeValueReportCard"
     ],
     "app/components/portal/LessonCard.tsx": [
       "LessonCard",
@@ -11987,6 +12000,9 @@
     ],
     "app/dashboard/transactions/[id]/financing-pit-stop-section.tsx": [
       "FinancingPitStopSection"
+    ],
+    "app/dashboard/transactions/[id]/hazard-insurance-section.tsx": [
+      "HazardInsuranceSection"
     ],
     "app/dashboard/transactions/[id]/lender-status-request-button.tsx": [
       "LenderStatusRequestButton"
@@ -15160,6 +15176,12 @@
       "isAgentGoalType",
       "isAutoSynced"
     ],
+    "lib/home-value/listing-appointment.ts": [
+      "earliestListingAppointmentAt"
+    ],
+    "lib/home-value/report-email.ts": [
+      "composeHomeValueReportEmail"
+    ],
     "lib/hooks/use-media-query.ts": [
       "useMediaQuery"
     ],
@@ -17578,6 +17600,9 @@
       "canSkipStages",
       "validateSkipStageTransition"
     ],
+    "lib/listing-presentation/generate-ai-presentation.ts": [
+      "generateAiListingPresentation"
+    ],
     "lib/listing-presentation/prelisting-delivery.ts": [
       "evaluateRenderReadiness",
       "composePrelistingEmail",
@@ -19441,6 +19466,11 @@
     "lib/transactions/gift-order-trigger.ts": [
       "checkAndTriggerGiftOrder"
     ],
+    "lib/transactions/hazard-insurance.ts": [
+      "readHazardInsurance",
+      "hazardSeverity",
+      "hazardReminderHeadline"
+    ],
     "lib/transactions/milestone-auto-trigger.ts": [
       "triggerMilestoneFromDocument"
     ],
@@ -19768,6 +19798,9 @@
     ],
     "lib/video/persona-variant-post-pass.ts": [
       "runPersonaVariantPostPass"
+    ],
+    "lib/video/playable-video.ts": [
+      "resolvePlayableVideo"
     ],
     "lib/video/presenter-media.ts": [
       "resolveAgentPresenterMedia"

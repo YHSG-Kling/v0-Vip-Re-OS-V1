@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import { CONTENT_TYPES, type ContentType } from "@/lib/constants"
 import { handleError, ValidationError, NotFoundError } from "@/lib/errors"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 // ============================================
 // UNIFIED CONTENT GENERATION SERVICE
@@ -53,6 +54,25 @@ export async function generateContent(params: ContentGenerationParams): Promise<
 
     const supabase = await createClient()
 
+    // THE THIRD WRITER OF ai_generated_content. The Content OS census records
+    // app/actions/ai-content-generation.tsx as the sole writer of this table;
+    // it is not — this function is reached from that file's generateSocialPost
+    // and generateEmail, and it was inserting with NO brokerage_id.
+    //
+    // Verified against the live database:
+    //   agc_insert  WITH CHECK (is_platform_admin() OR has_brokerage_access(brokerage_id))
+    //   has_brokerage_access(NULL) => false
+    //
+    // So every row this function ever tried to save was REFUSED outright for
+    // any non-platform-admin. `error` is thrown below, so the caller did see a
+    // failure — but generateSocialPost's own catch turns it into a generic
+    // message while the generated text is gone. The tenant must be resolved
+    // from the session and stamped AT THE INSERT, never patched on after.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      throw new ValidationError("No brokerage on this session — cannot save generated content")
+    }
+
     // Get context data based on content type
     const contextData = await gatherContextData(params)
 
@@ -60,10 +80,11 @@ export async function generateContent(params: ContentGenerationParams): Promise<
     const generatedContent = await generateContentWithAI(params, contextData)
 
     // Save to database
-        const { data: savedContent, error } = await supabase
+    const { data: savedContent, error } = await supabase
       .from("ai_generated_content")
       .insert({
         agent_id: params.agentId,
+        brokerage_id: ctx.brokerageId,
         content_type: params.contentType,
         platform: params.platform,
         generated_content: generatedContent.body,

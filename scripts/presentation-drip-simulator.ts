@@ -132,6 +132,33 @@ function testSectionEmail() {
   const noReel = composeSectionEmail({ ...base, reel: null })
   check("no reel → no fabricated video block", !noReel.html.includes("<img") && !noReel.html.includes("Watch the video"))
 
+  // ── THE REEL POLICY (owner ruling) ────────────────────────────────────────
+  // "the videos must go out with the channel so close the loop on this
+  //  autonomously" + "Thumbnail - c".
+  // A reel whose script postcheck has not returned a clean 'passed' STILL SHIPS —
+  // nothing waits for a human — but it travels as a link, because a rendered
+  // frame is the one artifact no check here can read. An outright 'failed' is
+  // refused upstream in resolvePlayableVideo, so it never reaches this composer.
+  const pending = composeSectionEmail({
+    ...base,
+    reel: { videoUrl: "https://bucket.test/reel.mp4", thumbnailUrl: "https://bucket.test/reel.jpg", reviewPending: true },
+  })
+  check("review-pending reel STILL goes out with the send (the loop closes itself)",
+    pending.html.includes("https://bucket.test/reel.mp4") && pending.text.includes("https://bucket.test/reel.mp4"))
+  check("review-pending reel does NOT embed its unverified thumbnail",
+    !pending.html.includes("<img") && !pending.html.includes("https://bucket.test/reel.jpg"))
+  check("a cleared reel still embeds its thumbnail (the policy is not a blanket downgrade)",
+    composeSectionEmail({
+      ...base,
+      reel: { videoUrl: "https://bucket.test/reel.mp4", thumbnailUrl: "https://bucket.test/reel.jpg", reviewPending: false },
+    }).html.includes(`<img src="https://bucket.test/reel.jpg"`))
+  check("a review-pending reel is still seller-safe on price",
+    !composeSectionEmail({
+      ...base,
+      sectionTitle: "Your home could list at $875,000",
+      reel: { videoUrl: "https://bucket.test/reel.mp4", thumbnailUrl: null, reviewPending: true },
+    }).html.includes("875,000"))
+
   // SELLER-SAFE: a price cannot ride in on a free-text title or note.
   const leaky = composeSectionEmail({
     ...base,

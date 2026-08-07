@@ -55,9 +55,14 @@ const realExecutors: ListingApptPrepExecutors = {
     const { generateAICMA } = await import("@/app/actions/ai-cma")
     return generateAICMA(args)
   },
+  // The SERVER-ONLY core, not the "use server" action wrapping it. This chain is
+  // started unattended by lib/ai-isa/book-seller-appointment.ts (a webhook lane
+  // with no session), and the action's supabase.auth.getUser() gate returned
+  // "Unauthorized" there — step 2 failed before it did any work. The core takes
+  // the tenant explicitly from the run's context instead of from a session.
   generatePresentation: async (args) => {
-    const { generateListingPresentation } = await import("@/app/actions/ai-listing-presentation")
-    return generateListingPresentation(args)
+    const { generateAiListingPresentation } = await import("@/lib/listing-presentation/generate-ai-presentation")
+    return generateAiListingPresentation(args)
   },
   // Lazily import the D-ID + ElevenLabs chapter-video pipeline so merely loading
   // this chain module (e.g. in a tsx simulator) does NOT eagerly pull the video/
@@ -221,8 +226,24 @@ export const listingApptPrepChain: WorkflowChain = {
           sellerName = [c?.first_name, c?.last_name].filter(Boolean).join(" ") || undefined
         }
 
+        // The APPOINTMENT this prep is for. It is what keeps the presentation to
+        // ONE row per meeting: the listing-presentation-prep cron keys its build
+        // on appointment_id, so passing it here makes step 2 write onto that same
+        // row instead of creating a second one — and a second one would mean a
+        // second seller drip (materializePresentationSections runs per row).
+        const appointmentId = await resolveAppointmentEventId(svc, {
+          metadataAppointmentId: ctx.metadata.appointment_id,
+          listingId: ctx.listingId ?? null,
+        })
+
         const result: any = await activeExecutors.generatePresentation({
+          // TENANT ANCHOR — the run's brokerage, not a session. The chain is
+          // started unattended by the AI-ISA and by the kernel event lane.
+          brokerageId: ctx.brokerageId,
           agentId: agent.id,
+          contactId: ctx.contactId ?? null,
+          appointmentId,
+          appointmentAt: ctx.metadata.appointment_date ?? null,
           propertyData: {
             address: propertyData.address,
             city: propertyData.city,
@@ -593,16 +614,65 @@ export const listingApptPrepChain: WorkflowChain = {
 }
 
 /**
+ * The calendar_events row this prep run is for.
+ *
+ * Two sources, because the three booking paths do not all carry it the same way:
+ *   1. metadata.appointment_id — set by lib/ai-isa/book-seller-appointment.ts.
+ *   2. listings.appointment_event_id — written by
+ *      lib/application/listing-lifecycle.ts::scheduleListingAppointmentService
+ *      when an agent books a consult on a listing.
+ * Returns null when neither yields one; the presentation is still built, it just
+ * cannot be keyed to an appointment.
+ */
+async function resolveAppointmentEventId(
+  svc: ReturnType<typeof createServiceClient>,
+  args: { metadataAppointmentId?: unknown; listingId: string | null },
+): Promise<string | null> {
+  const { isValidUUID } = await import("@/lib/validations")
+  if (typeof args.metadataAppointmentId === "string" && isValidUUID(args.metadataAppointmentId)) {
+    return args.metadataAppointmentId
+  }
+  if (!args.listingId) return null
+  const { data, error } = await svc
+    .from("listings")
+    .select("appointment_event_id")
+    .eq("id", args.listingId)
+    .maybeSingle()
+  if (error) {
+    // Not fatal — a presentation without an appointment_id is still a
+    // presentation. But a refused read is never passed off as "no appointment".
+    console.error(`[listing-appt-prep] appointment_event_id lookup for listing ${args.listingId} failed: ${error.message}`)
+    return null
+  }
+  const id = (data as { appointment_event_id?: string | null } | null)?.appointment_event_id ?? null
+  return id && isValidUUID(id) ? id : null
+}
+
+/**
  * Resolve the listing_presentations row the chapter reels drip against, and make
  * sure it carries what the drip needs (contact, appointment time, sending agent).
  *
- * Two sources, in order, because two producers exist:
+ * Two sources, in order:
  *   1. the id this run's generate_presentation step returned, and
- *   2. the newest presentation already on file for this seller — the
- *      listing-presentation-prep cron (buildListingPresentation) builds one for
- *      every appointment in the next 24h.
- * Both are scoped to the run's brokerage. Returns null rather than inventing a
- * row: with no presentation there is no section timetable to attach reels to.
+ *   2. the newest presentation already on file for this seller.
+ *
+ * WHY (2) STILL EARNS ITS PLACE now that step 2 genuinely persists. It is no
+ * longer covering for a step that always returned undefined — step 2 fails the
+ * run outright if it cannot save, so a run that REACHES here has a real id. What
+ * it still covers is a run started before that fix whose step_outputs already
+ * recorded presentationId: undefined, and the ordinary case where the
+ * listing-presentation-prep cron got to this appointment first. It is no longer
+ * masking a failure, because a failure can no longer arrive here dressed as a
+ * success.
+ *
+ * It prefers the presentation for THIS appointment's date rather than simply the
+ * newest for the contact: a seller who has had a previous listing appointment has
+ * more than one presentation on file, and attaching this run's reels to the old
+ * one would drip them against a timetable that has already run.
+ *
+ * Both paths are scoped to the run's brokerage. Returns null rather than
+ * inventing a row: with no presentation there is no section timetable to attach
+ * reels to.
  */
 async function resolveDripPresentation(
   svc: ReturnType<typeof createServiceClient>,
@@ -636,10 +706,20 @@ async function resolveDripPresentation(
       .eq("brokerage_id", args.brokerageId)
       .eq("contact_id", args.contactId)
       .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
+      .limit(10)
     if (error) console.error(`[listing-appt-prep] presentation lookup for contact ${args.contactId} failed: ${error.message}`)
-    row = (data as PresRow | null) ?? null
+    const rows = (data as PresRow[] | null) ?? []
+    // This appointment's presentation first (same calendar day), then the newest.
+    const wanted = new Date(args.appointmentAt)
+    const wantDay = Number.isNaN(wanted.getTime()) ? null : wanted.toISOString().slice(0, 10)
+    const sameDay = wantDay
+      ? rows.find((r) => {
+          if (!r.appointment_at) return false
+          const at = new Date(r.appointment_at)
+          return !Number.isNaN(at.getTime()) && at.toISOString().slice(0, 10) === wantDay
+        })
+      : undefined
+    row = sameDay ?? rows[0] ?? null
   }
   if (!row) return null
 

@@ -2,19 +2,19 @@
 //
 // THE 7-DAY RULE — one definition, no second copy anywhere.
 //
-// The owner's ruling names TWO different meetings and they are NOT the same booking:
+// ONE MEETING, NOT TWO. The owner's ruling: "the 7 day floor is only for listing
+// appointments (also called home value appointments)". The appointment a home-value
+// seller books IS the listing appointment — the sit-down where the agent walks the
+// property, presents the pricing strategy and the marketing plan, and asks for the
+// listing. There is no second, earlier "walk-through evaluation" booking in this lane:
+// this module used to argue for one with a 48-hour lead, and that split is retired.
+// The home-value lane offers exactly one appointment and it carries the constant below.
 //
-//   1. "the ability to schedule an appointment to EVALUATE their property"
-//      — the walk-through. The agent stands in the house and looks at it. Booked from
-//        the result page right after the form. Its lead time is the existing 48 hours
-//        (app/actions/home-value.ts::getAvailableAgentSlots): a seller who just asked
-//        "what's my home worth" wants somebody there SOON, and making them wait a week
-//        for a walk-through is how the lead goes cold. That constant is not this one.
-//
-//   2. "both the email and the portal will be given a way to schedule a LISTING
-//      appointment AS WELL which needs to be atleast 7 days out"
-//      — the presentation meeting where the agent asks for the listing. THIS is what
-//        the number below governs, and only this.
+// SCOPE OF THE FLOOR, stated so it does not spread. "ONLY for listing appointments."
+// Showings, closings, buyer consultations and every other calendar_events.event_type
+// have their own lead times and none of them read this constant. Grep before adding a
+// caller: if the thing being booked is not the listing/home-value appointment, this is
+// the wrong module.
 //
 // WHY SEVEN, stated so nobody "optimises" it away as an arbitrary delay:
 // the pre-listing seller drip (lib/listing-presentation/section-drip.ts) schedules the

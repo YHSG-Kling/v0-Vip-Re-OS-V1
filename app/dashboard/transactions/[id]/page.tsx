@@ -5,6 +5,8 @@ import { ClosingWatchtowerSection } from "./closing-watchtower-section"
 import { ClosingWarRoomSection } from "./closing-war-room-section"
 import { FinancingPitStopSection } from "./financing-pit-stop-section"
 import { BuyerMoveSection } from "./buyer-move-section"
+import { HazardInsuranceSection } from "./hazard-insurance-section"
+import { getTransactionHazardInsuranceAction } from "@/app/actions/transaction-hazard-insurance"
 import { AiCoordinatorPanel } from "./ai-coordinator-panel"
 import { getBuyerMoveCase } from "@/lib/transactions/buyer-move"
 import { FEATURES } from "@/lib/constants"
@@ -399,6 +401,15 @@ export default async function TransactionDetailPage({ params }: PageProps) {
   // Get insurance quotes from vendor services
   const insuranceQuotes = (vendorServices ?? []).filter(v => v.service_type === "insurance_quote")
 
+  // HAZARD INSURANCE (m385) — the tracked policy + the marketplace recommendations,
+  // resolved together by the action so the panel and the closing-orchestration cron
+  // read the same evaluator. Fetched here rather than in the client component so the
+  // service-role reads and the vendor resolver never reach the browser bundle.
+  const hazardInsuranceView = await getTransactionHazardInsuranceAction(
+    id,
+    (transaction as any).brokerage_id ?? undefined,
+  )
+
   // TITLE ISSUE TRIAGE — transaction_title_escrow.title_issues is a TEXT column
   // the platform writes as a JSON array of { text, status, severity }. The Title
   // & Escrow card rendered that raw blob inside one destructive badge, so a
@@ -464,6 +475,14 @@ export default async function TransactionDetailPage({ params }: PageProps) {
               }]
             : []
         }
+      />
+      {/* Hazard / homeowner's insurance — the tracked policy (or its stated absence,
+          with the lender's lead-time deadline) plus insurance vendors from the
+          brokerage marketplace, each linked to its existing portal spot. */}
+      <HazardInsuranceSection
+        transactionId={id}
+        brokerageId={(transaction as any).brokerage_id}
+        view={hazardInsuranceView}
       />
       {/* Buyer Move Services — post-contract move-in concierge (utilities, address, movers) with
           guided-DIY vs Utility Connect handoff (handoff execution feature-flagged until creds exist). */}

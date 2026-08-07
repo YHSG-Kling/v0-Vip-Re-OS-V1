@@ -54,8 +54,18 @@ type Svc = ReturnType<typeof createServiceClient>
 type PlayableVideoSource = "ai_video_project" | "remotion_render"
 
 export type PlayableVideo =
-  /** Finished and playable right now. */
-  | { state: "ready"; videoUrl: string; thumbnailUrl: string | null; source: PlayableVideoSource }
+  /**
+   * Finished and playable right now.
+   *
+   * `reviewPending` is true when the video is finished but its script postcheck
+   * came back 'needs_review' rather than 'passed'. It is NOT a reason to hold the
+   * send — the owner's ruling is that "the videos must go out with the channel",
+   * autonomously, with no human gate. It governs the THUMBNAIL only: a rendered
+   * frame is the one artifact no check in this system can read, so a reviewed-
+   * pending video travels as a plain link instead of an embedded image. See
+   * composeSectionEmail.
+   */
+  | { state: "ready"; videoUrl: string; thumbnailUrl: string | null; source: PlayableVideoSource; reviewPending: boolean }
   /** A render is in flight — the caller should wait rather than send. */
   | { state: "in_progress"; source: PlayableVideoSource }
   /** Nothing playable will arrive. `reason` is always populated. */
@@ -107,7 +117,16 @@ async function resolveVideoProjectPlayable(
     return { state: "none", reason: "video failed the script compliance postcheck" }
   }
   if ((VIDEO_FINISHED_STATUSES as readonly string[]).includes(p.status ?? "") && p.video_url) {
-    return { state: "ready", videoUrl: p.video_url, thumbnailUrl: p.thumbnail_url, source: "ai_video_project" }
+    return {
+      state: "ready",
+      videoUrl: p.video_url,
+      thumbnailUrl: p.thumbnail_url,
+      source: "ai_video_project",
+      // 'failed' was refused above. Anything short of an explicit 'passed' still
+      // SHIPS — holding it would need a human, and the loop has to close on its
+      // own — but it ships without its thumbnail embedded.
+      reviewPending: p.compliance_status !== "passed",
+    }
   }
   if ((VIDEO_IN_PROGRESS_STATUSES as readonly string[]).includes(p.status ?? "")) {
     return { state: "in_progress", source: "ai_video_project" }
@@ -131,7 +150,16 @@ async function resolveRemotionRenderPlayable(
 
   const r = data as { render_status: string | null; output_url: string | null; thumbnail_url: string | null }
   if (r.render_status === "succeeded" && r.output_url) {
-    return { state: "ready", videoUrl: r.output_url, thumbnailUrl: r.thumbnail_url, source: "remotion_render" }
+    // A Remotion render is composed from OUR templates rather than from a model's
+    // script, so there is no script postcheck to be pending on — its thumbnail is
+    // as verified as the composition that produced it.
+    return {
+      state: "ready",
+      videoUrl: r.output_url,
+      thumbnailUrl: r.thumbnail_url,
+      source: "remotion_render",
+      reviewPending: false,
+    }
   }
   if ((RENDER_IN_PROGRESS as readonly string[]).includes(r.render_status ?? "")) {
     return { state: "in_progress", source: "remotion_render" }

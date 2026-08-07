@@ -93,6 +93,7 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
       brokerage_id: agentCMA?.brokerage_id ?? null,
       agent_id: cmaAgentRecordId,
       contact_id: input.contactId,
+      listing_id: input.listingId,
       activity_type: "seller.cma.started",
       title: "CMA generation started",
       description: `CMA started for listing ${input.listingId}`,
@@ -117,6 +118,19 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
       return { success: false, error: "Listing not found" }
     }
 
+    // The seller's own upgrades since purchase — property_upgrades, the same
+    // rows the appraiser packet and the seller CMA page read.
+    const { loadSellerUpgradesForListing } = await import("@/lib/cma/seller-upgrades")
+    const sellerUpgrades = agentCMA?.brokerage_id
+      ? await loadSellerUpgradesForListing({
+          listingId: input.listingId,
+          brokerageId: agentCMA.brokerage_id,
+        })
+      : []
+    const sellerUpgradeLines = sellerUpgrades.map((u) =>
+      u.estimatedCost ? `${u.description} (~$${Math.round(u.estimatedCost).toLocaleString()})` : u.description,
+    )
+
     // ── Delegate to canonical AI CMA generator ──────────────────────────
     // generateAICMA owns the comp fetch, AI valuation, and write to
     // cma_reports. Map listing fields → CMAParams shape.
@@ -131,11 +145,21 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
         | "single_family" | "condo" | "townhouse" | "multi_family" | "land",
       bedrooms: input.bedrooms || listing.bedrooms || 0,
       bathrooms: input.bathrooms || listing.bathrooms || 0,
-      squareFeet: input.squareFeet || listing.square_feet || 0,
+      // `sqft` is the real column. This read `listing.square_feet`, which does
+      // not exist on listings — so unless the caller passed squareFeet (nothing
+      // does), every CMA generated from a listing was valued at ZERO square
+      // feet, the single strongest driver in a comp adjustment.
+      squareFeet: input.squareFeet || listing.sqft || 0,
       lotSize: listing.lot_size,
       yearBuilt: listing.year_built,
-      features: listing.features,
-      condition: listing.condition,
+      // `features` and `condition` are likewise not columns on listings — both
+      // reads were always undefined, so generateAICMA's prompt said
+      // "Features: Standard / Condition: Unknown" on every seller CMA. The real
+      // record is property_upgrades (the owner's ruling: the CMA uses the
+      // upgrades the seller has done since purchase), read here through the same
+      // loader the appraiser packet uses. condition stays unset rather than
+      // guessed — nothing on file states it.
+      features: sellerUpgradeLines.length > 0 ? sellerUpgradeLines : undefined,
       listingType: "seller",
       contactId: input.contactId,
       listingId: input.listingId,
@@ -149,23 +173,46 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
       return { success: false, error: err }
     }
 
+    // THE REAL cma_reports.id. generateAICMA returns it as `cmaId` (and `id`);
+    // this used to read `cmaReportId` / `reportId` — two keys it has never
+    // returned — and then fell back to `crypto.randomUUID()`. Both lookups were
+    // always undefined, so EVERY run invented a UUID and filed it in the
+    // completion activity as `cma_report_id`, pointing at a row that does not
+    // exist while the real id sat unread in the same object. A CMA whose id
+    // cannot be resolved is a FAILED CMA, not one with a made-up id.
     const cmaReportId =
-      (aiResult as { cmaReportId?: string; reportId?: string }).cmaReportId ??
-      (aiResult as { reportId?: string }).reportId ??
-      crypto.randomUUID()
+      (aiResult as { cmaId?: string; id?: string }).cmaId ??
+      (aiResult as { id?: string }).id
+    if (!cmaReportId) {
+      const err = "CMA generated but no report id was returned"
+      await emitCMAFailed(input.listingId, input.contactId, input.agentId, err)
+      return { success: false, error: err }
+    }
+    // Counted from the comparables the CMA actually used. `?? 0` used to be the
+    // only value this ever took, so the activity read "0 comparables" on runs
+    // that had ten.
     const comparableCount =
-      (aiResult as { comparableCount?: number }).comparableCount ?? 0
-    const qualityScore =
-      (aiResult as { qualityScore?: number }).qualityScore ?? 70
+      (aiResult as { comparables?: unknown[] }).comparables?.length ?? 0
+    // NOT INVENTED. The old `?? 70` hardcoded a passing quality score onto every
+    // CMA regardless of how thin the comp set was. cma_reports.quality_score is
+    // the column of record; when nothing has scored it, this stays undefined and
+    // the activity says so rather than claiming a 70.
+    const qualityScore = (aiResult as { qualityScore?: number }).qualityScore
 
-    // Emit completion event referencing the cma_reports row
+    // Emit completion event referencing the cma_reports row. listing_id is
+    // written because it is the key downstream readers join on — the
+    // presentation assembler's CMA check used to look for exactly this row by
+    // listing_id and never found one, because this insert did not carry it.
     await supabase.from("activities").insert({
       brokerage_id: agentCMA?.brokerage_id ?? null,
       agent_id: cmaAgentRecordId,
       contact_id: input.contactId,
+      listing_id: input.listingId,
       activity_type: "seller.cma.completed",
       title: "CMA generation completed",
-      description: `CMA completed: ${comparableCount} comparables, quality score ${qualityScore}`,
+      description: `CMA completed: ${comparableCount} comparables${
+        typeof qualityScore === "number" ? `, quality score ${qualityScore}` : ", quality score not assessed"
+      }`,
       notes: JSON.stringify({
         cma_report_id: cmaReportId,
         comparable_count: comparableCount,
@@ -213,6 +260,7 @@ async function emitCMAFailed(
     brokerage_id: agentFail?.brokerage_id ?? null,
     agent_id: (failAgentRow as { id?: string } | null)?.id ?? null,
     contact_id: contactId,
+    listing_id: listingId,
     activity_type: "seller.cma.failed",
     title: "CMA generation failed",
     description: reason,

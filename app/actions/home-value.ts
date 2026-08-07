@@ -1078,17 +1078,18 @@ async function generateAIValuation(propertyData: {
 }
 
 // ============================================================================
-// AGENT SLOT LOADING — ONE implementation, TWO lead times
+// AGENT SLOT LOADING — ONE appointment, ONE lead time
 //
-// Both appointment kinds offer 1-hour slots inside the agent's configured
-// working hours (home_value_page_configs.working_hours, default Mon–Fri 9–5),
-// conflict-checked against that agent's calendar_events. The ONLY thing that
-// differs is how far out the first bookable slot is, so the difference is a
-// parameter rather than a second copy of the generator that can drift.
+// The home-value lane books exactly ONE meeting: the listing appointment, which
+// the owner also calls the home value appointment. It offers 1-hour slots inside
+// the agent's configured working hours (home_value_page_configs.working_hours,
+// default Mon–Fri 9–5), conflict-checked against that agent's calendar_events,
+// starting no earlier than LISTING_APPOINTMENT_MIN_LEAD_DAYS out.
 //
-//   evaluation appointment → 48 hours   (the walk-through; the seller wants
-//                                        somebody there soon)
-//   listing appointment    → LISTING_APPOINTMENT_MIN_LEAD_DAYS (7 days)
+// This used to be parameterised for a SECOND booking — a 48-hour "walk-through
+// evaluation" — that the owner has since ruled is the same meeting. That path is
+// gone: it also wrote an event_type ('home_valuation_appointment') that nothing
+// in the system ever read, so it produced no presentation and no seller drip.
 //
 // The offered slots and the server's refusal are computed from the SAME
 // boundary, so the UI can never present a time the booking action will reject.
@@ -1105,13 +1106,30 @@ export interface AgentSlotOption {
   slots: Array<{ startAt: string; endAt: string; label: string }>
 }
 
-async function loadAgentSlots(
+/**
+ * getListingAppointmentSlots — THE ONE bookable meeting in the home-value lane.
+ *
+ * "both the email and the portal will be given a way to schedule a listing
+ *  appotintment ... which needs to be atleast 7 days out", and "the 7 day floor is
+ *  only for listing appointments (also called home value appointments)".
+ *
+ * The first offered slot IS earliestListingAppointmentAt(), the same instant
+ * scheduleSellerListingAppointment refuses below, so the seller is never shown a
+ * time the server will turn down.
+ */
+export async function getListingAppointmentSlots(
   brokerageId: string,
-  opts: { earliest: Date; windowDays: number },
 ): Promise<{ success: boolean; agents?: AgentSlotOption[]; error?: string }> {
   // PUBLIC lane — the result page and the portal both reach this without an
   // agent session. Tenant scope is the explicit brokerage_id filter below.
   const supabase = createServiceClient()
+
+  // The floor is 7 days, so the window has to run past it to show anything —
+  // 7 days of lead time plus a fortnight of choices.
+  const opts = {
+    earliest: earliestListingAppointmentAt(),
+    windowDays: LISTING_APPOINTMENT_MIN_LEAD_DAYS + 14,
+  }
 
   // Fetch all active agents for this brokerage
   const { data: agents, error: agentsError } = await supabase
@@ -1265,73 +1283,6 @@ async function loadAgentSlots(
 }
 
 // ============================================================================
-// getAvailableAgentSlots — THE EVALUATION APPOINTMENT (step 3 of the ruling)
-//
-// "the ability to schedule an appointment to evaluate their property" — the
-// walk-through. 48-hour floor, unchanged. This is NOT the appointment the
-// 7-day rule governs; see lib/home-value/listing-appointment.ts.
-// ============================================================================
-
-export async function getAvailableAgentSlots(brokerageId: string): Promise<{
-  success: boolean
-  agents?: AgentSlotOption[]
-  error?: string
-}> {
-  return loadAgentSlots(brokerageId, {
-    earliest: new Date(Date.now() + 48 * 60 * 60 * 1000),
-    windowDays: 14,
-  })
-}
-
-// ============================================================================
-// getListingAppointmentSlots — THE LISTING APPOINTMENT (step 7 of the ruling)
-//
-// "a way to schedule a listing appotintment as well which needs to be atleast
-//  7 days out". The first offered slot IS earliestListingAppointmentAt(), the
-// same instant scheduleSellerListingAppointment refuses below, so the seller is
-// never shown a time the server will turn down.
-// ============================================================================
-
-export async function getListingAppointmentSlots(brokerageId: string): Promise<{
-  success: boolean
-  agents?: AgentSlotOption[]
-  error?: string
-}> {
-  return loadAgentSlots(brokerageId, {
-    earliest: earliestListingAppointmentAt(),
-    // The floor is 7 days, so the window has to run past it to show anything —
-    // 7 days of lead time plus a fortnight of choices.
-    windowDays: LISTING_APPOINTMENT_MIN_LEAD_DAYS + 14,
-  })
-}
-
-// ============================================================================
-// scheduleHomeValuationAppt
-// Books a home valuation appointment: writes to calendar_events (agent entity)
-// and activities (agent + contact). Notifies the agent via notifications table.
-// ============================================================================
-
-export async function scheduleHomeValuationAppt(params: {
-  contactId: string
-  agentId: string
-  brokerageId: string
-  startAt: string // ISO
-  endAt: string // ISO
-  propertyAddress: string
-  contactName: string
-}): Promise<{ success: boolean; calendarEventId?: string; error?: string }> {
-  return bookAgentAppointment({
-    ...params,
-    kind: "home_valuation_appointment",
-    // The walk-through has no 7-day floor — see lib/home-value/listing-appointment.ts.
-    notBefore: null,
-    eventTitle: `Home Valuation Appointment — ${params.propertyAddress}`,
-    notificationTitle: "Home Valuation Appointment Booked",
-    notificationVerb: "a valuation appointment",
-  })
-}
-
-// ============================================================================
 // scheduleSellerListingAppointment — THE ≥7-DAY BOOKING
 //
 // "both the email and the portal will be given a way to schedule a listing
@@ -1350,7 +1301,7 @@ export async function scheduleHomeValuationAppt(params: {
 // point at and inventing one would be a fabricated record.
 // ============================================================================
 
-export async function scheduleSellerListingAppointment(params: {
+export async function scheduleSellerListingAppointment(args: {
   contactId: string
   agentId: string
   brokerageId: string
@@ -1359,35 +1310,8 @@ export async function scheduleSellerListingAppointment(params: {
   propertyAddress: string
   contactName: string
 }): Promise<{ success: boolean; calendarEventId?: string; error?: string }> {
-  return bookAgentAppointment({
-    ...params,
-    kind: "listing_appointment",
-    notBefore: earliestListingAppointmentAt(),
-    eventTitle: `Listing Appointment — ${params.propertyAddress}`,
-    notificationTitle: "Listing Appointment Booked",
-    notificationVerb: "a listing appointment",
-  })
-}
+  const eventTitle = `Listing Appointment — ${args.propertyAddress}`
 
-/**
- * The shared booking path for both appointment kinds. Not exported — the two
- * actions above are the capabilities; this is how they are the same code.
- */
-async function bookAgentAppointment(args: {
-  contactId: string
-  agentId: string
-  brokerageId: string
-  startAt: string
-  endAt: string
-  propertyAddress: string
-  contactName: string
-  kind: "home_valuation_appointment" | "listing_appointment"
-  /** Server-authoritative lead-time floor, or null when the kind has none. */
-  notBefore: Date | null
-  eventTitle: string
-  notificationTitle: string
-  notificationVerb: string
-}): Promise<{ success: boolean; calendarEventId?: string; error?: string }> {
   // PUBLIC lane: the caller is an unauthenticated seller (result page) or a
   // portal contact. Every id it hands us is therefore UNTRUSTED.
   const supabase = createServiceClient()
@@ -1399,7 +1323,9 @@ async function bookAgentAppointment(args: {
   }
 
   // ── THE LEAD-TIME FLOOR ────────────────────────────────────────────────────
-  if (args.notBefore && start < args.notBefore) {
+  // The ONE appointment this lane books carries it. Unconditional: there is no
+  // second, floor-less kind of home-value booking any more.
+  if (start < earliestListingAppointmentAt()) {
     return { success: false, error: LISTING_APPOINTMENT_TOO_SOON_ERROR }
   }
 
@@ -1466,11 +1392,11 @@ async function bookAgentAppointment(args: {
       brokerage_id: args.brokerageId,
       entity_type: "agent",
       entity_id: args.agentId,
-      event_type: args.kind,
+      event_type: "listing_appointment",
       start_at: args.startAt,
       end_at: args.endAt,
       is_system_generated: false,
-      title: args.eventTitle,
+      title: eventTitle,
       // agent_user_id is the USERS id — the column downstream calendar sync and
       // the Zoom/transcript lanes read. agents.id lives in entity_id.
       agent_user_id: agentUserId,
@@ -1496,8 +1422,8 @@ async function bookAgentAppointment(args: {
     brokerage_id: args.brokerageId,
     agent_id: args.agentId,
     contact_id: args.contactId,
-    activity_type: args.kind,
-    title: args.eventTitle,
+    activity_type: "listing_appointment",
+    title: eventTitle,
     description: `Scheduled by ${args.contactName} via the home value tool.`,
     scheduled_at: args.startAt,
     status: "scheduled",
@@ -1516,8 +1442,8 @@ async function bookAgentAppointment(args: {
       user_id: agentUserId,
       brokerage_id: args.brokerageId,
       type: "appointment_scheduled",
-      title: args.notificationTitle,
-      body: `${args.contactName} booked ${args.notificationVerb} for ${args.propertyAddress} on ${when}.`,
+      title: "Listing Appointment Booked",
+      body: `${args.contactName} booked a listing appointment for ${args.propertyAddress} on ${when}.`,
       entity_type: "contact",
       entity_id: args.contactId,
       priority: "high",

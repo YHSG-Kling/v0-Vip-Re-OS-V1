@@ -858,73 +858,52 @@ export async function updateABTestResults(
 // ============================================
 // CONTENT GENERATION LOGS
 // ============================================
-
-export async function logContentGeneration(data: {
-  agentId: string
-  contentType: string
-  prompt: string
-  model?: string
-  tokensUsed?: number
-  generationTime?: number
-  success: boolean
-  errorMessage?: string
-}) {
-  const supabase = await createClient()
-  // Signature unchanged (this one has live external callers), but the tenant
-  // is resolved from the session: without brokerage_id the agc_insert policy
-  // refuses the row, and every generation log was being dropped silently.
-  const ctx = await getAgentContext()
-
-  const { error } = await supabase.from("ai_generated_content").insert({
-    agent_id: data.agentId,
-    brokerage_id: ctx.brokerageId,
-    content_type: data.contentType,
-    content: data.prompt,
-    metadata: {
-      model: data.model,
-      tokens_used: data.tokensUsed,
-      generation_time_ms: data.generationTime,
-      success: data.success,
-      error_message: data.errorMessage,
-      is_log: true,
-    },
-    compliance_approved: false,
-  })
-
-  if (error) {
-    console.error("Error logging content generation:", error)
-  }
-}
-
-export async function getContentGenerationStats(agentId: string, dateRange?: { start: string; end: string }) {
-  if (!isValidUUID(agentId)) {
-    return {
-      totalGenerations: 156,
-      successRate: 98.5,
-      avgGenerationTime: 2.3,
-      totalTokensUsed: 45230,
-    }
-  }
-
-  const supabase = await createClient()
-
-  let query = supabase.from("ai_generated_content").select("*").eq("agent_id", agentId).eq("metadata->>is_log", "true")
-
-  if (dateRange) {
-    query = query.gte("created_at", dateRange.start).lte("created_at", dateRange.end)
-  }
-
-  const { data: logs } = await query
-
-  const totalGenerations = logs?.length || 0
-  const successCount = logs?.filter((l) => l.success).length || 0
-  const successRate = totalGenerations > 0 ? (successCount / totalGenerations) * 100 : 0
-  const avgGenerationTime =
-    logs && logs.length > 0 ? logs.reduce((sum, l) => sum + (l.generation_time_ms || 0), 0) / logs.length : 0
-  const totalTokensUsed = logs?.reduce((sum, l) => sum + (l.tokens_used || 0), 0) || 0
-
-  return { totalGenerations, successRate, avgGenerationTime, totalTokensUsed }
-}
+//
+// ── CONSOLIDATION, m386 ────────────────────────────────────────────────────
+// TWO functions in this file wrote the SAME generation telemetry — model,
+// token counts, elapsed ms, success flag, error message — into TWO different
+// tables. They are now ONE.
+//
+//   DELETED   logContentGeneration → ai_generated_content, telemetry buried in
+//             metadata under is_log = true. THAT TABLE HAS NO success, NO
+//             generation_time_ms AND NO tokens_used COLUMN — verified against
+//             the live schema — so its only reader, getContentGenerationStats,
+//             selected three columns that do not exist and reported
+//             0% success / 0ms / 0 tokens on every call it ever made. Same
+//             defect class as the analyzeABTest / engagement_metrics bug.
+//             It also took agentId FROM THE CALLER on a "use server" export,
+//             returned hard-coded demo numbers (156 / 98.5 / 2.3 / 45230) for
+//             a non-uuid id, and shared its name with
+//             lib/content-generation/generation-logger.ts::logContentGeneration,
+//             which writes an entirely different row into `activities`. That
+//             name collision is why "what has this agent generated?" returned
+//             half the truth depending on which lane you asked.
+//
+//   SURVIVOR  logGenerationCost → content_generation_logs, which carries a
+//             typed column for every one of those fields plus cost_usd.
+//             Session-resolved actor, brokerage_id stamped at the insert,
+//             error destructured and returned.
+//
+// DELETED   getContentGenerationStats. Its four fields are served, correctly
+//           and from the table that actually has the columns, by
+//           getMonthlyAICosts (volume, cost, and now total_tokens — ported
+//           below) and getContentPerformanceMetrics (avg_generation_time_ms,
+//           usage_rate). The surviving getContentGenerationStats is the one in
+//           lib/content-generation/generation-logger.ts, which aggregates
+//           `activities` and is correct against its own writer.
+//
+// PORTED BEFORE DELETING: the prompt text. logContentGeneration stored the
+// first 500 chars of the prompt; content_generation_logs had nowhere to put
+// it, so m386 adds `prompt text` and logGenerationCost now writes it. Nothing
+// the deleted pair could record is unrecordable now.
+//
+// CONTENT-GENERATION HISTORY NOW LIVES IN EXACTLY TWO PLACES, by design:
+//   · `activities`               — the draft-only System 4.1 lane
+//     (app/actions/content-generation-engine.ts). One signal row per
+//     generation, no raw content. Read by generation-logger's history/stats.
+//   · `content_generation_logs`  — the Content OS telemetry/cost ledger.
+//     Read by getMonthlyAICosts and getContentPerformanceMetrics.
+// `ai_generated_content` keeps ARTIFACTS (and usage signals), never telemetry.
 
 // ============================================
 // AI CONTENT GENERATION FUNCTIONS
@@ -942,6 +921,13 @@ export async function generateListingDescription(params: {
     return { success: false, error: "Invalid agent ID" }
   }
 
+  // Hoisted so the FAILURE log can record the real prompt and elapsed time.
+  // The deleted logContentGeneration was handed the literal string
+  // "Error occurred" here, so every failed listing description was logged
+  // against a prompt nobody wrote.
+  let promptText: string | null = null
+  const startTime = Date.now()
+
   try {
     // ── LAYER 0.1: Feature Access Gate ────────────────────────────────────────
     const agentContext = await getAgentContext()
@@ -951,7 +937,6 @@ export async function generateListingDescription(params: {
     }
 
     const supabase = await createClient()
-    const startTime = Date.now()
 
     let propertyData = params.propertyDetails
     if (params.propertyId && isValidUUID(params.propertyId)) {
@@ -966,6 +951,7 @@ export async function generateListingDescription(params: {
       .maybeSingle()
 
     const prompt = buildListingDescriptionPrompt(propertyData, params, brandVoice)
+    promptText = prompt
 
     const response = await generateAIResponse({
       prompt,
@@ -1005,15 +991,27 @@ export async function generateListingDescription(params: {
       console.error("[generateListingDescription] Content insert failed:", saveError)
     }
 
-    await logContentGeneration({
-      agentId: params.agentId,
+    // Repointed off the deleted logContentGeneration onto the survivor. This
+    // is a strict upgrade, not a like-for-like swap: the log now lands in
+    // content_generation_logs where success / generation_time_ms / total_tokens
+    // are REAL COLUMNS (they are not on ai_generated_content, which is why the
+    // old reader reported zeroes), it books the actual cost from the split
+    // prompt/completion counts instead of a single opaque total, and it links
+    // the telemetry row to the artifact row via content_id.
+    const costLog = await logGenerationCost({
+      contentId: savedContent?.id,
       contentType: "listing_description",
-      prompt: prompt.substring(0, 500),
+      prompt,
       model: response.model,
-      tokensUsed: response.tokensUsed.total,
-      generationTime,
+      promptTokens: response.tokensUsed?.input,
+      completionTokens: response.tokensUsed?.output,
+      totalTokens: response.tokensUsed?.total,
+      generationTimeMs: generationTime,
       success: true,
     })
+    if (!costLog.success) {
+      console.error("[generateListingDescription] Generation log failed:", costLog.error)
+    }
 
     // ── LAYER 0.1: Track usage after successful generation ──────────────────
     await incrementFeatureUsage(agentContext.userId, "ai_listing_generation")
@@ -1022,13 +1020,19 @@ export async function generateListingDescription(params: {
     return { success: true, data: result, contentId: savedContent?.id }
   } catch (error) {
     console.error("Generate listing description error:", error)
-    await logContentGeneration({
-      agentId: params.agentId,
+    // model is deliberately omitted: a throw can happen before the model call,
+    // and attributing a failure to a model that never ran would put a fake
+    // charge in the cost ledger. logGenerationCost books $0 for a failure log.
+    const failLog = await logGenerationCost({
       contentType: "listing_description",
-      prompt: "Error occurred",
+      prompt: promptText ?? undefined,
+      generationTimeMs: Date.now() - startTime,
       success: false,
       errorMessage: error instanceof Error ? error.message : "Unknown error",
     })
+    if (!failLog.success) {
+      console.error("[generateListingDescription] Failure log failed:", failLog.error)
+    }
     return { success: false, error: "Failed to generate listing description" }
   }
 }
@@ -1339,24 +1343,36 @@ export async function generateBlogPost(params: {
     // LIBRARY was redundant and invalid (a library entry is brokerage-scoped, not content-scoped, and
     // it omitted the required brokerage_id/visibility_scope) — removed to avoid duplication.
 
-    await logContentGeneration({
-      agentId: params.agentId,
+    // Repointed off the deleted logContentGeneration onto the survivor, exactly
+    // as generateListingDescription was: content_generation_logs has success /
+    // generation_time_ms / total_tokens as REAL COLUMNS, books the cost from the
+    // split prompt/completion counts, and links telemetry to the artifact via
+    // content_id. The old call also took agentId FROM THE CALLER on a
+    // "use server" export; the survivor derives the actor from the session.
+    const costLog = await logGenerationCost({
+      contentId: savedContent?.id,
       contentType: "blog_post",
-      prompt: prompt.substring(0, 500),
+      prompt,
       model: response.model,
-      tokensUsed: response.tokensUsed.total,
-      generationTime,
+      promptTokens: response.tokensUsed?.input,
+      completionTokens: response.tokensUsed?.output,
+      totalTokens: response.tokensUsed?.total,
+      generationTimeMs: generationTime,
       success: true,
     })
+    if (!costLog.success) {
+      console.error("[generateBlogPost] Generation log failed:", costLog.error)
+    }
 
     revalidatePath("/dashboard/content/blog")
     return { success: true, data: result, contentId: savedContent?.id }
   } catch (error) {
     console.error("Generate blog post error:", error)
-    await logContentGeneration({
-      agentId: params.agentId,
+    // The failure half of the ledger. logGenerationCost takes `model` as
+    // OPTIONAL precisely for this case — a catch block may never have reached
+    // the model call, and refusing those would lose every failure record.
+    await logGenerationCost({
       contentType: "blog_post",
-      prompt: "Error occurred",
       success: false,
       errorMessage: error instanceof Error ? error.message : "Unknown error",
     })
@@ -3231,7 +3247,14 @@ export async function calculateAICost(
 
 export async function logGenerationCost(params: {
   contentId?: string
-  model: string
+  /**
+   * Required for a SUCCESS log — a booked cost with no model attribution is a
+   * bill nobody can audit. OPTIONAL for a failure log: the deleted
+   * logContentGeneration was called from catch blocks that never reached the
+   * model call, and refusing those would lose the failure half of the ledger
+   * this function absorbed. See the CONSOLIDATION note above.
+   */
+  model?: string
   promptTokens?: number
   completionTokens?: number
   totalTokens?: number
@@ -3239,25 +3262,40 @@ export async function logGenerationCost(params: {
   success: boolean
   errorMessage?: string
   contentType?: string
+  /**
+   * PORTED from the deleted logContentGeneration, which stored the first 500
+   * chars of the prompt on ai_generated_content.content. m386 adds
+   * content_generation_logs.prompt so that capability survives the deletion.
+   * Truncated here, not by the caller, so every call site records the same
+   * amount. Audit trail only — never read back into a prompt.
+   */
+  prompt?: string
 }): Promise<{ success: true; cost: number } | { success: false; error: string }> {
   const auth = await requireContentActor()
   if (!auth.ok) return { success: false, error: auth.error }
 
-  if (!params.model?.trim()) return { success: false, error: "Model is required" }
+  if (params.success && !params.model?.trim()) {
+    return { success: false, error: "Model is required to book a generation cost" }
+  }
   if (params.contentId && !isValidUUID(params.contentId)) {
     return { success: false, error: "Invalid content ID" }
   }
 
   const supabase = await createClient()
 
-  const cost = await calculateAICost(
-    {
-      promptTokens: params.promptTokens,
-      completionTokens: params.completionTokens,
-      totalTokens: params.totalTokens,
-    },
-    params.model
-  )
+  // A failure log has no model to price against, so it books $0 rather than
+  // silently falling through calculateAICost's gpt-4o-mini default and
+  // inventing a charge for a generation that never happened.
+  const cost = params.model?.trim()
+    ? await calculateAICost(
+        {
+          promptTokens: params.promptTokens,
+          completionTokens: params.completionTokens,
+          totalTokens: params.totalTokens,
+        },
+        params.model
+      )
+    : 0
 
   const { error } = await supabase.from("content_generation_logs").insert({
     content_id: params.contentId ?? null,
@@ -3267,7 +3305,7 @@ export async function logGenerationCost(params: {
     // swallowed into a console line while the cost was returned as if booked.
     agent_id: auth.actor.agentId,
     brokerage_id: auth.actor.brokerageId,
-    model_used: params.model,
+    model_used: params.model?.trim() || null,
     prompt_tokens: params.promptTokens || 0,
     completion_tokens: params.completionTokens || 0,
     total_tokens: params.totalTokens || 0,
@@ -3276,6 +3314,8 @@ export async function logGenerationCost(params: {
     success: params.success,
     error_message: params.errorMessage,
     content_type: params.contentType,
+    // m386. Ported off the deleted logContentGeneration.
+    prompt: params.prompt ? params.prompt.slice(0, 500) : null,
   })
 
   if (error) {
@@ -3294,7 +3334,15 @@ export async function getMonthlyAICosts(month?: Date): Promise<
         total_cost: number
         total_generations: number
         avg_cost_per_generation: number
-        breakdown_by_model: Array<{ model: string; cost: number; count: number }>
+        /**
+         * PORTED from the deleted getContentGenerationStats, whose
+         * totalTokensUsed was the one field of its four that nothing else
+         * served. It read ai_generated_content.tokens_used — a column that
+         * does not exist — so it was always 0. content_generation_logs.total_tokens
+         * is the real number, written by logGenerationCost.
+         */
+        total_tokens: number
+        breakdown_by_model: Array<{ model: string; cost: number; count: number; tokens: number }>
       }
     }
   | { success: false; error: string }
@@ -3313,7 +3361,7 @@ export async function getMonthlyAICosts(month?: Date): Promise<
 
   const { data: logs, error } = await supabase
     .from("content_generation_logs")
-    .select("cost_usd, model_used")
+    .select("cost_usd, model_used, total_tokens")
     .eq("agent_id", auth.actor.agentId)
     .gte("generated_at", startOfMonth.toISOString())
     .lt("generated_at", endOfMonth.toISOString())
@@ -3327,14 +3375,19 @@ export async function getMonthlyAICosts(month?: Date): Promise<
   const rows = logs ?? []
   const totalCost = rows.reduce((sum, log) => sum + Number(log.cost_usd || 0), 0)
   const totalGenerations = rows.length
+  const totalTokens = rows.reduce((sum, log) => sum + Number(log.total_tokens || 0), 0)
 
-  const modelBreakdown = rows.reduce((acc: Record<string, { model: string; cost: number; count: number }>, log) => {
-    const model = log.model_used || "unknown"
-    if (!acc[model]) acc[model] = { model, cost: 0, count: 0 }
-    acc[model].cost += Number(log.cost_usd || 0)
-    acc[model].count += 1
-    return acc
-  }, {})
+  const modelBreakdown = rows.reduce(
+    (acc: Record<string, { model: string; cost: number; count: number; tokens: number }>, log) => {
+      const model = log.model_used || "unknown"
+      if (!acc[model]) acc[model] = { model, cost: 0, count: 0, tokens: 0 }
+      acc[model].cost += Number(log.cost_usd || 0)
+      acc[model].count += 1
+      acc[model].tokens += Number(log.total_tokens || 0)
+      return acc
+    },
+    {}
+  )
 
   return {
     success: true,
@@ -3342,6 +3395,7 @@ export async function getMonthlyAICosts(month?: Date): Promise<
       total_cost: totalCost,
       total_generations: totalGenerations,
       avg_cost_per_generation: totalGenerations > 0 ? totalCost / totalGenerations : 0,
+      total_tokens: totalTokens,
       breakdown_by_model: Object.values(modelBreakdown).sort((a, b) => b.cost - a.cost),
     },
   }

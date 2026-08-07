@@ -11,10 +11,12 @@
  *     email's "Schedule a listing appointment" button lands, no login needed
  *   · the contact portal, inside <HomeValueReportCard> on the portal home
  *
- * This is NOT the walk-through booking. <AppointmentBookingCard> next to it books
- * the EVALUATION appointment (48-hour floor) — the agent coming to look at the
- * house. This one books the LISTING appointment: the sit-down where the agent
- * presents the pricing strategy and the marketing plan and asks for the listing.
+ * It is the ONLY appointment this lane books. "the 7 day floor is only for
+ * listing appointments (also called home value appointments)" — the home-value
+ * seller's meeting IS the listing appointment: the sit-down where the agent
+ * walks the property, presents the pricing strategy and the marketing plan, and
+ * asks for the listing. There is no separate earlier "walk-through evaluation"
+ * card beside this one any more; that split was retired.
  *
  * The 7-day floor is not enforced here. getListingAppointmentSlots only OFFERS
  * times at or beyond it, and scheduleSellerListingAppointment refuses anything

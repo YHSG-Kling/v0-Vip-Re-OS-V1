@@ -33,6 +33,15 @@ export type DocumentClassification =
   // The preliminary HUD / settlement statement the title company or closing
   // attorney sends. It is the trigger for the agent to fill out the CDA.
   | "preliminary_closing_statement"
+  // ── BUYER SIDE (m385) ──────────────────────────────────────────────────
+  // The hazard / homeowner's insurance BINDER or declarations page. The lender
+  // will not fund without evidence of coverage, typically 7-10 days out, so a
+  // brokerage must be able to put this on its required-documents checklist and
+  // block or warn on it exactly like any other required document. It is the
+  // BUYER'S PROPERTY policy — not a vendor's own certificate of insurance,
+  // which is a different subject on a different row
+  // (vendors.compliance_credentials, m376).
+  | "insurance_binder"
   | "other"
 
 /** Human labels — the raw value is not client-readable. */
@@ -57,6 +66,7 @@ export const DOCUMENT_CLASSIFICATION_LABEL: Record<DocumentClassification, strin
   listing_agreement:             "Listing agreement",
   seller_broker_agreement:       "Seller broker agreement",
   preliminary_closing_statement: "Preliminary closing statement (HUD)",
+  insurance_binder:              "Insurance binder / declarations page",
   other:                         "Other",
 }
 

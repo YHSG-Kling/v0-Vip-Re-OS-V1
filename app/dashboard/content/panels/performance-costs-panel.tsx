@@ -281,10 +281,17 @@ export function PerformanceCostsPanel({ drafts }: { drafts: any[] }) {
             <p className="text-xs text-destructive">{errors.costs}</p>
           ) : costs ? (
             <>
-              <div className="grid grid-cols-3 gap-3">
+              {/* `Tokens` is the capability ported off the deleted
+                  getContentGenerationStats — the one number of its four that
+                  nothing else surfaced. It read a column that does not exist,
+                  so it always showed 0; this reads
+                  content_generation_logs.total_tokens, which logGenerationCost
+                  actually writes. */}
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 <Stat label="Total" value={`$${costs.total_cost.toFixed(2)}`} />
                 <Stat label="Generations" value={String(costs.total_generations)} />
                 <Stat label="Avg each" value={`$${costs.avg_cost_per_generation.toFixed(4)}`} />
+                <Stat label="Tokens" value={costs.total_tokens.toLocaleString()} />
               </div>
               {costs.breakdown_by_model.length > 0 && (
                 <div className="divide-y">
@@ -292,7 +299,7 @@ export function PerformanceCostsPanel({ drafts }: { drafts: any[] }) {
                     <div key={m.model} className="py-2 flex items-center justify-between text-xs">
                       <span className="font-mono">{m.model}</span>
                       <span className="text-muted-foreground">
-                        ${m.cost.toFixed(4)} over {m.count}
+                        ${m.cost.toFixed(4)} over {m.count} · {m.tokens.toLocaleString()} tok
                       </span>
                     </div>
                   ))}
