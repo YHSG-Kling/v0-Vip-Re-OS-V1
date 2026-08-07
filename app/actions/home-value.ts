@@ -6,6 +6,39 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { createPortalInviteForContact } from "./portal-invites"
 import { CONTACT_SOURCE_HOME_VALUE } from "@/lib/campaigns/contact-sources"
 import { autoEnrollContact } from "@/lib/campaign-sequences/auto-enroll"
+import { pushPortalValueCard } from "@/lib/kernel/portal-value"
+import {
+  LISTING_APPOINTMENT_MIN_LEAD_DAYS,
+  LISTING_APPOINTMENT_TOO_SOON_ERROR,
+  earliestListingAppointmentAt,
+} from "@/lib/home-value/listing-appointment"
+import { composeHomeValueReportEmail } from "@/lib/home-value/report-email"
+
+// ============================================================================
+// WHY THIS FILE USES THE SERVICE CLIENT FOR THE PUBLIC LANE
+//
+// /home-value is an UNAUTHENTICATED marketing page: a homeowner who has never
+// logged in fills the form. Every table this lane touches has RLS on, and the
+// policies are tenant policies —
+//   contacts INSERT              → broker / agent / platform_admin only
+//   valuation_requests INSERT    → brokerage_id = current_user_brokerage_id()
+//   home_value_estimates I/S     → brokerage_id = current_user_brokerage_id()
+//   agents / calendar_events S   → same
+// — and current_user_brokerage_id() is `SELECT brokerage_id FROM users WHERE
+// id = auth.uid()`, which is NULL for an anonymous visitor. `brokerage_id =
+// NULL` is NULL, i.e. not true, so Postgres refused every one of these
+// statements. supabase-js RESOLVES a refused query instead of throwing, so the
+// whole lane failed quietly: no contact, no request row, no estimate, and a
+// result page that reported "Estimate not found" for every submission.
+//
+// The public surfaces below therefore run on the SERVICE client, exactly like
+// the sibling public page app/home-value/[agentSlug]/page.tsx already does. The
+// service client bypasses RLS, so tenancy is carried EXPLICITLY: every write
+// names brokerage_id, and every read is either brokerage-scoped or keyed on a
+// per-row secret the seller was handed (the valuation_request id in their own
+// result URL). The authenticated dashboard surfaces at the bottom of this file
+// (savePageConfig) keep the session client and their RLS gate.
+// ============================================================================
 
 // ============================================================================
 // Types
@@ -171,7 +204,9 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
   requestId?: string
   error?: string
 }> {
-  const supabase = await createClient()
+  // PUBLIC, SESSIONLESS lane — see the note at the top of this file. Tenancy is
+  // carried explicitly on every statement below.
+  const supabase = createServiceClient()
 
   try {
     const {
@@ -234,7 +269,7 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
     // brokerage's primary active agent (earliest-created active agent = owner/primary).
     // This ensures every home value contact has an agent owner immediately.
     if (!resolvedAgentId) {
-      const { data: primaryAgent } = await supabase
+      const { data: primaryAgent, error: primaryAgentError } = await supabase
         .from("agents")
         .select("id")
         .eq("brokerage_id", resolvedBrokerageId)
@@ -243,20 +278,53 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
         .limit(1)
         .maybeSingle()
 
-      if (primaryAgent?.id) {
+      if (primaryAgentError) {
+        console.error("[home-value] primary agent lookup refused:", primaryAgentError.message)
+      } else if (primaryAgent?.id) {
         resolvedAgentId = primaryAgent.id
+      }
+    }
+
+    // ID CLASS. Resolved ONCE, here, and reused by the portal invite, the agent
+    // notification and the report email's signature lookup. agents.id and
+    // users.id are different id spaces: the portal invite and the notification
+    // both take a USERS id, and valuation_requests.agent_id / contacts.agent_id
+    // are AGENTS ids. Neither substitutes for the other — this resolves it.
+    let resolvedAgentUserId: string | null = null
+    if (resolvedAgentId) {
+      const { data: agentRow, error: agentRowError } = await supabase
+        .from("agents")
+        .select("user_id")
+        .eq("id", resolvedAgentId)
+        .maybeSingle()
+      if (agentRowError) {
+        console.error("[home-value] agent user_id lookup refused:", agentRowError.message)
+      } else {
+        resolvedAgentUserId = agentRow?.user_id ?? null
       }
     }
 
     // Step 2: Check for existing contact by email OR phone in this brokerage
     const normalizedPhone = phone.replace(/\D/g, "")
 
-    const { data: existingContact } = await supabase
+    const { data: existingContact, error: existingContactError } = await supabase
       .from("contacts")
-      .select("id")
+      .select("id, first_name")
       .eq("brokerage_id", resolvedBrokerageId)
       .or(`email.eq.${email},phone.eq.${phone}`)
+      // limit(1) before maybeSingle: a homeowner whose email AND phone are on two
+      // different rows matches twice, and maybeSingle turns "2 rows" into an error
+      // that used to read as "no match" — creating a third, duplicate contact.
+      .order("created_at", { ascending: true })
+      .limit(1)
       .maybeSingle()
+
+    if (existingContactError) {
+      // A refused dedupe read resolves as "no match" and would create a DUPLICATE
+      // contact for a homeowner who is already in the book. Fail loudly instead.
+      console.error("[home-value] contact dedupe read refused:", existingContactError.message)
+      return { success: false, error: "Failed to look up your record. Please try again." }
+    }
 
     let contactId: string
 
@@ -297,31 +365,49 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
         return { success: false, error: "Failed to create contact" }
       }
       contactId = newContact.id
-
-      // Non-blocking portal invite with magic link for new home-value contacts.
-      // Resolve users.id from the resolved agent row if available.
-      if (resolvedAgentId) {
-        supabase
-          .from("agents")
-          .select("user_id")
-          .eq("id", resolvedAgentId)
-          .maybeSingle()
-          .then(
-            ({ data: agentRow }) => {
-              if (agentRow?.user_id) {
-                createPortalInviteForContact({
-                  contactId: newContact.id,
-                  brokerageId: resolvedBrokerageId!,
-                  invitedByUserId: agentRow.user_id,
-                  sendMagicLink: true,
-                }).then(() => {}, () => {})
-              }
-            },
-            (err) => console.error("[home-value] background task failed:", err)
-          )
-      }
     } else {
       contactId = existingContact.id
+    }
+
+    // ── STEP 3b: THE PORTAL LOGIN ────────────────────────────────────────────
+    // The ruling: "they will be presented with a contact portal to log in and the
+    // report will show up in their portal". This is where that login is issued.
+    //
+    // TWO DEFECTS CLOSED HERE.
+    //
+    //  1. WRONG DOOR. This used to call createPortalInviteForContact — a
+    //     "use server" action whose FIRST statement is auth.getUser() and which
+    //     returns { error: "Unauthorized" } when there is no session. /home-value
+    //     is an unauthenticated marketing page, so there never is one: every
+    //     home-value seller's portal invite was refused before it did any work.
+    //     createSystemPortalInvite is the sibling built for exactly this — a
+    //     trusted server flow supplying the authorizing agent's USERS id, which
+    //     issuePortalInvite then verifies is in the contact's brokerage.
+    //
+    //  2. FIRE-AND-FORGET. It was a floating .then() chain on a serverless
+    //     request. The response returns, the lambda freezes, and the invite may
+    //     never run at all. It is awaited now — issuing a login is part of the
+    //     submission, not a side wish.
+    //
+    // Run for EXISTING contacts too, not only new ones: a returning homeowner is
+    // just as entitled to their report, and issuePortalInvite is idempotent (it
+    // reuses the open invite row and re-sends the magic link).
+    let portalInvited = false
+    if (resolvedAgentUserId) {
+      const { createSystemPortalInvite } = await import("@/lib/portal/portal-invite-core")
+      const invite = await createSystemPortalInvite({
+        contactId,
+        agentUserId: resolvedAgentUserId,
+        sendMagicLink: true,
+      }).catch((e: unknown) => ({ success: false, error: String(e) }))
+      portalInvited = invite.success === true
+      if (!portalInvited) {
+        console.error("[home-value] portal invite failed:", (invite as { error?: string }).error)
+      }
+    } else {
+      console.error(
+        `[home-value] no agent users.id for brokerage=${resolvedBrokerageId} — contact ${contactId} gets no portal login`,
+      )
     }
 
     // Step 4: INSERT valuation_requests with contact_id attached
@@ -411,7 +497,11 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
     // measured. Nothing reads it today; when a real payoff figure is collected,
     // fill it from that.
 
-    const { error: estimateError } = await supabase
+    // The insert RETURNS the row as the database stored it. Everything downstream
+    // — the portal card and the email — reads THIS, not `aiValuation`. Same row,
+    // one set of figures, so the two surfaces cannot disagree and neither one
+    // recomputes a value the record does not hold.
+    const { data: storedEstimate, error: estimateError } = await supabase
       .from("home_value_estimates")
       .insert({
         valuation_request_id: valuationRequest.id,
@@ -431,17 +521,24 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
         ai_narrative: aiValuation.ai_narrative,
         expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days
       })
+      .select(
+        "id, property_address, estimated_value_low, estimated_value_mid, estimated_value_high, confidence_score, methodology, market_trend, ai_narrative, comps_json",
+      )
+      .single()
 
-    if (estimateError) {
+    if (estimateError || !storedEstimate) {
       console.error("Error creating estimate:", estimateError)
       return { success: false, error: "Failed to create estimate" }
     }
 
     // Step 7: UPDATE contacts.home_value_estimate
-    await supabase
+    const { error: contactValueError } = await supabase
       .from("contacts")
-      .update({ home_value_estimate: aiValuation.estimated_value_mid })
+      .update({ home_value_estimate: storedEstimate.estimated_value_mid })
       .eq("id", contactId)
+    if (contactValueError) {
+      console.error("[home-value] contacts.home_value_estimate write failed:", contactValueError.message)
+    }
 
     // Step 8: EMIT HOME_VALUE_CONTACT_CREATED kernel event
     await supabase.from("lifecycle_events").insert({
@@ -457,29 +554,42 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
     })
 
     // Step 9: Notify the assigned agent via the notifications table.
-    // We need the agent's user_id (auth uid) to target the in-app notification.
-    if (resolvedAgentId) {
-      const { data: agentRow } = await supabase
-        .from("agents")
-        .select("user_id")
-        .eq("id", resolvedAgentId)
-        .maybeSingle()
-
-      if (agentRow?.user_id) {
-        await supabase.from("notifications").insert({
-          user_id: agentRow.user_id,
-          brokerage_id: resolvedBrokerageId,
-          type: "home_value_lead",
-          title: "New Home Value Request",
-          body: `${firstName} ${lastName} requested a home value for ${propertyAddress}, ${city || zipCode}. Timeline: ${qualificationData?.sellTimeline ?? "unknown"}. Motivation: ${qualificationData?.motivation ?? "unknown"}. Review and start a drip campaign.`,
-          entity_type: "contact",
-          entity_id: contactId,
-          priority: "high",
-          is_read: false,
-          channel: "in_app",
-        })
+    // notifications.user_id is a USERS id — resolved once above, not re-fetched
+    // and not substituted with the agents id.
+    if (resolvedAgentUserId) {
+      const { error: notifyError } = await supabase.from("notifications").insert({
+        user_id: resolvedAgentUserId,
+        brokerage_id: resolvedBrokerageId,
+        type: "home_value_lead",
+        title: "New Home Value Request",
+        body: `${firstName} ${lastName} requested a home value for ${propertyAddress}, ${city || zipCode}. Timeline: ${qualificationData?.sellTimeline ?? "unknown"}. Motivation: ${qualificationData?.motivation ?? "unknown"}. Review and start a drip campaign.`,
+        entity_type: "contact",
+        entity_id: contactId,
+        priority: "high",
+        is_read: false,
+        channel: "in_app",
+      })
+      if (notifyError) {
+        console.error("[home-value] agent notification write failed:", notifyError.message)
       }
     }
+
+    // ── Step 9b: THE REPORT REACHES THE SELLER — portal card, then email ──────
+    // Both are driven off `storedEstimate` (the row as written) and both offer
+    // the ≥7-day listing appointment. Neither is allowed to break the
+    // submission: the seller already has their result page either way.
+    await deliverHomeValueReport({
+      supabase,
+      brokerageId: resolvedBrokerageId,
+      contactId,
+      requestId: valuationRequest.id,
+      firstName,
+      recipientEmail: email,
+      agentUserId: resolvedAgentUserId,
+      agentId: resolvedAgentId,
+      portalInvited,
+      estimate: storedEstimate,
+    })
 
     // Step 10: AUTONOMOUS ENROLMENT. This used to look for a sequence by
     // `trigger_event = 'home_value_submitted'` OR `sequence_type = 'seller_nurture'`
@@ -510,11 +620,182 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
 }
 
 // ============================================================================
+// deliverHomeValueReport — the report reaches the seller on BOTH surfaces
+//
+// "the report will show up in their portal and also an email will be sent with
+//  it both the email and the portal will be given a way to schedule a listing
+//  appotintment as well"
+//
+// ONE source of figures: the `home_value_estimates` row exactly as it was
+// stored. Nothing here recomputes a value, and if the row does not carry a
+// usable range nothing is sent at all — an empty report is honest, a fabricated
+// one is not.
+//
+// Not exported: it is one step of the submission, not a separate capability, and
+// a "use server" module may only export async functions that are real actions.
+// ============================================================================
+
+/** The stored columns both surfaces render. Shaped by the insert's .select(). */
+interface StoredHomeValueEstimate {
+  id: string
+  property_address: string | null
+  estimated_value_low: number | null
+  estimated_value_mid: number | null
+  estimated_value_high: number | null
+  confidence_score: number | null
+  methodology: string | null
+  market_trend: string | null
+  ai_narrative: string | null
+  comps_json: unknown
+}
+
+async function deliverHomeValueReport(args: {
+  supabase: ReturnType<typeof createServiceClient>
+  brokerageId: string
+  contactId: string
+  requestId: string
+  firstName: string
+  recipientEmail: string
+  agentUserId: string | null
+  agentId: string | null
+  portalInvited: boolean
+  estimate: StoredHomeValueEstimate
+}): Promise<void> {
+  const { estimate } = args
+
+  const low = args.estimate.estimated_value_low
+  const mid = args.estimate.estimated_value_mid
+  const high = args.estimate.estimated_value_high
+
+  // No range means no report. Say nothing rather than send a blank or a guess.
+  if (typeof low !== "number" || typeof mid !== "number" || typeof high !== "number") {
+    console.error(
+      `[home-value] estimate ${estimate.id} carries no value range — no portal card and no email sent`,
+    )
+    return
+  }
+
+  const address = estimate.property_address ?? "your home"
+  const compsCount = Array.isArray(estimate.comps_json) ? estimate.comps_json.length : 0
+  const usd = (n: number) =>
+    new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n)
+
+  // ── 1. THE PORTAL ────────────────────────────────────────────────────────
+  // transparency_updates is the portal's "what's happening" feed — the same
+  // table the kernel fan-out and the offer net sheet write, rendered by
+  // RecentUpdatesFeed on the buyer / seller / lifetime homes. pushPortalValueCard
+  // is the shared primitive for it: is_visible_to_client = true (an invisible
+  // card defeats the point) and idempotent per (contact, update_type, day).
+  // The full report itself is rendered by <HomeValueReportCard> on the portal
+  // home, which reads this same home_value_estimates row.
+  const card = await pushPortalValueCard(
+    {
+      brokerageId: args.brokerageId,
+      contactId: args.contactId,
+      title: "Your home value report is ready",
+      summary:
+        `We estimate ${address} at ${usd(mid)} — a range of ${usd(low)} to ${usd(high)}. ` +
+        `Open your portal to see how we got there, and to book a listing appointment when you're ready ` +
+        `(we schedule those at least ${LISTING_APPOINTMENT_MIN_LEAD_DAYS} days out).`,
+      updateType: "home_value_report",
+      metadata: {
+        home_value_estimate_id: estimate.id,
+        valuation_request_id: args.requestId,
+        methodology: estimate.methodology,
+        confidence_score: estimate.confidence_score,
+      },
+    },
+    args.supabase,
+  )
+  if (!card.pushed && card.reason !== "duplicate_within_window") {
+    console.error(`[home-value] portal card not written for contact ${args.contactId}: ${card.reason}`)
+  }
+
+  // ── 2. THE EMAIL ─────────────────────────────────────────────────────────
+  const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")
+  if (!appUrl) {
+    // Same discipline the pre-listing drip uses: refuse to email links that
+    // resolve nowhere rather than send a report the seller cannot open.
+    console.error(
+      "[home-value] NEXT_PUBLIC_APP_URL is not configured — refusing to email a report whose links resolve nowhere",
+    )
+    return
+  }
+  const reportUrl = `${appUrl}/home-value/result/${args.requestId}`
+
+  // Who it comes from, for the closing line. users.id → first/last name.
+  let agentName: string | null = null
+  if (args.agentUserId) {
+    const { data: agentUser, error: agentUserError } = await args.supabase
+      .from("users")
+      .select("first_name, last_name")
+      .eq("id", args.agentUserId)
+      .maybeSingle()
+    if (agentUserError) {
+      console.error("[home-value] agent name lookup refused:", agentUserError.message)
+    } else if (agentUser) {
+      agentName = [agentUser.first_name, agentUser.last_name].filter(Boolean).join(" ") || null
+    }
+  }
+
+  const composed = composeHomeValueReportEmail({
+    firstName: args.firstName,
+    propertyAddress: address,
+    estimatedValueLow: low,
+    estimatedValueMid: mid,
+    estimatedValueHigh: high,
+    confidenceScore: estimate.confidence_score,
+    methodology: estimate.methodology,
+    marketTrend: estimate.market_trend,
+    compsCount,
+    aiNarrative: estimate.ai_narrative,
+    reportUrl,
+    // Only offered when a portal login was actually issued — a "log in to your
+    // portal" link for a contact with no invite is a dead end.
+    portalUrl: args.portalInvited ? `${appUrl}/portal/${args.contactId}` : null,
+    // The ≥7-day scheduler lives on the same report page the seller already owns,
+    // so the email's way in works with no login.
+    listingAppointmentUrl: `${reportUrl}#listing-appointment`,
+    agentName,
+  })
+
+  // THE GATE. dispatchEmail — never a provider call — so suppression, the
+  // contact's consent posture, quiet hours and de-confliction all fire. The
+  // homeowner asked for this specific report on this specific address and gave
+  // TCPA consent on the form, so the purpose is TRANSACTIONAL, not campaign.
+  const { dispatchEmail } = await import("@/lib/providers/dispatch")
+  const sent = await dispatchEmail({
+    brokerageId: args.brokerageId,
+    contactId: args.contactId,
+    // A USERS id — assembleEmail runs its signature waterfall off this. Passing
+    // the agents id here would silently skip the agent + team signature tiers.
+    userId: args.agentUserId ?? undefined,
+    to: args.recipientEmail,
+    subject: composed.subject,
+    html: composed.html,
+    text: composed.text,
+    channelPurpose: "transactional",
+    systemSource: "home_value_report",
+    metadata: {
+      home_value_estimate_id: estimate.id,
+      valuation_request_id: args.requestId,
+    },
+  }).catch((e: unknown) => ({ success: false, providerKey: "exception", error: String(e) }))
+
+  if (!sent.success) {
+    console.error(`[home-value] report email not delivered to contact ${args.contactId}: ${sent.error}`)
+  }
+}
+
+// ============================================================================
 // getHomeValueResult
 // ============================================================================
 
 export async function getHomeValueResult(requestId: string) {
-  const supabase = await createClient()
+  // PUBLIC read — the seller reaches this page straight off the form with no
+  // session. Scoped by the valuation_request id, which is a per-row secret only
+  // the seller was handed (it is their own result URL).
+  const supabase = createServiceClient()
 
   const { data: estimate, error } = await supabase
     .from("home_value_estimates")
@@ -547,13 +828,15 @@ export async function getHomeValueResult(requestId: string) {
   const agentSlug = estimate.valuation_requests?.ref_agent_slug
 
   if (agentSlug) {
-    const { data: agentData } = await supabase
+    const { data: agentData, error: agentError } = await supabase
       .from("agents")
       .select("id, phone_mobile, profile_image_url, users(first_name, last_name, email)")
       .eq("public_slug", agentSlug)
-      .single()
+      .maybeSingle()
 
-    if (agentData) {
+    if (agentError) {
+      console.error("[home-value] result-page agent read refused:", agentError.message)
+    } else if (agentData) {
       const agentUser = (agentData.users as any) ?? null
       agent = {
         id: agentData.id,
@@ -567,9 +850,30 @@ export async function getHomeValueResult(requestId: string) {
   }
 
   const vr = estimate.valuation_requests as any
+  const resolvedContactId: string | null = estimate.contact_id ?? vr?.contact_id ?? null
+
+  // THE HOMEOWNER'S OWN NAME. The booking cards stamp it on the appointment and
+  // into the agent's notification ("<name> booked a listing appointment"). The
+  // page used to pass the AGENT's name into that slot, so every booking told the
+  // agent they had booked with themselves. Distinct identities, resolved here.
+  let contactName: string | null = null
+  if (resolvedContactId) {
+    const { data: contactRow, error: contactRowError } = await supabase
+      .from("contacts")
+      .select("first_name, last_name")
+      .eq("id", resolvedContactId)
+      .maybeSingle()
+    if (contactRowError) {
+      console.error("[home-value] result-page contact read refused:", contactRowError.message)
+    } else if (contactRow) {
+      contactName = [contactRow.first_name, contactRow.last_name].filter(Boolean).join(" ") || null
+    }
+  }
 
   return {
     success: true,
+    requestId,
+    contactName,
     estimate: {
       id: estimate.id,
       propertyAddress: estimate.property_address,
@@ -587,7 +891,7 @@ export async function getHomeValueResult(requestId: string) {
       propertyDetails: estimate.valuation_requests,
     },
     brokerageId: vr?.brokerage_id ?? null,
-    contactId: estimate.contact_id ?? vr?.contact_id ?? null,
+    contactId: resolvedContactId,
     agent,
   }
 }
@@ -616,7 +920,7 @@ function cmaPropertyType(raw: string | null | undefined): "single_family" | "con
  * "Market trend not yet available" rather than inventing a direction.
  */
 async function resolveMarketTrend(
-  supabase: Awaited<ReturnType<typeof createClient>>,
+  supabase: ReturnType<typeof createServiceClient>,
   where: { zipCode?: string | null; city?: string | null; state?: string | null }
 ): Promise<AIValuationResponse["market_trend"]> {
   const read = async (col: "zip_code" | "city", value: string) => {
@@ -681,7 +985,7 @@ async function generateAIValuation(propertyData: {
   brokerageId: string
   contactId?: string | null
   agentUserId?: string | null
-  supabase: Awaited<ReturnType<typeof createClient>>
+  supabase: ReturnType<typeof createServiceClient>
 }): Promise<AIValuationResponse> {
   const marketTrend = await resolveMarketTrend(propertyData.supabase, {
     zipCode: propertyData.zipCode,
@@ -774,27 +1078,40 @@ async function generateAIValuation(propertyData: {
 }
 
 // ============================================================================
-// getAvailableAgentSlots
-// Returns active listing agents + their open 1-hour time slots for the next
-// 7 business days (Mon–Fri, 9am–5pm local). Conflicts are checked against
-// existing calendar_events for each agent.
+// AGENT SLOT LOADING — ONE implementation, TWO lead times
+//
+// Both appointment kinds offer 1-hour slots inside the agent's configured
+// working hours (home_value_page_configs.working_hours, default Mon–Fri 9–5),
+// conflict-checked against that agent's calendar_events. The ONLY thing that
+// differs is how far out the first bookable slot is, so the difference is a
+// parameter rather than a second copy of the generator that can drift.
+//
+//   evaluation appointment → 48 hours   (the walk-through; the seller wants
+//                                        somebody there soon)
+//   listing appointment    → LISTING_APPOINTMENT_MIN_LEAD_DAYS (7 days)
+//
+// The offered slots and the server's refusal are computed from the SAME
+// boundary, so the UI can never present a time the booking action will reject.
 // ============================================================================
 
-export async function getAvailableAgentSlots(brokerageId: string): Promise<{
-  success: boolean
-  agents?: Array<{
-    id: string
-    userId: string
-    firstName: string
-    lastName: string
-    phone: string | null
-    email: string | null
-    profileImageUrl: string | null
-    slots: Array<{ startAt: string; endAt: string; label: string }>
-  }>
-  error?: string
-}> {
-  const supabase = await createClient()
+export interface AgentSlotOption {
+  id: string
+  userId: string
+  firstName: string
+  lastName: string
+  phone: string | null
+  email: string | null
+  profileImageUrl: string | null
+  slots: Array<{ startAt: string; endAt: string; label: string }>
+}
+
+async function loadAgentSlots(
+  brokerageId: string,
+  opts: { earliest: Date; windowDays: number },
+): Promise<{ success: boolean; agents?: AgentSlotOption[]; error?: string }> {
+  // PUBLIC lane — the result page and the portal both reach this without an
+  // agent session. Tenant scope is the explicit brokerage_id filter below.
+  const supabase = createServiceClient()
 
   // Fetch all active agents for this brokerage
   const { data: agents, error: agentsError } = await supabase
@@ -804,14 +1121,17 @@ export async function getAvailableAgentSlots(brokerageId: string): Promise<{
     .eq("is_active", true)
     .limit(10)
 
-  if (agentsError || !agents?.length) {
+  if (agentsError) {
+    console.error("[home-value] agent slot read refused:", agentsError.message)
+    return { success: false, error: "Scheduling is unavailable right now." }
+  }
+  if (!agents?.length) {
     return { success: false, error: "No agents available" }
   }
 
   const now = new Date()
-  // Earliest bookable slot is 48 hours from now
-  const earliestSlot = new Date(now.getTime() + 48 * 60 * 60 * 1000)
-  const windowEnd = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000) // show 14 days ahead
+  const earliestSlot = opts.earliest
+  const windowEnd = new Date(now.getTime() + opts.windowDays * 24 * 60 * 60 * 1000)
 
   const agentIds = agents.map((a) => a.id)
 
@@ -830,10 +1150,24 @@ export async function getAvailableAgentSlots(brokerageId: string): Promise<{
       .in("agent_id", agentIds),
   ])
 
+  // A refused conflict read resolves as "nothing is booked" and would offer
+  // times the agent is already in. Refuse to offer anything instead.
+  if (eventsRes.error) {
+    console.error("[home-value] calendar conflict read refused:", eventsRes.error.message)
+    return { success: false, error: "Scheduling is unavailable right now." }
+  }
+  if (configsRes.error) {
+    console.error("[home-value] scheduler config read refused:", configsRes.error.message)
+    return { success: false, error: "Scheduling is unavailable right now." }
+  }
+
   const bookedByAgent: Record<string, Array<{ start: Date; end: Date }>> = {}
   for (const ev of eventsRes.data ?? []) {
     if (!bookedByAgent[ev.entity_id]) bookedByAgent[ev.entity_id] = []
-    bookedByAgent[ev.entity_id].push({ start: new Date(ev.start_at), end: new Date(ev.end_at) })
+    // end_at is nullable; a start-only event still blocks its hour.
+    const start = new Date(ev.start_at)
+    const end = ev.end_at ? new Date(ev.end_at) : new Date(start.getTime() + 60 * 60 * 1000)
+    bookedByAgent[ev.entity_id].push({ start, end })
   }
 
   // Map agent_id -> working_hours config (fall back to Mon-Fri 9-17 if no config)
@@ -852,7 +1186,8 @@ export async function getAvailableAgentSlots(brokerageId: string): Promise<{
     }
   }
 
-  // Generate 1-hour slots within agent-defined working hours, 48h+ out
+  // Generate 1-hour slots within agent-defined working hours, no earlier than
+  // `earliestSlot` — the SAME boundary the booking action enforces server-side.
   function generateSlots(agentId: string): Array<{ startAt: string; endAt: string; label: string }> {
     const slots: Array<{ startAt: string; endAt: string; label: string }> = []
     const booked = bookedByAgent[agentId] ?? []
@@ -869,8 +1204,7 @@ export async function getAvailableAgentSlots(brokerageId: string): Promise<{
       hoursByDay[h.day].push({ start: h.start_hour, end: h.end_hour })
     }
 
-    // Iterate day by day for 14 days, starting from tomorrow
-    for (let dayOffset = 0; dayOffset < 14; dayOffset++) {
+    for (let dayOffset = 0; dayOffset <= opts.windowDays; dayOffset++) {
       const d = new Date(now)
       d.setDate(d.getDate() + dayOffset)
       d.setHours(0, 0, 0, 0)
@@ -885,7 +1219,7 @@ export async function getAvailableAgentSlots(brokerageId: string): Promise<{
           const slotEnd = new Date(slotStart)
           slotEnd.setHours(h + 1)
 
-          // Must be at least 48h from now
+          // The lead-time floor for THIS appointment kind.
           if (slotStart < earliestSlot) continue
 
           const conflict = booked.some((b) => slotStart < b.end && slotEnd > b.start)
@@ -926,7 +1260,49 @@ export async function getAvailableAgentSlots(brokerageId: string): Promise<{
     }
   }).filter((a) => a.slots.length > 0)
 
+  if (result.length === 0) return { success: false, error: "No agents available" }
   return { success: true, agents: result }
+}
+
+// ============================================================================
+// getAvailableAgentSlots — THE EVALUATION APPOINTMENT (step 3 of the ruling)
+//
+// "the ability to schedule an appointment to evaluate their property" — the
+// walk-through. 48-hour floor, unchanged. This is NOT the appointment the
+// 7-day rule governs; see lib/home-value/listing-appointment.ts.
+// ============================================================================
+
+export async function getAvailableAgentSlots(brokerageId: string): Promise<{
+  success: boolean
+  agents?: AgentSlotOption[]
+  error?: string
+}> {
+  return loadAgentSlots(brokerageId, {
+    earliest: new Date(Date.now() + 48 * 60 * 60 * 1000),
+    windowDays: 14,
+  })
+}
+
+// ============================================================================
+// getListingAppointmentSlots — THE LISTING APPOINTMENT (step 7 of the ruling)
+//
+// "a way to schedule a listing appotintment as well which needs to be atleast
+//  7 days out". The first offered slot IS earliestListingAppointmentAt(), the
+// same instant scheduleSellerListingAppointment refuses below, so the seller is
+// never shown a time the server will turn down.
+// ============================================================================
+
+export async function getListingAppointmentSlots(brokerageId: string): Promise<{
+  success: boolean
+  agents?: AgentSlotOption[]
+  error?: string
+}> {
+  return loadAgentSlots(brokerageId, {
+    earliest: earliestListingAppointmentAt(),
+    // The floor is 7 days, so the window has to run past it to show anything —
+    // 7 days of lead time plus a fortnight of choices.
+    windowDays: LISTING_APPOINTMENT_MIN_LEAD_DAYS + 14,
+  })
 }
 
 // ============================================================================
@@ -944,18 +1320,141 @@ export async function scheduleHomeValuationAppt(params: {
   propertyAddress: string
   contactName: string
 }): Promise<{ success: boolean; calendarEventId?: string; error?: string }> {
-  const supabase = await createClient()
+  return bookAgentAppointment({
+    ...params,
+    kind: "home_valuation_appointment",
+    // The walk-through has no 7-day floor — see lib/home-value/listing-appointment.ts.
+    notBefore: null,
+    eventTitle: `Home Valuation Appointment — ${params.propertyAddress}`,
+    notificationTitle: "Home Valuation Appointment Booked",
+    notificationVerb: "a valuation appointment",
+  })
+}
 
-  // Double-check the slot is still free
-  const { data: conflict } = await supabase
+// ============================================================================
+// scheduleSellerListingAppointment — THE ≥7-DAY BOOKING
+//
+// "both the email and the portal will be given a way to schedule a listing
+//  appotintment as well which needs to be atleast 7 days out"
+//
+// The floor is enforced HERE, on the server, because that is the only place it
+// can be enforced. getListingAppointmentSlots offers nothing earlier, but a
+// client can post any timestamp it likes straight at this action, so filtering
+// the offered slots is presentation — this is the authority.
+//
+// It writes calendar_events.event_type = 'listing_appointment' — the SAME value
+// lib/application/listing-lifecycle.ts writes for an agent-booked listing
+// consult, so this seller's meeting is the same first-class kind of event on the
+// agent's calendar and not a private synonym. entity_type is 'agent' (not
+// 'listing') because this seller has no listing row yet; there is nothing to
+// point at and inventing one would be a fabricated record.
+// ============================================================================
+
+export async function scheduleSellerListingAppointment(params: {
+  contactId: string
+  agentId: string
+  brokerageId: string
+  startAt: string // ISO
+  endAt: string // ISO
+  propertyAddress: string
+  contactName: string
+}): Promise<{ success: boolean; calendarEventId?: string; error?: string }> {
+  return bookAgentAppointment({
+    ...params,
+    kind: "listing_appointment",
+    notBefore: earliestListingAppointmentAt(),
+    eventTitle: `Listing Appointment — ${params.propertyAddress}`,
+    notificationTitle: "Listing Appointment Booked",
+    notificationVerb: "a listing appointment",
+  })
+}
+
+/**
+ * The shared booking path for both appointment kinds. Not exported — the two
+ * actions above are the capabilities; this is how they are the same code.
+ */
+async function bookAgentAppointment(args: {
+  contactId: string
+  agentId: string
+  brokerageId: string
+  startAt: string
+  endAt: string
+  propertyAddress: string
+  contactName: string
+  kind: "home_valuation_appointment" | "listing_appointment"
+  /** Server-authoritative lead-time floor, or null when the kind has none. */
+  notBefore: Date | null
+  eventTitle: string
+  notificationTitle: string
+  notificationVerb: string
+}): Promise<{ success: boolean; calendarEventId?: string; error?: string }> {
+  // PUBLIC lane: the caller is an unauthenticated seller (result page) or a
+  // portal contact. Every id it hands us is therefore UNTRUSTED.
+  const supabase = createServiceClient()
+
+  const start = new Date(args.startAt)
+  const end = new Date(args.endAt)
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+    return { success: false, error: "That time is not valid. Please pick another." }
+  }
+
+  // ── THE LEAD-TIME FLOOR ────────────────────────────────────────────────────
+  if (args.notBefore && start < args.notBefore) {
+    return { success: false, error: LISTING_APPOINTMENT_TOO_SOON_ERROR }
+  }
+
+  // ── TENANCY. The service client bypasses RLS, so the ids in the payload are
+  // verified against the brokerage before anything is written. Without this a
+  // caller could book on any agent in any tenant on behalf of any contact.
+  const [agentCheck, contactCheck] = await Promise.all([
+    supabase
+      .from("agents")
+      .select("id, user_id")
+      .eq("id", args.agentId)
+      .eq("brokerage_id", args.brokerageId)
+      .maybeSingle(),
+    supabase
+      .from("contacts")
+      .select("id")
+      .eq("id", args.contactId)
+      .eq("brokerage_id", args.brokerageId)
+      .maybeSingle(),
+  ])
+  if (agentCheck.error || contactCheck.error) {
+    console.error(
+      "[home-value] booking identity check refused:",
+      agentCheck.error?.message ?? contactCheck.error?.message,
+    )
+    return { success: false, error: "Booking is unavailable right now. Please try again." }
+  }
+  if (!agentCheck.data || !contactCheck.data) {
+    return { success: false, error: "We couldn't match that agent and contact. Please reload and try again." }
+  }
+  const agentUserId: string | null = agentCheck.data.user_id ?? null
+
+  // Double-check the slot is still free. end_at is nullable on calendar_events,
+  // so an event with no end would fall out of a `.gt("end_at", …)` filter —
+  // fetch this agent's overlapping window and compare in code.
+  const { data: sameDayEvents, error: conflictError } = await supabase
     .from("calendar_events")
-    .select("id")
+    .select("id, start_at, end_at")
     .eq("entity_type", "agent")
-    .eq("entity_id", params.agentId)
-    .lt("start_at", params.endAt)
-    .gt("end_at", params.startAt)
-    .maybeSingle()
+    .eq("entity_id", args.agentId)
+    .gte("start_at", new Date(start.getTime() - 24 * 60 * 60 * 1000).toISOString())
+    .lte("start_at", args.endAt)
 
+  if (conflictError) {
+    // A refused conflict read resolves as "nothing booked" and would double-book
+    // the agent. Refuse the booking instead.
+    console.error("[home-value] booking conflict read refused:", conflictError.message)
+    return { success: false, error: "Booking is unavailable right now. Please try again." }
+  }
+
+  const conflict = (sameDayEvents ?? []).some((ev) => {
+    const evStart = new Date(ev.start_at)
+    const evEnd = ev.end_at ? new Date(ev.end_at) : new Date(evStart.getTime() + 60 * 60 * 1000)
+    return start < evEnd && end > evStart
+  })
   if (conflict) {
     return { success: false, error: "That time slot is no longer available. Please select another." }
   }
@@ -964,17 +1463,22 @@ export async function scheduleHomeValuationAppt(params: {
   const { data: calEvent, error: calError } = await supabase
     .from("calendar_events")
     .insert({
-      brokerage_id: params.brokerageId,
+      brokerage_id: args.brokerageId,
       entity_type: "agent",
-      entity_id: params.agentId,
-      event_type: "home_valuation_appointment",
-      start_at: params.startAt,
-      end_at: params.endAt,
+      entity_id: args.agentId,
+      event_type: args.kind,
+      start_at: args.startAt,
+      end_at: args.endAt,
       is_system_generated: false,
+      title: args.eventTitle,
+      // agent_user_id is the USERS id — the column downstream calendar sync and
+      // the Zoom/transcript lanes read. agents.id lives in entity_id.
+      agent_user_id: agentUserId,
       metadata: {
-        contact_id: params.contactId,
-        property_address: params.propertyAddress,
-        contact_name: params.contactName,
+        contact_id: args.contactId,
+        agent_id: args.agentId,
+        property_address: args.propertyAddress,
+        contact_name: args.contactName,
         source: "home_value_page",
       },
     })
@@ -982,42 +1486,47 @@ export async function scheduleHomeValuationAppt(params: {
     .single()
 
   if (calError || !calEvent) {
+    console.error("[home-value] calendar_events insert failed:", calError?.message)
     return { success: false, error: "Failed to book appointment. Please try again." }
   }
 
-  // Insert activity record
-  await supabase.from("activities").insert({
-    brokerage_id: params.brokerageId,
-    agent_id: params.agentId,
-    contact_id: params.contactId,
-    activity_type: "home_valuation_appointment",
-    title: `Home Valuation Appointment — ${params.propertyAddress}`,
-    description: `Scheduled by ${params.contactName} via the home value tool.`,
-    scheduled_at: params.startAt,
+  // Insert activity record. activities is a consequential ledger — the broker's
+  // evidence of what happened — so the write checks its own error.
+  const { error: activityError } = await supabase.from("activities").insert({
+    brokerage_id: args.brokerageId,
+    agent_id: args.agentId,
+    contact_id: args.contactId,
+    activity_type: args.kind,
+    title: args.eventTitle,
+    description: `Scheduled by ${args.contactName} via the home value tool.`,
+    scheduled_at: args.startAt,
     status: "scheduled",
     priority: "high",
   })
+  if (activityError) {
+    console.error("[home-value] appointment activity write failed:", activityError.message)
+  }
 
-  // Notify the agent
-  const { data: agentRow } = await supabase
-    .from("agents")
-    .select("user_id")
-    .eq("id", params.agentId)
-    .maybeSingle()
-
-  if (agentRow?.user_id) {
-    await supabase.from("notifications").insert({
-      user_id: agentRow.user_id,
-      brokerage_id: params.brokerageId,
+  // Notify the agent. notifications.user_id is a USERS id.
+  if (agentUserId) {
+    const when = new Date(args.startAt).toLocaleString("en-US", {
+      weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true,
+    })
+    const { error: notifyError } = await supabase.from("notifications").insert({
+      user_id: agentUserId,
+      brokerage_id: args.brokerageId,
       type: "appointment_scheduled",
-      title: "Home Valuation Appointment Booked",
-      body: `${params.contactName} booked a valuation appointment for ${params.propertyAddress} on ${new Date(params.startAt).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true })}.`,
+      title: args.notificationTitle,
+      body: `${args.contactName} booked ${args.notificationVerb} for ${args.propertyAddress} on ${when}.`,
       entity_type: "contact",
-      entity_id: params.contactId,
+      entity_id: args.contactId,
       priority: "high",
       is_read: false,
       channel: "in_app",
     })
+    if (notifyError) {
+      console.error("[home-value] appointment notification write failed:", notifyError.message)
+    }
   }
 
   return { success: true, calendarEventId: calEvent.id }
@@ -1028,14 +1537,20 @@ export async function scheduleHomeValuationAppt(params: {
 // ============================================================================
 
 export async function getAgentBySlug(slug: string) {
-  const supabase = await createClient()
+  // PUBLIC read — the landing page personalises itself for an anonymous visitor.
+  // public_slug is a globally-unique public handle: the row IS the scope.
+  const supabase = createServiceClient()
 
-  const { data: agent } = await supabase
+  const { data: agent, error } = await supabase
     .from("agents")
     .select("id, user_id, phone_mobile, profile_image_url, brokerage_id, users(first_name, last_name, email)")
     .eq("public_slug", slug)
     .maybeSingle()
 
+  if (error) {
+    console.error("[home-value] agent slug read refused:", error.message)
+    return null
+  }
   if (!agent) return null
   const user = Array.isArray(agent.users) ? agent.users[0] : (agent.users as any)
   return {
@@ -1134,14 +1649,22 @@ export async function savePageConfig(config: HomeValuePageConfig): Promise<{ suc
 // ============================================================================
 
 export async function getPageConfig(agentId: string): Promise<HomeValuePageConfig | null> {
-  const supabase = await createClient()
+  // Read by BOTH the authenticated dashboard builder and the PUBLIC landing page
+  // (getPageConfigByAgentId). The row is public-facing branding for one agent,
+  // scoped by that agent_id — the anon client returned nothing for the public
+  // caller, so every visitor saw the default headline instead of the agent's.
+  const supabase = createServiceClient()
 
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("home_value_page_configs")
     .select("*")
     .eq("agent_id", agentId)
     .maybeSingle()
 
+  if (error) {
+    console.error("[home-value] page config read refused:", error.message)
+    return null
+  }
   if (!data) return null
 
   return {

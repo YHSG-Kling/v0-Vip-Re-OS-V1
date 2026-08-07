@@ -328,7 +328,7 @@ export async function POST(req: NextRequest) {
 
 /**
  * Director reel completion → hand the finished COMPOSITE to the Campaign
- * Orchestrator.
+ * Orchestrator AND to the multi-channel fan-out.
  *
  * When this render is the final composite for a Director-commissioned reel
  * (entity_type='video_project'), flip the linked ai_video_projects to completed
@@ -337,6 +337,27 @@ export async function POST(req: NextRequest) {
  * fires on the branded cut. This closes the autonomous loop that previously
  * died at staging (commissionVideo staged but nothing rendered/announced it).
  *
+ * WHAT WAS MISSING — the fan-out. `video.generated` (handleVideoGenerated in
+ * lib/orchestrator/internal) is the handler that turns a finished video into an
+ * email draft, an SMS draft, a listing_media row on the property page, one
+ * social draft per platform, and an embed into every campaign asset. It was
+ * emitted ONLY by poll-did-videos, so a Remotion-rendered video — which is most
+ * of them — reached the signal bus and nothing else. It is emitted here now, on
+ * the SAME dedupe key poll-did-videos uses (`video.generated:<projectId>`), so
+ * a hybrid D-ID→Remotion video fans out exactly once, off the branded composite.
+ *
+ * DELIVERABLE vs INTERNAL-ONLY. The fan-out runs only for
+ * entity_type='video_project' — a render whose delivery intent is an
+ * ai_video_projects row (the Director's commissioned reel, the avatar handoff),
+ * which is where the recipient actually lives: contact_id, listing_id,
+ * marketing_campaign_id, video_type. Every internal reel carries its OWN entity
+ * type and has no project row — 'board_packet_reel', 'partners_meeting_reel',
+ * 'deal_room_reel', 'listing_pitch_reel' (agent-facing), 'listing_presentation'
+ * (the seller drip's section reels, delivered on their own timetable by
+ * deliverDueSections) — so none of them can be fanned out to a client by this
+ * path. That is a structural distinction, not a list to maintain: no project
+ * row, no addressee, no fan-out.
+ *
  * Extracted so a CACHE HIT runs the identical loop: the reel is genuinely ready
  * whether or not this particular request had to render it, and a cached reel
  * that never reached the Campaign Orchestrator would be a delivery the client
@@ -344,7 +365,7 @@ export async function POST(req: NextRequest) {
  */
 async function runPostRenderCoordination(
   svc: ReturnType<typeof createServiceClient>,
-  row: { id: string; entity_type: string | null; entity_id: string | null },
+  row: { id: string; brokerage_id: string; agent_user_id: string | null; entity_type: string | null; entity_id: string | null },
   outputUrl: string | null,
   thumbnailUrl: string | null,
 ): Promise<void> {
@@ -363,6 +384,89 @@ async function runPostRenderCoordination(
   } catch (e) {
     console.error("[render-composition] director-reel coordination publish failed:", (e as Error).message)
   }
+
+  // ── The multi-channel fan-out (email / SMS / portal / social / campaign) ──
+  try {
+    await emitRemotionVideoGenerated(svc, row)
+  } catch (e) {
+    console.error("[render-composition] video.generated fan-out failed:", (e as Error).message)
+  }
+}
+
+/**
+ * Emit `video.generated` for a finished Remotion composite so handleVideoGenerated
+ * fans it out. Reads the delivery intent off the project row — that row is what
+ * knows WHO the video is for.
+ *
+ * ID SPACES ARE RESOLVED, NEVER SUBSTITUTED. handleVideoGenerated writes
+ * ai_message_drafts.agent_user_id and calls createSocialPost({userId}), both of
+ * which are the USERS class. remotion_composition_renders.agent_user_id is
+ * already users-class; ai_video_projects.agent_id is AGENTS-class (m366), so it
+ * is resolved through agents.user_id rather than passed across. If neither
+ * yields a real users.id the event is emitted WITHOUT one and the handler's
+ * agent-addressed branches skip — better than stamping a draft with an id from
+ * the wrong space.
+ */
+async function emitRemotionVideoGenerated(
+  svc: ReturnType<typeof createServiceClient>,
+  row: { id: string; brokerage_id: string; agent_user_id: string | null; entity_id: string | null },
+): Promise<void> {
+  if (!row.entity_id || !row.brokerage_id) return
+
+  const { data: project, error } = await svc
+    .from("ai_video_projects")
+    .select("id, brokerage_id, agent_id, video_type, listing_id, contact_id, marketing_campaign_id, status")
+    .eq("id", row.entity_id)
+    .maybeSingle()
+  if (error) {
+    console.error(`[render-composition] project ${row.entity_id} unreadable for fan-out: ${error.message}`)
+    return
+  }
+  if (!project) return
+  const p = project as {
+    brokerage_id: string | null
+    agent_id: string | null
+    video_type: string | null
+    listing_id: string | null
+    contact_id: string | null
+    marketing_campaign_id: string | null
+    status: string | null
+  }
+  // Only a project the coordination step actually completed is fanned out — a
+  // render that finished but whose project write failed is not a deliverable.
+  if (p.status !== "completed") return
+
+  let agentUserId: string | null = row.agent_user_id
+  if (!agentUserId && p.agent_id) {
+    const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+    agentUserId = await resolveUserIdForAgentRecord(svc, p.agent_id)
+    if (!agentUserId) {
+      console.warn(`[render-composition] no users row behind agents.id=${p.agent_id} — fanning out unattributed`)
+    }
+  }
+
+  const { emitEventFromCron } = await import("@/lib/orchestrator/internal")
+  await emitEventFromCron({
+    brokerage_id: p.brokerage_id ?? row.brokerage_id,
+    user_id:      agentUserId ?? undefined,
+    event_type:   "video.generated",
+    source:       "system",
+    // The SAME key poll-did-videos uses, so a hybrid D-ID→Remotion video is
+    // fanned out once — off whichever cut finished last, which is the composite.
+    dedupe_key:   `video.generated:${row.entity_id}`,
+    payload: {
+      video_id:              row.entity_id,
+      video_type:            p.video_type,
+      // No URL is passed: handleVideoGenerated resolves the playable URL from
+      // the row through lib/video/playable-video, so it cannot ship a snapshot
+      // that the branding/upload steps have since superseded.
+      render_id:             row.id,
+      listing_id:            p.listing_id,
+      contact_id:            p.contact_id,
+      marketing_campaign_id: p.marketing_campaign_id,
+      agent_user_id:         agentUserId,
+    },
+  })
 }
 
 /** Select a still composition by id + render it to a PNG Buffer. Shared by

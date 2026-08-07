@@ -26,6 +26,7 @@ import { MarketPositionCard } from "@/app/components/portal/MarketPositionCard"
 import { MilestoneProgressBar, type TransactionMilestone } from "@/app/components/portal/MilestoneProgressBar"
 import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
 import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
+import { HomeValueReportCard } from "@/app/components/portal/HomeValueReportCard"
 import { NegotiationMirrorPanel } from "@/app/components/negotiation/negotiation-mirror-panel"
 import { MilestoneEducationPanel } from "@/app/components/portal/milestone-education-panel"
 import { EducationTutorCard } from "@/app/components/portal/education-tutor-card"
@@ -256,6 +257,13 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
            transitions (LISTING_PUBLISHED, OFFER_ACCEPTED, OPEN_HOUSE_SCHEDULED).
            Hidden when nothing client-visible yet. */}
       <RecentUpdatesFeed contactId={contactId} updates={recentUpdates} hideWhenEmpty />
+
+      {/* 0b. THE HOME VALUE REPORT — the seller asked "what's my home worth",
+           got a report, and this is where it lives in the portal. Carries the
+           portal's way in to the ≥7-day listing appointment. Renders nothing
+           when this contact has no home_value_estimates row, so it is invisible
+           to every seller who arrived by another door. */}
+      <HomeValueReportCard contactId={contactId} />
 
       {/* 1. LISTING STATUS BANNER */}
       <ListingStatsCard

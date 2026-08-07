@@ -31,18 +31,36 @@
  * was actually used is recorded on the provenance so a CMA built on year-old
  * comps has to say so.
  *
+ * ─── THE AI GAP-FILL (owner's second ruling) ────────────────────────────────
+ * Owner, verbatim: "perplexitycma can fill in if comps cant be found like under
+ * contract/pending."
+ *
+ * Providers are tried FIRST for every slot, always. Only a slot still SHORT
+ * after that is offered to lib/cma/perplexity-comp-finder, and only the slots
+ * named in AI_GAP_FILL_SLOTS below. Every gap-filled row carries
+ * `sourceProvider: "perplexity"`, the slot is recorded on
+ * `CompProvenance.aiGapFilledSlots`, and the CMA's seller-facing disclaimers say
+ * so in plain words. See AI_GAP_FILL_SLOTS for why the SOLD side is excluded.
+ *
  * ─── WHAT THIS MODULE WILL NOT DO ───────────────────────────────────────────
  * It will not invent a comparable, it will not carry a comp whose date it cannot
- * establish into a "sold within N months" claim, and it will not fall back to an
- * AI web search for the comp list (that is the whole point of the ruling — see
- * lib/cma/perplexity-comp-finder.ts). When no provider returns anything it
- * returns an empty set with a legible reason, never a silent empty.
+ * establish into a "sold within N months" claim, it will not let an AI web
+ * search anywhere near the closed-sale set that the dollar range is computed
+ * from, and it will not let a gap-filled row pass as provider data. When nothing
+ * can be sourced at all it returns an empty set with a legible reason, never a
+ * silent empty.
  */
 
 import "server-only"
 import { getRentcastComps, isRentcastConfigured, type RentcastComp } from "@/lib/property/rentcast"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
 import { IDXBrokerClient, type NormalizedIdxListing } from "@/lib/idxbroker-client"
+import {
+  findCompsViaPerplexity,
+  PERPLEXITY_COMP_SEARCH_COST_USD,
+  type PerplexityCompFinderResult,
+  type PerplexityCompSlotRequest,
+} from "./perplexity-comp-finder"
 import type { CompProviderId, ScoredComp } from "./comp-types"
 import type { SubjectFeatures } from "./state-adjustment-rates"
 
@@ -58,6 +76,55 @@ export const REQUIRED_PENDING_COMPS = 1
 export const PRIMARY_SOLD_WINDOW_MONTHS = 6
 /** The widened window, used ONLY when the primary one is short of the minimum. */
 export const WIDENED_SOLD_WINDOW_MONTHS = 12
+
+/** The three sides of the required mix, named so a shortfall can be attributed. */
+export type CompSlot = "sold" | "active" | "pending"
+
+/**
+ * WHICH SLOTS AN AI WEB SEARCH IS ALLOWED TO FILL — and the reasoning, because
+ * this is a judgement call and the next reader is entitled to the argument
+ * rather than the conclusion.
+ *
+ * ADMITTED: pending, active.
+ *   Both are ASKING prices. Neither enters the valuation math: runAiCma computes
+ *   its low/mid/high from the ADJUSTED CLOSED comps only, and the active/pending
+ *   rows exist to say which way the market is moving. An unverified row there is
+ *   bounded — it can make the narrative's market-direction paragraph wrong; it
+ *   cannot move the number. And the PENDING slot is the case the owner's ruling
+ *   actually names: it is unservable by construction, because RentCast's
+ *   comparable feed carries no under-contract status at all and IDX only reports
+ *   one when the brokerage's own featured feed happens to hold it. A requirement
+ *   that is normally impossible to meet is exactly what a gap-filler is for.
+ *
+ * REFUSED: sold.
+ *   1. Closed sales are the ONLY input to the dollar range. A wrong AI-sourced
+ *      sale price does not degrade the estimate, it BECOMES the estimate — the
+ *      number on a seller's screen, in cma_reports, and in the appraiser packet
+ *      handed to a licensed appraiser at the property.
+ *   2. The failure mode is invisible. A public listing page shows a "last sold"
+ *      figure, an estimate, and a list price in the same layout; a web-reading
+ *      model conflating them produces a comp that is perfectly plausible and
+ *      simply false. There is no downstream check that catches it.
+ *   3. Unlike pending, the sold slot is NOT structurally unservable — RentCast
+ *      serves closed comparables by design. A short sold set means either the
+ *      tenant has no RentCast credential (a setup problem that AI would MASK
+ *      rather than fix) or genuinely thin local coverage — and thin local
+ *      coverage is precisely where a web search is most likely to reach for a
+ *      neighbouring town and least likely to be right.
+ *   4. There is already a sanctioned answer to a thin sold set: widen the window
+ *      to 12 months, say so, and haircut the confidence. Where that still falls
+ *      short, "this rests on 2 closed sales — treat the range as directional" is
+ *      an honest CMA. "Here is a third sale we read off the internet" is not.
+ *
+ * Consequence, accepted deliberately: with no RentCast credential a CMA now
+ * produces no value range at all. That is the correct outcome. The fix is to
+ * connect the provider, and a report that says so is worth more than one that
+ * quietly papers over it.
+ */
+export const AI_GAP_FILL_SLOTS: readonly CompSlot[] = ["active", "pending"] as const
+
+/** Perplexity spend attributable to one gap-fill search, in cents. */
+const PERPLEXITY_GAP_FILL_COST_CENTS = Math.round(PERPLEXITY_COMP_SEARCH_COST_USD * 100)
 
 /**
  * How many comparables to ask RentCast for. The pull has to cover the sold set
@@ -93,10 +160,26 @@ export interface CompSourceRequest {
   /** The subject's known features — used to score similarity for providers that
    *  do not publish one of their own. */
   subject: SubjectFeatures
+  /** 'single_family' | 'condo' | 'townhouse' — narrows the AI gap-fill search. */
+  propertyType?: string | null
+  /**
+   * Set false to refuse the AI gap-fill entirely and take the provider-only set
+   * with its holes. Defaults to ON (the owner's ruling). Even when on, it only
+   * ever touches the slots in AI_GAP_FILL_SLOTS.
+   */
+  allowAiGapFill?: boolean
+  /** Vendor-ledger attribution for the lane doing the sourcing. */
+  systemSource?: string
 }
 
 /** What actually produced this comp set. Rides on the CMA result. */
 export interface CompProvenance {
+  /**
+   * The provider that served the MAJORITY of a side. When a side was partly
+   * provider-served and partly AI-gap-filled, this names the provider and the
+   * AI part is recorded on `aiGapFilledSlots` — every individual comp also
+   * carries its own `sourceProvider`, which is the authoritative per-row answer.
+   */
   soldProvider: CompProviderId
   activeProvider: CompProviderId
   pendingProvider: CompProviderId
@@ -111,8 +194,23 @@ export interface CompProvenance {
   soldCompCount: number
   activeCompCount: number
   pendingCompCount: number
-  /** True when the set meets 3 sold + 2 active + 1 pending. */
+  /** True when the returned set meets 3 sold + 2 active + 1 pending, counting
+   *  AI-gap-filled rows. Read it together with the two fields below. */
   meetsRequiredMix: boolean
+  /** True only when the PROVIDERS alone met the mix, before any gap-fill. This
+   *  is the number to quote when the question is "how well-sourced is this?" */
+  meetsRequiredMixFromProvidersAlone: boolean
+  /**
+   * Which sides had rows supplied by the AI web search because no provider
+   * could serve them. Empty on a fully provider-backed set. `"sold"` can never
+   * appear here — see AI_GAP_FILL_SLOTS.
+   */
+  aiGapFilledSlots: CompSlot[]
+  /** How many individual comps in this set came from the AI web search. */
+  aiGapFilledCompCount: number
+  /** True when a gap-fill search was actually RUN (it may still have returned
+   *  nothing usable — which is a different fact from never having tried). */
+  aiGapFillAttempted: boolean
   /** Plain-language facts about what happened — every empty side gets one. */
   notes: string[]
   citations: string[]
@@ -304,21 +402,129 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
   if (activeComps.length === 0) {
     notes.push(
       idxConnected
-        ? "No active comparable listings were available from either the connected IDX feed or RentCast."
-        : "No IDX feed is connected and RentCast returned no still-listed comparables, so no active comparables are included.",
+        ? "No active comparable listings were available from a data provider — neither the connected IDX feed nor RentCast returned one."
+        : "No IDX feed is connected and RentCast returned no still-listed comparables, so no active comparables came from a data provider.",
     )
   } else if (activeComps.length < REQUIRED_ACTIVE_COMPS) {
     notes.push(
-      `Only ${activeComps.length} active comparable listing(s) were available (the mix calls for ${REQUIRED_ACTIVE_COMPS}).`,
+      `Only ${activeComps.length} active comparable listing(s) were available from a data provider (the mix calls for ${REQUIRED_ACTIVE_COMPS}).`,
     )
   }
 
   if (pendingComps.length === 0) {
     notes.push(
       idxConnected
-        ? "No pending (under-contract) comparable was available: the connected IDX feed reported none. RentCast's comparable feed carries no under-contract status at all, so none was substituted."
-        : "No pending (under-contract) comparable was available. RentCast's comparable feed carries no under-contract status, and only a connected IDX Broker feed can report one — none is connected.",
+        ? "No pending (under-contract) comparable was available from a data provider: the connected IDX feed reported none. RentCast's comparable feed carries no under-contract status at all, so none was substituted from it."
+        : "No pending (under-contract) comparable was available from a data provider. RentCast's comparable feed carries no under-contract status, and only a connected IDX Broker feed can report one — none is connected.",
     )
+  }
+
+  // ── 5. The AI gap-fill — PER SLOT, providers already exhausted ────────────
+  //
+  // Nothing above this line has been influenced by a model. Everything below
+  // only touches the slots the providers left short, and only the slots in
+  // AI_GAP_FILL_SLOTS — never the sold side.
+  const meetsRequiredMixFromProvidersAlone =
+    closedComps.length >= REQUIRED_SOLD_COMPS &&
+    activeComps.length >= REQUIRED_ACTIVE_COMPS &&
+    pendingComps.length >= REQUIRED_PENDING_COMPS
+
+  const allowAiGapFill = req.allowAiGapFill !== false
+  const aiGapFilledSlots: CompSlot[] = []
+  let aiGapFilledCompCount = 0
+  let aiGapFillAttempted = false
+
+  const wantActive = allowAiGapFill && AI_GAP_FILL_SLOTS.includes("active")
+    ? Math.max(0, REQUIRED_ACTIVE_COMPS - activeComps.length)
+    : 0
+  const wantPending = allowAiGapFill && AI_GAP_FILL_SLOTS.includes("pending")
+    ? Math.max(0, REQUIRED_PENDING_COMPS - pendingComps.length)
+    : 0
+
+  // The sold shortfall is stated, and stated as a REFUSAL rather than an
+  // absence, so nobody reading the provenance later concludes the gap-fill was
+  // simply forgotten here.
+  if (allowAiGapFill && closedComps.length < REQUIRED_SOLD_COMPS) {
+    notes.push(
+      `The closed-sale side was NOT gap-filled by AI web search — deliberately. Closed sales are the only input to this analysis's value range, so they stay provider-verified; this set carries ${closedComps.length} of the ${REQUIRED_SOLD_COMPS} the method calls for. AI gap-fill is admitted for the ${AI_GAP_FILL_SLOTS.join(" and ")} sides only.`,
+    )
+  }
+
+  if (wantActive > 0 || wantPending > 0) {
+    aiGapFillAttempted = true
+    const want: PerplexityCompSlotRequest = { closed: 0, active: wantActive, pending: wantPending }
+    let ai: PerplexityCompFinderResult | null = null
+    try {
+      ai = await findCompsViaPerplexity({
+        brokerageId: req.brokerageId,
+        subjectAddress: fullAddress || req.address,
+        subjectCity: req.city ?? null,
+        subjectState: req.state ?? null,
+        subjectZip: req.zip ?? null,
+        subjectBeds: req.subject.bedrooms ?? null,
+        subjectBaths:
+          (req.subject.fullBaths ?? 0) + (req.subject.halfBaths ?? 0) * 0.5 || null,
+        subjectSqft: req.subject.sqftLiving ?? null,
+        subjectYearBuilt: req.subject.yearBuilt ?? null,
+        subjectPropertyType: req.propertyType ?? null,
+        want,
+        systemSource: req.systemSource ?? "cma_comp_source",
+      })
+    } catch {
+      ai = null
+    }
+    costCents += PERPLEXITY_GAP_FILL_COST_CENTS
+
+    // Never let a gap-fill re-serve a property a provider already gave us.
+    const seen = new Set(
+      [...closedComps, ...activeComps, ...pendingComps].map((c) => normalizeAddress(c.address)),
+    )
+    const admit = (rows: ScoredComp[], limit: number): ScoredComp[] => {
+      const out: ScoredComp[] = []
+      for (const row of rows) {
+        const key = normalizeAddress(row.address)
+        if (!key || seen.has(key)) continue
+        seen.add(key)
+        // Rank it on the same deterministic basis as an IDX comp — a model's
+        // opinion of its own comp is not comparable to RentCast's measured
+        // correlation and never gets to sort against one.
+        out.push({ ...row, similarityScore: featureSimilarity(req.subject, row) })
+        if (out.length >= limit) break
+      }
+      return out
+    }
+
+    const aiActive = ai ? admit(ai.activeComps, wantActive) : []
+    const aiPending = ai ? admit(ai.pendingComps, wantPending) : []
+
+    if (aiActive.length > 0) {
+      activeComps = [...activeComps, ...aiActive]
+      aiGapFilledSlots.push("active")
+      aiGapFilledCompCount += aiActive.length
+      if (activeProvider === "none") activeProvider = "perplexity"
+      notes.push(
+        `${aiActive.length} active comparable listing(s) came from an AI web search (Perplexity), not from a data provider, because no connected provider could serve the active side. They are unverified.`,
+      )
+    }
+    if (aiPending.length > 0) {
+      pendingComps = [...pendingComps, ...aiPending]
+      aiGapFilledSlots.push("pending")
+      aiGapFilledCompCount += aiPending.length
+      if (pendingProvider === "none") pendingProvider = "perplexity"
+      notes.push(
+        `The pending (under-contract) comparable came from an AI web search (Perplexity), not from a data provider — no connected provider reports under-contract status for this area. It is unverified.`,
+      )
+    }
+    if (aiGapFilledCompCount > 0) {
+      citations.push("Perplexity Sonar AI web search (gap-fill only — unverified, see disclaimers)")
+      for (const c of ai?.citations ?? []) citations.push(c)
+    } else {
+      notes.push(
+        ai == null
+          ? "An AI web search was attempted to fill the comparable slots no provider could serve, but the search itself failed. Those slots remain empty."
+          : `An AI web search was attempted to fill the comparable slots no provider could serve and returned nothing usable${ai.droppedUnusableRows > 0 ? ` (${ai.droppedUnusableRows} result(s) were discarded for having no address, no price, or no source link)` : ""}. Those slots remain empty.`,
+      )
+    }
   }
 
   const meetsRequiredMix =
@@ -342,6 +548,10 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
       activeCompCount: activeComps.length,
       pendingCompCount: pendingComps.length,
       meetsRequiredMix,
+      meetsRequiredMixFromProvidersAlone,
+      aiGapFilledSlots,
+      aiGapFilledCompCount,
+      aiGapFillAttempted,
       notes,
       citations,
       estimatedCostCents: costCents,
@@ -362,6 +572,20 @@ function rank(comps: ScoredComp[]): ScoredComp[] {
 
 function compareDesc(a: string, b: string): number {
   return a < b ? 1 : a > b ? -1 : 0
+}
+
+/**
+ * Loose address key used ONLY to stop a gap-filled comp from re-serving a
+ * property a provider already gave us. Lower-cased, punctuation and runs of
+ * whitespace collapsed. It is deliberately not an address PARSER — a missed
+ * match costs a duplicate row, and a parser that "helpfully" merged two
+ * different addresses would cost a comp.
+ */
+function normalizeAddress(raw: string | null | undefined): string {
+  return (raw ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
 }
 
 /** Whole months between an ISO day and `now`. Negative ages clamp to 0. */

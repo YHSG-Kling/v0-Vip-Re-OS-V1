@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Phone, Mail, TrendingUp, TrendingDown, Minus, MapPin } from "lucide-react"
 import Link from "next/link"
 import { AppointmentBookingCard } from "@/app/components/home-value/AppointmentBookingCard"
+import { ListingAppointmentCard } from "@/app/components/home-value/ListingAppointmentCard"
 
 export const dynamic = "force-dynamic"
 
@@ -36,6 +37,11 @@ export default async function HomeValueResultPage({ params }: PageProps) {
   }
 
   const { estimate, agent, brokerageId, contactId } = result
+  // THE HOMEOWNER, not the agent. Both booking cards stamp this onto the
+  // appointment and into the agent's notification ("<name> booked …"), and this
+  // slot used to be filled with the AGENT's name — so every booking told the
+  // agent they had booked with themselves.
+  const homeownerName = result.contactName ?? "Homeowner"
   const marketTrendIcon =
     estimate.marketTrend === "appreciating" ? (
       <TrendingUp className="h-4 w-4 text-green-600" />
@@ -152,18 +158,29 @@ export default async function HomeValueResultPage({ params }: PageProps) {
           </CardContent>
         </Card>
 
-        {/* Section 6: Schedule a Valuation Appointment */}
+        {/* Section 6: Schedule an appointment to EVALUATE the property — step 3
+            of the ruling. 48-hour lead time; this is the walk-through, not the
+            listing appointment below it. */}
         {brokerageId && contactId ? (
-          <AppointmentBookingCard
-            brokerageId={brokerageId}
-            contactId={contactId}
-            propertyAddress={estimate.propertyAddress}
-            contactName={
-              agent
-                ? `${agent.first_name} ${agent.last_name}`
-                : "Homeowner"
-            }
-          />
+          <>
+            <AppointmentBookingCard
+              brokerageId={brokerageId}
+              contactId={contactId}
+              propertyAddress={estimate.propertyAddress}
+              contactName={homeownerName}
+            />
+
+            {/* Section 6b: THE LISTING APPOINTMENT — step 7 of the ruling, and the
+                target of the "Schedule a listing appointment" button in the emailed
+                report (it deep-links to #listing-appointment on this page). A
+                different meeting from the one above, with the ≥7-day floor. */}
+            <ListingAppointmentCard
+              brokerageId={brokerageId}
+              contactId={contactId}
+              propertyAddress={estimate.propertyAddress}
+              contactName={homeownerName}
+            />
+          </>
         ) : (
           /* Fallback: agent contact card when no brokerage context */
           <Card className="border-primary/20 bg-primary/5">

@@ -171,64 +171,56 @@ export async function GET(request: NextRequest) {
           const duration: number | null =
             typeof data.duration === "number" ? Math.round(data.duration) : null
 
-          // ─── Persist video to Supabase Storage ─────────────────────────────
-          // D-ID result URLs are signed and expire in ~24–48h. Download immediately
-          // and store in our own bucket so emails, newsletters, and portals can
-          // embed a durable URL that never expires.
+          // ─── Persist video + thumbnail to OUR bucket, immediately ──────────
+          // D-ID result URLs are signed and expire in ~24–48h. Download the bytes
+          // the moment the render completes and host them ourselves so an email,
+          // newsletter, portal card or listing page embeds a URL that is still
+          // alive next month.
+          //
+          // ONE MEDIA HOST. This used to call supabase.storage directly, which
+          // meant it was the only completion path in the OS with NO fallback: a
+          // storage hiccup left persisted*Url null and the expiring D-ID URL was
+          // what got delivered — a link that rots a day later, inside an email
+          // that has already been sent. hostRenderedMedia is the same host every
+          // other finished byte rides (render coordinator, render endpoint,
+          // stills, thumbnails, voiceovers, the lib/did re-upload): Supabase
+          // storage first, Vercel Blob as the fallback, so a bucket copy exists
+          // even when storage is down.
+          const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
           let persistedVideoUrl: string | null = null
           let persistedThumbnailUrl: string | null = null
+          const agentFolder = video.agent_id ?? "shared"
 
           if (didResultUrl) {
             try {
-              const agentFolder = video.agent_id ?? "shared"
-              const videoPath = `agent-videos/${agentFolder}/${video.id}.mp4`
-
               const videoFetch = await fetch(didResultUrl)
               if (videoFetch.ok) {
-                const videoBuffer = await videoFetch.arrayBuffer()
-                const { error: uploadErr } = await supabase.storage
-                  .from("listing-media")
-                  .upload(videoPath, videoBuffer, {
-                    contentType: "video/mp4",
-                    upsert: true,
-                  })
-                if (!uploadErr) {
-                  const { data: { publicUrl } } = supabase.storage
-                    .from("listing-media")
-                    .getPublicUrl(videoPath)
-                  persistedVideoUrl = publicUrl
-                } else {
-                  console.error("[poll-did-videos] Storage upload failed:", uploadErr)
-                }
+                const videoBuffer = Buffer.from(await videoFetch.arrayBuffer())
+                persistedVideoUrl = await hostRenderedMedia(
+                  supabase, `agent-videos/${agentFolder}/${video.id}.mp4`, videoBuffer, "video/mp4",
+                )
+              } else {
+                console.error(`[poll-did-videos] D-ID result download failed: HTTP ${videoFetch.status}`)
               }
             } catch (storageErr: any) {
-              // Non-fatal — fall back to D-ID URL if storage fails
-              console.error("[poll-did-videos] Video persist failed:", storageErr.message)
+              // Non-fatal — the D-ID URL is still recorded below, but say so:
+              // a delivered link that points at it has a 24–48h life.
+              console.error("[poll-did-videos] Video persist failed:", storageErr?.message ?? storageErr)
             }
           }
 
           if (didThumbnailUrl) {
             try {
-              const agentFolder = video.agent_id ?? "shared"
-              const thumbPath = `agent-videos/${agentFolder}/${video.id}-thumb.jpg`
-
               const thumbFetch = await fetch(didThumbnailUrl)
               if (thumbFetch.ok) {
-                const thumbBuffer = await thumbFetch.arrayBuffer()
-                const { error: thumbErr } = await supabase.storage
-                  .from("listing-media")
-                  .upload(thumbPath, thumbBuffer, {
-                    contentType: "image/jpeg",
-                    upsert: true,
-                  })
-                if (!thumbErr) {
-                  const { data: { publicUrl } } = supabase.storage
-                    .from("listing-media")
-                    .getPublicUrl(thumbPath)
-                  persistedThumbnailUrl = publicUrl
-                }
+                const thumbBuffer = Buffer.from(await thumbFetch.arrayBuffer())
+                persistedThumbnailUrl = await hostRenderedMedia(
+                  supabase, `agent-videos/${agentFolder}/${video.id}-thumb.jpg`, thumbBuffer, "image/jpeg",
+                )
               }
-            } catch { /* thumbnail is non-critical */ }
+            } catch (thumbErr: any) {
+              console.error("[poll-did-videos] Thumbnail persist failed:", thumbErr?.message ?? thumbErr)
+            }
           }
 
           // ─── Pixel-level visual brand overlay (sprint C — now live) ─────────
@@ -487,40 +479,45 @@ export async function GET(request: NextRequest) {
             entityId: video.id,
           }).catch((err) => console.error("[poll-did-videos] Kernel event failed:", err))
 
-          // Emit orchestrator event so handleVideoGenerated can auto-draft social posts /
-          // personal contact emails based on video_type
-          if (video.brokerage_id) {
-            await emitEventFromCron({
-              brokerage_id: video.brokerage_id,
-              user_id:      agentUserId ?? undefined,
-              event_type:   "video.generated",
-              source:       "system",
-              dedupe_key:   `video.generated:${video.id}`,
-              payload: {
-                video_id:              video.id,
-                video_type:            video.video_type,
-                video_url:             persistedVideoUrl ?? didResultUrl ?? null,
-                thumbnail_url:         didThumbnailUrl ?? null,
-                listing_id:            (video as any).listing_id ?? null,
-                contact_id:            (video as any).contact_id ?? null,
-                marketing_campaign_id: (video as any).marketing_campaign_id ?? null,
-                agent_user_id:         agentUserId ?? null,
-              },
-            }).catch((err) => console.error("[poll-did-videos] Orchestrator event failed:", err))
-          }
-
-          // ─── Inter-manager bus: Asset Manager announces the finished render ──
-          // Fast coordinated path — Asset Manager → Campaign Orchestrator (distribute,
-          // always) + Ads Manager (promote, promotable kinds only). Deduped per
-          // ai_video_project so re-polling never re-signals; coexists idempotently with
-          // the polling crons (listing-promo-social-publish) as a safety net.
+          // ─── Terminal announcements: fan-out + inter-manager bus ────────────
+          // DEFER BOTH when a composite is pending: if this D-ID job is just the AVATAR
+          // TRACK for a Remotion composition (target_composition_id), the FINAL deliverable
+          // is the branded composite (bookends + QR) that render-composition produces, and
+          // it announces on ITS completion. Announcing here would deliver the un-branded cut.
           //
-          // DEFER when a composite is pending: if this D-ID job is just the AVATAR TRACK for a
-          // Remotion composition (target_composition_id), the FINAL deliverable is the branded
-          // composite (bookends + QR) that render-composition produces — it publishes the handoff on
-          // ITS completion. Announcing the raw avatar here would deliver the un-branded cut.
+          // The coordination publish already deferred; the video.generated fan-out did NOT,
+          // so every hybrid avatar→Remotion video was drafted into email, SMS, social and
+          // campaign assets pointing at the raw avatar clip minutes before the branded
+          // composite existed. Both now defer together, on the same condition.
           const hasPendingComposite = !!(video.provider_metadata as any)?.target_composition_id
           if (!hasPendingComposite) {
+            // Emit orchestrator event so handleVideoGenerated fans the finished video out
+            // to email + SMS drafts, the listing page, social drafts and campaign assets.
+            // NO URL is passed: the handler resolves the playable URL from the row through
+            // lib/video/playable-video, so the drafts carry the BRANDED, bucket-hosted cut
+            // rather than whatever snapshot was true at emit time.
+            if (video.brokerage_id) {
+              await emitEventFromCron({
+                brokerage_id: video.brokerage_id,
+                user_id:      agentUserId ?? undefined,
+                event_type:   "video.generated",
+                source:       "system",
+                dedupe_key:   `video.generated:${video.id}`,
+                payload: {
+                  video_id:              video.id,
+                  video_type:            video.video_type,
+                  listing_id:            (video as any).listing_id ?? null,
+                  contact_id:            (video as any).contact_id ?? null,
+                  marketing_campaign_id: (video as any).marketing_campaign_id ?? null,
+                  agent_user_id:         agentUserId ?? null,
+                },
+              }).catch((err) => console.error("[poll-did-videos] Orchestrator event failed:", err))
+            }
+
+            // Fast coordinated path — Asset Manager → Campaign Orchestrator (distribute,
+            // always) + Ads Manager (promote, promotable kinds only). Deduped per
+            // ai_video_project so re-polling never re-signals; coexists idempotently with
+            // the polling crons (listing-promo-social-publish) as a safety net.
             try {
               const { publishVideoCoordinationSignals } = await import("@/lib/kernel/video-coordination")
               await publishVideoCoordinationSignals(video.id, supabase)

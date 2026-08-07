@@ -5,8 +5,10 @@
  * CMA now has MORE THAN ONE comp source and none of them may own the type:
  *   · lib/property/rentcast.ts        — RentCast, the platform-owned default
  *   · lib/idxbroker-client.ts         — the brokerage's connected IDX feed
- *   · lib/cma/perplexity-comp-finder  — the AI web-search finder (see its header
- *                                       for what it is and is NOT admitted to)
+ *   · lib/cma/perplexity-comp-finder  — the AI web-search GAP-FILLER, reachable
+ *                                       only through comp-provider and only for
+ *                                       the slots providers left empty (see its
+ *                                       header for the full terms)
  *
  * `ScoredComp` is re-exported from perplexity-comp-finder for the callers that
  * already import it from there, so this move is source-compatible.
@@ -22,8 +24,12 @@ import type { CompFeatures } from "./state-adjustment-rates"
  *                a bare IDX key cannot serve sold comparables — see
  *                lib/idxbroker-client.ts for why)
  *   rentcast   — RentCast, the platform-owned comps provider (the DEFAULT)
- *   perplexity — the AI web-search comp finder (NOT a CMA comp source; kept
- *                for the appraiser packet — see perplexity-comp-finder.ts)
+ *   perplexity — the AI web-search comp finder, admitted ONLY as a per-slot
+ *                GAP-FILLER after every provider has been tried and only for
+ *                the ACTIVE and PENDING sides. A row carrying this is
+ *                UNVERIFIED and must be labelled as such wherever it is shown.
+ *                It can never appear on a closed sale — see AI_GAP_FILL_SLOTS
+ *                in lib/cma/comp-provider.ts for the reasoning.
  *   none       — nothing was sourced for this side
  */
 export type CompProviderId = "idxbroker" | "rentcast" | "perplexity" | "none"

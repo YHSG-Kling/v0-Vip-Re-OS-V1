@@ -566,14 +566,36 @@ async function handleCreditStatusUpdated(event: Event): Promise<ProcessingResult
   }
 }
 
+/**
+ * THE FAN-OUT. A finished video reaches every channel from here — an email
+ * draft, an SMS draft, the listing landing page, one social draft per platform,
+ * and an embed into every asset under its marketing campaign.
+ *
+ * ENGINE-AGNOSTIC BY CONSTRUCTION. This used to read `video_url` +
+ * `thumbnail_url` straight off a D-ID-shaped event payload and refuse outright
+ * when `video_url` was absent — so a Remotion render (which finishes MOST
+ * videos, and files its bytes in remotion_composition_renders before
+ * render-composition stamps the branded composite onto ai_video_projects) had
+ * no path into any of it. The URL is now resolved through the ONE resolver
+ * (lib/video/playable-video), which answers for BOTH engines, so a Remotion
+ * video fans out exactly like a D-ID one.
+ *
+ * IT RESOLVES, IT DOES NOT TRUST THE PAYLOAD. The row is authoritative and the
+ * payload is a snapshot: poll-did-videos brands the video AFTER the raw D-ID
+ * result exists, and render-composition writes the branded composite URL to the
+ * project row. Resolving means the drafts carry the delivered cut and the
+ * bucket URL, not whatever was true at emit time. A video the resolver will not
+ * call `ready` — still rendering, failed, or refused by the script-compliance
+ * postcheck — is REFUSED here with the reason, because every branch below
+ * writes that URL somewhere a human or a client eventually clicks.
+ */
 async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
   const startTime = Date.now()
   try {
     const {
       video_id,
       video_type,
-      video_url,
-      thumbnail_url,
+      render_id,
       listing_id,
       contact_id,
       marketing_campaign_id,
@@ -583,12 +605,27 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
     const tomorrow = new Date(Date.now() + 86_400_000).toISOString()
     const summary: string[] = []
 
-    if (!video_url) {
-      return { success: false, handler: "handleVideoGenerated", error: "video_url missing", processing_time_ms: Date.now() - startTime }
-    }
-
     const { createServiceClient: svcCreate } = await import("@/lib/supabase/service")
     const svc = svcCreate()
+
+    const { resolvePlayableVideo } = await import("@/lib/video/playable-video")
+    const playable = await resolvePlayableVideo(
+      { videoProjectId: video_id ?? null, renderId: render_id ?? null },
+      svc,
+    )
+    if (playable.state !== "ready") {
+      const detail = playable.state === "in_progress"
+        ? `render still in flight (${playable.source})`
+        : playable.reason
+      return {
+        success: false,
+        handler: "handleVideoGenerated",
+        error: `no playable video for ${video_id ?? render_id ?? "unknown"}: ${detail}`,
+        processing_time_ms: Date.now() - startTime,
+      }
+    }
+    const video_url     = playable.videoUrl
+    const thumbnail_url = playable.thumbnailUrl
 
     // ── 0. THE CONTENT KIT — a finished video is an ANCHOR ASSET: build the
     // proven multi-channel copy around it FIRST (per-channel captions, email

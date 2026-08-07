@@ -5,8 +5,11 @@
  * presentation are built on. Composes:
  *   1. Comp sourcing        — lib/cma/comp-provider.ts (RentCast by default,
  *                             the brokerage's connected IDX feed for the active
- *                             side). NEVER an AI web search: AI assists a CMA,
- *                             it does not source its comparables.
+ *                             side). Providers are tried FIRST for every slot;
+ *                             an AI web search may fill only a PENDING or ACTIVE
+ *                             slot no provider could serve, is labelled per row
+ *                             and per slot, and is never admitted to the SOLD
+ *                             side that the value range is computed from.
  *   2. State appraiser guidelines — lib/cma/state-adjustment-rates.ts, applied
  *                             per comp DETERMINISTICALLY (no model in the math)
  *   3. Seller-reported upgrades since purchase — narrative context, with the
@@ -17,10 +20,10 @@
  *
  * THE REQUIRED COMP MIX (owner's ruling): at least 3 SOLD within 6 months —
  * widening to 12 months ONLY when 6 months returns fewer than 3 — plus 2 ACTIVE
- * and 1 PENDING. Whichever window was actually used, and whichever provider
- * actually served each side, is reported on `compProvenance` and repeated in the
- * seller-facing disclaimers. A CMA can never claim a provenance or a comp
- * freshness it did not have.
+ * and 1 PENDING. Whichever window was actually used, whichever provider actually
+ * served each side, and whether any side had to be completed by an AI web search
+ * is reported on `compProvenance` and repeated in the seller-facing disclaimers.
+ * A CMA can never claim a provenance or a comp freshness it did not have.
  *
  * `mode` no longer selects a comp SOURCE — there is one sourcing path now, and
  * it is provider-backed for every mode. What mode still changes:
@@ -160,6 +163,23 @@ const NARRATIVE_COST_CENTS = 2
  */
 const WIDENED_WINDOW_CONFIDENCE_FACTOR = 0.85
 
+/**
+ * A set whose required 3/2/1 mix was completed by an AI web search rather than
+ * by a data provider is less well-sourced than a fully provider-backed one, and
+ * the confidence number must not read identically for both.
+ *
+ * The haircut is deliberately SMALL — 5% — and here is the honest reason it is
+ * not larger: the gap-fill can only touch the ACTIVE and PENDING sides (see
+ * AI_GAP_FILL_SLOTS in lib/cma/comp-provider.ts), and neither of those enters
+ * the value range, which is computed from the adjusted CLOSED comps alone. So
+ * the estimate itself is untouched by the gap-fill; what is weakened is the
+ * market-direction context around it. A large haircut here would misrepresent
+ * where the uncertainty actually lives. If AI-sourced SOLD comps were ever
+ * admitted, this factor would be the wrong instrument and a separate, much
+ * heavier one would be required.
+ */
+const AI_GAP_FILLED_MIX_CONFIDENCE_FACTOR = 0.95
+
 export async function runAiCma(input: AiCmaInput): Promise<AiCmaResult> {
   const isArv = input.mode === "investor_arv"
   const sellerUpgrades = (input.subject.sellerUpgrades ?? []).filter((u) => u?.description?.trim())
@@ -174,6 +194,8 @@ export async function runAiCma(input: AiCmaInput): Promise<AiCmaResult> {
     state: input.subject.state,
     zip: input.subject.zip ?? null,
     subject: input.subject,
+    propertyType: input.subject.propertyType ?? null,
+    systemSource: "ai_cma",
   })
 
   // ── 2. Load state adjustment rates ──────────────────────────────────────
@@ -215,7 +237,12 @@ export async function runAiCma(input: AiCmaInput): Promise<AiCmaResult> {
     (adjustClosed.length / REQUIRED_SOLD_COMPS) * 0.5 + avgSimilarity * 0.5 - spreadPenalty
   const confidenceScore = Math.max(
     0,
-    Math.min(1, rawConfidence * (sourced.provenance.soldWindowWidened ? WIDENED_WINDOW_CONFIDENCE_FACTOR : 1))
+    Math.min(
+      1,
+      rawConfidence *
+        (sourced.provenance.soldWindowWidened ? WIDENED_WINDOW_CONFIDENCE_FACTOR : 1) *
+        (sourced.provenance.aiGapFilledSlots.length > 0 ? AI_GAP_FILLED_MIX_CONFIDENCE_FACTOR : 1)
+    )
   )
 
   // ── 5. Investor ARV calculation ─────────────────────────────────────────
@@ -305,19 +332,29 @@ export function describeCompProvenance(p: CompProvenance): string {
     p.soldProvider === "rentcast"
       ? `RentCast (platform comps provider), sold within ${p.soldWindowMonths ?? "?"} months`
       : "no provider (none available)"
-  const activeWhere =
-    p.activeProvider === "idxbroker"
-      ? "the brokerage's connected IDX Broker feed"
-      : p.activeProvider === "rentcast"
-      ? "RentCast"
-      : "no provider (none available)"
-  const pendingWhere =
-    p.pendingProvider === "idxbroker" ? "the brokerage's connected IDX Broker feed" : "none available"
+  const activeWhere = describeSideProvider(p.activeProvider, p.aiGapFilledSlots.includes("active"))
+  const pendingWhere = describeSideProvider(p.pendingProvider, p.aiGapFilledSlots.includes("pending"))
   return (
     `${p.soldCompCount} sold from ${soldWhere}; ` +
     `${p.activeCompCount} active from ${activeWhere}; ` +
     `${p.pendingCompCount} pending from ${pendingWhere}.`
   )
+}
+
+/** Names a side's source, and says out loud when part of it is an AI web search. */
+function describeSideProvider(provider: CompProvenance["activeProvider"], aiGapFilled: boolean): string {
+  const base =
+    provider === "idxbroker"
+      ? "the brokerage's connected IDX Broker feed"
+      : provider === "rentcast"
+      ? "RentCast"
+      : provider === "perplexity"
+      ? "an AI web search (Perplexity) — UNVERIFIED, no data provider could serve this side"
+      : "no provider (none available)"
+  // A side can be part provider, part gap-fill; say so rather than picking one.
+  return aiGapFilled && provider !== "perplexity"
+    ? `${base}, completed by an AI web search (Perplexity) — the AI-sourced row(s) are UNVERIFIED`
+    : base
 }
 
 function formatUpgradesForPrompt(upgrades: SellerUpgrade[]): string {
@@ -358,12 +395,25 @@ async function generateValuationNarrative(params: {
           .join("\n")
       : "  (none — no closed comparable sales could be sourced)"
 
+  // Every listing row carries its own source, so the narrative writer cannot
+  // describe an AI-found listing as if a data provider had reported it.
+  const sourceTag = (c: ScoredComp) =>
+    c.sourceProvider === "perplexity"
+      ? " [SOURCE: AI web search — UNVERIFIED]"
+      : c.sourceProvider === "idxbroker"
+      ? " [source: IDX Broker feed]"
+      : c.sourceProvider === "rentcast"
+      ? " [source: RentCast]"
+      : ""
   const pendingSummary = pendingComps
-    .map((p) => `  • ${p.comp.address} — asking $${p.comp.salePrice.toLocaleString()}`)
+    .map((p) => `  • ${p.comp.address} — asking $${p.comp.salePrice.toLocaleString()}${sourceTag(p.comp)}`)
     .join("\n")
   const activeSummary = activeComps
-    .map((a) => `  • ${a.comp.address} — asking $${a.comp.salePrice.toLocaleString()}`)
+    .map((a) => `  • ${a.comp.address} — asking $${a.comp.salePrice.toLocaleString()}${sourceTag(a.comp)}`)
     .join("\n")
+  const hasAiSourcedListing = [...pendingComps, ...activeComps].some(
+    (c) => c.comp.sourceProvider === "perplexity"
+  )
 
   const arvBlock = arv
     ? `\n\nINVESTOR ARV ANALYSIS:
@@ -415,7 +465,17 @@ Estimated value range (derived from the ADJUSTED closed comps only):
 HARD RULES:
   - Use ONLY the comparables listed above. Do not add, recall, or infer any other
     property, address, sale price or sale date. If the comp set is thin, say it is thin.
-  - Never describe an active or pending listing as a sale.
+  - Never describe an active or pending listing as a sale.${
+    hasAiSourcedListing
+      ? `
+  - One or more of the pending/active listings above is tagged
+    [SOURCE: AI web search — UNVERIFIED]. Whenever you refer to one, say plainly
+    in the same sentence that it was found by an AI web search of public listing
+    sites rather than supplied by a data provider, and that it is unverified.
+    Do not smooth this over, do not relegate it to a footnote, and do not give
+    it the same weight as a provider-sourced comparable.`
+      : ""
+  }
 
 Write a 3-4 paragraph CMA narrative (NOT an appraisal):
   1. Value conclusion + range justification
@@ -457,6 +517,27 @@ function buildDisclaimers(
     "Estimated values are based on comparable sales supplied by a third-party data provider and are subject to market fluctuation.",
   ]
 
+  // ── THE AI GAP-FILL, SAID FIRST ───────────────────────────────────────────
+  // Placed at the TOP of the list, immediately after the "this is not an
+  // appraisal" line, and never appended to the tail where a reader stops
+  // reading. If a row in this report came off a web page instead of a data
+  // provider, that is the second thing the reader learns.
+  if (provenance.aiGapFilledSlots.length > 0) {
+    const sides = provenance.aiGapFilledSlots
+      .map((s) => (s === "pending" ? "pending (under-contract)" : s))
+      .join(" and ")
+    base.splice(
+      1,
+      0,
+      `NOT ALL COMPARABLES CAME FROM A DATA PROVIDER. ${provenance.aiGapFilledCompCount} of the comparables shown — the ${sides} listing(s) — were found by an AI web search of public listing sites, because no connected data provider (RentCast or the brokerage's IDX feed) could supply them. Those rows are UNVERIFIED: they have not been confirmed against the MLS or public records, and they should be independently checked before being relied on. Every AI-sourced row is labelled as such in the comparable table.`,
+    )
+    base.splice(
+      2,
+      0,
+      "The estimated value range was computed from CLOSED SALES ONLY, and no closed sale in this report came from an AI web search — closed comparables are taken exclusively from a data provider. The AI-sourced listings above inform market direction only; they do not move the estimate.",
+    )
+  }
+
   // ── Provenance, said out loud ──────────────────────────────────────────────
   if (provenance.soldProvider === "rentcast") {
     base.push(
@@ -483,12 +564,14 @@ function buildDisclaimers(
     )
   } else if (provenance.soldCompCount < REQUIRED_SOLD_COMPS) {
     base.push(
-      `This analysis rests on ${provenance.soldCompCount} closed comparable sale(s) — fewer than the ${REQUIRED_SOLD_COMPS} this method calls for. Treat the range as directional.`
+      `This analysis rests on ${provenance.soldCompCount} closed comparable sale(s) — fewer than the ${REQUIRED_SOLD_COMPS} this method calls for. Treat the range as directional. The shortfall was NOT made up with AI-sourced sales: a closed sale that anchors a valuation is only carried here when a data provider supplied it.`
     )
   }
   if (provenance.pendingCompCount === 0) {
     base.push(
-      "No pending (under-contract) comparable is included: no connected data provider reports under-contract status for this area. None was substituted."
+      provenance.aiGapFillAttempted
+        ? "No pending (under-contract) comparable is included: no connected data provider reports under-contract status for this area, and the AI web-search fallback returned nothing usable either. None was substituted."
+        : "No pending (under-contract) comparable is included: no connected data provider reports under-contract status for this area. None was substituted."
     )
   }
   if (provenance.activeCompCount === 0) {

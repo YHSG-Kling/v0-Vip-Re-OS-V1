@@ -25,7 +25,11 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { redactPriceAmounts, scrubSuggestedPriceKeys } from "@/lib/cma/customer-facing-guard"
 import { videoThumbnailEmbed } from "@/lib/video/video-thumbnail-embed"
-import { VIDEO_FINISHED_STATUSES, VIDEO_IN_PROGRESS_STATUSES } from "@/lib/video/video-status"
+// THE resolver — one definition of "what is the playable URL + thumbnail for
+// this finished video?", across BOTH engines (D-ID ai_video_projects and
+// Remotion remotion_composition_renders). Type-only here so the drip cron's
+// module graph is unchanged; the implementation is imported at the call site.
+import type { PlayableVideo } from "@/lib/video/playable-video"
 
 export interface SectionSpec { key: string; title: string; body: Record<string, unknown> }
 
@@ -40,6 +44,17 @@ export const SECTION_SEQUENCE: SectionSpec[] = [
   { key: "cma",         title: "Your Home's Analysis",     body: { kind: "cma", market_only: true, note: "Your home's value will be presented at our meeting." } },
   { key: "closing",     title: "Let's Talk Strategy",      body: { kind: "closing" } },
 ]
+
+/**
+ * The drip window used when a presentation carries NO appointment_at.
+ *
+ * Matched to the minimum lead time a listing appointment is booked with, so the
+ * fallback schedule looks like a real one rather than compressing the seller's
+ * whole sequence into a few days. planPresentationSections spreads across
+ * whatever window it is given, so this is a default, never an assumption: a
+ * presentation whose appointment is known always uses the real date.
+ */
+const DEFAULT_DRIP_WINDOW_DAYS = 7
 
 export interface PlanInput {
   presentationId: string
@@ -304,7 +319,7 @@ export async function materializePresentationSections(
   if (error || !pres) return { ok: false, inserted: 0, error: error?.message ?? "presentation not found" }
   if (!pres.brokerage_id) return { ok: false, inserted: 0, error: "presentation has no brokerage_id" }
 
-  const appointmentAt = pres.appointment_at ?? new Date(Date.now() + 5 * 86_400_000).toISOString()
+  const appointmentAt = pres.appointment_at ?? new Date(Date.now() + DEFAULT_DRIP_WINDOW_DAYS * 86_400_000).toISOString()
   const planned = planPresentationSections({
     presentationId,
     brokerageId:     pres.brokerage_id,
@@ -408,7 +423,7 @@ export async function attachChapterReelsToSections(
   // the SAME now→appointment window. One timetable, no second scheduler.
   const overflow = plan.filter((a) => a.isNewSection)
   if (overflow.length) {
-    const appointmentAt = pres.appointment_at ?? new Date(Date.now() + 5 * 86_400_000).toISOString()
+    const appointmentAt = pres.appointment_at ?? new Date(Date.now() + DEFAULT_DRIP_WINDOW_DAYS * 86_400_000).toISOString()
     const planned = planPresentationSections({
       presentationId,
       brokerageId: pres.brokerage_id,
@@ -491,80 +506,38 @@ function readChapterVideoLink(body: unknown): ChapterVideoLink | null {
 
 // ── Resolving a section's reel at delivery time ─────────────────────────────
 
-export type SectionReel =
-  /** A finished, playable reel. */
-  | { state: "ready";       videoUrl: string; thumbnailUrl: string | null; source: "chapter_reel" | "section_render" }
-  /** A reel exists but is still rendering — the section is not ready to send. */
-  | { state: "in_progress"; source: "chapter_reel" | "section_render" }
-  /** Nothing playable will arrive (no reel attached, or the render failed). */
-  | { state: "none";        reason: string }
+/**
+ * A section's reel is just a playable video, resolved by the ONE resolver every
+ * sender in the OS uses (lib/video/playable-video). This module used to carry
+ * its own copy of that lookup; the copy is gone rather than left to drift, and
+ * the type is an alias so callers still read in the drip's own vocabulary.
+ */
+export type SectionReel = PlayableVideo
 
 /**
- * Resolve the reel a section's email should embed. Prefers the chapter reel
- * (the agent on camera — the artifact the owner's ruling is about) and falls
- * back to the section's own Remotion slide/CMA render.
+ * Resolve the reel a section's email should embed. A section can carry BOTH a
+ * D-ID chapter reel (on body.chapter_video — the agent on camera) and its own
+ * Remotion slide/CMA render (render_id). Both are handed to the shared
+ * resolver, which returns the first READY one: the point is to deliver a video,
+ * so a finished Remotion section reel goes out rather than stalling behind a
+ * D-ID avatar that is still rendering.
  *
- * Returns the honest state, never a fabricated URL: a row that has not finished
- * rendering is 'in_progress' so the caller can wait rather than send an email
- * whose whole point is missing.
+ * Returns the honest state, never a fabricated URL: when nothing is ready but
+ * something is genuinely still coming the state is 'in_progress' so the caller
+ * can wait rather than send an email whose whole point is missing.
  */
 export async function resolveSectionReel(
   section: { render_id: string | null; body: Record<string, unknown> | null },
   client?: ReturnType<typeof createServiceClient>,
 ): Promise<SectionReel> {
-  const supabase = client ?? createServiceClient()
-  const reasons: string[] = []
-
-  const link = readChapterVideoLink(section.body)
-  if (link) {
-    const { data: proj, error } = await supabase
-      .from("ai_video_projects")
-      .select("id, status, video_url, thumbnail_url, compliance_status")
-      .eq("id", link.ai_video_project_id)
-      .maybeSingle()
-    if (error) {
-      reasons.push(`chapter reel unreadable: ${error.message}`)
-    } else if (!proj) {
-      reasons.push("chapter reel row not found")
-    } else {
-      const p = proj as { status: string | null; video_url: string | null; thumbnail_url: string | null; compliance_status: string | null }
-      // A reel the script postcheck FAILED never reaches a seller. 'needs_review'
-      // is advisory by design (lib/video/script-compliance) and still ships.
-      if (p.compliance_status === "failed") {
-        reasons.push("chapter reel failed the script compliance postcheck")
-      } else if ((VIDEO_FINISHED_STATUSES as readonly string[]).includes(p.status ?? "") && p.video_url) {
-        return { state: "ready", videoUrl: p.video_url, thumbnailUrl: p.thumbnail_url, source: "chapter_reel" }
-      } else if ((VIDEO_IN_PROGRESS_STATUSES as readonly string[]).includes(p.status ?? "")) {
-        return { state: "in_progress", source: "chapter_reel" }
-      } else {
-        reasons.push(`chapter reel is '${p.status ?? "unknown"}' with no playable URL`)
-      }
-    }
-  }
-
-  if (section.render_id) {
-    const { data: render, error } = await supabase
-      .from("remotion_composition_renders")
-      .select("id, render_status, output_url, thumbnail_url")
-      .eq("id", section.render_id)
-      .maybeSingle()
-    if (error) {
-      reasons.push(`section render unreadable: ${error.message}`)
-    } else if (!render) {
-      reasons.push("section render row not found")
-    } else {
-      const r = render as { render_status: string | null; output_url: string | null; thumbnail_url: string | null }
-      if (r.render_status === "succeeded" && r.output_url) {
-        return { state: "ready", videoUrl: r.output_url, thumbnailUrl: r.thumbnail_url, source: "section_render" }
-      }
-      if (r.render_status === "queued" || r.render_status === "rendering") {
-        return { state: "in_progress", source: "section_render" }
-      }
-      reasons.push(`section render is '${r.render_status ?? "unknown"}' with no output URL`)
-    }
-  }
-
-  return { state: "none", reason: reasons.length ? reasons.join("; ") : "no reel attached to this section" }
+  const { resolvePlayableVideo } = await import("@/lib/video/playable-video")
+  return resolvePlayableVideo(
+    {
+      videoProjectId: readChapterVideoLink(section.body)?.ai_video_project_id ?? null,
+      renderId:       section.render_id,
+    },
+    client ?? createServiceClient(),
+  )
 }
 
 // ── Delivery ────────────────────────────────────────────────────────────────
