@@ -328,7 +328,27 @@ function checkForElement(content: string, element: string): boolean {
   return pattern ? pattern.test(content) : false
 }
 
-function calculateThemFirstScore(content: string): number {
+/**
+ * THE ONE DETERMINISTIC "THEM FIRST" PRONOUN RATIO. 0..1, higher = more
+ * buyer-focused. 0.5 when the content contains no personal pronouns at all —
+ * that is "no signal", not "balanced", and callers should treat it as such.
+ *
+ * WHY IT IS EXPORTED FROM HERE. There were two byte-identical private copies of
+ * this function — this one and `lib/kernel/compliance.ts::calculatePronounRatio`
+ * — same word lists, same 0.5 neutral, same ratio. Two copies of a compliance
+ * threshold is how the gate and the report start disagreeing about the same
+ * content after someone tunes one word list. The kernel already imports from
+ * this module (kernel → compliance-rules), so this is the only direction that
+ * does not create a cycle: the survivor lives here and the kernel calls it.
+ *
+ * NOT A REPLACEMENT FOR `lib/them-first/validator.ts::validateThemFirstContent`.
+ * That one is the richer instrument — AI structural analysis
+ * (feelings/trust/value/solution), sentiment, and a severity-graded prohibited-
+ * phrase catalogue including Fair Housing. It costs an AI call. This is the
+ * cheap deterministic signal, for the paths that need a number on every
+ * generation rather than an adjudication.
+ */
+export function calculateThemFirstScore(content: string): number {
   // Count buyer-focused words (you, your, imagine, feel, enjoy)
   const buyerWords = (content.match(/\b(you|your|yours|imagine|feel|enjoy|benefit|discover|experience)\b/gi) || [])
     .length

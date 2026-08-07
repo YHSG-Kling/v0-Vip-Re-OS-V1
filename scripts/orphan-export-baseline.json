@@ -14,7 +14,7 @@
     "app/actions/ai-client-gifting.ts": 2,
     "app/actions/ai-closing-workflow.ts": 1,
     "app/actions/ai-cma.ts": 1,
-    "app/actions/ai-content-generation.tsx": 5,
+    "app/actions/ai-content-generation.tsx": 4,
     "app/actions/ai-contract-review.ts": 1,
     "app/actions/ai-direct-mail.ts": 3,
     "app/actions/ai-document-intelligence.ts": 1,
@@ -216,6 +216,7 @@
     "lib/agents/seller-update-reel-producer.ts": 3,
     "lib/agents/spawn-helper.ts": 1,
     "lib/ai/ai-error.ts": 2,
+    "lib/ai/content-features.ts": 1,
     "lib/ai/script-standards.ts": 1,
     "lib/ai/web-search.ts": 1,
     "lib/ai-isa/adaptive-reengagement.ts": 2,
@@ -733,7 +734,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 8924,
+  "census": 8926,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -793,7 +794,7 @@
     "app/actions/ai-closing-workflow.ts": 5,
     "app/actions/ai-cma.ts": 4,
     "app/actions/ai-communication-hub.ts": 9,
-    "app/actions/ai-content-generation.tsx": 43,
+    "app/actions/ai-content-generation.tsx": 42,
     "app/actions/ai-contract-review.ts": 6,
     "app/actions/ai-direct-mail.ts": 11,
     "app/actions/ai-document-intelligence.ts": 7,
@@ -2849,6 +2850,7 @@
     "lib/agents/tour-followup-producer.ts": 2,
     "lib/agents/vendor-loop-producer.ts": 5,
     "lib/ai/ai-error.ts": 3,
+    "lib/ai/content-features.ts": 2,
     "lib/ai/cost-tracking.ts": 6,
     "lib/ai/fair-use.ts": 2,
     "lib/ai/gateway-chat.ts": 2,
@@ -3094,7 +3096,7 @@
     "lib/compliance-rules/compliance-engine.ts": 5,
     "lib/compliance-rules/compliance-logger.ts": 4,
     "lib/compliance-rules/fair-housing-patterns.ts": 1,
-    "lib/compliance-rules/rule-evaluators.ts": 4,
+    "lib/compliance-rules/rule-evaluators.ts": 5,
     "lib/compliance-rules/state-fair-housing-format.ts": 1,
     "lib/compliance-rules/state-fair-housing.ts": 2,
     "lib/connections/accounting-scopes.ts": 10,
@@ -4640,7 +4642,6 @@
       "getComparableProperties",
       "validateThemFirstContent",
       "enhancedGenerateListingDescription",
-      "calculateAICost",
       "logGenerationCost",
       "getMonthlyAICosts",
       "getContentPerformanceMetrics",
@@ -12983,6 +12984,10 @@
       "isAiConfigError",
       "friendlyAiError"
     ],
+    "lib/ai/content-features.ts": [
+      "contentFeatureForType",
+      "isContentFeature"
+    ],
     "lib/ai/cost-tracking.ts": [
       "getModelPricing",
       "calculateCost",
@@ -14313,7 +14318,8 @@
       "evaluateRegulatoryCompliance",
       "evaluateBrokeragePolicyCompliance",
       "evaluateBrandCompliance",
-      "evaluateAISafetyCompliance"
+      "evaluateAISafetyCompliance",
+      "calculateThemFirstScore"
     ],
     "lib/compliance-rules/state-fair-housing-format.ts": [
       "formatStateFairHousingAdvisory"

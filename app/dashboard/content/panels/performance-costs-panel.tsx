@@ -18,7 +18,23 @@ import {
   logGenerationCost,
 } from "@/app/actions/ai-content-generation"
 
-const MODELS = ["openai/gpt-4o", "openai/gpt-4o-mini", "gemini-2.0-flash", "anthropic/claude-sonnet-4.5"]
+// The CANONICAL model ids — the `AIModel` union in lib/ai/cost-tracking.ts,
+// which is what the platform actually emits and what getModelPricing() is keyed
+// on. This list used to read "openai/gpt-4o" / "anthropic/claude-sonnet-4.5" /
+// "gemini-2.0-flash": a provider-prefixed namespace that existed only in the
+// rival price table this panel's server action used to call. That table is
+// gone, so those strings would now price at $0 (calculateCost warns and refuses
+// to guess rather than silently charging gpt-4o-mini rates, as the old one did).
+const MODELS = [
+  "claude-sonnet",
+  "claude-opus",
+  "claude-haiku",
+  "gpt-4o",
+  "gpt-4-turbo",
+  "gpt-4o-mini",
+  "gemini-pro",
+  "gemini-flash",
+]
 const PLATFORMS = ["instagram", "facebook", "linkedin", "twitter", "tiktok", "email", "blog"]
 
 export function PerformanceCostsPanel({ drafts }: { drafts: any[] }) {
@@ -100,7 +116,10 @@ export function PerformanceCostsPanel({ drafts }: { drafts: any[] }) {
         success: true,
       })
       if (!res.success) { toast.error(res.error); return }
-      toast.success(`Logged $${res.cost.toFixed(4)}`)
+      // Priced by the canonical table (lib/ai/cost-tracking.ts), same as every
+      // real generation. Says "recorded", not "billed": this row is content
+      // telemetry and is not what the spend card totals.
+      toast.success(`Recorded — priced at $${res.cost.toFixed(4)}`)
       setPromptTokens("")
       setCompletionTokens("")
       reload()
@@ -273,7 +292,7 @@ export function PerformanceCostsPanel({ drafts }: { drafts: any[] }) {
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-sm flex items-center gap-2">
-            <DollarSign className="h-4 w-4" /> AI spend this month
+            <DollarSign className="h-4 w-4" /> Content AI spend this month
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -281,18 +300,32 @@ export function PerformanceCostsPanel({ drafts }: { drafts: any[] }) {
             <p className="text-xs text-destructive">{errors.costs}</p>
           ) : costs ? (
             <>
-              {/* `Tokens` is the capability ported off the deleted
+              {/* These four now come from ai_tool_usage — the platform's ONE
+                  cost ledger, the same table the billing rollup and the
+                  fair-use counter read — filtered to the content features and
+                  scoped to this agent's brokerage. That means BOTH content
+                  lanes count, so the figures are legitimately larger than what
+                  this card showed when it read Lane B's own table.
+
+                  `Tokens` is the capability ported off the deleted
                   getContentGenerationStats — the one number of its four that
                   nothing else surfaced. It read a column that does not exist,
-                  so it always showed 0; this reads
-                  content_generation_logs.total_tokens, which logGenerationCost
-                  actually writes. */}
+                  so it always showed 0; this reads ai_tool_usage.tokens_used,
+                  the provider's real input+output count.
+
+                  "Avg each" is labelled as a ceiling on purpose: cost_cents is
+                  an integer Math.ceil'd per call, so a sub-cent generation
+                  books as 1 cent and the average can never read below $0.01. */}
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 <Stat label="Total" value={`$${costs.total_cost.toFixed(2)}`} />
                 <Stat label="Generations" value={String(costs.total_generations)} />
-                <Stat label="Avg each" value={`$${costs.avg_cost_per_generation.toFixed(4)}`} />
+                <Stat label="Avg each (max)" value={`$${costs.avg_cost_per_generation.toFixed(4)}`} />
                 <Stat label="Tokens" value={costs.total_tokens.toLocaleString()} />
               </div>
+              <p className="text-[10px] text-muted-foreground">
+                From the platform usage ledger, across every content generator. Costs are rounded up to
+                the nearest cent per generation, so totals are an upper bound.
+              </p>
               {costs.breakdown_by_model.length > 0 && (
                 <div className="divide-y">
                   {costs.breakdown_by_model.map((m: any) => (
@@ -309,7 +342,16 @@ export function PerformanceCostsPanel({ drafts }: { drafts: any[] }) {
           ) : null}
 
           <div className="border-t pt-3 space-y-3">
-            <Label className="text-xs">Log a generation cost</Label>
+            {/* HONESTY FIX. This form writes content_generation_logs, which is
+                the per-artifact telemetry lane — NOT the cost ledger the card
+                above reads. It therefore moves "Generation metrics", not "AI
+                spend". Calling it "Log a generation cost" next to a spend total
+                it cannot change would be a lie about what the button does. */}
+            <Label className="text-xs">Record a generation in the content log</Label>
+            <p className="text-[10px] text-muted-foreground">
+              Adds a row to this agent&apos;s content generation history. It does not change the spend
+              figures above — those come from the platform usage ledger, which only real AI calls write.
+            </p>
             <div className="grid gap-3 sm:grid-cols-3">
               <Select value={costModel} onValueChange={setCostModel}>
                 <SelectTrigger>
@@ -340,7 +382,7 @@ export function PerformanceCostsPanel({ drafts }: { drafts: any[] }) {
             </div>
             <Button variant="outline" onClick={handleLogCost} disabled={isPending || !promptTokens}>
               {isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
-              Log cost
+              Record generation
             </Button>
           </div>
         </CardContent>

@@ -167,7 +167,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
   let blogResult: BlogPostResult
   try {
     const { text } = await generateText({
-      feature: "blog_generation",
+      feature: "blog_post_generation",
       system: systemPrompt,
       prompt: userPrompt,
       temperature: 0.7,
@@ -948,7 +948,7 @@ Return ONLY valid JSON (no markdown, no code blocks):
   let discovered: DiscoveredKeyword[]
   try {
     const { text } = await generateText({
-      feature:      "blog_generation",
+      feature:      "blog_post_generation",
       system:       systemPrompt,
       prompt:       userPrompt,
       temperature:  0.4,
@@ -1204,7 +1204,7 @@ Return ONLY valid JSON (no markdown, no code blocks):
 
   try {
     const { text } = await generateText({
-      feature: "blog_generation",
+      feature: "blog_post_generation",
       system: systemPrompt,
       prompt: userPrompt,
       temperature: 0.8,
@@ -1282,7 +1282,7 @@ Return ONLY valid JSON (no markdown, no code blocks):
 
   try {
     const { text } = await generateText({
-      feature: "blog_generation",
+      feature: "blog_post_generation",
       system: systemPrompt,
       prompt: userPrompt,
       temperature: 0.3,

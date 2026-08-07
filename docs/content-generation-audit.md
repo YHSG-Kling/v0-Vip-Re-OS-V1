@@ -93,7 +93,7 @@ Supporting library (all reached through the barrel):
 | `bulkGenerateContent` | re-exported via `lib/services/index.ts` |
 | **`logContentGeneration`** | `app/api/ai/generate-content/route.ts` — **NAME COLLISION, see §3.1** |
 | **`getContentGenerationStats`** | **none** — **NAME COLLISION + defective, see §3.2** |
-| `generateSEOKeywords`, `detectTargetBuyer`, `getComparableProperties`, `calculateAICost` | none (declared orphans; `calculateAICost` is called internally by `logGenerationCost`) |
+| `generateSEOKeywords`, `detectTargetBuyer`, `getComparableProperties`, `calculateAICost` | none (declared orphans; `calculateAICost` was called internally by `logGenerationCost` — **since DELETED**, see §9.2) |
 
 ---
 
@@ -271,18 +271,144 @@ quietly here.
 ### 7.4 Census effect
 
 `app/actions/ai-content-generation.tsx` went from 45 exports to 43. Its unreferenced-export count is
-**unchanged at 5** — the same five symbols before and after (`calculateAICost`, `detectTargetBuyer`,
+**unchanged at 5** at the time of that pass — the same five symbols before and after (`calculateAICost`, `detectTargetBuyer`,
 `generateSEOKeywords`, `getComparableProperties`, `saveDescriptionToListing`), verified by recomputing
 the orphan set in a clean worktree at the pre-change commit. Both deleted symbols were *referenced*
 (so neither was an orphan), which is why the count did not drop. No new orphan was created.
 
 ---
 
-## 8. STILL OPEN (found here, not fixed here)
+## 8. OPEN ITEMS — status
 
-| # | Finding | Where |
+| # | Finding | Where | Status |
+|---|---|---|---|
+| 1 | `resolveAuthorizedAgentId()` falls back to `ctx.userId` for `activities.agent_id` — a cross-id-space substitution | `app/actions/content-generation-engine.ts` §5.1 | see §10 |
+| 2 | A THIRD writer of `ai_generated_content` with no `brokerage_id`, RLS-refused outright | `lib/services/content-generation.service.ts::generateContent` §5.2 | **CLOSED** — the tenant is now resolved from the session and stamped at the insert, and the function refuses rather than writing a row it knows will be denied |
+| 3 | `getBrandVoiceProfile`, `generateListingDescription`, `generateSocialPost` still take `agentId` from the caller on `"use server"` exports | `app/actions/ai-content-generation.tsx` §5 | still open |
+| 4 | Lane A's dead `generateImage` prompt-builder | §7.3 | see §10 |
+
+---
+
+## 9. THE LANES WERE DISCONNECTED IN TWO MEASURABLE WAYS
+
+The audit above establishes there is no file-level loser. The follow-on question —
+*connect the lanes* — turned out to have two concrete, measurable answers, neither
+of which is a merge.
+
+### 9.1 Two feature vocabularies → the ledger could not be joined, and Lane A was never routed
+
+Every AI call writes `ai_tool_usage` (`lib/ai/cost-tracking.ts::logAIUsage`, reached
+from `generateAIResponse`) stamped with a `feature` string. That is the platform's
+ONE cost ledger: real provider token counts, the dated provider price table,
+brokerage/team/agent dimensions, the monthly-aggregate RPC and the fair-use counter
+all hang off it.
+
+`AI_TASK_ROUTING` (lib/ai/models.ts) is the 50-key registry that maps a feature to
+its designated model. Extracting all 50 keys and testing membership:
+
+| Lane | Features emitted | In the registry |
 |---|---|---|
-| 1 | `resolveAuthorizedAgentId()` falls back to `ctx.userId` for `activities.agent_id`, which FKs `agents(id)` — a cross-id-space substitution that FK-rejects the write | `app/actions/content-generation-engine.ts` §5.1 |
-| 2 | A THIRD writer of `ai_generated_content` with no `brokerage_id`, so RLS refuses the insert outright while the caller still surfaces the generated text | `lib/services/content-generation.service.ts::generateContent` §5.2 |
-| 3 | `getBrandVoiceProfile`, `generateListingDescription`, `generateSocialPost` still take `agentId` from the caller on `"use server"` exports | `app/actions/ai-content-generation.tsx` §5 |
-| 4 | Lane A's dead `generateImage` prompt-builder | §7.3 |
+| B — `ai-content-generation.tsx` | `listing_description`, `blog_post_generation`, `social_post_generation`, `email_generation`, `tag_classification` | **5 of 5** |
+| A — `content-generator.ts` | `content_generation_${type}` + 3 literal siblings | **0 of 10** |
+
+Two consequences, both real:
+
+- **Routing.** `selectModelForTask()` missed on every Lane A call, so Lane A never
+  received the model its task is designated. Worst case: `content_generation_video`
+  — the FIFTH guarded Fair Housing script path, named by
+  `scripts/video-script-compliance-guard.ts` — missed `video_script_generation`
+  ("claude-sonnet … brand voice, persona-aware, Them-First scored").
+- **Ledger.** With two vocabularies, no single query could ask "content generation"
+  and span both lanes. The content cost panel read only Lane B's table, so Lane A's
+  spend had never been counted at all.
+
+Fix: `lib/ai/content-features.ts` — a NAME MAP, not a new registry. Every string in
+it is an existing `AI_TASK_ROUTING` key, asserted by the guard.
+
+### 9.2 Two price tables, sharing zero keys
+
+`content_generation_logs.cost_usd` was a SECOND booking of a call `ai_tool_usage`
+had already priced correctly — and it was priced by a rival inline table,
+`calculateAICost`, keyed on a provider-prefixed namespace (`"anthropic/claude-sonnet-4.5"`)
+that the system never emits. Unknown keys fell through to gpt-4o-mini rates.
+
+Measured on one generation (3000 in / 1200 out tokens). Key-namespace overlap: **NONE**.
+
+| model | canonical | `calculateAICost` | understated |
+|---|---|---|---|
+| claude-sonnet *(platform default for content)* | $0.03000 | $0.00117 | **25.6×** |
+| claude-opus | $0.14000 | $0.00117 | **119.7×** |
+| gpt-4-turbo | $0.07000 | $0.00117 | 59.8× |
+| gpt-4o | $0.02000 | $0.00117 | 17.1× |
+| every other model | — | $0.00117 | 8.5× |
+
+Survivor: `lib/ai/cost-tracking.ts::calculateCost`. `content_generation_logs` keeps
+its CONTENT dimension (content_id, content_type, prompt, per-artifact success/error)
+— it stops being the COST source of record, it does not stop existing.
+
+### 9.3 A THIRD duplicate found on the way: the Them-First pronoun ratio
+
+Two byte-identical private copies — same word lists, same 0.5 no-pronoun neutral,
+same ratio:
+
+- `lib/compliance-rules/rule-evaluators.ts::calculateThemFirstScore`
+- `lib/kernel/compliance.ts::calculatePronounRatio`
+
+The kernel already imported from compliance-rules, so that is the only non-circular
+direction: the survivor is exported from `rule-evaluators.ts` and the kernel calls
+it. Two copies of a compliance threshold is how the enforced gate and the compliance
+report begin disagreeing about the same content.
+
+**NOT merged into it:** `lib/them-first/validator.ts::validateThemFirstContent` is a
+richer instrument (AI structural analysis, sentiment, severity-graded prohibited
+phrases including Fair Housing) that costs an AI call. It is a different tool for a
+different moment, not a better copy of the same one.
+
+### 9.4 The ledger was silently dropping rows — `?? ""` into uuid columns
+
+Found while wiring the content panel onto `ai_tool_usage`. `generateAIResponse`
+called `logAIUsage({ brokerageId: … ?? "", teamId: … ?? "", agentId: … ?? "" })`.
+All three land in `uuid` columns, and Postgres refuses `''` for a uuid:
+
+```sql
+SELECT ''::uuid;  -- ERROR 22P02: invalid input syntax for type uuid: ""
+```
+
+`logAIUsage` catches its own insert error into a `console.error`, so **every AI
+call without a full identity triple** — background jobs, crons, unauthenticated
+paths — vanished from the ledger entirely rather than landing with the fields it
+did know. Live corroboration: 3 of 23 `ai_tool_usage` rows have `agent_id IS NULL`.
+
+That is unbilled, uncapped spend, and it matters more now that this table is the
+single source of record for the content cost surface, `increment_ai_usage_monthly`
+and the `ai_tokens_monthly` fair-use counter. Fixed to `?? null` (all three
+columns are nullable), with the monthly-aggregate RPC skipped explicitly when
+there is no brokerage rather than fired and swallowed.
+
+### 9.5 The unrouted-feature problem is repo-wide, not content-specific
+
+Sweeping every `feature: "…"` literal in `app/` and `lib/` against the 50-key
+registry (comments stripped):
+
+**77 unrouted feature literals across 64 distinct names.**
+
+Five of them were `blog_generation` — one character-class away from the real key
+`blog_post_generation`, in `app/actions/blog.ts` (×4) and `lib/repurpose/actions.ts`
+(×1). Live `ai_tool_usage` already carries 2 rows stamped `blog_generation`. Those
+are repointed here, because blog IS content generation and `blog_post_generation`
+is already in `CONTENT_GENERATION_FEATURES` — so blog spend now counts on the
+content panel where it previously could not.
+
+The other ~72 (`curriculum_authoring`, `client_message`, `manager_deliberation`,
+`transaction_*`, `podcast_*`, …) are **NOT touched here.** They are the same defect
+class but they are not the content lanes, and a 72-site sweep smuggled into this
+change would be exactly the kind of unreviewed scope creep the audit discipline
+exists to prevent. Recorded as its own piece of work.
+
+### 9.6 `quality_score` was a constant the prompt handed the model
+
+`lib/services/content-generation.service.ts` built a prompt that specified
+`"qualityScore": 85` in its own output schema, then read that field back and stored
+it — with `|| 85` and a `80` fallback behind it. Nothing ever measured anything. It
+now stores the deterministic Them-First ratio measured off the text that came back,
+and `null` when there is no text (the column is nullable — verified live).

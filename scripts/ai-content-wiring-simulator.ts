@@ -929,8 +929,19 @@ const MUTATIONS: Mutation[] = [
   {
     name: "reinstate a fabricated cost figure",
     file: ACTIONS,
-    find: "  const totalCost = rows.reduce((sum, log) => sum + Number(log.cost_usd || 0), 0)",
-    replace: "  const totalCost = rows.length === 0 ? 45.32 : rows.reduce((sum, log) => sum + Number(log.cost_usd || 0), 0)",
+    // RE-ANCHORED. This used to mutate the `content_generation_logs` line
+    //   const totalCost = rows.reduce((sum, log) => sum + Number(log.cost_usd || 0), 0)
+    // which no longer exists: getMonthlyAICosts now reads ai_tool_usage — the
+    // one ledger that already prices every AI call correctly — so the sum is
+    // over `cost_cents`, not `cost_usd`. The positive `fiction.costs` check
+    // never stopped passing; it was this MUTATION that went stale, and a
+    // mutation whose anchor is gone silently stops proving the check has teeth.
+    find: "  const totalCents = rows.reduce((sum, row) => sum + Number(row.cost_cents || 0), 0)",
+    // Injects the literal "45.32" — the exact string fiction.costs greps for.
+    // Mutating to `4532` cents would be the same lie in the new unit but would
+    // slip past the check, and a negative test that cannot trip its own positive
+    // check proves nothing.
+    replace: "  const totalCents = rows.length === 0 ? 45.32 * 100 : rows.reduce((sum, row) => sum + Number(row.cost_cents || 0), 0)",
     expect: "fiction.costs",
   },
   {

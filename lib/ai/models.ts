@@ -500,9 +500,20 @@ export async function generateAIResponse(request: AIRequest): Promise<AIResponse
   // Log usage
   await logAIUsage({
     userId: request.metadata.userId,
-    brokerageId: request.metadata.brokerageId ?? "",
-    teamId: request.metadata.teamId ?? "",
-    agentId: request.metadata.agentId ?? "",
+    // `?? null`, NOT `?? ""`. These three land in uuid columns on ai_tool_usage.
+    // Postgres refuses '' for a uuid with 22P02 (`invalid input syntax for type
+    // uuid: ""` — reproduced live), and logAIUsage swallows the insert error into
+    // a console line. So every call that lacked a full identity triple — a
+    // background job, a cron, an unauthenticated path — vanished from the cost
+    // ledger entirely rather than landing with the fields it did know.
+    //
+    // This matters more now than it did: ai_tool_usage is the single source of
+    // record for AI spend (the content cost surface, increment_ai_usage_monthly
+    // and the ai_tokens_monthly fair-use counter all read it), so a swallowed
+    // insert is unbilled, uncapped spend. All three columns are nullable.
+    brokerageId: request.metadata.brokerageId ?? null,
+    teamId: request.metadata.teamId ?? null,
+    agentId: request.metadata.agentId ?? null,
     model: executionResult.modelUsed,
     inputTokens: executionResult.inputTokens,
     outputTokens: executionResult.outputTokens,

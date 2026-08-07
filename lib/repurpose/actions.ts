@@ -819,7 +819,7 @@ export async function repurposeUrlToBlogPost(input: {
     const kw = await generateAIResponse({
       prompt: `Extract 3-5 concise SEO keywords (comma-separated, no # symbols) for a real estate blog post based on this transcript:\n${tr.transcript.slice(0, 3000)}`,
       maxTokens: 60,
-      metadata: { userId: ctx.userId, brokerageId: ctx.brokerageId, feature: "blog_generation" },
+      metadata: { userId: ctx.userId, brokerageId: ctx.brokerageId, feature: "blog_post_generation" },
     })
     keywords = Array.from(
       new Set((kw.text ?? "").split(",").map((s) => s.trim().replace(/^#+/, "")).filter(Boolean)),

@@ -7,6 +7,12 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { generateContent } from "@/lib/services/content-generation.service"
+// THE canonical AI price table. There used to be a second one in this file
+// (calculateAICost) keyed on a provider-prefixed namespace the system never
+// emits — see the COST TRACKING note below for why it is gone.
+import { calculateCost, type AIModel } from "@/lib/ai/cost-tracking"
+// The one feature vocabulary shared by BOTH content-generation lanes.
+import { CONTENT_GENERATION_FEATURES } from "@/lib/ai/content-features"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
@@ -901,9 +907,15 @@ export async function updateABTestResults(
 //   · `activities`               — the draft-only System 4.1 lane
 //     (app/actions/content-generation-engine.ts). One signal row per
 //     generation, no raw content. Read by generation-logger's history/stats.
-//   · `content_generation_logs`  — the Content OS telemetry/cost ledger.
-//     Read by getMonthlyAICosts and getContentPerformanceMetrics.
+//   · `content_generation_logs`  — the Content OS per-ARTIFACT telemetry lane:
+//     content_id, content_type, prompt, success/error_message and elapsed ms
+//     for one generated piece. Read by getContentPerformanceMetrics.
+//     NO LONGER THE COST SOURCE OF RECORD — see logGenerationCost's header.
 // `ai_generated_content` keeps ARTIFACTS (and usage signals), never telemetry.
+//
+// COST, separately and for the whole platform, lives in `ai_tool_usage`
+// (lib/ai/cost-tracking.ts::logAIUsage). getMonthlyAICosts reads THAT, filtered
+// by CONTENT_GENERATION_FEATURES so it spans both content lanes.
 
 // ============================================
 // AI CONTENT GENERATION FUNCTIONS
@@ -1006,6 +1018,10 @@ export async function generateListingDescription(params: {
       promptTokens: response.tokensUsed?.input,
       completionTokens: response.tokensUsed?.output,
       totalTokens: response.tokensUsed?.total,
+      // The CANONICAL cost — the exact figure logAIUsage has already written to
+      // ai_tool_usage.cost_cents for this same call. Passing it instead of
+      // letting this row be re-priced is what makes the two ledgers agree.
+      costUsd: response.costCents / 100,
       generationTimeMs: generationTime,
       success: true,
     })
@@ -1357,6 +1373,8 @@ export async function generateBlogPost(params: {
       promptTokens: response.tokensUsed?.input,
       completionTokens: response.tokensUsed?.output,
       totalTokens: response.tokensUsed?.total,
+      // Canonical cost, same as ai_tool_usage booked. See logGenerationCost.
+      costUsd: response.costCents / 100,
       generationTimeMs: generationTime,
       success: true,
     })
@@ -3223,28 +3241,70 @@ export async function enhancedGenerateListingDescription(params: {
 // COST TRACKING & ANALYTICS
 // ============================================
 
-export async function calculateAICost(
-  usage: { promptTokens?: number; completionTokens?: number; totalTokens?: number },
-  model: string = "openai/gpt-4o"
-): Promise<number> {
-  // Pricing per 1M tokens (as of 2026)
-  const pricing: Record<string, { prompt: number; completion: number }> = {
-    "openai/gpt-4o": { prompt: 2.50, completion: 10.0 },
-    "openai/gpt-4o-mini": { prompt: 0.15, completion: 0.60 },
-    "gemini-2.0-flash": { prompt: 0.075, completion: 0.30 },
-    "anthropic/claude-sonnet-4.5": { prompt: 3.0, completion: 15.0 },
-  }
+// ── ONE PRICE TABLE ────────────────────────────────────────────────────────
+//
+// DELETED  calculateAICost. It was a SECOND AI price table living in this file,
+//          and it shared ZERO KEYS with the platform's own.
+//
+//   NAMED DUPLICATE / SURVIVOR: lib/ai/cost-tracking.ts::calculateCost, backed
+//   by getModelPricing(). Keyed on the `AIModel` union the system actually
+//   emits ("claude-sonnet", "gpt-4o", "gemini-flash", …), dated provider
+//   pricing (lastUpdated "2026-02-20") with links to the provider pricing
+//   pages, 10 models. It is what logAIUsage uses to write ai_tool_usage.cost_cents,
+//   and therefore what the monthly-aggregate RPC (increment_ai_usage_monthly)
+//   and the ai_tokens_monthly fair-use counter are already based on.
+//
+//   calculateAICost was 4 rows keyed "openai/gpt-4o" / "openai/gpt-4o-mini" /
+//   "gemini-2.0-flash" / "anthropic/claude-sonnet-4.5" — a provider-prefixed
+//   namespace nothing in this codebase produces — and any unknown key fell
+//   THROUGH TO gpt-4o-mini rates instead of refusing. Overlap between the two
+//   key namespaces: none. So every real model missed and booked at mini rates:
+//   claude-sonnet (the platform default for content) understated 25.6x,
+//   claude-opus 119.7x, gpt-4-turbo 59.8x. Measured, not estimated — see
+//   docs/lane-b-cost-ledger-notes.md.
+//
+//   NOTHING WAS PORTED because nothing was unique. Its four prices are the same
+//   four prices getModelPricing() already carries under the canonical key
+//   (2.50/10.00 == gpt-4o, 0.15/0.60 == gpt-4o-mini, 0.075/0.30 == gemini-flash,
+//   3.0/15.0 == claude-sonnet). Its `totalTokens` argument was accepted and
+//   never read. Its only other behaviours — dollars instead of cents, and the
+//   silent mini fallback — are the two things that made it wrong.
+//
+// AND THE SAME CALL IS ALREADY PRICED ELSEWHERE. Every generation in this file
+// goes through generateAIResponse (lib/ai/models.ts), which computes costCents
+// from the canonical table and hands it to logAIUsage, which INSERTs a
+// ai_tool_usage row with the real provider token counts. content_generation_logs.cost_usd
+// was therefore a SECOND booking of a call the platform had already priced —
+// and the two never agreed. logGenerationCost now takes the canonical figure as
+// a parameter so that the two ledgers agree BY CONSTRUCTION, not by coincidence.
 
-  const rates = pricing[model] || pricing["openai/gpt-4o-mini"]
-  const promptTokens = usage.promptTokens || 0
-  const completionTokens = usage.completionTokens || 0
-
-  const promptCost = (promptTokens / 1000000) * rates.prompt
-  const completionCost = (completionTokens / 1000000) * rates.completion
-
-  return promptCost + completionCost
-}
-
+/**
+ * Write one row to content_generation_logs — the CONTENT dimension of a
+ * generation.
+ *
+ * ── WHAT THIS TABLE IS NOW, AND WHAT IT IS NOT ───────────────────────────────
+ *
+ * content_generation_logs is NO LONGER THE COST SOURCE OF RECORD. That is
+ * `ai_tool_usage`, written by lib/ai/cost-tracking.ts::logAIUsage on the way
+ * out of every generateAIResponse call, and it is what getMonthlyAICosts reads.
+ * ai_tool_usage is also what the monthly-aggregate RPC and the ai_tokens_monthly
+ * fair-use counter are computed from, so it is the platform's single accounting
+ * basis; a second, differently-priced ledger could only ever contradict it.
+ *
+ * THE TABLE IS NOT GOING AWAY, and this function is not either, because
+ * ai_tool_usage has no CONTENT dimension. Only here do you get, per artifact:
+ *   · content_id      — which generated artifact this call produced
+ *   · content_type    — listing_description / blog_post / …
+ *   · prompt          — the audit trail of what was actually asked (m386)
+ *   · success + error_message per artifact
+ *   · generation_time_ms per artifact
+ * ai_tool_usage carries none of those. getContentPerformanceMetrics reads this
+ * table for exactly that reason and is unaffected.
+ *
+ * cost_usd is still written, and it is now the SAME number ai_tool_usage booked
+ * (see COST RESOLUTION below) rather than a rival computation. Treat it as a
+ * denormalised convenience copy on the content row — not as the bill.
+ */
 export async function logGenerationCost(params: {
   contentId?: string
   /**
@@ -3258,6 +3318,22 @@ export async function logGenerationCost(params: {
   promptTokens?: number
   completionTokens?: number
   totalTokens?: number
+  /**
+   * THE CANONICAL COST, IN DOLLARS — pass `response.costCents / 100` from
+   * generateAIResponse.
+   *
+   * That is the exact number lib/ai/cost-tracking.ts::logAIUsage has already
+   * written to ai_tool_usage.cost_cents for this same call. Passing it here
+   * makes the two ledgers agree BY CONSTRUCTION instead of re-pricing the call
+   * a second time from a second table and hoping the answers match (they did
+   * not: see the ONE PRICE TABLE note above).
+   *
+   * Omit it and the cost is DERIVED from model + tokens via the same canonical
+   * table (calculateCost, which returns CENTS — converted below). That path
+   * exists for callers that have a model and token counts but no priced
+   * response, e.g. the manual entry form on the performance/costs panel.
+   */
+  costUsd?: number
   generationTimeMs?: number
   success: boolean
   errorMessage?: string
@@ -3283,19 +3359,29 @@ export async function logGenerationCost(params: {
 
   const supabase = await createClient()
 
-  // A failure log has no model to price against, so it books $0 rather than
-  // silently falling through calculateAICost's gpt-4o-mini default and
-  // inventing a charge for a generation that never happened.
-  const cost = params.model?.trim()
-    ? await calculateAICost(
-        {
-          promptTokens: params.promptTokens,
-          completionTokens: params.completionTokens,
-          totalTokens: params.totalTokens,
-        },
-        params.model
-      )
-    : 0
+  // ── COST RESOLUTION, in order of authority ───────────────────────────────
+  //
+  //   1. costUsd supplied  → book it verbatim. This is `response.costCents/100`,
+  //      the SAME figure ai_tool_usage already holds for this call, so the two
+  //      ledgers cannot drift.
+  //   2. model supplied    → derive from the CANONICAL table. calculateCost
+  //      returns CENTS (Math.ceil'd), so /100 for the numeric dollar column.
+  //      An off-vocabulary model makes calculateCost warn and return 0 — it
+  //      refuses to guess. The deleted calculateAICost silently charged
+  //      gpt-4o-mini rates instead, which is how every real model got booked at
+  //      a fraction of its price.
+  //   3. neither           → $0.
+  //
+  // A FAILURE LOG STILL BOOKS $0, unchanged and deliberate: the catch blocks
+  // that call this pass neither a model nor a cost, precisely because a throw
+  // can happen before the model call ever ran. A failed generation that never
+  // reached a provider must not put a charge in the ledger.
+  const cost =
+    typeof params.costUsd === "number" && Number.isFinite(params.costUsd) && params.costUsd >= 0
+      ? params.costUsd
+      : params.model?.trim()
+        ? calculateCost(params.model.trim() as AIModel, params.promptTokens || 0, params.completionTokens || 0) / 100
+        : 0
 
   const { error } = await supabase.from("content_generation_logs").insert({
     content_id: params.contentId ?? null,
@@ -3327,19 +3413,62 @@ export async function logGenerationCost(params: {
   return { success: true, cost }
 }
 
+/**
+ * Content AI spend for one calendar month, read from THE ONE LEDGER.
+ *
+ * ── WHY ai_tool_usage AND NOT content_generation_logs ────────────────────────
+ *
+ * This used to read content_generation_logs, which has two problems as a bill:
+ *
+ *   1. It only ever contains LANE B rows. Lane A
+ *      (lib/content-generation/*) never writes it, so half the platform's
+ *      content spend was simply absent from the content spend panel.
+ *   2. Its cost_usd was priced by a rival table that shared no keys with the
+ *      one the platform actually books against — see the ONE PRICE TABLE note
+ *      above. Every figure it showed was understated, claude-sonnet by 25.6x.
+ *
+ * ai_tool_usage is written by lib/ai/cost-tracking.ts::logAIUsage on the way out
+ * of EVERY generateAIResponse call, in both lanes, with the real provider token
+ * counts and the dated provider price table. It is the same table the monthly
+ * aggregate RPC and the ai_tokens_monthly fair-use counter are computed from.
+ * Reading it means this panel, the billing rollup and the cap check can no
+ * longer disagree about what a month cost.
+ *
+ * ── ROUNDING, STATED HONESTLY ────────────────────────────────────────────────
+ *
+ * ai_tool_usage.cost_cents is an INTEGER and calculateCost applies Math.ceil
+ * PER CALL. A generation that truly cost $0.004 is stored as 1 cent. So:
+ *   · total_cost is rounded UP, by up to (1 cent x number of generations);
+ *   · avg_cost_per_generation inherits that and can never fall below $0.01 for
+ *     a non-empty month, however cheap the model.
+ * This is not a defect being papered over — it is the platform's own accounting
+ * basis, the exact number the invoice rollup and the fair-use counter use,
+ * which is precisely why it is the right source here. But a reader looking at
+ * "Avg each" on a haiku-only month deserves to know the figure is a ceiling,
+ * not a measurement.
+ *
+ * ── SCOPE ────────────────────────────────────────────────────────────────────
+ * brokerage AND agent, both explicit. RLS on ai_tool_usage is
+ * `(brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id())`, so
+ * the policy alone would also admit every UNTENANTED row on the platform; the
+ * explicit .eq("brokerage_id") is what excludes those. The .eq("agent_id")
+ * preserves the agent scoping this function has always had.
+ */
 export async function getMonthlyAICosts(month?: Date): Promise<
   | {
       success: true
       costs: {
+        /** Dollars. Rounded UP per generation — see the ROUNDING note above. */
         total_cost: number
         total_generations: number
+        /** Dollars. Cannot be below $0.01 on a non-empty month — see ROUNDING. */
         avg_cost_per_generation: number
         /**
          * PORTED from the deleted getContentGenerationStats, whose
          * totalTokensUsed was the one field of its four that nothing else
          * served. It read ai_generated_content.tokens_used — a column that
-         * does not exist — so it was always 0. content_generation_logs.total_tokens
-         * is the real number, written by logGenerationCost.
+         * does not exist — so it was always 0. ai_tool_usage.tokens_used is the
+         * real number, written from the provider's own input+output counts.
          */
         total_tokens: number
         breakdown_by_model: Array<{ model: string; cost: number; count: number; tokens: number }>
@@ -3354,36 +3483,66 @@ export async function getMonthlyAICosts(month?: Date): Promise<
   const targetMonth = month ? new Date(month) : new Date()
   if (Number.isNaN(targetMonth.getTime())) return { success: false, error: "Invalid month" }
 
-  const startOfMonth = new Date(targetMonth.getFullYear(), targetMonth.getMonth(), 1)
-  // Day 0 of the NEXT month is the last day of this one, but at 00:00 — which
-  // dropped everything generated after midnight on the final day.
-  const endOfMonth = new Date(targetMonth.getFullYear(), targetMonth.getMonth() + 1, 1)
+  // ── MONTH BOUNDS AGAINST A `timestamp WITHOUT time zone` COLUMN ────────────
+  //
+  // ai_tool_usage.created_at is timestamp WITHOUT time zone, DEFAULT now(), and
+  // the database's TimeZone is UTC — verified live — so every stored value is a
+  // UTC wall-clock reading with the zone stripped off.
+  //
+  // Sending an ISO string ending in `Z` would be wrong here in a way that fails
+  // silently: Postgres casts the literal to `timestamp` by DISCARDING the
+  // offset, not by converting it. The old code built the bounds with
+  // `new Date(year, month, 1)` — midnight LOCAL — and then .toISOString()'d it;
+  // on any server not running in UTC that shifts the month boundary by the
+  // offset and quietly moves generations into the neighbouring month.
+  //
+  // So: compute the bounds in UTC with Date.UTC, and emit them with NO zone
+  // designator at all (`YYYY-MM-DDTHH:MM:SS`). There is then no offset for
+  // Postgres to drop and nothing to misinterpret.
+  //
+  // The half-open [start, startOfNextMonth) shape is unchanged and stays: `lte`
+  // on the last day at 00:00 used to drop everything generated after midnight
+  // on the final day of the month.
+  const naiveUtc = (d: Date) => d.toISOString().slice(0, 19)
+  const year = targetMonth.getUTCFullYear()
+  const monthIndex = targetMonth.getUTCMonth()
+  const startOfMonth = naiveUtc(new Date(Date.UTC(year, monthIndex, 1)))
+  const startOfNextMonth = naiveUtc(new Date(Date.UTC(year, monthIndex + 1, 1)))
 
-  const { data: logs, error } = await supabase
-    .from("content_generation_logs")
-    .select("cost_usd, model_used, total_tokens")
+  const { data: usage, error } = await supabase
+    .from("ai_tool_usage")
+    .select("cost_cents, tokens_used, model_used")
+    .eq("brokerage_id", auth.actor.brokerageId)
     .eq("agent_id", auth.actor.agentId)
-    .gte("generated_at", startOfMonth.toISOString())
-    .lt("generated_at", endOfMonth.toISOString())
+    // The ONE vocabulary, shared by both lanes (lib/ai/content-features.ts).
+    // Deliberately narrower than "all AI spend": voice, CMA and lead scoring
+    // also write ai_tool_usage and do not belong on a content panel.
+    .in("feature", CONTENT_GENERATION_FEATURES as string[])
+    .gte("created_at", startOfMonth)
+    .lt("created_at", startOfNextMonth)
 
-  // A denied cost query is not a $0 bill.
+  // A denied cost query is not a $0 bill. supabase-js RESOLVES a refused read,
+  // so without this the panel would render "$0.00 this month" over an RLS
+  // rejection.
   if (error) {
     console.error("[getMonthlyAICosts] Query failed:", error)
     return { success: false, error: error.message }
   }
 
-  const rows = logs ?? []
-  const totalCost = rows.reduce((sum, log) => sum + Number(log.cost_usd || 0), 0)
+  const rows = usage ?? []
+  // Sum in integer CENTS and divide ONCE, so 300 one-cent rows total exactly
+  // $3.00 rather than accumulating float dust.
+  const totalCents = rows.reduce((sum, row) => sum + Number(row.cost_cents || 0), 0)
   const totalGenerations = rows.length
-  const totalTokens = rows.reduce((sum, log) => sum + Number(log.total_tokens || 0), 0)
+  const totalTokens = rows.reduce((sum, row) => sum + Number(row.tokens_used || 0), 0)
 
   const modelBreakdown = rows.reduce(
-    (acc: Record<string, { model: string; cost: number; count: number; tokens: number }>, log) => {
-      const model = log.model_used || "unknown"
-      if (!acc[model]) acc[model] = { model, cost: 0, count: 0, tokens: 0 }
-      acc[model].cost += Number(log.cost_usd || 0)
+    (acc: Record<string, { model: string; cents: number; count: number; tokens: number }>, row) => {
+      const model = row.model_used || "unknown"
+      if (!acc[model]) acc[model] = { model, cents: 0, count: 0, tokens: 0 }
+      acc[model].cents += Number(row.cost_cents || 0)
       acc[model].count += 1
-      acc[model].tokens += Number(log.total_tokens || 0)
+      acc[model].tokens += Number(row.tokens_used || 0)
       return acc
     },
     {}
@@ -3392,11 +3551,13 @@ export async function getMonthlyAICosts(month?: Date): Promise<
   return {
     success: true,
     costs: {
-      total_cost: totalCost,
+      total_cost: totalCents / 100,
       total_generations: totalGenerations,
-      avg_cost_per_generation: totalGenerations > 0 ? totalCost / totalGenerations : 0,
+      avg_cost_per_generation: totalGenerations > 0 ? totalCents / totalGenerations / 100 : 0,
       total_tokens: totalTokens,
-      breakdown_by_model: Object.values(modelBreakdown).sort((a, b) => b.cost - a.cost),
+      breakdown_by_model: Object.values(modelBreakdown)
+        .map(({ model, cents, count, tokens }) => ({ model, cost: cents / 100, count, tokens }))
+        .sort((a, b) => b.cost - a.cost),
     },
   }
 }

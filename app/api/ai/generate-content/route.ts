@@ -73,6 +73,11 @@ Target Contact Profile:
       metadata: {
         userId: agentCtx.userId,
         brokerageId,
+        // agentId was MISSING here. logAIUsage stamps ai_tool_usage.agent_id
+        // from this metadata, and getMonthlyAICosts scopes its read by agent —
+        // so without it every generation through this route was booked to the
+        // brokerage but invisible on the agent's own spend panel.
+        agentId,
         feature: "email_generation",
       },
     })
@@ -84,6 +89,12 @@ Target Contact Profile:
     // literal "email_generation" as a MODEL NAME when response.model was
     // falsy, which is a feature label, not a model, and would have polluted
     // the per-model cost breakdown with a row nothing prices.
+    //
+    // costUsd is `response.costCents / 100` — the CANONICAL figure that
+    // lib/ai/cost-tracking.ts::logAIUsage has already booked to
+    // ai_tool_usage.cost_cents for this very call. Before this, the cost on
+    // this row was recomputed by a rival price table keyed on a namespace the
+    // system never emits, so the two ledgers disagreed on every generation.
     const genLog = await logGenerationCost({
       contentType,
       prompt,
@@ -91,6 +102,7 @@ Target Contact Profile:
       promptTokens: response.tokensUsed?.input,
       completionTokens: response.tokensUsed?.output,
       totalTokens: response.tokensUsed?.total,
+      costUsd: response.costCents / 100,
       generationTimeMs: generationTime,
       success: true,
     })

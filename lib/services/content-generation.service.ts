@@ -6,6 +6,7 @@ import { isValidUUID } from "@/lib/validations"
 import { CONTENT_TYPES, type ContentType } from "@/lib/constants"
 import { handleError, ValidationError, NotFoundError } from "@/lib/errors"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { calculateThemFirstScore } from "@/lib/compliance-rules/rule-evaluators"
 
 // ============================================
 // UNIFIED CONTENT GENERATION SERVICE
@@ -95,7 +96,10 @@ export async function generateContent(params: ContentGenerationParams): Promise<
           context_data: contextData,
           generation_params: params,
         },
-        quality_score: generatedContent.qualityScore || 85,
+        // `|| 85` removed: it substituted a constant whenever the measured score
+        // was 0 (all agent-centric copy — the case that most deserves a low
+        // number) or null. quality_score is nullable; null means "not measured".
+        quality_score: generatedContent.qualityScore ?? null,
         approval_status: "pending",
       })
       .select()
@@ -215,8 +219,11 @@ function buildPrompt(params: ContentGenerationParams, contextData: any): string 
   prompt += `  "subject": "Subject line or title",\n`
   prompt += `  "body": "Main content",\n`
   prompt += `  "hashtags": ["tag1", "tag2"],\n`
-  prompt += `  "cta": "Call to action",\n`
-  prompt += `  "qualityScore": 85\n`
+  prompt += `  "cta": "Call to action"\n`
+  // NO "qualityScore" FIELD. It used to ask the model to return the literal
+  // 85 — so the "score" was a constant this prompt handed over and then read
+  // back as if the model had assessed anything. The score is now MEASURED from
+  // the returned text (calculateThemFirstScore), never self-reported.
   prompt += `}\n`
 
   return prompt
@@ -327,12 +334,18 @@ function parseAIResponse(text: string, params: ContentGenerationParams) {
     const jsonMatch = text.match(/\{[\s\S]*\}/)
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0])
+      const body = parsed.body || text
       return {
         subject: parsed.subject || "",
-        body: parsed.body || text,
+        body,
         hashtags: parsed.hashtags || [],
         cta: parsed.cta || "",
-        qualityScore: parsed.qualityScore || 85,
+        // MEASURED, not self-reported. This was `parsed.qualityScore || 85`,
+        // reading a field the prompt itself specified as the literal 85 — so
+        // the number was a constant on both paths and the `|| 85` never even
+        // had to fire. calculateThemFirstScore actually counts buyer-focused
+        // vs agent-focused pronouns in the text that came back.
+        qualityScore: themFirstQualityScore(body),
         platformSpecific: parsed.platformSpecific || {},
       }
     }
@@ -340,15 +353,41 @@ function parseAIResponse(text: string, params: ContentGenerationParams) {
     console.log("[v0] Failed to parse JSON, using raw text")
   }
 
-  // Fallback: use raw text
+  // Fallback: use raw text. The score is measured off that raw text — the old
+  // hardcoded 80 here scored content nobody had looked at.
   return {
     subject: "",
     body: text,
     hashtags: [],
     cta: "",
-    qualityScore: 80,
+    qualityScore: themFirstQualityScore(text),
     platformSpecific: {},
   }
+}
+
+/**
+ * The stored quality_score for a generated piece, 0-100.
+ *
+ * WHAT IT IS: the deterministic "Them First" pronoun ratio — how much of the
+ * copy speaks to the reader ("you", "your", "imagine") versus about the agent
+ * ("I", "me", "my"). It is the same measure the compliance gate enforces
+ * (lib/kernel/compliance.ts evaluateOutbound warns below 0.6), so a piece that
+ * scores badly here is the same piece that gate will flag.
+ *
+ * WHAT IT IS NOT: a judgement of whether the copy is any good. It is one
+ * cheap, honest signal, not an editorial verdict — which is precisely why it
+ * replaced a hardcoded 85. The richer instrument is
+ * lib/them-first/validator.ts::validateThemFirstContent (AI structural analysis
+ * + sentiment + severity-graded prohibited phrases, including Fair Housing);
+ * it costs an AI call per piece, so it belongs on review, not on every write.
+ *
+ * Returns null for empty content: no text is "no signal", and writing a number
+ * for it would be the same fabrication in a new place. quality_score is
+ * nullable (verified against the live schema), so null is storable.
+ */
+function themFirstQualityScore(content: string): number | null {
+  if (!content || !content.trim()) return null
+  return Math.round(calculateThemFirstScore(content) * 100)
 }
 
 /**

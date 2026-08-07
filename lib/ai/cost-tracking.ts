@@ -120,7 +120,14 @@ export function estimateTokens(text: string): number {
  */
 export async function logAIUsage(params: {
   userId: string
-  brokerageId: string
+  /**
+   * Nullable BY DESIGN. Callers used to coerce a missing tenant to `""`, which
+   * Postgres rejects for a uuid column (22P02) — so the whole usage row was
+   * refused and the error swallowed below. A background job with no tenant
+   * still deserves to be in the ledger; it lands with brokerage_id NULL rather
+   * than not landing at all.
+   */
+  brokerageId: string | null
   teamId?: string | null
   agentId?: string | null
   model: AIModel
@@ -173,21 +180,26 @@ export async function logAIUsage(params: {
     // Update monthly aggregates using RPC function
     // Parameters must be in exact order: p_brokerage_id, p_month, p_tokens_input, p_tokens_output, p_cost_cents, p_model, p_feature, p_team_id, p_agent_id
     const currentMonth = new Date().toISOString().slice(0, 7) + "-01" // YYYY-MM-01 format
-    
-    const { error: rpcError } = await supabase.rpc("increment_ai_usage_monthly", {
-      p_brokerage_id: params.brokerageId,
-      p_month: currentMonth,
-      p_tokens_input: params.inputTokens,
-      p_tokens_output: params.outputTokens,
-      p_cost_cents: costCents,
-      p_model: params.model,
-      p_feature: params.feature,
-      p_team_id: params.teamId || null,
-      p_agent_id: params.agentId || null
-    })
 
-    if (rpcError) {
-      console.error("[v0] Failed to increment monthly usage:", rpcError)
+    // The monthly aggregate is PER BROKERAGE — there is nothing to increment
+    // without one, and calling it with null would fail inside the function.
+    // Skipped explicitly rather than fired and swallowed.
+    if (params.brokerageId) {
+      const { error: rpcError } = await supabase.rpc("increment_ai_usage_monthly", {
+        p_brokerage_id: params.brokerageId,
+        p_month: currentMonth,
+        p_tokens_input: params.inputTokens,
+        p_tokens_output: params.outputTokens,
+        p_cost_cents: costCents,
+        p_model: params.model,
+        p_feature: params.feature,
+        p_team_id: params.teamId || null,
+        p_agent_id: params.agentId || null
+      })
+
+      if (rpcError) {
+        console.error("[v0] Failed to increment monthly usage:", rpcError)
+      }
     }
 
     // Bump the generic usage_counters row so lib/usage/check-cap.ts sees

@@ -30,6 +30,7 @@ import { processKernelEvent } from "./notification-engine"
 
 import {
   evaluateRegulatoryCompliance,
+  calculateThemFirstScore,
 } from "@/lib/compliance-rules/rule-evaluators"
 
 // Them-first check — reuse the prohibited phrase list from the validator.
@@ -61,13 +62,17 @@ const THEM_FIRST_PROHIBITED: Array<{ phrase: string; category: string }> = [
   { phrase: "you'll make money", category: "investment_advice" },
 ]
 
-function calculatePronounRatio(content: string): number {
-  const buyerWords = (content.match(/\b(you|your|yours|imagine|feel|enjoy|benefit|discover|experience)\b/gi) || []).length
-  const agentWords = (content.match(/\b(i|me|my|mine|we|us|our|ours)\b/gi) || []).length
-  const total = buyerWords + agentWords
-  if (total === 0) return 0.5
-  return buyerWords / total
-}
+/**
+ * DELETED — this was a byte-identical copy of
+ * lib/compliance-rules/rule-evaluators.ts::calculateThemFirstScore: same two
+ * word lists, same 0.5 no-pronoun neutral, same ratio. The survivor is exported
+ * from there and imported above; this module already depended on that one, so
+ * that is the only non-circular direction.
+ *
+ * Two copies of a compliance threshold is how the enforced gate and the
+ * compliance report begin disagreeing about the same content the moment someone
+ * tunes one word list and not the other.
+ */
 
 // ─── RESTRICTED CONTACT STATES ────────────────────────────────────────────────
 // States where non-ISA actors are blocked from outbound messaging.
@@ -220,7 +225,7 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
     }
   }
 
-  const pronounRatio = calculatePronounRatio(content)
+  const pronounRatio = calculateThemFirstScore(content)
   if (pronounRatio < 0.6) {
     violations.push(
       `ThemFirst: Content is only ${Math.round(pronounRatio * 100)}% contact-focused (target ≥60%). Reduce agent-centric language.`

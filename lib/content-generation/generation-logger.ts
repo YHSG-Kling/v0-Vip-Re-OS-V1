@@ -7,13 +7,51 @@ import { ContentGenerationOutput } from "./content-generator"
 // GENERATION ACTIVITY LOGGING
 // Logs all content generation to activities table (ONLY)
 // ============================================
+//
+// ─── ACTOR IDENTITY: TWO COLUMNS, TWO ID SPACES ──────────────────────────────
+//
+// activities has TWO distinct actor columns, verified against the live schema:
+//
+//   activities_agent_id_fkey       FOREIGN KEY (agent_id)      REFERENCES agents(id) ON DELETE CASCADE
+//   activities_agent_user_id_fkey  FOREIGN KEY (agent_user_id) REFERENCES users(id)  ON DELETE SET NULL
+//
+// `agent_id` is NULLABLE. `agents.id` and `users.id` are DISJOINT id spaces —
+// `select count(*) from agents a join users u on u.id = a.id` returns 0 on the
+// live database. So a users.id placed in agent_id can NEVER satisfy the FK; it
+// is a guaranteed 23503, not an occasional one.
+//
+// This lane used to do exactly that for brokers/admins/TCs (anyone without an
+// `agents` row), and the rejection was invisible: this function console.errors
+// and returns { success: false }, and every caller drops the return value. The
+// user got their content and no audit row was ever written.
+//
+// RULE FOR ANYONE EDITING THIS FILE: agent_id takes an agents.id or NULL.
+// agent_user_id takes a users.id. Never assign one to the other, and never
+// paper over a missing agents.id with `?? userId`.
+//
+// ─── TENANT ANCHOR ───────────────────────────────────────────────────────────
+//
+// activities.brokerage_id is NOT NULL with no default. A BEFORE INSERT trigger
+// (activities_set_brokerage_trg) back-fills it from agents/users/contacts/etc.,
+// but relying on that is fragile — it cannot run at all on a row that is about
+// to be FK-rejected. These writers now pass brokerage_id explicitly from the
+// caller's already-verified session context.
+
+/** Actor identity for an activity row. Two id spaces, never interchangeable. */
+export interface ActivityActor {
+  /** agents.id, or null when the caller has no agents row (broker/admin/TC). */
+  agent_id: string | null
+  /** users.id — the authenticated human. Always known. */
+  agent_user_id?: string | null
+  /** brokerages.id — the tenant anchor (NOT NULL in the DB). */
+  brokerage_id?: string | null
+}
 
 /**
  * Log content generation event to activities table
  * This is the ONLY database write allowed by System 4.1
  */
-export async function logContentGeneration(params: {
-  agent_id: string
+export async function logContentGeneration(params: ActivityActor & {
   content_output: ContentGenerationOutput
   entity_id?: string // UUID of generated content (runtime only, not persisted)
   entity_type?: string // 'content'
@@ -24,7 +62,16 @@ export async function logContentGeneration(params: {
     const { data, error } = await supabase
       .from("activities")
       .insert({
-        agent_id: params.agent_id,
+        // NULL when the caller has no agents row — honest, and permitted by the
+        // schema. Do NOT substitute agent_user_id here (see header).
+        agent_id: params.agent_id ?? null,
+        agent_user_id: params.agent_user_id ?? null,
+        ...(params.brokerage_id ? { brokerage_id: params.brokerage_id } : {}),
+        // These two were previously accepted as params and then silently
+        // dropped from the insert, so the runtime content_id was never recorded
+        // and entity_type defaulted to 'unknown'.
+        entity_id: params.entity_id ?? null,
+        entity_type: params.entity_type ?? "content",
         activity_type: "content_generated",
         title: `Generated ${params.content_output.content_type}`,
         description: `AI-generated ${params.content_output.content_type} content for ${params.content_output.channel_intent || "general"} channel`,
@@ -63,8 +110,7 @@ export async function logContentGeneration(params: {
 /**
  * Log batch content generation
  */
-export async function logBatchContentGeneration(params: {
-  agent_id: string
+export async function logBatchContentGeneration(params: ActivityActor & {
   batch_results: Array<{
     content_output: ContentGenerationOutput
     success: boolean
@@ -77,6 +123,8 @@ export async function logBatchContentGeneration(params: {
     if (result.success) {
       const log = await logContentGeneration({
         agent_id: params.agent_id,
+        agent_user_id: params.agent_user_id,
+        brokerage_id: params.brokerage_id,
         content_output: result.content_output,
       })
       if (log.success) {
@@ -91,8 +139,7 @@ export async function logBatchContentGeneration(params: {
 /**
  * Log omnipresent content generation (one idea → many formats)
  */
-export async function logOmnipresentGeneration(params: {
-  agent_id: string
+export async function logOmnipresentGeneration(params: ActivityActor & {
   core_idea: string
   formats_generated: ContentGenerationOutput[]
 }): Promise<{ success: boolean; activity_id?: string }> {
@@ -102,7 +149,11 @@ export async function logOmnipresentGeneration(params: {
     const { data, error } = await supabase
       .from("activities")
       .insert({
-        agent_id: params.agent_id,
+        // Same two-id-space rule as logContentGeneration — see file header.
+        agent_id: params.agent_id ?? null,
+        agent_user_id: params.agent_user_id ?? null,
+        ...(params.brokerage_id ? { brokerage_id: params.brokerage_id } : {}),
+        entity_type: "content",
         activity_type: "omnipresent_content_generated",
         title: `Generated omnipresent content`,
         description: `AI-generated content across ${params.formats_generated.length} formats from one core idea`,
@@ -138,7 +189,10 @@ export async function logOmnipresentGeneration(params: {
  * Read from activities table
  */
 export async function getContentGenerationHistory(params: {
-  agent_id: string
+  /** agents.id, or null when the caller has no agents row. */
+  agent_id: string | null
+  /** users.id — used as the actor filter when agent_id is null. */
+  agent_user_id?: string | null
   limit?: number
   content_type?: string
 }): Promise<Array<{
@@ -152,10 +206,20 @@ export async function getContentGenerationHistory(params: {
   try {
     const supabase = await createClient()
 
+    // Filter on whichever actor column actually holds this caller's identity.
+    // Writing NULL into agent_id for agent-less callers means we must READ them
+    // back by agent_user_id — `.eq("agent_id", null)` would not match those rows.
+    const actorColumn = params.agent_id ? "agent_id" : "agent_user_id"
+    const actorValue = params.agent_id ?? params.agent_user_id
+    if (!actorValue) {
+      console.error("[System 4.1] getContentGenerationHistory called with no actor id")
+      return []
+    }
+
     let query = supabase
       .from("activities")
       .select("id, title, description, activity_type, notes, completed_at")
-      .eq("agent_id", params.agent_id)
+      .eq(actorColumn, actorValue)
       .in("activity_type", ["content_generated", "omnipresent_content_generated"])
       .order("completed_at", { ascending: false })
 
@@ -193,7 +257,10 @@ export async function getContentGenerationHistory(params: {
  * Get content generation stats (aggregated from activities)
  */
 export async function getContentGenerationStats(params: {
-  agent_id: string
+  /** agents.id, or null when the caller has no agents row. */
+  agent_id: string | null
+  /** users.id — used as the actor filter when agent_id is null. */
+  agent_user_id?: string | null
   date_range?: { start: string; end: string }
 }): Promise<{
   total_generated: number
@@ -204,10 +271,18 @@ export async function getContentGenerationStats(params: {
   try {
     const supabase = await createClient()
 
+    // Same two-column actor filter as getContentGenerationHistory.
+    const actorColumn = params.agent_id ? "agent_id" : "agent_user_id"
+    const actorValue = params.agent_id ?? params.agent_user_id
+    if (!actorValue) {
+      console.error("[System 4.1] getContentGenerationStats called with no actor id")
+      return { total_generated: 0, by_content_type: {}, by_channel: {}, recent_generations: 0 }
+    }
+
     let query = supabase
       .from("activities")
       .select("notes, completed_at")
-      .eq("agent_id", params.agent_id)
+      .eq(actorColumn, actorValue)
       .in("activity_type", ["content_generated", "omnipresent_content_generated"])
 
     if (params.date_range) {
@@ -216,7 +291,12 @@ export async function getContentGenerationStats(params: {
 
     const { data, error } = await query
 
-    if (error || !data) {
+    if (error) {
+      // A REFUSED read is not "no rows". Say so instead of returning silent zeros.
+      console.error("[System 4.1] Failed to get content stats:", error)
+      return { total_generated: 0, by_content_type: {}, by_channel: {}, recent_generations: 0 }
+    }
+    if (!data) {
       return { total_generated: 0, by_content_type: {}, by_channel: {}, recent_generations: 0 }
     }
 
