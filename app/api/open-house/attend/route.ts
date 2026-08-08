@@ -3,6 +3,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { persistContactConsent } from "@/lib/kernel/compliance/require-contact-consent"
+import { queueContactEnrichment } from "@/lib/enrichment/contact-enrichment-core"
 
 export async function POST(req: NextRequest) {
   try {
@@ -118,6 +119,17 @@ export async function POST(req: NextRequest) {
         consented: true,
         ipAddress: ip,
         userAgent: userAgent,
+      }).catch(() => {})
+
+      // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). Only on the
+      // CREATE branch — a returning attendee already went through this. This
+      // public route emits no kernel event, so nothing else would have queued
+      // it. Voided: a sign-in must never fail because of enrichment.
+      void queueContactEnrichment({
+        contactId,
+        brokerageId: event.brokerage_id,
+        triggerType: "open_house",
+        supabase,
       }).catch(() => {})
     }
 

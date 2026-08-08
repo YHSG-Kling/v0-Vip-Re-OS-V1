@@ -73,11 +73,27 @@ export interface VoiceOption {
   name: string
   language: string
   gender: string | null
+  /** ElevenLabs' own classification. Only "premade" ever reaches a caller. */
+  category: string
+  /** The label line a picker renders under the name, when ElevenLabs has one. */
+  description: string | null
 }
 
 /**
- * List the ElevenLabs voices available to the platform. HeyGen voice listing is
- * removed — the only voice engine is ElevenLabs.
+ * List the ElevenLabs STOCK voices available to the platform.
+ *
+ * PREMADE ONLY — THIS IS A SAFETY FILTER, NOT A TIDY-UP. Every agent's Instant
+ * Voice Clone is created through /api/elevenlabs/voice-clone against the ONE
+ * platform ElevenLabs account, so GET /v1/voices returns this brokerage's
+ * clones — and every other brokerage's — right alongside the stock library.
+ * Rendering that list unfiltered in a picker would offer agent A the cloned
+ * voice of agent B, which is the audio form of this platform's standing rule
+ * that nobody else's likeness is ever used. ElevenLabs tags its own library
+ * `category: "premade"` and everything created via /voices/add as "cloned" /
+ * "generated" / "professional"; only "premade" is returned here, and a voice
+ * with no category at all is dropped rather than assumed safe.
+ *
+ * HeyGen voice listing is removed — the only voice engine is ElevenLabs.
  */
 export async function listElevenLabsVoices(): Promise<{ success: boolean; voices: VoiceOption[] }> {
   const apiKey = process.env.ELEVENLABS_API_KEY
@@ -91,12 +107,18 @@ export async function listElevenLabsVoices(): Promise<{ success: boolean; voices
     auth: { style: "header", name: "xi-api-key", value: apiKey },
   })
   if (!res.ok || !res.data) return { success: false, voices: [] }
-  const voices: VoiceOption[] = (res.data.voices ?? []).map((v: any) => ({
-    voice_id: v.voice_id,
-    name: v.name ?? v.voice_id,
-    language: v.labels?.language ?? v.fine_tuning?.language ?? "en",
-    gender: v.labels?.gender ?? null,
-  }))
+  const voices: VoiceOption[] = (res.data.voices ?? [])
+    .filter((v: any) => typeof v?.voice_id === "string" && v.category === "premade")
+    .map((v: any) => ({
+      voice_id: v.voice_id,
+      name: v.name ?? v.voice_id,
+      language: v.labels?.language ?? v.fine_tuning?.language ?? "en",
+      gender: v.labels?.gender ?? null,
+      category: "premade",
+      description: typeof v.description === "string" && v.description.trim()
+        ? v.description.trim()
+        : [v.labels?.accent, v.labels?.description].filter(Boolean).join(", ") || null,
+    }))
   return { success: true, voices }
 }
 

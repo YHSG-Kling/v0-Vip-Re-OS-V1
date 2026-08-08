@@ -11,6 +11,15 @@ import { calculateFuzzyMatch } from '@/lib/lead-pipeline/fuzzy-matcher'
 import { calculateLeadScore } from '@/lib/lead-governance/multi-factor-scorer'
 import { resolveAgentForContact } from '@/lib/lead-assignment/contact-assignment'
 import { mergeIdentityFields } from '@/lib/data-steward/field-steward'
+// NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
+// not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
+// `server-only` (it holds the service client and the paid PeopleData/OSINT
+// clients), and a static import here would pull that into every module graph
+// that reaches this file — including the plain `tsx` guard simulators, which are
+// not a server component and crash on `server-only` at load. lib/kernel/crm.ts
+// already used the dynamic form for exactly this reason; these call sites were
+// the inconsistency. The queue call is best-effort and already awaited/voided,
+// so deferring the import costs nothing.
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -525,41 +534,21 @@ export async function queueContactEnrichmentAndScore(params: {
 }): Promise<void> {
   const supabase = createServiceClient()
 
-  // Queue enrichment — idempotent: skip if already pending or processing
-  const { data: existing } = await supabase
-    .from('lead_enrichment_queue')
-    .select('id')
-    .eq('brokerage_id', params.brokerageId)
-    .eq('contact_id', params.contactId)
-    .in('status', ['pending', 'processing'])
-    .limit(1)
-    .maybeSingle()
-
-  if (!existing?.id) {
-    await supabase.from('lead_enrichment_queue').insert({
-      brokerage_id: params.brokerageId,
-      contact_id: params.contactId,   // contact_id NOT lead_id
-      lead_id: null,
-      status: 'pending',
-      enrichment_type: 'skip_trace',
-      trigger_type: 'contact_captured',
-    })
-
-    await supabase.from('lifecycle_events').insert({
-      brokerage_id: params.brokerageId,
-      entity_type: 'contact',
-      entity_id: params.contactId,
-      event_type: KernelEvent.CONTACT_ENRICHMENT_QUEUED,
-      metadata: {},
-    })
-
-    await processKernelEvent({
-      event: KernelEvent.CONTACT_ENRICHMENT_QUEUED,
-      brokerageId: params.brokerageId,
-      entityType: 'contact',
-      entityId: params.contactId,
-    })
-  }
+  // Queue enrichment. This used to be a private copy of the queue write — one of
+  // four in the repo, each with a different set of guards. The pending/processing
+  // idempotency check this copy had was ported onto the survivor,
+  // lib/enrichment/contact-enrichment-core.ts:queueContactEnrichment, which adds
+  // the freshness check this copy lacked and the owner's live-deal suppression
+  // rule that none of the four had. It also emits CONTACT_ENRICHMENT_QUEUED
+  // through emitKernelEvent, which does the lifecycle_events insert AND the
+  // reactor fan-out in one call — the pair of calls here could drift apart.
+  //
+  // The SCORING half below is this function's own capability and stays.
+  await (await import("@/lib/enrichment/contact-enrichment-core")).queueContactEnrichment({
+    brokerageId: params.brokerageId,
+    contactId: params.contactId,
+    triggerType: 'contact_captured',
+  })
 
   // Score immediately with available data (re-scored after enrichment completes)
   const { data: contact } = await supabase

@@ -33,7 +33,17 @@ export interface Twin {
   brokerageId: string | null
   label: string
   sourceType: "photo" | "video"
+  /** What the agent uploaded — the raw photo/video that went to D-ID. */
   sourceUrl: string
+  /**
+   * THE FINISHED AVATAR, RE-HOSTED IN OUR OWN SUPABASE BUCKET.
+   *
+   * Written by lib/did/avatar-completion.ts:applyAvatarOutcome once D-ID says
+   * "done": it downloads the finished asset and uploads it to `twin-avatars` at
+   * `rehosted/{assetId}.{ext}`, and THIS is the url every surface should render
+   * — the D-ID CDN url it came from expires. Null until the avatar finishes.
+   */
+  avatarUrl: string | null
   thumbnailUrl: string | null
   didAvatarId: string | null
   voiceId: string | null
@@ -59,6 +69,7 @@ function rowToTwin(row: any): Twin {
     label: row.label ?? "My Twin",
     sourceType: row.source_type,
     sourceUrl: row.source_url,
+    avatarUrl: row.avatar_url ?? null,
     thumbnailUrl: row.thumbnail_url,
     didAvatarId: row.did_avatar_id,
     voiceId: row.voice_id,
@@ -197,11 +208,12 @@ export async function deleteTwin(twinId: string): Promise<{ ok: boolean; error?:
  * Update a twin's display label and personality — the "edit an existing twin"
  * path, as distinct from finalizeTwin() which is the wizard's last step.
  *
- * NOT WIRED YET. TwinCard already carries a `canEdit` prop but only renders
- * Set-default and Delete; there is no rename / edit-personality affordance.
- * Wiring it is a UI change in
- * app/dashboard/settings/twin-studio/components/twin-card.tsx (outside this
- * slice's file set). The endpoint is hardened in place meanwhile.
+ * WIRED (w3): the "Rename / edit personality" item on TwinCard's menu
+ * (app/dashboard/settings/twin-studio/components/twin-card.tsx). The card had
+ * carried a `canEdit` prop that promised an edit affordance and rendered only
+ * Set-default and Delete, so a twin's name and personality were fixed at
+ * creation. The dialog's maxLength values mirror the ceilings below, which
+ * REFUSE rather than truncate.
  */
 export async function updateTwinDetails(params: {
   twinId: string
@@ -401,6 +413,139 @@ export async function createTwinDraft(params: {
 // paid to create, with no cap check and no `voice_clones_created` meter line.
 // The metering bypass is the reason this is a deletion and not a "harmless
 // duplicate".
+
+// ─── Stock voices ─────────────────────────────────────────────────────────
+//
+// THE SECOND WAY TO HAVE A VOICE. A clone costs money, takes a recording, and
+// some agents simply do not want their own voice on an explainer video — so the
+// Twin Studio voice step offers ElevenLabs' STOCK library as well as the clone.
+// A stock voice creates nothing at the vendor: it is an id that already exists
+// in the shared library, so there is no usage cap to check and nothing to meter.
+// That is precisely why the allowlist below is load-bearing — see
+// setTwinStockVoice.
+
+export interface TwinVoiceOption {
+  voiceId: string
+  label: string
+  /** One line of "what does it sound like", shown under the name. */
+  style: string
+  gender: string | null
+}
+
+/**
+ * The stock voices a twin may be given.
+ *
+ * TWO SOURCES, ONE LIST. The curated set in lib/video/assistant-options.ts is
+ * the reliable floor — it renders with no vendor key and never changes shape
+ * under us. On top of it, when ELEVENLABS_API_KEY is configured, the live
+ * library is merged in so the picker is not frozen to nine ids forever.
+ * `listElevenLabsVoices` returns PREMADE voices only; it must, because the
+ * platform ElevenLabs account also holds every agent's clone.
+ *
+ * The curated entry wins on an id collision — its `style` line is written for
+ * this product, ElevenLabs' own description is not.
+ */
+export async function listTwinVoiceOptions(): Promise<{ voices: TwinVoiceOption[]; live: boolean }> {
+  const { ASSISTANT_VOICE_OPTIONS } = await import("@/lib/video/assistant-options")
+
+  const byId = new Map<string, TwinVoiceOption>()
+  for (const v of ASSISTANT_VOICE_OPTIONS) {
+    byId.set(v.voiceId, { voiceId: v.voiceId, label: v.label, style: v.style, gender: v.gender })
+  }
+
+  let live = false
+  try {
+    const { listElevenLabsVoices } = await import("./avatar-voice-catalog")
+    const res = await listElevenLabsVoices()
+    if (res.success) {
+      live = true
+      for (const v of res.voices) {
+        if (byId.has(v.voice_id)) continue
+        byId.set(v.voice_id, {
+          voiceId: v.voice_id,
+          label: v.name,
+          style: v.description ?? `${v.gender ?? "Neutral"} · ${v.language}`,
+          gender: v.gender,
+        })
+      }
+    }
+  } catch {
+    // The stock catalogue is an enhancement, not a prerequisite — a vendor
+    // outage must not empty the picker and leave the agent with no voice
+    // option at all. The curated floor still stands.
+    live = false
+  }
+
+  return { voices: [...byId.values()], live }
+}
+
+/**
+ * Give a twin one of the STOCK voices instead of a clone.
+ *
+ * THE ALLOWLIST IS THE WHOLE POINT. `attachVoiceToTwin` was deleted in w2s3
+ * because it let a caller write an ARBITRARY voice id onto their twin — binding
+ * a voice nobody paid to create, with no cap check and no
+ * `voice_clones_created` meter line. This action must NOT re-open that door, so
+ * the id is checked against the stock catalogue and anything outside it is
+ * refused. A CLONE still has exactly one way in:
+ * POST /api/elevenlabs/voice-clone, which is where the cap and the metering
+ * live.
+ */
+export async function setTwinStockVoice(params: {
+  twinId: string
+  voiceId: string
+}): Promise<{ ok: boolean; error?: string }> {
+  const ctx = await resolveWriteContext()
+  if (!ctx.isAuthenticated || !ctx.agentId) return { ok: false, error: "Unauthorized" }
+
+  const voiceId = params.voiceId?.trim()
+  if (!voiceId) return { ok: false, error: "Pick a voice" }
+
+  // Allowlist FIRST — cheapest refusal, and it needs no database round trip.
+  //
+  // FAILS CLOSED, and says which kind of "no" it is. If the live catalogue was
+  // unreachable on this call, an id the agent legitimately picked a moment ago
+  // may not be in the set — that is a "try again", not "you picked a bad
+  // voice". Either way the write does not happen: the whole point of the gate
+  // is that an unverified id never reaches the column.
+  const { voices, live } = await listTwinVoiceOptions()
+  if (!voices.some((v) => v.voiceId === voiceId)) {
+    return {
+      ok: false,
+      error: live
+        ? "That isn't one of the stock voices. Pick one from the list, or record your own."
+        : "We couldn't reach the voice library to confirm that one — try again in a moment.",
+    }
+  }
+
+  const supabase = createServiceClient()
+
+  // `error` destructured so a REFUSED read is not read as "no such twin".
+  // This is an ownership gate, so it fails closed either way.
+  const { data: twin, error: twinError } = await supabase
+    .from("agent_avatar_assets")
+    .select("id, agent_id")
+    .eq("id", params.twinId)
+    .maybeSingle()
+  if (twinError) return { ok: false, error: "Could not verify the twin — nothing was changed" }
+  if (!twin || twin.agent_id !== ctx.agentId) return { ok: false, error: "Twin not found" }
+
+  const { error: updateError } = await supabase
+    .from("agent_avatar_assets")
+    .update({
+      voice_id: voiceId,
+      // A stock voice has no recording behind it. Clearing this is honest: a
+      // leftover sample url from an earlier clone attempt would claim this
+      // voice was built from that recording.
+      voice_sample_url: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", params.twinId)
+  if (updateError) return { ok: false, error: updateError.message }
+
+  revalidatePath("/dashboard/settings/twin-studio")
+  return { ok: true }
+}
 
 export async function finalizeTwin(params: {
   twinId: string

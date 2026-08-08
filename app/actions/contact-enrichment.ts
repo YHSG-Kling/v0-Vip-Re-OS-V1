@@ -1,238 +1,102 @@
 "use server"
 
+/**
+ * app/actions/contact-enrichment.ts — THE SESSION DOOR onto contact enrichment.
+ *
+ * The work moved to lib/enrichment/contact-enrichment-core.ts, which takes the
+ * tenant as an argument. This file resolves the tenant from the SESSION and
+ * calls in there; app/api/cron/contact-enrichment is the UNATTENDED door onto
+ * the same functions and passes the brokerage id explicitly.
+ *
+ * WHY THE SPLIT EXISTS. An earlier wave anchored getUnenrichedContacts /
+ * getContactsNeedingLifeChangeCheck on getAgentContext() and left a comment
+ * admitting the cost — "the enrichment cron has no session; under RLS the anon
+ * client returned nothing anyway". The nightly run has processed zero contacts
+ * and reported success ever since. A session gate on a function an unattended
+ * caller depends on does not secure it; it silently switches it off. The
+ * unattended caller needs its own door onto the library, never a fake identity.
+ *
+ * THE OWNER'S RULING, which every entry point below now honours:
+ *   "contact enrichment should happen as soon as a new contact comes in and also
+ *    check if a life change or other change happens for the contact but not if
+ *    they have an active listing or an active transaction; just before or after."
+ * The suppression lives in lib/enrichment/deal-suppression.ts:isContactInLiveDeal
+ * and is consulted inside the core, so it cannot be skipped by adding a new
+ * caller here.
+ *
+ * `"use server"` makes every export in this file a public HTTP endpoint, so
+ * there are no exported helpers — only gated async actions.
+ */
+
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { PeopleDataClient } from "@/lib/external"
-import { OSINTClient } from "@/lib/osint-client"
-import { validateEmail, validatePhone } from "@/lib/contact-validation"
-
-const peopleData = new PeopleDataClient()
-const osint = new OSINTClient()
-
-// Life change types that indicate real estate intent
-const LIFE_CHANGE_TYPES = [
-  "divorce",
-  "marriage",
-  "job_change",
-  "relocation",
-  "new_baby",
-  "death_in_family",
-  "retirement",
-  "foreclosure",
-  "bankruptcy",
-  "inheritance",
-]
+import {
+  enrichContactRecord,
+  runLifeChangeCheck,
+  listUnenrichedContacts,
+  listContactsDueForLifeChangeCheck,
+  type EnrichmentSource,
+} from "@/lib/enrichment/contact-enrichment-core"
 
 /**
- * Enrich a single contact with PeopleData, OSINT, and validation
- * Skips if already enriched unless forceRefresh is true
+ * Enrich a single contact with PeopleData, OSINT and validation.
+ *
+ * Skips when already enriched (unless `forceRefresh`), when the contact has an
+ * active listing or an active transaction, and when the brokerage is over its
+ * monthly vendor budget.
  */
 export async function enrichContact(
   contactId: string,
   options: {
     forceRefresh?: boolean
-    source?: "manual" | "auto" | "ghl_sync" | "import"
+    source?: EnrichmentSource
   } = {},
 ): Promise<{ success: boolean; enriched: boolean; error?: string }> {
-  const supabase = await createClient()
-
-  try {
-    // Get contact
-    const { data: contact, error } = await supabase.from("contacts").select("*").eq("id", contactId).single()
-
-    if (error || !contact) {
-      return { success: false, enriched: false, error: "Contact not found" }
-    }
-
-    // Skip if already enriched (unless force refresh)
-    if (contact.enriched_at && !options.forceRefresh) {
-      console.log(`[ContactEnrichment] Skipping ${contactId} - already enriched`)
-      return { success: true, enriched: false }
-    }
-
-    let enrichmentData: any = {}
-    const validationResults: any = {}
-
-    // 1. Validate email
-    if (contact.email) {
-      const emailValidation = await validateEmail(contact.email)
-      validationResults.email = emailValidation
-
-      if (emailValidation.valid) {
-        await supabase
-          .from("contacts")
-          .update({
-            email_verified: true,
-            email_verification_date: new Date().toISOString(),
-          })
-          .eq("id", contactId)
-      }
-    }
-
-    // 2. Validate phone
-    if (contact.phone) {
-      const phoneValidation = await validatePhone(contact.phone)
-      validationResults.phone = phoneValidation
-
-      if (phoneValidation.valid) {
-        await supabase
-          .from("contacts")
-          .update({
-            phone_verified: true,
-            phone_verification_date: new Date().toISOString(),
-            phone_type: phoneValidation.type,
-          })
-          .eq("id", contactId)
-      }
-    }
-
-    // 3. Enrich with PeopleData
-    const personData = await peopleData.enrich({
-      firstName: contact.first_name,
-      lastName: contact.last_name,
-      email: contact.email,
-      phone: contact.phone,
-    })
-
-    if (personData) {
-      enrichmentData = {
-        ...enrichmentData,
-        age_range: personData.ageRange,
-        gender: personData.gender,
-        marital_status: personData.maritalStatus,
-        household_income: personData.householdIncome,
-        home_owner_status: personData.homeOwnerStatus,
-        home_value_estimate: personData.homeValue,
-        occupation: personData.currentTitle,
-        linkedin_url: personData.linkedinUrl,
-        facebook_url: personData.facebookUrl,
-        twitter_url: personData.twitterUrl,
-        data_source: "peopledata",
-        confidence_score: personData.enrichmentConfidence || 70,
-      }
-    }
-
-    // 4. Run OSINT search
-    const osintData = await osint.searchPerson({
-      firstName: contact.first_name,
-      lastName: contact.last_name,
-      email: contact.email,
-      phone: contact.phone,
-      city: contact.city,
-      state: contact.state,
-    })
-
-    if (osintData) {
-      enrichmentData = {
-        ...enrichmentData,
-        public_records: osintData.public_records || [],
-        court_records: osintData.court_records || [],
-        property_records: osintData.property_records || [],
-        life_events: osintData.life_events || [],
-        last_life_event_detected: osintData.life_events?.length > 0 ? new Date().toISOString() : null,
-      }
-
-      // If OSINT found social profiles, merge them
-      if (osintData.social_profiles?.length) {
-        const findProfile = (platform: string) =>
-          osintData.social_profiles.find((p) => p.platform === platform)?.url
-        enrichmentData.linkedin_url = enrichmentData.linkedin_url || findProfile("linkedin")
-        enrichmentData.facebook_url = enrichmentData.facebook_url || findProfile("facebook")
-        enrichmentData.twitter_url = enrichmentData.twitter_url || findProfile("twitter")
-      }
-    }
-
-    // 5. Save enrichment data directly to the contacts table
-    const enrichmentUpdate = {
-      // Demographic data
-      age_range: enrichmentData.age_range,
-      gender: enrichmentData.gender,
-      marital_status: enrichmentData.marital_status,
-      household_income: enrichmentData.household_income,
-      home_owner_status: enrichmentData.home_owner_status,
-      home_value_estimate: enrichmentData.home_value_estimate,
-      length_of_residence: enrichmentData.length_of_residence,
-      occupation: enrichmentData.occupation,
-      education_level: enrichmentData.education_level,
-      // Social profiles
-      linkedin_url: enrichmentData.linkedin_url,
-      facebook_url: enrichmentData.facebook_url,
-      twitter_url: enrichmentData.twitter_url,
-      instagram_url: enrichmentData.instagram_url,
-      // Life events and OSINT data
-      life_events: enrichmentData.life_events || [],
-      last_life_event_detected: enrichmentData.last_life_event_detected,
-      public_records: enrichmentData.public_records || [],
-      court_records: enrichmentData.court_records || [],
-      property_records: enrichmentData.property_records || [],
-      // Metadata
-      data_source: enrichmentData.data_source,
-      confidence_score: enrichmentData.confidence_score || 70,
-    }
-    const { error: updateError } = await supabase
-      .from("contacts")
-      .update(enrichmentUpdate)
-      .eq("id", contactId)
-      // tenant anchor (scope burn-down): pinned to the fetched contact's brokerage
-      .eq("brokerage_id", contact.brokerage_id)
-
-    if (updateError) {
-      console.error("[ContactEnrichment] Error saving enrichment data:", updateError)
-      return { success: false, enriched: false, error: updateError.message }
-    }
-
-    // 6. Update contact enrichment tracking metadata
-    await supabase
-      .from("contacts")
-      .update({
-        enriched_at: new Date().toISOString(),
-        enrichment_source: options.source || "auto",
-        last_life_change_check: new Date().toISOString(),
-      })
-      .eq("id", contactId)
-
-    return { success: true, enriched: true }
-  } catch (error) {
-    console.error("[ContactEnrichment] Error:", error)
-    return { success: false, enriched: false, error: String(error) }
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, enriched: false, error: "Unauthorized" }
   }
+
+  const result = await enrichContactRecord({
+    contactId,
+    brokerageId: ctx.brokerageId,
+    source: options.source ?? "manual",
+    forceRefresh: options.forceRefresh,
+  })
+
+  return { success: result.success, enriched: result.enriched, error: result.error }
 }
 
 /** Upper bound on one batch. Each id costs a PeopleData call + an OSINT call. */
 const ENRICH_BATCH_MAX = 200
 
 /**
- * Enrich multiple contacts (for imports/bulk operations)
+ * Enrich multiple contacts (for imports/bulk operations).
  *
- * GATED, TENANT-FILTERED AND CAPPED (was none of the three).
+ * GATED, TENANT-FILTERED AND CAPPED (was none of the three — see the wave-2
+ * burn-down, docs/orphan-burndown-w2s1.md). `"use server"` makes this a public
+ * HTTP endpoint and it took an unbounded caller-supplied array of contact ids
+ * with no session; every id costs a PeopleData record AND a fan of OSINT scrapes,
+ * so an anonymous caller could bill the platform for arbitrarily many external
+ * lookups and point them at other tenants' contacts.
  *
- * `"use server"` makes this a public HTTP endpoint, and it took an **unbounded
- * caller-supplied array of contact ids** with no session. Every id costs a
- * `PeopleDataClient.enrich` call *and* an `OSINTClient.searchPerson` call — paid,
- * per-lookup, third-party vendor spend — and writes the result (emails, phones,
- * addresses, inferred life events like divorce / bankruptcy / death in family)
- * onto the contact row. So an anonymous caller could bill the platform for
- * arbitrarily many external lookups, and point them at other tenants' contacts.
- * The 500 ms sleep between ids meant one request could also occupy a server
- * worker indefinitely.
+ *  - **Session gate.**
+ *  - **Tenant filter before spending anything.** Ids are resolved against
+ *    `contacts` scoped to the caller's brokerage; ids that are not the caller's
+ *    are counted as `failed` rather than dropped, so fishing with foreign uuids
+ *    gives no signal about whether they exist.
+ *  - **Cap** of ENRICH_BATCH_MAX ids per call.
  *
- * Three fixes, in order of importance:
- *  - **Session gate**, matching this file's `getUnenrichedContacts` /
- *    `getContactsNeedingLifeChangeCheck` tenant-anchor idiom.
- *  - **Tenant filter before spending anything.** The ids are resolved against
- *    `contacts` scoped to the caller's brokerage, and only survivors are
- *    enriched. This is a resolve, not a trust: ids that do not belong to the
- *    caller are counted as `failed` rather than silently dropped, so a caller
- *    fishing with foreign uuids gets no signal about whether they exist.
- *  - **Cap.** At most `ENRICH_BATCH_MAX` ids per call.
- *
- * The read destructures `error` — a refused lookup must not be mistaken for "none
- * of these contacts are yours", because here that difference is the difference
+ * The scope read destructures `error` — a refused lookup must not be mistaken
+ * for "none of these are yours", because here that difference is the difference
  * between refusing and spending money.
+ *
+ * Live-deal suppression is enforced per contact inside enrichContactRecord, so a
+ * bulk import cannot enrich a contact whose deal went live mid-batch.
  */
 export async function enrichContactsBatch(
   contactIds: string[],
-  options: { source?: "manual" | "auto" | "ghl_sync" | "import" } = {},
+  options: { source?: EnrichmentSource } = {},
 ): Promise<{ success: number; failed: number; skipped: number; error?: string }> {
   let success = 0
   let failed = 0
@@ -243,7 +107,9 @@ export async function enrichContactsBatch(
   }
   if (contactIds.length > ENRICH_BATCH_MAX) {
     return {
-      success: 0, failed: 0, skipped: 0,
+      success: 0,
+      failed: 0,
+      skipped: 0,
       error: `Batch too large — enrich at most ${ENRICH_BATCH_MAX} contacts at a time`,
     }
   }
@@ -272,13 +138,14 @@ export async function enrichContactsBatch(
   failed += requested.length - ownIds.size
 
   for (const contactId of ownIds) {
-    const result = await enrichContact(contactId, options)
+    const result = await enrichContactRecord({
+      contactId,
+      brokerageId: ctx.brokerageId,
+      source: options.source ?? "import",
+    })
     if (result.success) {
-      if (result.enriched) {
-        success++
-      } else {
-        skipped++
-      }
+      if (result.enriched) success++
+      else skipped++
     } else {
       failed++
     }
@@ -291,165 +158,86 @@ export async function enrichContactsBatch(
 }
 
 /**
- * Check for life changes on existing enriched contacts
- * Only runs OSINT, skips full enrichment
+ * Check for a life change on an existing contact. OSINT only — no PeopleData
+ * record is bought. Suppressed while the contact is in a live deal.
  */
 export async function checkContactLifeChanges(
   contactId: string,
 ): Promise<{ success: boolean; changesFound: number; error?: string }> {
-  const supabase = await createClient()
-
-  try {
-    // Get contact
-    const { data: contact, error } = await supabase.from("contacts").select("*").eq("id", contactId).single()
-
-    if (error || !contact) {
-      return { success: false, changesFound: 0, error: "Contact not found" }
-    }
-
-    // Run OSINT search for life events only
-    const osintData = await osint.searchPerson({
-      firstName: contact.first_name,
-      lastName: contact.last_name,
-      city: contact.city,
-      state: contact.state,
-    })
-
-    let changesFound = 0
-
-    if (osintData?.life_events?.length > 0) {
-      // Get existing life events from the contact
-      const { data: contactData } = await supabase
-        .from("contacts")
-        .select("life_events")
-        .eq("id", contactId)
-        .single()
-
-      const existingEvents = (contactData?.life_events as any[]) || []
-      const existingTypes = new Set(existingEvents.map((e: any) => e.type))
-
-      for (const event of osintData.life_events) {
-        // Skip if we already detected this type recently
-        if (existingTypes.has(event.event)) continue
-
-        // Add new life event to the array
-        const updatedEvents = [
-          ...existingEvents,
-          {
-            type: event.event,
-            details: event.source,
-            detected_at: new Date().toISOString(),
-            confidence: 50,
-          },
-        ]
-
-        // Update contact with new life events
-        await supabase
-          .from("contacts")
-          .update({
-            life_events: updatedEvents,
-            last_life_event_detected: new Date().toISOString(),
-          })
-          .eq("id", contactId)
-
-        changesFound++
-      }
-    }
-
-    // Update last check timestamp
-    await supabase
-      .from("contacts")
-      .update({
-        last_life_change_check: new Date().toISOString(),
-      })
-      .eq("id", contactId)
-
-    return { success: true, changesFound }
-  } catch (error) {
-    console.error("[ContactEnrichment] Life change check error:", error)
-    return { success: false, changesFound: 0, error: String(error) }
-  }
-}
-
-/**
- * Get unenriched contacts for batch processing
- */
-export async function getUnenrichedContacts(limit = 50): Promise<{ contacts: any[]; count: number }> {
-  const supabase = await createClient()
-
-  // tenant anchor (scope burn-down): this is an exported server action — only
-  // ever hand back contacts from the caller's own brokerage. (The enrichment
-  // cron has no session; under RLS the anon client returned nothing anyway.)
   const ctx = await getAgentContext()
-  if (!ctx.brokerageId) return { contacts: [], count: 0 }
-
-  const { data, error, count } = await supabase
-    .from("contacts")
-    .select("id, first_name, last_name, email, phone", { count: "exact" })
-    .eq("brokerage_id", ctx.brokerageId)
-    .is("enriched_at", null)
-    .order("created_at", { ascending: false })
-    .limit(limit)
-
-  if (error) {
-    console.error("[ContactEnrichment] Error getting unenriched contacts:", error)
-    return { contacts: [], count: 0 }
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, changesFound: 0, error: "Unauthorized" }
   }
 
-  return { contacts: data || [], count: count || 0 }
+  const result = await runLifeChangeCheck({
+    contactId,
+    brokerageId: ctx.brokerageId,
+    trigger: "manual",
+  })
+
+  return { success: result.success, changesFound: result.changesFound, error: result.error }
 }
 
 /**
- * Get contacts needing life change check (not checked in last 30 days)
+ * Contacts in the caller's brokerage that have never been enriched and are not
+ * in a live deal. The unattended sweep does NOT come through here — it calls
+ * lib/enrichment/contact-enrichment-core.ts:listUnenrichedContacts with the
+ * brokerage id it is iterating.
  */
-export async function getContactsNeedingLifeChangeCheck(limit = 50): Promise<{ contacts: any[]; count: number }> {
-  const supabase = await createClient()
-
-  // tenant anchor (scope burn-down): same rationale as getUnenrichedContacts.
+export async function getUnenrichedContacts(limit = 25): Promise<{ contacts: any[]; count: number }> {
   const ctx = await getAgentContext()
-  if (!ctx.brokerageId) return { contacts: [], count: 0 }
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { contacts: [], count: 0 }
 
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+  const { contacts, error } = await listUnenrichedContacts({ brokerageId: ctx.brokerageId, limit })
+  if (error) return { contacts: [], count: 0 }
+  return { contacts, count: contacts.length }
+}
 
-  const { data, error, count } = await supabase
-    .from("contacts")
-    .select("id, first_name, last_name, email, city, state", { count: "exact" })
-    .eq("brokerage_id", ctx.brokerageId)
-    .not("enriched_at", "is", null) // Only already enriched contacts
-    .or(`last_life_change_check.is.null,last_life_change_check.lt.${thirtyDaysAgo}`)
-    .order("last_life_change_check", { ascending: true, nullsFirst: true })
-    .limit(limit)
+/** Already-enriched contacts whose life-change check has gone stale (30 days). */
+export async function getContactsNeedingLifeChangeCheck(limit = 25): Promise<{ contacts: any[]; count: number }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { contacts: [], count: 0 }
 
-  if (error) {
-    console.error("[ContactEnrichment] Error getting contacts for life change check:", error)
-    return { contacts: [], count: 0 }
-  }
-
-  return { contacts: data || [], count: count || 0 }
+  const { contacts, error } = await listContactsDueForLifeChangeCheck({ brokerageId: ctx.brokerageId, limit })
+  if (error) return { contacts: [], count: 0 }
+  return { contacts, count: contacts.length }
 }
 
 /**
- * Get recent life changes for agent notification
- * Life events are stored in contacts.life_events (JSONB array)
+ * Recent life changes for agent notification. Life events live in
+ * contacts.life_events (a jsonb array) — there is no contact_enrichment_data
+ * table.
+ *
+ * TENANT ANCHOR ADDED. This read had no brokerage filter at all: it selected
+ * contacts by `last_life_event_detected` across the whole table and returned
+ * names, emails, phones and inferred life events (divorce, bankruptcy, death in
+ * family) for every tenant on the platform. `agentId` was the only optional
+ * narrowing and it is caller-supplied, so passing someone else's agents.id read
+ * their book. Both call sites (the agent dashboard and
+ * app/actions/lifetime-customers.ts) are session surfaces, so nothing legitimate
+ * relied on the cross-tenant behaviour.
+ *
+ * `agentId` is now a filter WITHIN the caller's brokerage, not an identity claim.
  */
 export async function getRecentLifeChanges(agentId?: string, daysBack = 7): Promise<any[]> {
-  const supabase = await createClient()
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return []
 
+  const supabase = await createClient()
   const cutoffDate = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString()
 
-  // Get contacts with recent life events
   let query = supabase
     .from("contacts")
     .select("id, first_name, last_name, email, phone, agent_id, life_events, last_life_event_detected")
+    .eq("brokerage_id", ctx.brokerageId)
     .not("life_events", "is", null)
     .gte("last_life_event_detected", cutoffDate)
     .order("last_life_event_detected", { ascending: false })
     .limit(50)
 
-  // Filter by agent if provided
-  if (agentId) {
-    query = query.eq("agent_id", agentId)
-  }
+  // contacts.agent_id is agents.id — a disjoint id space from users.id. The
+  // caller passes an agents.id; it is never coerced from ctx.userId.
+  if (agentId) query = query.eq("agent_id", agentId)
 
   const { data: contacts, error } = await query
 
@@ -457,20 +245,13 @@ export async function getRecentLifeChanges(agentId?: string, daysBack = 7): Prom
     console.error("[ContactEnrichment] Error getting recent life changes:", error)
     return []
   }
+  if (!contacts || contacts.length === 0) return []
 
-  if (!contacts || contacts.length === 0) {
-    return []
-  }
-
-  // Transform data - expand life events from each contact
-  const results = contacts
+  return contacts
     .map((contact) => {
       const lifeEvents = (contact.life_events as any[]) || []
-      
-      // Return life events with contact info
       return lifeEvents
         .filter((event: any) => {
-          // Only include events detected within the time window
           const detectedAt = new Date(event.detected_at || contact.last_life_event_detected || 0)
           return detectedAt >= new Date(cutoffDate)
         })
@@ -489,39 +270,26 @@ export async function getRecentLifeChanges(agentId?: string, daysBack = 7): Prom
         }))
     })
     .flat()
-
-  return results
 }
 
 /**
  * Mark a detected life change as notified.
  *
- * FINISHED (was a no-op that reported success). It used to log the id and return
- * `{ success: true }` without touching anything — so the caller's "we've told the
- * agent about this" state was never recorded, and every subsequent render
- * re-surfaced the same divorce/bankruptcy/relocation notification forever, while
- * the endpoint reported that it had been handled. A function that claims a write
- * it did not perform is worse than one that refuses.
+ * FINISHED IN AN EARLIER WAVE (was a no-op that reported success): it logged the
+ * id and returned `{ success: true }` without touching anything, so every render
+ * re-surfaced the same divorce/bankruptcy/relocation notification forever while
+ * the endpoint claimed it had been handled.
  *
- * Two things blocked finishing it, and both were wrong beliefs rather than real
- * obstacles:
+ * The signature is `(contactId, eventType)`, not `(changeId)`, because the array
+ * elements this codebase writes are `{ type, details, detected_at, confidence }`
+ * — there is no id on them, and the de-duplication in the life-change checker
+ * keys on the event TYPE. That is the key that exists rather than one that does
+ * not.
  *
- *  - The old comment said life events live in `contact_enrichment_data.life_events`.
- *    **There is no `contact_enrichment_data` table** (checked live). They live in
- *    `contacts.life_events`, a jsonb array — which is where `enrichContact` and
- *    `checkContactLifeChanges` in this same file actually write them.
- *  - It took a `changeId`, but the array elements this codebase writes are
- *    `{ type, details, detected_at, confidence }` — **there is no id on them**.
- *    The de-duplication in `checkContactLifeChanges` keys on `event.event`, i.e.
- *    the event *type* is the identity of an element for a given contact. So the
- *    signature is now `(contactId, eventType)`, which is the key that exists
- *    rather than one that does not. The export was orphaned, so nothing had to
- *    change to accommodate this.
- *
- * Read-modify-write on a jsonb array is not atomic. That is acceptable here — the
- * only field being set is an idempotent `notified_at` marker, so a lost update
- * re-shows one notification rather than corrupting anything — but it is stated
- * rather than left to be discovered.
+ * Read-modify-write on a jsonb array is not atomic. Acceptable here — the only
+ * field set is an idempotent `notified_at` marker, so a lost update re-shows one
+ * notification rather than corrupting anything — but stated rather than left to
+ * be discovered.
  */
 export async function markLifeChangeNotified(
   contactId: string,
@@ -538,9 +306,6 @@ export async function markLifeChangeNotified(
 
   const supabase = await createClient()
 
-  // Tenant-scoped read. `error` is destructured because a refused read and a
-  // missing contact are the same shape, and only one of them should be reported
-  // as "no such contact".
   const { data: contact, error: readError } = await supabase
     .from("contacts")
     .select("life_events")
@@ -561,8 +326,6 @@ export async function markLifeChangeNotified(
   })
 
   if (!matched) {
-    // Already notified, or no such event — either way there is nothing to write.
-    // Say so instead of reporting a write that did not happen.
     return { success: false, error: "No un-notified life event of that type on this contact" }
   }
 
@@ -582,8 +345,14 @@ export async function enrichContactData(...args: Parameters<typeof enrichContact
 }
 
 /**
- * Get enrichment insights for a contact including enrichment data and recent life changes
- * All enrichment data is stored directly on the contacts table
+ * Enrichment data + recent life changes for one contact. All enrichment data
+ * lives directly on the contacts row.
+ *
+ * TENANT ANCHOR ADDED. This was a bare PK lookup, so any authenticated caller
+ * (and, before the session gate, any caller at all) could read another tenant's
+ * contact's household income, marital status, court records and property
+ * records by uuid. The brokerage filter makes a foreign uuid indistinguishable
+ * from a non-existent one.
  */
 export async function getContactInsights(contactId: string): Promise<{
   enrichment: any | null
@@ -591,10 +360,13 @@ export async function getContactInsights(contactId: string): Promise<{
   lastEnriched: string | null
   error?: string
 }> {
-  const supabase = await createClient()
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { enrichment: null, lifeChanges: [], lastEnriched: null, error: "Unauthorized" }
+  }
 
   // Enrichment columns read back for the insights panel (kept out of the query
-  // chain so the PK scope on the query itself stays auditable).
+  // chain so the scope on the query itself stays auditable).
   const ENRICHMENT_COLUMNS =
     "id, enriched_at, enrichment_source, confidence_score, data_source, " +
     "age_range, gender, marital_status, household_income, home_owner_status, " +
@@ -602,65 +374,47 @@ export async function getContactInsights(contactId: string): Promise<{
     "linkedin_url, facebook_url, twitter_url, instagram_url, life_events, " +
     "last_life_event_detected, public_records, court_records, property_records"
 
-  try {
-    // Get contact with all enrichment data — PK lookup is the scope anchor.
-    const { data: contactRow, error: contactError } = await supabase
-      .from("contacts")
-      .select(ENRICHMENT_COLUMNS)
-      .eq("id", contactId)
-      .maybeSingle()
-    // Dynamic select string defeats supabase-js column inference — the shape is
-    // exactly ENRICHMENT_COLUMNS.
-    const contact = contactRow as Record<string, any> | null
+  const supabase = await createClient()
 
-    if (contactError) {
-      return {
-        enrichment: null,
-        lifeChanges: [],
-        lastEnriched: null,
-        error: contactError.message,
-      }
-    }
+  const { data: contactRow, error: contactError } = await supabase
+    .from("contacts")
+    .select(ENRICHMENT_COLUMNS)
+    .eq("id", contactId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
 
-    // Extract life changes from contact data
-    const lifeChanges = (contact?.life_events as any[]) || []
+  // Dynamic select string defeats supabase-js column inference — the shape is
+  // exactly ENRICHMENT_COLUMNS.
+  const contact = contactRow as Record<string, any> | null
 
-    // Build enrichment object from contact data
-    const enrichment = contact
-      ? {
-          age_range: contact.age_range,
-          gender: contact.gender,
-          marital_status: contact.marital_status,
-          household_income: contact.household_income,
-          home_owner_status: contact.home_owner_status,
-          home_value_estimate: contact.home_value_estimate,
-          length_of_residence: contact.length_of_residence,
-          occupation: contact.occupation,
-          education_level: contact.education_level,
-          linkedin_url: contact.linkedin_url,
-          facebook_url: contact.facebook_url,
-          twitter_url: contact.twitter_url,
-          instagram_url: contact.instagram_url,
-          public_records: contact.public_records,
-          court_records: contact.court_records,
-          property_records: contact.property_records,
-          data_source: contact.data_source,
-          confidence_score: contact.confidence_score,
-        }
-      : null
-
-    return {
-      enrichment,
-      lifeChanges,
-      lastEnriched: contact?.enriched_at || null,
-    }
-  } catch (error) {
-    console.error("Error getting contact insights:", error)
-    return {
-      enrichment: null,
-      lifeChanges: [],
-      lastEnriched: null,
-      error: String(error),
-    }
+  if (contactError) {
+    return { enrichment: null, lifeChanges: [], lastEnriched: null, error: contactError.message }
   }
+
+  const lifeChanges = (contact?.life_events as any[]) || []
+
+  const enrichment = contact
+    ? {
+        age_range: contact.age_range,
+        gender: contact.gender,
+        marital_status: contact.marital_status,
+        household_income: contact.household_income,
+        home_owner_status: contact.home_owner_status,
+        home_value_estimate: contact.home_value_estimate,
+        length_of_residence: contact.length_of_residence,
+        occupation: contact.occupation,
+        education_level: contact.education_level,
+        linkedin_url: contact.linkedin_url,
+        facebook_url: contact.facebook_url,
+        twitter_url: contact.twitter_url,
+        instagram_url: contact.instagram_url,
+        public_records: contact.public_records,
+        court_records: contact.court_records,
+        property_records: contact.property_records,
+        data_source: contact.data_source,
+        confidence_score: contact.confidence_score,
+      }
+    : null
+
+  return { enrichment, lifeChanges, lastEnriched: contact?.enriched_at || null }
 }

@@ -14,6 +14,16 @@ import {
 } from '@/lib/kernel'
 import { KernelEvent } from '@/lib/kernel/events'
 import { MAX_RETRIES, enrichmentRetryOutcome } from './enrichment-retry'
+import { isContactInLiveDeal } from '@/lib/enrichment/deal-suppression'
+// NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
+// not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
+// `server-only` (it holds the service client and the paid PeopleData/OSINT
+// clients), and a static import here would pull that into every module graph
+// that reaches this file — including the plain `tsx` guard simulators, which are
+// not a server component and crash on `server-only` at load. lib/kernel/crm.ts
+// already used the dynamic form for exactly this reason; these call sites were
+// the inconsistency. The queue call is best-effort and already awaited/voided,
+// so deferring the import costs nothing.
 
 const BATCH_SIZE = 10
 
@@ -88,6 +98,78 @@ export async function processEnrichmentQueue(
     // Step 2: Determine entity type
     const entityType: EntityType = entry.lead_id ? 'lead' : 'contact'
     const entityId = (entry.lead_id ?? entry.contact_id) as string
+
+    // ── Step 2a: THE OWNER'S SUPPRESSION RULE ────────────────────────────────
+    // "…but not if they have an active listing or an active transaction; just
+    // before or after." This is the LAST gate before money is spent, and it is
+    // re-asked here even though the queue writer already asked it: a contact can
+    // sign a listing agreement or go under contract between being queued and
+    // being drained, and the drain runs on a 15-minute cron.
+    //
+    // Only CONTACTS are checked. A `leads` row is by definition pre-contact —
+    // leads.id and contacts.id are disjoint id spaces, so passing a lead id to a
+    // contact-keyed predicate would ask a question about the wrong row.
+    //
+    // isContactInLiveDeal FAILS CLOSED: an unreadable listings/transactions read
+    // returns "in a live deal", so a broken read stops spend instead of
+    // releasing it.
+    if (entityType === 'contact') {
+      const verdict = await isContactInLiveDeal({
+        contactId: entityId,
+        brokerageId,
+        supabase,
+      })
+      if (verdict.inLiveDeal) {
+        // NOT a failure and NOT a retry — the contact is simply not eligible
+        // right now. 'skipped' keeps it out of the retry ladder (which would
+        // otherwise burn its three attempts against a deal that lasts weeks) and
+        // the create-time / deal-ended triggers will re-queue it once the deal
+        // ends.
+        await supabase
+          .from('lead_enrichment_queue')
+          .update({
+            status: 'skipped',
+            error_message: `Suppressed — contact is in a live ${verdict.reason ?? 'deal'}`
+              + (verdict.error ? ` (${verdict.error})` : ''),
+            completed_at: new Date().toISOString(),
+          })
+          .eq('id', entry.id)
+        continue
+      }
+    }
+
+    // ── Step 2b: LIFE-CHANGE re-checks are a different job ───────────────────
+    // A row queued with enrichment_type 'osint_profile' asks "what changed?",
+    // not "who is this?" — it must NOT buy a PeopleData record. Routed to the
+    // OSINT-only checker instead of falling through into the skip-trace path.
+    //
+    // 'osint_profile' is not a token invented for this branch: it is one of the
+    // five values lead_enrichment_queue_enrichment_type_check admits
+    // (skip_trace | property_match | phone_validation | osint_profile |
+    // duplicate_check, verified live), and it is the one that describes an OSINT
+    // search. A made-up 'life_change' would have been rejected by the constraint
+    // and the row would have vanished on insert — and, because the drain filters
+    // on values the column can hold, nothing here would ever have run.
+    if (entityType === 'contact' && entry.enrichment_type === 'osint_profile') {
+      const check = await (await import("@/lib/enrichment/contact-enrichment-core")).runLifeChangeCheck({
+        contactId: entityId,
+        brokerageId,
+        supabase,
+        trigger: entry.trigger_type,
+      })
+      await supabase
+        .from('lead_enrichment_queue')
+        .update({
+          status: check.success ? 'completed' : 'failed',
+          error_message: check.error ?? null,
+          enrichment_results: { changes_found: check.changesFound, skipped: check.skipped ?? null },
+          completed_at: new Date().toISOString(),
+        })
+        .eq('id', entry.id)
+      if (check.success) result.succeeded++
+      else result.failed++
+      continue
+    }
 
     try {
       // Step 3: Fetch entity

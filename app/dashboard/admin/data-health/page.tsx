@@ -11,6 +11,7 @@ import { getDataHealthStats, runDataHygieneScan, getDataHealthLogs } from "@/app
 import { refreshStalePredictions } from "@/app/actions/ai-predictions"
 import { loadSelfAuditRollup } from "@/app/actions/self-audit-rollup"
 import type { SelfAuditRollup } from "@/lib/platform/self-audit-rollup"
+import { EnrichmentBacklogPanel } from "./enrichment-backlog-panel"
 
 export default function DataHealthPage() {
   const [stats, setStats] = useState<any>(null)
@@ -116,6 +117,12 @@ export default function DataHealthPage() {
           </Button>
         </div>
       </div>
+
+      {/* Enrichment backlog — who is eligible for enrichment right now, and the
+          manual lever for it. Both counts already exclude contacts in a live
+          listing or transaction (the owner's before-or-after rule), so this is a
+          list of work that CAN be done, not a list of what has been forgotten. */}
+      <EnrichmentBacklogPanel />
 
       {/* FIRST-WEEK TELEMETRY — what the OS caught itself doing wrong, by rail and
           tenant (self-audit findings + signature-chase escalations, trailing 7d).

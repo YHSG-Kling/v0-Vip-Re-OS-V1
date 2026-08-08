@@ -34,6 +34,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { checkBuyerCanPerformAction } from "@/app/actions/buyer-execution"
+import { enforceFinancialGate, logBuyerExecutionEvent } from "./buyer-execution-engine"
 import type { FinancialVerificationResult } from "@/lib/buyer-lifecycle/financial-verification"
 
 /**
@@ -137,6 +138,47 @@ function explainBlock(reason: string | undefined, v: FinancialVerificationResult
 }
 
 /**
+ * The sessionless twin of checkBuyerCanPerformAction: same gate, same blocked-attempt
+ * log, same return shape — minus the cookie-session authorization the caller has
+ * already performed on this lane. Kept private so there is still exactly ONE exported
+ * entry point (guardShowingFinancialGate) and no second way to run the gate.
+ */
+async function runGateSessionless(
+  contactId: string,
+  actorUserId: string | undefined,
+): Promise<{ success: boolean; allowed?: boolean; reason?: string; verification?: FinancialVerificationResult }> {
+  try {
+    const context = { contactId, userId: actorUserId, source: "voice_assistant" as const }
+    const gateCheck = await enforceFinancialGate(context, "tour")
+
+    if (!gateCheck.allowed) {
+      // The trail is the point — a voice-blocked showing must leave the same row a
+      // portal-blocked one does, or the audit trail has a hole shaped like the lane.
+      await logBuyerExecutionEvent({
+        contactId,
+        eventType: "buyer.tour.blocked",
+        userId: actorUserId,
+        source: "voice_assistant",
+        metadata: {
+          reason: gateCheck.reason,
+          verification_status: gateCheck.verification?.isVerified || false,
+        },
+      })
+    }
+
+    return {
+      success: true,
+      allowed: gateCheck.allowed,
+      reason: gateCheck.reason,
+      verification: gateCheck.verification,
+    }
+  } catch (error) {
+    console.error("[showing-financial-policy] sessionless gate failed:", error)
+    return { success: false }
+  }
+}
+
+/**
  * THE ENFORCEMENT POINT for every path that sets or schedules a showing.
  *
  * Order matters and is the contract: the tenant policy is read FIRST, and when
@@ -148,21 +190,47 @@ function explainBlock(reason: string | undefined, v: FinancialVerificationResult
  * this and never used: it runs the same gate AND writes a `buyer.tour.blocked`
  * row to the buyer execution event log with the reason and verification status.
  * A gate that blocks a customer silently is half a gate; this one leaves a trail.
+ *
+ * ── SESSIONLESS-CALLER OVERLOAD (wave 3) ────────────────────────────────────
+ * `checkBuyerCanPerformAction` is a `"use server"` action, and wave 3 gated it on
+ * `requireContactAccess`, which builds a COOKIE-BASED Supabase client. Two of this
+ * guard's three call sites are ordinary server actions and have cookies. The third
+ * does not: `requestShowing` carries an explicit sessionless-caller overload for the
+ * voice webhook (lib/voice/showing-request.ts → app/actions/showings.ts), where the
+ * speaker is resolved from a voice-session row and there is no auth cookie anywhere.
+ * On that lane the session gate would answer "Unauthorized", `check.success` would be
+ * false, and every voice-booked showing at an opted-in brokerage would come back
+ * "financial verification unavailable" — a gate failure invented by plumbing.
+ *
+ * So the sessionless lane gets its OWN door, exactly like `requestShowing` itself
+ * does, and it is NOT given a fake identity: it passes the real `actorUserId` its
+ * caller already verified, and it runs the SAME two steps — `enforceFinancialGate`
+ * then the `buyer.tour.blocked` log — against the same library primitives. The
+ * authorization that the cookie lane gets from `requireContactAccess` is, on this
+ * lane, already done by the caller before it ever reaches here.
  */
 export async function guardShowingFinancialGate(params: {
   contactId: string
   brokerageId: string | null | undefined
   /** users.id of whoever is acting — NOT a contacts.id and NOT an agents.id. */
   userId?: string | null
+  /**
+   * Present ONLY on the sessionless (voice webhook) lane. `actorUserId` must be a
+   * users.id the caller has already resolved and verified; it is never taken from
+   * anything a speaker said. Absent = the normal cookie-session lane.
+   */
+  caller?: { actorUserId?: string | null } | null
 }): Promise<ShowingFinancialGateResult> {
   const required = await isFinancialGateRequiredForShowings(params.brokerageId)
   if (!required) return { blocked: false }
 
-  const check = await checkBuyerCanPerformAction({
-    contactId: params.contactId,
-    action: "tour",
-    userId: params.userId ?? undefined,
-  })
+  const check = params.caller
+    ? await runGateSessionless(params.contactId, params.caller.actorUserId ?? params.userId ?? undefined)
+    : await checkBuyerCanPerformAction({
+        contactId: params.contactId,
+        action: "tour",
+        userId: params.userId ?? undefined,
+      })
 
   if (!check.success) {
     // We could NOT evaluate the gate. Saying "your lender hasn't confirmed"

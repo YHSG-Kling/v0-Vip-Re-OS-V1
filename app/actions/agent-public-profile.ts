@@ -16,6 +16,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { queueContactEnrichment } from "@/lib/enrichment/contact-enrichment-core"
 
 export interface ProfileLeadInput {
   agentId: string
@@ -82,6 +83,18 @@ export async function captureProfileLead(input: ProfileLeadInput): Promise<{
   if (error || !contact) {
     return { success: false, error: error?.message ?? "Failed to create contact" }
   }
+
+  // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). This door creates a
+  // contact row directly and emits no kernel event, so the event-reactor lane
+  // never saw it. Best-effort and voided: the queue write must never block or
+  // fail the inquiry. Suppression (no enrichment during a live listing or
+  // transaction) and de-duplication live inside queueContactEnrichment.
+  void queueContactEnrichment({
+    contactId: contact.id,
+    brokerageId: agent.brokerage_id,
+    triggerType: "agent_public_profile",
+    supabase: svc,
+  }).catch(() => {})
 
   await svc.from("activities").insert({
     contact_id: contact.id,

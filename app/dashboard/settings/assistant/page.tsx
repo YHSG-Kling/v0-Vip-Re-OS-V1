@@ -11,6 +11,7 @@ import { redirect } from "next/navigation"
 import { Loader2 } from "lucide-react"
 import { createClient } from "@/lib/supabase/server"
 import { getMyVoiceAvatarPrefs } from "@/app/actions/voice-avatar-settings"
+import { listMyTwins } from "@/app/actions/twin-studio"
 import { GENERIC_VOICES } from "@/lib/voice/voice-resolver"
 import { ListeningPreferencesPanel } from "./listening-preferences-panel"
 import { ReplyStylePanel } from "./reply-style-panel"
@@ -27,7 +28,25 @@ async function AssistantContent() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
-  const [prefs, ctx] = await Promise.all([getMyVoiceAvatarPrefs(), getAgentContext()])
+  const [prefs, ctx, myTwins] = await Promise.all([
+    getMyVoiceAvatarPrefs(),
+    getAgentContext(),
+    listMyTwins(),
+  ])
+
+  // THE FACES THIS AGENT MAY CHOOSE FROM — their OWN twins, ready and approved,
+  // and nobody else's. updateMyAssistantAvatar re-checks exactly this server-side
+  // (the picker is a convenience, not the boundary), but offering an unusable or
+  // unapproved twin here would only teach the agent that the control is broken.
+  const assistantAvatarChoices = myTwins.twins
+    .filter((t) => t.status === "ready" && t.approvalStatus === "approved" && !!t.didAvatarId)
+    .map((t) => ({
+      didAvatarId: t.didAvatarId!,
+      label: t.label,
+      // The re-hosted bucket copy first — the D-ID-side url expires.
+      previewUrl: t.avatarUrl ?? t.thumbnailUrl ?? (t.sourceType === "photo" ? t.sourceUrl : null),
+      isDefault: t.isDefault,
+    }))
 
   // Reply style is independent of the twin: an agent with no voice clone still
   // drafts replies. The old early-return hid the whole page behind twin setup,
@@ -49,6 +68,7 @@ async function AssistantContent() {
         <ListeningPreferencesPanel
           initialPrefs={prefs}
           genericVoices={GENERIC_VOICES}
+          avatarChoices={assistantAvatarChoices}
         />
       ) : (
         <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">

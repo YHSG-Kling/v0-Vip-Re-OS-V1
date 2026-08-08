@@ -634,54 +634,42 @@ export async function attachLeadOriginHistoryToContact(params: {
 // ─── COMMAND 8: enrichContactAfterIntake ─────────────────────────────────────
 /**
  * Queues the contact for enrichment. Non-blocking — caller should void this.
- * Writes a lead_enrichment_queue row with enrichments_needed based on missing fields.
+ *
+ * MERGED, then delegated. The body used to be a fourth private copy of "write a
+ * lead_enrichment_queue row", and the four copies had disagreed for a long time:
+ * this one had a 7-day freshness check but no guard against an already-pending
+ * row (so a double intake queued twice and paid twice), contact-capture's copy
+ * had the pending guard but no freshness check, the widget route had neither,
+ * and lib/ghl-integration.ts had neither AND omitted brokerage_id, which made
+ * every GHL-synced contact's queue row invisible to the drain.
+ *
+ * The survivor is
+ * lib/enrichment/contact-enrichment-core.ts:queueContactEnrichment — it carries
+ * BOTH guards, requires the tenant, consults BOTH enrichment stamps
+ * (`enriched_at` and `last_enriched_at` are different columns owned by different
+ * lanes), and applies the owner's live-deal suppression rule, which none of the
+ * four copies had.
+ *
+ * This export is kept: it is the CRM kernel's name for the operation and
+ * createOrUpdateContactFromDirectIntake calls it. Its `CRMResult` contract is
+ * unchanged — success with `data.skipped` when nothing was queued.
  */
 export async function enrichContactAfterIntake(params: {
   contactId: string
   brokerageId: string
 }): Promise<CRMResult> {
-  const supabase = createServiceClient()
-  const now = new Date().toISOString()
-
-  const { data: contact } = await supabase
-    .from("contacts")
-    .select("email, phone, last_enriched_at")
-    .eq("id", params.contactId)
-    .maybeSingle()
-
-  if (!contact) return { success: false, error: "Contact not found" }
-
-  // Only enrich if not recently enriched (within 7 days)
-  if (contact.last_enriched_at) {
-    const age = Date.now() - new Date(contact.last_enriched_at as string).getTime()
-    const sevenDays = 7 * 24 * 60 * 60 * 1000
-    if (age < sevenDays) return { success: true, data: { skipped: true } }
-  }
-
-  const enrichments_needed: string[] = ["skip_trace"]
-  if (!contact.email) enrichments_needed.push("email_append")
-  if (!contact.phone) enrichments_needed.push("phone_append")
-
-  await supabase.from("lead_enrichment_queue").insert({
-    contact_id:         params.contactId,
-    brokerage_id:       params.brokerageId,
-    enrichment_type:    "skip_trace",
-    enrichments_needed,
-    status:             "pending",
-    trigger_type:       "contact_intake",
-    queued_at:          now,
-    max_retries:        3,
+  const { queueContactEnrichment } = await import("@/lib/enrichment/contact-enrichment-core")
+  const result = await queueContactEnrichment({
+    contactId:   params.contactId,
+    brokerageId: params.brokerageId,
+    triggerType: "contact_intake",
   })
 
-  await supabase.from("lifecycle_events").insert({
-    entity_type:  "contact",
-    entity_id:    params.contactId,
-    event_type:   KernelEvent.CONTACT_ENRICHMENT_QUEUED,
-    brokerage_id: params.brokerageId,
-    created_at:   now,
-  })
-
-  return { success: true }
+  if (result.queued) return { success: true, data: { queued: true } }
+  if (result.reason === "not_found") return { success: false, error: "Contact not found" }
+  if (result.reason === "error") return { success: false, error: result.error }
+  // already_queued | recently_enriched | live_deal — nothing to do, not a failure.
+  return { success: true, data: { skipped: true, reason: result.reason } }
 }
 
 // ─── COMMAND 9: notifyAssignedAgentForNextAction ──────────────────────────────

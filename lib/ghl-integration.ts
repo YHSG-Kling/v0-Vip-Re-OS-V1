@@ -7,25 +7,26 @@
 import { createServiceClient } from "./supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
-/**
- * Queue a contact for background enrichment via the database.
- * Avoids importing from app/actions — the enrichment worker reads this queue.
- */
-async function queueContactEnrichment(contactId: string, metadata: Record<string, any> = {}): Promise<void> {
-  try {
-    const supabase = createServiceClient()
-    await supabase.from('lead_enrichment_queue').insert({
-      contact_id: contactId,
-      trigger_type: metadata.source ?? 'ghl_sync',
-      enrichment_type: 'skip_trace',
-      enrichment_results: metadata,
-      status: 'pending',
-      queued_at: new Date().toISOString(),
-    })
-  } catch (err) {
-    console.error('[GHL] Failed to queue enrichment:', err)
-  }
-}
+// DELETED — a private `queueContactEnrichment(contactId, metadata)`.
+// Survivor: lib/enrichment/contact-enrichment-core.ts:queueContactEnrichment.
+//
+// It was a fourth private copy of the queue write and it carried NOTHING the
+// survivor lacks — no freshness check, no already-pending check, no live-deal
+// suppression. What it did carry was a defect: it omitted `brokerage_id`.
+// lead_enrichment_queue.brokerage_id is nullable so the INSERT succeeded, but
+// the drain (lib/lead-pipeline/enrichment-orchestrator.ts:processEnrichmentQueue)
+// selects `.eq('brokerage_id', brokerageId)` — every row it wrote was invisible
+// to every drain, forever. Per the burn-down method the bad implementation is
+// not ported; the class is fixed at the survivor, which REQUIRES the tenant and
+// refuses without it rather than writing an un-processable row.
+//
+// It also had no caller. That is not why it is gone — the surface it belongs to
+// is INBOUND CRM import, and that surface is already wired: lib/crm/import-pull.ts
+// (the GoHighLevel puller included) feeds processImportRows →
+// lib/contact-pipeline/contact-capture.ts:captureContact →
+// queueContactEnrichmentAndScore, which now calls the survivor. The capability
+// this function was reaching for is finished and connected; this copy is the
+// redundant one.
 
 interface GHLContact {
   id?: string

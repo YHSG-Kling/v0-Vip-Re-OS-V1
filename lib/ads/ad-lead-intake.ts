@@ -12,6 +12,15 @@
  * a client component.
  */
 import { createServiceClient } from "@/lib/supabase/service"
+// NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
+// not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
+// `server-only` (it holds the service client and the paid PeopleData/OSINT
+// clients), and a static import here would pull that into every module graph
+// that reaches this file — including the plain `tsx` guard simulators, which are
+// not a server component and crash on `server-only` at load. lib/kernel/crm.ts
+// already used the dynamic form for exactly this reason; these call sites were
+// the inconsistency. The queue call is best-effort and already awaited/voided,
+// so deferring the import costs nothing.
 
 export interface AdLeadInput {
   brokerageId: string
@@ -103,6 +112,24 @@ export async function ingestConsentedAdLead(
     ip_address:     input.ip ?? null,
     user_agent:     input.userAgent ?? null,
   })
+
+  // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). Only for a NEW
+  // contact — the `existingId` branch above is a consent upgrade on someone
+  // already in the book, not an arrival. This path emits no kernel contact
+  // event, so nothing else queued it. Voided: a paid-ad lead must land even if
+  // enrichment cannot be queued. Suppression lives in queueContactEnrichment.
+  if (created) {
+    void import("@/lib/enrichment/contact-enrichment-core")
+      .then((m) =>
+        m.queueContactEnrichment({
+          contactId,
+          brokerageId: input.brokerageId,
+          triggerType: "ad_lead_form",
+          supabase,
+        }),
+      )
+      .catch(() => {})
+  }
 
   return { ok: true, contactId, created }
 }

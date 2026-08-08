@@ -108,10 +108,10 @@ export async function updateMyProspectVoice(params: {
  * always uses the agent's own clone — but self-view is still this agent's
  * identity, and the twin it names still belongs to someone.)
  *
- * NOT WIRED: the settings panel
- * (app/dashboard/settings/assistant/listening-preferences-panel.tsx) wires the
- * two voice actions but has no avatar control, so the avatar half of this
- * module has no surface. Adding the picker is a UI change outside this slice.
+ * WIRED (w3): the "The face you see" picker in
+ * app/dashboard/settings/assistant/listening-preferences-panel.tsx. The page
+ * feeds it this agent's own ready + approved twins (from listMyTwins), so the
+ * list and this gate agree — but the gate below is the boundary, not the list.
  */
 export async function updateMyAssistantAvatar(params: {
   assistantAvatarId: string | null

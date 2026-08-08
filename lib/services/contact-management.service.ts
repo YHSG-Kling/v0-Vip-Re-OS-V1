@@ -6,6 +6,15 @@ import { isValidUUID, validateEmail, validatePhone, validateContact } from "@/li
 import { LEAD_SOURCES } from "@/lib/constants"
 import { handleError, ValidationError, NotFoundError, DatabaseError } from "@/lib/errors"
 import { calculateLeadScore } from "./lead-management.service"
+// NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
+// not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
+// `server-only` (it holds the service client and the paid PeopleData/OSINT
+// clients), and a static import here would pull that into every module graph
+// that reaches this file — including the plain `tsx` guard simulators, which are
+// not a server component and crash on `server-only` at load. lib/kernel/crm.ts
+// already used the dynamic form for exactly this reason; these call sites were
+// the inconsistency. The queue call is best-effort and already awaited/voided,
+// so deferring the import costs nothing.
 
 // ============================================
 // UNIFIED CONTACT MANAGEMENT SERVICE
@@ -105,6 +114,27 @@ export async function createContact(params: CreateContactParams) {
     if (error) {
       throw new DatabaseError("Failed to create contact", error)
     }
+
+    // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). This is the CRM
+    // manual-add service and it emits no CONTACT_CREATED, so the event-reactor
+    // lane never saw an agent-typed contact. Voided — the add must not fail
+    // because of enrichment. Live-deal suppression, the freshness check and the
+    // already-pending check are all inside queueContactEnrichment.
+    //
+    // Queued rather than enriched inline: enrichment makes two paid vendor calls
+    // and this runs on the request path. app/api/contacts/create/route.ts used
+    // to fire an un-awaited enrichContact() here, which on a serverless runtime
+    // is a coin-flip — the response returns, the function freezes, and the work
+    // may never finish. A queue row survives that.
+    void import("@/lib/enrichment/contact-enrichment-core")
+      .then((m) =>
+        m.queueContactEnrichment({
+          contactId: contact.id,
+          brokerageId: agentRow.brokerage_id as string,
+          triggerType: "crm_manual_add",
+        }),
+      )
+      .catch(() => {})
 
     // Calculate initial lead score
     await calculateLeadScore({

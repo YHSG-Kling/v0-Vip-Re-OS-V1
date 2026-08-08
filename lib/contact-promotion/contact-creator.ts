@@ -15,6 +15,15 @@
 
 import { peopleDataProfileToContactColumns } from '@/lib/lead-pipeline/enrichment-column-map'
 import { ENUM_VOCABULARIES, normalizeEnumValue } from '@/lib/data-steward/value-normalizer'
+// NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
+// not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
+// `server-only` (it holds the service client and the paid PeopleData/OSINT
+// clients), and a static import here would pull that into every module graph
+// that reaches this file — including the plain `tsx` guard simulators, which are
+// not a server component and crash on `server-only` at load. lib/kernel/crm.ts
+// already used the dynamic form for exactly this reason; these call sites were
+// the inconsistency. The queue call is best-effort and already awaited/voided,
+// so deferring the import costs nothing.
 
 export interface ContactCreationData {
   leadId: string
@@ -222,6 +231,24 @@ export async function createContactFromLead(
     if (error) {
       throw new Error(`Failed to create contact: ${error.message}`)
     }
+
+    // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). This is THE
+    // lead->contact converter and it emits no CONTACT_CREATED, so a promoted
+    // lead reached no enrichment lane at all. The lead already carries an
+    // enrichment profile, which is why this queues rather than forces: the
+    // freshness check inside queueContactEnrichment consults BOTH enrichment
+    // stamps and will skip a contact the lead pipeline enriched recently, so a
+    // promotion does not re-buy a record we just paid for. Voided — a promotion
+    // must never fail because of enrichment.
+    void import("@/lib/enrichment/contact-enrichment-core")
+      .then((m) =>
+        m.queueContactEnrichment({
+          contactId: contact.id,
+          brokerageId: data.brokerageId,
+          triggerType: "lead_promotion",
+        }),
+      )
+      .catch(() => {})
 
     return { contactId: contact.id }
 

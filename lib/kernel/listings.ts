@@ -16,6 +16,15 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
+// NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
+// not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
+// `server-only` (it holds the service client and the paid PeopleData/OSINT
+// clients), and a static import here would pull that into every module graph
+// that reaches this file — including the plain `tsx` guard simulators, which are
+// not a server component and crash on `server-only` at load. lib/kernel/crm.ts
+// already used the dynamic form for exactly this reason; these call sites were
+// the inconsistency. The queue call is best-effort and already awaited/voided,
+// so deferring the import costs nothing.
 import { resolveDealType } from "@/lib/transactions/deal-type-resolver"
 import { KernelEvent } from "./events"
 import type { ListingStage as LifecycleListingStage } from "@/lib/listing-lifecycle/lifecycle-definitions"
@@ -315,6 +324,26 @@ export async function createOrAttachSellerContact(
       .single()
 
     if (error) return { success: false, error: error.message }
+
+    // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). A seller contact
+    // created alongside a listing is the case the ruling's "just before" is
+    // about: the listing exists but has not been signed, so the seller is still
+    // a prospect and enrichment is exactly what should happen now. If the
+    // listing is already at LISTING_AGREEMENT_SIGNED or beyond,
+    // queueContactEnrichment's live-deal check declines and the contact is
+    // picked up after the deal ends instead. The decision is the predicate's,
+    // not this call site's. Voided — listing setup must not fail on enrichment.
+    void import("@/lib/enrichment/contact-enrichment-core")
+      .then((m) =>
+        m.queueContactEnrichment({
+          contactId: contact.id,
+          brokerageId: input.brokerageId,
+          triggerType: "listing_seller_intake",
+          supabase,
+        }),
+      )
+      .catch(() => {})
+
     return { success: true, contactId: contact.id, created: true }
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "createOrAttachSellerContact failed" }

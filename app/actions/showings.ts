@@ -93,10 +93,16 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
     // has opted in, the buyer must be financially verified before a showing is
     // set. The refusal carries the gate's OWN reason so "your lender hasn't
     // confirmed financials yet" never arrives looking like a server error.
+    // `caller` is forwarded so the sessionless (voice webhook) lane does not hit the
+    // cookie-session gate inside checkBuyerCanPerformAction — wave 3 gated that action
+    // on requireContactAccess, and this lane has no cookie by construction. Same gate,
+    // same blocked-attempt log, real resolved actor; see the overload note in
+    // lib/buyer-execution/showing-financial-policy.ts.
     const finGate = await guardShowingFinancialGate({
       contactId:   data.contactId,
       brokerageId: brokerageId,
       userId:      authUserId,
+      caller:      caller ? { actorUserId: caller.actorUserId ?? authUserId } : null,
     })
     if (finGate.blocked) {
       return { success: false, error: finGate.reason, errorCode: finGate.errorCode }

@@ -3,7 +3,6 @@ import { createContact } from "@/lib/services"
 import { createClient } from "@/lib/supabase/server"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import type { ContactFormData } from "@/types/contact"
-import { enrichContact } from "@/app/actions/contact-enrichment"
 
 export async function POST(request: NextRequest) {
   try {
@@ -67,9 +66,14 @@ export async function POST(request: NextRequest) {
 
     const contact = result.contact
 
-    enrichContact(contact.id, { source: "manual" }).catch((err) => {
-      console.error("[Contact Create] Enrichment error:", err)
-    })
+    // Enrichment is no longer fired from here. It used to be an un-awaited
+    // `enrichContact(contact.id, ...)` on the request path — two paid vendor
+    // calls that a serverless runtime is free to freeze the moment this handler
+    // returns, so the spend either half-happened or never happened and nothing
+    // recorded which. `createContact` now QUEUES the enrichment instead
+    // (lib/services/contact-management.service.ts), which is one row write and
+    // survives the response; the queue drain does the paid work off the request
+    // path, after re-checking the owner's live-deal suppression rule.
 
     return NextResponse.json({
       success: true,

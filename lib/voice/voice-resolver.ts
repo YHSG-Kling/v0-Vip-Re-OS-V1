@@ -20,6 +20,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { FALLBACK_VOICE_ID } from "./elevenlabs-tts"
+import { ASSISTANT_VOICE_OPTIONS } from "@/lib/video/assistant-options"
 
 export type VoiceContext = "self" | "contact_facing"
 
@@ -169,16 +170,24 @@ export interface GenericVoiceOption {
 }
 
 /**
- * Curated ElevenLabs default voices the agent can pick from in settings.
- * These are widely-known stable IDs from ElevenLabs' library.
+ * Curated ElevenLabs stock voices the agent can pick from in settings.
+ *
+ * DERIVED, NOT DUPLICATED. This used to be a second hand-maintained array of
+ * the same eight-ish ids that lib/video/assistant-options.ts already curated —
+ * two lists for one job, so a voice offered on the Assistant settings page
+ * could be missing from the AI Identity picker, and one of them still called
+ * EXAVITQu4vr4xnSDxMaL "Bella" years after ElevenLabs renamed it Sarah.
+ * ASSISTANT_VOICE_OPTIONS is the survivor (it is the client-safe module; this
+ * one is `server-only`), and this is a shape adapter over it so every existing
+ * caller — the Assistant listening panel and the phone ISA voice card — keeps
+ * the exact `GenericVoiceOption` shape it renders.
  */
-export const GENERIC_VOICES: GenericVoiceOption[] = [
-  { id: "21m00Tcm4TlvDq8ikWAM", name: "Rachel",  description: "Warm, professional", gender: "female", accent: "American" },
-  { id: "EXAVITQu4vr4xnSDxMaL", name: "Bella",   description: "Soft, conversational", gender: "female", accent: "American" },
-  { id: "AZnzlk1XvdvUeBnXmlld", name: "Domi",    description: "Energetic, friendly", gender: "female", accent: "American" },
-  { id: "MF3mGyEYCl7XYWbV9V6O", name: "Elli",    description: "Calm, articulate", gender: "female", accent: "American" },
-  { id: "ErXwobaYiN019PkySvjV", name: "Antoni",  description: "Smooth, confident", gender: "male", accent: "American" },
-  { id: "VR6AewLTigWG4xSOukaG", name: "Arnold",  description: "Authoritative, mature", gender: "male", accent: "American" },
-  { id: "pNInz6obpgDQGcFmaJgB", name: "Adam",    description: "Deep, professional", gender: "male", accent: "American" },
-  { id: "yoZ06aMxZJJ28mfd3POQ", name: "Sam",     description: "Approachable, neutral", gender: "male", accent: "American" },
-]
+export const GENERIC_VOICES: GenericVoiceOption[] = ASSISTANT_VOICE_OPTIONS.map((v) => ({
+  id: v.voiceId,
+  name: v.label,
+  // The picker cards render this on one clamped line, so take the short half of
+  // the style sentence rather than the full "…— great for client updates" tail.
+  description: v.style.split("—")[0]!.trim(),
+  gender: v.gender,
+  accent: v.accent,
+}))

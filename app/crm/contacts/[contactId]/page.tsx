@@ -11,6 +11,7 @@ import { LastPromiseCard }          from "@/components/contact/LastPromiseCard"
 import { InvestorDealsPanel }        from "@/components/contact/investor-deals-panel"
 import { BuyerBrokerAgreementPanel } from "@/components/contact/buyer-broker-agreement-panel"
 import { WorkflowRunsPanel }         from "./components/workflow-runs-panel"
+import { EnrichmentPanel }          from "./components/enrichment-panel"
 import { assertCanActOnContact }    from "@/lib/auth/contact-access"
 import { getBuyerTours }             from "@/app/actions/tour-planner"
 import { getBuyerJourney }           from "@/app/actions/buyer-execution"
@@ -300,6 +301,17 @@ export default async function ContactDetailPage({ params }: PageProps) {
           and a failed run no way to be resumed or cancelled. */}
       <div className="px-4 pt-3">
         <WorkflowRunsPanel contactId={contactId} />
+      </div>
+
+      {/* Enrichment + detected life changes. The enrichment lane has always
+          written household income, ownership, social profiles, public/court/
+          property records and life events onto the contact row, and none of it
+          was displayed anywhere — so a detected divorce or relocation, the whole
+          point of the feature, reached no agent. This is that surface, plus the
+          two manual controls (enrich now / check for changes) and the
+          acknowledgement that stops a change re-surfacing forever. */}
+      <div className="px-4 pt-3">
+        <EnrichmentPanel contactId={contactId} />
       </div>
 
       {/* Buyer broker agreement — the NAR 2024 gate that blocks showings and offers

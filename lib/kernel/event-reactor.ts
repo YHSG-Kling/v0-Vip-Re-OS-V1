@@ -260,6 +260,106 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     } catch { /* just-in-time education is best-effort */ }
   }
 
+  // (D-quinquies) CONTACT ENRICHMENT — the owner's ruling, event-driven.
+  //
+  //   "contact enrichment should happen as soon as a new contact comes in and
+  //    also check if a life change or other change happens for the contact but
+  //    not if they have an active listing or an active transaction; just before
+  //    or after."
+  //
+  // TWO TRIGGERS, ONE SUPPRESSION.
+  //
+  // 1. AS SOON AS A NEW CONTACT COMES IN. There is no single code-level
+  //    chokepoint for contact creation — nineteen distinct `contacts` INSERT
+  //    sites exist across app/ and lib/ (enumerated in docs/wave3-enrichment.md),
+  //    and hooking each one would leave the twentieth unhooked the day someone
+  //    adds it. The kernel EVENT BUS is the closest thing to a chokepoint that
+  //    actually exists: CONTACT_CREATED and CONTACT_CAPTURED are the two events
+  //    the intake paths emit, every emitter reaches this reactor through
+  //    emitKernelEvent / processKernelEvent, and a new door that emits either
+  //    one is covered without being edited. The doors that emit NEITHER are
+  //    picked up by the nightly net (app/api/cron/contact-enrichment), which is
+  //    why that cron was revived rather than retired.
+  //
+  // 2. A LIFE CHANGE OR OTHER CHANGE. The re-check fires when a DEAL ENDS —
+  //    which is precisely the owner's "or after". A transaction closing or a
+  //    listing leaving its active stages is the moment suppression LIFTS, and it
+  //    is also the moment the contact's circumstances have most likely changed
+  //    (they just moved). Firing here means the re-check happens on a real
+  //    signal instead of only on a 30-day timer; the timer stays in the cron as
+  //    the net for contacts with no deal activity at all.
+  //
+  // BEST-EFFORT, ALWAYS. Both branches only ENQUEUE — one row and one event, no
+  // vendor call — so contact creation is never blocked by, and can never fail
+  // because of, enrichment. The queue writer applies the live-deal suppression
+  // itself, and the drain re-applies it before spending, because a contact can
+  // enter a deal between being queued and being processed.
+  if (params.brokerageId && params.entityType === "contact") {
+    const isCreate =
+      params.event === KernelEvent.CONTACT_CREATED || params.event === KernelEvent.CONTACT_CAPTURED
+
+    if (isCreate) {
+      try {
+        const { queueContactEnrichment } = await import("@/lib/enrichment/contact-enrichment-core")
+        await queueContactEnrichment({
+          contactId:   params.entityId,
+          brokerageId: params.brokerageId,
+          triggerType: params.event === KernelEvent.CONTACT_CREATED ? "contact_created" : "contact_captured",
+          supabase:    svc,
+        })
+      } catch (err) {
+        console.error("[event-reactor] contact enrichment enqueue failed:", err)
+      }
+    }
+  }
+
+  // (D-sexies) DEAL ENDED → re-check the contact for a life change.
+  // Listed separately from the block above because the entity here is the
+  // transaction or the listing, not the contact. Both sides of a dual deal are
+  // covered: the emitter's explicit buyer/seller ids are preferred, and
+  // resolveEventContacts — the same resolver the portal/sequence path uses,
+  // which returns BOTH represented sides of a transaction — fills in for bare
+  // emitters that forward only an entity id.
+  const DEAL_END_EVENTS: string[] = [
+    KernelEvent.TRANSACTION_CLOSED,
+    KernelEvent.TRANSACTION_STAGE_CHANGED,
+    KernelEvent.LISTING_STAGE_CHANGED,
+  ]
+  if (params.brokerageId && DEAL_END_EVENTS.includes(params.event)) {
+    try {
+      const { queueContactLifeChangeRecheck } = await import("@/lib/enrichment/contact-enrichment-core")
+      let dealContacts = [
+        params.contactId,
+        params.buyerContactId,
+        params.sellerContactId,
+      ].filter((id): id is string => typeof id === "string" && id.length > 0)
+
+      if (dealContacts.length === 0) {
+        const r = await resolveEventContacts(svc, params.entityType, params.entityId)
+        dealContacts = [r.contactId, r.buyerContactId, r.sellerContactId].filter(
+          (id): id is string => typeof id === "string" && id.length > 0,
+        )
+      }
+
+      for (const contactId of [...new Set(dealContacts)]) {
+        // The helper is the one that decides whether the deal has actually
+        // ENDED — TRANSACTION_STAGE_CHANGED and LISTING_STAGE_CHANGED fire on
+        // every stage move, most of which are mid-deal. It re-uses the same
+        // isContactInLiveDeal predicate rather than parsing the event metadata,
+        // so "the deal ended" means exactly "no live deal remains", which is the
+        // condition the ruling actually names.
+        await queueContactLifeChangeRecheck({
+          contactId,
+          brokerageId: params.brokerageId,
+          triggerType: "deal_ended",
+          supabase:    svc,
+        })
+      }
+    } catch (err) {
+      console.error("[event-reactor] deal-ended life-change re-check enqueue failed:", err)
+    }
+  }
+
   // (E) Contact-agent-assignment intro video — when contacts.agent_id is set
   // (the canonical assignment moment per the app rule: raw_leads → platform,
   // leads → AI ISA + brokerage, contacts → agents), fire a personalized D-ID

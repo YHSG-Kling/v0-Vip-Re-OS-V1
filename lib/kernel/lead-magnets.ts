@@ -5,6 +5,15 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { CONTACT_SOURCE_LEAD_MAGNET } from "@/lib/campaigns/contact-sources"
 import { autoEnrollContact } from "@/lib/campaign-sequences/auto-enroll"
+// NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
+// not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
+// `server-only` (it holds the service client and the paid PeopleData/OSINT
+// clients), and a static import here would pull that into every module graph
+// that reaches this file — including the plain `tsx` guard simulators, which are
+// not a server component and crash on `server-only` at load. lib/kernel/crm.ts
+// already used the dynamic form for exactly this reason; these call sites were
+// the inconsistency. The queue call is best-effort and already awaited/voided,
+// so deferring the import costs nothing.
 
 // ============================================================================
 // INPUT / OUTPUT CONTRACTS
@@ -410,7 +419,13 @@ export async function captureFormSubmission(
       // out this agent's lead magnet becomes that agent's lead. Never reassign a contact another agent
       // already owns (no lead-stealing). The contacts.agent_id trigger emits contact_agent_assigned.
       if (!(existingContact as any).agent_id && form.agent_id) {
-        await supabase.from("contacts").update({ agent_id: form.agent_id }).eq("id", contactId)
+        // tenant anchor: the contact was resolved by email WITHIN this brokerage,
+        // so the update must be pinned to it too — a bare `.eq("id", …)` on a
+        // service client is a cross-tenant write waiting to happen.
+        await supabase.from("contacts")
+          .update({ agent_id: form.agent_id })
+          .eq("brokerage_id", input.brokerageId)
+          .eq("id", contactId)
       }
     } else {
       // Stamp the new contact's intent from the magnet so determinePortalView shows the right portal +
@@ -433,11 +448,32 @@ export async function captureFormSubmission(
       capturedContactType = (intentRouting.contactType as string | null) ?? null
       const { data: newContact } = await supabase
         .from("contacts")
-        .insert(newRow)
+        // tenant anchor (scope burn-down): re-stamped ON the chain, not only
+        // inside `newRow` — the scope guard reads the window after `.from(`, and
+        // a brokerage_id set in a payload variable declared further up is
+        // invisible to it (and to a reader auditing the query).
+        .insert({ ...newRow, brokerage_id: input.brokerageId })
         .select("id")
         .maybeSingle()
 
-      if (newContact) contactId = newContact.id
+      if (newContact) {
+        contactId = newContact.id
+        // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). A lead-magnet
+        // download creates the contact row here and emits no CONTACT_CREATED, so
+        // the event-reactor lane never saw it. Voided — the form submission must
+        // land even if the queue write fails. Live-deal suppression and
+        // de-duplication are inside queueContactEnrichment.
+        void import("@/lib/enrichment/contact-enrichment-core")
+          .then((m) =>
+            m.queueContactEnrichment({
+              contactId: newContact.id,
+              brokerageId: input.brokerageId,
+              triggerType: "lead_magnet",
+              supabase,
+            }),
+          )
+          .catch(() => {})
+      }
     }
   }
 

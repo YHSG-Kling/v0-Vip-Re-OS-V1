@@ -12,8 +12,8 @@ import { Textarea } from "@/app/components/ui/textarea"
 import { Label } from "@/app/components/ui/label"
 import { toast } from "sonner"
 import { createTwinDraft, finalizeTwin } from "@/app/actions/twin-studio"
-import { uploadTwinAvatar, uploadTwinVoiceSample } from "@/app/actions/twin-studio-upload"
-import { VoiceRecorder } from "./voice-recorder"
+import { uploadTwinAvatar } from "@/app/actions/twin-studio-upload"
+import { TwinVoiceStep } from "./twin-voice-step"
 import { ConsentRecorder } from "./consent-recorder"
 
 type Step = "look" | "consent" | "voice" | "personality" | "done"
@@ -161,7 +161,10 @@ export function TwinWizard({ open, onOpenChange }: Props) {
         )}
 
         {step === "voice" && twinId && (
-          <VoiceStep
+          // BOTH doors to a voice — clone or stock — live in one shared
+          // component, because the same step is offered again from the twin
+          // card for a twin that skipped it here.
+          <TwinVoiceStep
             twinId={twinId}
             label={label}
             onSkip={() => setStep("personality")}
@@ -356,67 +359,9 @@ function LookStep({
   )
 }
 
-// ─── Step 2 — Voice ────────────────────────────────────────────────────────
-
-function VoiceStep({
-  twinId, label, onSkip, onComplete,
-}: { twinId: string; label: string; onSkip: () => void; onComplete: () => void }) {
-  const [working, setWorking] = useState(false)
-
-  async function handleSample(blob: Blob, mimeType: string) {
-    setWorking(true)
-    try {
-      const base64 = await blobToBase64(blob)
-      const upload = await uploadTwinVoiceSample({ base64, mimeType })
-      if (!upload.ok || !upload.url) {
-        toast.error(upload.error ?? "Upload failed")
-        return
-      }
-
-      const cloneRes = await fetch("/api/elevenlabs/voice-clone", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: `Twin: ${label}`,
-          sample_audio_urls: [upload.url],
-          twin_id: twinId,
-        }),
-      })
-      if (!cloneRes.ok) {
-        const err = await cloneRes.json().catch(() => ({}))
-        toast.error(err.error ?? "Voice clone failed")
-        return
-      }
-      onComplete()
-    } finally {
-      setWorking(false)
-    }
-  }
-
-  if (working) {
-    return (
-      <div className="text-center py-12">
-        <Loader2 className="h-8 w-8 animate-spin mx-auto mb-3" />
-        <p className="text-sm font-medium">Cloning your voice…</p>
-        <p className="text-xs text-muted-foreground mt-1">Usually about 30 seconds.</p>
-      </div>
-    )
-  }
-
-  return (
-    <div className="space-y-4 pt-2">
-      <VoiceRecorder onSampleReady={handleSample} maxSeconds={60} />
-      <div className="text-center">
-        <button
-          onClick={onSkip}
-          className="text-xs text-muted-foreground hover:text-foreground"
-        >
-          Skip — I'll do this later
-        </button>
-      </div>
-    </div>
-  )
-}
+// Step 2 (Voice) is ./twin-voice-step.tsx — SHARED with the twin card's
+// "Add a voice" affordance, so the clone route and the stock-voice allowlist
+// have exactly one implementation between the two entry points.
 
 // ─── Step 3 — Personality ──────────────────────────────────────────────────
 
@@ -607,17 +552,5 @@ function fileToBase64(file: File): Promise<string> {
     }
     reader.onerror = reject
     reader.readAsDataURL(file)
-  })
-}
-
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => {
-      const result = reader.result as string
-      resolve(result.split(",")[1] ?? "")
-    }
-    reader.onerror = reject
-    reader.readAsDataURL(blob)
   })
 }

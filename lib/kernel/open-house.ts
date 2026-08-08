@@ -12,6 +12,15 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
+// NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
+// not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
+// `server-only` (it holds the service client and the paid PeopleData/OSINT
+// clients), and a static import here would pull that into every module graph
+// that reaches this file — including the plain `tsx` guard simulators, which are
+// not a server component and crash on `server-only` at load. lib/kernel/crm.ts
+// already used the dynamic form for exactly this reason; these call sites were
+// the inconsistency. The queue call is best-effort and already awaited/voided,
+// so deferring the import costs nothing.
 import { KernelEvent } from "./events"
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -209,6 +218,23 @@ export async function resolveOrCreateOpenHouseContact(input: {
     console.log(
       `[Kernel] Created new contact ${newContact.id} from open_house attendee (open_house: ${open_house_id})`
     )
+
+    // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). This kernel
+    // command creates the contact row directly and emits no CONTACT_CREATED, so
+    // the event-reactor lane never saw open-house attendees. Voided: attendee
+    // resolution must not fail because of enrichment. Live-deal suppression and
+    // de-duplication are inside queueContactEnrichment.
+    void import("@/lib/enrichment/contact-enrichment-core")
+      .then((m) =>
+        m.queueContactEnrichment({
+          contactId: newContact.id,
+          brokerageId: brokerage_id,
+          triggerType: "open_house",
+          supabase,
+        }),
+      )
+      .catch(() => {})
+
     return {
       success: true,
       contact_id: newContact.id,

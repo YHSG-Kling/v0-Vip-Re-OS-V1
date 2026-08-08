@@ -4,21 +4,32 @@ import { useState, useTransition } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, CheckCircle2, AlertCircle, Volume2, User, Sparkles } from "lucide-react"
+import { Loader2, CheckCircle2, AlertCircle, Volume2, User, Sparkles, Video } from "lucide-react"
+import Link from "next/link"
 import {
   updateMyVoicePreference,
   updateMyProspectVoice,
+  updateMyAssistantAvatar,
   type AgentVoiceAvatarPrefs,
 } from "@/app/actions/voice-avatar-settings"
 import { previewAssistantVoiceAction } from "@/app/actions/ai-identity"
 import type { GenericVoiceOption } from "@/lib/voice/voice-resolver"
 
+/** One of the agent's OWN twins, ready + approved, offered as their self-view face. */
+export interface AssistantAvatarChoice {
+  didAvatarId: string
+  label: string
+  previewUrl: string | null
+  isDefault: boolean
+}
+
 interface Props {
   initialPrefs: AgentVoiceAvatarPrefs
   genericVoices: GenericVoiceOption[]
+  avatarChoices: AssistantAvatarChoice[]
 }
 
-export function ListeningPreferencesPanel({ initialPrefs, genericVoices }: Props) {
+export function ListeningPreferencesPanel({ initialPrefs, genericVoices, avatarChoices }: Props) {
   const [prefs, setPrefs] = useState(initialPrefs)
   const [previewLoading, setPreviewLoading] = useState<string | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -60,6 +71,33 @@ export function ListeningPreferencesPanel({ initialPrefs, genericVoices }: Props
       const result = await updateMyProspectVoice({ prospectVoiceId: voiceId })
       if (result.success) {
         setPrefs({ ...prefs, prospectVoiceId: voiceId })
+        setSaved(true)
+        setTimeout(() => setSaved(false), 2500)
+      } else {
+        setSaveError(result.error ?? "Save failed")
+      }
+    })
+  }
+
+  /**
+   * WHICH OF THE AGENT'S OWN TWINS FRONTS THEIR SELF-VIEW.
+   *
+   * Persists agents.assistant_avatar_id, which lib/voice/voice-resolver.ts
+   * :resolveSelfAvatar returns as the D-ID avatar to render in the morning
+   * brief and their own avatar call. Passing null clears it back to their
+   * default clone — a real choice, not an absence.
+   *
+   * The server action re-verifies that the id is one of THIS agent's own
+   * ready + approved twins; the list here is filtered the same way so the two
+   * agree, but the server is the boundary.
+   */
+  function handleChooseAvatar(didAvatarId: string | null) {
+    setSaveError(null)
+    setSaved(false)
+    startTransition(async () => {
+      const result = await updateMyAssistantAvatar({ assistantAvatarId: didAvatarId })
+      if (result.success) {
+        setPrefs({ ...prefs, assistantAvatarId: didAvatarId })
         setSaved(true)
         setTimeout(() => setSaved(false), 2500)
       } else {
@@ -220,6 +258,81 @@ export function ListeningPreferencesPanel({ initialPrefs, genericVoices }: Props
           with you through the portal AI chat or AI ISA — that's how they recognize you. This
           setting only affects what YOU hear when YOU talk to your assistant or play your brief.
         </p>
+
+        {/* ─── The face YOU see ───────────────────────────────────────────
+            The counterpart to the voice choice above, and the missing half of
+            this panel: agents.assistant_avatar_id had a hardened server action
+            and no control anywhere, so an agent with three twins could not
+            choose which one greeted them in their own morning brief.
+            OWN TWINS ONLY — an agent may only ever promote a likeness they own
+            and that is approved, so this list is their own ready + approved
+            twins and nothing else. */}
+        <div className="border-t pt-4 mt-4 space-y-2">
+          <div className="flex items-start gap-2">
+            <Video className="h-4 w-4 text-purple-600 mt-0.5 shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm font-medium">The face you see</p>
+              <p className="text-xs text-muted-foreground">
+                Which of your twins fronts your own morning brief and avatar call. Your contacts
+                always see your default twin — this is only your view.
+              </p>
+            </div>
+          </div>
+
+          {avatarChoices.length === 0 ? (
+            <p className="text-[11px] text-muted-foreground ml-6">
+              You don&apos;t have an approved twin yet.{" "}
+              <Link href="/dashboard/settings/twin-studio" className="underline hover:text-foreground">
+                Create one in Twin Studio
+              </Link>{" "}
+              and it will show up here.
+            </p>
+          ) : (
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 ml-6">
+              <button
+                type="button"
+                onClick={() => handleChooseAvatar(null)}
+                disabled={isPending}
+                className={`rounded-md border p-2 text-left text-xs transition-colors ${
+                  !prefs.assistantAvatarId ? "border-purple-400 bg-purple-50" : "border-border hover:bg-muted"
+                }`}
+              >
+                <div className="aspect-square rounded bg-muted flex items-center justify-center mb-1">
+                  <Sparkles className="h-4 w-4 text-muted-foreground" />
+                </div>
+                <span className="font-medium block truncate">My default twin</span>
+              </button>
+
+              {avatarChoices.map((a) => {
+                const isSelected = prefs.assistantAvatarId === a.didAvatarId
+                return (
+                  <button
+                    key={a.didAvatarId}
+                    type="button"
+                    onClick={() => handleChooseAvatar(a.didAvatarId)}
+                    disabled={isPending}
+                    className={`rounded-md border p-2 text-left text-xs transition-colors ${
+                      isSelected ? "border-purple-400 bg-purple-50" : "border-border hover:bg-muted"
+                    }`}
+                  >
+                    <div className="aspect-square rounded bg-muted overflow-hidden mb-1 flex items-center justify-center">
+                      {a.previewUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={a.previewUrl} alt={a.label} className="w-full h-full object-cover" />
+                      ) : (
+                        <User className="h-4 w-4 text-muted-foreground" />
+                      )}
+                    </div>
+                    <span className="font-medium block truncate">{a.label}</span>
+                    {a.isDefault && (
+                      <span className="text-[10px] text-muted-foreground">Default twin</span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
 
         {/* Practice prospect voice — Track C */}
         <div className="border-t pt-4 mt-4 space-y-2">

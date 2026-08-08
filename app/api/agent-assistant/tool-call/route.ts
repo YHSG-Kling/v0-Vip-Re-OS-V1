@@ -295,8 +295,28 @@ async function runTool(
       if (!ct || (ct as { brokerage_id?: string }).brokerage_id !== session.brokerage_id) {
         return { error: "That contact isn't in your brokerage." }
       }
-      const { getBuyerJourney } = await import("@/app/actions/buyer-execution")
-      return getBuyerJourney({ contactId, userId: session.user_id, source: "voice_assistant" })
+      // Read the journey through the LIBRARY function, NOT the getBuyerJourney server
+      // action. Wave 3 gated that action on requireContactAccess, which builds a
+      // cookie-based Supabase client — and this webhook has no cookie session at all
+      // (secret header + agent_assistant_sessions lookup, by design, same as
+      // query_listing_status above). Calling the action would turn the voice lane away
+      // with "Unauthorized" on every buyer question.
+      //
+      // This is NOT a hole and NOT a fake identity: the speaker is the REAL user on the
+      // session row, and the tenant check the action would have done — contact's
+      // brokerage vs. caller's brokerage — is the entity_owner gate performed six lines
+      // above against session.brokerage_id. Same two facts, resolved the way this lane
+      // can resolve them.
+      const { getBuyerJourneyStatus, getBuyerFriendlyMessage } = await import("@/lib/buyer-execution")
+      const journey = await getBuyerJourneyStatus({
+        contactId,
+        userId: session.user_id,
+        source: "voice_assistant",
+      })
+      if (!journey.success || !journey.status) {
+        return { error: journey.error ?? "Could not read that buyer's journey." }
+      }
+      return { success: true, journey: journey.status, message: getBuyerFriendlyMessage(journey.status) }
     }
 
     // ── Vendor/lender lane: lender confirms a buyer's financing by voice ──
@@ -326,16 +346,25 @@ async function runTool(
         }
       }
 
-      const { lenderConfirmBuyerFinancials } = await import("@/app/actions/buyer-execution")
-      const res = await lenderConfirmBuyerFinancials({
+      // Library function, not the server action — the action is now gated on
+      // requireContactAccess (a cookie-session client) and this webhook has no cookie
+      // session. The authority that matters here is unchanged and lives INSIDE the
+      // library function: it proves the actor's user_type is lender/vendor and that
+      // they hold a vendor_contact_assignment for this contact with 'financial' scope
+      // (assertVendorAssignedToContact). session.user_id is the real speaker from the
+      // agent_assistant_sessions row, never anything the caller said.
+      const { lenderConfirmFinancialVerification } = await import("@/lib/buyer-execution")
+      const res = await lenderConfirmFinancialVerification({
         contactId,
         lenderId: session.user_id,          // the acting lender/vendor USER
         verificationType,
-        approvedAmount,
-        loanType: params.loan_type ? String(params.loan_type) : undefined,
-        interestRate: params.interest_rate != null ? Number(params.interest_rate) : undefined,
-        lenderName: params.lender_name ? String(params.lender_name) : undefined,
-        notes: params.notes ? String(params.notes) : undefined,
+        metadata: {
+          approvedAmount,
+          loanType: params.loan_type ? String(params.loan_type) : undefined,
+          interestRate: params.interest_rate != null ? Number(params.interest_rate) : undefined,
+          lenderName: params.lender_name ? String(params.lender_name) : undefined,
+          notes: params.notes ? String(params.notes) : undefined,
+        },
       })
       if (!("success" in res) || !res.success) {
         return { error: (res as { error?: string }).error ?? "Could not confirm financing." }

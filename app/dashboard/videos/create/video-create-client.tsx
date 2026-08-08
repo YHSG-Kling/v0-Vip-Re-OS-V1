@@ -257,12 +257,8 @@ export default function VideoCreatePage() {
   }>>([])
   // Which asset row (or "photo" for the legacy photo fallback) the agent selected
   const [selectedDidAssetId, setSelectedDidAssetId] = useState<string | "photo" | null>(null)
-  // Inline "add avatar" upload state
-  const [showAddAvatar, setShowAddAvatar] = useState(false)
-  const [newAvatarFile, setNewAvatarFile] = useState<File | null>(null)
-  const [newAvatarLabel, setNewAvatarLabel] = useState("")
-  const [isAddingAvatar, setIsAddingAvatar] = useState(false)
-  const [addAvatarError, setAddAvatarError] = useState<string | null>(null)
+  // (the inline "add avatar" state went with the uploader — avatars are
+  //  created in Twin Studio, and this step only picks one)
 
   // Step 3: Style & Output
   const [backgroundStyle, setBackgroundStyle] = useState<string>("white")
@@ -1390,47 +1386,23 @@ export default function VideoCreatePage() {
                   const hasAnyAvatar = readyAssets.length > 0 || hasPhoto
                   const hasAnyVoice = elVoiceProfiles.length > 0
 
-                  async function handleAddAvatar() {
-                    if (!newAvatarFile || !resolvedAgentId) return
-                    setIsAddingAvatar(true)
-                    setAddAvatarError(null)
-                    try {
-                      const form = new FormData()
-                      form.append("file", newAvatarFile)
-                      form.append("bucket", "agent-photos")
-                      const uploadRes = await fetch("/api/storage/upload-temp", { method: "POST", body: form })
-                      const uploadData = uploadRes.ok ? await uploadRes.json() : null
-                      if (!uploadData?.url) throw new Error("Upload failed — please try again.")
-
-                      const createRes = await fetch("/api/did/create-avatar", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                          source_url: uploadData.url,
-                          label: newAvatarLabel || "My Avatar",
-                          set_as_default: readyAssets.length === 0,
-                        }),
-                      })
-                      const createData = await createRes.json()
-                      if (!createRes.ok) throw new Error(createData.error ?? "Avatar creation failed.")
-
-                      // Refresh avatar list
-                      const { data: refreshed } = await supabase
-                        .from("agent_avatar_assets")
-                        .select("id, label, source_type, did_avatar_id, status, thumbnail_url, is_default")
-                        .eq("agent_id", resolvedAgentId)
-                        .order("is_default", { ascending: false })
-                        .order("created_at", { ascending: false })
-                      setDidAvatarAssets(refreshed ?? [])
-                      setShowAddAvatar(false)
-                      setNewAvatarFile(null)
-                      setNewAvatarLabel("")
-                    } catch (err: any) {
-                      setAddAvatarError(err.message)
-                    } finally {
-                      setIsAddingAvatar(false)
-                    }
-                  }
+                  // handleAddAvatar was REMOVED here (Wave 3, criterion 1:
+                  // "twin studio is supposed to be where the user creates their
+                  // avatar for video").
+                  //
+                  // SURVIVOR: app/dashboard/settings/twin-studio/components/twin-wizard.tsx
+                  //
+                  // It was not merely a duplicate, it was a broken one. It
+                  // POSTed /api/did/create-avatar with NO `source_type`, and the
+                  // route defaults that to "video" — so the upload was always
+                  // submitted as a V3 Instant Avatar and always refused 428 by
+                  // the consent gate, on a page with no consent recorder. The
+                  // affordance could not succeed for anybody. The survivor
+                  // sends source_type, records consent first for a video
+                  // source, ties the job to a twin row, and applies the
+                  // brokerage approval gate. Nothing was lost: the avatar
+                  // PICKER below (choose which ready twin presents this video)
+                  // is selection, not creation, and is untouched.
 
                   return (
                     <div className="space-y-6">
@@ -1540,48 +1512,12 @@ export default function VideoCreatePage() {
                             size="sm"
                             variant="outline"
                             className="text-xs h-7 gap-1"
-                            onClick={() => setShowAddAvatar((v) => !v)}
+                            onClick={() => router.push("/dashboard/settings/twin-studio")}
                           >
                             <Upload className="h-3 w-3" />
-                            Add Avatar
+                            Add Avatar in Twin Studio
                           </Button>
                         </div>
-
-                        {/* Inline add-avatar form */}
-                        {showAddAvatar && (
-                          <div className="p-4 rounded-lg border bg-muted/50 space-y-3">
-                            <p className="text-sm font-medium">Upload a new avatar video clip (5–15 sec)</p>
-                            <input
-                              type="text"
-                              placeholder="Avatar name (e.g. Outdoor Casual)"
-                              value={newAvatarLabel}
-                              onChange={(e) => setNewAvatarLabel(e.target.value)}
-                              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                            />
-                            <input
-                              type="file"
-                              accept="video/mp4,video/webm"
-                              onChange={(e) => setNewAvatarFile(e.target.files?.[0] ?? null)}
-                              className="block text-sm"
-                            />
-                            {addAvatarError && (
-                              <p className="text-xs text-destructive">{addAvatarError}</p>
-                            )}
-                            <div className="flex gap-2">
-                              <Button
-                                size="sm"
-                                disabled={!newAvatarFile || isAddingAvatar}
-                                onClick={handleAddAvatar}
-                              >
-                                {isAddingAvatar ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
-                                {isAddingAvatar ? "Uploading…" : "Upload & Create Avatar"}
-                              </Button>
-                              <Button size="sm" variant="ghost" onClick={() => { setShowAddAvatar(false); setAddAvatarError(null) }}>
-                                Cancel
-                              </Button>
-                            </div>
-                          </div>
-                        )}
 
                         {/* Processing avatars banner */}
                         {pendingAssets.length > 0 && (
@@ -1659,11 +1595,14 @@ export default function VideoCreatePage() {
                         ) : (
                           <Alert variant="destructive">
                             <AlertTriangle className="h-4 w-4" />
-                            <AlertTitle>No avatar uploaded</AlertTitle>
+                            <AlertTitle>You don&apos;t have an avatar yet</AlertTitle>
                             <AlertDescription className="flex items-center justify-between gap-4 flex-wrap">
-                              <span>Upload a video clip above or go to Avatar & Voice Setup.</span>
-                              <Button size="sm" variant="outline" className="shrink-0" onClick={() => router.push("/dashboard/videos/voice")}>
-                                Set Up Avatar
+                              <span>
+                                Build one in Twin Studio from a photo or a short video — it takes a
+                                few minutes and you only do it once.
+                              </span>
+                              <Button size="sm" variant="outline" className="shrink-0" onClick={() => router.push("/dashboard/settings/twin-studio")}>
+                                Open Twin Studio
                               </Button>
                             </AlertDescription>
                           </Alert>

@@ -1,6 +1,7 @@
 "use client"
 
 import { useMemo, useState } from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -350,30 +351,28 @@ export function VoiceCloneClient({
         return
       }
 
-      // For video uploads: create a persistent D-ID avatar so renders use avatar_id
-      // (faster + more consistent quality). Runs in background — no need to wait.
-      if (avatarType === "video") {
-        fetch("/api/did/create-avatar", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            source_url: data.url,
-            label: "My Avatar",
-            set_as_default: true,
-          }),
-        }).catch((err) =>
-          console.error("[voice-client] D-ID avatar creation failed:", err)
-        )
-      }
+      // NO SECOND AVATAR-CREATION PATH. This used to fire
+      // POST /api/did/create-avatar here, in the background, with `.catch()`
+      // swallowing the result — and with NO `source_type` and NO `twin_id`, so
+      // the route treated it as a video and refused it 428 at the consent gate
+      // (D-ID requires a recorded consent for a V3 Instant Avatar, and this
+      // page has no consent recorder). The failure went to the console while
+      // the message below told the agent "D-ID is processing your avatar —
+      // you'll be notified when it's ready". Nothing was created and nobody was
+      // ever notified.
+      //
+      // SURVIVOR: app/dashboard/settings/twin-studio/components/twin-wizard.tsx
+      // — it sends source_type, defers the video submit until AFTER
+      // ConsentRecorder, ties the job to a twin row, and carries the approval
+      // gate. The upload above still stands on its own: it saves the source
+      // photo/video onto the video profile, which is the fallback face
+      // /api/did/generate-video renders from when there is no persistent
+      // avatar. That is a real thing this page does. Creating the avatar is not.
 
       const warningText = data.warnings?.length ? ` Note: ${data.warnings.join(" ")}` : ""
-      const processingNote =
-        avatarType === "video"
-          ? " D-ID is processing your avatar (1–3 min) — you'll be notified when it's ready."
-          : ""
       setAvatarStatus("success")
       setAvatarMessage(
-        `Your ${avatarType === "photo" ? "photo" : "video"} has been saved.${warningText}${processingNote}`
+        `Your ${avatarType === "photo" ? "photo" : "video"} has been saved.${warningText}`
       )
       setAvatarDone(true)
     } catch (err: any) {
@@ -661,9 +660,22 @@ export function VoiceCloneClient({
               </CardTitle>
               <CardDescription>
                 A clear headshot or short video clip (5–15 seconds) facing the camera, in good lighting.
+                This is the fallback face your videos render from.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
+              {/* ONE PLACE MAKES AVATARS. This page saves a source photo/video
+                  onto your video profile; it does not build a persistent twin,
+                  and it used to pretend otherwise. */}
+              <div className="rounded-lg border bg-muted/30 p-3 text-xs text-muted-foreground">
+                Want a reusable twin with its own voice and personality — the one your clients meet
+                in the portal and on video?{" "}
+                <Link href="/dashboard/settings/twin-studio" className="underline hover:text-foreground">
+                  Build it in Twin Studio
+                </Link>
+                . That&apos;s where a photo or video becomes a real avatar.
+              </div>
+
               {/* Photo vs Video toggle */}
               <div className="flex gap-3">
                 <Button

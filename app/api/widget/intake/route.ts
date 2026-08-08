@@ -6,6 +6,7 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { NextRequest, NextResponse } from 'next/server'
+import { queueContactEnrichment } from '@/lib/enrichment/contact-enrichment-core'
 
 function normalizePhone(raw: string | undefined): string | null {
   if (!raw) return null
@@ -204,15 +205,22 @@ export async function POST(req: NextRequest) {
     })
 
     // ── 7. Enrichment queue ──────────────────────────────────────────────────
-    await supabase.from('lead_enrichment_queue').insert({
-      contact_id: contactId,
-      brokerage_id,
-      status: 'pending',
-      trigger_type: 'widget_intake',
-      enrichment_type: 'skip_trace',
-      enrichments_needed: ['email_verify', 'phone_verify', 'social_lookup'],
-      retry_count: 0,
-      max_retries: 3,
+    // This route is PUBLIC (a website widget posts to it), and it used to write
+    // the queue row inline with no guards at all: no freshness check and no
+    // already-pending check, so a visitor who submitted the form five times
+    // queued five paid enrichments of the same person. It also could not observe
+    // the owner's rule that a contact in a live listing or transaction is not
+    // enriched.
+    //
+    // Delegated to the single writer, which carries all three
+    // (lib/enrichment/contact-enrichment-core.ts:queueContactEnrichment).
+    // `enrichments_needed` is derived there from which identifiers the contact is
+    // actually missing rather than being a fixed list.
+    await queueContactEnrichment({
+      contactId,
+      brokerageId: brokerage_id,
+      triggerType: 'widget_intake',
+      supabase,
     })
 
     // ── 8. Notify assigned agent ─────────────────────────────────────────────

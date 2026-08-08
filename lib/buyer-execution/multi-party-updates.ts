@@ -13,8 +13,63 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { emitFinancialVerificationEvent } from '@/lib/buyer-lifecycle'
 import { logBuyerExecutionEvent } from './buyer-execution-engine'
 import { assertVendorAssignedToContact } from '@/lib/vendor/assignment-access'
+import type { SupabaseClient } from '@supabase/supabase-js'
 
 export type ActorRole = 'agent' | 'lender' | 'admin' | 'broker'
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ACTOR ROLE RESOLUTION — read `user_type`, not the retired `role` column.
+//
+// lib/auth/resolve-user-role.ts states the rule: "`user_type` is the single source of
+// truth. The legacy `role` column is being retired; new code MUST NOT read or write
+// it." `lenderConfirmFinancialVerification` below was migrated in an earlier wave, with
+// a note that the old `role === 'lender'` test "silently rejected genuine lenders".
+// The other three guards in this file were missed, and the live database shows what
+// that cost (project hrvaqgvukzxfskkcrwbt, wave-3 probe):
+//
+//     select count(*) total, count(role) role_set, count(user_type) user_type_set
+//     from users;   ->   total 23, role_set 4, user_type_set 23
+//
+// 19 of 23 users have role = NULL, and the four that are set are title-cased
+// ('Admin', 'Lender') which no lowercase includes() list matches. So:
+//
+//   * adminOverrideFinancialGate refused EVERY user in the database — the sole
+//     user_type='broker' user has role NULL, both user_type='admin' users are NULL
+//     or 'Admin'. The emergency financial-gate override could never succeed.
+//   * agentAdvanceBuyerStage (the "Advance stage" button on the CRM contact page)
+//     and agentAssistSearchConfiguration refused 22 of 23.
+//
+// It failed CLOSED, so nothing was exposed — but the capability had never once run.
+// These now read user_type with the legacy role column as a case-insensitive fallback
+// only, matching the shape lenderConfirmFinancialVerification already uses.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Staff types permitted to record agent-side buyer updates. */
+const AGENT_LEVEL_TYPES = new Set(['agent', 'team_lead', 'isa', 'tc', 'broker', 'broker_owner', 'admin', 'superadmin'])
+/** Staff types permitted to override a financial gate. Deliberately narrower. */
+const OVERRIDE_LEVEL_TYPES = new Set(['admin', 'broker', 'broker_owner', 'superadmin'])
+
+/**
+ * Resolve an actor's canonical role from `users.user_type`.
+ * Returns null when there is no such user OR the read was refused — supabase-js
+ * RESOLVES a failed query, so the error is destructured explicitly and treated as a
+ * refusal rather than as "no row", and every caller fails closed on null.
+ */
+async function resolveActorType(
+  supabase: SupabaseClient<any, any, any>,
+  userId: string,
+): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('users')
+    .select('user_type, role')
+    .eq('id', userId)
+    .maybeSingle()
+
+  if (error || !data) return null
+  const row = data as { user_type?: string | null; role?: string | null }
+  const resolved = row.user_type ?? row.role ?? ''
+  return String(resolved).toLowerCase() || null
+}
 
 export interface MultiPartyUpdateContext {
   contactId: string
@@ -131,21 +186,16 @@ export async function agentAssistSearchConfiguration(params: {
   const { contactId, agentId, searchPreferences, notes } = params
   
   const supabase = createServiceClient()
-  
-  // Verify agent role
-  const { data: user } = await supabase
-    .from('users')
-    .select('role')
-    .eq('id', agentId)
-    .single()
-  
-  if (!user || !['agent', 'team_lead', 'broker', 'admin'].includes(user.role)) {
+
+  // Verify agent role — see ACTOR ROLE RESOLUTION at the top of this file.
+  const actorType = await resolveActorType(supabase, agentId)
+  if (!actorType || !AGENT_LEVEL_TYPES.has(actorType)) {
     return {
       success: false,
       error: 'Invalid agent role'
     }
   }
-  
+
   // Log agent assistance
   await logBuyerExecutionEvent({
     contactId,
@@ -155,7 +205,7 @@ export async function agentAssistSearchConfiguration(params: {
     metadata: {
       search_preferences: searchPreferences,
       notes,
-      actor_role: user.role,
+      actor_role: actorType,
     }
   })
   
@@ -206,21 +256,21 @@ export async function adminOverrideFinancialGate(params: {
   const { contactId, adminId, reason, expiresAt } = params
   
   const supabase = createServiceClient()
-  
-  // Verify admin/broker role
-  const { data: user } = await supabase
-    .from('users')
-    .select('role')
-    .eq('id', adminId)
-    .single()
-  
-  if (!user || !['admin', 'broker'].includes(user.role)) {
+
+  // Verify admin/broker role — see ACTOR ROLE RESOLUTION at the top of this file.
+  // This is the LAST gate in front of a financial-gate override, so it stays here even
+  // though the calling server action now derives the admin from the session and checks
+  // the same thing: defence in depth, and the lib function is reachable from lanes
+  // (the ElevenLabs webhook) that have no cookie session at all.
+  const actorType = await resolveActorType(supabase, adminId)
+  if (!actorType || !OVERRIDE_LEVEL_TYPES.has(actorType)) {
     return {
       success: false,
       error: 'Only admins or brokers can override financial gates'
     }
   }
-  
+
+
   if (!reason || reason.length < 10) {
     return {
       success: false,
@@ -247,7 +297,7 @@ export async function adminOverrideFinancialGate(params: {
     source: 'agent_action',
     metadata: {
       override_reason: reason,
-      actor_role: user.role,
+      actor_role: actorType,
       severity: 'high',
     }
   })
@@ -268,21 +318,16 @@ export async function agentAdvanceBuyerStage(params: {
   const { contactId, agentId, targetState, reason } = params
   
   const supabase = createServiceClient()
-  
-  // Verify agent role
-  const { data: user } = await supabase
-    .from('users')
-    .select('role')
-    .eq('id', agentId)
-    .single()
-  
-  if (!user || !['agent', 'team_lead', 'broker', 'admin'].includes(user.role)) {
+
+  // Verify agent role — see ACTOR ROLE RESOLUTION at the top of this file.
+  const actorType = await resolveActorType(supabase, agentId)
+  if (!actorType || !AGENT_LEVEL_TYPES.has(actorType)) {
     return {
       success: false,
       error: 'Invalid agent role'
     }
   }
-  
+
   // Log stage advancement
   await logBuyerExecutionEvent({
     contactId,
@@ -292,7 +337,7 @@ export async function agentAdvanceBuyerStage(params: {
     metadata: {
       target_state: targetState,
       reason,
-      actor_role: user.role,
+      actor_role: actorType,
     }
   })
   
