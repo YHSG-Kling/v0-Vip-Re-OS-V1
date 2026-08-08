@@ -1,7 +1,11 @@
 // lib/connections/vendor-stripe.ts
 // Single source of truth for a vendor's Stripe Connect account, on the unified owner model.
 // A vendor's Connect account lives in platform_credentials keyed by
-// (owner_type="vendor", owner_id=<vendor_marketplace_profiles.id>, platform="stripe"):
+// (owner_type="vendor", owner_id=<vendors.id>, platform="stripe"):
+// NOTE: owner_id is a `vendors.id`, NOT a vendor_marketplace_profiles.id — those are
+// disjoint id spaces (vendor_earnings/_invoices/_payouts and user_role_assignments.vendor_id
+// all FK to `vendors`). This comment previously named the marketplace-profile id and
+// app/vendor/earnings/page.tsx acted on it, which made that whole surface inert.
 //   - account_id                       → the acct_… Connect id
 //   - config.stripe_onboarding_complete → details_submitted && charges_enabled
 // This is the same row the Connection Center's startStripeConnect writes, so onboarding via either

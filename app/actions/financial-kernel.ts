@@ -71,25 +71,79 @@ type FinancialContextResolution =
   | { success: true; ctx: FinancialActorContext }
   | { success: false; error: string; ctx?: undefined }
 
+/**
+ * 🚨 THE TENANT OVERRIDE IS REMOVED.
+ *
+ * This used to read:
+ *
+ *     brokerageId: brokerageId ?? ctx.brokerageId
+ *
+ * i.e. a **caller-supplied brokerage id silently replaced the session's own**. Its two
+ * consumers — `loadAgentFinancialDashboardSummaryAction` and
+ * `loadAgentProfitLossSummaryAction` — are `"use server"` exports taking
+ * `{ agentId, brokerageId? }` straight from the client, so any authenticated user could name
+ * another brokerage and have the kernel's one tenant filter
+ * (`loadAgentFinancialSummary`'s `.eq("brokerage_id", ctx.brokerageId)`) resolve in their
+ * favour. The session's brokerage is now the only brokerage. `brokerageId` is accepted and
+ * ignored (house pattern) — every call site already passes the caller's own.
+ */
 async function resolveFinancialContext(
-  brokerageId?: string
+  _brokerageId?: string
 ): Promise<FinancialContextResolution> {
   try {
     const ctx = await getFinancialActorContext()
-
-    return {
-      success: true,
-      ctx: {
-        ...ctx,
-        brokerageId: brokerageId ?? ctx.brokerageId,
-      },
-    }
+    return { success: true, ctx }
   } catch (error) {
     return {
       success: false,
       error: error instanceof Error ? error.message : String(error),
     }
   }
+}
+
+/**
+ * 🚨 SECOND HALF OF THE SAME HOLE — the `agentId` was never checked either.
+ *
+ * `lib/kernel/financial.ts:loadAgentFinancialDashboardSummary` fans out **eight** queries on
+ * the SERVICE client (RLS bypassed) and six of them filter on `agent_id` ALONE, with no
+ * brokerage anchor: `business_expenses` (amount, description, **receipt_url**),
+ * `agent_commissions` (gross, net, split %), `commission_distributions`,
+ * `agent_commission_profiles`, and the whole `agents` row. So removing the brokerage override
+ * above is necessary but NOT sufficient — the agent id itself is the key, and it was
+ * unvalidated.
+ *
+ * This gate answers both questions the endpoint needs: is that agent in MY brokerage, and am
+ * I allowed to look at their money at all. An agent may read their own; a broker / admin /
+ * superadmin may read anyone's in their brokerage; nobody reads across brokerages.
+ *
+ * `error` is destructured — supabase-js RESOLVES a refused query, and a gate that reads a
+ * refusal as "no such agent" must fail CLOSED, which it does.
+ */
+async function authorizeAgentScope(
+  ctx: FinancialActorContext,
+  agentId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!agentId) return { ok: false, error: "Missing agent id" }
+
+  // Self is always allowed. agents.id and users.id are DISJOINT id spaces — this compares
+  // agents.id to agents.id (ctx.agentId), never to ctx.userId.
+  const isSelf = !!ctx.agentId && ctx.agentId === agentId
+  const isBrokerLevel = ["broker", "admin", "superadmin"].includes(ctx.userType)
+  if (!isSelf && !isBrokerLevel) {
+    return { ok: false, error: "Forbidden — you may only view your own financials" }
+  }
+
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from("agents")
+    .select("brokerage_id")
+    .eq("id", agentId)
+    .maybeSingle()
+  if (error) return { ok: false, error: "Could not verify the agent" }
+  if (!data || data.brokerage_id !== ctx.brokerageId) {
+    return { ok: false, error: "Forbidden" }
+  }
+  return { ok: true }
 }
 
 // ─── EXPORTED SERVER ACTIONS ──────────────────────────────────────────────────────
@@ -103,11 +157,18 @@ export async function loadFinancialWorkspaceAction() {
   }
 }
 
+/**
+ * Kernel-canonical MTD/YTD GCI, agent net, transaction count and cap progress for one agent.
+ * Same `authorizeAgentScope` gate as the dashboard/P&L actions — it takes an `agentId` from
+ * the caller, so without it any authenticated user could name any agent.
+ */
 export async function loadAgentFinancialSummaryAction(
   input: Omit<LoadAgentFinancialSummaryInput, "ctx">
 ): Promise<KernelFinancialResult<AgentFinancialSummary>> {
   try {
     const ctx = await getFinancialActorContext()
+    const scope = await authorizeAgentScope(ctx, input.agentId)
+    if (!scope.ok) return { success: false, error: scope.error }
     return await loadAgentFinancialSummary({ ...input, ctx })
   } catch (error) {
     return { success: false, error: String(error) }
@@ -126,6 +187,9 @@ export async function loadAgentFinancialDashboardSummaryAction(params: {
       error: ctx.error || "Failed to resolve financial context",
     }
   }
+
+  const scope = await authorizeAgentScope(ctx.ctx, params.agentId)
+  if (!scope.ok) return { success: false, error: scope.error }
 
   return await loadAgentFinancialDashboardSummary({
     ctx: ctx.ctx,
@@ -146,6 +210,9 @@ export async function loadAgentProfitLossSummaryAction(params: {
       error: ctx.error || "Failed to resolve financial context",
     }
   }
+
+  const scope = await authorizeAgentScope(ctx.ctx, params.agentId)
+  if (!scope.ok) return { success: false, error: scope.error }
 
   return await loadAgentProfitLossSummary({
     ctx: ctx.ctx,

@@ -4,12 +4,24 @@ import { useState, useEffect, useRef, useTransition } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
 import { createResourceAction } from "@/app/actions/education-kernel"
-import { generateText, generateVideo } from "@/app/actions/content-generation-engine"
+import {
+  generateText,
+  generateVideo,
+  // Wave 4 slice 2 — these three were orphaned exports of the same gated
+  // module the two above already come from. generateAudio adds the podcast
+  // format (the learning-modules console already offers a Podcast channel);
+  // generateFromURL is the repurpose-an-existing-article lane; the two reads
+  // give the author the ledger of what they have already spent AI budget on.
+  generateAudio,
+  generateFromURL,
+  getGenerationHistory,
+  getGenerationStats,
+} from "@/app/actions/content-generation-engine"
 import { getDidAvatars, createTalkingPhotoVideo, type AvatarOption } from "@/app/actions/avatar-voice-catalog"
 import { generateAvatarVideo, getAvatarVideoStatus } from "@/app/actions/external-services"
 import { createClient } from "@/lib/supabase/client"
 import { toast } from "sonner"
-import { Sparkles, Video, Loader2, RefreshCw } from 'lucide-react'
+import { Sparkles, Video, Loader2, RefreshCw, History } from 'lucide-react'
 
 type Tab = "create" | "ai-generate" | "avatar-video" | "photo-video"
 
@@ -28,9 +40,21 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
   // AI generate tab state
   const [aiTopic, setAiTopic] = useState('')
   const [aiAudience, setAiAudience] = useState<string>('agent')
-  const [aiMode, setAiMode] = useState<'article' | 'script'>('article')
+  const [aiMode, setAiMode] = useState<'article' | 'script' | 'podcast' | 'url'>('article')
+  const [aiSourceUrl, setAiSourceUrl] = useState('')
   const [aiResult, setAiResult] = useState('')
   const [isGenerating, startGenerating] = useTransition()
+
+  // AI generation ledger — what this author has already generated, and what it
+  // has cost in volume. Both reads are session-scoped inside the action
+  // (resolveAuthorizedAgentId); nothing here names an agent.
+  const [genStats, setGenStats] = useState<{
+    total_generated: number
+    by_content_type: Record<string, number>
+    recent_generations: number
+  } | null>(null)
+  const [genHistory, setGenHistory] = useState<any[]>([])
+  const [ledgerError, setLedgerError] = useState<string | null>(null)
 
   // Photo video tab state
   const [photoUrl, setPhotoUrl] = useState('')
@@ -86,11 +110,69 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
     }
   }
 
+  const MODE_LABEL: Record<string, string> = {
+    article: 'Article',
+    script: 'Video Script',
+    podcast: 'Podcast Script',
+    url: 'Repurposed Article',
+  }
+
+  // Refresh the generation ledger. Errors are shown, not swallowed — an
+  // unreadable ledger must not render as "you have generated nothing".
+  const refreshGenerationLedger = async () => {
+    setLedgerError(null)
+    const [statsRes, historyRes] = await Promise.all([
+      getGenerationStats({}).catch(() => null),
+      getGenerationHistory({ limit: 10 }).catch(() => null),
+    ])
+    if (statsRes?.success && statsRes.stats) setGenStats(statsRes.stats)
+    else if (statsRes && !statsRes.success) setLedgerError(statsRes.error ?? 'Could not read your generation stats')
+    if (historyRes?.success && historyRes.history) setGenHistory(historyRes.history)
+    else if (historyRes && !historyRes.success) {
+      setLedgerError((prev) => prev ?? historyRes.error ?? 'Could not read your generation history')
+    }
+  }
+
+  useEffect(() => {
+    if (tab === 'ai-generate') void refreshGenerationLedger()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab])
+
   const handleAIGenerate = () => {
-    if (!agentId || !aiTopic) { toast.error('Enter a topic first'); return }
+    if (!agentId) { toast.error('Finishing your account setup — try again in a moment'); return }
+    if (aiMode === 'url') {
+      if (!aiSourceUrl.trim()) { toast.error('Paste the article URL to repurpose'); return }
+    } else if (!aiTopic) {
+      toast.error('Enter a topic first'); return
+    }
     startGenerating(async () => {
       let text = ''
-      if (aiMode === 'article') {
+      if (aiMode === 'url') {
+        const result = await generateFromURL({
+          agent_id: agentId,
+          source_url: aiSourceUrl.trim(),
+          content_type: 'blog',
+          custom_instructions: `Rewrite this as an educational article for real estate ${aiAudience}s.`,
+        })
+        if (!result.success) {
+          toast.error(result.error ?? 'Failed to generate content')
+          return
+        }
+        text = (result as any).content?.raw_content ?? (result as any).content?.body ?? ''
+      } else if (aiMode === 'podcast') {
+        const result = await generateAudio({
+          agent_id: agentId,
+          content_type: 'podcast_script',
+          duration_minutes: 10,
+          custom_prompt: `Write a podcast script for real estate ${aiAudience}s about: ${aiTopic}`,
+          target_audience: aiAudience,
+        })
+        if (!result.success) {
+          toast.error(result.error ?? 'Failed to generate content')
+          return
+        }
+        text = (result as any).content?.raw_content ?? (result as any).content?.script ?? ''
+      } else if (aiMode === 'article') {
         const result = await generateText({
           agent_id: agentId,
           content_type: 'blog',
@@ -122,23 +204,28 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
       // Only claim success when we actually captured content to show + save.
       if (text.trim()) toast.success('Content generated')
       else toast.error('The generator returned no content — try a different topic')
+      // Every branch above logged a generation; keep the ledger truthful.
+      void refreshGenerationLedger()
     })
   }
 
   const handleSaveAIContent = async () => {
-    if (!aiResult || !aiTopic) { toast.error('No content to save'); return }
+    if (!aiResult || (!aiTopic && !aiSourceUrl)) { toast.error('No content to save'); return }
     setLoading(true)
     try {
       await createResourceAction({
-        title: aiTopic,
-        description: `AI-generated ${aiMode} for ${aiAudience}s`,
-        contentType: aiMode === 'script' ? 'video' : 'article',
+        title: aiTopic || aiSourceUrl,
+        description: `AI-generated ${MODE_LABEL[aiMode] ?? aiMode} for ${aiAudience}s`,
+        // A podcast script is saved on the podcast channel, not mislabelled as
+        // an article — learning_modules.channels already carries "podcast".
+        contentType:
+          aiMode === 'script' ? 'video' : aiMode === 'podcast' ? 'podcast' : 'article',
         content: aiResult,
-        estimatedMinutes: aiMode === 'article' ? 5 : 3,
+        estimatedMinutes: aiMode === 'podcast' ? 10 : aiMode === 'article' || aiMode === 'url' ? 5 : 3,
         brokerageId,
       })
       toast.success('Saved to education library')
-      setAiTopic(''); setAiResult('')
+      setAiTopic(''); setAiResult(''); setAiSourceUrl('')
     } catch {
       toast.error('Failed to save')
     } finally {
@@ -332,16 +419,33 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">Format</label>
-                <select value={aiMode} onChange={e => setAiMode(e.target.value as 'article' | 'script')}
+                <select value={aiMode} onChange={e => setAiMode(e.target.value as 'article' | 'script' | 'podcast' | 'url')}
                   className="w-full border rounded px-3 py-2">
                   <option value="article">Article</option>
                   <option value="script">Video Script</option>
+                  <option value="podcast">Podcast Script</option>
+                  <option value="url">Repurpose from a URL</option>
                 </select>
               </div>
             </div>
+            {aiMode === 'url' && (
+              <div>
+                <label className="block text-sm font-medium mb-1">Source article URL</label>
+                <input
+                  type="url"
+                  value={aiSourceUrl}
+                  onChange={e => setAiSourceUrl(e.target.value)}
+                  placeholder="https://…"
+                  className="w-full border rounded px-3 py-2"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  The article is rewritten as an education lesson for the audience above.
+                </p>
+              </div>
+            )}
             <Button onClick={handleAIGenerate} disabled={isGenerating || !agentId}>
               {isGenerating ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Sparkles className="h-4 w-4 mr-1.5" />}
-              Generate {aiMode === 'article' ? 'Article' : 'Video Script'}
+              Generate {MODE_LABEL[aiMode] ?? 'Content'}
             </Button>
             {aiResult && (
               <div className="space-y-3">
@@ -356,6 +460,57 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
                 </Button>
               </div>
             )}
+
+            {/* AI generation ledger — what this author has already generated.
+                Every generation above costs AI budget, and until now there was
+                no way to see what had been spent it on. */}
+            <div className="border-t pt-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium flex items-center gap-1.5">
+                  <History className="h-4 w-4" />
+                  Your AI generations
+                </p>
+                <Button variant="ghost" size="sm" onClick={() => void refreshGenerationLedger()}>
+                  <RefreshCw className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+
+              {ledgerError && (
+                <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2">
+                  {ledgerError}
+                </p>
+              )}
+
+              {genStats && (
+                <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+                  <span><span className="font-semibold text-foreground">{genStats.total_generated}</span> total</span>
+                  <span><span className="font-semibold text-foreground">{genStats.recent_generations}</span> recent</span>
+                  {Object.entries(genStats.by_content_type ?? {}).map(([k, v]) => (
+                    <span key={k}>{k.replace(/_/g, ' ')}: <span className="font-semibold text-foreground">{v}</span></span>
+                  ))}
+                </div>
+              )}
+
+              {genHistory.length > 0 ? (
+                <ul className="divide-y text-xs max-h-48 overflow-y-auto">
+                  {genHistory.map((h: any, i: number) => (
+                    // Real row shape from getContentGenerationHistory: the rows
+                    // are `activities` (title/description/activity_type/notes/
+                    // completed_at) — NOT content_type/created_at.
+                    <li key={h?.id ?? i} className="py-1.5 flex items-center justify-between gap-3">
+                      <span className="truncate">{h?.title ?? h?.activity_type?.replace(/_/g, ' ') ?? 'content'}</span>
+                      <span className="text-muted-foreground shrink-0">
+                        {h?.completed_at ? new Date(h.completed_at).toLocaleDateString() : ''}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                !ledgerError && (
+                  <p className="text-xs text-muted-foreground">Nothing generated yet.</p>
+                )
+              )}
+            </div>
           </div>
         )}
 

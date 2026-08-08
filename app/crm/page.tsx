@@ -3,12 +3,16 @@
 import { useEffect, useState, useCallback, useTransition, useRef } from "react"
 import { useAuth } from "@/lib/auth/client"
 import { useSearchParams, useRouter } from "next/navigation"
-import { getContacts, getContactById, createContact, addContactNote } from "@/app/actions/contacts"
+import { getContacts, getContactById, createContact, addContactNote, archiveContact } from "@/app/actions/contacts"
 import {
   getContactCreditAccounts,
   getContactVideoEngagement,
   getContactTransactions,
   getContactActivity,
+  // Wave 4 slice 2 — orphaned export of the module this page already uses.
+  // The smart_assistant_suggestions queue for this contact had no reader
+  // anywhere, so the suggestions the OS writes were never shown to anyone.
+  getContactCopilotSuggestions,
 } from "@/app/actions/contact-details"
 import { getContactIntelligence, toggleAIISA, type ContactIntelligence } from "@/app/actions/contact-intelligence"
 import { FinancialVerificationPanel } from "@/app/crm/components/financial-verification-panel"
@@ -90,6 +94,7 @@ import {
   Activity,
   DollarSign,
   CheckSquare,
+  Trash2,
 } from "lucide-react"
 import Link from "next/link"
 import { format, formatDistanceToNow } from "date-fns"
@@ -203,6 +208,7 @@ export default function CRMPage() {
     searchParams.get("contact") ?? searchParams.get("contactId")
   )
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null)
+  const [archivingContact, setArchivingContact] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
 
   // Brief-driven action: when the morning brief deep-links here with
@@ -241,6 +247,7 @@ export default function CRMPage() {
   const [contactVideos, setContactVideos] = useState<any[]>([])
   const [contactTransactions, setContactTransactions] = useState<any[]>([])
   const [contactActivityTimeline, setContactActivityTimeline] = useState<any[]>([])
+  const [copilotSuggestions, setCopilotSuggestions] = useState<any[]>([])
   const [contactIntelligence, setContactIntelligence] = useState<ContactIntelligence | null>(null)
   const [unifiedLeadProfile, setUnifiedLeadProfile] = useState<any>(null)
   const [unifiedProfileLoaded, setUnifiedProfileLoaded] = useState(false)
@@ -396,6 +403,7 @@ export default function CRMPage() {
           videosResult,
           transactionsResult,
           activityResult,
+          copilotSuggestionsResult,
         ] = await Promise.all([
           getContactById(contactId),
           detectClientChurn(contactId).catch(() => null),
@@ -406,12 +414,14 @@ export default function CRMPage() {
           getContactVideoEngagement(contactId).catch(() => ({ videos: [] })),
           getContactTransactions(contactId).catch(() => ({ transactions: [] })),
           getContactActivity(contactId).catch(() => ({ activity: [] })),
+          getContactCopilotSuggestions(contactId).catch(() => ({ suggestions: [] })),
         ])
 
         setCreditAccounts(creditResult?.accounts ?? [])
         setContactVideos(videosResult?.videos ?? [])
         setContactTransactions(transactionsResult?.transactions ?? [])
         setContactActivityTimeline(activityResult?.activity ?? [])
+        setCopilotSuggestions((copilotSuggestionsResult as any)?.suggestions ?? [])
 
         // Intelligence loads independently — non-blocking
         getContactIntelligence(contactId)
@@ -1313,6 +1323,41 @@ export default function CRMPage() {
                     <Workflow className="h-3.5 w-3.5" />
                     Enroll in Workflow
                   </Button>
+
+                  {/* Archive — the CRM had NO contact-removal control at all. The
+                      action soft-deletes (deleted_at) and writes a CONTACT_ARCHIVED
+                      lifecycle event; history, activities, conversations and tasks
+                      are preserved. The server decides who may archive (an agent
+                      only their own contacts, leadership any in the brokerage), so a
+                      refusal is reported honestly rather than assumed. */}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full gap-1.5 text-xs justify-start text-destructive hover:text-destructive"
+                    disabled={archivingContact}
+                    onClick={async () => {
+                      if (!selectedContactId) return
+                      const name = `${selectedContact?.first_name ?? ""} ${selectedContact?.last_name ?? ""}`.trim() || "this contact"
+                      if (!window.confirm(`Archive ${name}? They will be removed from your lists. History is kept.`)) return
+                      setArchivingContact(true)
+                      try {
+                        const res = await archiveContact(selectedContactId)
+                        if (!res.success) {
+                          toast.error(res.error ?? "Could not archive this contact")
+                          return
+                        }
+                        toast.success(`${name} archived`)
+                        setSelectedContactId(null)
+                        setSelectedContact(null)
+                        await loadContacts()
+                      } finally {
+                        setArchivingContact(false)
+                      }
+                    }}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    {archivingContact ? "Archiving…" : "Archive Contact"}
+                  </Button>
                 </div>
 
                 {/* SMS Dialog */}
@@ -1968,6 +2013,37 @@ export default function CRMPage() {
                               <span>{conversationIntelligence.objections[0]}</span>
                             </div>
                           )}
+                        </CardContent>
+                      </Card>
+                    )}
+
+                    {/* Copilot suggestions for THIS contact
+                        (smart_assistant_suggestions, status='pending', scoped to
+                        this agent + brokerage inside the action). Nothing read
+                        this queue before, so every suggestion the OS wrote for a
+                        contact sat unseen. */}
+                    {copilotSuggestions.length > 0 && (
+                      <Card className="border-indigo-200">
+                        <CardHeader className="pb-2">
+                          <CardTitle className="text-sm flex items-center gap-2">
+                            <Brain className="h-4 w-4 text-indigo-600" />
+                            Suggestions for this contact
+                            <Badge variant="outline" className="text-xs">{copilotSuggestions.length}</Badge>
+                          </CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-2">
+                          {copilotSuggestions.map((sug: any) => (
+                            <div key={sug.id} className="rounded-lg border p-2.5">
+                              <p className="text-sm font-medium">
+                                {sug.title ?? sug.suggestion_type ?? "Suggestion"}
+                              </p>
+                              {sug.description && (
+                                <p className="text-xs text-muted-foreground mt-0.5">
+                                  {sug.description}
+                                </p>
+                              )}
+                            </div>
+                          ))}
                         </CardContent>
                       </Card>
                     )}

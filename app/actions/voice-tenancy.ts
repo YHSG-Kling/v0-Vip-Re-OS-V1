@@ -18,9 +18,14 @@ async function requireBrokerageAdmin(): Promise<{ ok: true; brokerageId: string 
   return { ok: true, brokerageId: ctx.brokerageId }
 }
 
-/** This month's voice line: calls, minutes, cost — the meter behind the bill. */
+/** This month's voice line: calls, minutes, cost — the meter behind the bill.
+ *
+ *  Also reports `planTier`, so the phone-settings page can decide whether to
+ *  render the BYO-Twilio card at all. The tier rule is still ENFORCED inside
+ *  setTwilioByoCredsAction — this is only what the page renders, never the gate.
+ *  (Reading `plan_tier`, the column with writers; `subscription_tier` drifts.) */
 export async function getVoiceUsageAction(month?: string): Promise<
-  { ok: true; usage: VoiceUsage; credTier: string } | { ok: false; error: string }
+  { ok: true; usage: VoiceUsage; credTier: string; planTier: string | null } | { ok: false; error: string }
 > {
   const auth = await requireBrokerageAdmin()
   if (!auth.ok) return auth
@@ -29,7 +34,40 @@ export async function getVoiceUsageAction(month?: string): Promise<
   const usage = await loadVoiceUsage(svc, auth.brokerageId, m)
   const { resolveTenantTwilioCreds } = await import("@/lib/voice/twilio-tenancy")
   const creds = await resolveTenantTwilioCreds(svc, auth.brokerageId)
-  return { ok: true, usage, credTier: creds?.tier ?? "unconfigured" }
+  const { data: brk } = await svc
+    .from("brokerages").select("plan_tier").eq("id", auth.brokerageId).maybeSingle()
+  return {
+    ok: true,
+    usage,
+    credTier: creds?.tier ?? "unconfigured",
+    planTier: ((brk as any)?.plan_tier as string | null) ?? null,
+  }
+}
+
+/** Whether BYO Twilio is currently configured for this brokerage — the read the
+ *  settings card needs so it can say "connected" without ever handing the auth
+ *  token back to the browser. Only the SID (a public identifier) is returned. */
+export async function getTwilioByoStatusAction(): Promise<
+  { ok: true; configured: boolean; accountSid: string | null } | { ok: false; error: string }
+> {
+  const auth = await requireBrokerageAdmin()
+  if (!auth.ok) return auth
+  const svc = createServiceClient()
+  // Destructure error — a refused read must not render as "not connected",
+  // which would invite an admin to re-enter credentials that are already there.
+  const { data, error } = await svc
+    .from("platform_credentials")
+    .select("account_id, is_active")
+    .eq("brokerage_id", auth.brokerageId)
+    .eq("platform", "twilio_byo")
+    .maybeSingle()
+  if (error) return { ok: false, error: error.message }
+  return {
+    ok: true,
+    configured: Boolean(data?.is_active && data?.account_id),
+    // NEVER access_token. The SID is the only half safe to echo back.
+    accountSid: (data?.account_id as string | null) ?? null,
+  }
 }
 
 /** BYO Twilio creds — the top-tier escape hatch for tenants with their own

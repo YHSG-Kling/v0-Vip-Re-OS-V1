@@ -114,7 +114,7 @@ import {
   resolveFormsProviderAction,
   loadAvailableFormsAction,
 } from "@/app/actions/forms-kernel"
-import { detectTransactionIssues, detectTransactionDelays } from "@/app/actions/transactions"
+import { detectTransactionIssues, detectTransactionDelays, setMilestoneClientVisibility } from "@/app/actions/transactions"
 import {
   TransactionFormEsignFlow,
   type FormTemplate,
@@ -2539,18 +2539,23 @@ export function TransactionDetailClient({
                                     row.id === m.id ? { ...row, is_client_visible: visible } : row
                                   )
                                 )
-                                const supabase = createClient()
-                                const { error } = await supabase
-                                  .from("transaction_milestones")
-                                  .update({ is_client_visible: visible })
-                                  .eq("id", m.id)
-                                if (error) {
+                                // This toggle decides what a CLIENT sees in their portal, so it
+                                // goes through the server action written for it —
+                                // app/actions/transactions.ts:setMilestoneClientVisibility —
+                                // not a raw browser-side update. Two things the inline version
+                                // could not do: validate the milestone id, and revalidate the
+                                // server-rendered surfaces (the portal journey and the
+                                // transactions list read this flag), which left the portal
+                                // showing the old visibility until something else happened to
+                                // revalidate it.
+                                const res = await setMilestoneClientVisibility(m.id, visible)
+                                if (!res.success) {
                                   setLocalMilestones((prev) =>
                                     prev.map((row) =>
                                       row.id === m.id ? { ...row, is_client_visible: !visible } : row
                                     )
                                   )
-                                  toast.error("Failed to update milestone visibility")
+                                  toast.error(res.error ?? "Failed to update milestone visibility")
                                 } else {
                                   toast.success(
                                     visible

@@ -274,12 +274,44 @@ export async function updateContact(contactId: string, updates: Partial<{
 
 // ─── archiveContact ───────────────────────────────────────────────────────────
 
+/**
+ * Soft-delete (archive) a contact — the ONE contact-removal door.
+ *
+ * WIRED (w4s1) — `app/crm/page.tsx` (contact detail header → Archive). Until now
+ * the CRM had no way to remove a contact at all: this action had no caller, and
+ * neither did the kernel command behind it.
+ *
+ * DUPLICATE — survivor is THIS function. The loser is
+ * `app/actions/crm.ts:deleteContact` →
+ * `lib/services/contact-management.service.ts:deleteContact`, which also soft-deletes
+ * a contact by stamping `deleted_at`. That lane is kept for its barrel exports but
+ * must not be used, because it is broken for the admin case and weaker throughout:
+ *   · it takes a CALLER-SUPPLIED `agentId` and the service re-verifies ownership with
+ *     `.eq("agent_id", agentId)`. A broker/admin archiving another agent's contact
+ *     passes the gate in `app/actions/crm.ts` and is then rejected by the service —
+ *     so the admin path can never succeed. This lane resolves the agent id
+ *     SERVER-side from `getAgentContext()` and applies the agent predicate ONLY for
+ *     `userType === "agent"`, so leadership works.
+ *   · it scopes by agent, not by brokerage. This lane puts `brokerage_id` on the
+ *     UPDATE predicate.
+ *   · it has no `.is("deleted_at", null)` guard, so re-archiving rewrites the
+ *     original archive timestamp.
+ *   · it writes no lifecycle event; this lane writes CONTACT_ARCHIVED.
+ * The one capability it had that this lacked — cache revalidation of the CRM
+ * surfaces — is PORTED below. Its `status: 'deleted'` write is deliberately NOT
+ * ported: `contacts.status` has no CHECK constraint (verified live) and every
+ * reader already filters on `deleted_at IS NULL`, so a second, unconstrained
+ * deletion flag is a divergence waiting to happen, not a capability.
+ */
 export async function archiveContact(contactId: string) {
   try {
-    const { agentId, brokerageId, userType } = await getAgentContext()
+    const { agentId, brokerageId, userType, isAuthenticated } = await getAgentContext()
 
-    if (!brokerageId) {
-      return { success: false, error: "No brokerage context" }
+    if (!isAuthenticated || !brokerageId) {
+      return { success: false, error: "Not authenticated" }
+    }
+    if (!contactId) {
+      return { success: false, error: "contactId required" }
     }
 
     const result = await archiveContactRecord({
@@ -289,7 +321,17 @@ export async function archiveContact(contactId: string) {
       userType: userType ?? undefined,
     })
 
-    return result.success ? { success: true } : { success: false, error: result.error }
+    if (!result.success) {
+      return { success: false, error: result.error }
+    }
+
+    // PORTED from the losing lane: without these the archived contact stays on the
+    // cached CRM lists until the next full reload, so the UI keeps showing a record
+    // the user was just told is gone.
+    revalidatePath("/crm")
+    revalidatePath("/dashboard/crm")
+
+    return { success: true }
   } catch (error: any) {
     return { success: false, error: error.message }
   }

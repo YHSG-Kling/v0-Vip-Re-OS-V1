@@ -686,7 +686,10 @@ export async function getEducationPlan(params: GetEducationPlanParams): Promise<
 export interface CreateEducationalResourceInput {
   title: string
   description: string
-  contentType: "video" | "article" | "interactive" | "assessment"
+  /** "podcast" added wave 4 slice 2 — the learning-modules console already
+   *  offers a Podcast channel, and the education editor can now author an
+   *  audio/podcast script (content-generation-engine.ts:generateAudio). */
+  contentType: "video" | "article" | "interactive" | "assessment" | "podcast"
   content: string
   estimatedMinutes: number
   createdBy: string
@@ -706,6 +709,7 @@ export async function createEducationalResource(
   const channels = (() => {
     switch (input.contentType) {
       case "video":         return ["video"]
+      case "podcast":       return ["podcast"]
       case "article":       return ["article"]
       case "interactive":   return ["quiz"]
       case "assessment":    return ["quiz"]

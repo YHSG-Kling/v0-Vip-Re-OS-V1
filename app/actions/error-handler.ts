@@ -131,11 +131,93 @@ export async function resolveErrorGroup(groupId: string, solution: string) {
   return { success: true }
 }
 
+/**
+ * The people an error can be assigned TO — everyone in the caller's brokerage.
+ *
+ * Added (w4s1) because `assignErrorGroup` had no caller and no way to get one: the
+ * error triage surface had Resolve and Dismiss but no Assign, and there was no
+ * reader anywhere that returned brokerage USERS. `listBrokerageAgentsAction`
+ * (app/actions/admin/locations.ts) is not a substitute — it returns `agents.id`,
+ * while `automation_errors.assigned_to` FKs to `users(id)`. Those are disjoint id
+ * spaces; feeding one where the other belongs is a 23503, not a mis-assignment.
+ */
+export async function listAssignableTeammates(): Promise<
+  Array<{ id: string; name: string; email: string | null }>
+> {
+  const supabase = await createClient()
+  const { brokerageId, isAuthenticated } = await getAgentContext()
+  if (!isAuthenticated || !brokerageId) return []
+
+  const { data, error } = await supabase
+    .from("users")
+    .select("id, first_name, last_name, email, user_type")
+    .eq("brokerage_id", brokerageId)
+    .limit(500)
+
+  // A refused read returns an empty roster rather than a fabricated one.
+  if (error) {
+    console.error("[error-handler] assignable teammates read failed:", error.message)
+    return []
+  }
+
+  // Staff only — a contact, a vendor or a lender portal user shares the brokerage_id
+  // but is not someone an internal automation error can be handed to.
+  const STAFF_TYPES = new Set([
+    "agent", "broker", "broker_owner", "broker_admin", "admin",
+    "superadmin", "team_lead", "tc", "compliance_officer", "isa",
+  ])
+
+  return (data ?? [])
+    .filter((u: any) => STAFF_TYPES.has(String(u.user_type ?? "")))
+    .map((u: any) => ({
+      id: u.id as string,
+      name: [u.first_name, u.last_name].filter(Boolean).join(" ") || (u.email as string) || String(u.id).slice(0, 8),
+      email: (u.email as string | null) ?? null,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/**
+ * Assign an automation error to a teammate.
+ *
+ * `automation_errors.assigned_to` and `.assigned_by` both FK to `users(id)` —
+ * verified live — so `assigneeId` is a users.id, NOT an agents.id.
+ */
 export async function assignErrorGroup(groupId: string, assigneeId: string) {
   const supabase = await createClient()
-  const { brokerageId, userId } = await getAgentContext()
+  const { brokerageId, userId, isAuthenticated } = await getAgentContext()
 
-  const { error } = await supabase
+  // The gate was the tenant predicate alone, with the session never checked. An
+  // unauthenticated call reached `.eq("brokerage_id", undefined)`, which is a
+  // malformed predicate rather than a refusal — the wrong shape for an
+  // authorization boundary on a `"use server"` endpoint.
+  if (!isAuthenticated || !brokerageId) {
+    throw new Error("Not authenticated")
+  }
+  if (!groupId || !assigneeId) {
+    throw new Error("groupId and assigneeId are required")
+  }
+
+  // The assignee was taken entirely on trust. `assigned_to` FKs to users(id) with
+  // no tenant constraint of its own, so any users.id was accepted — including a
+  // user of a DIFFERENT brokerage, who would then own an error record they cannot
+  // see and which no one in the owning brokerage is chasing. Confirm the assignee
+  // is in the caller's brokerage first. `error` is destructured: supabase-js
+  // resolves a refused read, and this gate must fail closed.
+  const { data: assignee, error: assigneeErr } = await supabase
+    .from("users")
+    .select("id")
+    .eq("id", assigneeId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (assigneeErr) throw new Error("Could not verify the assignee")
+  if (!assignee) throw new Error("That person is not in your brokerage")
+
+  // `.select("id")` so a zero-row update is observable. Without it a wrong id, or
+  // an error belonging to another tenant, updated nothing and this still returned
+  // { success: true } — the UI would show the error as assigned to someone who
+  // was never given it.
+  const { data: updated, error } = await supabase
     .from("automation_errors")
     .update({
       assigned_to: assigneeId,
@@ -144,10 +226,14 @@ export async function assignErrorGroup(groupId: string, assigneeId: string) {
     })
     .eq("id", groupId)
     .eq("brokerage_id", brokerageId)
+    .select("id")
 
   if (error) {
     console.error("Error assigning group:", error)
     throw new Error("Failed to assign error group")
+  }
+  if (!updated?.length) {
+    throw new Error("That error was not found in your brokerage")
   }
 
   return { success: true }

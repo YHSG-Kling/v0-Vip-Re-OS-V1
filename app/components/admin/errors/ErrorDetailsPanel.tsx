@@ -1,12 +1,23 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { getErrorGroupDetails } from "@/app/actions/error-handler"
+import {
+  getErrorGroupDetails,
+  assignErrorGroup,
+  listAssignableTeammates,
+} from "@/app/actions/error-handler"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
-import { AlertTriangle, Copy, Trash2, CheckCircle } from "lucide-react"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { AlertTriangle, Copy, Trash2, CheckCircle, UserPlus, Loader2 } from "lucide-react"
 
 interface ErrorDetailsPanelProps {
   groupId: string
@@ -21,6 +32,44 @@ export function ErrorDetailsPanel({
 }: ErrorDetailsPanelProps) {
   const [details, setDetails] = useState<any>(null)
   const [isLoading, setIsLoading] = useState(true)
+
+  // ASSIGN — the triage surface had Resolve and Dismiss and no way to hand an error
+  // to the person who can actually fix it, which is why assignErrorGroup had no
+  // caller. The list is users.id (what automation_errors.assigned_to FKs to), never
+  // agents.id.
+  const [teammates, setTeammates] = useState<Array<{ id: string; name: string; email: string | null }>>([])
+  const [assigneeId, setAssigneeId] = useState("")
+  const [assigning, setAssigning] = useState(false)
+  const [assignMsg, setAssignMsg] = useState<string | null>(null)
+  const [assignErr, setAssignErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    listAssignableTeammates()
+      .then((rows) => { if (!cancelled) setTeammates(rows) })
+      .catch(() => { if (!cancelled) setTeammates([]) })
+    return () => { cancelled = true }
+  }, [])
+
+  async function handleAssign() {
+    setAssignMsg(null)
+    setAssignErr(null)
+    if (!assigneeId) { setAssignErr("Pick who should own this error."); return }
+    setAssigning(true)
+    try {
+      await assignErrorGroup(groupId, assigneeId)
+      const who = teammates.find((t) => t.id === assigneeId)?.name ?? "that teammate"
+      setAssignMsg(`Assigned to ${who}.`)
+      // Reflect it immediately — the panel would otherwise keep showing the old owner.
+      setDetails((d: any) => (d ? { ...d, assigned_to: assigneeId } : d))
+    } catch (e: any) {
+      // assignErrorGroup THROWS on refusal (unknown assignee, wrong brokerage,
+      // no matching error). Surface the real reason rather than a generic failure.
+      setAssignErr(e?.message ?? "Could not assign this error")
+    } finally {
+      setAssigning(false)
+    }
+  }
 
   useEffect(() => {
     const loadDetails = async () => {
@@ -83,6 +132,34 @@ export function ErrorDetailsPanel({
               </p>
             </div>
           </div>
+        </div>
+
+        {/* Assign */}
+        <div className="pt-4 space-y-2 border-t">
+          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Owner</p>
+          {assignMsg && <p className="text-xs text-green-700">{assignMsg}</p>}
+          {assignErr && <p className="text-xs text-red-600">{assignErr}</p>}
+          {teammates.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              No teammates available to assign.
+            </p>
+          ) : (
+            <div className="flex gap-2">
+              <Select value={assigneeId} onValueChange={setAssigneeId}>
+                <SelectTrigger className="h-9 flex-1">
+                  <SelectValue placeholder="Assign to…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {teammates.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button size="sm" variant="secondary" onClick={handleAssign} disabled={assigning}>
+                {assigning ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
+              </Button>
+            </div>
+          )}
         </div>
 
         {/* Actions */}

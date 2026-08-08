@@ -3,6 +3,11 @@ import { notFound, redirect } from "next/navigation"
 import { MarketingTierClient } from "./marketing-tier-client"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { getMarketingPackageStatus } from "@/app/actions/marketing-package-automation"
+import {
+  getTierForListing,
+  getTierBudgets,
+  getTiersForBrokerage,
+} from "@/lib/listings/tier-assigner"
 
 interface PageProps {
   params: Promise<{ id: string }>
@@ -55,43 +60,56 @@ export default async function ListingMarketingTierPage({ params }: PageProps) {
 
   if (!listing) notFound()
 
-  // Load current tier details if assigned
-  let currentTier = null
+  // Load current tier details if assigned.
+  //
+  // These reads go through lib/listings/tier-assigner.ts rather than raw selects,
+  // for the same reason the marketing-package read below already does: the tenant
+  // guard travels with the reader instead of being re-typed (or forgotten) at each
+  // surface. The raw selects these replace were weaker in three concrete ways —
+  // the tier lookup, the tier_budgets read and the tier_distributions read all
+  // filtered ONLY on the id/tier_id with no `brokerage_id` predicate (they leaned
+  // entirely on RLS), and the tier lookup used `.single()`, which throws PGRST116
+  // when a listing still points at a deleted tier and takes the whole page down
+  // with a 500 instead of degrading to "no tier assigned".
+  let currentTier: {
+    id: string
+    tier_name: string
+    min_price: number | null
+    max_price: number | null
+    description: string | null
+    is_active: boolean
+  } | null = null
   let tierBudgets: Array<{ id: string; channel_type: string; default_budget: number }> = []
   let tierDistributions: Array<{ id: string; asset_type: string; channel_type: string; is_required: boolean }> = []
 
   if (listing.marketing_tier_id) {
-    const { data: tier } = await supabase
-      .from("listing_marketing_tiers")
-      .select("*")
-      .eq("id", listing.marketing_tier_id)
-      .single()
+    const tierResult = await getTierForListing(listingId)
+    if (tierResult.success && (tierResult as any).tier) {
+      currentTier = (tierResult as any).tier
 
-    if (tier) {
-      currentTier = tier
+      const budgetResult = await getTierBudgets(listing.marketing_tier_id)
+      if (budgetResult.success) {
+        tierBudgets = ((budgetResult as any).budgets ?? []) as typeof tierBudgets
+      }
 
-      const { data: budgets } = await supabase
-        .from("tier_budgets")
-        .select("*")
-        .eq("tier_id", tier.id)
-
-      tierBudgets = budgets ?? []
-
+      // Distributions are read here rather than through
+      // tier-assigner:getRequiredDistributions because this surface renders the
+      // FULL set and badges each row required/optional — that reader returns only
+      // the required ones, so swapping it in would silently hide the optional
+      // distributions. The tenant predicate it carries is applied here instead.
       const { data: distributions } = await supabase
         .from("tier_distributions")
         .select("*")
-        .eq("tier_id", tier.id)
+        .eq("tier_id", listing.marketing_tier_id)
+        .eq("brokerage_id", userRow.brokerage_id)
 
       tierDistributions = distributions ?? []
     }
   }
 
   // Load all tiers for brokerage (for admin settings)
-  const { data: allTiers } = await supabase
-    .from("listing_marketing_tiers")
-    .select("*")
-    .eq("brokerage_id", userRow.brokerage_id)
-    .order("min_price", { ascending: true, nullsFirst: true })
+  const allTiersResult = await getTiersForBrokerage(userRow.brokerage_id)
+  const allTiers = allTiersResult.success ? ((allTiersResult as any).tiers ?? []) : []
 
   // Load marketing campaigns for this listing
   const { data: campaigns } = await supabase
@@ -135,7 +153,7 @@ export default async function ListingMarketingTierPage({ params }: PageProps) {
       currentTier={currentTier}
       tierBudgets={tierBudgets}
       tierDistributions={tierDistributions}
-      allTiers={allTiers ?? []}
+      allTiers={allTiers}
       campaigns={campaigns ?? []}
       assets={assets ?? []}
       userId={user.id}

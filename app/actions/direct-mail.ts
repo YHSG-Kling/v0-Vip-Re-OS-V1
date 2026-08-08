@@ -15,6 +15,7 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -398,12 +399,18 @@ export async function removeRecipient(recipientId: string) {
  *      row. A campaign that cannot be read is a REFUSAL, not a NULL tenant: the
  *      read destructures `error`, and a refused read is not "no such campaign".
  *
- * NOT YET WIRED. The Lob receiver reconciles into the outcomes ledger
- * (ingestProviderTruth) and mirrors terminal status onto the campaign, but it
- * does not write mail_tracking — so the Tracking tab renders empty for every
- * campaign. Finishing this is one call from that route's POST handler, after
- * ingestProviderTruth, with the campaign resolved from `lob_order_id`. See
- * docs/orphan-burndown-slice3.md for the exact shape.
+ * WIRED (wave 4 slice 2) into app/api/webhooks/lob-events/route.ts, after
+ * ingestProviderTruth, with the campaign resolved from `lob_order_id`. Before
+ * that the Tracking tab rendered empty for every campaign, forever: nothing in
+ * the tree wrote mail_tracking.
+ *
+ * SERVICE CLIENT, deliberately. mail_tracking's live RLS policy is
+ * `brokerage_id = current_user_brokerage_id()` for ALL commands. The only caller
+ * that can get past the secret gate above is an UNATTENDED one (Lob's receiver),
+ * which has no session — so a cookie client would make every insert a silent
+ * no-op and the Tracking tab would stay empty even once wired. The secret is the
+ * gate; the tenant is still resolved from the campaign row, never accepted from
+ * the caller.
  */
 export async function trackDelivery(params: TrackDeliveryParams & { webhookSecret?: string }) {
   try {
@@ -421,7 +428,7 @@ export async function trackDelivery(params: TrackDeliveryParams & { webhookSecre
       }
     }
 
-    const supabase = await createClient()
+    const supabase = createServiceClient()
 
     // Resolve the tenant from the campaign. Never take it from the caller, and
     // never let a refused read become a NULL brokerage_id on an inserted row.

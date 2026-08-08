@@ -23,14 +23,38 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
  * trusting caller-supplied IDs.
  */
 async function requireBrokerage(): Promise<
-  | { ok: true; brokerageId: string; userId: string; agentId: string | null }
+  | { ok: true; brokerageId: string; userId: string; agentId: string | null; userType: string }
   | { ok: false; error: string }
 > {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { ok: false, error: "Unauthorized" }
   }
-  return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId }
+  return {
+    ok: true,
+    brokerageId: ctx.brokerageId,
+    userId: ctx.userId,
+    agentId: ctx.agentId,
+    userType: ctx.userType ?? "agent",
+  }
+}
+
+/**
+ * Roles that see EVERY post in the brokerage. Everyone else (an ordinary agent)
+ * sees only their own. Merged in from the retired
+ * `app/actions/social-publishing.ts:getSocialAnalytics`, which was the only reader
+ * that scoped social analytics per user — this file's reader was brokerage-wide, so
+ * an individual agent could read the whole brokerage's social performance.
+ * `social_posts.user_id` is a users.id and is reliably populated (both the manual
+ * creator and the listing-promo cron resolve and set it), so the filter narrows
+ * rather than blanking the view.
+ */
+const SOCIAL_ANALYTICS_ALL_POSTS_ROLES = [
+  "ADMIN", "BROKER", "COMPLIANCE_OFFICER",
+  "admin", "broker", "broker_owner", "broker_admin", "compliance_officer", "superadmin",
+]
+function seesAllBrokeragePosts(userType: string): boolean {
+  return SOCIAL_ANALYTICS_ALL_POSTS_ROLES.includes(userType)
 }
 
 /** Verify a given agents.id row belongs to brokerageId. Uses service client. */
@@ -1070,6 +1094,13 @@ export async function getSocialMediaAnalytics(
       .select("*, engagement:social_engagement_tracking(*)")
       .eq("brokerage_id", brokerageId)
       .eq("status", "published")
+
+    // Per-user scoping merged in from the retired social-publishing reader: an
+    // ordinary agent sees their own posts' performance, leadership sees the
+    // brokerage's.
+    if (!seesAllBrokeragePosts(ctx.userType)) {
+      query = query.eq("user_id", ctx.userId)
+    }
 
     if (dateRange?.start) {
       query = query.gte("published_at", dateRange.start)

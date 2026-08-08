@@ -11,25 +11,16 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 // user, etc.). Hardened: caller must own the relevant user_id, OR be admin.
 // =====================================================
 
-const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
-
-async function authorizeForUser(targetUserId: string | undefined | null): Promise<
-  | { ok: true }
-  | { ok: false; error: string }
-> {
-  const supabase = await createServerClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Not authenticated" }
-  if (targetUserId && targetUserId === user.id) return { ok: true }
-
-  const { data: userRow } = await supabase
-    .from("users")
-    .select("user_type")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (userRow && ADMIN_ROLES.has((userRow.user_type ?? "") as string)) return { ok: true }
-  return { ok: false, error: "Forbidden: must be the user or an admin" }
-}
+// The gate this file grew privately now lives in ONE place and is shared with
+// app/actions/copilot.ts, whose identical event handlers had no gate at all. Two behaviours
+// moved WITH it rather than being lost:
+//   · it destructures `error` on both reads (supabase-js RESOLVES a refused query, so a
+//     refusal used to be indistinguishable from "no such user" — in a gate those must differ);
+//   · a missing `targetUserId` no longer falls through to the role check by accident — an
+//     unstated target now requires the act-for-others role explicitly.
+// See lib/auth/authorize-for-user.ts for why it is a plain module (server-only would break
+// any plain-tsx guard that transitively imports it).
+import { authorizeForUser } from "@/lib/auth/authorize-for-user"
 
 export async function handleAssistantQuery(payload: any) {
   const { user_id, query, context } = payload

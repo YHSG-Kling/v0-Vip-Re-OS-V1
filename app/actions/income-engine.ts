@@ -240,7 +240,12 @@ export async function dismissRecommendedActionAction(params: {
   const ctx = await resolveAgentContext()
   if (!ctx.ok) return ctx
   const svc = createServiceClient()
-  const { error } = await svc
+  // `.select("id")` + a zero-row refusal (wave 4 slice 2). Without it an
+  // actionId belonging to a DIFFERENT agent matched zero rows, came back with
+  // error === null, and was reported as { ok: true } — the agent was told the
+  // recommendation was dismissed when nothing was written, and it reappeared on
+  // the next load with no explanation.
+  const { data: touched, error } = await svc
     .from("income_gap_recommended_actions")
     .update({
       status:            "dismissed",
@@ -249,7 +254,11 @@ export async function dismissRecommendedActionAction(params: {
     })
     .eq("id", params.actionId)
     .eq("agent_id", ctx.agentId)
+    .select("id")
   if (error) return { ok: false, error: error.message }
+  if (!touched || touched.length === 0) {
+    return { ok: false, error: "That recommendation is not yours, or no longer exists." }
+  }
   revalidatePath("/dashboard/income-truth")
   return { ok: true }
 }
@@ -261,7 +270,12 @@ export async function completeRecommendedActionAction(params: {
   const ctx = await resolveAgentContext()
   if (!ctx.ok) return ctx
   const svc = createServiceClient()
-  const { error } = await svc
+  // `.select("id")` + a zero-row refusal (wave 4 slice 2). Without it an
+  // actionId belonging to a DIFFERENT agent matched zero rows, came back with
+  // error === null, and was reported as { ok: true } — the agent was told the
+  // recommendation was completed when nothing was written, and it reappeared on
+  // the next load with no explanation.
+  const { data: touched, error } = await svc
     .from("income_gap_recommended_actions")
     .update({
       status:            "completed",
@@ -270,7 +284,11 @@ export async function completeRecommendedActionAction(params: {
     })
     .eq("id", params.actionId)
     .eq("agent_id", ctx.agentId)
+    .select("id")
   if (error) return { ok: false, error: error.message }
+  if (!touched || touched.length === 0) {
+    return { ok: false, error: "That recommendation is not yours, or no longer exists." }
+  }
   revalidatePath("/dashboard/income-truth")
   return { ok: true }
 }

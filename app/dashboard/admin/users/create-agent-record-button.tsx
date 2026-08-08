@@ -48,9 +48,14 @@ export function CreateAgentRecordButton({
   const [commissionSplit, setCommissionSplit] = useState("")
   const [capAmount, setCapAmount] = useState("")
   const [error, setError] = useState("")
+  // The brokerage's auto-provision toggle is honored server-side by createAgent.
+  // Whatever it did (or could not do) is reported here — a purchased Twilio
+  // number is real money and a failed purchase is not a silent non-event.
+  const [phoneNote, setPhoneNote] = useState("")
 
   const handleCreate = () => {
     setError("")
+    setPhoneNote("")
     startTransition(async () => {
       const result = await createAgent({
         user_id: userId,
@@ -65,6 +70,15 @@ export function CreateAgentRecordButton({
       const refusal = (result as { error?: string }).error
       if ("error" in result && refusal) {
         setError(refusal)
+        return
+      }
+      const prov = (result as { phoneProvisioning?: { phoneNumber?: string; error?: string } })
+        .phoneProvisioning
+      if (prov?.error) {
+        // The agent row IS created — keep the dialog open only long enough to
+        // say what did not happen, rather than reporting a clean success.
+        setPhoneNote(prov.error)
+        router.refresh()
         return
       }
       setOpen(false)
@@ -139,6 +153,11 @@ export function CreateAgentRecordButton({
             </div>
 
             {error && <p className="text-sm text-destructive">{error}</p>}
+            {phoneNote && (
+              <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
+                {phoneNote}
+              </p>
+            )}
           </div>
 
           <DialogFooter>

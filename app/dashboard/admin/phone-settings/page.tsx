@@ -1,7 +1,9 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { getBrokeragePhoneSettings, getPhoneAllowanceStatusAction } from "@/app/actions/phone-provisioning"
-import { getVoiceUsageAction } from "@/app/actions/voice-tenancy"
+import { getVoiceUsageAction, getTwilioByoStatusAction } from "@/app/actions/voice-tenancy"
+import { TwilioByoCard } from "./twilio-byo-card"
+import { AgentPortInCard, type PortInAgentOption } from "./agent-port-in-card"
 import { GENERIC_VOICES } from "@/lib/voice/voice-resolver"
 import { PhoneSettingsClient } from "./phone-settings-client"
 
@@ -33,6 +35,29 @@ export default async function PhoneSettingsPage() {
   const allowanceRes = await getPhoneAllowanceStatusAction().catch(() => null)
   const allowanceStatus = allowanceRes?.success ? allowanceRes.status : null
 
+  // BYO Twilio (Multi-Location only) — the escape hatch had no UI at all, so
+  // the one commercially-promised way off platform-managed telephony could not
+  // be reached. The tier rule is enforced inside setTwilioByoCredsAction; this
+  // only decides whether to RENDER the card. Tenants already carrying BYO creds
+  // see it regardless of the tier read, so a plan change can never strand a
+  // configured account with no way to look at or replace it.
+  // Agent roster for the port-in card. getAgents() runs on the COOKIE client, so
+  // RLS (agents_read_brokerage) scopes it to the caller's own brokerage — the
+  // page never names a tenant. manuallyAddAgentPhone re-checks tenancy anyway.
+  const { getAgents } = await import("@/app/actions/agents")
+  const agentRows = await getAgents().catch(() => [] as any[])
+  const portInAgents: PortInAgentOption[] = (agentRows as any[])
+    .map((a) => ({
+      agentId: a?.id as string,
+      // Identity lives on users (agents has no first_name/last_name/email).
+      name: (a?.user?.name as string) || (a?.user?.email as string) || "Unnamed agent",
+    }))
+    .filter((a) => Boolean(a.agentId))
+
+  const byoRes = await getTwilioByoStatusAction().catch(() => null)
+  const byoConfigured = byoRes?.ok ? byoRes.configured : false
+  const showByo = usageRes?.ok && (usageRes.planTier === "multi_location" || byoConfigured)
+
   return (
     <div className="space-y-4">
       {/* Voice usage — the meter behind the bill (metered platform telephony) */}
@@ -54,6 +79,13 @@ export default async function PhoneSettingsPage() {
           </div>
         </div>
       )}
+      {showByo && (
+        <TwilioByoCard
+          initialConfigured={byoConfigured}
+          initialAccountSid={byoRes?.ok ? byoRes.accountSid : null}
+        />
+      )}
+      <AgentPortInCard agents={portInAgents} />
       <PhoneSettingsClient initialSettings={settings} genericVoices={GENERIC_VOICES} allowanceStatus={allowanceStatus} />
     </div>
   )

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -41,6 +41,7 @@ import {
   X,
 } from "lucide-react"
 import { generateBlogPost, generateTopicIdeas, saveBlogPost } from "@/app/actions/blog"
+import { getMyBlogCadencePolicy } from "@/app/actions/blog-cadence-policy"
 import type { TopicIdea } from "@/app/actions/blog"
 import { format } from "date-fns"
 
@@ -124,6 +125,29 @@ export function BlogDashboardClient({
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("all")
   const [categoryFilter, setCategoryFilter] = useState<string>("All")
+  // The agent's own blog cadence (wave 4 slice 2). The cadence cron publishes
+  // on this schedule; before this the only place it appeared was the settings
+  // page you had to already know about, so an agent on this dashboard had no
+  // idea whether anything was scheduled to publish at all.
+  const [cadence, setCadence] = useState<{ cadence: string; fireDay: number | null } | null>(null)
+  const [cadenceUnset, setCadenceUnset] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    getMyBlogCadencePolicy()
+      .then((r) => {
+        if (cancelled) return
+        // A refused read is NOT "no cadence configured" — leave both pieces of
+        // state alone so the chip simply does not render, rather than telling
+        // the agent nothing is scheduled when we could not check.
+        if (!r.success) return
+        if (r.policy) setCadence({ cadence: r.policy.cadence, fireDay: r.policy.fire_day })
+        else setCadenceUnset(true)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
   const [isGenerateOpen, setIsGenerateOpen] = useState(false)
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const [isTopicsOpen, setIsTopicsOpen] = useState(false)
@@ -272,6 +296,20 @@ export function BlogDashboardClient({
             <p className="text-muted-foreground">
               Generate and manage SEO-optimized blog content for your market
             </p>
+            {(cadence || cadenceUnset) && (
+              <p className="text-xs text-muted-foreground mt-1">
+                {cadence && cadence.cadence !== "off"
+                  ? `Auto-publishing ${cadence.cadence}${
+                      cadence.fireDay !== null ? ` (day ${cadence.fireDay})` : ""
+                    }.`
+                  : cadence
+                    ? "Auto-publishing is off."
+                    : "No posting cadence set yet — nothing publishes automatically."}{" "}
+                <a href="/settings/blog-cadence" className="text-blue-600 hover:underline">
+                  Change
+                </a>
+              </p>
+            )}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             {/* AI Topic Ideas */}

@@ -230,8 +230,14 @@ export async function getContentGenerationHistory(params: {
     const { data, error } = await query
 
     if (error) {
+      // A REFUSED read is not "you have generated nothing". Both of these reads
+      // are now RENDERED (the education editor's generation ledger), so folding
+      // a refusal into an empty list would tell an author their AI spend was
+      // zero. The single caller (content-generation-engine.ts) wraps this in
+      // try/catch → handleError → { success:false, error }, and its surface
+      // shows that error. Verified: no other caller in the tree.
       console.error("[System 4.1] Failed to get content history:", error)
-      return []
+      throw new Error(`Could not read your generation history: ${error.message}`)
     }
 
     // Filter by content_type if specified
@@ -249,7 +255,7 @@ export async function getContentGenerationHistory(params: {
     return data || []
   } catch (error) {
     console.error("[System 4.1] Error getting content history:", error)
-    return []
+    throw error instanceof Error ? error : new Error("Could not read your generation history")
   }
 }
 
@@ -292,9 +298,11 @@ export async function getContentGenerationStats(params: {
     const { data, error } = await query
 
     if (error) {
-      // A REFUSED read is not "no rows". Say so instead of returning silent zeros.
+      // A REFUSED read is not "no rows" — the comment said so and the code then
+      // returned silent zeros anyway. Same reasoning as the history read above:
+      // this number is now rendered, and "0 generated" is a claim.
       console.error("[System 4.1] Failed to get content stats:", error)
-      return { total_generated: 0, by_content_type: {}, by_channel: {}, recent_generations: 0 }
+      throw new Error(`Could not read your generation stats: ${error.message}`)
     }
     if (!data) {
       return { total_generated: 0, by_content_type: {}, by_channel: {}, recent_generations: 0 }
@@ -332,6 +340,6 @@ export async function getContentGenerationStats(params: {
     return stats
   } catch (error) {
     console.error("[System 4.1] Error getting content stats:", error)
-    return { total_generated: 0, by_content_type: {}, by_channel: {}, recent_generations: 0 }
+    throw error instanceof Error ? error : new Error("Could not read your generation stats")
   }
 }

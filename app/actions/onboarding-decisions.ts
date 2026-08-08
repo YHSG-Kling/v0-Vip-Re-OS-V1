@@ -15,6 +15,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
+  attachLessons,
   composeOnboardingDecisions,
   loadOnboardingDecisionFacts,
   type OnboardingDecision,
@@ -38,6 +39,18 @@ async function loadMember(): Promise<
   }
 }
 
+/**
+ * The client-callable re-read of the decision list.
+ *
+ * MERGED (wave 4 slice 2): this used to return `composeOnboardingDecisions(facts)`
+ * raw, while the server card that renders the same list
+ * (app/components/onboarding/setup-readiness-card.tsx) also runs `attachLessons`,
+ * which hangs the /academy/module/… link off each decision. Swapping this
+ * action's output into the rendered list would therefore have SILENTLY DROPPED
+ * every lesson link. It now composes the identical shape, so the two are
+ * interchangeable — which is the point: DecisionRoom can replace its list with
+ * server truth instead of hand-writing an optimistic "done" card.
+ */
 export async function getOnboardingDecisionsAction(): Promise<
   | { ok: true; decisions: OnboardingDecision[] }
   | { ok: false; error: string }
@@ -46,7 +59,10 @@ export async function getOnboardingDecisionsAction(): Promise<
   if (!m.ok) return { ok: false, error: m.error }
   const svc = createServiceClient()
   const facts = await loadOnboardingDecisionFacts(svc as any, { brokerageId: m.brokerageId })
-  return { ok: true, decisions: composeOnboardingDecisions(facts) }
+  return {
+    ok: true,
+    decisions: attachLessons(composeOnboardingDecisions(facts), facts.moduleIdByTopic ?? new Map()),
+  }
 }
 
 export async function adoptAssistantIdentityAction(): Promise<

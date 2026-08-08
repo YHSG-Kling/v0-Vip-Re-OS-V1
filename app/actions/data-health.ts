@@ -320,22 +320,50 @@ export async function purgeInvalidContacts() {
     }
 
     // Soft delete contacts (mark as deleted) — brokerage-scoped.
-    const { error } = await supabase
+    // .select("id") so deletedCount is what was PROVEN purged, not what we
+    // intended to purge: contactIds comes from data_health_logs, and a log row
+    // can outlive its contact (or point at a contact this tenant can no longer
+    // touch). Reporting the intent as the result is the "control that reports
+    // success without doing the thing" defect.
+    const { data: purged, error } = await supabase
       .from("contacts")
       .update({ deleted_at: new Date().toISOString() })
       .eq("brokerage_id", ctx.brokerageId)
       .in("id", contactIds)
+      .select("id")
 
     if (error) throw error
 
-    // Remove the health logs for purged contacts — same scope.
-    await supabase
-      .from("data_health_logs")
-      .delete()
-      .eq("brokerage_id", ctx.brokerageId)
-      .in("contact_id", contactIds)
+    const purgedIds = ((purged ?? []) as Array<{ id: string }>).map((r) => r.id)
 
-    return { success: true, deletedCount: contactIds.length }
+    // Remove the health logs for purged contacts — same scope. Only for rows we
+    // actually purged: clearing the log for a contact that survived would hide
+    // it from the next scan's Invalid list.
+    if (purgedIds.length > 0) {
+      const { error: logError } = await supabase
+        .from("data_health_logs")
+        .delete()
+        .eq("brokerage_id", ctx.brokerageId)
+        .in("contact_id", purgedIds)
+      if (logError) {
+        // The purge itself landed — say so, and say the log is still dirty,
+        // rather than swallowing it and letting the next scan look wrong.
+        return {
+          success: true,
+          deletedCount: purgedIds.length,
+          message: `Purged ${purgedIds.length} contact(s), but the health log could not be cleared: ${logError.message}`,
+        }
+      }
+    }
+
+    return {
+      success: true,
+      deletedCount: purgedIds.length,
+      message:
+        purgedIds.length === contactIds.length
+          ? undefined
+          : `${purgedIds.length} of ${contactIds.length} flagged contacts were purged; the rest no longer exist in this brokerage.`,
+    }
   } catch (error) {
     console.error("Failed to purge invalid contacts:", error)
     return { success: false, error: "Failed to purge contacts", deletedCount: 0 }

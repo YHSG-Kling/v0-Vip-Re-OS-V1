@@ -599,32 +599,70 @@ export async function handleRSVP(params: { eventId: string; invitationId: string
   const supabase = await createClient()
 
   try {
-    const { data: invitation } = await supabase
+    // Destructure `error` (wave 4 slice 2). supabase-js RESOLVES a refused
+    // query, so `const { data: invitation }` alone turned an RLS refusal into
+    // the same "Invitation not found" as a bad id — and this path then went on
+    // to write.
+    const { data: invitation, error: invErr } = await supabase
       .from("open_house_invitations")
       .select("*")
       .eq("id", params.invitationId)
       .maybeSingle()
 
+    if (invErr) {
+      return { success: false, error: "Could not look up that invitation — your RSVP was not recorded." }
+    }
     if (!invitation) {
       return { success: false, error: "Invitation not found" }
     }
+    // The invitation must actually belong to the event named in the link.
+    // Without this, an invitation id and an event id from two different
+    // brokerages could be combined into one tracking row.
+    if (invitation.event_id !== params.eventId) {
+      return { success: false, error: "Invitation not found" }
+    }
 
-    // Update invitation
-    await supabase
+    // Update invitation — refuse a zero-row write instead of thanking the
+    // invitee for an RSVP that was never recorded.
+    const { data: updated, error: updErr } = await supabase
       .from("open_house_invitations")
       .update({
         rsvp_response: params.response,
         rsvp_updated_at: new Date().toISOString(),
       })
       .eq("id", params.invitationId)
+      .select("id")
 
-    // Track RSVP
-    await supabase.from("open_house_rsvp_tracking").insert({
+    if (updErr) return { success: false, error: "Your RSVP could not be saved. Please try again." }
+    if (!updated || updated.length === 0) {
+      return { success: false, error: "Your RSVP could not be saved. Please try again." }
+    }
+
+    // Track RSVP.
+    // brokerage_id is STAMPED from the invitation. It was omitted entirely, and
+    // open_house_rsvp_tracking's RLS policy is
+    // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()` with
+    // a NULLABLE brokerage_id (both verified live) — so every row this endpoint
+    // wrote was untenanted, which under that policy means readable AND writable
+    // by every user of every tenant, and by anonymous callers. Stamping the
+    // tenant closes it; a row with no resolvable tenant is refused rather than
+    // written world-open.
+    const rsvpBrokerageId = (invitation as { brokerage_id?: string | null }).brokerage_id ?? null
+    if (!rsvpBrokerageId) {
+      return { success: false, error: "This invitation is not linked to a brokerage — your RSVP was not recorded." }
+    }
+    const { error: trackErr } = await supabase.from("open_house_rsvp_tracking").insert({
+      brokerage_id: rsvpBrokerageId,
       event_id: params.eventId,
       contact_id: invitation.contact_id,
       rsvp_status: params.response,
       rsvp_updated_at: new Date().toISOString(),
     })
+    if (trackErr) {
+      // The RSVP itself landed on the invitation above — say what did and did
+      // not happen rather than reporting a clean success or a clean failure.
+      console.error("[handleRSVP] rsvp tracking insert failed:", trackErr.message)
+    }
 
     revalidatePath("/dashboard/open-house")
 
@@ -1240,14 +1278,43 @@ export async function submitFeedback(params: {
   const supabase = await createClient()
 
   try {
-    const { data: attendee } = await supabase.from("open_house_attendees").select("*").eq("id", params.attendeeId).maybeSingle()
+    // Destructure `error` — a refusal must not read as "Attendee not found"
+    // and must never fall through to a write. (wave 4 slice 2)
+    const { data: attendee, error: attErr } = await supabase
+      .from("open_house_attendees").select("*").eq("id", params.attendeeId).maybeSingle()
 
+    if (attErr) {
+      return { success: false, error: "Could not look up that visit — your feedback was not saved." }
+    }
     if (!attendee) {
       return { success: false, error: "Attendee not found" }
     }
 
-    // Update attendee record
-    await supabase
+    // open_house_feedback carries a buyer's price opinion, their concerns and
+    // their contact link. Its RLS policy is
+    // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()` and
+    // brokerage_id is NULLABLE (both verified live), so a row written with a
+    // null tenant is readable by every user of every tenant AND by anonymous
+    // callers. `attendee.brokerage_id ?? null` did exactly that whenever the
+    // attendee row had drifted untenanted. Resolve from the event as a fallback
+    // and REFUSE rather than write the feedback world-open.
+    let feedbackBrokerageId: string | null =
+      (attendee as { brokerage_id?: string | null }).brokerage_id ?? null
+    if (!feedbackBrokerageId && attendee.event_id) {
+      const { data: ev } = await supabase
+        .from("open_house_events").select("brokerage_id").eq("id", attendee.event_id).maybeSingle()
+      feedbackBrokerageId = (ev as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+    }
+    if (!feedbackBrokerageId) {
+      return {
+        success: false,
+        error: "This visit is not linked to a brokerage — your feedback was not saved.",
+      }
+    }
+
+    // Update attendee record — refuse a zero-row write rather than thanking the
+    // visitor for feedback that was never stored.
+    const { data: attUpdated, error: attUpdErr } = await supabase
       .from("open_house_attendees")
       .update({
         feedback_rating: params.overallRating,
@@ -1255,13 +1322,18 @@ export async function submitFeedback(params: {
         feedback_collected_at: new Date().toISOString(),
       })
       .eq("id", params.attendeeId)
+      .select("id")
+
+    if (attUpdErr || !attUpdated || attUpdated.length === 0) {
+      return { success: false, error: "Your feedback could not be saved. Please try again." }
+    }
 
     // Store detailed feedback in the correct table with correct column names
-    await supabase.from("open_house_feedback").insert({
+    const { error: fbErr } = await supabase.from("open_house_feedback").insert({
       attendee_id: params.attendeeId,
       event_id: attendee.event_id,
       contact_id: attendee.contact_id ?? null,
-      brokerage_id: attendee.brokerage_id ?? null,
+      brokerage_id: feedbackBrokerageId,
       rating: params.overallRating,
       price_opinion: params.pricingFeedback ?? null,
       liked_most: params.whatLikedMost ?? null,
@@ -1269,6 +1341,12 @@ export async function submitFeedback(params: {
       interested_in_offer: params.wouldMakeOffer === "yes",
       has_own_agent: attendee.working_with_agent ?? false,
     })
+    if (fbErr) {
+      return {
+        success: false,
+        error: "Your rating was recorded but the detailed feedback could not be saved. Please try again.",
+      }
+    }
 
     // Update lead score based on feedback
     let scoreAdjustment = 0

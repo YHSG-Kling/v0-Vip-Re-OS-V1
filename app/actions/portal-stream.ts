@@ -289,10 +289,51 @@ export async function dispositionPortalEventAction(params: {
 
 // ─── On-demand projection (admin) ────────────────────────────────────────
 
+/**
+ * On-demand re-run of the portal-stream projector.
+ *
+ * SECURITY (wave 4 slice 2). This endpoint takes the caller's word for nothing
+ * except "is signed in", and then makes a server-side request carrying
+ * CRON_SECRET in an Authorization header. That is a privilege escalation by
+ * shape: any signed-in user of any tenant — an agent, an invited assistant, a
+ * portal contact with a login — could make the platform run a projection pass
+ * across every tenant's lifecycle_events, on demand, as often as they liked.
+ * The secret is never disclosed, but the CAPABILITY it guards was.
+ *
+ * The cron route itself already documents the on-demand path as "admin
+ * on-demand reprojection". The gate now matches: brokerage admin / broker /
+ * superadmin only, resolved from `users.user_type` (NOT `users.role`, which is
+ * retired — 19 of 23 live rows are NULL and the rest are title-cased, so a role
+ * filter here would have matched nobody and turned the gate into a hard block).
+ * Fails CLOSED: a refused profile read is a refusal, not a pass.
+ */
+const PROJECTION_TRIGGER_ROLES = new Set([
+  "broker", "broker_admin", "broker_owner", "admin", "superadmin", "super_admin",
+])
+
 export async function triggerPortalProjectionAction(): Promise<{ success: boolean; error?: string }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: "Unauthorized" }
+
+  const { data: profile, error: profileErr } = await supabase
+    .from("users")
+    .select("user_type, platform_role")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (profileErr) {
+    // supabase-js RESOLVES a refused query — a swallowed error here would read
+    // as "no profile" and, if this were written the other way round, as a pass.
+    return { success: false, error: "Could not verify your access — projection refused" }
+  }
+  const userType = (profile as { user_type?: string | null } | null)?.user_type ?? ""
+  const platformRole = (profile as { platform_role?: string | null } | null)?.platform_role ?? ""
+  if (!PROJECTION_TRIGGER_ROLES.has(userType) && platformRole !== "superadmin") {
+    return {
+      success: false,
+      error: "Forbidden — only a broker, brokerage admin or platform staff can re-run the portal projection.",
+    }
+  }
 
   const secret = process.env.CRON_SECRET
   if (!secret) return { success: false, error: "CRON_SECRET not configured" }

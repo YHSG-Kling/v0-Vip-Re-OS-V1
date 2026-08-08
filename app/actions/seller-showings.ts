@@ -378,8 +378,15 @@ export async function approveShowingRequest(params: {
 
   if (reqErr || !req) return { success: false, error: "Showing request not found" }
 
-  // UPDATE showing_requests
-  await supabase
+  // UPDATE showing_requests.
+  // This used to be a bare `await` with NO error check and no `.select()`, so a
+  // refused or zero-row update was invisible — and the code below then went on
+  // to INSERT a real `showings` row and fire SHOWING_SCHEDULED for an approval
+  // that was never recorded. The seller's approval is the load-bearing fact
+  // here; if it did not land, nothing after it may happen. (This hardening was
+  // ported from app/actions/showings.ts:updateShowingStatus before that
+  // duplicate was deleted — wave 4 slice 2.)
+  const { data: approvedRows, error: approveErr } = await supabase
     .from("showing_requests")
     .update({
       seller_approved: true,
@@ -388,6 +395,12 @@ export async function approveShowingRequest(params: {
       updated_at: new Date().toISOString(),
     })
     .eq("id", params.requestId)
+    .select("id")
+
+  if (approveErr) return { success: false, error: approveErr.message }
+  if (!approvedRows || approvedRows.length === 0) {
+    return { success: false, error: "Showing request not found, or you do not have access to it." }
+  }
 
   // Compose scheduled_at from date + start_time
   const scheduledAt = new Date(
@@ -483,15 +496,27 @@ export async function suggestAlternativeTime(params: {
     return { success: false, error: "Forbidden" }
   }
 
-  const { error } = await supabase
+  const { data: rescheduledRows, error } = await supabase
     .from("showing_requests")
     .update({
       alternative_times: params.proposedTimes,
+      // Ported from the deleted app/actions/showings.ts:updateShowingStatus
+      // (wave 4 slice 2). Proposing new times used to write ONLY the
+      // alternative_times array and leave status = 'pending', so the request
+      // stayed in the "awaiting your decision" queue that getShowingRequests
+      // builds (`.eq("status","pending")`) and the agent was asked to decide on
+      // it again on every visit. 'needs_reschedule' is live-verified against
+      // showing_requests_status_check.
+      status:            "needs_reschedule",
       updated_at:        new Date().toISOString(),
     })
     .eq("id", params.requestId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if (!rescheduledRows || rescheduledRows.length === 0) {
+    return { success: false, error: "Showing request not found, or you do not have access to it." }
+  }
 
   revalidatePath(`/dashboard/listings/${params.listingId}/showings`)
   return { success: true }
@@ -521,7 +546,11 @@ export async function denyShowingRequest(params: {
     return { success: false, error: "Forbidden" }
   }
 
-  const { error } = await supabase
+  // `.select("id")` + a zero-row refusal, ported from the deleted
+  // app/actions/showings.ts:updateShowingStatus. Without it an update RLS
+  // refused came back with error === null and was reported as { success: true }
+  // — the agent was told the request was denied when nothing was written.
+  const { data: deniedRows, error } = await supabase
     .from("showing_requests")
     .update({
       status:       "denied",
@@ -529,8 +558,12 @@ export async function denyShowingRequest(params: {
       updated_at:   new Date().toISOString(),
     })
     .eq("id", params.requestId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if (!deniedRows || deniedRows.length === 0) {
+    return { success: false, error: "Showing request not found, or you do not have access to it." }
+  }
 
   revalidatePath(`/dashboard/listings/${params.listingId}/showings`)
   return { success: true }

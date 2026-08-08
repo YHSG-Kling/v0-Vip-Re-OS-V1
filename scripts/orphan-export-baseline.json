@@ -6,8 +6,6 @@
     "app/actions/admin/billing.ts": 2,
     "app/actions/admin/commission-agreement.ts": 1,
     "app/actions/admin/create-subscriber.ts": 1,
-    "app/actions/admin/invitations.ts": 1,
-    "app/actions/admin/locations.ts": 1,
     "app/actions/agents.ts": 5,
     "app/actions/ai-auto-response.ts": 4,
     "app/actions/ai-calendar-management.ts": 1,
@@ -16,7 +14,6 @@
     "app/actions/ai-cma.ts": 1,
     "app/actions/ai-content-generation.tsx": 4,
     "app/actions/ai-contract-review.ts": 1,
-    "app/actions/ai-direct-mail.ts": 3,
     "app/actions/ai-document-intelligence.ts": 1,
     "app/actions/ai-isa/engage-contact.ts": 1,
     "app/actions/ai-isa/initiate-engagement.ts": 1,
@@ -36,9 +33,7 @@
     "app/actions/analytics.ts": 2,
     "app/actions/assistant.ts": 3,
     "app/actions/auth.ts": 3,
-    "app/actions/avatar-voice-catalog.ts": 1,
     "app/actions/billing.ts": 3,
-    "app/actions/blog-cadence-policy.ts": 1,
     "app/actions/blog.ts": 3,
     "app/actions/brand-template-registry.ts": 2,
     "app/actions/brokerage-cda-setup.ts": 1,
@@ -56,12 +51,8 @@
     "app/actions/communications.ts": 1,
     "app/actions/compliance/manage-required-docs.ts": 1,
     "app/actions/compliance-bridge-actions.ts": 2,
-    "app/actions/contact-details.ts": 1,
-    "app/actions/contact-enrichment.ts": 2,
     "app/actions/contacts/update-channel-controls.ts": 1,
-    "app/actions/contacts.ts": 1,
     "app/actions/content-compliance.ts": 2,
-    "app/actions/content-generation-engine.ts": 4,
     "app/actions/content-intel/sources.ts": 1,
     "app/actions/content-prediction.ts": 1,
     "app/actions/content-studio.ts": 1,
@@ -70,20 +61,14 @@
     "app/actions/credit-copilot.ts": 3,
     "app/actions/crm.ts": 1,
     "app/actions/cron-kernel.ts": 1,
-    "app/actions/data-health.ts": 1,
     "app/actions/demo-auth.ts": 3,
-    "app/actions/direct-mail.ts": 1,
     "app/actions/documents.ts": 1,
     "app/actions/dotloop-integration.ts": 1,
     "app/actions/email-campaigns.ts": 1,
-    "app/actions/error-handler.ts": 1,
     "app/actions/fb-audience-templates.ts": 1,
-    "app/actions/financial-kernel.ts": 2,
-    "app/actions/financials.ts": 1,
     "app/actions/forms-kernel.ts": 1,
     "app/actions/gamification.ts": 1,
     "app/actions/inbox.ts": 2,
-    "app/actions/income-engine.ts": 2,
     "app/actions/journey-tasks.ts": 1,
     "app/actions/lead-assignment/assign-lead.ts": 1,
     "app/actions/lead-import/import-actions.ts": 1,
@@ -108,11 +93,9 @@
     "app/actions/onboarding/agent-onboarding-actions.ts": 1,
     "app/actions/onboarding/mentor-session.ts": 1,
     "app/actions/onboarding/training.ts": 1,
-    "app/actions/onboarding-decisions.ts": 1,
     "app/actions/open-house-automation.ts": 3,
     "app/actions/open-house.ts": 1,
     "app/actions/partner-orders.ts": 1,
-    "app/actions/phone-provisioning.ts": 2,
     "app/actions/photo-management.ts": 2,
     "app/actions/podcast-generation.ts": 2,
     "app/actions/portal-lifetime.ts": 1,
@@ -125,40 +108,29 @@
     "app/actions/seller-coaching.ts": 1,
     "app/actions/seller-listing/execution-engine.ts": 1,
     "app/actions/seller-offers.ts": 2,
-    "app/actions/seller-showing-sentiment.ts": 1,
-    "app/actions/showings.ts": 1,
     "app/actions/smart-insights.ts": 1,
     "app/actions/social/generate-social-post.ts": 1,
     "app/actions/social-media-automation.ts": 1,
-    "app/actions/social-publishing.ts": 4,
+    "app/actions/social-publishing.ts": 1,
     "app/actions/social-share.ts": 2,
-    "app/actions/stock-video-upload.ts": 1,
-    "app/actions/superadmin/connector-healing.ts": 2,
-    "app/actions/superadmin/deal-room-demo.ts": 1,
     "app/actions/superadmin/parked-retention.ts": 2,
     "app/actions/superadmin/platform-controls.ts": 1,
-    "app/actions/superadmin/platform-providers.ts": 1,
     "app/actions/tour-planner.ts": 2,
     "app/actions/transaction-document-signatures.ts": 2,
     "app/actions/transaction-inspections.ts": 2,
     "app/actions/transaction-stage-machine.ts": 1,
     "app/actions/transaction-transparency.ts": 1,
-    "app/actions/transactions.ts": 1,
-    "app/actions/twin-studio.ts": 1,
     "app/actions/user-profile.ts": 1,
     "app/actions/vendor-budget.ts": 1,
     "app/actions/vendor-invite.ts": 2,
     "app/actions/vendor-marketplace.ts": 2,
-    "app/actions/vendor-payments.ts": 3,
+    "app/actions/vendor-payments.ts": 1,
     "app/actions/vendor-portal.ts": 1,
     "app/actions/vendor-verification.ts": 1,
-    "app/actions/vendor-w9.ts": 1,
     "app/actions/video/create-video-project.ts": 5,
     "app/actions/video-content.ts": 1,
     "app/actions/video-generation.ts": 2,
     "app/actions/video-repurposing.ts": 3,
-    "app/actions/voice-avatar-settings.ts": 1,
-    "app/actions/voice-tenancy.ts": 1,
     "app/components/heartbeat/heartbeat-card.tsx": 1,
     "app/components/portal/FitBadge.tsx": 1,
     "app/components/portal/SellerOfferCard.tsx": 1,
@@ -174,7 +146,6 @@
     "lib/ads/ad-creative-engine.ts": 3,
     "lib/ads/ad-lead-intake.ts": 2,
     "lib/ads/ad-manager.ts": 2,
-    "lib/ads/ad-monitor.ts": 2,
     "lib/ads/ad-outcome-loop.ts": 3,
     "lib/ads/ad-performance-ingest.ts": 1,
     "lib/ads/connectors/ad-payload.ts": 2,
@@ -244,7 +215,6 @@
     "lib/billing/phone-plan-resolve.ts": 2,
     "lib/billing/plan-tier.ts": 1,
     "lib/billing/stripe-status.ts": 2,
-    "lib/blog/seo-optimizer.ts": 1,
     "lib/blog/wordpress-connection.ts": 1,
     "lib/branding/resolve-brokerage-brand.ts": 1,
     "lib/brokerage-intelligence/miners.ts": 6,
@@ -536,7 +506,7 @@
     "lib/listings/photo-intelligence.ts": 6,
     "lib/listings/relist-recovery.ts": 1,
     "lib/listings/seller-weekly-report.ts": 2,
-    "lib/listings/tier-assigner.ts": 4,
+    "lib/listings/tier-assigner.ts": 1,
     "lib/managers/accuracy-gate.ts": 8,
     "lib/managers/cross-referral.ts": 7,
     "lib/managers/deliberation.ts": 9,
@@ -726,7 +696,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 8904,
+  "census": 8928,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -959,7 +929,7 @@
     "app/actions/education-tutor.ts": 1,
     "app/actions/email-campaigns.ts": 10,
     "app/actions/embed-widgets.ts": 6,
-    "app/actions/error-handler.ts": 6,
+    "app/actions/error-handler.ts": 7,
     "app/actions/exception-center.ts": 5,
     "app/actions/external-services.ts": 2,
     "app/actions/fb-audience-templates.ts": 2,
@@ -1153,14 +1123,14 @@
     "app/actions/settings/update-global-settings.ts": 1,
     "app/actions/settings/update-notification-rules.ts": 1,
     "app/actions/setup-readiness.ts": 1,
-    "app/actions/showings.ts": 8,
+    "app/actions/showings.ts": 7,
     "app/actions/smart-insights.ts": 13,
     "app/actions/smart-queue.ts": 1,
     "app/actions/smarter-this-week.ts": 1,
     "app/actions/social/generate-social-post.ts": 5,
     "app/actions/social-dm.ts": 1,
     "app/actions/social-media-automation.ts": 17,
-    "app/actions/social-publishing.ts": 12,
+    "app/actions/social-publishing.ts": 9,
     "app/actions/social-share.ts": 3,
     "app/actions/source-analytics.ts": 7,
     "app/actions/standup-audio.ts": 1,
@@ -1229,7 +1199,7 @@
     "app/actions/transaction-transparency.ts": 3,
     "app/actions/transactions.ts": 58,
     "app/actions/twin-studio-upload.ts": 3,
-    "app/actions/twin-studio.ts": 9,
+    "app/actions/twin-studio.ts": 11,
     "app/actions/usage-overview.ts": 1,
     "app/actions/user-profile.ts": 6,
     "app/actions/vendor-billing.ts": 3,
@@ -1272,7 +1242,7 @@
     "app/actions/voice-avatar-settings.ts": 4,
     "app/actions/voice-call-bridge.ts": 4,
     "app/actions/voice-dial-batch.ts": 3,
-    "app/actions/voice-tenancy.ts": 2,
+    "app/actions/voice-tenancy.ts": 3,
     "app/actions/walkthrough-outcome.ts": 1,
     "app/actions/weekly-insights.ts": 1,
     "app/actions/whats-new.ts": 1,
@@ -1996,6 +1966,7 @@
     "app/crm/contacts/[contactId]/components/buyer-lifecycle-panel.tsx": 1,
     "app/crm/contacts/[contactId]/components/buyer-stage-progress.tsx": 1,
     "app/crm/contacts/[contactId]/components/conversation-coaching-panel.tsx": 1,
+    "app/crm/contacts/[contactId]/components/enrichment-panel.tsx": 1,
     "app/crm/contacts/[contactId]/components/fatigue-panel.tsx": 1,
     "app/crm/contacts/[contactId]/components/fatigue-widget.tsx": 1,
     "app/crm/contacts/[contactId]/components/financial-verification-panel.tsx": 1,
@@ -2057,6 +2028,7 @@
     "app/dashboard/admin/composition-library/client.tsx": 1,
     "app/dashboard/admin/content-studio/actions.ts": 1,
     "app/dashboard/admin/content-studio/approve-button.tsx": 1,
+    "app/dashboard/admin/data-health/enrichment-backlog-panel.tsx": 1,
     "app/dashboard/admin/direct-mail-performance/client.tsx": 1,
     "app/dashboard/admin/education/education-client.tsx": 1,
     "app/dashboard/admin/feature-governance/feature-governance-client.tsx": 1,
@@ -2087,7 +2059,9 @@
     "app/dashboard/admin/onboarding/onboarding-curriculum-editor.tsx": 1,
     "app/dashboard/admin/onboarding-steps/OnboardingStepsClient.tsx": 1,
     "app/dashboard/admin/phone-settings/a2p-card.tsx": 1,
+    "app/dashboard/admin/phone-settings/agent-port-in-card.tsx": 1,
     "app/dashboard/admin/phone-settings/phone-settings-client.tsx": 1,
+    "app/dashboard/admin/phone-settings/twilio-byo-card.tsx": 1,
     "app/dashboard/admin/privacy/requests/dsar-row-actions.tsx": 1,
     "app/dashboard/admin/scrape-diagnostics/scrape-diagnostics-client.tsx": 1,
     "app/dashboard/admin/scrape-diagnostics/tenant-coverage-card.tsx": 1,
@@ -2103,6 +2077,7 @@
     "app/dashboard/admin/users/create-agent-record-button.tsx": 1,
     "app/dashboard/admin/users/edit-user-button.tsx": 1,
     "app/dashboard/admin/users/invitations/invitations-table.tsx": 1,
+    "app/dashboard/admin/users/invitations/setup-complete-card.tsx": 1,
     "app/dashboard/admin/users/invite-user-button.tsx": 1,
     "app/dashboard/admin/vendor-approvals/approval-client.tsx": 1,
     "app/dashboard/admin/vendor-approvals/review-moderation-client.tsx": 1,
@@ -2171,6 +2146,8 @@
     "app/dashboard/campaigns/ads/ads-dashboard-client.tsx": 1,
     "app/dashboard/campaigns/ads/ctv-lane.tsx": 1,
     "app/dashboard/campaigns/competitive/competitive-monitor-client.tsx": 1,
+    "app/dashboard/campaigns/competitive/track-competitor-dialog.tsx": 1,
+    "app/dashboard/campaigns/mail/components/analytics-tab.tsx": 1,
     "app/dashboard/campaigns/mail/components/campaigns-tab.tsx": 1,
     "app/dashboard/campaigns/mail/components/create-campaign-dialog.tsx": 1,
     "app/dashboard/campaigns/mail/components/mail-piece-preview.tsx": 1,
@@ -2269,6 +2246,7 @@
     "app/dashboard/financials/components/planning/tax-readiness-panel.tsx": 1,
     "app/dashboard/financials/components/planning/tax-setaside-panel.tsx": 1,
     "app/dashboard/financials/expenses/components/add-expense-dialog.tsx": 1,
+    "app/dashboard/financials/expenses/components/delete-expense-button.tsx": 1,
     "app/dashboard/financials/reports/reports-client.tsx": 1,
     "app/dashboard/financials/team/team-revenue-chart.tsx": 1,
     "app/dashboard/forms/FormsLibraryClient.tsx": 1,
@@ -2276,6 +2254,7 @@
     "app/dashboard/goals/goals-client.tsx": 1,
     "app/dashboard/help/help-client.tsx": 1,
     "app/dashboard/help/ticket-thread.tsx": 1,
+    "app/dashboard/income-truth/action-disposition.tsx": 1,
     "app/dashboard/intelligence/components/ai-citation-visibility-card.tsx": 1,
     "app/dashboard/intelligence/components/os/ai-quality-panel.tsx": 1,
     "app/dashboard/intelligence/components/os/behavior-patterns-panel.tsx": 1,
@@ -2350,6 +2329,7 @@
     "app/dashboard/listings/[id]/open-house/tabs/event-day-tab.tsx": 1,
     "app/dashboard/listings/[id]/open-house/tabs/intelligence-tab.tsx": 1,
     "app/dashboard/listings/[id]/open-house/tabs/marketing-tab.tsx": 1,
+    "app/dashboard/listings/[id]/showings/seller-sentiment-panel.tsx": 1,
     "app/dashboard/listings/health/actions.ts": 3,
     "app/dashboard/listings/health/health-client.tsx": 1,
     "app/dashboard/listings/listings-new-button.tsx": 1,
@@ -2467,6 +2447,7 @@
     "app/dashboard/settings/twin-studio/components/approval-queue.tsx": 1,
     "app/dashboard/settings/twin-studio/components/consent-recorder.tsx": 1,
     "app/dashboard/settings/twin-studio/components/twin-card.tsx": 1,
+    "app/dashboard/settings/twin-studio/components/twin-voice-step.tsx": 1,
     "app/dashboard/settings/twin-studio/components/twin-wizard.tsx": 1,
     "app/dashboard/settings/twin-studio/components/voice-recorder.tsx": 1,
     "app/dashboard/settings/twin-studio/twin-studio-client.tsx": 1,
@@ -2573,6 +2554,7 @@
     "app/dashboard/transactions/portfolio-risk-scan.tsx": 1,
     "app/dashboard/vendors/premium-placement-panel.tsx": 1,
     "app/dashboard/vendors/vendor-access-panel.tsx": 1,
+    "app/dashboard/vendors/vendor-bills-panel.tsx": 1,
     "app/dashboard/vendors/vendor-charges-panel.tsx": 1,
     "app/dashboard/vendors/vendor-directory-client.tsx": 1,
     "app/dashboard/videos/board/video-studio-dialog.tsx": 1,
@@ -2924,6 +2906,7 @@
     "lib/approval-workflow/approval-engine.ts": 6,
     "lib/approval-workflow/approval-logger.ts": 5,
     "lib/audiences/audience-sync.ts": 2,
+    "lib/auth/authorize-for-user.ts": 1,
     "lib/auth/contact-access.ts": 1,
     "lib/auth/isa-actor.ts": 2,
     "lib/auth/permissions-client.ts": 3,
@@ -3205,6 +3188,10 @@
     "lib/elevenlabs/conv-ai.ts": 4,
     "lib/email/orchestrate-email-preset-send.ts": 1,
     "lib/embed/widget-modes.ts": 4,
+    "lib/enrichment/contact-enrichment-core.ts": 6,
+    "lib/enrichment/deal-suppression.ts": 2,
+    "lib/enrichment/deal-vocabulary.ts": 2,
+    "lib/enrichment/identifier-guard.ts": 1,
     "lib/entitlements/resolve.ts": 2,
     "lib/errors/auto-retry.ts": 3,
     "lib/errors/collect-error.ts": 2,
@@ -5822,6 +5809,7 @@
       "getErrorGroupDetails",
       "dismissErrorGroup",
       "resolveErrorGroup",
+      "listAssignableTeammates",
       "assignErrorGroup",
       "getErrorMetrics"
     ],
@@ -7132,7 +7120,6 @@
     "app/actions/showings.ts": [
       "requestShowing",
       "getShowings",
-      "updateShowingStatus",
       "completeShowing",
       "createShowing",
       "updateShowing",
@@ -7190,8 +7177,6 @@
       "rescheduleSocialPost"
     ],
     "app/actions/social-publishing.ts": [
-      "handleScheduledPost",
-      "handlePostPublished",
       "handleContentApproved",
       "getSocialAccounts",
       "connectSocialAccount",
@@ -7200,7 +7185,6 @@
       "createSocialPost",
       "updateSocialPost",
       "deleteSocialPost",
-      "getSocialAnalytics",
       "generateSocialContent"
     ],
     "app/actions/social-share.ts": [
@@ -7692,6 +7676,8 @@
       "approveTwin",
       "rejectTwin",
       "createTwinDraft",
+      "listTwinVoiceOptions",
+      "setTwinStockVoice",
       "finalizeTwin"
     ],
     "app/actions/usage-overview.ts": [
@@ -7973,6 +7959,7 @@
     ],
     "app/actions/voice-tenancy.ts": [
       "getVoiceUsageAction",
+      "getTwilioByoStatusAction",
       "setTwilioByoCredsAction"
     ],
     "app/actions/walkthrough-outcome.ts": [
@@ -10227,6 +10214,9 @@
     "app/crm/contacts/[contactId]/components/conversation-coaching-panel.tsx": [
       "ConversationCoachingPanel"
     ],
+    "app/crm/contacts/[contactId]/components/enrichment-panel.tsx": [
+      "EnrichmentPanel"
+    ],
     "app/crm/contacts/[contactId]/components/fatigue-panel.tsx": [
       "FatiguePanel"
     ],
@@ -10412,6 +10402,9 @@
     "app/dashboard/admin/content-studio/approve-button.tsx": [
       "ApproveReelButton"
     ],
+    "app/dashboard/admin/data-health/enrichment-backlog-panel.tsx": [
+      "EnrichmentBacklogPanel"
+    ],
     "app/dashboard/admin/direct-mail-performance/client.tsx": [
       "DirectMailPerformanceClient"
     ],
@@ -10502,8 +10495,14 @@
     "app/dashboard/admin/phone-settings/a2p-card.tsx": [
       "A2pRegistrationCard"
     ],
+    "app/dashboard/admin/phone-settings/agent-port-in-card.tsx": [
+      "AgentPortInCard"
+    ],
     "app/dashboard/admin/phone-settings/phone-settings-client.tsx": [
       "PhoneSettingsClient"
+    ],
+    "app/dashboard/admin/phone-settings/twilio-byo-card.tsx": [
+      "TwilioByoCard"
     ],
     "app/dashboard/admin/privacy/requests/dsar-row-actions.tsx": [
       "DSARRowActions"
@@ -10550,6 +10549,9 @@
     ],
     "app/dashboard/admin/users/invitations/invitations-table.tsx": [
       "InvitationsTable"
+    ],
+    "app/dashboard/admin/users/invitations/setup-complete-card.tsx": [
+      "SetupCompleteCard"
     ],
     "app/dashboard/admin/users/invite-user-button.tsx": [
       "InviteUserButton"
@@ -10754,6 +10756,12 @@
     ],
     "app/dashboard/campaigns/competitive/competitive-monitor-client.tsx": [
       "CompetitiveMonitorClient"
+    ],
+    "app/dashboard/campaigns/competitive/track-competitor-dialog.tsx": [
+      "TrackCompetitorDialog"
+    ],
+    "app/dashboard/campaigns/mail/components/analytics-tab.tsx": [
+      "AnalyticsTab"
     ],
     "app/dashboard/campaigns/mail/components/campaigns-tab.tsx": [
       "CampaignsTab"
@@ -11049,6 +11057,9 @@
     "app/dashboard/financials/expenses/components/add-expense-dialog.tsx": [
       "AddExpenseDialog"
     ],
+    "app/dashboard/financials/expenses/components/delete-expense-button.tsx": [
+      "DeleteExpenseButton"
+    ],
     "app/dashboard/financials/reports/reports-client.tsx": [
       "ReportsClient"
     ],
@@ -11069,6 +11080,9 @@
     ],
     "app/dashboard/help/ticket-thread.tsx": [
       "TicketThread"
+    ],
+    "app/dashboard/income-truth/action-disposition.tsx": [
+      "ActionDisposition"
     ],
     "app/dashboard/intelligence/components/ai-citation-visibility-card.tsx": [
       "AiCitationVisibilityCard"
@@ -11297,6 +11311,9 @@
     ],
     "app/dashboard/listings/[id]/open-house/tabs/marketing-tab.tsx": [
       "MarketingTab"
+    ],
+    "app/dashboard/listings/[id]/showings/seller-sentiment-panel.tsx": [
+      "SellerSentimentPanel"
     ],
     "app/dashboard/listings/health/actions.ts": [
       "loadListingHealthBoard",
@@ -11668,6 +11685,9 @@
     "app/dashboard/settings/twin-studio/components/twin-card.tsx": [
       "TwinCard"
     ],
+    "app/dashboard/settings/twin-studio/components/twin-voice-step.tsx": [
+      "TwinVoiceStep"
+    ],
     "app/dashboard/settings/twin-studio/components/twin-wizard.tsx": [
       "TwinWizard"
     ],
@@ -12007,6 +12027,9 @@
     ],
     "app/dashboard/vendors/vendor-access-panel.tsx": [
       "VendorAccessPanel"
+    ],
+    "app/dashboard/vendors/vendor-bills-panel.tsx": [
+      "VendorBillsPanel"
     ],
     "app/dashboard/vendors/vendor-charges-panel.tsx": [
       "VendorChargesPanel"
@@ -13439,6 +13462,9 @@
       "onLeadConvertedForAudience",
       "onContactBecameLifetimeForAudience"
     ],
+    "lib/auth/authorize-for-user.ts": [
+      "authorizeForUser"
+    ],
     "lib/auth/contact-access.ts": [
       "assertCanActOnContact"
     ],
@@ -14859,6 +14885,25 @@
       "normalizeEnabledModes",
       "usableModes",
       "initialMode"
+    ],
+    "lib/enrichment/contact-enrichment-core.ts": [
+      "queueContactEnrichment",
+      "queueContactLifeChangeRecheck",
+      "enrichContactRecord",
+      "runLifeChangeCheck",
+      "listUnenrichedContacts",
+      "listContactsDueForLifeChangeCheck"
+    ],
+    "lib/enrichment/deal-suppression.ts": [
+      "isContactInLiveDeal",
+      "contactsInLiveDeals"
+    ],
+    "lib/enrichment/deal-vocabulary.ts": [
+      "isListingLive",
+      "isTransactionLive"
+    ],
+    "lib/enrichment/identifier-guard.ts": [
+      "hasUsableIdentifier"
     ],
     "lib/entitlements/resolve.ts": [
       "rolloutBucket",
@@ -20213,5 +20258,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 349
+  "trulyDead": 301
 }

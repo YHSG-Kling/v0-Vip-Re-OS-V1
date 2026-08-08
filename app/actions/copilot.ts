@@ -5,14 +5,40 @@ import { agentIdForUser } from "@/lib/agents/agent-for-user"
 import { logMilestoneOverdue } from "@/lib/events"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { incrementUsage } from "@/lib/usage"
+import { isValidUUID } from "@/lib/validations"
+import { authorizeForUser } from "@/lib/auth/authorize-for-user"
 
 // =====================================================
-// EVENT HANDLERS - Called by orchestrator
+// EVENT HANDLERS — named "called by orchestrator", but NOT ACTUALLY DISPATCHED.
 // =====================================================
+// `lib/orchestrator/internal.ts:EVENT_HANDLERS` is the registry these were written for, and
+// its own header records that the map "is NOT CURRENTLY DISPATCHED". None of the three
+// handlers below appears in it at all — only `generate7DayPlan` from this file does. So in
+// practice their ONLY reachable entry point was the one `"use server"` gives them: an
+// unauthenticated HTTP endpoint accepting an arbitrary `payload`, from which they read a
+// `user_id` and then wrote on that user's behalf — booking a calendar event for them,
+// delivering a notification to them, accepting a suggestion as them.
+//
+// They are now gated with the shared `authorizeForUser` (lib/auth/authorize-for-user.ts) —
+// the same question app/actions/assistant.ts's sibling handlers already asked and this file
+// did not. Verified before adding the gate: `grep -rn` over `app/api/cron/`,
+// `app/api/webhooks/` and the orchestrator found NO unattended caller for any of the three,
+// so nothing is turned away by it today.
+//
+// WHEN THE ORCHESTRATOR IS WIRED, IT MUST NOT CALL THESE. `emitEventFromCron` runs with a
+// service credential and no session, so a session gate would refuse it (the exact defect
+// hard-won lesson #1 records). The unattended lane needs its own door: lift each body into a
+// plain (non-`"use server"`) module under `lib/copilot/` that takes an injected Supabase
+// client, register THAT in `EVENT_HANDLERS`, and leave these exports as the gated
+// human-facing wrappers. That refactor is deliberately not done here — a half-moved handler
+// is worse than a gated one.
 
 export async function handleSuggestionAccepted(payload: any) {
-  const supabase = await createServerClient()
   const { suggestion_id, user_id, action_type } = payload
+  const auth = await authorizeForUser(user_id)
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const supabase = await createServerClient()
 
   // ONE write, not two, and the result is read.
   //
@@ -48,8 +74,13 @@ export async function handleSuggestionAccepted(payload: any) {
 }
 
 export async function handleCoachingSessionBooked(payload: any) {
-  const supabase = await createServerClient()
   const { user_id, session_date, coach_id, topic } = payload
+  // Books a real calendar event and a task for `user_id`. Without this gate any caller could
+  // put an entry on any agent's calendar and name an arbitrary `coach_id` as the attendee.
+  const auth = await authorizeForUser(user_id)
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const supabase = await createServerClient()
 
   // calendar_events requires brokerage_id + entity_type/entity_id (NOT NULL,
   // pass 5 live catch — this insert ALWAYS failed without them) and tasks
@@ -101,8 +132,14 @@ export async function handleCoachingSessionBooked(payload: any) {
 }
 
 export async function handleMorningKickoff(payload: any) {
+  const { user_id } = payload
+  // Reads `user_id`'s task list and DELIVERS THEM A NOTIFICATION. Ungated, that is both a
+  // read of another agent's day and a notification-spoofing endpoint — the body text is
+  // derived from their tasks but the delivery is triggered by whoever called.
+  const auth = await authorizeForUser(user_id)
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = await createServerClient()
-  const { user_id, brokerage_id } = payload
 
   // Generate daily priorities
   const { data: todayTasks } = await supabase
@@ -205,11 +242,33 @@ export async function generate7DayPlan(payload: any) {
 // Transaction milestone tracking and automation
 // =====================================================
 
+/**
+ * Create a milestone on the transaction behind a listing.
+ *
+ * 🚨 THIS REPORTED SUCCESS WITHOUT DOING THE THING.
+ *
+ * The insert below never set `transaction_id`, and `params.listing_id` — the only thing tying
+ * the request to anything — was **accepted and then never read**. There is no `listing_id`
+ * column on `transaction_milestones`, and `transaction_id` is NULLABLE in the live schema, so
+ * Postgres accepted the row happily. The result was an orphan milestone attached to no
+ * transaction: invisible to the transaction detail page, to `getTransactionMilestones`, to the
+ * portal journey and to `checkOverdueMilestones` — while the action returned
+ * `{ success: true, milestone: data }` and the caller saw a milestone created.
+ *
+ * `responsible_party` was likewise accepted and silently dropped (no such column). It is now
+ * declared as unsupported rather than pretending, because a caller who passes it today
+ * believes an owner was recorded.
+ *
+ * Finished: the listing is resolved to its transaction IN THE CALLER'S BROKERAGE, and the
+ * milestone is attached to it. A listing with no transaction is a refusal, not a silent
+ * orphan — you cannot put a milestone on a deal that does not exist yet.
+ */
 export async function createTransactionMilestone(params: {
   listing_id: string
   milestone_type: string
   title: string
   due_date: string
+  /** Not persisted — `transaction_milestones` has no such column. Ignored. */
   responsible_party?: string
   description?: string
 }) {
@@ -223,10 +282,39 @@ export async function createTransactionMilestone(params: {
   const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
   if (!profile?.brokerage_id) throw new Error("No brokerage found")
 
+  if (!isValidUUID(params.listing_id)) {
+    return { success: false as const, error: "Invalid listing ID" }
+  }
+
+  // Resolve the listing's transaction, scoped to the caller's brokerage. `error` is
+  // destructured: supabase-js RESOLVES a refused query, so without this an RLS refusal and
+  // "this listing has no transaction" would be indistinguishable — and the refusal would be
+  // reported to the user as the latter.
+  const { data: tx, error: txError } = await supabase
+    .from("transactions")
+    .select("id")
+    .eq("listing_id", params.listing_id)
+    .eq("brokerage_id", profile.brokerage_id)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (txError) {
+    return { success: false as const, error: `Could not resolve the transaction: ${txError.message}` }
+  }
+  if (!tx) {
+    return {
+      success: false as const,
+      error: "No transaction exists for this listing yet — a milestone needs a deal to hang on.",
+    }
+  }
+
   // Create milestone
   const { data, error } = await supabase
     .from("transaction_milestones")
     .insert({
+      // THE ATTACHMENT. Without this the row is an orphan — see the header comment.
+      transaction_id: tx.id,
       brokerage_id: profile.brokerage_id,
       milestone_name: params.milestone_type, // NOT NULL on transaction_milestones
       milestone_type: params.milestone_type,
@@ -240,7 +328,7 @@ export async function createTransactionMilestone(params: {
 
   if (error) throw error
 
-  return { success: true, milestone: data }
+  return { success: true as const, milestone: data }
 }
 
 export async function checkOverdueMilestones() {

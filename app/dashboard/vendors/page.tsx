@@ -13,6 +13,10 @@ import {
   VendorChargesPanel,
   type VendorChargeInvoice,
 } from "./vendor-charges-panel"
+import {
+  VendorBillsPanel,
+  type VendorBillInvoice,
+} from "./vendor-bills-panel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { findChargeAttribution, resolveVendorActorScope } from "@/lib/vendors/vendor-scope"
 import { readW9StatusMap, type W9Status } from "@/lib/vendors/w9"
@@ -159,6 +163,23 @@ export default async function VendorsPage() {
         } as VendorChargeInvoice
       })
     )
+
+  // VENDOR BILLS — the BROKERAGE→VENDOR payable lane (billed_to='brokerage'):
+  // invoices vendors submitted for booked work, which the brokerage owes. Produced
+  // by app/actions/multi-persona.ts:submitVendorInvoice from the vendor-bookings
+  // panel. Marking one paid (vendor-payments.ts:markInvoicePaid) is the only thing
+  // that mints the vendor_earnings row the payout lane draws on, so without this
+  // list the loop had no consumer. `error` is read deliberately — supabase-js
+  // resolves a refused query, and rendering "no bills awaiting payment" over a
+  // denied read would hide real payables.
+  const { data: vendorBillRows, error: vendorBillsErr } = await supabase
+    .from("vendor_invoices")
+    .select("id, vendor_id, invoice_number, status, total_amount, due_date, paid_at, notes")
+    .eq("brokerage_id", profile.brokerage_id)
+    .eq("billed_to", "brokerage")
+    .order("created_at", { ascending: false })
+    .limit(100)
+  const vendorBills: VendorBillInvoice[] = vendorBillsErr ? [] : ((vendorBillRows ?? []) as VendorBillInvoice[])
 
   // Round 37 — agents charge THEIR vendors: resolve the viewer's team scope and
   // (for agents) which vendors are attributed to them (migration 1106 columns —
@@ -456,6 +477,17 @@ export default async function VendorsPage() {
             userRole={profile.user_type ?? "agent"}
             viewerUserId={profile.id}
             chargeableVendorIds={chargeableVendorIds}
+          />
+
+          {/* The opposite direction: what the brokerage OWES its vendors for booked
+              work (billed_to='brokerage'). Marking one paid credits the vendor's
+              available balance, which is what the vendor payout lane draws on. */}
+          <VendorBillsPanel
+            bills={vendorBills}
+            vendorNames={Object.fromEntries(
+              (preferredVendors ?? []).map((v: any) => [v.id as string, (v.name as string | null) ?? "Vendor"])
+            )}
+            userRole={profile.user_type ?? "agent"}
           />
         </TabsContent>
 

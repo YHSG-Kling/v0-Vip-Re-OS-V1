@@ -331,57 +331,40 @@ export async function getShowings(contactId: string) {
 }
 
 /**
- * The SELLER-SIDE verdict on a showing request.
+ * DELETED (wave 4 slice 2): `updateShowingStatus`.
  *
- * Deliberately NOT folded into the generic `updateShowing(id, updates: any)`
- * below: this one carries two things that generic patch does not, and both are
- * load-bearing —
- *   · a status union that matches the live `showing_requests_status_check`
- *     exactly (pending | approved | needs_reschedule | denied | cancelled,
- *     verified against the database), so a typo cannot reach Postgres; and
- *   · the `seller_approved` / `seller_approved_at` stamping that is the actual
- *     record of the seller having said yes. Nothing else writes those columns.
+ * Survivors, all session-gated (`requireCaller`), all listing-tenancy-checked,
+ * and all already WIRED to
+ * app/components/dashboard/listings/showings/showing-requests-panel.tsx:
  *
- * Silent-write fixed: this used to run the UPDATE with no `.select()`, so a row
- * that RLS refused, or an id that did not exist, matched zero rows, came back
- * with `error === null`, and was reported to the caller as `{ success: true }`.
- * A seller could be told their approval was recorded when nothing was written.
- * It now asks for the affected rows back and refuses when there are none.
+ *   approved          → app/actions/seller-showings.ts:approveShowingRequest
+ *   denied            → app/actions/seller-showings.ts:denyShowingRequest
+ *   needs_reschedule  → app/actions/seller-showings.ts:suggestAlternativeTime
+ *   cancelled         → app/actions/showings.ts:cancelShowing (below)
+ *
+ * Its own doc block claimed two unique capabilities. Both were checked and both
+ * were false or harmful:
+ *
+ *   · "the seller_approved / seller_approved_at stamping … nothing else writes
+ *     those columns" — approveShowingRequest has always written both
+ *     (seller-showings.ts). A comment is not evidence.
+ *   · the `pending` status, which no survivor offers. Not ported: reverting an
+ *     approved request to pending would leave the `showings` row,
+ *     converted_showing_id, the lifecycle_event and the fired SHOWING_SCHEDULED
+ *     event behind it untouched — a badly-implemented extra, so the class was
+ *     fixed at the survivor instead of the implementation copied.
+ *
+ * What it DID have, and what was merged onto the survivors before deleting:
+ * the `.select()` + zero-row refusal, so an update RLS refused stops reporting
+ * success. approveShowingRequest additionally did not destructure `error` at
+ * all, and went on to INSERT a real showings row for an approval that may never
+ * have been recorded. suggestAlternativeTime also gained the
+ * `status: "needs_reschedule"` write the loser carried.
+ *
+ * The loser was also the weakest of the four: no authentication check, no
+ * listing-tenancy check, no revalidatePath, and none of the approve-path
+ * side effects.
  */
-export async function updateShowingStatus(
-  showingId: string,
-  status: "pending" | "approved" | "needs_reschedule" | "denied" | "cancelled",
-  sellerNotes?: string
-) {
-  try {
-    const supabase = await createClient()
-
-    const { data, error } = await supabase
-      .from("showing_requests")
-      .update({
-        status, // CHECK: pending|approved|needs_reschedule|denied|cancelled
-        ...(sellerNotes !== undefined ? { seller_notes: sellerNotes } : {}),
-        ...(status === "approved" ? { seller_approved: true, seller_approved_at: new Date().toISOString() } : {}),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", showingId)
-      .select("id")
-
-    if (error) {
-      console.error("[v0] Error updating showing status:", error)
-      return { success: false, error: error.message }
-    }
-
-    if (!data || data.length === 0) {
-      return { success: false, error: "Showing not found, or you do not have access to it." }
-    }
-
-    return { success: true }
-  } catch (error: any) {
-    console.error("[v0] Error in updateShowingStatus:", error)
-    return { success: false, error: error.message }
-  }
-}
 
 // Mark an actual scheduled showing (showings table) as completed. The mobile
 // day-panel operates on showings rows, not showing_requests.

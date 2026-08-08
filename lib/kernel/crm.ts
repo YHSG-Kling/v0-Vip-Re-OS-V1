@@ -819,10 +819,24 @@ export async function archiveContactRecord(params: {
     query = query.eq("agent_id", params.agentId)
   }
 
-  const { error } = await query
+  // 🐛 A CONTROL THAT REPORTED SUCCESS WITHOUT DOING THE THING.
+  // The predicates above are the authorization: wrong tenant, an agent who does not
+  // own the contact, or an already-archived row all match ZERO rows. A zero-row
+  // UPDATE is not an error in Postgres, so `error` was null, this returned
+  // { success: true }, AND it wrote a CONTACT_ARCHIVED lifecycle event — an audit
+  // trail asserting an archive that never happened, and a UI free to tell the user
+  // their contact was removed while the record stayed live and reachable.
+  // `.select("id")` makes the affected rows observable so the outcome is the truth.
+  const { data: archived, error } = await query.select("id")
 
   if (error) {
     return { success: false, error: error.message }
+  }
+
+  if (!archived?.length) {
+    // Deliberately does not distinguish "does not exist" from "not yours" — that
+    // difference is itself an id-enumeration oracle across tenants.
+    return { success: false, error: "Contact not found, already archived, or not yours to archive" }
   }
 
   await supabase.from("lifecycle_events").insert({

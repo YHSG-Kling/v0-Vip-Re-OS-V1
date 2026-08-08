@@ -74,20 +74,82 @@ export async function POST(request: NextRequest) {
     },
   })
 
-  // 2. Mirror a TERMINAL outcome onto the campaign the agent looks at.
+  // 2. Resolve the campaign(s) this piece belongs to. Used by BOTH the terminal
+  //    status mirror and the per-piece tracking ledger below, so one read.
+  //    An unknown piece id resolves to nothing and both steps no-op.
+  let campaignIds: string[] = []
+  try {
+    const svc = createServiceClient()
+    // Destructure error: a refused read must not read as "no such campaign".
+    const { data, error } = await svc
+      .from("direct_mail_campaigns")
+      .select("id")
+      .eq("lob_order_id", pieceId)
+    if (!error) campaignIds = ((data ?? []) as Array<{ id: string }>).map((r) => r.id)
+  } catch {
+    // Reconciliation already landed; a lookup failure must not un-ACK.
+  }
+
+  // 3. Mirror a TERMINAL outcome onto the campaign the agent looks at.
   let campaignUpdated = false
   const status = campaignStatusFor(eventType)
-  if (status) {
+  if (status && campaignIds.length > 0) {
     try {
       const svc = createServiceClient()
       const { data } = await svc
         .from("direct_mail_campaigns")
         .update({ status })
-        .eq("lob_order_id", pieceId)
+        .in("id", campaignIds)
         .select("id")
       campaignUpdated = ((data ?? []) as unknown[]).length > 0
     } catch {
       // Reconciliation already landed; a mirror failure must not un-ACK.
+    }
+  }
+
+  // 4. PER-PIECE DELIVERY LEDGER — the rows the campaign Tracking tab reads
+  //    (app/dashboard/campaigns/mail/mail-dashboard.tsx → getTrackingRecords →
+  //    mail_tracking). Nothing in the tree wrote this table before, so that tab
+  //    rendered empty for every campaign regardless of what Lob reported.
+  //
+  //    trackDelivery is the writer, and it refuses anything that does not
+  //    present LOB_WEBHOOK_SECRET — we are that caller, so we hand it the
+  //    secret we already verified above. It resolves brokerage_id from the
+  //    campaign row itself; we never pass a tenant in.
+  //
+  //    In-flight events are recorded too, not just terminal ones: "in_transit"
+  //    and "re_routed" are exactly what a broker asks about while a piece is
+  //    still crossing the country.
+  let trackingRecorded = 0
+  if (campaignIds.length > 0) {
+    const { trackDelivery } = await import("@/app/actions/direct-mail")
+    const spec = TRUTH_SOURCES.direct_mail
+    for (const campaignId of campaignIds) {
+      try {
+        const r = await trackDelivery({
+          campaignId,
+          // Lob's piece id is the per-piece handle the Tracking tab shows.
+          batchId: pieceId,
+          brokerageId: "", // resolved from the campaign row inside; never trusted
+          webhookSecret: secret,
+          deliveryPayload: {
+            status: eventType,
+            // Only stamp the timestamp the event actually proves. A
+            // `delivered_at` on an "in_transit" event would be a fabricated
+            // delivery, which is the exact defect this ledger exists to remove.
+            mailed_at: spec.inFlight.includes(eventType) ? at : null,
+            delivered_at: spec.confirms.includes(eventType) ? at : null,
+            returned_at: spec.contradicts.includes(eventType) ? at : null,
+            lob_event: eventType,
+            lob_piece_id: pieceId,
+            expected_delivery_date: body?.body?.expected_delivery_date ?? null,
+          },
+        })
+        if (r?.success) trackingRecorded += 1
+        else console.error("[lob-events] trackDelivery refused:", r?.error)
+      } catch (err) {
+        console.error("[lob-events] trackDelivery threw:", err)
+      }
     }
   }
 
@@ -98,5 +160,6 @@ export async function POST(request: NextRequest) {
     verdict: recon.verdict,
     escalated: recon.escalated,
     campaignUpdated,
+    trackingRecorded,
   })
 }

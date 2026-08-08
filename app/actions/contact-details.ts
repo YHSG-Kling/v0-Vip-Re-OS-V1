@@ -168,12 +168,19 @@ export async function getContactCopilotSuggestions(contactId: string) {
     return { suggestions: [], error: null }
   }
 
-  // Pre-check that the contact belongs to caller's brokerage
-  const { data: contact } = await supabase
+  // Pre-check that the contact belongs to caller's brokerage.
+  // Destructure `error` (wave 4 slice 2): supabase-js RESOLVES a refused query,
+  // so a swallowed error read as "not your contact" AND as "no suggestions" —
+  // the same empty result. This queue is now rendered on /crm, so an unreadable
+  // check must say so rather than showing an agent an empty suggestion list.
+  const { data: contact, error: contactErr } = await supabase
     .from("contacts")
     .select("brokerage_id")
     .eq("id", contactId)
     .maybeSingle()
+  if (contactErr) {
+    return { suggestions: [], error: contactErr }
+  }
   if (!contact || contact.brokerage_id !== brokerageId) {
     return { suggestions: [], error: null }
   }

@@ -14,9 +14,30 @@ import { generateText } from "ai"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
+// PLATFORM VOCABULARIES — verified against the LIVE CHECK constraints, which are
+// DIFFERENT for the two tables and did not match these unions:
+//   competitor_ads_source_platform_check   → facebook | instagram | google
+//   competitor_posts_source_platform_check → facebook | instagram | linkedin | x | youtube | tiktok
+// The ad union previously offered 'linkedin' and 'tiktok', which the ads CHECK
+// rejects (23514) — those branches were unreachable, and any caller taking the type
+// at its word would have hit an opaque database error. The post union offered
+// 'twitter', which the posts CHECK also rejects (the live vocabulary is 'x'), and
+// omitted the 'x' and 'youtube' values it does admit.
+export type CompetitorAdPlatform = "facebook" | "instagram" | "google"
+export type CompetitorPostPlatform =
+  | "facebook" | "instagram" | "linkedin" | "x" | "youtube" | "tiktok"
+
+export const COMPETITOR_AD_PLATFORMS: readonly CompetitorAdPlatform[] = [
+  "facebook", "instagram", "google",
+] as const
+export const COMPETITOR_POST_PLATFORMS: readonly CompetitorPostPlatform[] = [
+  "facebook", "instagram", "linkedin", "x", "youtube", "tiktok",
+] as const
+
 export interface IngestCompetitorAdParams {
-  brokerageId: string
-  sourcePlatform: "facebook" | "instagram" | "google" | "linkedin" | "tiktok"
+  /** Ignored — the tenant is resolved from the session by requireBrokerage(). */
+  brokerageId?: string
+  sourcePlatform: CompetitorAdPlatform
   competitorName: string
   adHeadline: string
   adCopy: string
@@ -26,8 +47,9 @@ export interface IngestCompetitorAdParams {
 }
 
 export interface IngestCompetitorPostParams {
-  brokerageId: string
-  sourcePlatform: "facebook" | "instagram" | "twitter" | "linkedin" | "tiktok"
+  /** Ignored — the tenant is resolved from the session by requireBrokerage(). */
+  brokerageId?: string
+  sourcePlatform: CompetitorPostPlatform
   competitorName: string
   postCaption: string
   mediaUrl?: string

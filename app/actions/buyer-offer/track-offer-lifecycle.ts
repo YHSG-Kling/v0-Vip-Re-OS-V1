@@ -164,15 +164,33 @@ export async function getOfferLifecycleState(
 
 /**
  * Submit offer (DRAFT → PENDING)
+ *
+ * GATED. This is `"use server"` — a public HTTP endpoint — and it authenticated
+ * nothing while running on `createServiceClient()`. The only "identity" was a
+ * `userId` uuid supplied by the caller, which was then used to look up a
+ * `brokerage_id` for the audit row. So any unauthenticated caller who knew (or
+ * guessed) an offer uuid could move another tenant's offer DRAFT → PENDING and
+ * file the audit trail under a brokerage of their choosing — or under `null`,
+ * because `?? null` accepted a user id that resolved to nothing.
+ *
+ * `requireOfferActor()` (already in this file, previously used only by
+ * `markOfferExpired`) is the right door: it proves a session, and takes the
+ * tenant from `offers.brokerage_id` rather than from the caller. `userId` is
+ * retained and ignored per the house pattern so future call sites keep
+ * type-checking.
  */
 export async function submitOffer(
   offerId: string,
-  userId: string
+  /** Ignored — the actor is derived from the session. */
+  _userId?: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    if (!isValidUUID(offerId) || !isValidUUID(userId)) {
-      return { success: false, error: "Invalid IDs" };
+    if (!isValidUUID(offerId)) {
+      return { success: false, error: "Invalid offer ID" };
     }
+
+    const gate = await requireOfferActor(offerId);
+    if (!gate.ok) return { success: false, error: gate.error };
 
     // Check current state
     const stateResult = await getOfferLifecycleState(offerId);
@@ -186,10 +204,10 @@ export async function submitOffer(
 
     // Emit submission event
     const supabase = createServiceClient();
-    const { data: agentUserS } = await supabase.from("users").select("brokerage_id").eq("id", userId).maybeSingle();
     const { error } = await supabase.from("activities").insert({
-      brokerage_id: agentUserS?.brokerage_id ?? null,
-      agent_id: await resolveAgentId(supabase as any, userId),
+      // From the OFFER, not from a caller-supplied user id.
+      brokerage_id: gate.brokerageId,
+      agent_id: await resolveAgentId(supabase as any, gate.userId),
       activity_type: "buyer.offer.submitted",
       title: `Offer submitted`,
       description: `Offer ${offerId} submitted`,
@@ -210,16 +228,25 @@ export async function submitOffer(
 
 /**
  * Withdraw offer (DRAFT|PENDING → WITHDRAWN)
+ *
+ * GATED — same class as `submitOffer` above, with a sharper edge: `WITHDRAWN` is
+ * a **terminal** state in this machine, so an unauthenticated caller could kill
+ * any live offer on the platform outright and stamp an arbitrary `reason` onto
+ * the audit trail. The tenant now comes from `offers.brokerage_id`.
  */
 export async function withdrawOffer(
   offerId: string,
-  userId: string,
+  /** Ignored — the actor is derived from the session. */
+  _userId: string | undefined,
   reason: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    if (!isValidUUID(offerId) || !isValidUUID(userId)) {
-      return { success: false, error: "Invalid IDs" };
+    if (!isValidUUID(offerId)) {
+      return { success: false, error: "Invalid offer ID" };
     }
+
+    const gate = await requireOfferActor(offerId);
+    if (!gate.ok) return { success: false, error: gate.error };
 
     // Check current state
     const stateResult = await getOfferLifecycleState(offerId);
@@ -233,10 +260,10 @@ export async function withdrawOffer(
 
     // Emit withdrawal event
     const supabase = createServiceClient();
-    const { data: agentUserW } = await supabase.from("users").select("brokerage_id").eq("id", userId).maybeSingle();
     const { error } = await supabase.from("activities").insert({
-      brokerage_id: agentUserW?.brokerage_id ?? null,
-      agent_id: await resolveAgentId(supabase as any, userId),
+      // From the OFFER, not from a caller-supplied user id.
+      brokerage_id: gate.brokerageId,
+      agent_id: await resolveAgentId(supabase as any, gate.userId),
       activity_type: "buyer.offer.withdrawn",
       title: `Offer withdrawn`,
       description: reason,
@@ -257,17 +284,35 @@ export async function withdrawOffer(
 
 /**
  * Record seller response (PENDING → ACCEPTED|REJECTED|COUNTERED)
+ *
+ * GATED — this was the worst of the three. Unauthenticated, on the service
+ * client, it let **anyone accept or reject any PENDING offer on the platform**
+ * and file the resulting `buyer.offer.accepted` activity under a tenant of the
+ * caller's choosing. `ACCEPTED` and `REJECTED` are terminal states here, and
+ * `getOfferLifecycleState` — which this writes the source rows for — is what
+ * `convert-to-transaction.ts` and `handle-multi-offer.ts` gate on, so a forged
+ * acceptance propagates into the transaction lane.
+ *
+ * Note this is a *different* function from
+ * `app/actions/buyer-offer/record-seller-response.ts:recordSellerResponse`, which
+ * is the wired one the offer-agent-actions surface calls. This one is the
+ * activities-derived lifecycle mirror; both are kept (see the "not a duplicate"
+ * reasoning in the ledger) and this one is now gated to match.
  */
 export async function recordSellerResponse(
   offerId: string,
   response: "ACCEPTED" | "REJECTED" | "COUNTERED",
-  userId: string,
+  /** Ignored — the actor is derived from the session. */
+  _userId?: string,
   notes?: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    if (!isValidUUID(offerId) || !isValidUUID(userId)) {
-      return { success: false, error: "Invalid IDs" };
+    if (!isValidUUID(offerId)) {
+      return { success: false, error: "Invalid offer ID" };
     }
+
+    const gate = await requireOfferActor(offerId);
+    if (!gate.ok) return { success: false, error: gate.error };
 
     // Check current state
     const stateResult = await getOfferLifecycleState(offerId);
@@ -282,11 +327,11 @@ export async function recordSellerResponse(
     // Emit response event
     const supabase = createServiceClient();
     const eventType = `buyer.offer.${response.toLowerCase()}`;
-    const { data: agentUserR } = await supabase.from("users").select("brokerage_id").eq("id", userId).maybeSingle();
 
     const { error } = await supabase.from("activities").insert({
-      brokerage_id: agentUserR?.brokerage_id ?? null,
-      agent_id: await resolveAgentId(supabase as any, userId),
+      // From the OFFER, not from a caller-supplied user id.
+      brokerage_id: gate.brokerageId,
+      agent_id: await resolveAgentId(supabase as any, gate.userId),
       activity_type: eventType,
       title: `Seller response: ${response}`,
       description: notes ?? `Seller responded: ${response}`,

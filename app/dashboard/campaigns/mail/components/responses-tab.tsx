@@ -28,6 +28,12 @@ import {
   TrendingUp,
 } from "lucide-react"
 import { formatDistanceToNow } from "date-fns"
+import { useState, useTransition } from "react"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Loader2 } from "lucide-react"
+import { trackCampaignResponse } from "@/app/actions/ai-direct-mail"
 import type { Campaign, Response } from "../mail-dashboard"
 
 interface ResponsesTabProps {
@@ -36,6 +42,8 @@ interface ResponsesTabProps {
   selectedCampaignId: string | null
   onSelectCampaign: (id: string) => void
   loading: boolean
+  /** Reload campaign detail after a response is logged. */
+  onResponseLogged?: () => void
 }
 
 const RESPONSE_CONFIG: Record<
@@ -56,8 +64,45 @@ export function ResponsesTab({
   selectedCampaignId,
   onSelectCampaign,
   loading,
+  onResponseLogged,
 }: ResponsesTabProps) {
   const selectedCampaign = campaigns.find((c) => c.id === selectedCampaignId)
+
+  // Operator-side response logging. QR scans attribute themselves anonymously via
+  // /api/qr/scan, but the responses that arrive by PHONE or by someone typing the
+  // landing URL off the postcard have no automatic signal at all — the agent is the
+  // only witness, and until now there was nowhere to record them, so response rate
+  // and cost-per-response undercounted every non-QR response.
+  //
+  // Keyed on the tracking code PRINTED ON THE PIECE (direct_mail_campaigns.tracking_id),
+  // which is what a caller reads out. The action resolves the campaign from that code
+  // and refuses one outside the caller's brokerage — the code is low-entropy and
+  // printed, so it is an addressing key, never an authorization.
+  const [logCode, setLogCode] = useState("")
+  const [logType, setLogType] = useState<"call" | "website_visit" | "form_submission" | "qr_scan">("call")
+  const [logMsg, setLogMsg] = useState<string | null>(null)
+  const [logErr, setLogErr] = useState<string | null>(null)
+  const [logging, startLogging] = useTransition()
+
+  function handleLogResponse() {
+    setLogMsg(null)
+    setLogErr(null)
+    const code = logCode.trim()
+    if (!code) {
+      setLogErr("Enter the tracking code printed on the mail piece.")
+      return
+    }
+    startLogging(async () => {
+      const res = await trackCampaignResponse({ trackingId: code, responseType: logType })
+      if (!res.success) {
+        setLogErr(res.error ?? "The response could not be recorded")
+        return
+      }
+      setLogMsg("Response recorded.")
+      setLogCode("")
+      onResponseLogged?.()
+    })
+  }
 
   // Calculate summary stats
   const stats = responses.reduce(
@@ -111,6 +156,58 @@ export function ResponsesTab({
           </div>
         )}
       </div>
+
+      {/* Log a response that arrived off-platform (a call, a typed-in landing URL). */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Log a response</CardTitle>
+          <CardDescription>
+            Someone called or came in off a mail piece? Enter the tracking code printed
+            on it so this campaign gets credit in the response rate.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {logMsg && (
+            <p className="text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+              {logMsg}
+            </p>
+          )}
+          {logErr && (
+            <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              {logErr}
+            </p>
+          )}
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs">Tracking code</Label>
+              <Input
+                className="h-9 w-56"
+                value={logCode}
+                onChange={(e) => setLogCode(e.target.value)}
+                placeholder="dm-…"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Response type</Label>
+              <Select value={logType} onValueChange={(v) => setLogType(v as typeof logType)}>
+                <SelectTrigger className="h-9 w-44">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="call">Phone call</SelectItem>
+                  <SelectItem value="website_visit">Landing visit</SelectItem>
+                  <SelectItem value="form_submission">Form submit</SelectItem>
+                  <SelectItem value="qr_scan">QR scan</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <Button size="sm" onClick={handleLogResponse} disabled={logging}>
+              {logging ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+              Log response
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       {!selectedCampaignId ? (
         <Card className="flex flex-col items-center justify-center p-12 text-center">

@@ -123,7 +123,7 @@ export async function createResourceAction(input: {
   return createEducationalResource(supabase, {
     title: input.title,
     description: input.description,
-    contentType: input.contentType as "video" | "article" | "interactive" | "assessment",
+    contentType: input.contentType as "video" | "article" | "interactive" | "assessment" | "podcast",
     content: input.content,
     estimatedMinutes: input.estimatedMinutes,
     createdBy: actor.userId,

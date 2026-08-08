@@ -249,9 +249,27 @@ export async function submitVendorInvoice(invoiceId: string): Promise<InvoiceRes
 }
 
 // ---------------------------------------------------------------------------
-// markInvoicePaid — brokerage marks an invoice as paid
+// markInvoicePaid — brokerage marks an invoice it OWES A VENDOR as paid
 // ---------------------------------------------------------------------------
 
+/**
+ * WIRED (w4s1) — `app/dashboard/vendors/vendor-bills-panel.tsx` (the "Vendor Bills"
+ * card on the brokerage vendor directory).
+ *
+ * This closes the marketplace's core money loop, which had a live producer and no
+ * consumer. `app/actions/multi-persona.ts:submitVendorInvoice` (wired to the
+ * dashboard vendor-bookings panel) creates `billed_to='brokerage'` invoices with
+ * status 'submitted' — a vendor billing the brokerage for booked work. NOTHING on
+ * the platform could then mark one paid, so `vendor_earnings` was never minted from
+ * that lane, the vendor earnings page showed nothing, and `initiateVendorPayout`
+ * had nothing to pay out. Vendors did work, invoiced for it, and could never be
+ * paid through the product.
+ *
+ * NOT a duplicate of `markVendorChargePaid` — that one explicitly refuses
+ * `billed_to !== 'vendor'` (it settles money flowing vendor→brokerage and mints no
+ * earnings). This is the opposite direction. It is also not
+ * `markClientInvoiceCollected` (billed_to='contact', vendor-collected).
+ */
 export async function markInvoicePaid(params: {
   invoiceId: string
   paymentMethod?: string
@@ -260,6 +278,17 @@ export async function markInvoicePaid(params: {
   const ctx = await resolveWriteContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
+  }
+
+  // ROLE GATE. Asserting a bill is paid MINTS a `vendor_earnings` row with status
+  // 'available', which `initiateVendorPayout` wires out over Stripe Connect — this
+  // is a spend authorization, not bookkeeping. It was gated on tenancy alone, so any
+  // authenticated member of the brokerage could create a payable claim. Matches the
+  // sibling money lane `markVendorChargePaid`, minus the 'agent' branch: an agent may
+  // settle a charge THEY raised (money coming IN), but authorizing a payment OUT of
+  // brokerage funds is leadership's.
+  if (!VENDOR_CHARGE_ADMIN_ROLES.has(ctx.userType)) {
+    return { success: false, error: "Forbidden: broker, admin, or team lead only" }
   }
 
   // CRITICAL: verify invoice belongs to caller's brokerage before
@@ -288,6 +317,29 @@ export async function markInvoicePaid(params: {
   // 'paid' by a route that never touched this function.
   if (verify.status === "paid") {
     return { success: true, invoiceId: params.invoiceId }
+  }
+  if (verify.status === "cancelled") {
+    return { success: false, error: "Invoice was cancelled" }
+  }
+
+  // LANE GUARD. Three billing lanes share this table and each has its OWN
+  // settlement action; only the brokerage-billed lane belongs here:
+  //   billed_to='brokerage' → this action (brokerage pays the vendor; mints earnings)
+  //   billed_to='vendor'    → markVendorChargePaid (vendor pays the brokerage)
+  //   billed_to='contact'   → markClientInvoiceCollected / confirmVendorInvoiceCheckout
+  //                           (the vendor collects DIRECTLY from the client, and
+  //                            recordDirectCollectionEarnings records those earnings
+  //                            as already paid_out because the platform never held
+  //                            the funds)
+  // Without this, a brokerage marking a CONTACT invoice paid would mint an
+  // 'available' earning — a payout claim against brokerage funds for money the
+  // brokerage never collected and does not owe. The billed_to='vendor' early return
+  // further down is kept as the second door on the same rule.
+  if (verify.billed_to === "contact") {
+    return {
+      success: false,
+      error: "This invoice is billed to a client — the vendor collects it directly. Use the vendor's invoice center to record collection.",
+    }
   }
 
   const svc = createServiceClient()
@@ -409,10 +461,16 @@ export async function initiateStripeConnectOnboarding(vendorId: string): Promise
   }
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
+  // Return to the surface that STARTED onboarding. These used to point at
+  // /vendor/settings, which is a bare `redirect('/settings/general')` stub — it
+  // drops the query string entirely, so a vendor finishing Stripe's hosted flow
+  // landed on an unrelated page and nothing ever reconciled the account. The
+  // Connect UI lives on /vendor/earnings (stripe-connect.tsx), and that page now
+  // reads ?stripe=complete and calls completeStripeConnectOnboarding().
   const link = await stripe.accountLinks.create({
     account: accountId,
-    refresh_url: `${appUrl}/vendor/settings?stripe=refresh`,
-    return_url: `${appUrl}/vendor/settings?stripe=complete`,
+    refresh_url: `${appUrl}/vendor/earnings?stripe=refresh`,
+    return_url: `${appUrl}/vendor/earnings?stripe=complete`,
     type: "account_onboarding",
   })
 
@@ -635,8 +693,9 @@ export async function getVendorEarningsSummary(
 // ---------------------------------------------------------------------------
 
 /**
- * ORPHAN (no caller) — KEPT DELIBERATELY. It is the only implementation that can
- * turn `stripe_onboarding_complete` back OFF.
+ * WIRED (w4s1) — `app/vendor/earnings/page.tsx` calls this when Stripe redirects
+ * the vendor back with `?stripe=complete`. It is also the only implementation that
+ * can turn `stripe_onboarding_complete` back OFF.
  *
  * Survivor for the "flip the flag on" half: `app/api/billing/webhook/route.ts`,
  * the `account.updated` branch → `lib/connections/vendor-stripe.ts:
@@ -657,21 +716,16 @@ export async function getVendorEarningsSummary(
  * hosted flow — webhooks are eventually consistent, and Connect events have to be
  * separately enabled on the endpoint for that branch to ever fire.
  *
- * Correctly gated (`requireVendorActor(vendorId)` — the caller must BE this vendor).
+ * Correctly gated (`requireVendorActor(vendorId)` — the caller must BE this vendor),
+ * so the vendorId passed in must be a `vendors.id` (the canonical linkage is
+ * `user_role_assignments.vendor_id`; `vendors` has no user_id).
  *
- * → HANDOFF (survivor fix, one line, outside this slice): in
- *   `app/api/billing/webhook/route.ts` `case "account.updated"`, pass the computed
- *   boolean instead of gating on it:
- *     const complete = Boolean(account.details_submitted && account.charges_enabled)
- *     await setStripeOnboardingByAccount(supabase, account.id, complete)
- *
- * → HANDOFF (wiring, outside this slice): `initiateStripeConnectOnboarding` sets
- *   `return_url: ${appUrl}/vendor/settings?stripe=complete`, but the surface that
- *   STARTS onboarding is `app/vendor/earnings/stripe-connect.tsx`, and
- *   `app/vendor/settings/page.tsx` is a bare `redirect('/settings/general')` that
- *   drops the query string. So the vendor lands somewhere else entirely and nothing
- *   reads `?stripe=complete`. Point `return_url` at the earnings surface and have it
- *   call this on that param.
+ * DONE (was a handoff): the survivor's promote-only hole is fixed — the webhook's
+ * `account.updated` branch now passes the computed boolean instead of gating on it.
+ * DONE (was a handoff): `initiateStripeConnectOnboarding` now returns the vendor to
+ * `/vendor/earnings?stripe=complete` (it pointed at `/vendor/settings`, a bare
+ * `redirect('/settings/general')` stub that drops the query string), and that page
+ * calls this on the param.
  */
 export async function completeStripeConnectOnboarding(vendorId: string): Promise<{
   success: boolean

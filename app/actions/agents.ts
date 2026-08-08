@@ -206,8 +206,53 @@ export async function createAgent(agentData: {
     return { error: error.message }
   }
 
+  // ── AUTO-PROVISION THE AGENT'S PHONE NUMBER ────────────────────────────────
+  // `brokerages.auto_provision_phone_numbers` was a control that did nothing:
+  // the phone-settings toggle told the broker "new agents get a phone number
+  // automatically", and NOTHING in the tree read the flag. This is that reader.
+  //
+  //  • Only when the flag is ON. This purchases a real Twilio number and bills
+  //    the tenant, so it never runs on a brokerage that did not ask for it.
+  //  • BEST EFFORT. The agent record is already committed and is the point of
+  //    this action; a provisioning failure is REPORTED, never allowed to
+  //    reverse or fail the creation.
+  //  • autoProvisionAgentPhone re-derives the caller's own context and role —
+  //    no identity is forged here, and it re-checks that the agent belongs to
+  //    this brokerage.
+  //  • The plan's phone allowance is enforced inside it (metered overage,
+  //    blocked only at the hard cap).
+  let phoneProvisioning: { phoneNumber?: string; error?: string } | undefined
+  if (data?.id) {
+    // Destructure error: a refused settings read must not read as "toggle off"
+    // — but it must also not be treated as "toggle on" and spend money. A
+    // failure here simply skips provisioning and says so.
+    const { data: brkSettings, error: settingsErr } = await svc
+      .from("brokerages")
+      .select("auto_provision_phone_numbers")
+      .eq("id", ctx.brokerageId)
+      .maybeSingle()
+
+    if (settingsErr) {
+      phoneProvisioning = {
+        error: `Agent created. Could not check your auto-provisioning setting, so no number was purchased: ${settingsErr.message}`,
+      }
+    } else if (brkSettings?.auto_provision_phone_numbers === true) {
+      try {
+        const { autoProvisionAgentPhone } = await import("@/app/actions/phone-provisioning")
+        const prov = await autoProvisionAgentPhone({ agentId: data.id })
+        phoneProvisioning = prov.success
+          ? { phoneNumber: prov.phoneNumber }
+          : { error: `Agent created, but no phone number was provisioned: ${prov.error}` }
+      } catch (err) {
+        phoneProvisioning = {
+          error: `Agent created, but phone provisioning failed: ${err instanceof Error ? err.message : "unknown error"}`,
+        }
+      }
+    }
+  }
+
   revalidatePath("/dashboard/admin/users")
-  return { data }
+  return { data, phoneProvisioning }
 }
 
 export async function updateAgent(

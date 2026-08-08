@@ -36,7 +36,9 @@ import {
   CheckCircle,
   Clock,
   Loader2,
+  Plus,
 } from "lucide-react"
+import { TrackCompetitorDialog } from "./track-competitor-dialog"
 import {
   generateInsights,
   resolveAlert,
@@ -150,6 +152,7 @@ export function CompetitiveMonitorClient({
   const [generatingInsights, setGeneratingInsights] = useState(false)
   const [selectedAd, setSelectedAd] = useState<CompetitorAd | null>(null)
   const [selectedPost, setSelectedPost] = useState<CompetitorPost | null>(null)
+  const [trackOpen, setTrackOpen] = useState(false)
 
   // Group insights by type
   const groupedInsights = insights.reduce(
@@ -198,6 +201,7 @@ export function CompetitiveMonitorClient({
 
   return (
     <Tabs defaultValue="ads" className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
       <TabsList className="grid w-full max-w-2xl grid-cols-4">
         <TabsTrigger value="ads" className="flex items-center gap-2">
           <Megaphone className="h-4 w-4" />
@@ -240,6 +244,16 @@ export function CompetitiveMonitorClient({
           )}
         </TabsTrigger>
       </TabsList>
+        {/* Manual ingest door. The Exa cron fills competitor_ads on its own, but
+            NOTHING wrote competitor_posts — so the Posts tab could only ever be
+            empty until an agent had a way to add what they actually see. */}
+        <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setTrackOpen(true)}>
+          <Plus className="h-4 w-4" />
+          Track a competitor
+        </Button>
+      </div>
+
+      <TrackCompetitorDialog open={trackOpen} onOpenChange={setTrackOpen} />
 
       {/* ─── COMPETITOR ADS TAB ──────────────────────────────────────────────── */}
       <TabsContent value="ads" className="space-y-6">

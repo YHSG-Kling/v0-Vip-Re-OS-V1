@@ -5,6 +5,7 @@ import { listPendingInvitationsAction } from "@/app/actions/admin/invitations"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { InvitationsTable } from "./invitations-table"
+import { SetupCompleteCard } from "./setup-complete-card"
 
 export const dynamic = "force-dynamic"
 
@@ -26,6 +27,20 @@ export default async function InvitationsPage() {
   const r = await listPendingInvitationsAction()
   if (!r.ok) {
     return <div className="p-6 text-red-600">Failed to load invitations: {r.error}</div>
+  }
+
+  // Current brokerage onboarding status for the setup-complete card below.
+  // Cookie client — RLS scopes both reads to the caller's own tenant; the page
+  // never names a brokerage, and the action re-derives it from the session.
+  // A refused read leaves the status null and the card shows the safe default
+  // rather than claiming setup is finished.
+  const { data: meRow } = await supabase
+    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  let onboardingStatus: string | null = null
+  if (meRow?.brokerage_id) {
+    const { data: brk } = await supabase
+      .from("brokerages").select("onboarding_status").eq("id", meRow.brokerage_id).maybeSingle()
+    onboardingStatus = (brk?.onboarding_status as string | null) ?? null
   }
 
   return (
@@ -51,6 +66,8 @@ export default async function InvitationsPage() {
           </Badge>
         </div>
       </div>
+
+      <SetupCompleteCard initialStatus={onboardingStatus} pendingCount={r.pending_count ?? 0} />
 
       <Card>
         <CardHeader className="pb-3">

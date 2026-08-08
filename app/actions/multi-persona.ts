@@ -1731,6 +1731,23 @@ export async function getLenderDashboard(vendorId: string) {
 /**
  * Submit vendor invoice — creates a proper record in vendor_invoices table
  * and marks it submitted. Supersedes the old vendor_bookings.notes workaround.
+ *
+ * SECURITY (w4s1): this was a `"use server"` endpoint with NO auth gate at all —
+ * it went straight to `createServiceClient()` on a caller-supplied bookingId and
+ * amount. Any caller could mint a `billed_to='brokerage'` vendor invoice of any
+ * amount against ANY tenant's booking, and it also overwrote that booking's
+ * `cost`. That is not a paperwork bug: this is the ONLY live producer of
+ * brokerage-billed vendor invoices, and `markInvoicePaid` turns a paid one into a
+ * `vendor_earnings` row with status 'available', which `initiateVendorPayout`
+ * wires out through Stripe Connect. Ungated invoice creation was the front door of
+ * that money path.
+ *
+ * Gate: the caller must be signed in AND either (a) in the booking's brokerage, or
+ * (b) BE the vendor the booking is for (user_role_assignments.vendor_id — the
+ * canonical vendor linkage; `vendors` has no user_id). No unattended caller exists
+ * — the only call site is the brokerage dashboard's vendor-bookings panel
+ * (app/dashboard/components/vendor-bookings-panel.tsx); `app/api/cron/`,
+ * `app/api/webhooks/` and the queue workers were checked and none reach it.
  */
 export async function submitVendorInvoice(params: {
   bookingId: string
@@ -1741,22 +1758,50 @@ export async function submitVendorInvoice(params: {
   notes?: string
 }): Promise<{ success: boolean; invoiceId?: string; error?: string }> {
   try {
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false, error: "Unauthorized" }
+
+    if (!params.bookingId) return { success: false, error: "bookingId required" }
+    if (!Number.isFinite(params.amount) || params.amount <= 0) {
+      return { success: false, error: "Invoice amount must be greater than zero" }
+    }
+
     const supabase = createServiceClient()
 
-    // Resolve vendor_id and brokerage_id from the booking
-    const { data: booking } = await supabase
+    // Resolve vendor_id and brokerage_id from the booking. `error` is destructured
+    // deliberately — supabase-js RESOLVES a refused read, so `data`-only would read
+    // a denial as "no such booking" and (in the old shape) insert an invoice with
+    // NULL vendor_id/brokerage_id: an unscoped money row. Fails closed.
+    const { data: booking, error: bookingErr } = await supabase
       .from("vendor_bookings")
       .select("vendor_id, brokerage_id, listing_id")
       .eq("id", params.bookingId)
-      .single()
+      .maybeSingle()
+
+    if (bookingErr) return { success: false, error: "Could not verify the booking" }
+    if (!booking?.brokerage_id || !booking?.vendor_id) {
+      return { success: false, error: "Booking not found" }
+    }
+
+    if (booking.brokerage_id !== auth.brokerageId) {
+      // Not the booking's brokerage — the only other legitimate submitter is the
+      // vendor being invoiced for.
+      const { data: ra, error: raErr } = await supabase
+        .from("user_role_assignments")
+        .select("id")
+        .eq("user_id", auth.userId)
+        .eq("vendor_id", booking.vendor_id)
+        .maybeSingle()
+      if (raErr || !ra) return { success: false, error: "Forbidden" }
+    }
 
     const { data: invoice, error } = await supabase
       .from("vendor_invoices")
       .insert({
-        vendor_id: booking?.vendor_id ?? null,
-        brokerage_id: booking?.brokerage_id ?? null,
+        vendor_id: booking.vendor_id,
+        brokerage_id: booking.brokerage_id,
         booking_id: params.bookingId,
-        listing_id: booking?.listing_id ?? null,
+        listing_id: booking.listing_id ?? null,
         billed_to: "brokerage",
         invoice_number: params.invoiceNumber,
         invoice_date: params.invoiceDate,
