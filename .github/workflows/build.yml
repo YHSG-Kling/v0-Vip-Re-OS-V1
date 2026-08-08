@@ -35,27 +35,34 @@ jobs:
       # Single-process webpack build (no build worker) AND single-worker page-data
       # collection (experimental.cpus:1 — see next.config.ts).
       #
-      # 12288 was too high and is why the build kept dying AFTER a clean compile.
-      # --max-old-space-size caps V8's OLD SPACE only; total RSS adds new space,
-      # compiled code, and native/buffer allocations, which on a graph this size is
-      # comfortably +2-4 GB. So a 12 GB cap lets ONE process reach ~15 GB RSS on a
-      # 16 GB runner — and page-data collection is a child process that INHERITS
-      # this value, so it was being handed a cap it could not spend safely.
+      # This value is EMPIRICALLY BRACKETED, not guessed. `next build` runs two
+      # phases with materially different memory profiles and only ONE NODE_OPTIONS
+      # between them, because page-data collection is a child process that inherits
+      # it. Every number below is from a CI log on this branch:
       #
-      # The evidence for the sequence, all from the CI logs:
-      #   · 3 workers (the default, os.cpus()-1) → killed 19-73s into the phase
-      #   · cpus:1 → "Collecting page data using 1 worker", survived 3m10s, still killed
-      # Bounding parallelism was necessary and not sufficient; the per-process cap
-      # is the remaining lever.
+      #   12288, 3 workers (os.cpus()-1 default)
+      #       → runner shutdown 19-73s into page-data collection
+      #   12288, cpus:1
+      #       → compile OK in 8.4-9.2 min; "Collecting page data using 1 worker";
+      #         survived 3m10s, then runner shutdown. RSS, not heap: the cap is
+      #         old space only, and new space + code + native add ~2-4 GB on a
+      #         graph this size, so a 12 GB cap lets one process approach the
+      #         16 GB runner ceiling.
+      #    8192, cpus:1
+      #       → COMPILE ITSELF aborted at 6 min, exit 134 (SIGABRT),
+      #         "Ineffective mark-compacts near heap limit", heap at
+      #         7161 MB used / 7773 MB committed. Too low: this broke a phase
+      #         that had been working.
       #
-      # 8192 keeps peak RSS near ~10-11 GB with real headroom on the runner, and
-      # compile has margin: it completes in 8.4-9.2 min and webpackMemoryOptimizations
-      # drops retained caches, so a lower ceiling costs GC pressure rather than
-      # correctness.
+      # So compile demonstrably needs >7.8 GB, and page-data demonstrably cannot
+      # be given 12 GB on a 16 GB runner. 10240 is the value that clears compile's
+      # measured demand with ~2.4 GB of margin while staying meaningfully under the
+      # ceiling that made page-data's RSS fatal.
       #
-      # If this still gets killed, the next lever is a larger runner, which is a
-      # cost decision for the repo owner rather than something to change here.
-      NODE_OPTIONS: "--max-old-space-size=8192"
+      # If this is still killed, the phases genuinely do not fit one runner and the
+      # answer is a larger runner — a cost decision for the repo owner, not
+      # something to keep bisecting here.
+      NODE_OPTIONS: "--max-old-space-size=10240"
       # NO max-old-space-size override: `next build` uses Turbopack (Rust), which
       # holds the heavy compile state in NATIVE memory. Reserving a large V8 old
       # space steals from that native budget and pushed total RSS past the 16 GB
