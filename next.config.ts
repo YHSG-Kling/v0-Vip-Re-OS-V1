@@ -114,6 +114,36 @@ const nextConfig: NextConfig = {
     // JS heap). A SINGLE-process build holds one module graph bounded by the heap
     // cap (NODE_OPTIONS below) — the lowest-peak-memory config, which fits. Left
     // OFF (default). Slower, but it completes on a constrained runner.
+
+    // PAGE-DATA COLLECTION IS A SEPARATE PHASE WITH ITS OWN WORKER POOL, and
+    // turning webpackBuildWorker off does not touch it. That is why the build kept
+    // dying AFTER a clean compile: the log reads
+    //   ✓ Compiled with warnings in 8.6min
+    //   Collecting page data using 3 workers ...
+    //   ##[error]The runner has received a shutdown signal
+    // — a memory kill of the runner, seconds into the phase, with the compile
+    // already finished and successful.
+    //
+    // The arithmetic is the whole story. Those workers are child processes and
+    // they INHERIT the job's NODE_OPTIONS, which sets --max-old-space-size=12288
+    // for the benefit of the single compile process. So three page-data workers
+    // are each permitted a 12 GB old space on a 16 GB runner. That survives only
+    // while the module graph is small enough that they never actually claim it,
+    // which is exactly why this presented for a long time as an intermittent
+    // ~20-25% flake and then became 100% reproducible once the graph grew: it was
+    // never random, it was a threshold.
+    //
+    // cpus:1 collects page data in ONE worker, which is the same single-process
+    // strategy already chosen for compile above (and what the build workflow's own
+    // comment says it wants: "Single-process webpack build"). Serial is slower —
+    // page data for a large route tree — but the job's ceiling is 40 minutes and a
+    // build that finishes in 20 beats one that is killed at 9.
+    //
+    // Deliberately NOT fixed by lowering NODE_OPTIONS instead: the one compile
+    // process genuinely needs the large heap, and shrinking it to make three
+    // workers fit would trade a reliable page-data phase for an unreliable
+    // compile. Bound the parallelism, not the heap.
+    cpus: 1,
   },
   // Skip bundling for packages that ship platform-specific native binaries
   // or otherwise can't be analysed by Turbopack. They get plain Node
