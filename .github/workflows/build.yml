@@ -32,10 +32,30 @@ jobs:
     timeout-minutes: 40
     env:
       NEXT_TELEMETRY_DISABLED: "1"
-      # Single-process webpack build (no build worker — see next.config.ts). Give
-      # that one process a large heap; on a 16 GB runner one process at ~10 GB +
-      # OS/native overhead fits, whereas parallel workers did not.
-      NODE_OPTIONS: "--max-old-space-size=12288"
+      # Single-process webpack build (no build worker) AND single-worker page-data
+      # collection (experimental.cpus:1 — see next.config.ts).
+      #
+      # 12288 was too high and is why the build kept dying AFTER a clean compile.
+      # --max-old-space-size caps V8's OLD SPACE only; total RSS adds new space,
+      # compiled code, and native/buffer allocations, which on a graph this size is
+      # comfortably +2-4 GB. So a 12 GB cap lets ONE process reach ~15 GB RSS on a
+      # 16 GB runner — and page-data collection is a child process that INHERITS
+      # this value, so it was being handed a cap it could not spend safely.
+      #
+      # The evidence for the sequence, all from the CI logs:
+      #   · 3 workers (the default, os.cpus()-1) → killed 19-73s into the phase
+      #   · cpus:1 → "Collecting page data using 1 worker", survived 3m10s, still killed
+      # Bounding parallelism was necessary and not sufficient; the per-process cap
+      # is the remaining lever.
+      #
+      # 8192 keeps peak RSS near ~10-11 GB with real headroom on the runner, and
+      # compile has margin: it completes in 8.4-9.2 min and webpackMemoryOptimizations
+      # drops retained caches, so a lower ceiling costs GC pressure rather than
+      # correctness.
+      #
+      # If this still gets killed, the next lever is a larger runner, which is a
+      # cost decision for the repo owner rather than something to change here.
+      NODE_OPTIONS: "--max-old-space-size=8192"
       # NO max-old-space-size override: `next build` uses Turbopack (Rust), which
       # holds the heavy compile state in NATIVE memory. Reserving a large V8 old
       # space steals from that native budget and pushed total RSS past the 16 GB
