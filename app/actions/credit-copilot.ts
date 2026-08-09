@@ -360,7 +360,7 @@ export async function handlePartnerReferral(payload: any) {
 export async function getCreditPipelineStats() {
   const supabase = await createServerClient()
 
-  const { agentId, brokerageId, userType, isAuthenticated } = await getAgentContext()
+  const { agentId, brokerageId, userId, userType, isAuthenticated } = await getAgentContext()
   if (!isAuthenticated) throw new Error("Not authenticated")
 
   const emptyStats = {
@@ -373,6 +373,19 @@ export async function getCreditPipelineStats() {
     // null, not 0 — "no budget row for this period" is a different fact from
     // "spent nothing", and the page renders them differently.
     budget: null as { used: number; limit: number } | null,
+    // THE READER for credit_partner_referrals. Wiring referToCreditPartner made
+    // that table write-only — rows nobody could ever see — which is the
+    // "outputs nothing consumes" defect test:orphan-writes exists to catch. A
+    // referral is a real business record (we told a consumer we handed their
+    // credit situation to a named partner), so the verdict is to build the
+    // reader, not to drop the write.
+    referrals: [] as Array<{
+      id: string
+      contact_id: string | null
+      partner_name: string | null
+      status: string | null
+      referred_at: string | null
+    }>,
   }
 
   if (!brokerageId) return emptyStats
@@ -448,6 +461,32 @@ export async function getCreditPipelineStats() {
     }
   }
 
+  // Partner referrals for this tenant. Scoped on brokerage_id (the column
+  // referToCreditPartner stamps); an agent sees only referrals they made, matching
+  // the "own book" rule applied to accounts above. `error` is destructured — a
+  // refused read must render as a refusal, not as "no referrals", because an empty
+  // referral list is a claim that we never handed this consumer to anyone.
+  let referralQuery = supabase
+    .from("credit_partner_referrals")
+    .select("id, contact_id, partner_name, status, referred_at")
+    .eq("brokerage_id", brokerageId)
+    .order("referred_at", { ascending: false })
+    .limit(100)
+  // Filter on userId, NOT agentId. `referring_agent_id` is named for an agent but
+  // carries no foreign key, and referToCreditPartner writes `user.id` into it —
+  // the auth/users id space, which is disjoint from agents.id. Filtering it by
+  // agentId would compare two different id spaces and match nothing, so every
+  // agent would be told they had made no referrals. Verified against the live
+  // schema: credit_partner_referrals has FKs on contact_id, brokerage_id and
+  // partner_id only.
+  if (userType === "agent" && userId) {
+    referralQuery = referralQuery.eq("referring_agent_id", userId)
+  }
+  const { data: referralRows, error: referralError } = await referralQuery
+  if (referralError) {
+    return { ...emptyStats, success: false as const, error: referralError.message }
+  }
+
   return {
     success: true as const,
     total_value: totalValue,
@@ -456,6 +495,7 @@ export async function getCreditPipelineStats() {
     by_stage: byStage,
     accounts: accounts || [],
     budget,
+    referrals: (referralRows ?? []) as typeof emptyStats.referrals,
   }
 }
 
