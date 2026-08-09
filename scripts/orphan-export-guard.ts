@@ -98,7 +98,26 @@ const SKIP_TOP_LEVEL = new Set([
  * finish. The three that ARE wired (syncContactToGHL, logGHLCall,
  * addGHLContactNote, getContactConversationHistory) prove the file is live.
  */
-const SCANNED_ROOTS = ["app", "lib", "services"]
+// `hooks` added after the use-server guard was found reporting green over a
+// directory it never opened. Auditing every sweep's file walk for the same
+// narrowing turned up this one: the census covered app, lib and services (the
+// latter added when services/ was found uncensused) and had never once opened
+// hooks/, so it reported a precise-looking 1437 while 33 exported hooks sat
+// outside the count — 29 of them referenced by nothing anywhere in the tree,
+// including the twenty data hooks in hooks/use-dashboard-data.ts
+// (useTransactions, useContacts, useListings, useOffers, useCommissions, …),
+// which together are an entire unwired data layer.
+//
+// This RAISES the number, and that is the point: it is a measurement fix, the
+// same shape as the prose-only-reference correction that took the count from 29
+// to 240. A census that quietly excludes a directory is not a smaller problem,
+// it is an unmeasured one, and the reported figure was wrong in the flattering
+// direction.
+//
+// NOT a delete list — the standing rule holds: an unwired capability is work to
+// FINISH. These hooks are now visible so they can be wired or consciously ruled
+// on, instead of being invisible to the instrument that exists to find them.
+const SCANNED_ROOTS = ["app", "lib", "services", "hooks"]
 
 function walk(dir: string, out: string[] = []): string[] {
   let entries: string[]

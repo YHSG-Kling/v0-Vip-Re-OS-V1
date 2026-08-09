@@ -143,6 +143,13 @@
     "app/newsletters/components/newsletter-ai-panel.tsx": 1,
     "app/routes-compatibility.ts": 1,
     "app/settings/email-templates/template-preview.tsx": 1,
+    "hooks/use-click-outside.ts": 1,
+    "hooks/use-contact-dashboard.ts": 1,
+    "hooks/use-dashboard-data.ts": 19,
+    "hooks/use-debounce.ts": 1,
+    "hooks/use-local-storage.ts": 1,
+    "hooks/use-media-query.ts": 7,
+    "hooks/use-toast.ts": 1,
     "lib/ads/ad-creative-engine.ts": 3,
     "lib/ads/ad-lead-intake.ts": 2,
     "lib/ads/ad-manager.ts": 2,
@@ -696,7 +703,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 8928,
+  "census": 8961,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2730,6 +2737,14 @@
     "app/workflows/components/os/workflow-command-strip.tsx": 1,
     "app/workflows/components/os/workflow-health-radar.tsx": 1,
     "app/workflows/workflows-content.tsx": 1,
+    "hooks/use-click-outside.ts": 1,
+    "hooks/use-contact-dashboard.ts": 1,
+    "hooks/use-dashboard-data.ts": 19,
+    "hooks/use-debounce.ts": 1,
+    "hooks/use-local-storage.ts": 1,
+    "hooks/use-media-query.ts": 8,
+    "hooks/use-mobile.ts": 1,
+    "hooks/use-toast.ts": 1,
     "lib/academy/quiz.ts": 3,
     "lib/ads/ad-creative-engine.ts": 4,
     "lib/ads/ad-creator.ts": 6,
@@ -12565,6 +12580,55 @@
     "app/workflows/workflows-content.tsx": [
       "WorkflowsContent"
     ],
+    "hooks/use-click-outside.ts": [
+      "useClickOutside"
+    ],
+    "hooks/use-contact-dashboard.ts": [
+      "useContactDashboard"
+    ],
+    "hooks/use-dashboard-data.ts": [
+      "useDashboardData",
+      "useTransactions",
+      "useContacts",
+      "useListings",
+      "useAppointments",
+      "useShowings",
+      "useOffers",
+      "useReferrals",
+      "useReviews",
+      "useExpenses",
+      "useCommissions",
+      "useOpenHouses",
+      "useTasks",
+      "useNotifications",
+      "useDocuments",
+      "useAgents",
+      "useTours",
+      "useVendors",
+      "useCommunications"
+    ],
+    "hooks/use-debounce.ts": [
+      "useDebounce"
+    ],
+    "hooks/use-local-storage.ts": [
+      "useLocalStorage"
+    ],
+    "hooks/use-media-query.ts": [
+      "useMediaQuery",
+      "useIsSmall",
+      "useIsMedium",
+      "useIsLarge",
+      "useIsXLarge",
+      "useIs2XLarge",
+      "usePrefersDarkMode",
+      "usePrefersReducedMotion"
+    ],
+    "hooks/use-mobile.ts": [
+      "useIsMobile"
+    ],
+    "hooks/use-toast.ts": [
+      "reducer"
+    ],
     "lib/academy/quiz.ts": [
       "parseQuizQuestions",
       "hasQuiz",
@@ -20258,5 +20322,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 301
+  "trulyDead": 332
 }
