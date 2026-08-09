@@ -39,14 +39,16 @@ import {
 } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Loader2 } from "lucide-react"
+import { ingestCompetitorAd, ingestCompetitorPost } from "@/lib/ads/ad-monitor"
+// Values come from the plain vocabulary module, not from the "use server" action
+// file — a client component cannot import a value across that boundary, and the
+// attempt is what broke the build.
 import {
-  ingestCompetitorAd,
-  ingestCompetitorPost,
   COMPETITOR_AD_PLATFORMS,
   COMPETITOR_POST_PLATFORMS,
   type CompetitorAdPlatform,
   type CompetitorPostPlatform,
-} from "@/lib/ads/ad-monitor"
+} from "@/lib/ads/ad-monitor-vocabulary"
 
 export function TrackCompetitorDialog({
   open,

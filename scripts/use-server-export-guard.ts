@@ -27,8 +27,22 @@ function walk(dir: string, out: string[]) {
   }
 }
 
+// SCAN EVERY TREE THAT CAN HOLD A "use server" MODULE, not just app/actions.
+//
+// This guard was written to stop exactly one build-breaker and then missed a live
+// instance of it, because it only ever walked app/actions. The directive is not
+// confined there: lib/ads/ad-monitor.ts carries "use server" and grew two
+// `export const` arrays, which failed page-data collection in CI with
+//   A "use server" file can only export async functions, found object.
+// while this guard reported "scanned 548 action files ✓".
+//
+// A guard that inspects a subset of the surface its rule applies to reports green
+// for the files it never opened, which is worse than no guard — it is a green light
+// over an unexamined area. `app` also covers route handlers and co-located action
+// files outside app/actions.
 const files: string[] = []
-walk(join(root, "app", "actions"), files)
+walk(join(root, "app"), files)
+walk(join(root, "lib"), files)
 
 const violations: string[] = []
 for (const f of files) {

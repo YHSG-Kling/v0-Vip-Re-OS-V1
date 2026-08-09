@@ -14,25 +14,21 @@ import { generateText } from "ai"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
-// PLATFORM VOCABULARIES — verified against the LIVE CHECK constraints, which are
-// DIFFERENT for the two tables and did not match these unions:
-//   competitor_ads_source_platform_check   → facebook | instagram | google
-//   competitor_posts_source_platform_check → facebook | instagram | linkedin | x | youtube | tiktok
-// The ad union previously offered 'linkedin' and 'tiktok', which the ads CHECK
-// rejects (23514) — those branches were unreachable, and any caller taking the type
-// at its word would have hit an opaque database error. The post union offered
-// 'twitter', which the posts CHECK also rejects (the live vocabulary is 'x'), and
-// omitted the 'x' and 'youtube' values it does admit.
-export type CompetitorAdPlatform = "facebook" | "instagram" | "google"
-export type CompetitorPostPlatform =
-  | "facebook" | "instagram" | "linkedin" | "x" | "youtube" | "tiktok"
-
-export const COMPETITOR_AD_PLATFORMS: readonly CompetitorAdPlatform[] = [
-  "facebook", "instagram", "google",
-] as const
-export const COMPETITOR_POST_PLATFORMS: readonly CompetitorPostPlatform[] = [
-  "facebook", "instagram", "linkedin", "x", "youtube", "tiktok",
-] as const
+// PLATFORM VOCABULARIES live in ./ad-monitor-vocabulary — a plain module, NOT this
+// one. This file carries a top-level "use server" directive, and such a module may
+// export ONLY async functions; the two `readonly[]` constants that used to sit here
+// made Next.js fail page-data collection with
+//   A "use server" file can only export async functions, found object.
+// which fails the production build. The `export type` aliases were legal (types are
+// erased) but moved with them so the vocabulary has one home.
+//
+// Re-exporting them from here would reintroduce the same defect — a value export is
+// a value export however it is spelled — so consumers import from the vocabulary
+// module directly. Type-only import here: erased, and therefore safe.
+import type {
+  CompetitorAdPlatform,
+  CompetitorPostPlatform,
+} from "./ad-monitor-vocabulary"
 
 export interface IngestCompetitorAdParams {
   /** Ignored — the tenant is resolved from the session by requireBrokerage(). */
