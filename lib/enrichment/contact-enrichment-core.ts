@@ -75,7 +75,36 @@ const OSINT_REQUESTS_PER_SEARCH = 6
  */
 export const LIFE_CHANGE_CHECK_INTERVAL_DAYS = 30
 
-export type EnrichmentSource = "manual" | "auto" | "ghl_sync" | "import" | "contact_intake" | "deal_ended"
+/**
+ * Where an enrichment run was triggered FROM.
+ *
+ * ── "ghl_sync" IS DELIBERATELY ABSENT (owner's wave-5 ruling) ────────────────
+ *   "no ghl on when a contact is syncing to it. we only enrich the contact in
+ *    this system."
+ *
+ * Two separate things, both checked:
+ *
+ *  · TRIGGER. No enrichment may be entered from a GoHighLevel sync. The live
+ *    paths already refuse — lib/ghl-integration.ts:syncContactFromGHL returns
+ *    "Inbound CRM sync is disabled — GHL is sync-out only", and
+ *    app/api/webhooks/gohighlevel/route.ts verifies the signature and then
+ *    ignores the event — and wave 3 deleted both the private GHL queue writer
+ *    and the cron's GHL third pass. What survived was this member and one
+ *    docstring example: vocabulary that named GHL as a legitimate enrichment
+ *    trigger and so invited the path back. Removed, with no replacement.
+ *  · DESTINATION. Enrichment output stays in this system. Verified rather than
+ *    assumed: the canonical egress choke point lib/crm/sync.ts:syncContactToCRM
+ *    takes CRMContactPayload = { firstName, lastName, email, phone, tags,
+ *    source, brokerageId, agentId } — no enrichment column, no
+ *    enrichment_profile, no life_events — and no module in lib/enrichment calls
+ *    it. Nothing needed removing there.
+ *
+ * A GHL-LINKED CONTACT IS STILL ENRICHABLE. The rule is about the trigger and
+ * the destination, not about excluding those contacts: a contact that arrived
+ * through the bulk CRM migration importer (lib/crm/import-pull.ts) is enriched
+ * here for OUR system like any other, under 'import'.
+ */
+export type EnrichmentSource = "manual" | "auto" | "import" | "contact_intake" | "deal_ended"
 
 export interface EnrichmentOutcome {
   success: boolean
@@ -130,7 +159,9 @@ export async function queueContactEnrichment(params: {
   contactId: string
   brokerageId: string
   /** Free-form provenance, e.g. 'contact_intake' | 'contact_captured' |
-   *  'widget_intake' | 'ghl_sync' | 'deal_ended'. No CHECK on this column. */
+   *  'widget_intake' | 'import' | 'deal_ended'. No CHECK on this column.
+   *  NEVER 'ghl_sync' — a GHL sync is not an enrichment trigger (see
+   *  EnrichmentSource above for the ruling and the evidence). */
   triggerType: string
   enrichmentType?: string
   /** Skip if the contact was enriched within this many days. */

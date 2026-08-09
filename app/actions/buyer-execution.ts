@@ -14,7 +14,7 @@
 
 import { isValidUUID } from '@/lib/validations'
 import { handleError } from '@/lib/errors'
-import { isAdminOrBroker } from '@/lib/auth/resolve-user-role'
+import { createServiceClient } from '@/lib/supabase/service'
 import {
   getBuyerJourneyStatus,
   enforceFinancialGate,
@@ -24,6 +24,7 @@ import {
   lenderConfirmFinancialVerification,
   agentAssistSearchConfiguration,
   adminOverrideFinancialGate,
+  resolveFinancialGateOverrideAuthority,
   agentAdvanceBuyerStage,
   getMultiPartyUpdateHistory,
   type BuyerExecutionContext,
@@ -373,9 +374,26 @@ export async function agentConfigureBuyerSearch(params: {
  *
  *   1. The caller has a session AND this contact is in their tenant
  *      (requireContactAccess resolves the brokerage from the CONTACT row).
- *   2. That same session user actually holds an admin/broker user_type. Checked here
- *      from the user_type requireContactAccess already resolved, and checked AGAIN
- *      inside adminOverrideFinancialGate against the database.
+ *   2. That same session user holds an ADMITTED user_type, checked against an explicit
+ *      allow-list. Checked here from the user_type requireContactAccess already
+ *      resolved, and checked AGAIN inside adminOverrideFinancialGate against a
+ *      user_type that function re-reads from the database itself.
+ *
+ * WAVE 5 — OWNER RULING: "admin or agent can override the finiancing gate".
+ *
+ * `agent` is admitted, scoped to THE AGENT OF RECORD ON THAT CONTACT rather than to any
+ * agent in the brokerage. requireContactAccess proves tenancy, not relationship — its
+ * staff branch lets every agent in the brokerage through — so the loose reading would
+ * hand any agent the power to lift the financing gate of a buyer they have never met.
+ * The voice lane already draws the line in the same place. The rule itself lives in ONE
+ * place, lib/buyer-execution/multi-party-updates.ts, so the two layers cannot drift.
+ *
+ * THE SELF-OVERRIDE HAZARD. requireContactAccess deliberately admits the CONTACT
+ * THEMSELVES (linked user id OR matching email), and it returns on that branch BEFORE
+ * the staff test — so `isContactSelf` can be true while the caller carries a staff
+ * user_type, whenever a contacts row shares their email address. Authority is therefore
+ * an explicit ALLOW-LIST of staff user_types ANDed with a refusal of self, never
+ * "not a contact": a negation would silently admit every user_type added later.
  *
  * `adminId` is retained on the signature and ignored.
  */
@@ -399,13 +417,26 @@ export async function adminOverrideFinancialVerification(params: {
   const access = await requireContactAccess(contactId)
   if (!access.ok) return { success: false, error: access.error }
 
+  // The buyer never lifts their own gate. Checked FIRST and independently of user_type,
+  // because requireContactAccess's self branch short-circuits its own staff test — so a
+  // staff user_type on a self-matched caller proves nothing here.
+  if (access.isContactSelf) {
+    return { success: false, error: 'You cannot override your own financial gate' }
+  }
+
   // Being able to SEE this contact is not permission to lift their financing gate.
-  // isAdminOrBroker reads user_type — the canonical column. (The retired `role` column
-  // is null for 19 of 23 live users and title-cased for the rest, which is exactly why
-  // the check inside the lib function had never once passed; see the note at the top
-  // of lib/buyer-execution/multi-party-updates.ts.)
-  if (!isAdminOrBroker({ user_type: access.userType })) {
-    return { success: false, error: 'Only admins or brokers can override financial gates' }
+  // The allow-list (and the agent-of-record scoping) lives in the lib module so this
+  // layer and the lib layer enforce ONE rule; the user_type read is still independent
+  // — this one comes from the session via requireContactAccess, the lib one from a
+  // fresh `users` read. user_type is the canonical column; `role` is retired.
+  const supabase = createServiceClient()
+  const authority = await resolveFinancialGateOverrideAuthority(supabase, {
+    userId: access.userId,
+    userType: access.userType,
+    contactId,
+  })
+  if (!authority.allowed) {
+    return { success: false, error: authority.error }
   }
 
   try {

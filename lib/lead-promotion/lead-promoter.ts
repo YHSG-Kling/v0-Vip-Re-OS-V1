@@ -142,6 +142,37 @@ export async function promoteRawRecordToLead(
       })
       .eq('id', rawRecordId)
 
+    // ── LEAD ENRICHMENT (wave 5, DIRECT HOOK) ────────────────────────────────
+    // "enrichment also needs to still happen with raw leads" (owner).
+    //
+    // The third of the three `leads` INSERT sites in app/ + lib/. It emits no
+    // kernel event, so the reactor chokepoint cannot reach it and it gets a
+    // direct hook — named individually in
+    // scripts/enrichment-suppression-simulator.ts, because a direct hook rots
+    // silently: delete this call and nothing errors, no test goes red, the lead
+    // is simply never enriched.
+    //
+    // `initialBrokerageId`, NOT `brokerageId`: a platform-origin lead is inserted
+    // with brokerage_id NULL and only gains a tenant when Engine 1 distributes
+    // it. Queueing under the SCRAPING brokerage would write a row whose tenant
+    // does not match the lead's — the drain would hand it to the wrong
+    // brokerage's budget and the wrong brokerage's suppression check. A parked
+    // lead is left for the cron net, which picks it up once it has a home.
+    //
+    // BEST-EFFORT AND VOIDED: promotion must never fail because of enrichment.
+    if (initialBrokerageId) {
+      try {
+        const { queueLeadEnrichmentBestEffort } = await import('@/lib/enrichment/lead-enrichment-core')
+        queueLeadEnrichmentBestEffort({
+          leadId:      newLead.id,
+          brokerageId: initialBrokerageId,
+          triggerType: 'raw_promotion',
+        })
+      } catch (err) {
+        console.error('[lead-promoter] lead enrichment enqueue failed:', err)
+      }
+    }
+
     return {
       success: true,
       leadId: newLead.id,

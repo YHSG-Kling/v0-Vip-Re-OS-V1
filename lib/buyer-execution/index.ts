@@ -23,6 +23,9 @@ export {
   lenderConfirmFinancialVerification,
   agentAssistSearchConfiguration,
   adminOverrideFinancialGate,
+  // The ONE definition of who may override a financing gate. Exported so the server
+  // action enforces the same rule as the lib function instead of keeping its own copy.
+  resolveFinancialGateOverrideAuthority,
   agentAdvanceBuyerStage,
   getMultiPartyUpdateHistory,
 } from "./multi-party-updates"

@@ -46,6 +46,7 @@ import { composeSentinelLossReport } from "@/lib/kernel/write-sentinel"
 import { geoapifyConfigured } from "@/lib/external/geoapify-client"
 import { OSINTClient } from "@/lib/osint-client"
 import { fetchOSINTNeighborhoodData } from "@/lib/external/osint-neighborhood"
+import { runFreeOsintLane } from "@/lib/external/osint-free"
 import { gatewayChat } from "@/lib/ai/gateway-chat"
 
 // ── Webhook expectations (the URLs bindNumberToTwilioLane writes) ────────────
@@ -765,7 +766,15 @@ export function getPlatformProviderRegistry(): PlatformProviderEntry[] {
   // geocoding, Overpass amenities, US Census ACS — all keyless free tiers.
   // Its gateway calls log under service keys nominatim/overpass/census, which
   // POSTURE_CANON folds here so the lane's traffic attributes to this row.
+  //
+  // SELECTABLE FROM THE ENRICHMENT LANE (wave 5): lib/external/osint-free.ts is
+  // the lane's provider surface — planEnrichmentLane routes a queue row to it and
+  // runFreeOsintLane executes it. Bound here too, so the posture row cannot drift
+  // away from the module the enrichment drain actually selects. NOT in
+  // DECOMMISSIONED_PROVIDERS and nothing new is added to the registry: this is the
+  // SAME osint_free row, now with a second binding.
   void fetchOSINTNeighborhoodData // binding: lib/external/osint-neighborhood
+  void runFreeOsintLane           // binding: lib/external/osint-free (the selectable lane)
   {
     const a = get("osint_free", "osint-neighborhood (keyless module)")
     a.label = "OSINT Free (OSM + Census)"

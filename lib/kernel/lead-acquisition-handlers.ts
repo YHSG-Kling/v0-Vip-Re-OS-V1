@@ -71,14 +71,39 @@ export async function handleLeadCaptured(params: {
     created_at: new Date().toISOString(),
   })
 
-  await supabase.from('lead_enrichment_queue').insert({
-    lead_id: leadId,
-    brokerage_id: brokerageId,
-    status: 'pending',
-    enrichment_type: 'skip_trace',
-    trigger_type: 'lead_captured',
-    queued_at: new Date().toISOString(),
-  })
+  // ── LEAD ENRICHMENT (wave 5) ───────────────────────────────────────────────
+  // This used to be a bare INSERT into lead_enrichment_queue right here:
+  //
+  //   await supabase.from('lead_enrichment_queue').insert({
+  //     lead_id: leadId, brokerage_id: brokerageId, status: 'pending',
+  //     enrichment_type: 'skip_trace', trigger_type: 'lead_captured', queued_at,
+  //   })
+  //
+  // It carried NONE of the guards the contact lane spent wave 3 consolidating:
+  // no freshness check (a lead captured twice paid twice), no pending-row
+  // idempotency, no identifier gate (a scraped row with no name, email or phone
+  // bought a guaranteed PeopleData miss and then burned its three retries against
+  // the drain's own identifier refusal), no live-deal suppression, no vendor
+  // budget pre-flight, no backlog cap.
+  //
+  // MERGED, not deleted: the capability — "a captured lead gets enriched" — is
+  // exactly what the survivor does, and it does it with every guard.
+  // Survivor: lib/enrichment/lead-enrichment-core.ts:queueLeadEnrichment.
+  //
+  // Awaited (not voided) because this handler is already the async lifecycle
+  // path and the writer never throws; the SLA row below must still be written
+  // whatever the queue decides.
+  try {
+    const { queueLeadEnrichment } = await import('@/lib/enrichment/lead-enrichment-core')
+    await queueLeadEnrichment({
+      leadId,
+      brokerageId,
+      triggerType: 'lead_captured',
+      supabase,
+    })
+  } catch (err) {
+    console.error('[lead-acquisition] lead enrichment enqueue failed:', err)
+  }
 
   const targetAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
   await supabase.from('lead_sla_tracking').insert({

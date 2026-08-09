@@ -456,6 +456,34 @@ export async function createLeadOnlyRecordForAcquisitionSource(params: {
     return { success: false, error: error?.message ?? "Lead insert failed" }
   }
 
+  // ── LEAD ENRICHMENT (wave 5, DIRECT HOOK) ──────────────────────────────────
+  // "enrichment also needs to still happen with raw leads" (owner).
+  //
+  // This is one of the three `leads` INSERT sites in app/ + lib/ and it emits NO
+  // kernel event, so the reactor chokepoint (event-reactor.ts D-septies, on
+  // RAW_RECORD_PROMOTED / LEAD_CAPTURED) cannot see it. A direct hook is what a
+  // door without an event gets — and a direct hook rots silently, so this one is
+  // named individually in scripts/enrichment-suppression-simulator.ts, which
+  // fails if the call disappears.
+  //
+  // BEST-EFFORT AND VOIDED: creating a lead must never fail because of
+  // enrichment. queueLeadEnrichment never throws either, so this is belt and
+  // braces on purpose. Imported dynamically because
+  // lib/enrichment/lead-enrichment-core.ts is `server-only` and a static import
+  // would drag that into every module graph reaching this file — including the
+  // plain-tsx guards, which crash on `server-only` at load. Same pattern as
+  // queueContactEnrichment below.
+  try {
+    const { queueLeadEnrichmentBestEffort } = await import("@/lib/enrichment/lead-enrichment-core")
+    queueLeadEnrichmentBestEffort({
+      leadId:      data.id,
+      brokerageId: params.brokerage_id,
+      triggerType: "acquisition_source",
+    })
+  } catch (err) {
+    console.error("[crm] lead enrichment enqueue failed:", err)
+  }
+
   return { success: true, data: { leadId: data.id } }
 }
 

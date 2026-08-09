@@ -16,7 +16,7 @@
 import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { createServiceClient } from "@/lib/supabase/service"
-import { isListingLive, isTransactionLive } from "./deal-vocabulary"
+import { isListingLive, isTransactionLive, leadDealLinkage } from "./deal-vocabulary"
 
 export * from "./deal-vocabulary"
 
@@ -176,4 +176,75 @@ export async function contactsInLiveDeals(params: {
   }
 
   return { suppressed, degraded: false }
+}
+
+// ─── THE LEAD SIDE (wave 5) ──────────────────────────────────────────────────
+
+export interface LeadLiveDealVerdict extends LiveDealVerdict {
+  /** The contacts.id the verdict was actually decided on, when the lead had one.
+   *  Absent means the lead is unlinked and no contact question was asked. */
+  resolvedContactId?: string
+}
+
+/**
+ * Is the CONTACT this lead resolves to in a live deal right now?
+ *
+ * NOT a re-key of `isContactInLiveDeal` onto a lead id. `leads.id` and
+ * `contacts.id` are disjoint id spaces and neither `listings` nor `transactions`
+ * carries a lead-keyed column at all (see the header of ./deal-vocabulary for the
+ * FK evidence), so a lead id handed to the contact predicate asks a question
+ * about a row that does not exist — and gets "no rows" back, which the caller
+ * would read as "safe to spend". This function RESOLVES `leads.contact_id`
+ * instead, and hands the contact predicate a contacts.id or nothing at all.
+ *
+ * Never throws. Returns `inLiveDeal: true` on any read error — if we cannot tell,
+ * we do not enrich.
+ */
+export async function isLeadInLiveDeal(params: {
+  leadId: string
+  brokerageId: string
+  supabase?: SupabaseClient<any, any, any>
+}): Promise<LeadLiveDealVerdict> {
+  const { leadId, brokerageId } = params
+
+  if (!leadId || !brokerageId) {
+    return { inLiveDeal: true, reason: "unreadable", error: "leadId and brokerageId are both required" }
+  }
+
+  const supabase = params.supabase ?? createServiceClient()
+
+  // The tenant is applied here as well as on the deal reads. Without it a service
+  // client would happily resolve a foreign tenant's lead to a foreign contact and
+  // then ask the deal question under OUR brokerage id — which reads as "no deals"
+  // and unlocks spend on a record we do not own.
+  const { data: lead, error: leadError } = await supabase
+    .from("leads")
+    .select("id, contact_id")
+    .eq("id", leadId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+
+  if (leadError) {
+    return { inLiveDeal: true, reason: "unreadable", error: `leads: ${leadError.message}` }
+  }
+  // A lead we cannot find is not "a lead with no deals" — it is a lead we know
+  // nothing about. Fail closed rather than spend on an id we could not confirm
+  // belongs to this tenant.
+  if (!lead) {
+    return { inLiveDeal: true, reason: "unreadable", error: "lead not found in this brokerage" }
+  }
+
+  const linkage = leadDealLinkage(lead as { contact_id?: string | null })
+  if (linkage.kind === "unlinked") {
+    // Schema fact, not an assumption: nothing in listings or transactions can
+    // reference a lead. An unconverted lead cannot be in a live deal.
+    return NOT_IN_DEAL
+  }
+
+  const verdict = await isContactInLiveDeal({
+    contactId: linkage.contactId,
+    brokerageId,
+    supabase,
+  })
+  return { ...verdict, resolvedContactId: linkage.contactId }
 }

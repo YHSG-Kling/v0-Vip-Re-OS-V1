@@ -13,6 +13,10 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { emitFinancialVerificationEvent } from '@/lib/buyer-lifecycle'
 import { logBuyerExecutionEvent } from './buyer-execution-engine'
 import { assertVendorAssignedToContact } from '@/lib/vendor/assignment-access'
+// agents.id -> users.id. Taken from the CLIENT-AGNOSTIC kernel module, not from
+// lib/kernel/agent-identity-resolver.ts: that one is `server-only` and pulling it
+// into this graph would break any plain guard/page that reaches this module.
+import { resolveUserIdForAgentRecord } from '@/lib/kernel/agent-identity'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 export type ActorRole = 'agent' | 'lender' | 'admin' | 'broker'
@@ -46,8 +50,125 @@ export type ActorRole = 'agent' | 'lender' | 'admin' | 'broker'
 
 /** Staff types permitted to record agent-side buyer updates. */
 const AGENT_LEVEL_TYPES = new Set(['agent', 'team_lead', 'isa', 'tc', 'broker', 'broker_owner', 'admin', 'superadmin'])
-/** Staff types permitted to override a financial gate. Deliberately narrower. */
-const OVERRIDE_LEVEL_TYPES = new Set(['admin', 'broker', 'broker_owner', 'superadmin'])
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FINANCING-GATE OVERRIDE AUTHORITY
+//
+// Owner ruling: "admin or agent can override the finiancing gate".
+//
+// Expressed as an EXPLICIT ALLOW-LIST of staff user_types, and never as "not a
+// contact" or any other negation. A negation admits every user_type that is added
+// to the vocabulary later — which is exactly how this class of hole gets reopened.
+//
+// The vocabulary was verified against the LIVE CHECK constraint rather than
+// assumed (project hrvaqgvukzxfskkcrwbt, `users_user_type_check`, convalidated):
+//
+//   admin, agent, broker, broker_owner, compliance_officer, contact, isa,
+//   lender, superadmin, support, system, tc, team_lead, vendor
+//
+// Deliberately absent: team_lead, isa, tc, compliance_officer, support, lender,
+// vendor, system — the ruling names admin and agent, and widening past it is not
+// ours to invent. (`broker_admin` / `super_admin`, which lib/auth/resolve-user-role
+// still tolerates as legacy spellings, are NOT admissible values in the constraint,
+// so they are absent here too.)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Override authority over ANY contact in the caller's tenant. The admin/broker
+ * family, unchanged from before the ruling.
+ */
+const OVERRIDE_BROKERAGE_WIDE_TYPES = new Set([
+  'admin',
+  'broker',
+  'broker_owner',
+  'superadmin',
+])
+
+/**
+ * Override authority ONLY over a contact this caller is the AGENT OF RECORD for.
+ *
+ * "agent" is scoped to the agent ON THAT CONTACT, not to any agent in the
+ * brokerage. Tenancy alone is not a relationship: `requireContactAccess` admits
+ * every agent in the brokerage, so reading the ruling the loose way would let any
+ * of a brokerage's agents lift the financing gate of a buyer they have never met.
+ * The voice lane already draws the line in the same place
+ * (validate-authority.ts:validateContactAccess restricts a plain agent to their own
+ * contacts while admin/broker get brokerage-wide reach), so this keeps the two
+ * lanes saying the same thing.
+ */
+const OVERRIDE_ASSIGNED_AGENT_TYPES = new Set(['agent'])
+
+export type OverrideAuthorityDecision =
+  | { allowed: true; scope: 'brokerage_wide' | 'assigned_agent' }
+  | { allowed: false; error: string }
+
+/**
+ * THE ONE PLACE the financing-gate override authority rule is written down.
+ *
+ * Both enforcement points call this — the server action (with the user_type
+ * requireContactAccess already resolved) and adminOverrideFinancialGate below
+ * (with a user_type it re-reads from the database itself). Sharing the DECISION
+ * while keeping the two user_type READS independent is what keeps the layers in
+ * agreement without giving up defence in depth.
+ *
+ * Fails CLOSED on every uncertainty: unknown user_type, refused query, missing
+ * contact, missing agents row.
+ */
+export async function resolveFinancialGateOverrideAuthority(
+  supabase: SupabaseClient<any, any, any>,
+  params: { userId: string; userType: string | null; contactId: string },
+): Promise<OverrideAuthorityDecision> {
+  const { userId, userType, contactId } = params
+  const refusal = {
+    allowed: false as const,
+    error: 'Only admins, brokers, or the assigned agent can override financial gates',
+  }
+
+  if (!userId || !userType) return refusal
+
+  const type = userType.toLowerCase()
+  const brokerageWide = OVERRIDE_BROKERAGE_WIDE_TYPES.has(type)
+  const assignedAgentOnly = OVERRIDE_ASSIGNED_AGENT_TYPES.has(type)
+
+  // Not on either allow-list — refuse before touching the database.
+  if (!brokerageWide && !assignedAgentOnly) return refusal
+
+  // `contacts.agent_id` is an agents.id (FK contacts_agent_id_fkey -> agents(id)),
+  // NOT a users.id — verified against the live schema. `contact_user_id` IS a
+  // users.id. Never compare across those spaces.
+  const { data: contact, error: contactErr } = await supabase
+    .from('contacts')
+    .select('agent_id, contact_user_id')
+    .eq('id', contactId)
+    .maybeSingle()
+
+  // supabase-js RESOLVES a refused query, so `error` is destructured explicitly;
+  // a gate that cannot read its own inputs must refuse, not proceed.
+  if (contactErr || !contact) return refusal
+
+  const row = contact as { agent_id: string | null; contact_user_id: string | null }
+
+  // NOBODY overrides their own financing gate, whatever their user_type says.
+  // The gate exists to stop a buyer transacting before their finances are verified;
+  // a staff member who is also the contact of record is still the buyer here.
+  if (row.contact_user_id && row.contact_user_id === userId) {
+    return { allowed: false, error: 'You cannot override your own financial gate' }
+  }
+
+  if (brokerageWide) return { allowed: true, scope: 'brokerage_wide' }
+
+  // assignedAgentOnly: bridge users.id -> agents.id through the contact's assigned
+  // agents row. Resolving the agents row's user_id (rather than guessing which of a
+  // multi-tenant user's agents rows to use) makes this exact.
+  if (!row.agent_id) return refusal
+  // `as any` on the client matches the existing call convention for the kernel
+  // agent-identity helpers elsewhere in the app (they are typed against the default
+  // SupabaseClient schema generic, this module against <any, any, any>).
+  const assignedUserId = await resolveUserIdForAgentRecord(supabase as any, row.agent_id)
+  if (!assignedUserId || assignedUserId !== userId) return refusal
+
+  return { allowed: true, scope: 'assigned_agent' }
+}
 
 /**
  * Resolve an actor's canonical role from `users.user_type`.
@@ -257,19 +378,21 @@ export async function adminOverrideFinancialGate(params: {
   
   const supabase = createServiceClient()
 
-  // Verify admin/broker role — see ACTOR ROLE RESOLUTION at the top of this file.
-  // This is the LAST gate in front of a financial-gate override, so it stays here even
-  // though the calling server action now derives the admin from the session and checks
-  // the same thing: defence in depth, and the lib function is reachable from lanes
-  // (the ElevenLabs webhook) that have no cookie session at all.
+  // Verify override authority — see FINANCING-GATE OVERRIDE AUTHORITY at the top of
+  // this file. This is the LAST gate in front of a financial-gate override, so it stays
+  // here even though the calling server action checks the same rule: defence in depth.
+  // The user_type is re-read from the database here (resolveActorType) rather than
+  // trusted from the caller, so the two layers agree on the RULE while reading the
+  // FACT independently.
   const actorType = await resolveActorType(supabase, adminId)
-  if (!actorType || !OVERRIDE_LEVEL_TYPES.has(actorType)) {
-    return {
-      success: false,
-      error: 'Only admins or brokers can override financial gates'
-    }
+  const authority = await resolveFinancialGateOverrideAuthority(supabase, {
+    userId: adminId,
+    userType: actorType,
+    contactId,
+  })
+  if (!authority.allowed) {
+    return { success: false, error: authority.error }
   }
-
 
   if (!reason || reason.length < 10) {
     return {
@@ -278,17 +401,33 @@ export async function adminOverrideFinancialGate(params: {
     }
   }
   
-  // Emit override verification event
-  await emitFinancialVerificationEvent({
+  // Emit override verification event. `verifiedBy` is derived from the authority that
+  // was actually granted, not hard-coded to 'admin' — now that an assigned agent can
+  // override, recording every override as an admin one would misattribute the actor in
+  // the very record that exists to reconstruct who lifted the gate.
+  const verifiedBy = authority.scope === 'assigned_agent' ? 'agent' : 'admin'
+
+  const emitted = await emitFinancialVerificationEvent({
     contactId,
     verificationType: 'agent_confirmation',
     status: 'verified',
-    verifiedBy: 'admin',
+    verifiedBy,
     source: 'manual',
     userId: adminId,
     expiresAt,
+    // The reason belongs on the verification event too, not only on the separate audit
+    // row: this is the event `checkFinancialVerification` reads back, so it is the one
+    // that survives as the explanation for why the gate is open.
+    verificationNotes: reason,
   })
-  
+
+  // This is the write that actually lifts the gate. Dropping its result reported
+  // success while nothing had been written — the sibling lender path above already
+  // propagates the failure, and so must this one.
+  if (!emitted.success) {
+    return { success: false, error: emitted.error ?? 'Failed to record financial gate override' }
+  }
+
   // Log override (high severity)
   await logBuyerExecutionEvent({
     contactId,
@@ -298,10 +437,14 @@ export async function adminOverrideFinancialGate(params: {
     metadata: {
       override_reason: reason,
       actor_role: actorType,
+      // Which allow-list admitted this actor — 'brokerage_wide' (admin family) or
+      // 'assigned_agent' (the agent of record on this contact).
+      override_scope: authority.scope,
+      expires_at: expiresAt?.toISOString() ?? null,
       severity: 'high',
     }
   })
-  
+
   return { success: true }
 }
 

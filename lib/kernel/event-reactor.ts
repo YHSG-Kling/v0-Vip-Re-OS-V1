@@ -360,6 +360,76 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
   }
 
+  // (D-septies) LEAD ENRICHMENT — Track A. The owner's wave-5 ruling:
+  //
+  //   "enrichment also needs to still happen with raw leads"
+  //
+  // The DRAIN has always handled both tracks (enrichment-orchestrator.ts line 2:
+  // "Processes BOTH lead_id rows (Track A) and contact_id rows (Track B)") and
+  // lead_enrichment_queue carries both lead_id and contact_id. What was missing
+  // was door coverage: enumerated the way wave 3 enumerated contacts, there are
+  // exactly THREE `leads` INSERT sites in app/ + lib/ and not one of them queued
+  // anything (docs/wave5-lead-enrichment.md).
+  //
+  // THE CHOKEPOINT. Only one of those three is live —
+  // lib/lead-pipeline/pipeline-processor.ts — and it already emits
+  // RAW_RECORD_PROMOTED with the new lead's id in metadata. So the event bus is
+  // the lead-side chokepoint for the same reason it is the contact-side one: a
+  // future promotion path that emits the event is covered without being edited.
+  // LEAD_CAPTURED is listened for alongside it because
+  // lib/kernel/lead-acquisition-handlers.ts:handleLeadCaptured emits it, and that
+  // handler's own hand-rolled queue INSERT (no freshness check, no idempotency,
+  // no identifier gate, no suppression, no budget gate) now routes through the
+  // guarded writer instead. The two other doors emit nothing and are hooked
+  // directly, by name, in the guard.
+  //
+  // ENTITY SHAPE. RAW_RECORD_PROMOTED's entity is the RAW RECORD, not the lead —
+  // entityType 'raw_scraped_lead', entityId the raw_scraped_leads id — so the
+  // lead id is read from metadata.lead_id. Using entityId here would hand a
+  // raw_scraped_leads.id to a leads-keyed query: a different id space, and
+  // exactly the substitution the enrichment lane refuses to make anywhere else.
+  //
+  // PARKED PLATFORM LEADS. A platform-origin lead is born with brokerage_id NULL
+  // and only gains a tenant when Engine 1 distributes it, which happens AFTER
+  // this emit. queueLeadEnrichment reads the lead `.eq("brokerage_id", …)`, so
+  // such a lead returns `not_found` and is not queued — correct: nobody should
+  // buy a record for a lead no tenant owns yet. The cron net
+  // (listLeadsNeedingEnrichment) collects it once distribution gives it a home.
+  //
+  // BEST-EFFORT, ALWAYS. The branch only ENQUEUES — a few reads and one row, no
+  // vendor call — and it is wrapped, so lead creation can never fail because of
+  // enrichment. The writer applies suppression, freshness-by-evidence, the
+  // identifier gate, the backlog cap and the budget pre-flight itself; the drain
+  // re-checks before spending.
+  const LEAD_CREATE_EVENTS: string[] = [
+    KernelEvent.RAW_RECORD_PROMOTED,
+    KernelEvent.LEAD_CAPTURED,
+  ]
+  if (params.brokerageId && LEAD_CREATE_EVENTS.includes(params.event)) {
+    try {
+      const metaLeadId = (params.metadata as Record<string, unknown> | null | undefined)?.lead_id
+      const leadId =
+        params.event === KernelEvent.LEAD_CAPTURED && params.entityType === "lead"
+          ? params.entityId
+          : typeof metaLeadId === "string" && metaLeadId.length > 0
+            ? metaLeadId
+            : null
+
+      if (leadId) {
+        const { queueLeadEnrichment } = await import("@/lib/enrichment/lead-enrichment-core")
+        await queueLeadEnrichment({
+          leadId,
+          brokerageId: params.brokerageId,
+          triggerType:
+            params.event === KernelEvent.LEAD_CAPTURED ? "lead_captured" : "raw_record_promoted",
+          supabase: svc,
+        })
+      }
+    } catch (err) {
+      console.error("[event-reactor] lead enrichment enqueue failed:", err)
+    }
+  }
+
   // (E) Contact-agent-assignment intro video — when contacts.agent_id is set
   // (the canonical assignment moment per the app rule: raw_leads → platform,
   // leads → AI ISA + brokerage, contacts → agents), fire a personalized D-ID

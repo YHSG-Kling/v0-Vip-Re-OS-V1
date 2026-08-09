@@ -12,12 +12,22 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import {
   checkFinancialVerification,
-  isVerificationExpired,
   getCurrentBuyerState as getCurrentState,
   type FinancialVerificationResult,
   type BuyerState,
-  type FinancialVerificationEvent,
 } from '@/lib/buyer-lifecycle'
+// TWO functions are named `isVerificationExpired` and they take DIFFERENT shapes:
+//   · extensions/financial-verification-schema.ts — takes a FinancialVerificationEvent
+//     and reads `event.metadata.expires_at`. This is the one the barrel exports
+//     (see the note at lib/buyer-lifecycle/index.ts:33).
+//   · financial-verification.ts — takes a FinancialVerificationResult and reads
+//     `verification.expiresAt`. THIS is the shape checkFinancialVerification returns.
+// This file used to call the barrel (event-shaped) one on a Result, silencing the
+// mismatch with `as unknown as`. A Result has no `metadata` property, so
+// `event.metadata.expires_at` threw a TypeError on EVERY verified buyer — and
+// checkBuyerGovernance has no try/catch. Import the Result-shaped predicate directly
+// and drop the cast, so the expiry branch actually evaluates.
+import { isVerificationExpired } from '@/lib/buyer-lifecycle/financial-verification'
 
 export interface GovernanceCheckResult {
   allowed: boolean
@@ -51,7 +61,7 @@ export async function checkBuyerGovernance(params: {
   const financialCheck = await checkFinancialVerification({ contactId })
   
   // 2a. Check expiration
-  if (financialCheck.isVerified && isVerificationExpired(financialCheck as unknown as FinancialVerificationEvent & { created_at: string })) {
+  if (isVerificationExpired(financialCheck)) {
     return {
       allowed: false,
       blockerType: 'verification_expired',
@@ -321,7 +331,7 @@ export async function getDiagnosticGovernanceStatus(contactId: string): Promise<
     const verification = await checkFinancialVerification({ contactId })
     const isFrozen = currentState ? ['BUYER_UNDER_CONTRACT', 'BUYER_CLOSED', 'BUYER_LIFETIME'].includes(currentState) : false
     const isFinanciallyVerified = verification.isVerified
-    const isVerificationExpiredFlag = isFinanciallyVerified && isVerificationExpired(verification as unknown as FinancialVerificationEvent & { created_at: string })
+    const isVerificationExpiredFlag = isVerificationExpired(verification)
 
     const searchCheck = await checkBuyerGovernance({ contactId, action: 'search' })
     const tourCheck = await checkBuyerGovernance({ contactId, action: 'tour' })

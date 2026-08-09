@@ -202,3 +202,55 @@ export function isTransactionLive(row: { status?: string | null; stage?: string 
   return txnStatusesActive.has(status) || txnStagesActive.has(stage)
 }
 
+// ─── THE LEAD SIDE (wave 5) ──────────────────────────────────────────────────
+//
+// "enrichment also needs to still happen with raw leads" (owner). Track A rides
+// the same queue and the same drain as Track B, so it needs the same suppression
+// rule — but the rule cannot be re-keyed onto a lead id, and this is why.
+//
+// VERIFIED AGAINST THE LIVE SCHEMA (project hrvaqgvukzxfskkcrwbt): thirty-seven
+// tables carry a foreign key to `leads`. `listings` is NOT one of them and
+// `transactions` is NOT one of them. A column scan agrees — listings has only
+// `contact_id` / `seller_contact_id`, transactions has only `contact_id` /
+// `buyer_contact_id` / `seller_contact_id`. There is no `listings.lead_id` and no
+// `transactions.lead_id` anywhere in the schema.
+//
+// So "is THIS LEAD in a live deal" is UNANSWERABLE in the lead's own id space.
+// Answering it "no" would be a guess dressed as a fact. The only bridge is
+// `leads.contact_id` (FK → contacts), and it is exactly the case that matters:
+// lib/kernel/lead-acquisition-handlers.ts:413 stamps `leads.contact_id` when a
+// lead converts, so a converted lead whose contact then signs a listing must be
+// suppressed or the lead lane pays to enrich a client mid-deal — precisely what
+// the ruling forbids.
+//
+// leads.id and contacts.id are DISJOINT id spaces. This function exists so that
+// the resolution is a named, testable step rather than a `leadId ?? contactId`
+// somewhere in an I/O function — the substitution that raises 22P02 at best and
+// answers a question about the wrong row at worst.
+
+/**
+ * What the deal tables can be asked about a lead.
+ *  · `unlinked` — the lead has no contact. NOTHING in `listings` or
+ *    `transactions` can reference it, so it cannot be in a live deal. This is a
+ *    schema fact, not an assumption, and it is the ordinary case for a raw lead.
+ *  · `resolve`  — the lead converted; ask the CONTACT-keyed predicate about
+ *    `contactId`, which is a contacts.id and never the lead's own id.
+ */
+export type LeadDealLinkage =
+  | { kind: "unlinked" }
+  | { kind: "resolve"; contactId: string }
+
+/**
+ * PURE. Resolve a lead row to the id the deal tables can actually be queried by.
+ *
+ * Whitespace-only and empty-string `contact_id` are treated as UNLINKED rather
+ * than passed through: `.eq("id", "")` on a uuid column raises 22P02 (invalid
+ * input syntax), which supabase-js surfaces as an error — and an error in a
+ * fail-closed predicate suppresses the lead forever.
+ */
+export function leadDealLinkage(row: { contact_id?: string | null }): LeadDealLinkage {
+  const contactId = (row.contact_id ?? "").trim()
+  if (!contactId) return { kind: "unlinked" }
+  return { kind: "resolve", contactId }
+}
+
