@@ -649,6 +649,14 @@ async function dispatchContactChannel(
       contactName: contact.first_name ?? null,
       firstMessage: callContext.firstMessage ?? null,
       systemPrompt: callContext.systemPrompt ?? null,
+      // ARMS THE AUTONOMY GATE — unattended re-engagement dial. 'ghost_recovery'
+      // and 'ai_isa' both map to the ai_isa manager; the trigger reason decides
+      // which, so the ledger records why the contact was called.
+      //
+      // `reason` is 'stale' | 'ghosted' | 'reactivation' — there is no
+      // 'ghost_recovery' reason. This mirrors the callPurpose mapping ~20 lines
+      // above, which is the convention this file already uses.
+      systemSource: reason === "ghosted" ? "ghost_recovery" : "ai_isa",
     })
     if (!placed.ok) {
       // Call couldn't be placed (TCPA block / provider) — drop a voicemail, else email.

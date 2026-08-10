@@ -12,6 +12,7 @@ import {
   twimlGatherTurn, twimlTransfer, twimlHangup, TURN_INSTRUCTIONS,
 } from "../lib/voice/reception-brain"
 import { encodeOutboundBrief, decodeOutboundBrief, composeVoicemailMessage } from "../lib/voice/twilio-outbound"
+import { OUTBOUND_CALL_GATE_ORDER } from "../lib/voice/outbound-call-gates"
 import { relayConfigured, twimlConnectRelay, parseRelayFrame, relaySpeak, relayEnd, parseRelayPlanRequest, composePacingRule } from "../lib/voice/conversation-relay"
 import { validateA2pProfile, nextA2pStep, describeA2pState } from "../lib/voice/a2p-registration"
 import { rollupVoiceActivity, composeVoiceActivityBrief } from "../lib/kernel/call-intelligence"
@@ -316,9 +317,17 @@ console.log("\n── SOURCE: wiring ──")
 
   // ── OUTBOUND lane wiring ──
   const outboundLib = src("lib/voice/twilio-outbound.ts")
-  check("OUTBOUND: TCPA chokepoint + budget gate run BEFORE the Twilio dial (fails closed)",
-    outboundLib.indexOf("enforceTCPACompliance") < outboundLib.indexOf("callConnector")
-    && outboundLib.includes("checkVendorBudget") && outboundLib.includes('estimatePlatformVendorCost("twilio_voice"'))
+  // ASSERT THE CONSTRUCT, NOT THE SPELLING. This used to read
+  // `indexOf("enforceTCPACompliance") < indexOf("callConnector")` in THIS file,
+  // which broke the moment the gates were correctly consolidated into
+  // lib/voice/outbound-call-gates.ts (wave 8). What must hold is: the executor
+  // runs the whole gate stack before it dials, and the stack really contains
+  // the TCPA and budget gates — both checked against the exported gate list.
+  check("OUTBOUND: the gate stack runs BEFORE the Twilio dial",
+    outboundLib.indexOf("runOutboundCallGates") >= 0
+    && outboundLib.indexOf("runOutboundCallGates") < outboundLib.indexOf("callConnector"))
+  check("OUTBOUND: that stack still contains the TCPA chokepoint + the vendor budget ceiling",
+    OUTBOUND_CALL_GATE_ORDER.includes("tcpa") && OUTBOUND_CALL_GATE_ORDER.includes("vendor_budget"))
   check("OUTBOUND: machine detection + status callback registered at dial time",
     outboundLib.includes('MachineDetection: "Enable"') && outboundLib.includes("/api/voice/twilio/status"))
   const outboundRoute = src("app/api/voice/twilio/outbound/route.ts")

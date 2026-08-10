@@ -3,15 +3,25 @@
 // OUTBOUND AI CALLS ON THE TWILIO-NATIVE LANE (owner: "no longer vapi") — the
 // ISA's outbound dial rides the same turn-based serverless engine as inbound
 // reception: POST /Calls.json with our answer webhook, machine detection on,
-// the same reception-brain turn loop after connect. The GOVERNANCE ORDER is
-// identical to the Vapi lane it replaces and runs BEFORE any Twilio request:
-//   1. TCPA chokepoint (DNC / consent / quiet-hours / RND — fails closed)
-//   2. Vendor budget gate (over-ceiling brokerages pause outbound voice)
+// the same reception-brain turn loop after connect. The GOVERNANCE ORDER runs
+// BEFORE any Twilio request and lives in ONE place —
+// lib/voice/outbound-call-gates.ts:OUTBOUND_CALL_GATES:
+//   1. Autonomy boundary (a governed manager may only dial unattended within
+//      its proven trust boundary; opt-in by managerKey/systemSource)
+//   2. Suppression (contact flags AND contact_suppression_list — fails closed)
+//   3. TCPA chokepoint (DNC / consent / quiet-hours / RND — fails closed)
+//   4. De-conflict (over-touch suppression, 1 call / 7 days by default)
+//   5. Vendor budget gate (over-ceiling brokerages pause outbound voice)
+// Gates 1, 2 and 4 arrived in wave 8 from lib/providers/dispatch.ts:dispatchPhone
+// (deleted; this function is the survivor) — until then a contact suppressed on
+// the LIST rather than on the dnc_status FLAG could still be dialled here,
+// because enforceTCPACompliance reads the flag and never the list.
 // The call brief (objective + optional ISA persona prompt) travels in the
 // voice_calls row's ai_notes as compact JSON — the answer/turn webhooks rebuild
 // the brain from it per turn (serverless: the row IS the session).
 
 import { withAiCallDisclosures } from "@/lib/communication/call-disclosures"
+import type { ManagerKey } from "@/lib/kernel/manager-registry"
 
 export interface OutboundCallBrief {
   engine: "twilio"
@@ -71,6 +81,20 @@ export interface PlaceOutboundParams {
   firstMessage?: string | null
   systemPrompt?: string | null
   transactional?: boolean
+  /** Unconverted LEAD origin, when the dial came from a lead rather than a
+   *  promoted contact — gives the lead the same over-touch protection
+   *  (de-conflict counts lead touches from isa_outreach_log). */
+  leadId?: string | null
+  /** Attribution for the de-conflict audit row; also the signal the autonomy
+   *  gate infers a governed manager from (SYSTEM_SOURCE_TO_MANAGER). */
+  systemSource?: string
+  /** The governed AI manager placing this call. Set ONLY for AUTONOMOUS
+   *  (unattended) manager dials — it arms the autonomy gate. Deliberately
+   *  unset by default: an agent clicking "call" in the UI is a human decision
+   *  and must never be held by an autonomy posture. */
+  managerKey?: ManagerKey | null
+  /** A human approved this call (approval queue) — bypasses the autonomy gate. */
+  humanApproved?: boolean
 }
 
 export type PlaceOutboundResult =
@@ -78,37 +102,33 @@ export type PlaceOutboundResult =
   | { ok: false; error: string; blocked?: boolean; blockReason?: string }
 
 /**
- * Place an outbound AI call on the Twilio-native lane. Same gates, same ledger,
- * different engine: TCPA + budget first, tenant's own number + creds (BYO →
- * subaccount → master), machine detection, honest errors — a failed dial never
- * fabricates a voice_calls row claiming success.
+ * Place an outbound AI call on the Twilio-native lane. Same ledger, one gate
+ * stack: every pre-dial gate runs first (autonomy → suppression → TCPA →
+ * de-conflict → vendor budget, all in lib/voice/outbound-call-gates.ts), then
+ * the tenant's own number + creds (BYO → subaccount → master), machine
+ * detection, honest errors — a failed dial never fabricates a voice_calls row
+ * claiming success.
  */
 export async function placeOutboundAiCall(svc: any, params: PlaceOutboundParams): Promise<PlaceOutboundResult> {
-  // 1. TCPA chokepoint — identical to the Vapi lane it replaces; fails closed.
-  const { enforceTCPACompliance } = await import("@/lib/communication/tcpa-gate")
-  const gate = await enforceTCPACompliance({
-    channel: "call",
-    phone: params.toNumber,
-    contactId: params.contactId,
+  // 1. THE GATE STACK — every deterministic refusal, cheapest first, money last,
+  //    all of it BEFORE anything that dials. A refusal short-circuits, so a
+  //    suppressed or non-consenting recipient never reaches the budget read and
+  //    never reaches Twilio. Refusals already carry a real reason string.
+  const { runOutboundCallGates } = await import("@/lib/voice/outbound-call-gates")
+  const refusal = await runOutboundCallGates({
     brokerageId: params.brokerageId,
+    toNumber: params.toNumber,
+    contactId: params.contactId,
+    leadId: params.leadId ?? null,
     initiatedBy: params.initiatedBy ?? null,
     transactional: params.transactional ?? false,
+    systemSource: params.systemSource,
+    managerKey: params.managerKey ?? null,
+    humanApproved: params.humanApproved,
   })
-  if (!gate.allowed) {
-    return { ok: false, error: gate.message ?? "TCPA gate blocked the call", blocked: true, blockReason: gate.blockReason }
-  }
+  if (refusal) return refusal
 
-  // 2. Vendor budget gate — over-ceiling tenants pause outbound voice.
-  try {
-    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
-    const { estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
-    const budget = await checkVendorBudget({ brokerageId: params.brokerageId, addCost: estimatePlatformVendorCost("twilio_voice", 3) })
-    if (!budget.allowed) {
-      return { ok: false, error: "Vendor budget exceeded — outbound voice paused", blocked: true, blockReason: "vendor_budget_exceeded" }
-    }
-  } catch { /* budget read failure never blocks a compliant call */ }
-
-  // 3. FROM number: the agent's own line first (contacts recognize it), else
+  // 2. FROM number: the agent's own line first (contacts recognize it), else
   //    any active brokerage line — dialing needs a real tenant number; no
   //    shared-platform fallback on this lane (caller ID honesty).
   let numQ = svc.from("tenant_phone_numbers")
@@ -130,7 +150,7 @@ export async function placeOutboundAiCall(svc: any, params: PlaceOutboundParams)
   if (!appUrl) return { ok: false, error: "NEXT_PUBLIC_APP_URL not set — the answer webhook can't be registered. No call was placed." }
   const base = appUrl.replace(/\/$/, "")
 
-  // 4. Dial.
+  // 3. Dial.
   const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
   const res = await callConnector<{ sid?: string }>({
     connector: "twilio",
@@ -153,7 +173,7 @@ export async function placeOutboundAiCall(svc: any, params: PlaceOutboundParams)
     return { ok: false, error: `Twilio dial failed (${res.status ?? "—"}): ${res.error ?? "unknown"}` }
   }
 
-  // 5. The ledger row IS the session — the answer/turn webhooks rebuild the
+  // 4. The ledger row IS the session — the answer/turn webhooks rebuild the
   //    brain from ai_notes. Insert failure is surfaced (the call is live but
   //    the turn webhook can't run without its session row).
   const { data: row, error: insErr } = await svc.from("voice_calls").insert({

@@ -90,6 +90,12 @@ export async function initiateVoiceCall(
       brokerageId: contact.brokerage_id,
       agentUserId,
       objective: 'Follow up with this contact for the agent: confirm what they need next (buying, selling, or a question), and offer to book time with the agent.',
+      // ARMS THE AUTONOMY GATE. This is an UNATTENDED dial from the sequence
+      // engine — no human is at a keyboard — so it must be held when the
+      // campaign_orchestrator is outside its trust boundary (god switch, tenant
+      // halt, posture, accuracy gate). SYSTEM_SOURCE_TO_MANAGER maps
+      // 'sequence' → campaign_orchestrator; the gate is a no-op without it.
+      systemSource: 'sequence',
     })
     if (!placed.ok) return { success: false, error: placed.error }
     return { success: true, callId: placed.voiceCallId ?? undefined, vendorCallId: placed.callSid }

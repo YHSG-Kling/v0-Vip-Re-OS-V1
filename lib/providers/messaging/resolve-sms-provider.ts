@@ -165,10 +165,20 @@ export async function resolveSMSProviderForActor(
   throw new Error("No SMS provider is configured. Add credentials in Settings → Integrations.")
 }
 
-/** Backwards-compat wrapper — callers that don't yet have userId context. */
-export async function resolveSMSProviderForBrokerage(
-  brokerageId: string | null | undefined,
-): Promise<ResolvedSMSProvider> {
-  return resolveSMSProviderForActor({ brokerageId: brokerageId ?? null })
-}
+// ─── `resolveSMSProviderForBrokerage` — DELETED (wave 8) ─────────────────────
+// SURVIVOR: resolveSMSProviderForActor, immediately above (this same file).
+//
+// It was a pure delegation wrapper — its entire body was
+// `return resolveSMSProviderForActor({ brokerageId: brokerageId ?? null })` —
+// introduced as a "backwards-compat wrapper for callers that don't yet have
+// userId context". There were no such callers anywhere in the tree, and there
+// is nothing for a caller to gain by going through it: ResolveSMSContext's
+// fields are ALL optional, so `resolveSMSProviderForActor({ brokerageId })` is
+// the same call with the same cascade, one less indirection, and the option of
+// adding userId/teamId later without changing function.
+//
+// NOTHING TO MERGE, verified rather than assumed: the wrapper narrowed the
+// context and added no branch, no fallback and no error handling of its own —
+// the brokerage tier, the platform-managed tenant-number tier and the env
+// fallback all live in the survivor and are reached identically either way.
 

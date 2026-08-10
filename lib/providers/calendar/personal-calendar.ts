@@ -24,6 +24,24 @@ import type {
 const GOOGLE_CAL = "https://www.googleapis.com/calendar/v3"
 const GRAPH = "https://graph.microsoft.com/v1.0"
 
+/**
+ * READINESS PREDICATE for this connection: does this agent have a Google or
+ * Microsoft account connected with a token we can still use? True means the
+ * create/availability paths above will hit a REAL calendar; false means
+ * lib/providers/calendar/index.ts takes its mock branch (a fabricated event id,
+ * generic business-hours slots) and nothing lands anywhere.
+ *
+ * WIRED (w8): app/dashboard/settings/calendar/page.tsx — the "Your Bookings
+ * Calendar" panel. That page previously only described
+ * calendar_provider_accounts, a registry that stores no OAuth token, so the
+ * connection that actually receives bookings had no status anywhere in the
+ * product.
+ *
+ * False is deliberately not split into "never connected" vs "token expired":
+ * getFreshPersonalToken cannot tell the two apart without a second read, and
+ * the remedy — connect/reconnect the account — is the same either way. The
+ * surface says exactly that rather than guessing.
+ */
 export async function hasPersonalCalendar(agentUserId: string, owner?: EmailOwner): Promise<boolean> {
   return (await getFreshPersonalToken(agentUserId, owner).catch(() => null)) != null
 }

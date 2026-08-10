@@ -173,6 +173,10 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
     contactName: contact.first_name,
     firstMessage: ctx.firstMessage ?? null,
     systemPrompt: ctx.systemPrompt ?? null,
+    // ARMS THE AUTONOMY GATE — unattended ISA campaign dial, no human present.
+    // SYSTEM_SOURCE_TO_MANAGER maps 'ai_isa' → ai_isa; without this the gate
+    // resolves no manager and is a no-op.
+    systemSource: "ai_isa",
   })
   if (!placed.ok) return { success: false, error: placed.error }
   const callData = { id: placed.callSid, status: "initiated", createdAt: new Date().toISOString() }

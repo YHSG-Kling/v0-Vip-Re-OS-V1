@@ -576,14 +576,10 @@
     "lib/property/neighborhood-scoring.ts": 2,
     "lib/property/rentcast.ts": 1,
     "lib/property-risk/deal-killer-runner.ts": 1,
-    "lib/providers/calendar/personal-calendar.ts": 1,
-    "lib/providers/dispatch.ts": 1,
     "lib/providers/email/personal-email-adapter.ts": 1,
-    "lib/providers/messaging/resolve-sms-provider.ts": 1,
     "lib/providers/messaging/sms-adapters.ts": 2,
     "lib/providers/outbound-sender.ts": 3,
     "lib/providers/payment/index.ts": 3,
-    "lib/providers/tenancy-matrix.ts": 1,
     "lib/recruiting/career-tier.ts": 4,
     "lib/recruiting/challenge-runner.ts": 1,
     "lib/recruiting/leaderboard.ts": 3,
@@ -670,7 +666,6 @@
     "lib/voice/twilio-voice.ts": 1,
     "lib/voice/voice-bus.ts": 2,
     "lib/voice/voice-coverage.ts": 2,
-    "lib/voice/voice-resolver.ts": 1,
     "lib/voice-admin/kernel-command-surface.ts": 1,
     "lib/voice-admin/plan-voice-command.ts": 2,
     "lib/wealth-advisor/fetch-market-rates.ts": 1,
@@ -683,7 +678,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 8988,
+  "census": 8986,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -3949,13 +3944,13 @@
     "lib/providers/calendar/index.ts": 4,
     "lib/providers/calendar/personal-calendar.ts": 5,
     "lib/providers/content-safety.ts": 1,
-    "lib/providers/dispatch.ts": 5,
+    "lib/providers/dispatch.ts": 4,
     "lib/providers/email/personal-email-adapter.ts": 3,
     "lib/providers/esign/index.ts": 6,
     "lib/providers/inbound-router.ts": 1,
     "lib/providers/mailing-cass-gate.ts": 2,
     "lib/providers/messaging/index.ts": 4,
-    "lib/providers/messaging/resolve-sms-provider.ts": 2,
+    "lib/providers/messaging/resolve-sms-provider.ts": 1,
     "lib/providers/messaging/sms-adapters.ts": 4,
     "lib/providers/outbound-sender.ts": 7,
     "lib/providers/payment/index.ts": 7,
@@ -4191,6 +4186,7 @@
     "lib/voice/isa-readiness-copy.ts": 1,
     "lib/voice/isa-readiness.ts": 1,
     "lib/voice/number-provisioning.ts": 4,
+    "lib/voice/outbound-call-gates.ts": 1,
     "lib/voice/parse-team-command.ts": 1,
     "lib/voice/platform-reception.ts": 7,
     "lib/voice/reception-brain.ts": 8,
@@ -4210,7 +4206,7 @@
     "lib/voice/voice-bus.ts": 3,
     "lib/voice/voice-coverage.ts": 2,
     "lib/voice/voice-report-format.ts": 2,
-    "lib/voice/voice-resolver.ts": 3,
+    "lib/voice/voice-resolver.ts": 2,
     "lib/voice/warm-transfer.ts": 7,
     "lib/voice-admin/kernel-command-surface.ts": 4,
     "lib/voice-admin/plan-voice-command.ts": 2,
@@ -18898,7 +18894,6 @@
     "lib/providers/dispatch.ts": [
       "dispatchEmail",
       "dispatchSms",
-      "dispatchPhone",
       "dispatchDirectMail",
       "dispatchVideo"
     ],
@@ -18929,8 +18924,7 @@
       "sendEmail"
     ],
     "lib/providers/messaging/resolve-sms-provider.ts": [
-      "resolveSMSProviderForActor",
-      "resolveSMSProviderForBrokerage"
+      "resolveSMSProviderForActor"
     ],
     "lib/providers/messaging/sms-adapters.ts": [
       "sendViaTwilio",
@@ -20074,6 +20068,9 @@
       "provisionNumber",
       "releaseNumber"
     ],
+    "lib/voice/outbound-call-gates.ts": [
+      "runOutboundCallGates"
+    ],
     "lib/voice/parse-team-command.ts": [
       "parseTeamCommandText"
     ],
@@ -20186,8 +20183,7 @@
     ],
     "lib/voice/voice-resolver.ts": [
       "resolveSelfVoice",
-      "resolveSelfAvatar",
-      "resolveContactFacing"
+      "resolveSelfAvatar"
     ],
     "lib/voice/warm-transfer.ts": [
       "composeWhisperBriefing",
@@ -20368,5 +20364,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 298
+  "trulyDead": 292
 }

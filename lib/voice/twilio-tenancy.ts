@@ -27,7 +27,16 @@ export interface TwilioCreds {
   tier: "byo" | "subaccount" | "master"
 }
 
-/** PURE: pick the credential tier from what exists. */
+/**
+ * PURE: pick the credential tier from what exists. BYO beats the platform
+ * subaccount beats the master fallback — the order the banner above declares.
+ *
+ * This is the ONE place that decision is made. `resolveTenantTwilioCreds` used
+ * to restate the same ladder inline as three sequential `if`s, so the ladder
+ * lived in two places and only the impure one could be exercised (it needs a
+ * DB and two env vars). Keeping the ORDER here and the FETCHING there is what
+ * makes the ordering testable at all.
+ */
 export function pickCredTier(has: { byo: boolean; subaccount: boolean; master: boolean }): TwilioCreds["tier"] | null {
   if (has.byo) return "byo"
   if (has.subaccount) return "subaccount"
@@ -35,21 +44,46 @@ export function pickCredTier(has: { byo: boolean; subaccount: boolean; master: b
   return null
 }
 
-/** Resolve the Twilio credentials this brokerage's phone operations should use. */
+/**
+ * Resolve the Twilio credentials this brokerage's phone operations should use.
+ * Fetches what exists, then asks `pickCredTier` which one wins.
+ *
+ * FAILS CLOSED on a refused read (w8). supabase-js RESOLVES a rejected query
+ * with `{ data: null, error }`, and this function used to destructure only
+ * `data` — so an RLS refusal or a transport error read as "this tenant has no
+ * credentials on file" and fell straight through to the PLATFORM MASTER
+ * account. That is not a degraded answer, it is the wrong tenant's account:
+ * the call would be placed and BILLED on the platform's own Twilio, from a
+ * number the brokerage does not own. A refusal now returns null (honest
+ * not-configured), which every caller already handles because null is also the
+ * answer when nothing is configured. Zero ROWS still falls through to master —
+ * that is the documented legacy path and it is a fact, not a failure.
+ */
 export async function resolveTenantTwilioCreds(svc: any, brokerageId: string): Promise<TwilioCreds | null> {
-  const { data: rows } = await svc.from("platform_credentials")
+  const { data: rows, error } = await svc.from("platform_credentials")
     .select("platform, account_id, access_token")
     .eq("brokerage_id", brokerageId)
     .in("platform", ["twilio_byo", "twilio_subaccount"])
     .eq("is_active", true)
+  if (error) return null
+
   const byo = ((rows ?? []) as any[]).find((r) => r.platform === "twilio_byo")
   const sub = ((rows ?? []) as any[]).find((r) => r.platform === "twilio_subaccount")
-  if (byo?.account_id && byo?.access_token) return { accountSid: byo.account_id, authToken: byo.access_token, tier: "byo" }
-  if (sub?.account_id && sub?.access_token) return { accountSid: sub.account_id, authToken: sub.access_token, tier: "subaccount" }
   const masterSid = process.env.TWILIO_ACCOUNT_SID
   const masterToken = process.env.TWILIO_AUTH_TOKEN
-  if (masterSid && masterToken) return { accountSid: masterSid, authToken: masterToken, tier: "master" }
-  return null
+
+  const tier = pickCredTier({
+    byo: !!(byo?.account_id && byo?.access_token),
+    subaccount: !!(sub?.account_id && sub?.access_token),
+    master: !!(masterSid && masterToken),
+  })
+
+  switch (tier) {
+    case "byo":        return { accountSid: byo.account_id, authToken: byo.access_token, tier }
+    case "subaccount": return { accountSid: sub.account_id, authToken: sub.access_token, tier }
+    case "master":     return { accountSid: masterSid!, authToken: masterToken!, tier }
+    default:           return null
+  }
 }
 
 /**

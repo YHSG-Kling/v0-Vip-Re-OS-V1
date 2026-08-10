@@ -504,6 +504,13 @@ async function dispatchToChannel(
       contactName:  lead.first_name ?? contactRow.first_name ?? null,
       firstMessage: callContext.firstMessage ?? null,
       systemPrompt: callContext.systemPrompt ?? null,
+      // ARMS THE AUTONOMY GATE — unattended qualification dial on a raw lead.
+      // `leadId` is passed too so the suppression and de-conflict gates can key
+      // on the LEAD as well as the contact row minted for it: this path calls
+      // people who exist as a lead first, and suppression recorded against the
+      // lead must still bind.
+      systemSource: "ai_isa",
+      leadId:       lead.id ?? null,
     })
     if (!placed.ok) {
       console.error('[AI-ISA] Twilio call failed, falling back to email:', placed.error)

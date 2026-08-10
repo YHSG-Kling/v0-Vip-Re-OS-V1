@@ -104,9 +104,11 @@ export async function updateMyProspectVoice(params: {
  * platform's own standing rule that nobody else's face is ever used as a
  * fallback or a substitute.
  *
- * (Contact-facing surfaces are unaffected either way — `resolveContactFacing`
- * always uses the agent's own clone — but self-view is still this agent's
- * identity, and the twin it names still belongs to someone.)
+ * (Contact-facing surfaces are unaffected either way — they resolve through
+ * `lib/video/video-identity.ts:resolveVideoIdentity` with purpose
+ * "contact_facing", which always uses the licensed human's own
+ * agent_voice_profiles clone and never reads this column — but self-view is
+ * still this agent's identity, and the twin it names still belongs to someone.)
  *
  * WIRED (w3): the "The face you see" picker in
  * app/dashboard/settings/assistant/listening-preferences-panel.tsx. The page

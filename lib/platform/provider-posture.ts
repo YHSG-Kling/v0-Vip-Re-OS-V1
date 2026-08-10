@@ -36,7 +36,7 @@ import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import type { A2pState } from "@/lib/voice/a2p-registration"
 import { nextA2pStep } from "@/lib/voice/a2p-registration"
 import { CONNECTOR_REGISTRY } from "@/lib/agentic-os/connector-registry"
-import { PROVIDER_TENANCY } from "@/lib/providers/tenancy-matrix"
+import { PROVIDER_TENANCY, providerTenancy, type TenancyModel } from "@/lib/providers/tenancy-matrix"
 import { PLATFORM_VENDORS, USER_CONNECTED_VENDORS } from "@/lib/agentic-os/vendor-ownership"
 import { PLATFORM_PROVIDER_KEYS, PROBE_SPECS } from "@/lib/agentic-os/connector-probe"
 import { VENDOR_PRICING } from "@/lib/vendor-governance/cost-normalizer"
@@ -1119,6 +1119,20 @@ export interface BrokerageReadinessInput {
   envConfigured: boolean | null
   /** This brokerage has an active credential/connection row for this provider. */
   tenantConnected: boolean
+  /**
+   * Can THIS TENANT actually go and turn the lane on themselves?
+   *
+   * `scope` is a lossy fold: getPlatformProviderRegistry collapses the tenancy
+   * matrix's five models into a platform/tenant boolean pair, and `byo_top_tier`
+   * — an enterprise escape hatch the matrix scopes to the multi_location tier —
+   * lands in the same bucket as `user_oauth`. So Twilio, whose whole product
+   * promise is "tenants never touch a Twilio signup", read as the broker's move.
+   *
+   * `undefined` means unknown → treated as actionable, which is the behaviour
+   * every caller had before this field existed. Only an explicit `false`
+   * reassigns the work to platform staff.
+   */
+  tenantActionable?: boolean
 }
 
 /**
@@ -1137,11 +1151,67 @@ export function resolveBrokerageReadinessState(
     return { state: "live_platform", ready: true }
   }
   // BYO lanes the tenant can still turn on themselves.
-  if (input.scope === "tenant_byo" || input.scope === "both") {
+  if ((input.scope === "tenant_byo" || input.scope === "both") && input.tenantActionable !== false) {
     return { state: "needs_connection", ready: false }
   }
   // Platform-scoped but the key is absent — nothing the tenant can do; staff owns it.
   return { state: "platform_dark", ready: false }
+}
+
+// ── The tenancy decision, read from the matrix rather than re-derived ─────────
+//
+// PROVIDER_TENANCY is the owner's ONE ruling on who owns each vendor
+// relationship, and lib/providers/tenancy-matrix.ts:providerTenancy is its
+// lookup. Above, the registry builder reads that table for its ENV VARS and
+// folds the five models into two booleans; the readiness surface then had no
+// way back to the ruling itself, so it answered "whose job is this?" from the
+// fold and got Twilio wrong. These two helpers ask the matrix directly.
+//
+// Deliberately NOT exported: their only consumer is
+// getBrokerageProviderReadiness below, and an exported helper with no
+// cross-file caller is a brand-new orphan in the file that measures them.
+
+/** Models that put the switch in the TENANT's hands (they connect their own
+ *  account / key). `byo_top_tier` is NOT one: the matrix scopes it to the
+ *  multi_location tier, so it is an enterprise option, never the broker's
+ *  to-do. */
+const TENANT_INITIATED_MODELS: readonly TenancyModel[] = ["user_oauth", "tenant_optional_key"]
+
+/** Is the remaining work this tenant's, per the tenancy matrix? `undefined` =
+ *  the provider has no matrix row (the per-lane scraper entries, and every
+ *  provider that reaches the registry only through the connector/capability
+ *  vocabularies), so the caller keeps its prior behaviour. */
+function tenantActionableFor(provider: string): boolean | undefined {
+  const t = providerTenancy(provider)
+  if (!t) return undefined
+  return t.models.some((m) => TENANT_INITIATED_MODELS.includes(m))
+}
+
+/** The honest one-liner for a state, sharpened by the provider's declared
+ *  tenancy when the matrix has a ruling for it. */
+function readinessNote(state: BrokerageReadinessState, provider: string): string {
+  const t = providerTenancy(provider)
+  if (!t) return READINESS_NOTE[state]
+
+  if (state === "needs_connection") {
+    if (t.models.includes("user_oauth")) {
+      return "Connect your own account — this lane runs on your identity, not the platform's."
+    }
+    if (t.models.includes("tenant_optional_key")) {
+      return "The platform key covers this; connect your own only if you want the usage on your account."
+    }
+    return READINESS_NOTE[state]
+  }
+
+  if (state === "platform_dark") {
+    const platformRun = t.models.includes("platform_subaccount") || t.models.includes("platform_metered")
+    if (platformRun && t.models.includes("byo_top_tier")) {
+      return "Not yet enabled at the platform level. The platform provisions this for you — bringing your own account is a multi-location-tier option, never a requirement."
+    }
+    if (platformRun) return "Not yet enabled at the platform level — nothing for you to set up; it is provided with your plan."
+  }
+
+  return READINESS_NOTE[state]
 }
 
 export interface BrokerageProviderReadinessRow {
@@ -1226,8 +1296,10 @@ export async function getBrokerageProviderReadiness(
       scope: e.scope,
       envConfigured,
       tenantConnected: connected.has(e.provider),
+      // The tenancy matrix's own ruling, not the registry's platform/tenant fold.
+      tenantActionable: tenantActionableFor(e.provider),
     })
-    return { provider: e.provider, label: e.label, category: e.category, scope: e.scope, state, ready, note: READINESS_NOTE[state] }
+    return { provider: e.provider, label: e.label, category: e.category, scope: e.scope, state, ready, note: readinessNote(state, e.provider) }
   })
 
   // Ready first, then needs-connection (tenant-actionable) ahead of platform-dark, then by category.

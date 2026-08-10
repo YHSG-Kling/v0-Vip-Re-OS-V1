@@ -1,28 +1,45 @@
 /**
  * lib/voice/voice-resolver.ts
  *
- * Resolves the right ElevenLabs voice ID + DID avatar ID for any speaking
- * surface. Two contexts:
+ * SELF ONLY. Resolves the ElevenLabs voice ID + D-ID avatar ID for what the
+ * AGENT hears/sees in their OWN surfaces — the morning brief, the standup
+ * audio, the assistant chat, the internal TTS endpoint. It honors
+ * agents.voice_preference: 'clone' → voice_id, 'generic' → assistant_voice_id
+ * (or the platform fallback), and the same shape for the avatar
+ * (assistant_avatar_id, the self-view twin, before the clone).
  *
- *   1. SELF — what the agent hears/sees in their own assistant + brief.
- *      Honors agents.voice_preference: 'clone' → voice_id, 'generic' →
- *      assistant_voice_id (or platform fallback). Same pattern for avatar.
+ * Those self-view preferences are exactly why this module MUST NOT be used for
+ * anything a CONTACT hears or sees.
  *
- *   2. CONTACT_FACING — what a contact (buyer/seller/lifetime customer)
- *      hears/sees when interacting with their agent's portal AI chat or
- *      avatar call. ALWAYS uses the agent's clone — that's the whole point:
- *      the contact feels they're talking to their actual agent.
+ * ── WHO FRONTS A CONTACT-FACING SURFACE (w8) ─────────────────────────────────
+ * `resolveContactFacing` used to live here as the contact-facing half of a
+ * pair. It was DELETED as a duplicate; the survivor is
+ * `lib/video/video-identity.ts:resolveVideoIdentity` called with
+ * `purpose: "contact_facing"`, which already fronts the listing pitch reel and
+ * the Deal Room reel and is proof-locked by scripts/no-brokerage-face-guard.ts.
+ * The survivor does the same job more completely:
  *
- * All resolution returns the FALLBACK_VOICE_ID / null avatar gracefully so
- * callers never crash on missing data.
+ *   · it reads agent_voice_profiles (elevenlabs_voice_id + did_photo_url) —
+ *     the twin pipeline's own source of truth, honoring the profile the agent
+ *     SELECTED in voice_assistant_config before their default one. This module
+ *     read agents.voice_id, which lib/voice/sync-voice-id.ts documents as a
+ *     PROMOTED COPY of that same column, and agents.avatar_id, which has ZERO
+ *     writers anywhere in the tree — so the deleted function's avatar half
+ *     could only ever return null.
+ *   · it returns voiceId/avatarPhotoUrl as NULL when the agent has no twin, so
+ *     the caller refuses honestly. The deleted function substituted
+ *     FALLBACK_VOICE_ID — a stranger's voice under the agent's name, the same
+ *     defect class the no-brokerage-face rule forbids. That behaviour was
+ *     deliberately NOT ported.
+ *
+ * The self resolvers below keep the fallback: a stock voice reading YOUR OWN
+ * brief to you is a convenience, not a misrepresentation.
  */
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { FALLBACK_VOICE_ID } from "./elevenlabs-tts"
 import { ASSISTANT_VOICE_OPTIONS } from "@/lib/video/assistant-options"
-
-export type VoiceContext = "self" | "contact_facing"
 
 export interface ResolvedVoice {
   voiceId: string                        // always populated (falls back to FALLBACK_VOICE_ID)
@@ -88,73 +105,6 @@ export async function resolveSelfAvatar(agentUserId: string): Promise<ResolvedAv
     return { avatarId: agent.avatar_id, source: "agent_clone" }
   }
   return { avatarId: null, source: "none" }
-}
-
-// ---------------------------------------------------------------------------
-// CONTACT-FACING — contact hearing/seeing their agent
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve the voice + avatar a CONTACT should hear/see when interacting
- * with their assigned agent's AI surface (portal AI chat, video call, etc.).
- *
- * Always uses the agent's clone — voice_preference is irrelevant here.
- */
-export async function resolveContactFacing(contactId: string): Promise<{
-  voice: ResolvedVoice
-  avatar: ResolvedAvatar
-  agentName: string | null
-}> {
-  const svc = createServiceClient()
-
-  // Find the contact's assigned agent
-  const { data: contact } = await svc
-    .from("contacts")
-    .select("agent_id")
-    .eq("id", contactId)
-    .maybeSingle()
-
-  if (!contact?.agent_id) {
-    return {
-      voice: { voiceId: FALLBACK_VOICE_ID, source: "platform_fallback" },
-      avatar: { avatarId: null, source: "none" },
-      agentName: null,
-    }
-  }
-
-  const { data: agent } = await svc
-    .from("agents")
-    .select("voice_id, avatar_id, user_id")
-    .eq("id", contact.agent_id)
-    .maybeSingle()
-
-  if (!agent) {
-    return {
-      voice: { voiceId: FALLBACK_VOICE_ID, source: "platform_fallback" },
-      avatar: { avatarId: null, source: "none" },
-      agentName: null,
-    }
-  }
-
-  let agentName: string | null = null
-  if (agent.user_id) {
-    const { data: u } = await svc
-      .from("users")
-      .select("first_name, last_name")
-      .eq("id", agent.user_id)
-      .maybeSingle()
-    agentName = [u?.first_name, u?.last_name].filter(Boolean).join(" ") || null
-  }
-
-  return {
-    voice: agent.voice_id
-      ? { voiceId: agent.voice_id, source: "agent_clone" }
-      : { voiceId: FALLBACK_VOICE_ID, source: "platform_fallback" },
-    avatar: agent.avatar_id
-      ? { avatarId: agent.avatar_id, source: "agent_clone" }
-      : { avatarId: null, source: "none" },
-    agentName,
-  }
 }
 
 // ---------------------------------------------------------------------------

@@ -2,7 +2,11 @@
  * OUTBOUND DISPATCH LAYER
  * lib/providers/dispatch.ts
  *
- * Single entry point for all outbound comms: email, SMS, phone, direct mail.
+ * Single entry point for outbound comms: email, SMS, direct mail (+ the D-ID
+ * video RENDER-AND-DELIVER path). PHONE IS NOT HERE: an outbound voice call goes
+ * through lib/voice/twilio-outbound.ts:placeOutboundAiCall, which owns the one
+ * pre-dial gate stack (lib/voice/outbound-call-gates.ts) — see the PHONE section
+ * below for why the second one was merged into it.
  * Provider selection is always resolved via kernel/providers.ts cascade:
  *   user → team → brokerage → superadmin → system default
  * Never hardcode a provider name in feature code — use these dispatchers.
@@ -15,17 +19,19 @@
  *
  * direct_mail and the video renderer are SYSTEM_ONLY: superadmin-controlled, no
  * per-brokerage override.
- * SMS and phone are supported via the existing Twilio messaging provider.
+ * SMS is supported via the existing Twilio messaging provider.
  */
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const LobSDK = require("lob")
 
 import { resolveProvider } from "@/lib/kernel/providers"
+// placeCall is deliberately NOT imported here any more: the phone dispatcher was
+// merged into lib/voice/twilio-outbound.ts:placeOutboundAiCall (see the PHONE
+// section below). The raw TwiML dial still has its own live caller.
 import {
   sendEmail as messagingSendEmail,
   sendSMS as messagingSendSMS,
-  placeCall as messagingPlaceCall,
 } from "@/lib/providers/messaging"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
 import { normalizeVendorCost } from "@/lib/vendor-governance/cost-normalizer"
@@ -153,7 +159,7 @@ interface DispatchResult {
 // communication; only an AFFIRMATIVE over-ceiling verdict blocks.
 async function vendorBudgetPreflight(args: {
   brokerageId: string
-  channel: "email" | "sms" | "phone" | "direct_mail"
+  channel: "email" | "sms" | "direct_mail"
   vendorKey: string
   /** Estimated USD cost of this send — keep in lockstep with the metered figure below. */
   addCost: number
@@ -684,140 +690,35 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
   return result
 }
 
-// ─── PHONE (outbound call) ────────────────────────────────────────────────────
-
-export interface DispatchPhoneParams extends DispatchActorContext {
-  to: string
-  /** TwiML URL that controls the call flow */
-  twimlUrl: string
-  metadata?: Record<string, unknown>
-}
-
-export async function dispatchPhone(params: DispatchPhoneParams): Promise<DispatchResult> {
-  // ── AUTONOMY GATE: hold an autonomous send from a manager outside its trust boundary ──
-  const autonomyHeld = await autonomyGate(params)
-  if (autonomyHeld) return autonomyHeld
-  // ── COMPLIANCE GATE: Check if contact is eligible for phone calls ───────────
-  if (params.contactId || params.leadId) {
-    const supabase = await createServiceClient()
-    const recipientId = params.contactId || params.leadId
-    const table = params.contactId ? "contacts" : "leads"
-
-    // Final straggler gate (1/2): comprehensive suppression check — contact flags
-    // (dnc_status / call_stop_flag) AND contact_suppression_list, brokerage-scoped.
-    // The contact-flag-only gate below misses list-only entries.
-    const suppression = await checkSuppression({
-      brokerageId: params.brokerageId,
-      contactId: params.contactId ?? null,
-      email: null,
-      phone: params.to ?? null,
-      channel: "phone",
-    })
-    if (suppression.suppressed) {
-      console.warn(`[Dispatch] Phone call blocked for ${recipientId}: ${suppression.reason}`)
-      return {
-        success: false,
-        providerKey: "compliance_gate",
-        error: `Outbound blocked: ${suppression.reason}`,
-      }
-    }
-
-    const { data: recipient, error: recipientError } = await supabase
-      .from(table)
-      .select("*")
-      .eq("id", recipientId)
-      .maybeSingle()
-
-    if (!recipientError && recipient) {
-      const complianceResult = await evaluateOutboundCompliance({
-        contact: recipient,
-        channel: "phone",
-        content: "Outbound call",
-        actorContext: {
-          brokerageId: params.brokerageId,
-          actorType: params.systemSource?.includes("ai_isa") ? "ai_isa" : "system",
-          userId: params.userId,
-        },
-      })
-
-      if (!complianceResult.allowed) {
-        console.warn(
-          `[Dispatch] Phone call blocked for ${recipientId}: ${complianceResult.primaryReason}`
-        )
-        return {
-          success: false,
-          providerKey: "compliance_gate",
-          error: `Outbound blocked: ${complianceResult.primaryReason}`,
-        }
-      }
-    }
-
-    // ── De-Conflict gate (over-touch suppression) ────────────────────────────
-    const deferred = await deconflictGate({
-      brokerageId:    params.brokerageId,
-      channel:        "phone",
-      contactId:      params.contactId ?? null,
-      leadId:         params.leadId ?? null,
-      recipientPhone: params.to ?? null,
-      systemSource:   params.systemSource,
-    })
-    if (deferred) return deferred
-  }
-
-  const { providerKey } = await resolveProvider({
-    providerType: "phone",
-    actorContext: {
-      userId: params.userId ?? params.brokerageId,
-      brokerageId: params.brokerageId,
-      teamId: params.teamId,
-    },
-  })
-
-  // ── VENDOR-BUDGET PRE-FLIGHT — after every consumer-protection gate, before the
-  //    provider call. NOTE: this is the generic TwiML lane only; the Twilio-native
-  //    AI call lane (lib/voice/twilio-outbound.ts) runs its OWN budget pre-flight
-  //    and never routes through dispatchPhone — no double-gating. Fail-open.
-  const phoneBudget = await vendorBudgetPreflight({
-    brokerageId: params.brokerageId,
-    channel: "phone",
-    vendorKey: "twilio_voice",
-    addCost: normalizeVendorCost("twilio_voice", 1), // ~1 min estimate
-    systemSource: params.systemSource,
-  })
-  if (phoneBudget.refusal) return phoneBudget.refusal
-
-  const raw = await messagingPlaceCall({
-    to: params.to,
-    twimlUrl: params.twimlUrl,
-  })
-
-  const result: DispatchResult = {
-    success: raw.success,
-    providerKey,
-    messageId: raw.callSid,
-    error: raw.error,
-    budgetWarning: phoneBudget.warning,
-  }
-
-  void logVendorUsage({
-    vendorName: providerKey,
-    usageType: "minutes",
-    unitCount: 1,
-    estimatedCost: 0.013, // Twilio Voice ~$0.013/min
-    systemSource: params.systemSource ?? "dispatch",
-    brokerageId: params.brokerageId,
-    agentId: params.agentId,
-    leadId: params.leadId,
-    metadata: {
-      to: params.to,
-      provider_key: providerKey,
-      ...(params.metadata ?? {}),
-    },
-  })
-
-  return result
-}
-
+// ─── PHONE (outbound call) — MERGED AWAY (wave 8) ─────────────────────────────
+// `dispatchPhone` used to live here. It had ZERO callers while the platform's
+// ONLY live outbound-dial path was — and remains —
+//
+//     SURVIVOR: lib/voice/twilio-outbound.ts:placeOutboundAiCall
+//
+// The two were not redundant, they were COMPLEMENTARY, which is the dangerous
+// kind of duplicate: each gate the orphan had and the survivor lacked was a hole
+// in the lane that actually dials. `enforceTCPACompliance` (the survivor's
+// consent gate) reads the contact FLAG `contacts.dnc_status` and never reads
+// `contact_suppression_list`, so a contact suppressed on the LIST alone could
+// still be dialled by the AI outbound lane. dispatchPhone's own comment named
+// that failure mode and its `checkSuppression` call was the only thing closing
+// it — on a code path nothing ever executed.
+//
+// GATES CARRIED ACROSS to the survivor, in lib/voice/outbound-call-gates.ts:
+//   · autonomyGate     → OUTBOUND_CALL_GATES[0] "autonomy"    (trust boundary)
+//   · checkSuppression → OUTBOUND_CALL_GATES[1] "suppression" (contact flags AND
+//     contact_suppression_list, brokerage-scoped, fails closed) — the fix
+//   · deconflictGate   → OUTBOUND_CALL_GATES[3] "deconflict"  (over-touch)
+// NOT carried: `evaluateOutboundCompliance` and this file's generic
+// vendorBudgetPreflight — the survivor already runs enforceTCPACompliance (a
+// stricter, logging consent chokepoint) and its own checkVendorBudget, and
+// neither was weakened by the merge.
+//
+// The generic TwiML dial itself was not deleted: lib/providers/messaging:placeCall
+// still exists behind its own TCPA gate and is used by the warm/whisper bridge
+// (app/actions/voice-call-bridge.ts), which dials the AGENT's own line.
+//
 // ─── DIRECT MAIL (superadmin-controlled, system-only) ────────────────────────
 // direct_mail is SYSTEM_ONLY in kernel/providers.ts — resolveProvider always
 // returns the system default (lob) and ignores per-brokerage overrides.

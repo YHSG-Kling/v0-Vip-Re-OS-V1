@@ -7,6 +7,7 @@ import {
   fetchSyncLogs,
 } from "@/app/actions/calendar/calendar-sync-actions"
 import { createClient } from "@/lib/supabase/server"
+import { hasPersonalCalendar } from "@/lib/providers/calendar/personal-calendar"
 import type { CalendarProviderAccountRow, CalendarSyncLogRow } from "@/lib/kernel"
 import { CopyToClipboardButton } from "./CopyToClipboardButton"
 
@@ -44,6 +45,24 @@ import { CopyToClipboardButton } from "./CopyToClipboardButton"
  * provider adapter and stores no OAuth token; every push and pull writes a
  * calendar_sync_logs row with status 'partial' and the reason. The sync history
  * below prints that reason verbatim, so the screen and the database agree.
+ *
+ * ── THE BOOKINGS CALENDAR (w8) ──────────────────────────────────────────────
+ * Everything above concerns calendar_provider_accounts — a registry that holds
+ * no OAuth token and therefore delivers nothing. That is not the only calendar
+ * in the product, and it was the only one this page mentioned.
+ *
+ * The calendar that actually RECEIVES BOOKINGS is the agent's own connected
+ * Google / Microsoft account: lib/providers/calendar/index.ts routes
+ * createCalendarEvent and getAvailability through
+ * lib/providers/calendar/personal-calendar.ts whenever that account resolves,
+ * and falls back to a MOCK event id / mock business-hours slots when it does
+ * not. So an agent with no personal calendar connected gets bookings that
+ * "succeed" and land nowhere, and this page — the one place they would look —
+ * said nothing about it either way.
+ *
+ * hasPersonalCalendar is the readiness predicate for exactly that connection
+ * (same OAuth token the personal-email adapter uses, so one consent covers
+ * mail + calendar). It now answers the question on the surface that asks it.
  */
 
 interface Props {
@@ -87,6 +106,18 @@ export default async function CalendarSettingsPage({ searchParams }: Props) {
     accounts = await fetchMyProviderAccounts()
   } catch (e) {
     accountsError = e instanceof Error ? e.message : "Connected calendars could not be read"
+  }
+
+  // THE BOOKINGS CALENDAR (see header): does this agent have a personal
+  // Google/Outlook connection with a usable token? A thrown error is reported
+  // as an error — never as "not connected", which would be a different fact.
+  let personalCalendarReady: boolean | null = null
+  let personalCalendarError: string | null = null
+  try {
+    personalCalendarReady = await hasPersonalCalendar(user.id)
+  } catch (e) {
+    personalCalendarError =
+      e instanceof Error ? e.message : "Your connected calendar account could not be checked"
   }
 
   // Sync history per account — a refused read is shown as a refusal, never as
@@ -162,6 +193,52 @@ export default async function CalendarSettingsPage({ searchParams }: Props) {
           assuming the event reached the provider.
         </div>
       )}
+
+      {/* ── Bookings calendar (the personal Google/Outlook connection) ──── */}
+      <div className="bg-white rounded-lg shadow p-4">
+        <h2 className="text-lg font-semibold text-gray-900 mb-1">Your Bookings Calendar</h2>
+        <p className="text-sm text-gray-600 mb-4">
+          Showings, appointments and availability checks run against your own connected Google or
+          Microsoft account — the same connection your email uses. Without it, bookings are not
+          written to any real calendar.
+        </p>
+
+        {personalCalendarError ? (
+          <div className="rounded border border-red-200 bg-red-50 px-4 py-3">
+            <p className="text-sm font-medium text-red-800">
+              Your connected calendar account could not be checked
+            </p>
+            <p className="text-xs text-red-700 mt-1">
+              {personalCalendarError} — until this read succeeds, treat the status below as unknown
+              rather than as &ldquo;not connected&rdquo;.
+            </p>
+          </div>
+        ) : personalCalendarReady ? (
+          <div className="rounded border border-green-200 bg-green-50 px-4 py-3">
+            <p className="text-sm font-medium text-green-800">Connected</p>
+            <p className="text-xs text-green-700 mt-1">
+              A Google or Microsoft account is connected and its access token is current. New
+              bookings are created on that calendar, and availability is read from its free/busy.
+            </p>
+          </div>
+        ) : (
+          <div className="rounded border border-amber-200 bg-amber-50 px-4 py-3">
+            <p className="text-sm font-medium text-amber-900">Not connected</p>
+            <p className="text-xs text-amber-800 mt-1">
+              No Google or Microsoft account with a usable token is on file for you — either none is
+              connected, or the stored token could no longer be refreshed. Until one is,
+              appointments booked in the app are recorded here but are never written to a real
+              calendar, and availability falls back to generic business hours.
+            </p>
+            <a
+              href="/settings/connections"
+              className="inline-block mt-3 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium py-2 px-4 rounded"
+            >
+              Connect a calendar account
+            </a>
+          </div>
+        )}
+      </div>
 
       {/* ── Link a calendar account ─────────────────────────────────────── */}
       <div className="bg-white rounded-lg shadow p-4">
