@@ -7,8 +7,9 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Loader2, CheckCircle2, Camera } from "lucide-react"
+import { Loader2, CheckCircle2, Camera, Mail } from "lucide-react"
 import { manualProvisionSubscriberAction } from "@/app/actions/superadmin/manual-subscriber"
+import { retrySubscriberInvite } from "@/app/actions/admin/create-subscriber"
 import { listSnapshotsAction, type SnapshotRow } from "@/app/actions/superadmin/config-snapshots"
 
 type CanonicalTier = "solo_agent" | "team" | "brokerage" | "multi_location"
@@ -28,8 +29,17 @@ export function ManualSubscriberForm() {
   const [adminEmail, setAdminEmail] = useState("")
   const [notes, setNotes] = useState("")
 
-  const [feedback, setFeedback] = useState<{ kind: "error" | "success"; message: string; brokerageId?: string } | null>(null)
+  const [feedback, setFeedback] = useState<{
+    kind: "error" | "success"
+    message: string
+    brokerageId?: string
+    /** Set only when the tenant WAS provisioned but the owner's magic link did
+     *  not go out. Carries what retrySubscriberInvite needs to resend it. */
+    retryInvite?: { adminEmail: string; brokerageId: string }
+  } | null>(null)
   const [isPending, startTransition] = useTransition()
+  const [resending, setResending] = useState(false)
+  const [resendNote, setResendNote] = useState<string | null>(null)
 
   // Optional config snapshot — day-one branding for the new tenant's website.
   const [snapshots, setSnapshots] = useState<SnapshotRow[]>([])
@@ -70,12 +80,35 @@ export function ManualSubscriberForm() {
           ? ` Snapshot apply FAILED: ${r.snapshotError}.`
           : ` Snapshot applied: ${(r.snapshotApplied ?? []).join(", ") || "nothing to apply"}.`
         : ""
+      setResendNote(null)
       setFeedback({
         kind: "success",
         message: `Provisioned ${brokerageName} on ${tier}. ${r.inviteSent ? "Invite email sent" : `Invite email ${r.inviteError ? "FAILED: " + r.inviteError : "skipped"}`}.${snapshotNote}`,
         brokerageId: r.brokerageId,
+        // The tenant exists either way; only the magic link is missing. Until
+        // now this state was reported and then abandoned — there was no way to
+        // resend, so the owner simply never got in.
+        retryInvite:
+          !r.inviteSent && r.brokerageId
+            ? { adminEmail, brokerageId: r.brokerageId }
+            : undefined,
       })
     })
+  }
+
+  async function onResendInvite(target: { adminEmail: string; brokerageId: string }) {
+    setResending(true)
+    setResendNote(null)
+    try {
+      const res = await retrySubscriberInvite(target)
+      // The action now reads the provider's { error } instead of assuming the
+      // send happened, so this message reflects the real outcome.
+      setResendNote(res.success ? `Invite re-sent to ${target.adminEmail}.` : `Resend failed: ${res.error ?? "unknown error"}`)
+    } catch (e: any) {
+      setResendNote(`Resend failed: ${e?.message ?? "unknown error"}`)
+    } finally {
+      setResending(false)
+    }
   }
 
   return (
@@ -208,6 +241,17 @@ export function ManualSubscriberForm() {
             {feedback.kind === "success" && <CheckCircle2 className="h-4 w-4" />}
             <span>{feedback.message}</span>
           </div>
+          {feedback.retryInvite && (
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
+              <Button type="button" size="sm" variant="outline" disabled={resending}
+                onClick={() => onResendInvite(feedback.retryInvite!)}>
+                {resending
+                  ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Resending…</>
+                  : <><Mail className="h-4 w-4 mr-2" />Resend owner invite</>}
+              </Button>
+              {resendNote && <span className="text-xs">{resendNote}</span>}
+            </div>
+          )}
           {feedback.brokerageId && (
             <div className="mt-2">
               <Button type="button" size="sm" variant="outline"

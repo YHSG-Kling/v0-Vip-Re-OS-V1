@@ -6,13 +6,8 @@ import { createClient } from "@/lib/supabase/server"
 import { selectClientMilestones } from "@/lib/kernel/portal"
 import { SELLER_MILESTONE_LABELS } from "@/lib/portal/resolve-education-context"
 import {
-  resolveSellerContext,
-  getShowingStats,
-  getRecentFeedback,
-  getOfferSummary,
-} from "@/lib/portal/resolve-seller-context"
-import {
   getMarketPosition,
+  getSellerDashboardData,
   getSellerVendors,
   getShowingInsights,
 } from "@/app/actions/portal-seller"
@@ -103,8 +98,25 @@ interface SellerHomeProps {
 export default async function SellerHome({ contactId }: SellerHomeProps) {
   const supabase = await createClient()
 
-  // Get base seller context
-  const context = await resolveSellerContext(supabase, contactId)
+  // ONE authorized aggregate for the seller's home screen:
+  // app/actions/portal-seller.ts:getSellerDashboardData. This page used to
+  // resolve the context and then call getShowingStats / getRecentFeedback /
+  // getOfferSummary inline — the same four calls the action makes, minus the
+  // action's requireContactAccess check. Every OTHER module on this page
+  // (getMarketPosition, getSellerVendors, getShowingInsights) already goes
+  // through that gate; these four were the ones that did not.
+  const dashboard = await getSellerDashboardData(contactId)
+  const context = {
+    contactId:     dashboard.contactId,
+    contactName:   dashboard.contactName,
+    listing:       dashboard.listing,
+    metrics:       dashboard.metrics,
+    transactionId: dashboard.transactionId,
+    agentId:       dashboard.agentId,
+  }
+  const showingStats   = dashboard.showingStats
+  const recentFeedback = dashboard.recentFeedback
+  const offerSummary   = dashboard.offerSummary
 
   // Fetch richer insight data — only when a listing exists, errors silently swallowed
   let showingInsights: Awaited<ReturnType<typeof getShowingInsights>> | null = null
@@ -115,9 +127,6 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
 
   // Parallel data fetches
   const [
-    showingStats,
-    recentFeedback,
-    offerSummary,
     marketPosition,
     vendorData,
     milestonesResult,
@@ -127,18 +136,6 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
     educationResult,
     recentUpdatesResult,
   ] = await Promise.all([
-    // Showing stats
-    context.listing
-      ? getShowingStats(supabase, context.listing.id)
-      : Promise.resolve({ thisWeek: 0, total: 0, avgRating: null }),
-    // Recent feedback
-    context.listing
-      ? getRecentFeedback(supabase, context.listing.id, 3)
-      : Promise.resolve([]),
-    // Offer summary
-    context.listing
-      ? getOfferSummary(supabase, context.listing.id)
-      : Promise.resolve({ total: 0, highest: null, accepted: null, pending: 0 }),
     // Market position
     getMarketPosition(contactId),
     // Vendors

@@ -96,10 +96,16 @@ export async function getPlatformVendorSpendOverview(): Promise<
 
   const svc = createServiceClient()
   const startOfMonth = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)).toISOString()
-  const [{ data: usage }, { data: brokerages }] = await Promise.all([
+  // `error` is destructured on BOTH reads. supabase-js RESOLVES a refused query, so
+  // `{ data }` alone read a denial as "no spend" — and the support console renders
+  // that as "All brokerages within budget", a false all-clear on the platform's
+  // spend-control surface.
+  const [{ data: usage, error: usageError }, { data: brokerages, error: brokeragesError }] = await Promise.all([
     svc.from("vendor_usage_tracking").select("brokerage_id, total_cost").gte("created_at", startOfMonth),
     svc.from("brokerages").select("id, name, plan_tier"),
   ])
+  if (usageError) return { ok: false, error: usageError.message }
+  if (brokeragesError) return { ok: false, error: brokeragesError.message }
   return { ok: true, rows: aggregateBrokerageSpend(usage ?? [], brokerages ?? []) }
 }
 

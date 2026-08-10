@@ -490,30 +490,16 @@ export async function createScriptVariation(data: {
 // VIDEO GENERATION QUEUE
 // ============================================
 
-export async function queueVideoGeneration(data: {
-  agentId?: string  // ignored — derived from session
-  scriptId?: string
-  templateId?: string
-  scriptContent: string
-  videoType: string
-  priority?: number
-  scheduledFor?: string
-  metadata?: any
-}) {
-  const auth = await requireCaller()
-  if (!auth.ok) throw new Error(auth.error)
-
-  // SCHEMA DRIFT: live video_generation_queue has only id, project_id,
-  // status, priority, created_at, processed_at — none of agent_id,
-  // script_id, template_id, script_content, video_type, scheduled_for,
-  // metadata, compliance_approved exist. The richer queue model lives in
-  // ai_video_projects. We refuse to insert the drift columns to surface
-  // the bug; callers should be migrated to insert into ai_video_projects
-  // directly.
-  return {
-    error: "queueVideoGeneration: schema drift — use ai_video_projects insertion path instead",
-  }
-}
+// `queueVideoGeneration` REMOVED (Wave 6). It was a stub whose entire body was
+// `return { error: "schema drift — use ai_video_projects insertion path instead" }`
+// — a public HTTP endpoint that could never queue anything, with no callers.
+// Survivors, which are the "ai_video_projects insertion path" its own error names:
+//   • app/actions/video.ts:submitVideoGenerationJobAction — tenant-gated via
+//     assertProjectInCallerBrokerage, delegating to
+//     lib/kernel/video.ts:submitVideoGenerationJob (atomic project-slot claim).
+//   • app/actions/video-generation.ts:generateVideoFromScript — script → project →
+//     queue row → provider job, for the "I have a script" entry point.
+// Nothing was ported: a stub that returns an error string has no capability to move.
 
 export async function getVideoQueue(_agentId: string) {
   // SCHEMA DRIFT: video_generation_queue has no agent_id column in live
@@ -1189,22 +1175,78 @@ Return ONLY the script text, no formatting or labels.`
   }
 }
 
+/**
+ * Render a video from a script.
+ *
+ * WAVE 6 — absorbed the only capability its twin `createAvatarVideo` had that
+ * this lacked: **rendering from a script already saved in the library**, named by
+ * `scriptId`. Supply `scriptId` and the script text and title are read from
+ * `video_scripts_library` (tenant-checked), and no duplicate library row is
+ * written; supply `script` + `title` and the previous behaviour is unchanged.
+ * `createAvatarVideo` is deleted — see the ledger; it burned real D-ID credits and
+ * then only `console.log`'d the provider job id, so the render was unpollable and
+ * the agent paid for a video nothing could ever find.
+ *
+ * `createAvatarVideo`'s laxness is deliberately NOT ported: it defaulted a missing
+ * avatar/voice to `""` and called the provider anyway. This path refuses instead.
+ */
 export async function generateVideoFromScript(params: {
-  script: string
-  title: string
+  /** Required unless `scriptId` is given. */
+  script?: string
+  /** Required unless `scriptId` is given. */
+  title?: string
+  /** Render an existing `video_scripts_library` row instead of raw text. */
+  scriptId?: string
   type: "avatar" | "voice"
   avatarId?: string
   voiceId?: string
   userId?: string  // ignored — derived from session
 }) {
-  // Auth gate — calls HeyGen API which burns paid credits under our key.
+  // Auth gate — the provider call burns paid credits under our key.
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
 
   const supabase = createServiceClient()
 
   try {
-    console.log("[v0] Generating video from script:", params.title)
+    // ─── Resolve the script: an existing library row, or raw text ────────────
+    let script = params.script ?? ""
+    let title = params.title ?? ""
+    let sourceScriptId: string | null = null
+
+    if (params.scriptId) {
+      if (!isValidUUID(params.scriptId)) {
+        return { success: false, error: "Invalid script ID" }
+      }
+      // Tenant check BEFORE any paid work — `error` destructured so a refused
+      // read is not read as "no such script".
+      const { data: scriptRow, error: scriptReadError } = await supabase
+        .from("video_scripts_library")
+        .select("id, brokerage_id, script_content, title")
+        .eq("id", params.scriptId)
+        .maybeSingle()
+      if (scriptReadError) {
+        return { success: false, error: `Could not read the script — ${scriptReadError.message}` }
+      }
+      if (!scriptRow) return { success: false, error: "Script not found" }
+      if (scriptRow.brokerage_id !== auth.brokerageId) {
+        return { success: false, error: "Forbidden" }
+      }
+      const storedScript = (scriptRow.script_content ?? "").trim()
+      if (!storedScript) {
+        return { success: false, error: "That script has no content to render" }
+      }
+      script = storedScript
+      title = (params.title ?? scriptRow.title ?? "").trim() || "Untitled video"
+      sourceScriptId = scriptRow.id as string
+    }
+
+    if (!script.trim()) {
+      return { success: false, error: "A script is required" }
+    }
+    if (!title.trim()) title = "Untitled video"
+
+    console.log("[v0] Generating video from script:", title)
 
     // Validate that agent has required settings
     if (params.type === "avatar" && !params.avatarId) {
@@ -1239,8 +1281,8 @@ export async function generateVideoFromScript(params: {
     const created = await createVideoProject({
       brokerageId:      auth.brokerageId ?? "",
       agentUserId:      auth.userId,
-      title:            params.title,
-      script:           params.script,
+      title:            title,
+      script:           script,
       // Mirrors ai_video_projects_video_type — an avatar talking head from a
       // supplied script is the explainer lane.
       videoType:        "avatar_explainer",
@@ -1277,22 +1319,29 @@ export async function generateVideoFromScript(params: {
     // SCHEMA DRIFT: video_scripts_library has no script_text / video_status
     // / persona_validated / video_type columns — only script_content / etc.
     // Map to the real columns we have.
-    const { data: scriptRecord, error: scriptError } = await supabase
-      .from("video_scripts_library")
-      .insert({
-        brokerage_id: auth.brokerageId,
-        script_content: params.script,
-        title: params.title,
-        created_by: auth.userId,
-        // "video" violated the script_type CHECK — every script record from this
-        // path silently never persisted (error only console.warned).
-        script_type: toLibraryScriptType("custom"),
-        is_active: true,
-      })
-      .select()
-      .single()
+    //
+    // SKIPPED when the caller named an existing library script: rendering a saved
+    // script must not mint a second copy of it every time it is rendered.
+    let scriptRecordId: string | null = sourceScriptId
+    if (!sourceScriptId) {
+      const { data: scriptRecord, error: scriptError } = await supabase
+        .from("video_scripts_library")
+        .insert({
+          brokerage_id: auth.brokerageId,
+          script_content: script,
+          title: title,
+          created_by: auth.userId,
+          // "video" violated the script_type CHECK — every script record from this
+          // path silently never persisted (error only console.warned).
+          script_type: toLibraryScriptType("custom"),
+          is_active: true,
+        })
+        .select()
+        .single()
 
-    if (scriptError) console.warn("[v0] Script record error:", scriptError)
+      if (scriptError) console.warn("[v0] Script record error:", scriptError)
+      scriptRecordId = scriptRecord?.id ?? null
+    }
 
     // Kick off generation via the platform engine — D-ID + ElevenLabs (no HeyGen).
     // Non-fatal: if the provider isn't configured the item stays queued for the
@@ -1302,7 +1351,7 @@ export async function generateVideoFromScript(params: {
       const didRes = await generateAvatarVideo({
         avatarId: params.avatarId,
         voiceId: params.voiceId,
-        script: params.script,
+        script: script,
         brokerageId: auth.brokerageId ?? undefined,
       })
       const didJobId = (didRes as { videoId?: string }).videoId
@@ -1344,7 +1393,7 @@ export async function generateVideoFromScript(params: {
     // projectId is what every downstream video surface keys on (renders,
     // delivery, the reaper, the poll cron). Returning only the queue id left
     // callers holding the one id that nothing else in the video system uses.
-    return { success: true, videoId: queueRecord.id, projectId: project.id, queueId: scriptRecord?.id }
+    return { success: true, videoId: queueRecord.id, projectId: project.id, queueId: scriptRecordId }
   } catch (error: any) {
     console.error("[v0] Video generation error:", error)
     return { success: false, error: error.message }
@@ -1414,57 +1463,21 @@ export async function getEducationTemplates() {
   return getVideoTemplates({ category: "education" })
 }
 
-export async function createAvatarVideo(params: {
-  scriptId: string
-  script: string
-  avatarId?: string
-  voice?: string
-  userId?: string  // ignored — derived from session
-}) {
-  if (!isValidUUID(params.scriptId)) {
-    return { success: false, error: "Invalid script ID" }
-  }
-
-  // Auth gate — calls HeyGen API which burns paid credits under our key.
-  const auth = await requireCaller()
-  if (!auth.ok) return { success: false, error: auth.error }
-
-  const supabase = createServiceClient()
-
-  // Verify script belongs to caller's brokerage before billing HeyGen
-  const { data: scriptRow } = await supabase
-    .from("video_scripts_library")
-    .select("brokerage_id")
-    .eq("id", params.scriptId)
-    .maybeSingle()
-  if (!scriptRow) return { success: false, error: "Script not found" }
-  if (scriptRow.brokerage_id !== auth.brokerageId) {
-    return { success: false, error: "Forbidden" }
-  }
-
-  try {
-    console.log("[v0] Generating avatar video for script:", params.scriptId)
-
-    // Platform engine: D-ID + ElevenLabs (no HeyGen). Delegate to the rewired
-    // generation action (was a direct api.heygen.com call — business-rule violation).
-    const { generateAvatarVideo } = await import("@/app/actions/external-services")
-    const didRes = await generateAvatarVideo({
-      avatarId: params.avatarId || "",
-      voiceId: params.voice || "",
-      script: params.script,
-      brokerageId: auth.brokerageId ?? undefined,
-    })
-    if (!didRes.success) {
-      return { success: false, error: (didRes as { error?: string }).error || "Video provider error (D-ID + ElevenLabs)" }
-    }
-    const didVideoId = (didRes as { videoId?: string }).videoId
-    // Provider job tracking belongs on ai_video_projects (provider_job_id/_status);
-    // video_scripts_library has no place to persist it — log so it isn't lost.
-    console.log(`[video-generation] D-ID video_id=${didVideoId} for script ${params.scriptId}`)
-
-    return { success: true, videoId: didVideoId, status: "generating" }
-  } catch (error: any) {
-    console.error("[v0] Video generation error:", error)
-    return { success: false, error: error.message }
-  }
-}
+// `createAvatarVideo` REMOVED (Wave 6) — duplicate.
+// SURVIVOR: app/actions/video-generation.ts:generateVideoFromScript
+//
+// Same capability (saved script + avatar + voice → D-ID/ElevenLabs render), but
+// this copy carried the exact defect the survivor was already fixed for: it called
+// the provider FOR REAL, burning paid credits, then wrote the returned job id to
+// `console.log` and nowhere else. `poll-did-videos` selects `ai_video_projects`
+// rows on (status='generating' AND provider_job_id NOT NULL AND
+// provider_metadata->>provider='did'); this path created no project at all, so the
+// render was unpollable forever and the agent paid for a video nothing could find —
+// while the function returned `{ success: true, status: "generating" }`.
+// It also defaulted a missing avatar/voice to `""` and called the provider anyway.
+//
+// MERGED FIRST, then deleted: its one genuine capability — rendering a script
+// already in `video_scripts_library` by id, with the tenant check, instead of
+// re-posting raw text — is now `generateVideoFromScript({ scriptId, ... })`, which
+// also skips minting a duplicate library row for a script that already exists.
+// The `""`-avatar laxness was deliberately NOT ported; the survivor refuses.

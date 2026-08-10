@@ -34,9 +34,22 @@ export default async function LicenseCEPage() {
   const completions = await listCeCompletions(agent.id)
   const ceCenter = await getCeCenter().catch(() => null)
 
+  // Whether to RENDER the provider-setup form. `connectCeProvider` re-checks this
+  // same allowlist server-side, so this is presentation only, never the gate.
+  // Vocabulary is the live `users_user_type_check` (broker_owner is storable;
+  // `broker_admin` is not, and `users.role` is retired).
+  const { data: viewer } = await svc
+    .from("users")
+    .select("user_type")
+    .eq("id", user.id)
+    .maybeSingle()
+  const canManageProvider = ["broker", "broker_owner", "admin", "superadmin"].includes(
+    String((viewer as { user_type?: string | null } | null)?.user_type ?? ""),
+  )
+
   return (
     <div className="space-y-6">
-    {ceCenter && <CeCenterPanel center={ceCenter} />}
+    {ceCenter && <CeCenterPanel center={ceCenter} canManageProvider={canManageProvider} />}
     <LicenseCEClient
       agentId={agent.id}
       profile={{

@@ -6,7 +6,7 @@ import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { redirect } from "next/navigation"
 import { getPlatformVendorSpendOverview } from "@/app/actions/vendor-budget"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
+import { VendorBreakdownRow } from "./vendor-breakdown-row"
 
 export const dynamic = "force-dynamic"
 
@@ -58,19 +58,13 @@ export default async function SupportConsolePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r) => {
-                    const badge = LEVEL_BADGE[r.level] ?? LEVEL_BADGE.ok
-                    return (
-                      <tr key={r.brokerageId} className="border-b last:border-0">
-                        <td className="py-2 pr-4">{r.name}</td>
-                        <td className="py-2 pr-4 text-muted-foreground">{r.planTier}</td>
-                        <td className="py-2 pr-4 text-right tabular-nums">${r.spent.toFixed(2)}</td>
-                        <td className="py-2 pr-4 text-right tabular-nums">${r.budget.toFixed(0)}</td>
-                        <td className="py-2 pr-4 text-right tabular-nums">{r.percent}%</td>
-                        <td className="py-2"><Badge variant={badge.variant}>{badge.label}</Badge></td>
-                      </tr>
-                    )
-                  })}
+                  {rows.map((r) => (
+                    <VendorBreakdownRow
+                      key={r.brokerageId}
+                      row={r}
+                      badge={LEVEL_BADGE[r.level] ?? LEVEL_BADGE.ok}
+                    />
+                  ))}
                 </tbody>
               </table>
             </div>

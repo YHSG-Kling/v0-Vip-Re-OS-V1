@@ -61,7 +61,9 @@ const OFFER_LIST_COLUMNS =
   "ai_recommendation, ai_analysis, ai_extraction_status, ai_extracted_data, " +
   "offer_document_url, offer_document_name, status, offer_type, parent_offer_id, " +
   "current_round, is_winning_offer, submitted_at, response_deadline, " +
-  "seller_viewed_at, contact_id, agent_id, brokerage_id"
+  // form_source is rendered by the offers manager; it was missing here, so a
+  // refresh through this reader would have blanked that column.
+  "seller_viewed_at, contact_id, agent_id, brokerage_id, listing_id, form_source"
 
 export async function getOffersForListing(listingId: string) {
   const auth = await requireCaller()
@@ -515,14 +517,21 @@ export async function recordSellerView(listingId: string) {
   }
 
   const now = new Date().toISOString()
-  await svc
+  // `.select()` + `error` are read deliberately. This previously discarded both
+  // and returned {success:true} whether or not the stamp landed — and
+  // seller_viewed_at is the evidence an agent relies on to say "your seller has
+  // seen this offer". A count of 0 is a legitimate outcome (already viewed), so
+  // it is reported honestly rather than treated as failure.
+  const { data: stamped, error: stampErr } = await svc
     .from("offers")
     .update({ seller_viewed_at: now, updated_at: now })
     .eq("listing_id", listingId)
     .eq("brokerage_id", listingRow.brokerage_id)
     .is("seller_viewed_at", null)
+    .select("id")
+  if (stampErr) return { success: false, error: stampErr.message }
 
-  return { success: true }
+  return { success: true, newlyViewed: stamped?.length ?? 0 }
 }
 
 // ── TRIGGER AI COMPARISON ─────────────────────────────────────────────────────

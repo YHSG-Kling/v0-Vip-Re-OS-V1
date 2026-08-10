@@ -221,8 +221,26 @@ Create a tiered gifting strategy:
 // GIFT ORDER MANAGEMENT
 // ============================================================================
 
+/**
+ * Record a gift order.
+ *
+ * WAVE 6 — **this never wrote a row.** `client_gifts.brokerage_id` is NOT NULL
+ * with no default (verified live), and the insert omitted it entirely, so every
+ * order died on a NOT NULL violation. Because the result was destructured as
+ * `const { data: gift }` with no `error`, supabase-js resolved the rejection and
+ * the action returned `{ success: true, data: null }` — the gifting panel showed
+ * a confirmed order and nothing existed. That is why `getGiftAnalytics` had no
+ * data to be right or wrong about, and it is the same `activities.brokerage_id`
+ * class from Lesson 8, in the money lane.
+ *
+ * The tenant and the agent now come from the SESSION, not from the caller — this
+ * is a `"use server"` export, so `agentId` was a caller-asserted identity on an
+ * insert. `agentId` is retained and ignored per the house pattern so existing
+ * call sites keep type-checking.
+ */
 export async function createGiftOrder(params: {
-  agentId: string
+  /** Ignored — derived from the session. */
+  agentId?: string
   contactId: string
   giftDetails: {
     name: string
@@ -235,17 +253,25 @@ export async function createGiftOrder(params: {
   deliveryAddress?: string
   deliveryDate?: string
 }) {
-  if (!isValidUUID(params.agentId) || !isValidUUID(params.contactId)) {
-    return { success: false, error: "Invalid IDs" }
+  if (!isValidUUID(params.contactId)) {
+    return { success: false, error: "Invalid contact ID" }
+  }
+
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.agentId || !ctx.brokerageId) {
+    return { success: false, error: "Not authenticated" }
   }
 
   const supabase = await createClient()
 
   try {
-    const { data: gift } = await supabase
+    const { data: gift, error } = await supabase
       .from("client_gifts")
       .insert({
-        agent_id:             params.agentId,
+        // NOT NULL, no default — omitting this is what killed every write.
+        brokerage_id:         ctx.brokerageId,
+        // agents.id (contacts.agent_id and client_gifts.agent_id both FK agents(id)).
+        agent_id:             ctx.agentId,
         contact_id:           params.contactId,
         gift_type:            params.giftDetails.name,
         gift_name:            params.giftDetails.name,
@@ -259,7 +285,12 @@ export async function createGiftOrder(params: {
         status:               "pending",
       })
       .select()
-      .single()
+      .maybeSingle()
+
+    // PROVEN, not assumed. A rejected insert resolves — it does not throw — so
+    // without this the caller is told the gift was ordered when it was not.
+    if (error) return { success: false, error: error.message }
+    if (!gift)  return { success: false, error: "The gift order was not recorded" }
 
     revalidatePath("/gifts")
     return { success: true, data: gift }
@@ -353,6 +384,38 @@ Generate the note and a shorter version for cards.`,
  * on whom — gift costs joined to `contacts(first_name, last_name)` — and it ran
  * with no auth gate on a caller-supplied agents.id, so one uuid read another
  * agent's client list and their gifting budget.
+ *
+ * WAVE 6 — this function had never once returned a real number. Four defects,
+ * all confirmed against the live schema (`information_schema.columns` on
+ * `client_gifts` / `referrals`, project hrvaqgvukzxfskkcrwbt):
+ *
+ *  1. **It read columns that do not exist.** `client_gifts` has NO `cost` column
+ *     and NO `vendor` column — the money is in `actual_cost` / `estimated_cost`
+ *     and the supplier is `vendor_name`. `g.cost` was `undefined` on every row,
+ *     so `totalSpent` was **always 0**, `byOccasion` was all zeros, and
+ *     `topVendors` labelled every gift `"Unknown"`. The one writer in this file
+ *     (`createGiftOrder`) has always written `estimated_cost` / `vendor_name`,
+ *     so reader and writer never agreed.
+ *  2. **Divide-by-zero shipped as a headline metric.** With `totalSpent` pinned
+ *     at 0, `(referralCount * 8000) / 0 * 100` is `Infinity` (or `NaN` at zero
+ *     referrals), and `.toFixed(0)` renders that verbatim — the endpoint returned
+ *     `estimatedROI: "Infinity%"`.
+ *  3. **The ROI was built on a hardcoded $8,000 "average commission".** That is
+ *     fabricated money. `referrals.commission_amount` is a real column; the
+ *     attributed commission is now summed from actual rows, and when no closed
+ *     referral carries an amount the metric is reported as unavailable rather
+ *     than invented.
+ *  4. **The referral join was backwards.** "Referrals from gifted clients" means
+ *     the gifted client is the REFERRER, which is `referrals.referrer_contact_id`
+ *     (the FK `lib/kernel/referral-appreciation.ts` and
+ *     `app/actions/referrals/referral-appreciation.ts` populate, and the one
+ *     `ai-sphere-management.ts` embeds). It filtered on `referred_contact_id`,
+ *     i.e. referrals whose *newly introduced* contact happened to have been
+ *     gifted — a different, mostly-empty set.
+ *
+ * Also: `const { data }` with no `error` destructure meant a REFUSED read
+ * returned `{ success: true, totalSpent: 0 }` — "your gifting spend is $0" is
+ * indistinguishable from "the query failed" (Lesson 5). Both reads now fail closed.
  */
 export async function getGiftAnalytics(params?: { agentId?: string; year?: number }) {
   const ctx = await getAgentContext()
@@ -364,52 +427,115 @@ export async function getGiftAnalytics(params?: { agentId?: string; year?: numbe
   const year = params?.year || new Date().getFullYear()
 
   try {
-    const { data: gifts } = await supabase
+    // Half-open interval. `.lte(created_at, "<year>-12-31")` compared a timestamptz
+    // against midnight, so every gift recorded during 31 December fell outside the
+    // year it belongs to.
+    const yearStart = `${year}-01-01T00:00:00.000Z`
+    const nextYearStart = `${year + 1}-01-01T00:00:00.000Z`
+
+    const { data: gifts, error: giftsError } = await supabase
       .from("client_gifts")
       .select(`
-        *,
-        contacts(first_name, last_name),
-        referrals:contacts(referrals!referred_contact_id(id))
+        id, contact_id, occasion, actual_cost, estimated_cost, vendor_name, status,
+        contacts(first_name, last_name)
       `)
       .eq("agent_id", ctx.agentId)
-      .gte("created_at", `${year}-01-01`)
-      .lte("created_at", `${year}-12-31`)
+      .gte("created_at", yearStart)
+      .lt("created_at", nextYearStart)
 
-    if (!gifts) {
-      return { success: true, data: { totalSpent: 0, giftCount: 0 } }
+    // Fail CLOSED. A refused read must never be rendered as "you spent nothing".
+    if (giftsError) {
+      return { success: false, error: `Could not read gift history: ${giftsError.message}` }
     }
 
-    const totalSpent = gifts.reduce((sum, g) => sum + (g.cost || 0), 0)
-    const byOccasion = gifts.reduce((acc, g) => {
-      acc[g.occasion] = (acc[g.occasion] || 0) + (g.cost || 0)
+    const giftRows = (gifts ?? []) as Array<{
+      id: string
+      contact_id: string | null
+      occasion: string | null
+      actual_cost: number | null
+      estimated_cost: number | null
+      vendor_name: string | null
+    }>
+
+    if (giftRows.length === 0) {
+      return {
+        success: true,
+        data: {
+          totalSpent: 0,
+          giftCount: 0,
+          byOccasion: {} as Record<string, number>,
+          uniqueRecipients: 0,
+          referralsFromGiftedClients: 0,
+          attributedCommission: 0,
+          estimatedROI: null as string | null,
+          averageGiftValue: 0,
+          topVendors: [] as Array<[string, number]>,
+        },
+      }
+    }
+
+    // `actual_cost` is what was really paid; `estimated_cost` is the quote the
+    // recommendation produced. Prefer the former and fall back to the latter, so
+    // a gift ordered but not yet invoiced still counts toward the budget.
+    const costOf = (g: { actual_cost: number | null; estimated_cost: number | null }) =>
+      Number(g.actual_cost ?? g.estimated_cost ?? 0) || 0
+
+    const totalSpent = giftRows.reduce((sum, g) => sum + costOf(g), 0)
+    const byOccasion = giftRows.reduce((acc, g) => {
+      const key = g.occasion ?? "unspecified"
+      acc[key] = (acc[key] || 0) + costOf(g)
       return acc
     }, {} as Record<string, number>)
 
-    // Calculate ROI (referrals received from gifted clients)
-    const giftedContactIds = [...new Set(gifts.map(g => g.contact_id))]
-    const { data: referralsFromGifted } = await supabase
-      .from("referrals")
-      .select("id")
-      .in("referred_contact_id", giftedContactIds)
-      .gte("created_at", `${year}-01-01`)
+    const giftedContactIds = [...new Set(giftRows.map((g) => g.contact_id).filter((id): id is string => !!id))]
 
-    const referralCount = referralsFromGifted?.length || 0
-    const avgCommission = 8000 // Estimated average commission
-    const estimatedROI = ((referralCount * avgCommission) / totalSpent * 100).toFixed(0)
+    // `.in()` with an empty array is a query for nothing — skip it rather than
+    // sending a degenerate filter.
+    let referralCount = 0
+    let attributedCommission = 0
+    if (giftedContactIds.length > 0) {
+      const { data: referralsFromGifted, error: referralsError } = await supabase
+        .from("referrals")
+        .select("id, commission_amount")
+        // The GIFTED client is the referrer. See defect (4) above.
+        .in("referrer_contact_id", giftedContactIds)
+        .gte("created_at", yearStart)
+        .lt("created_at", nextYearStart)
+
+      if (referralsError) {
+        return { success: false, error: `Could not read referral attribution: ${referralsError.message}` }
+      }
+
+      const referralRows = (referralsFromGifted ?? []) as Array<{ commission_amount: number | null }>
+      referralCount = referralRows.length
+      attributedCommission = referralRows.reduce((sum, r) => sum + (Number(r.commission_amount ?? 0) || 0), 0)
+    }
+
+    // ROI only exists when both sides are real money. No spend, or no recorded
+    // commission on the attributed referrals, means the number is UNKNOWN — which
+    // is reported as null, not as a fabricated or infinite percentage.
+    const estimatedROI =
+      totalSpent > 0 && attributedCommission > 0
+        ? `${Math.round((attributedCommission / totalSpent) * 100)}%`
+        : null
 
     return {
       success: true,
       data: {
         totalSpent,
-        giftCount: gifts.length,
+        giftCount: giftRows.length,
         byOccasion,
         uniqueRecipients: giftedContactIds.length,
         referralsFromGiftedClients: referralCount,
-        estimatedROI: `${estimatedROI}%`,
-        averageGiftValue: totalSpent / gifts.length || 0,
+        /** Sum of `referrals.commission_amount` on referrals from gifted clients. Real rows only. */
+        attributedCommission,
+        /** null when spend or attributed commission is zero — never "Infinity%". */
+        estimatedROI,
+        averageGiftValue: totalSpent / giftRows.length,
         topVendors: (Object.entries(
-          gifts.reduce((acc, g) => {
-            acc[g.vendor || "Unknown"] = (acc[g.vendor || "Unknown"] || 0) + 1
+          giftRows.reduce((acc, g) => {
+            const vendor = g.vendor_name?.trim() || "Unknown"
+            acc[vendor] = (acc[vendor] || 0) + 1
             return acc
           }, {} as Record<string, number>)
         ) as Array<[string, number]>).sort((a, b) => b[1] - a[1]).slice(0, 5),

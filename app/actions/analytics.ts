@@ -158,8 +158,24 @@ export async function aggregateValueDelivered(agentId: string, date: Date) {
   )
 
   // Store aggregated value.
-  // onConflict matches the live constraint `value_delivered_daily_agent_id_date_key
-  // UNIQUE (agent_id, date)` (verified against project hrvaqgvukzxfskkcrwbt).
+  //
+  // SCHEMA (w6s3, verified live against project hrvaqgvukzxfskkcrwbt):
+  // `value_delivered_daily` has exactly these columns — id, agent_id, brokerage_id,
+  // date, total_value_delivered_dollars, recipients_count, cost_to_deliver,
+  // value_breakdown (jsonb), created_at, updated_at.
+  //
+  // The eight keys in `valueCalculation` (free_tools_used_count,
+  // guides_downloaded_count, questions_answered_count, personalized_reports_sent,
+  // free_tools_value, guides_value, help_value, reports_value) DO NOT EXIST on the
+  // table. Spreading them into the upsert made this write fail with a column error
+  // on every single call — so `value_delivered_daily` could never have had a row,
+  // and every reader of it (loadValueDrivenDashboard, calculateTrustCapital, the
+  // /analytics and /dashboard/intelligence pages) was structurally guaranteed to
+  // render zeros. The breakdown belongs in the `value_breakdown` jsonb, which is
+  // what that column is for; the readers below unpack it from there.
+  //
+  // onConflict matches the live UNIQUE (agent_id, date) — constraint name
+  // `value_delivered_daily_unique`.
   const { data, error } = await supabase
     .from("value_delivered_daily")
     .upsert(
@@ -167,10 +183,11 @@ export async function aggregateValueDelivered(agentId: string, date: Date) {
         date: dateStr,
         agent_id: agentId,
         brokerage_id: brokerageId, // tenant stamp — column existed but was never set
-        ...valueCalculation,
+        value_breakdown: valueCalculation,
         total_value_delivered_dollars: total_value_delivered,
         recipients_count: uniqueRecipients.size,
         cost_to_deliver: 0, // Calculate actual costs
+        updated_at: new Date().toISOString(),
       },
       { onConflict: "agent_id,date" },
     )
@@ -191,6 +208,18 @@ export async function aggregateValueDelivered(agentId: string, date: Date) {
 // ============================================
 // TRUST CAPITAL CALCULATION
 // ============================================
+
+/**
+ * Read a counter out of a `value_delivered_daily.value_breakdown` jsonb blob.
+ * The breakdown keys were previously read as top-level COLUMNS
+ * (`m.free_tools_used_count`, `m.guides_downloaded_count`) which do not exist on
+ * the table, so those sums were always 0 regardless of what had been aggregated.
+ */
+function breakdownCount(row: any, key: string): number {
+  const b = row?.value_breakdown
+  if (!b || typeof b !== "object") return 0
+  return Number((b as Record<string, unknown>)[key]) || 0
+}
 
 export async function calculateTrustCapital(agentId: string, periodDays: number = 30) {
   const supabase = await createClient()
@@ -300,10 +329,28 @@ export async function trackLeadValueJourney(contactId: string) {
   // Fail closed — a refused read is not "no such contact".
   if (contactError || !contact) return null
 
-  // Calculate value received (simplified - would need actual tracking)
-  const toolsUsed: string[] = [] // Track from tool_usage_sessions
-  const guidesDownloaded: string[] = [] // Track from downloads
+  // Value received.
+  //
+  // HONESTY NOTE (w6s3, schema verified live): `tool_usage_sessions` keys on
+  // `visitor_id` (text) and `document_downloads` on `user_id`/`partner_id` — NEITHER
+  // table carries a `contact_id`, so per-contact tool/guide attribution genuinely
+  // cannot be derived from what the database records today. These stay empty rather
+  // than being filled with a guess, and the arrays are written as [] so the shape is
+  // stable. Closing this properly needs a contact linkage on those two ledgers; see
+  // docs/wave6-slice3.md.
+  const toolsUsed: string[] = []
+  const guidesDownloaded: string[] = []
   const valueReceived = toolsUsed.length * 50 + guidesDownloaded.length * 100
+
+  // Touchpoints: this WAS hardcoded 0, which is a fabricated figure on a table the
+  // /analytics lead-journey panel renders. `activities` does carry contact_id, so the
+  // real count is available. `count: "exact", head: true` fetches no rows.
+  const { count: touchpointCount, error: touchpointError } = await supabase
+    .from("activities")
+    .select("id", { count: "exact", head: true })
+    .eq("contact_id", contactId)
+    .eq("brokerage_id", ctx.brokerageId)
+  if (touchpointError) return null // fail closed rather than writing a zero as fact
 
   // Check if converted
   const becameClient = contact.transactions?.some((t: any) => t.status === "closed")
@@ -319,8 +366,8 @@ export async function trackLeadValueJourney(contactId: string) {
 
   const roiMultiple = valueReceived > 0 && conversionValue ? conversionValue / valueReceived : 0
 
-  // Upsert journey data
-  const { data: journey } = await supabase
+  // Upsert journey data. onConflict matches the live UNIQUE (contact_id).
+  const { data: journey, error: journeyError } = await supabase
     .from("lead_value_journey")
     .upsert(
       {
@@ -328,7 +375,7 @@ export async function trackLeadValueJourney(contactId: string) {
         brokerage_id: ctx.brokerageId, // tenant stamp — column existed but was never set
         first_interaction_date: firstInteraction.toISOString().split("T")[0],
         total_value_received: valueReceived,
-        touchpoints_count: 0, // Track from interactions
+        touchpoints_count: touchpointCount ?? 0,
         tools_used: toolsUsed,
         guides_downloaded: guidesDownloaded,
         time_to_conversion_days: timeToConversion,
@@ -340,6 +387,14 @@ export async function trackLeadValueJourney(contactId: string) {
     )
     .select()
     .single()
+
+  // The write's own error was previously discarded, so a rejected upsert returned
+  // the same `null` as "contact not visible" and the caller could not tell that the
+  // journey had not been recorded.
+  if (journeyError) {
+    console.error("[analytics] lead_value_journey upsert failed:", journeyError.message)
+    return null
+  }
 
   return journey
 }
@@ -405,8 +460,8 @@ export async function loadValueDrivenDashboard(agentId: string, period: string =
   const totalValueDelivered =
     valueMetrics?.reduce((sum, m) => sum + (parseFloat(m.total_value_delivered_dollars as any) || 0), 0) || 0
   const peopleHelped = valueMetrics?.reduce((sum, m) => sum + (m.recipients_count || 0), 0) || 0
-  const toolsUsed = valueMetrics?.reduce((sum, m) => sum + (m.free_tools_used_count || 0), 0) || 0
-  const guidesShared = valueMetrics?.reduce((sum, m) => sum + (m.guides_downloaded_count || 0), 0) || 0
+  const toolsUsed = valueMetrics?.reduce((sum, m) => sum + breakdownCount(m, "free_tools_used_count"), 0) || 0
+  const guidesShared = valueMetrics?.reduce((sum, m) => sum + breakdownCount(m, "guides_downloaded_count"), 0) || 0
 
   const closedDeals = transactions?.filter((t) => t.status === "closed") || []
   const monthlyGCI = closedDeals.reduce((sum, t) => sum + ((t.purchase_price || 0) * commissionStructure.agentBuyerSideRate), 0)

@@ -1,7 +1,7 @@
 "use server"
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { auditStaffAction, gateStaffAction } from "@/lib/platform/staff-action-gate"
 import { provisionTenantOwner } from "@/lib/kernel/users"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { stripe } from "@/lib/stripe"
@@ -31,24 +31,16 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
   inviteError?: string
   error?: string
 }> {
-  const supabase = await createClient()
-  const {
-    data: { user: callerUser },
-  } = await supabase.auth.getUser()
-  if (!callerUser) return { success: false, error: "Unauthenticated" }
-
-  const { data: callerProfile } = await supabase
-    .from("users")
-    .select("user_type, role, platform_role")
-    .eq("id", callerUser.id)
-    .single()
-
-  // Accept superadmin via any of the three role columns
-  const callerType =
-    callerProfile?.platform_role ?? callerProfile?.user_type ?? callerProfile?.role
-  if (callerType !== "superadmin") {
-    return { success: false, error: "Forbidden: superadmin only" }
-  }
+  // GATE PARITY (round 19). This used to demand a literal 'superadmin' read off
+  // `platform_role ?? user_type ?? role` — including the RETIRED users.role
+  // column. Its only caller, manualProvisionSubscriberAction, gates on the
+  // 'tenants' platform capability instead, so a platform admin / support staffer
+  // passed the outer door and was then refused by this inner one: the documented
+  // "platform admin staff provision subscribers too" policy did not actually
+  // work. Both doors now consult the SAME capability through the canonical gate.
+  const gate = await gateStaffAction("tenants")
+  if (!gate.ok) return { success: false, error: gate.error }
+  const callerUser = { id: gate.userId }
 
   const service = createServiceClient()
 
@@ -199,36 +191,71 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
   }
 }
 
+/**
+ * RESEND the tenant-owner magic link for a subscriber whose original invite did
+ * not land (`createSubscriber` returns `inviteSent:false` + `inviteError` when
+ * that happens — provisionTenantOwner tolerates an "already registered" address
+ * and still finishes the tenant).
+ *
+ * This does NOT invent an owner. It re-sends to an address that ALREADY holds a
+ * users row on that brokerage — see the target check below. Without that check
+ * the endpoint was a superadmin-gated primitive for mailing an
+ * `user_type:'admin'` invite for ANY brokerage_id to ANY address, which is a
+ * tenant-takeover shape rather than a retry.
+ */
 export async function retrySubscriberInvite(params: {
   adminEmail: string
   brokerageId: string
 }): Promise<{ success: boolean; error?: string }> {
-  // Superadmin-only — previously this was wide open and let any client
-  // send Supabase invite emails to any address attached to any brokerage_id.
-  const supabase = await createClient()
-  const { data: { user: callerUser } } = await supabase.auth.getUser()
-  if (!callerUser) return { success: false, error: "Unauthenticated" }
+  // Platform-staff gate, same capability as the provisioning door it retries for
+  // ('tenants'). Previously this was wide open and let any client send Supabase
+  // invite emails to any address attached to any brokerage_id; then it was hard
+  // superadmin, which locked out the platform admins who provision tenants.
+  const gate = await gateStaffAction("tenants")
+  if (!gate.ok) return { success: false, error: gate.error }
 
-  const { data: callerProfile } = await supabase
-    .from("users")
-    .select("user_type, role, platform_role")
-    .eq("id", callerUser.id)
-    .single()
-
-  const callerType =
-    callerProfile?.platform_role ?? callerProfile?.user_type ?? callerProfile?.role
-  if (callerType !== "superadmin") {
-    return { success: false, error: "Forbidden: superadmin only" }
+  const email = params.adminEmail.trim().toLowerCase()
+  if (!email || !params.brokerageId) {
+    return { success: false, error: "adminEmail and brokerageId are both required" }
   }
 
   const service = createServiceClient()
+
+  // TARGET CHECK — the address must already be a user of THIS brokerage. That is
+  // exactly the state createSubscriber leaves behind (provisionTenantOwner step 3
+  // upserts the users row with user_type='admin' + brokerage_id before it ever
+  // reports inviteSent:false), so every legitimate retry passes, while
+  // "mail an admin invite for someone else's tenant" no longer does.
+  const { data: target, error: targetErr } = await service
+    .from("users")
+    .select("id, user_type, brokerage_id")
+    .eq("email", email)
+    .eq("brokerage_id", params.brokerageId)
+    .maybeSingle()
+  if (targetErr) return { success: false, error: `Could not verify the invitee: ${targetErr.message}` }
+  if (!target) {
+    return {
+      success: false,
+      error: "No user with that email belongs to that brokerage — provision the subscriber first instead of resending an invite.",
+    }
+  }
+
+  // supabase-js RESOLVES a refused invite with { error } — it does not throw, so
+  // the old bare try/catch returned {success:true} for sends that never happened.
   try {
-    await service.auth.admin.inviteUserByEmail(params.adminEmail, {
+    const { error: sendErr } = await service.auth.admin.inviteUserByEmail(email, {
       data: {
         brokerage_id: params.brokerageId,
-        user_type: "admin",
+        user_type: (target.user_type as string | null) ?? "admin",
       },
       redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?next=/dashboard/onboarding`,
+    })
+    if (sendErr) return { success: false, error: sendErr.message }
+    // A staff member mailing a tenant-owner magic link is a cross-tenant act;
+    // it belongs in the same audit trail as the provisioning that preceded it.
+    await auditStaffAction(gate, "subscriber.invite.resent", params.brokerageId, {
+      admin_email: email,
+      user_type: (target.user_type as string | null) ?? "admin",
     })
     return { success: true }
   } catch (err: any) {

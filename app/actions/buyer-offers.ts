@@ -8,6 +8,7 @@ import { KernelEvent }         from "@/lib/kernel/events"
 import { isValidUUID }         from "@/lib/validations"
 import { resolveAgentId }      from "@/lib/kernel/agent-identity"
 import { requireContactAccess } from "@/lib/portal/require-contact-access"
+import { checkDuplicateOffer } from "@/app/actions/buyer-offer/handle-multi-offer"
 
 // ─── STAFF GATE ───────────────────────────────────────────────────────────────
 // Several exports below are agent-only writes on a buyer's file — creating the
@@ -580,6 +581,26 @@ export async function createOffer(
     resolvedListingId = form.listing_id
   }
 
+  // ── MULTI-OFFER GOVERNANCE (System 7.1A Domain 2) ──────────────────────────
+  // "No duplicate offers on the same listing" is the rule that module states and
+  // enforces nowhere: checkDuplicateOffer was written for exactly this moment
+  // and had no caller, so the only offer creator on the platform never asked.
+  // Only a LIVE offer blocks — the check counts non-terminal offers, and DRAFT
+  // is excluded here on purpose so an abandoned draft cannot lock a buyer out of
+  // the property they actually want to bid on.
+  // Applies only to our OWN listings; for an external/IDX target listing_id is
+  // NULL and there is no listing key to dedupe on (property_address dedupe is a
+  // separate, unbuilt piece of work).
+  if (resolvedListingId) {
+    const dupe = await checkDuplicateOffer(contactId, resolvedListingId)
+    if (dupe.success && dupe.has_duplicate && dupe.existing_state !== "DRAFT") {
+      return {
+        success: false,
+        error: `This buyer already has a live offer on this property (${dupe.existing_state?.toLowerCase()}). Withdraw or resolve offer ${dupe.existing_offer_id} before submitting another.`,
+      }
+    }
+  }
+
   const { data: offer, error: offerError } = await supabase
     .from("offers")
     .insert({
@@ -630,6 +651,44 @@ export async function createOffer(
 
   if (offerError || !offer) {
     return { success: false, error: offerError?.message ?? "Failed to create offer" }
+  }
+
+  // ── THE OFFER LIFECYCLE LANE'S MISSING WRITER ──────────────────────────────
+  // `buyer.offer.draft.created` on activities(entity_type='offer', entity_id) is
+  // the event the whole offer state machine derives DRAFT from:
+  //   · app/actions/buyer-offer/track-offer-lifecycle.ts:getOfferLifecycleState
+  //   · lib/buyer-offer/expire-offers.ts, lib/buyer-offer/status-sync.ts
+  //   · handle-multi-offer.ts (pending counts, duplicates, active-offer list)
+  //   · app/components/offer/multi-offer-status-banner.tsx (buyer-facing)
+  //   · the offer-expiry cron
+  // NOTHING in the repo ever wrote it. Every one of those readers therefore got
+  // "Offer not found" for every offer that has ever existed: the banner showed
+  // zero active offers, the 3-pending cap could never bind, submitOffer could
+  // never move an offer out of DRAFT because there was no DRAFT to move, and
+  // offers.status could not sync. The canonical creator is the right emitter.
+  //
+  // brokerage_id is supplied explicitly — it is NOT NULL on activities, and an
+  // emitter that omits it writes zero rows while reporting success.
+  // `error` is read rather than swallowed for the same reason.
+  const { error: lifecycleActivityErr } = await supabase.from("activities").insert({
+    brokerage_id:  brokerageId,
+    agent_id:      agentId,
+    contact_id:    contactId,
+    listing_id:    resolvedListingId,
+    activity_type: "buyer.offer.draft.created",
+    title:         "Offer draft created",
+    description:   `Offer draft created for ${form.property_address}`,
+    notes:         JSON.stringify({ offer_id: offer.id, new_state: "DRAFT" }),
+    status:        "completed",
+    entity_type:   "offer",
+    entity_id:     offer.id,
+  })
+  if (lifecycleActivityErr) {
+    // Non-fatal — the offer row is the durable artifact — but LOUD, because a
+    // silent failure here is what put this lane in the dark to begin with.
+    console.error(
+      `[createOffer] offer ${offer.id} created but its buyer.offer.draft.created lifecycle event failed (${lifecycleActivityErr.message}) — lifecycle-derived state for this offer will read as "not found".`,
+    )
   }
 
   // Accept the recommendation
@@ -831,11 +890,15 @@ export async function getBuyerOffers(
 
   const { data, error } = await supabase
     .from("offers")
+    // `listing_id` is PORTED from the inline copy that used to live in
+    // app/crm/contacts/[contactId]/offers/page.tsx (w6s3) — that page selected it
+    // and this reader did not, so consolidating onto this survivor without it would
+    // have dropped a capability the offers client relies on.
     .select(`
       id, property_address, offer_price, status, esign_status,
       esign_sent_at, form_source, esign_provider, strategy_recommendation_id,
       created_at, submitted_at, closing_date, financing_type,
-      earnest_money, contingencies, buyer_notes
+      earnest_money, contingencies, buyer_notes, listing_id
     `)
     .eq("contact_id", contactId)
     // Tenant anchor comes from the contact row via the gate, never the caller.

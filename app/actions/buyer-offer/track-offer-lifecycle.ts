@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { createServiceClient } from "@/lib/supabase/service";
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { expireOffer } from "@/lib/buyer-offer/expire-offers";
 import { isValidUUID } from "@/lib/validations";
 
 /**
@@ -397,52 +398,24 @@ export async function markOfferExpired(
     const gate = await requireOfferActor(offerId);
     if (!gate.ok) return { success: false, error: gate.error };
 
-    // The reason recorded has to be the reason that happened.
-    if (!gate.responseDeadline) {
-      return { success: false, error: "This offer has no response deadline, so it cannot expire on one" };
-    }
-    if (new Date(gate.responseDeadline).getTime() > Date.now()) {
-      return { success: false, error: "The response deadline has not passed yet" };
-    }
-
-    // Check current state
-    const stateResult = await getOfferLifecycleState(offerId);
-    if (!stateResult.success || !stateResult.data) {
-      return { success: false, error: stateResult.error };
-    }
-
-    if (stateResult.data.current_state !== "PENDING") {
-      return { success: false, error: "Only PENDING offers can expire" };
-    }
-
-    // Emit expiration event
+    // Deadline check, PENDING check, the activity write AND the offers.status
+    // sync all live in lib/buyer-offer/expire-offers.ts so that the hourly
+    // /api/cron/offer-expiry sweep — which has no session and must not fake one —
+    // runs exactly this logic through its own service-credential door instead of
+    // a divergent copy.
     const supabase = createServiceClient();
-    const { error } = await supabase.from("activities").insert({
+    const outcome = await expireOffer(supabase as any, {
+      offerId,
       // From the OFFER, not from a caller-supplied user id.
-      brokerage_id: gate.brokerageId,
+      brokerageId: gate.brokerageId,
+      responseDeadline: gate.responseDeadline,
       // IDENTITY CLASS. activities.agent_id FKs agents(id) and the session gives
       // a users id — they are disjoint spaces, so it is RESOLVED, never
-      // substituted. The three sibling writes in this file (submitted,
-      // withdrawn, response) already resolve it; this fourth one was missed, so
-      // every EXPIRED offer failed to record its lifecycle event while the other
-      // three recorded fine.
-      agent_id: await resolveAgentId(supabase as any, gate.userId),
-      activity_type: "buyer.offer.expired",
-      title: "Offer expired",
-      description: "Offer expired: deadline passed",
-      notes: JSON.stringify({
-        offer_id: offerId,
-        previous_state: "PENDING",
-        new_state: "EXPIRED",
-        expiration_reason: "deadline_passed",
-        response_deadline: gate.responseDeadline,
-      }),
-      status: "completed",
-      entity_type: "offer",
-      entity_id: offerId,
+      // substituted.
+      actorAgentId: await resolveAgentId(supabase as any, gate.userId),
     });
 
-    if (error) throw error;
+    if (!outcome.expired) return { success: false, error: outcome.reason };
 
     return { success: true };
   } catch (error: any) {

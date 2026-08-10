@@ -55,16 +55,32 @@ export default async function OffersPage({
     .eq("brokerage_id", listing.brokerage_id)
     .order("submitted_at", { ascending: false })
 
-  // Resolve buyer agent names — separate query since offers.agent_id has no declared FK to users
+  // Resolve buyer agent names.
+  // IDENTITY CLASS: `offers.agent_id` is an **agents.id** (createOffer writes it
+  // through resolveAgentId), and identity lives on **users**, reached via
+  // agents.user_id. This query used to look the agents ids up in `users` by id
+  // — two disjoint uuid spaces — so it matched nothing and EVERY offer rendered
+  // its buyer agent as "Unknown". Resolve agents → users, then map back to the
+  // agents.id the offer rows actually carry.
   const agentIds = [...new Set((offers ?? []).map((o) => o.agent_id).filter(Boolean))] as string[]
   let agentNameMap: Record<string, string> = {}
   if (agentIds.length > 0) {
-    const { data: agentUsers } = await supabase
-      .from("users")
-      .select("id, first_name, last_name")
+    const { data: agentRows } = await supabase
+      .from("agents")
+      .select("id, user_id")
       .in("id", agentIds)
-    if (agentUsers) {
-      agentNameMap = Object.fromEntries(agentUsers.map((u: any) => [u.id, `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim() || "Unknown"]))
+    const userIds = [...new Set((agentRows ?? []).map((a: any) => a.user_id).filter(Boolean))] as string[]
+    if (userIds.length > 0) {
+      const { data: agentUsers } = await supabase
+        .from("users")
+        .select("id, first_name, last_name")
+        .in("id", userIds)
+      const nameByUserId = Object.fromEntries(
+        (agentUsers ?? []).map((u: any) => [u.id, `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim() || "Unknown"])
+      )
+      agentNameMap = Object.fromEntries(
+        (agentRows ?? []).map((a: any) => [a.id, nameByUserId[a.user_id] ?? "Unknown"])
+      )
     }
   }
 

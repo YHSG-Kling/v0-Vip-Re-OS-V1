@@ -32,7 +32,12 @@ import {
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
-import { loadValueDrivenDashboard, getLeadValueJourneys } from "@/app/actions/analytics"
+import {
+  loadValueDrivenDashboard,
+  getLeadValueJourneys,
+  aggregateValueDelivered,
+  trackLeadValueJourney,
+} from "@/app/actions/analytics"
 import { generatePageInsight } from "@/app/actions/generate-page-insight"
 import { cn } from "@/lib/utils"
 
@@ -44,6 +49,8 @@ export default function AnalyticsDashboard() {
   const [loading, setLoading] = useState(true)
   const [aiSummary, setAiSummary] = useState<string | null>(null)
   const [aiSummaryLoading, setAiSummaryLoading] = useState(false)
+  const [aggregateError, setAggregateError] = useState<string | null>(null)
+  const [rebuilding, setRebuilding] = useState(false)
 
   useEffect(() => {
     loadData()
@@ -68,6 +75,20 @@ export default function AnalyticsDashboard() {
         return
       }
 
+      // `value_delivered_daily` has exactly ONE writer in the tree —
+      // aggregateValueDelivered — and it had no caller, so this dashboard read a
+      // table nothing ever filled and rendered zeros by construction. Refresh
+      // today's row before reading. It is idempotent (UNIQUE (agent_id, date) +
+      // onConflict), and a failure must not take the whole page down: the rest of
+      // the dashboard does not depend on it.
+      const agg = await aggregateValueDelivered(agentId, new Date())
+      if (!agg.success) {
+        console.error("[analytics] value aggregation skipped:", agg.error)
+        setAggregateError(agg.error ?? null)
+      } else {
+        setAggregateError(null)
+      }
+
       const [dashboard, journeys] = await Promise.all([
         loadValueDrivenDashboard(agentId, period),
         getLeadValueJourneys(agentId, 20),
@@ -79,6 +100,48 @@ export default function AnalyticsDashboard() {
     } catch (error) {
       console.error("[v0] Failed to load analytics:", error)
       setLoading(false)
+    }
+  }
+
+  /**
+   * `lead_value_journey` likewise has exactly one writer — trackLeadValueJourney —
+   * and it had no caller, so the Lead Value Journeys table below could only ever be
+   * empty. This is its door: recompute the journey for the agent's own contacts,
+   * then re-read. Bounded to 100 contacts and run sequentially in small batches so
+   * one click cannot fan out unbounded. Each call is server-side tenant-checked; a
+   * contact outside the caller's brokerage simply returns null.
+   */
+  async function rebuildJourneys() {
+    setRebuilding(true)
+    try {
+      const supabase = createClient()
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+      const agentId = await resolveAgentId(supabase, user.id)
+      if (!agentId) return
+
+      const { data: contacts, error } = await supabase
+        .from("contacts")
+        .select("id")
+        .eq("agent_id", agentId)
+        .order("created_at", { ascending: false })
+        .limit(100)
+      if (error) {
+        console.error("[analytics] could not list contacts to rebuild journeys:", error.message)
+        return
+      }
+
+      const ids = (contacts ?? []).map((c: any) => c.id).filter(Boolean)
+      for (let i = 0; i < ids.length; i += 5) {
+        await Promise.all(ids.slice(i, i + 5).map((id: string) => trackLeadValueJourney(id)))
+      }
+
+      const journeys = await getLeadValueJourneys(agentId, 20)
+      setLeadJourneys(journeys)
+    } catch (err) {
+      console.error("[analytics] journey rebuild failed:", err)
+    } finally {
+      setRebuilding(false)
     }
   }
 
@@ -125,7 +188,10 @@ export default function AnalyticsDashboard() {
           [c.first_name, c.last_name].filter(Boolean).join(" "),
           c.email ?? "",
           j.total_value_received ?? 0,
-          j.touchpoint_count ?? j.total_touchpoints ?? "",
+          // The live column is `touchpoints_count` — neither `touchpoint_count` nor
+          // `total_touchpoints` exists on lead_value_journey, so this CSV column was
+          // always blank.
+          j.touchpoints_count ?? "",
         ])
       }
     }
@@ -370,9 +436,21 @@ export default function AnalyticsDashboard() {
           <TabsContent value="value" className="space-y-6">
             {/* Lead Value Journeys Table */}
             <Card>
-              <CardHeader>
-                <CardTitle>Lead Value Journeys</CardTitle>
-                <CardDescription>Track how much value each lead receives before converting</CardDescription>
+              <CardHeader className="flex flex-row items-start justify-between gap-4">
+                <div>
+                  <CardTitle>Lead Value Journeys</CardTitle>
+                  <CardDescription>Track how much value each lead receives before converting</CardDescription>
+                </div>
+                <Button variant="outline" size="sm" onClick={rebuildJourneys} disabled={rebuilding}>
+                  {rebuilding ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                      Rebuilding…
+                    </>
+                  ) : (
+                    "Rebuild journeys"
+                  )}
+                </Button>
               </CardHeader>
               <CardContent>
                 <div className="overflow-x-auto">
@@ -406,11 +484,18 @@ export default function AnalyticsDashboard() {
                             <div className="flex items-center">
                               <div className="w-8 h-8 rounded-full bg-purple-100 dark:bg-purple-950/20 flex items-center justify-center mr-3">
                                 <span className="text-sm font-semibold text-purple-700 dark:text-purple-400">
-                                  {journey.contacts?.name?.charAt(0) || "?"}
+                                  {/* getLeadValueJourneys selects first_name/last_name — there is no
+                                      `name` column on contacts, so this rendered "?"/"Unknown" for
+                                      every row even when the journey was populated. */}
+                                  {(journey.contacts?.first_name || journey.contacts?.last_name || "?").charAt(0)}
                                 </span>
                               </div>
                               <div>
-                                <p className="text-sm font-medium">{journey.contacts?.name || "Unknown"}</p>
+                                <p className="text-sm font-medium">
+                                  {[journey.contacts?.first_name, journey.contacts?.last_name]
+                                    .filter(Boolean)
+                                    .join(" ") || "Unknown"}
+                                </p>
                                 <p className="text-xs text-muted-foreground">{journey.contacts?.email || ""}</p>
                               </div>
                             </div>

@@ -1732,6 +1732,14 @@ export const CRON_MANAGER: Record<string, ManagerKey> = {
   "/api/cron/tour-optimizer": "shopping_agent",
   "/api/cron/investor-offmarket-refresh": "shopping_agent",
   "/api/property-alerts/run": "shopping_agent",
+  // The unattended door to offer expiry. `markOfferExpired` is session-gated on
+  // purpose, so nothing could ever expire an offer without a browser; this sweep
+  // holds the service credential instead (lib/buyer-offer/expire-offers.ts).
+  // Owned by shopping_agent because it stewards the `offers` table itself
+  // (TABLE_MANAGER: offers → shopping_agent) — deliberately NOT deal_coordinator,
+  // which only owns post-gate transactions, and NOT listing_concierge, which owns
+  // the seller-side net-sheet ranking of an inbound offer (/api/cron/offer-net-sheet).
+  "/api/cron/offer-expiry": "shopping_agent",
   // ── Listing Concierge — the seller side ──
   "/api/cron/listing-health-scan": "listing_concierge",
   "/api/cron/listing-presentation-prep": "listing_concierge",

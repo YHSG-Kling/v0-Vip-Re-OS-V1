@@ -1,101 +1,51 @@
 import { NextRequest, NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase/server"
+import { getPortalMessages } from "@/app/actions/portal-messages"
 
 /**
  * GET /api/portal/messages/[contactId]
  * Returns all messages for a contact ordered by created_at ascending.
  *
- * Access rules (matches portal layout gate):
- *  1. Authenticated user whose email matches contact.email (contact self-service)
- *  2. Assigned agent (agents.id === contacts.agent_id AND agents.user_id === user.id)
- *  3. Admin/broker of same brokerage
+ * CONSOLIDATED (w6s3). This route used to carry its OWN inline copy of the portal
+ * access rules and its own `client_portal_messages` query. That copy had drifted
+ * from the shared gate in two directions:
+ *   · it recognised a contact only by EMAIL match, so a portal client linked by
+ *     `contacts.contact_user_id` with a different login email was refused their own
+ *     message thread;
+ *   · it admitted only admin/broker/superadmin as staff, so an assigned contact's
+ *     team_lead / tc / agent colleague in the same brokerage was refused, while the
+ *     shared gate allows them.
+ *
+ * Survivor: `app/actions/portal-messages.ts:getPortalMessages`, which is the gated
+ * (`lib/portal/require-contact-access.ts:requireContactAccess`), brokerage-scoped
+ * reader — the exact capability this route duplicated. There is now one gate and one
+ * query for portal message history; the SWR poller in
+ * `app/portal/[contactId]/messages/messages-client.tsx` keeps its endpoint unchanged.
  */
 export async function GET(
-  request: NextRequest,
-  { params }: { params: Promise<{ contactId: string }> }
+  _request: NextRequest,
+  { params }: { params: Promise<{ contactId: string }> },
 ) {
   try {
     const { contactId } = await params
-    const supabase = await createClient()
-
-    // Validate auth
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser()
-
-    if (authError || !user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
-
-    // Validate contactId
     if (!contactId) {
       return NextResponse.json({ error: "Contact ID is required" }, { status: 400 })
     }
 
-    // Load contact to validate access
-    const { data: contact, error: contactError } = await supabase
-      .from("contacts")
-      .select("id, email, agent_id, brokerage_id")
-      .eq("id", contactId)
-      .maybeSingle()
+    const res = await getPortalMessages(contactId)
 
-    if (contactError || !contact) {
-      return NextResponse.json({ error: "Contact not found" }, { status: 404 })
+    if (!res.success) {
+      // requireContactAccess distinguishes these deliberately — a refused read
+      // ("Access check failed") must NOT be reported as a clean 404.
+      const status =
+        res.error === "Unauthorized" ? 401
+        : res.error === "Forbidden" ? 403
+        : res.error === "Contact not found" ? 404
+        : 500
+      return NextResponse.json({ error: res.error ?? "Failed to load messages" }, { status })
     }
 
-    // ── Access gate ────────────────────────────────────────────────────────────
-    let accessGranted = false
-
-    // Rule 1: Contact's own email (client self-service)
-    if (user.email?.toLowerCase() === contact.email?.toLowerCase()) {
-      accessGranted = true
-    }
-
-    // Rule 2: Assigned agent (agents.user_id === user.id AND agents.id === contact.agent_id)
-    if (!accessGranted && contact.agent_id) {
-      const { data: ag } = await supabase
-        .from("agents")
-        .select("id")
-        .eq("user_id", user.id)
-        .eq("id", contact.agent_id)
-        .maybeSingle()
-      if (ag) accessGranted = true
-    }
-
-    // Rule 3: Admin/broker of same brokerage
-    if (!accessGranted) {
-      const { data: ur } = await supabase
-        .from("users")
-        .select("user_type, brokerage_id")
-        .eq("id", user.id)
-        .maybeSingle()
-      if (
-        ur?.brokerage_id === contact.brokerage_id &&
-        ["admin", "broker", "superadmin"].includes(ur?.user_type ?? "")
-      ) {
-        accessGranted = true
-      }
-    }
-
-    if (!accessGranted) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 })
-    }
-
-    // Fetch messages scoped to contact + brokerage
-    const { data: messages, error: fetchError } = await supabase
-      .from("client_portal_messages")
-      .select("*")
-      .eq("contact_id", contactId)
-      .eq("brokerage_id", contact.brokerage_id)
-      .order("created_at", { ascending: true })
-
-    if (fetchError) {
-      return NextResponse.json({ error: "Failed to load messages" }, { status: 500 })
-    }
-
-    return NextResponse.json({ messages: messages || [] })
-  } catch (error) {
+    return NextResponse.json({ messages: res.messages ?? [] })
+  } catch {
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }

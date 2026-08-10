@@ -13,7 +13,7 @@ import {
   analyzeMessageSentiment,
   generateSmartResponse,
 } from "@/app/actions/ai-communication-hub"
-import { getLeadThreadMessages, convertLeadFromInbox } from "@/app/actions/inbox"
+import { getLeadThreadMessages, convertLeadFromInbox, markInboxRead } from "@/app/actions/inbox"
 import { sendSocialDmReply } from "@/app/actions/social-dm"
 import { socialDmSupport } from "@/lib/social/dm-support"
 import { analyzeConversation } from "@/app/actions/ai-predictions"
@@ -139,6 +139,12 @@ export default function InboxClient({
   const socialDispatchable = isSocialThread && !!socialPlatform && socialDmSupport(socialPlatform).supported
 
   const didInitialSelect = useRef(false)
+
+  // handleSelect runs inside startTransition and must read the CURRENT list to
+  // resolve the thread's contact id; closing over `conversations` would capture a
+  // stale array (the same class the loadThread comment above already records).
+  const conversationsRef = useRef<Conversation[]>(conversations)
+  useEffect(() => { conversationsRef.current = conversations }, [conversations])
 
   // ── Supabase Realtime — subscribe to new messages in selected conversation ──
   useEffect(() => {
@@ -267,6 +273,26 @@ export default function InboxClient({
     loadThread(id)
     startTransition(async () => {
       await markConversationRead(id)
+
+      // TWO LEDGERS, NOT ONE. `markConversationRead` zeroes
+      // `conversations.unread_count` — the thread BADGE — and nothing else. The
+      // underlying rows stay unread: `messages.status = 'unread'` and
+      // `client_portal_messages.read = false`. Every surface that counts those
+      // directly (the kernel's `loadUniversalInbox` totalUnread, the client
+      // portal's own unread state) therefore kept reporting messages the agent
+      // had already opened. `markInboxRead` is the function that clears them, and
+      // it had no caller anywhere — so it never ran.
+      //
+      // Contact-keyed, so it only applies to contact threads (lead threads return
+      // above; they have no conversations row and no read state).
+      const contactId = conversationsRef.current.find(c => c.id === id)?.contacts?.id
+      if (contactId) {
+        // Best-effort: it re-verifies the contact's tenant server-side and returns
+        // a reason rather than throwing, and the badge above must not depend on it.
+        const res = await markInboxRead({ contactId })
+        if (!res.success) console.error("[inbox] markInboxRead failed:", res.error)
+      }
+
       setConversations(prev =>
         prev.map(c => c.id === id ? { ...c, unread_count: 0 } : c)
       )

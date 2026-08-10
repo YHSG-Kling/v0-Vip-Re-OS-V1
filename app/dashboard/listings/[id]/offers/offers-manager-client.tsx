@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState, useTransition } from "react"
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -33,6 +33,7 @@ import {
   generateSellerPortalLink,
   acceptOffer,
   rejectOffer,
+  getOffersForListing,
   getTransactionByListingId,
   getRepairNegotiationItems,
 } from "@/app/actions/seller-offers"
@@ -110,6 +111,27 @@ interface Props {
 
 export function OffersManagerClient({ listing, initialOffers, currentUserId, brokerageId, userRole }: Props) {
   const [offers, setOffers] = useState<Offer[]>(initialOffers)
+  const [refreshError, setRefreshError] = useState<string | null>(null)
+
+  // RE-READ FROM TRUTH after a state transition. Accept / reject / counter each
+  // used to patch local React state only — splicing the row out, or flipping
+  // is_winning_offer client-side — so the screen showed the outcome the caller
+  // INTENDED rather than the one the database recorded. If a server-side
+  // transition half-succeeded, the UI still claimed it worked, and stayed wrong
+  // until a full page reload.
+  // app/actions/seller-offers.ts:getOffersForListing is the authoritative reader
+  // for exactly this (auth + listing-in-caller's-brokerage + tenant-anchored
+  // query, same columns this page renders) and had no caller at all.
+  const refreshOffers = useCallback(async () => {
+    const res = await getOffersForListing(listing.id)
+    if (!res.success) {
+      // Do NOT silently keep stale rows on screen — say the list is stale.
+      setRefreshError(res.error ?? "Could not refresh the offer list")
+      return
+    }
+    setRefreshError(null)
+    setOffers(res.offers as unknown as Offer[])
+  }, [listing.id])
   const [activeTab, setActiveTab] = useState("overview")
   const [counterTarget, setCounterTarget] = useState<Offer | null>(null)
   const [aiResult, setAiResult] = useState<Record<string, unknown> | null>(null)
@@ -232,13 +254,7 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
     startTransition(async () => {
       const result = await acceptOffer({ offerId, listingId: listing.id, brokerageId, agentUserId: currentUserId })
       if (result.success) {
-        setOffers((prev) =>
-          prev.map((o) =>
-            o.id === offerId
-              ? { ...o, is_winning_offer: true, status: "accepted" }
-              : { ...o, is_winning_offer: false }
-          )
-        )
+        await refreshOffers()
         toast({ title: "Offer accepted", description: "Listing moved to Under Contract" })
       } else {
         toast({ title: "Accept failed", description: result.error, variant: "destructive" })
@@ -334,7 +350,7 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
     startTransition(async () => {
       const result = await rejectOffer({ offerId, listingId: listing.id, brokerageId, agentUserId: currentUserId })
       if (result.success) {
-        setOffers((prev) => prev.filter((o) => o.id !== offerId))
+        await refreshOffers()
         toast({ title: "Offer rejected" })
       } else {
         toast({ title: "Reject failed", description: result.error, variant: "destructive" })
@@ -471,6 +487,15 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
 
           {/* Decision History — last 20 decisions for this listing */}
           <DecisionHistoryPanel listingId={listing.id} />
+
+      {/* A failed re-read must be visible: the rows on screen are then the
+          PRE-transition list, and silently keeping them is how a UI ends up
+          asserting a state the database never reached. */}
+      {refreshError && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          This list may be out of date — could not reload offers after the last change: {refreshError}
+        </div>
+      )}
 
       {/* AI recommendation banner */}
       {aiResult && (

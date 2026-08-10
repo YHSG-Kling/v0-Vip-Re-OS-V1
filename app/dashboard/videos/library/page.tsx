@@ -54,6 +54,7 @@ import {
   updateScriptApprovalStatus,
   recordVideoEngagementEvent,
 } from "@/app/actions/video-generation"
+import { VideoGenerationButtons } from "@/app/components/video/VideoGenerationButtons"
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -893,6 +894,29 @@ function VideoLibraryContent() {
                       <span>Target: {selectedScript.duration_target_seconds}s</span>
                     )}
                   </div>
+                </div>
+
+                {/* Render this script.
+                    `scriptId` is passed, so the action reads the script text and
+                    tenant from the STORED row and does not mint a duplicate
+                    library entry for a script that is already in the library.
+                    Gated on `approved` for the same reason the approval control
+                    below exists — an unapproved script must not reach a paid
+                    provider render. */}
+                <div className="space-y-2 pt-4 border-t">
+                  <Label>Generate video</Label>
+                  {selectedScript.approval_status === "approved" ? (
+                    <VideoGenerationButtons
+                      scriptId={selectedScript.id}
+                      script={selectedScript.script_content}
+                      title={selectedScript.title}
+                      size="sm"
+                    />
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      Approve this script first — rendering spends provider credits.
+                    </p>
+                  )}
                 </div>
 
                 {/* Variations */}

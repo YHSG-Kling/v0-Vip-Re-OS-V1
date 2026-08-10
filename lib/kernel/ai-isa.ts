@@ -1023,16 +1023,27 @@ export async function recordAiIsaOutcome(
           .maybeSingle()
 
         if (sequenceRow?.id) {
-          const { enrollContactInSequence } = await import(
-            "@/app/actions/campaign-sequences"
-          )
-          await enrollContactInSequence({
+          // UNATTENDED LANE: this runs with no session, so it uses the shared
+          // enrollment library directly and supplies its tenant explicitly. It used
+          // to call the `"use server"` action `enrollContactInSequence`, which
+          // omitted the NOT NULL `brokerage_id` — every enrollment here was refused
+          // by the database, and the swallowing catch below reported "enrolled in
+          // long-term nurture" while enrolling nobody. That catch is kept (the
+          // outcome record must not fail on a nurture miss) but the failure is now
+          // at least logged instead of vanishing.
+          const { enrollInSequence } = await import("@/lib/campaigns/enroll-in-sequence")
+          const { error: enrollError } = await enrollInSequence({
             sequenceId: sequenceRow.id,
+            brokerageId: ctx.brokerageId,
             leadId,
+            enrolledBy: ctx.userId ?? null,
           })
+          if (enrollError) {
+            console.error("[ai-isa] long-term nurture enrollment failed:", enrollError)
+          }
         }
       } catch (e) {
-        // best effort
+        console.error("[ai-isa] long-term nurture enrollment threw:", e)
       }
     }
 

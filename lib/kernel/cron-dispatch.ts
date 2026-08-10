@@ -225,6 +225,10 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/voice-distiller-weekly"              , schedule: "0 9 * * 5" },
   { path: "/api/cron/showing-prep"                        , schedule: "15 * * * *" },
   { path: "/api/cron/deadline-watcher"                    , schedule: "45 * * * *" }, // (staggered r43)
+  // Offer expiry — the unattended door for PENDING → EXPIRED. `markOfferExpired`
+  // is session-gated by design, so without this nothing ever expired an offer
+  // whose `offers.response_deadline` had passed. Offset from deadline-watcher.
+  { path: "/api/cron/offer-expiry"                        , schedule: "52 * * * *" },
   { path: "/api/cron/marketing-agent-weekly-measure"      , schedule: "30 22 * * 0" },
   { path: "/api/cron/refresh-market-rates"                , schedule: "30 6 * * *" },
   { path: "/api/cron/market-insights-weekly"              , schedule: "30 6 * * 1" },

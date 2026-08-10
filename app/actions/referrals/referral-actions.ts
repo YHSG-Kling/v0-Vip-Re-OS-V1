@@ -25,6 +25,13 @@ export type ReferralPartnerRow = {
    *  a name — the contact details were written and then invisible. */
   email: string | null
   phone: string | null
+  /** Same class as email/phone above: `referral_partners.company_name` exists
+   *  live and listPartnersWithReferrals selects `*`, so the value was always on
+   *  the wire — it was simply undeclared here, which made the credit-pipeline
+   *  partner picker unable to fall back to the company when a partner has no
+   *  personal name (`p.partner_name || p.company_name || "Unnamed partner"`).
+   *  Declared rather than dropped from the consumer: the data is real. */
+  company_name: string | null
   agreement_date: string | null
   notes: string | null
   commission_split_percentage: number | null

@@ -18,7 +18,7 @@ import {
   type VendorBillInvoice,
 } from "./vendor-bills-panel"
 import { createServiceClient } from "@/lib/supabase/service"
-import { findChargeAttribution, resolveVendorActorScope } from "@/lib/vendors/vendor-scope"
+import { canInviteVendors, findChargeAttribution, resolveVendorActorScope } from "@/lib/vendors/vendor-scope"
 import { readW9StatusMap, type W9Status } from "@/lib/vendors/w9"
 import {
   searchVendors,
@@ -30,6 +30,7 @@ import {
 } from "@/app/actions/vendor-marketplace"
 import { Store, FileText, Star, CheckCircle2, KeyRound } from "lucide-react"
 import { VendorAccessPanel } from "./vendor-access-panel"
+import { VendorPortalInvitePanel } from "./vendor-portal-invite-panel"
 import { listVendorAssignmentsForBrokerageAction } from "@/app/actions/vendor-contact-access"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
@@ -239,6 +240,48 @@ export default async function VendorsPage() {
   }))
   const canRevokeAccess = ["broker", "broker_admin", "admin", "superadmin", "team_lead"]
     .includes(profile.user_type ?? "")
+
+  // PLATFORM INVITATIONS — the front door for the vendor portal. vendor_invitations
+  // has had a writer (app/actions/vendor-invite.ts) and an acceptance page
+  // (/vendor-invite/[token]) since round 15, but NO surface ever called the
+  // writer: the invite could only be created by hand, so the vendor portal was
+  // reachable in principle and unreachable in practice. This reads the state the
+  // panel below acts on. `error` is read deliberately — an RLS refusal must not
+  // render as "nobody has been invited".
+  const { data: inviteRows, error: inviteErr } = await supabase
+    .from("vendor_invitations")
+    .select("id, vendor_id, status, email, expires_at, created_at")
+    .eq("brokerage_id", profile.brokerage_id)
+    .order("created_at", { ascending: false })
+    .limit(500)
+  // Which vendors already hold a portal login. vendors has NO user_id column —
+  // the user_role_assignments row IS the link (see the superadmin vendor board).
+  const svcForLinks = createServiceClient()
+  const { data: vendorLinkRows } = await svcForLinks
+    .from("user_role_assignments")
+    .select("user_id, vendor_id")
+    .eq("brokerage_id", profile.brokerage_id)
+    .not("vendor_id", "is", null)
+  const linkedUserIds = [...new Set((vendorLinkRows ?? []).map((r: any) => r.user_id as string))]
+  const { data: linkedUsers } = linkedUserIds.length
+    ? await svcForLinks.from("users").select("id, email").in("id", linkedUserIds)
+    : { data: [] as any[] }
+  const emailByUserId = new Map<string, string>(
+    (linkedUsers ?? []).map((u: any) => [u.id as string, (u.email as string) ?? "linked account"])
+  )
+  const linkedEmailByVendor = new Map<string, string>()
+  for (const l of (vendorLinkRows ?? []) as any[]) {
+    if (l.vendor_id && !linkedEmailByVendor.has(l.vendor_id)) {
+      linkedEmailByVendor.set(l.vendor_id, emailByUserId.get(l.user_id) ?? "linked account")
+    }
+  }
+  const invitableVendors = (preferredVendors ?? []).map((v: any) => ({
+    id:          v.id as string,
+    name:        (v.name as string) ?? "Unnamed vendor",
+    email:       (v.email as string | null) ?? null,
+    linkedEmail: linkedEmailByVendor.get(v.id as string) ?? null,
+  }))
+  const canInviteVendorsHere = canInviteVendors(profile.user_type)
 
   const serviceTypes = [...new Set(vendors.map(v => v.category).filter(Boolean))]
   const assignedCount = assignedVendors?.length || 0
@@ -539,6 +582,15 @@ export default async function VendorsPage() {
 
         {/* Tab 5: Client access grants — the write half of the vendor access model */}
         <TabsContent value="client-access" className="space-y-4">
+          {/* Platform access: can this vendor sign in at all. Distinct from the
+              per-client grants below, which decide what a signed-in vendor sees. */}
+          <VendorPortalInvitePanel
+            vendors={invitableVendors}
+            invitations={(inviteRows ?? []) as any}
+            loadError={inviteErr?.message ?? null}
+            canInvite={canInviteVendorsHere}
+            canRevoke={canRevokeAccess}
+          />
           <VendorAccessPanel
             assignments={accessAssignments}
             vendors={vendorOptions}

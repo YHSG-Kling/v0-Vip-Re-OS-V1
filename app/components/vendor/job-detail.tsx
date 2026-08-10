@@ -29,11 +29,50 @@ import {
   addVendorJobNote,
   updateVendorJobCost,
   sendVendorMessageToAgent,
+  uploadVendorJobDocument,
 } from "@/app/actions/vendor-portal"
 
 interface VendorJobDetailProps {
   job: any
   vendorId: string
+}
+
+/**
+ * `transaction_documents.doc_type` is free text on the live schema (no CHECK),
+ * so this list is the vendor-facing vocabulary rather than a DB constraint.
+ * Keep it aligned with the labels the TC/agent document surfaces already read
+ * (`inspection_report` is the value `transaction-inspections.ts` writes).
+ */
+const VENDOR_DOC_TYPES: Array<{ value: string; label: string }> = [
+  { value: "invoice",           label: "Invoice" },
+  { value: "inspection_report", label: "Inspection / Service Report" },
+  { value: "job_photo",         label: "Job Photo" },
+  { value: "completion_report", label: "Completion Report" },
+  { value: "estimate",          label: "Estimate / Quote" },
+  { value: "permit",            label: "Permit" },
+  { value: "warranty",          label: "Warranty" },
+  { value: "other",             label: "Other" },
+]
+
+/**
+ * The Server Action boundary carries JSON, not binary — a `File`/`Buffer` is not
+ * serializable across it — so the bytes travel as a `data:` URL, which
+ * `uploadVendorJobDocument` already decodes.
+ *
+ * Size: `next.config.ts` sets `serverActions.bodySizeLimit: '8mb'` and base64
+ * inflates by ~33%, so the browser can never reach the action's own 25MB cap
+ * (that cap exists for server-to-server callers). Cap the browser at 5MB here so
+ * an oversized file gets a real message instead of an opaque body-limit failure.
+ */
+const BROWSER_UPLOAD_MAX_BYTES = 5 * 1024 * 1024
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error(`Could not read ${file.name}`))
+    reader.onload = () => resolve(String(reader.result ?? ""))
+    reader.readAsDataURL(file)
+  })
 }
 
 export function VendorJobDetail({ job, vendorId }: VendorJobDetailProps) {
@@ -44,6 +83,14 @@ export function VendorJobDetail({ job, vendorId }: VendorJobDetailProps) {
   const [loading, setLoading] = useState(false)
   const [saveStatus, setSaveStatus] = useState("")
   const [showMarkComplete, setShowMarkComplete] = useState(false)
+  const [docType, setDocType] = useState("invoice")
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState("")
+  const [uploadedDocs, setUploadedDocs] = useState<string[]>([])
+
+  // `uploadVendorJobDocument` verifies the job links to THIS transaction, so the
+  // id has to come from the job row the server already scoped to this vendor.
+  const transactionId: string | undefined = job?.vendor_assignments?.transaction_id
 
   const handleStatusChange = async (newStatus: string) => {
     setLoading(true)
@@ -97,6 +144,63 @@ export function VendorJobDetail({ job, vendorId }: VendorJobDetailProps) {
       setSaveStatus("Failed to update cost")
     }
     setLoading(false)
+  }
+
+  const handleFilesSelected = async (files: File[]) => {
+    if (files.length === 0) return
+
+    setUploadError("")
+
+    if (!transactionId) {
+      setUploadError("This job is not linked to a transaction yet, so documents cannot be filed against it.")
+      return
+    }
+
+    setUploading(true)
+    const succeeded: string[] = []
+    const failures: string[] = []
+
+    // Sequential, not Promise.all — each call carries a whole file body and the
+    // action stores the object before inserting the row; firing them together
+    // would race the 8MB action body budget.
+    for (const file of files) {
+      if (file.size === 0) {
+        failures.push(`${file.name} is empty`)
+        continue
+      }
+      if (file.size > BROWSER_UPLOAD_MAX_BYTES) {
+        failures.push(
+          `${file.name} is larger than the ${Math.floor(BROWSER_UPLOAD_MAX_BYTES / (1024 * 1024))}MB upload limit`,
+        )
+        continue
+      }
+      try {
+        const dataUrl = await readFileAsDataUrl(file)
+        // Throws (it does not return {success:false}) on any gate/storage/insert
+        // failure, so a rejection here means nothing was filed — never report
+        // this file as uploaded.
+        await uploadVendorJobDocument({
+          jobId: job.id,
+          transactionId,
+          vendorId,
+          documentType: docType,
+          fileName: file.name,
+          fileData: dataUrl,
+        })
+        succeeded.push(file.name)
+      } catch (error) {
+        failures.push(`${file.name} — ${error instanceof Error ? error.message : "upload failed"}`)
+      }
+    }
+
+    if (succeeded.length > 0) {
+      setUploadedDocs((prev) => [...prev, ...succeeded])
+      setSaveStatus(`Uploaded ${succeeded.length} document${succeeded.length === 1 ? "" : "s"}`)
+      setTimeout(() => setSaveStatus(""), 2500)
+    }
+    if (failures.length > 0) setUploadError(failures.join("; "))
+
+    setUploading(false)
   }
 
   const handleSendMessage = async () => {
@@ -269,28 +373,74 @@ export function VendorJobDetail({ job, vendorId }: VendorJobDetailProps) {
           </CardTitle>
           <CardDescription>Job photos, invoices, and completion reports</CardDescription>
         </CardHeader>
-        <CardContent>
-          <div className="border-2 border-dashed rounded-lg p-8 text-center hover:bg-muted/50 transition-colors cursor-pointer">
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="doc-type" className="text-sm">
+              Document type
+            </Label>
+            <Select value={docType} onValueChange={setDocType} disabled={uploading}>
+              <SelectTrigger id="doc-type">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {VENDOR_DOC_TYPES.map((t) => (
+                  <SelectItem key={t.value} value={t.value}>
+                    {t.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="border-2 border-dashed rounded-lg p-8 text-center hover:bg-muted/50 transition-colors">
             <Upload className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
             <p className="text-sm font-medium">Upload documents</p>
-            <p className="text-xs text-muted-foreground">Drag and drop or click to select</p>
+            <p className="text-xs text-muted-foreground">
+              Filed against this transaction. Up to{" "}
+              {Math.floor(BROWSER_UPLOAD_MAX_BYTES / (1024 * 1024))}MB per file.
+            </p>
             <input
               type="file"
               multiple
               className="sr-only"
               id="doc-upload"
-              disabled={loading}
+              disabled={uploading || !transactionId}
+              onChange={(e) => {
+                // Snapshot before clearing — `files` is live and resetting
+                // `value` empties it. Reset so re-picking the same file still
+                // fires `change`.
+                const picked = Array.from(e.target.files ?? [])
+                e.target.value = ""
+                void handleFilesSelected(picked)
+              }}
             />
             <Button
               variant="outline"
               size="sm"
               className="mt-4"
-              disabled={loading}
+              disabled={uploading || !transactionId}
               onClick={() => document.getElementById("doc-upload")?.click()}
             >
-              Choose Files
+              {uploading ? "Uploading…" : "Choose Files"}
             </Button>
+            {!transactionId && (
+              <p className="text-xs text-amber-600 mt-3">
+                This job is not linked to a transaction yet, so documents cannot be filed against it.
+              </p>
+            )}
           </div>
+
+          {uploadedDocs.length > 0 && (
+            <ul className="text-sm space-y-1">
+              {uploadedDocs.map((name, i) => (
+                <li key={`${name}-${i}`} className="flex items-center gap-2 text-green-700">
+                  <CheckCircle2 className="h-4 w-4 shrink-0" />
+                  <span className="truncate">{name}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {uploadError && <p className="text-sm text-red-600">{uploadError}</p>}
         </CardContent>
       </Card>
 

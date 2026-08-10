@@ -68,17 +68,45 @@ async function requireContactAccess(contactId: string): Promise<
 
 // ─── SELLER CONTEXT ───────────────────────────────────────────────────────────
 
-export async function getSellerDashboardData(contactId: string) {
+export interface SellerDashboardData extends SellerContext {
+  showingStats:   Awaited<ReturnType<typeof getShowingStats>>
+  recentFeedback: ShowingFeedback[]
+  offerSummary:   Awaited<ReturnType<typeof getOfferSummary>>
+  /** True when the caller is not entitled to this contact's seller data. The
+   *  fields above are then empty because access was REFUSED, which is not the
+   *  same statement as "this seller has no listing". */
+  accessDenied:   boolean
+}
+
+/**
+ * The seller portal's whole home-screen payload behind ONE authorization check.
+ *
+ * The denial branch used to return `{listing, transaction, contact, agent, …}` —
+ * four keys that are not fields of `SellerContext` at all, and none of the five
+ * that are (`contactId`, `contactName`, `metrics`, `transactionId`, `agentId`).
+ * A caller that destructured the success shape got `undefined` for every one of
+ * them the moment access was denied. That mismatch is why this aggregator was
+ * never wired to the surface it was written for: it could not be consumed
+ * safely. It now returns ONE shape, with `accessDenied` saying which case it is.
+ */
+export async function getSellerDashboardData(contactId: string): Promise<SellerDashboardData> {
+  const emptyExtras = {
+    showingStats:   { thisWeek: 0, total: 0, avgRating: null },
+    recentFeedback: [] as ShowingFeedback[],
+    offerSummary:   { total: 0, highest: null, accepted: null, pending: 0 },
+  }
+
   const access = await requireContactAccess(contactId)
   if (!access.ok) {
     return {
-      listing: null,
-      transaction: null,
-      contact: null,
-      agent: null,
-      showingStats: { thisWeek: 0, total: 0, avgRating: null },
-      recentFeedback: [],
-      offerSummary: { total: 0, highest: null, accepted: null, pending: 0 },
+      contactId,
+      contactName:   "there",
+      listing:       null,
+      metrics:       null,
+      transactionId: null,
+      agentId:       null,
+      ...emptyExtras,
+      accessDenied:  true,
     }
   }
 
@@ -88,12 +116,7 @@ export async function getSellerDashboardData(contactId: string) {
   const context = await resolveSellerContext(supabase, contactId)
 
   if (!context.listing) {
-    return {
-      ...context,
-      showingStats: { thisWeek: 0, total: 0, avgRating: null },
-      recentFeedback: [],
-      offerSummary: { total: 0, highest: null, accepted: null, pending: 0 },
-    }
+    return { ...context, ...emptyExtras, accessDenied: false }
   }
 
   // Parallel data fetches
@@ -108,6 +131,7 @@ export async function getSellerDashboardData(contactId: string) {
     showingStats,
     recentFeedback,
     offerSummary,
+    accessDenied: false,
   }
 }
 
@@ -319,41 +343,98 @@ export async function getShowingInsights(contactId: string) {
 
 // ─── OFFER DATA ───────────────────────────────────────────────────────────────
 
+/**
+ * Every offer on the seller's listing — THE reader for the seller portal's
+ * Offers screen (`app/portal/[contactId]/offers/page.tsx`).
+ *
+ * BUYER PII IS SCOPED BY WHO IS ASKING. `requireContactAccess` admits two very
+ * different callers: the SELLER themselves in their portal, and staff of the
+ * brokerage. The seller is entitled to know an offer exists and on what terms;
+ * they are not entitled to the buyer's email address and phone number, which
+ * belong to the buyer and (routinely) to a different brokerage. The previous
+ * shape selected `contacts(id, first_name, last_name, email, phone)` and handed
+ * it to whoever asked — including a portal session — and the page this replaces
+ * did worse, selecting `contacts(*)`, the buyer's entire record.
+ *
+ * A seller gets first name + last initial. Staff get the full contact detail
+ * they need to work the deal.
+ *
+ * Column names are explicit and verified against the live schema. The page's
+ * `select("*")` hid three mismatches that rendered as missing data with no
+ * error: `offers.close_date` and `offers.expires_at` do not exist (they are
+ * `closing_date` / `response_deadline`) and `listings.price` does not exist
+ * (it is `list_price`), so the seller's offer card showed "TBD" for the closing
+ * date, never showed an expiry, and computed NaN% against the asking price.
+ * The aliases below keep the existing render code working against real columns.
+ */
 export async function getSellerOffers(contactId: string) {
   const access = await requireContactAccess(contactId)
-  if (!access.ok) return { offers: [], listPrice: null }
+  if (!access.ok) return { offers: [], listPrice: null, error: "Forbidden" as string | null }
 
   const supabase = createServiceClient()
 
-  // Get listing first — scoped to caller's brokerage
-  const { data: listings } = await supabase
+  // Get listing first — scoped to the contact's brokerage. Matched on EITHER
+  // seller key: `seller_contact_id` is the canonical one, but portal surfaces
+  // have historically resolved a seller's listing through `contact_id`, and a
+  // listing keyed only the other way must not read back as "no listing".
+  const { data: listings, error: listingErr } = await supabase
     .from("listings")
-    .select("id, list_price")
-    .eq("seller_contact_id", contactId)
+    .select("id, list_price, address, city, state, brokerage_id")
+    .or(`seller_contact_id.eq.${contactId},contact_id.eq.${contactId}`)
     .eq("brokerage_id", access.brokerageId)
     .order("listing_date", { ascending: false })
     .limit(1)
+  // supabase-js resolves a refused query — an empty list must not be reported
+  // as "you have no offers" when the read was actually denied.
+  if (listingErr) return { offers: [], listPrice: null, error: listingErr.message }
 
   const listing = listings?.[0]
 
   if (!listing) {
-    return { offers: [], listPrice: null }
+    return { offers: [], listPrice: null, error: null }
   }
 
-  // Get all offers for this listing
-  const { data: offers } = await supabase
+  const { data: offers, error: offersErr } = await supabase
     .from("offers")
     .select(`
-      id, listing_id, contact_id, offer_amount:offer_price, status, offer_date:submitted_at, expiration_date:response_deadline,
-      earnest_money, down_payment_percent, contingencies, notes,
+      id, listing_id, contact_id, transaction_id,
+      offer_price, offer_amount:offer_price, status,
+      created_at, submitted_at, offer_date:submitted_at,
+      expiration_date:response_deadline, expires_at:response_deadline,
+      close_date:closing_date, closing_date,
+      earnest_money, down_payment_percent, financing_type, contingencies,
+      seller_net_estimate, notes,
+      esign_status, esign_provider, esign_sent_at, esign_completed_at, buyer_signed_at,
       buyer:contacts(id, first_name, last_name, email, phone)
     `)
     .eq("listing_id", listing.id)
-    .order("submitted_at", { ascending: false })
+    .order("offer_price", { ascending: false })
+  if (offersErr) return { offers: [], listPrice: listing.list_price, error: offersErr.message }
+
+  const scoped = (offers ?? []).map((o: any) => {
+    const buyer = o.buyer as { id?: string; first_name?: string | null; last_name?: string | null; email?: string | null; phone?: string | null } | null
+    if (!buyer) return o
+    if (access.isContactSelf) {
+      const lastInitial = buyer.last_name ? `${buyer.last_name.trim().charAt(0).toUpperCase()}.` : ""
+      return {
+        ...o,
+        buyer: {
+          id:         buyer.id,
+          first_name: buyer.first_name ?? "Buyer",
+          last_name:  lastInitial,
+          // email / phone deliberately absent — the seller's agent brokers
+          // contact between the parties; the portal is not a directory of the
+          // other side's clients.
+        },
+      }
+    }
+    return o
+  })
 
   return {
-    offers: offers ?? [],
+    offers: scoped,
     listPrice: listing.list_price,
+    error: null as string | null,
   }
 }
 

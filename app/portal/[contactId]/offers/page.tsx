@@ -7,7 +7,8 @@ import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/app/components/ui/tabs"
 import { NetSheetCalculator } from "@/components/portal/NetSheetCalculator"
-import { analyzeMultipleOffers } from "@/app/actions/seller-offers"
+import { analyzeMultipleOffers, recordSellerView } from "@/app/actions/seller-offers"
+import { getSellerOffers } from "@/app/actions/portal-seller"
 import { CheckCircle2, Clock, FileText, ArrowLeft, PartyPopper, Filter, DollarSign, Calendar, Home } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { SignatureStatusBadge } from "@/app/components/shared/SignatureStatusBadge"
@@ -298,14 +299,34 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
     .order("created_at", { ascending: false })
     .limit(5)
 
-  const { data: sellerOffers } = await supabase
-    .from("offers")
-    .select("*, buyer:contacts(*)")
-    .eq("listing_id", listing.id)
-    .in("status", ["pending", "submitted", "under_review", "countered"])
-    .order("offer_price", { ascending: false })
+  // ONE READER for the seller's offers: app/actions/portal-seller.ts:getSellerOffers.
+  // This used to be an inline `select("*, buyer:contacts(*)")` — the buyer's
+  // ENTIRE contact record pulled for a card that renders their first name — and
+  // `select("*")` silently hid three column-name mismatches below
+  // (offer.close_date, offer.expires_at, listing.price do not exist), which is
+  // why the closing date read "TBD" and the vs-asking figure was NaN. The action
+  // selects real columns, aliases them to the names this page renders, and
+  // narrows the buyer to first name + last initial for a portal (seller) caller.
+  const sellerOfferResult = await getSellerOffers(contactId)
+  const sellerOffersLoadError = sellerOfferResult.error
+  const listPrice = sellerOfferResult.listPrice ?? listing.list_price ?? null
+  offers = (sellerOfferResult.offers ?? []).filter((o: any) =>
+    ["pending", "submitted", "under_review", "countered"].includes(o.status)
+  )
 
-  offers = sellerOffers ?? []
+  // SELLER VIEWED. `offers.seller_viewed_at` is what the agent-side offers
+  // manager reads to say "your seller has seen this offer", and
+  // app/actions/seller-offers.ts:recordSellerView is its only writer — which
+  // nothing called, so the column was permanently NULL and the agent's
+  // "not yet viewed" badge was a constant, not a fact. This IS the moment it
+  // describes: the seller is looking at their offers right now. The action
+  // re-verifies the caller (seller-self or agent in the listing's brokerage)
+  // and only stamps rows that are still unviewed.
+  if (offers.length > 0) {
+    await recordSellerView(listing.id).catch(() => {
+      /* the stamp is telemetry — it must never stop a seller seeing their offers */
+    })
+  }
 
   if (!offers || offers.length === 0) {
     return (
@@ -334,8 +355,20 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
         <Card>
           <CardContent className="py-12 text-center">
             <Clock className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-            <h3 className="text-lg font-semibold mb-2">No offers yet</h3>
-            <p className="text-muted-foreground">When you receive offers, they will appear here</p>
+            {/* A refused read must not be shown as "no offers" — supabase-js
+                resolves a denied query, so an empty list and a failure look
+                identical unless the error is carried through and said out loud. */}
+            {sellerOffersLoadError ? (
+              <>
+                <h3 className="text-lg font-semibold mb-2">Could not load your offers</h3>
+                <p className="text-muted-foreground">{sellerOffersLoadError}</p>
+              </>
+            ) : (
+              <>
+                <h3 className="text-lg font-semibold mb-2">No offers yet</h3>
+                <p className="text-muted-foreground">When you receive offers, they will appear here</p>
+              </>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -347,7 +380,9 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
     const offer = offers[0]
     const contingencies =
       typeof offer.contingencies === "string" ? JSON.parse(offer.contingencies || "{}") : offer.contingencies || {}
-    const priceVsList = ((offer.offer_price - listing.price) / listing.price) * 100
+    // listPrice comes from getSellerOffers (listings.list_price). `listing.price`
+    // is not a column — this computed NaN and rendered "NaN% below asking".
+    const priceVsList = listPrice ? ((offer.offer_price - listPrice) / listPrice) * 100 : null
 
     return (
       <div className="space-y-6">
@@ -404,7 +439,10 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center justify-between">
-                <span>Offer from {offer.buyer?.name || offer.buyer?.first_name || "Buyer A"}</span>
+                {/* `contacts` has no `name` column — first_name/last_name are the
+                    real ones. getSellerOffers narrows a portal caller's view to
+                    first name + last initial. */}
+                <span>Offer from {[offer.buyer?.first_name, offer.buyer?.last_name].filter(Boolean).join(" ") || "Buyer A"}</span>
                 {offer.expires_at && (
                   <Badge variant="outline">
                     Expires in{" "}
@@ -419,9 +457,11 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
                   ${(offer.offer_price || 0).toLocaleString()}
                 </div>
                 <div className="text-sm text-muted-foreground">
-                  {priceVsList > 0
-                    ? `${priceVsList.toFixed(1)}% above asking`
-                    : `${Math.abs(priceVsList).toFixed(1)}% below asking`}
+                  {priceVsList === null
+                    ? "No asking price on file to compare against"
+                    : priceVsList > 0
+                      ? `${priceVsList.toFixed(1)}% above asking`
+                      : `${Math.abs(priceVsList).toFixed(1)}% below asking`}
                 </div>
               </div>
 
@@ -487,11 +527,15 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
             </CardContent>
           </Card>
 
-          {/* Net Sheet Calculator using canonical offer_price */}
+          {/* Net Sheet Calculator using canonical offer_price.
+              `listings` has no mortgage_balance column — the old
+              `listing.mortgage_balance || 0` was reading undefined, so this is
+              the same 0 with the fiction removed; the seller enters their real
+              payoff in the calculator itself. */}
           <NetSheetCalculator
             offerPrice={offer.offer_price || 0}
-            listPrice={listing.price || 0}
-            currentMortgageBalance={listing.mortgage_balance || 0}
+            listPrice={listPrice || 0}
+            currentMortgageBalance={0}
             propertyAddress={listing.address || ""}
             state={listing.state ?? null}
           />

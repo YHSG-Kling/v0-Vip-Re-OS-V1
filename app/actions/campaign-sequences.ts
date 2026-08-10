@@ -488,36 +488,45 @@ export async function launchCampaignSequence(sequenceId: string): Promise<{ succ
 
 // ─── Enrollment Operations ────────────────────────────────────────────────────
 
+/**
+ * Enroll a contact (or a lead's contact) into a sequence — the INTERACTIVE door.
+ *
+ * TWO DEFECTS FIXED (w6s3), both verified against the live schema:
+ *  1. `sequence_enrollments.brokerage_id` is NOT NULL with no default and
+ *     `contact_id` is NOT NULL. This function omitted brokerage_id and passed
+ *     `contact_id: null` on the lead path, so **every enrollment it ever attempted
+ *     was refused by the database**. Nothing has ever been enrolled through the
+ *     product; the enrollment lists and `cancelEnrollment` had nothing to act on.
+ *  2. It had NO gate at all. As a `"use server"` export driving a service client it
+ *     was a public endpoint that could start an automated outbound programme against
+ *     any contact id in any tenant.
+ *
+ * The WRITE now lives in `lib/campaigns/enroll-in-sequence.ts:enrollInSequence`, which
+ * takes its tenant explicitly. `lib/kernel/ai-isa.ts` runs without a session and calls
+ * that library directly with its own ctx.brokerageId — an unattended caller gets its
+ * own door rather than being turned away by this gate or handed a fake identity.
+ */
 export async function enrollContactInSequence(params: {
   sequenceId: string
   contactId?: string
   leadId?: string
 }): Promise<{ enrollment: SequenceEnrollment | null; error?: string }> {
-  if (!params.contactId && !params.leadId) {
-    return { enrollment: null, error: "Must provide contact or lead ID" }
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { enrollment: null, error: "Not authenticated" }
   }
-  
-  const service = createServiceClient()
-  const { data, error } = await service
-    .from("sequence_enrollments")
-    .insert({
-      sequence_id: params.sequenceId,
-      contact_id: params.contactId ?? null,
-      lead_id: params.leadId ?? null,
-      status: "active",
-      current_step: 1,
-      enrolled_at: new Date().toISOString(),
-    })
-    .select()
-    .maybeSingle()
 
-  if (error) return { enrollment: null, error: error.message }
-  
-  // Increment enrollment count
-  await service.rpc("increment_sequence_enrollments", { seq_id: params.sequenceId })
-  
-  revalidatePath(`/dashboard/campaigns/sequences/${params.sequenceId}`)
-  return { enrollment: data as SequenceEnrollment }
+  const { enrollInSequence } = await import("@/lib/campaigns/enroll-in-sequence")
+  const result = await enrollInSequence({
+    sequenceId: params.sequenceId,
+    brokerageId: ctx.brokerageId,
+    contactId: params.contactId ?? null,
+    leadId: params.leadId ?? null,
+    enrolledBy: ctx.userId ?? null,
+  })
+
+  if (result.enrollment) revalidatePath(`/dashboard/campaigns/sequences/${params.sequenceId}`)
+  return result
 }
 
 export async function cancelEnrollment(enrollmentId: string, sequenceId: string): Promise<{ success: boolean; error?: string }> {
@@ -583,53 +592,70 @@ export async function getSequenceSteps(sequenceId: string): Promise<{ steps: Seq
       .maybeSingle()
     if (!seq || seq.brokerage_id !== ctx.brokerageId) return { steps: [], error: "Not found" }
 
-    // DB stores channel (not step_type) — map on read
+    // DB stores channel (not step_type) — map on read.
+    //
+    // The select used to name only the nine common columns while the mapper below
+    // read `row.output_variable_name`, `row.ad_platform`, `row.video_script` … — so
+    // every per-channel field came back `undefined` and was mapped to null. This is
+    // now the exact INVERSE of saveSequenceSteps: the same PALETTE_STEP_FIELDS
+    // allow-list drives the select, so anything the palette can write, this reads
+    // back. (scripts/step-palette-consolidation-simulator.ts already proves every
+    // palette field name is a real column on campaign_sequence_steps, so this
+    // projection cannot name one that does not exist.)
+    const stepSelect = [
+      "id",
+      "step_number",
+      "step_name",
+      "channel",
+      "delay_days",
+      "delay_hours",
+      "subject",
+      "body",
+      "is_active",
+      ...PALETTE_STEP_FIELDS,
+    ]
+      .filter((c, i, a) => a.indexOf(c) === i)
+      .join(", ")
+
     const { data, error } = await service
       .from("campaign_sequence_steps")
-      .select("id, step_number, step_name, channel, delay_days, delay_hours, subject, body, is_active")
+      .select(stepSelect)
       .eq("sequence_id", sequenceId)
       .order("step_number", { ascending: true })
     if (error) return { steps: [], error: error.message }
-    for (const row of data ?? []) {
+    // `stepSelect` is BUILT AT RUNTIME, so supabase-js cannot infer a row shape and
+    // types `data` as GenericStringError[] — every property access on it is a type
+    // error even though the column is really there. The `.map` below already casts
+    // per-row for the same reason; this validation loop needs the same treatment.
+    // Cast the ROW, not the check: the guard itself still runs against the real
+    // value, so an unknown channel is still refused rather than waved through.
+    for (const row of (data ?? []) as any[]) {
       if (!row.channel || !VALID_STEP_TYPES.has(row.channel)) {
         return { steps: [], error: `Invalid step channel in sequence: ${row.channel ?? "(empty)"}` }
       }
     }
-    const steps: SequenceBuilderStep[] = (data ?? []).map((row: any) => ({
-      id: row.id,
-      step_number: row.step_number,
-      step_name: row.step_name ?? row.channel ?? "Step",
-      step_type: (row.channel ?? "email") as SequenceBuilderStep["step_type"],
-      delay_days: row.delay_days ?? 0,
-      delay_hours: row.delay_hours ?? 0,
-      subject: row.subject ?? null,
-      body: row.body ?? "",
-      is_active: row.is_active ?? true,
-      output_variable_name: row.output_variable_name ?? null,
-      qr_attached: row.qr_attached ?? false,
-      qr_target_url_pattern: row.qr_target_url_pattern ?? null,
-      image_prompt: row.image_prompt ?? null,
-      image_style: row.image_style ?? null,
-      image_aspect_ratio: row.image_aspect_ratio ?? null,
-      video_script: row.video_script ?? null,
-      video_voice_only: row.video_voice_only ?? false,
-      video_background_url: row.video_background_url ?? null,
-      voice_drop_script: row.voice_drop_script ?? null,
-      voice_drop_voice_id: row.voice_drop_voice_id ?? null,
-      social_platform: row.social_platform ?? null,
-      social_caption_prompt: row.social_caption_prompt ?? null,
-      task_assignee_type: row.task_assignee_type ?? null,
-      task_title: row.task_title ?? null,
-      task_due_offset_days: row.task_due_offset_days ?? 0,
-      document_type: row.document_type ?? null,
-      document_state: row.document_state ?? null,
-      avm_data_source: row.avm_data_source ?? null,
-      avm_report_type: row.avm_report_type ?? null,
-      avm_include_investor_adj: row.avm_include_investor_adj ?? false,
-      ad_platform: row.ad_platform ?? null,
-      ad_objective: row.ad_objective ?? null,
-      direct_mail_piece_type: row.direct_mail_piece_type ?? null,
-    }))
+    const steps: SequenceBuilderStep[] = (data ?? []).map((row: any) => {
+      const step: SequenceBuilderStep = {
+        id: row.id,
+        step_number: row.step_number,
+        step_name: row.step_name ?? row.channel ?? "Step",
+        step_type: row.channel as SequenceBuilderStep["step_type"],
+        delay_days: row.delay_days ?? 0,
+        delay_hours: row.delay_hours ?? 0,
+        subject: row.subject ?? null,
+        body: row.body ?? "",
+        is_active: row.is_active ?? true,
+      }
+      // Carry every palette-declared field back verbatim. `null` is preserved as
+      // null (an unset column), NOT coerced to a default — a false default here
+      // would be written back as fact on the next save.
+      for (const name of PALETTE_STEP_FIELDS) {
+        if (name in step) continue
+        if (!(name in row)) continue
+        step[name] = row[name]
+      }
+      return step
+    })
     return { steps }
   } catch (e: any) {
     return { steps: [], error: e.message }

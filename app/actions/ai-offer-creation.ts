@@ -9,7 +9,6 @@ import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { generateObjectRouted } from "@/lib/ai/models"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
-import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
@@ -52,24 +51,6 @@ const STATE_OFFER_FORMS: Record<string, { required: string[]; addenda: string[] 
     required: ["Purchase Agreement", "Agency Disclosure", "Pre-Approval Letter"],
     addenda: ["Inspection Contingency", "Financing Contingency", "Appraisal Contingency"],
   },
-}
-
-interface OfferCreationParams {
-  agentId: string
-  buyerId: string
-  listingId: string
-  offerPrice: number
-  earnestMoney: number
-  downPaymentPercent: number
-  financingType: "conventional" | "fha" | "va" | "cash" | "usda" | "other"
-  contingencies: string[]
-  closeDate: string
-  escalationClause?: {
-    enabled: boolean
-    maxPrice: number
-    increment: number
-  }
-  additionalTerms?: any
 }
 
 // ============================================
@@ -502,132 +483,27 @@ Respond with JSON only: { "recommendedResponse": "accept"|"counter"|"walk_away",
 }
 
 // ============================================
-// 8. SUBMIT COMPLETE OFFER
+// 8. SUBMIT COMPLETE OFFER — REMOVED (duplicate writer)
 // ============================================
-export async function submitCompleteOffer(params: OfferCreationParams) {
-  try {
-    // Resolve identity from session — ignore caller-supplied agentId
-    const ctx = await getAgentContext()
-    if (!ctx.isAuthenticated || !ctx.brokerageId) {
-      return { success: false, error: "Unauthorized" }
-    }
-
-    if (!isValidUUID(params.buyerId) || !isValidUUID(params.listingId)) {
-      return { success: false, error: "Invalid IDs provided" }
-    }
-
-    const supabase = await createClient()
-
-    // Get listing details — RLS handles cross-brokerage visibility for buyer-side offers
-    const { data: listing } = await supabase
-      .from("listings")
-      .select("*, agent_id, seller_contact_id, address, state")
-      .eq("id", params.listingId)
-      .single()
-
-    if (!listing) {
-      return { success: false, error: "Listing not found" }
-    }
-
-    // Verify the buyer belongs to the caller's brokerage
-    const { data: buyer } = await supabase
-      .from("contacts")
-      .select("brokerage_id")
-      .eq("id", params.buyerId)
-      .maybeSingle()
-    if (!buyer || buyer.brokerage_id !== ctx.brokerageId) {
-      return { success: false, error: "Forbidden" }
-    }
-
-    // NOT `?? ctx.userId` (m360) — every consumer below is agents-class.
-    const effectiveAgentId = ctx.agentId
-    if (!effectiveAgentId) return { success: false, error: "No agent profile for this user yet — finish account setup." }
-
-    // Create transaction record — agent/brokerage from session, not params
-    const { data: transaction, error: txError } = await supabase
-      .from("transactions")
-      .insert({
-        agent_id: effectiveAgentId,
-        brokerage_id: ctx.brokerageId,
-        // Live columns: contact_id (primary client = buyer) + buyer_contact_id;
-        // there is no buyer_id. deal_type ∈ {buyer,seller,dual}; status CHECK has
-        // no "offer_submitted"; close_date (not estimated_close_date). The old
-        // values failed the insert outright.
-        contact_id: params.buyerId,
-        buyer_contact_id: params.buyerId,
-        listing_id: params.listingId,
-        deal_type: "buyer",
-        status: "active",
-        deal_name: listing.address || `Offer ${params.listingId}`, // NOT NULL
-        property_address: listing.address,
-        purchase_price: params.offerPrice,
-        close_date: params.closeDate,
-      })
-      .select()
-      .single()
-
-    if (txError) throw txError
-
-    // Create offer record (using canonical offers table with offer_price)
-    const { data: offer, error: offerError } = await supabase
-      .from("offers")
-      .insert({
-        transaction_id: transaction.id,
-        listing_id: params.listingId,
-        contact_id: params.buyerId,
-        offer_price: params.offerPrice,
-        earnest_money: params.earnestMoney,
-        down_payment_percent: params.downPaymentPercent,
-        financing_type: params.financingType,
-        contingencies: params.contingencies,
-        closing_date: params.closeDate,
-        escalation_clause: params.escalationClause?.enabled || false,
-        escalation_cap: params.escalationClause?.maxPrice,
-        status: "pending",
-        submitted_at: new Date().toISOString(),
-      })
-      .select()
-      .single()
-
-    if (offerError) throw offerError
-
-    // Create Dotloop
-    const dotloopResult = await createOfferDotloop({
-      agentId: effectiveAgentId,
-      buyerId: params.buyerId,
-      propertyAddress: listing.address,
-      transactionId: transaction.id,
-    })
-
-    // Notify listing agent. pass 13: activities.agent_user_id FKs users(id) but
-    // listing.agent_id is agents.id — the raw stamp FK-threw and the "offer
-    // received" activity never landed. Resolve to the agent's auth user id.
-    const { data: listingAgentRow } = await supabase
-      .from("agents").select("user_id").eq("id", listing.agent_id).maybeSingle()
-    await supabase.from("activities").insert({
-      agent_user_id: listingAgentRow?.user_id ?? null,
-      activity_type: "offer_received",
-      entity_type: "offer",
-      entity_id: offer.id,
-      description: `New offer of $${params.offerPrice.toLocaleString()} received on ${listing.address}`,
-      metadata: { priority: "high" },
-    })
-
-    revalidatePath("/offers")
-    revalidatePath(`/listings/${params.listingId}`)
-    revalidatePath("/dashboard/transactions")
-
-    return {
-      success: true,
-      offer,
-      transaction,
-      dotloop: dotloopResult,
-    }
-  } catch (error) {
-    console.error("[AI Offer Creation] Submit error:", error)
-    return handleError(error, "submitCompleteOffer")
-  }
-}
+// `submitCompleteOffer` used to live here: a SECOND offer writer that inserted
+// into `transactions` + `offers` directly. The canonical writer is
+// app/actions/buyer-offers.ts:createOffer, which is the one the offer wizard
+// actually uses and is strictly more complete. This copy was not merely
+// redundant, it was unsafe:
+//   · it BYPASSED the financial-verification gate (buyer_financial_profiles
+//     .verified) that createOffer enforces at the API boundary, so any
+//     signed-in agent could bind an unverified buyer to an offer through it;
+//   · it wrote the offers row with NO brokerage_id and NO agent_id, so the
+//     resulting offer was invisible to every tenant-scoped offers surface;
+//   · it minted a status:'active' `transactions` row per SUBMITTED offer,
+//     before any acceptance — one phantom deal in the pipeline per offer;
+//   · its "offer received" activities insert omitted brokerage_id (NOT NULL),
+//     so that notification wrote zero rows while reporting success. The real
+//     listing-side notification lives at the wizard
+//     (offer-form-wizard.tsx:notifyListingSide) and supplies the tenant.
+// Nothing was lost by removing it: the Dotloop step it performed is
+// `createOfferDotloop` above, still exported and still reached through
+// lib/workflow/adapters/send-for-esign.ts.
 
 // Backward compatibility aliases — wrapped because "use server" rejects `const = fn`
 export async function aiAnalyzeOfferStrategy(...args: Parameters<typeof aiOfferStrategyAdvisor>) {

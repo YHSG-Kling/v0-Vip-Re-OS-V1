@@ -32,7 +32,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { randomBytes } from "node:crypto"
-import { resolveVendorActorScope } from "@/lib/vendors/vendor-scope"
+import { canInviteVendors, resolveVendorActorScope } from "@/lib/vendors/vendor-scope"
 
 /**
  * Best-effort first-inviter-wins attribution stamp on the vendor row
@@ -62,7 +62,13 @@ async function stampVendorInviteAttribution(
 }
 
 const INVITE_TTL_DAYS = 14
-const INVITE_ALLOWED_ROLES = new Set(["broker","broker_admin","admin","superadmin","team_lead","agent"])
+
+/** Roles that may REVOKE a pending invite — leadership only (an agent may bring
+ *  a vendor in, but pulling the invite back is a brokerage decision). Kept here
+ *  rather than in vendor-scope because nothing else needs it; the INVITE side
+ *  now defers to lib/vendors/vendor-scope.ts:canInviteVendors so the two copies
+ *  of that list cannot drift apart. */
+const REVOKE_ALLOWED_ROLES = new Set(["broker","broker_admin","admin","superadmin","team_lead"])
 
 function generateInviteToken(): string {
   // 32 random bytes → 43 url-safe base64 chars. Plenty of entropy
@@ -82,6 +88,17 @@ export interface InviteVendorResult {
   error?:       string
   invitationId?: string
   inviteUrl?:   string
+  /** Whether the invitation EMAIL actually went out. The invitation row is the
+   *  durable artifact and is created either way, but the send is a separate
+   *  provider call that can fail (already-registered address, SMTP outage) —
+   *  and a UI that says "invitation sent" over a failed send is exactly the
+   *  "reports success without doing the thing" defect. `false` means: the link
+   *  is live, hand it over yourself. */
+  emailSent?:   boolean
+  emailError?:  string
+  /** True when an unexpired pending invitation already existed and was reused
+   *  instead of minting a second token. */
+  reused?:      boolean
 }
 
 export async function inviteVendorToPlatformAction(
@@ -91,25 +108,31 @@ export async function inviteVendorToPlatformAction(
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthenticated" }
 
-  const { data: caller } = await supabase
+  // `error` is read deliberately: supabase-js RESOLVES a refused query, so
+  // `data: null` from an RLS denial is indistinguishable from "no such user"
+  // unless the error is inspected. Both paths refuse — the gate fails CLOSED —
+  // but a denied read must say so rather than blame the brokerage config.
+  const { data: caller, error: callerErr } = await supabase
     .from("users")
     .select("user_type, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
+  if (callerErr) return { ok: false, error: `Could not verify your account: ${callerErr.message}` }
 
   if (!caller?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
-  if (!INVITE_ALLOWED_ROLES.has(caller.user_type ?? "")) {
+  if (!canInviteVendors(caller.user_type)) {
     return { ok: false, error: "Forbidden — your role cannot invite vendors" }
   }
 
   const svc = createServiceClient()
 
   // Look up vendor — must exist and belong to the caller's brokerage.
-  const { data: vendor } = await svc
+  const { data: vendor, error: vendorErr } = await svc
     .from("vendors")
     .select("id, name, email, brokerage_id")
     .eq("id", input.vendorId)
     .maybeSingle()
+  if (vendorErr) return { ok: false, error: `Could not read the vendor record: ${vendorErr.message}` }
   if (!vendor) return { ok: false, error: "Vendor not found" }
   if (vendor.brokerage_id !== caller.brokerage_id) {
     return { ok: false, error: "Forbidden — vendor belongs to another brokerage" }
@@ -120,13 +143,20 @@ export async function inviteVendorToPlatformAction(
 
   // If a pending invite already exists for this vendor + email, reuse it
   // (idempotent — clicking "Invite" twice should not flood the vendor's inbox).
-  const { data: existing } = await svc
+  const { data: existing, error: existingErr } = await svc
     .from("vendor_invitations")
     .select("id, token, expires_at")
     .eq("vendor_id", vendor.id)
     .eq("status", "pending")
     .gt("expires_at", new Date().toISOString())
+    .order("created_at", { ascending: false })
+    .limit(1)
     .maybeSingle()
+  // A failed lookup must NOT fall through to "no pending invite" — that would
+  // mint a second live token for the same vendor on every retry.
+  if (existingErr) {
+    return { ok: false, error: `Could not check for an existing invitation: ${existingErr.message}` }
+  }
 
   let invitationId: string
   let token: string
@@ -177,24 +207,36 @@ export async function inviteVendorToPlatformAction(
   // Send Supabase auth invite. The magic link drops them at /auth/callback;
   // /auth/callback then redirects to /vendor-invite/[token] (next param) where
   // accept-form.tsx finalizes the link to user_role_assignments.
+  let emailSent = false
+  let emailError: string | undefined
   try {
-    await svc.auth.admin.inviteUserByEmail(vendor.email.toLowerCase(), {
-      data: {
-        first_name:     vendor.name?.split(" ")[0] ?? "Vendor",
-        last_name:      vendor.name?.split(" ").slice(1).join(" ") ?? "",
-        user_type:      "vendor",
-        brokerage_id:   caller.brokerage_id,
-        invitation_id:  invitationId,
-        custom_message: input.customMessage ?? null,
+    // supabase-js resolves this call with { error } rather than throwing on a
+    // provider refusal, so the error is read explicitly — a swallowed refusal
+    // here is what made "Invitation sent" a claim nobody had checked.
+    const { error: sendErr } = await svc.auth.admin.inviteUserByEmail(
+      vendor.email.toLowerCase(),
+      {
+        data: {
+          first_name:     vendor.name?.split(" ")[0] ?? "Vendor",
+          last_name:      vendor.name?.split(" ").slice(1).join(" ") ?? "",
+          user_type:      "vendor",
+          brokerage_id:   caller.brokerage_id,
+          invitation_id:  invitationId,
+          custom_message: input.customMessage ?? null,
+        },
+        redirectTo: `${appUrl}/auth/callback?next=${encodeURIComponent(`/vendor-invite/${token}`)}`,
       },
-      redirectTo: `${appUrl}/auth/callback?next=${encodeURIComponent(`/vendor-invite/${token}`)}`,
-    })
+    )
+    if (sendErr) emailError = sendErr.message
+    else emailSent = true
   } catch (err: any) {
-    console.warn("[inviteVendor] Email send failed:", err?.message)
-    // Non-fatal — caller can manually share inviteUrl.
+    emailError = err?.message ?? "unknown send failure"
+  }
+  if (!emailSent) {
+    console.warn(`[inviteVendor] invitation ${invitationId} created but email not sent: ${emailError}`)
   }
 
-  return { ok: true, invitationId, inviteUrl }
+  return { ok: true, invitationId, inviteUrl, emailSent, emailError, reused: !!existing }
 }
 
 // ── ACCEPT ───────────────────────────────────────────────────────────────────
@@ -324,22 +366,35 @@ export async function revokeVendorInviteAction(
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthenticated" }
 
-  const { data: caller } = await supabase
+  const { data: caller, error: callerErr } = await supabase
     .from("users")
     .select("user_type, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
+  if (callerErr) return { ok: false, error: `Could not verify your account: ${callerErr.message}` }
   if (!caller?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
-  if (!["broker","broker_admin","admin","superadmin","team_lead"].includes(caller.user_type ?? "")) {
-    return { ok: false, error: "Forbidden" }
+  if (!REVOKE_ALLOWED_ROLES.has(caller.user_type ?? "")) {
+    return { ok: false, error: "Forbidden — only a broker, admin or team lead can revoke an invitation" }
   }
 
   const svc = createServiceClient()
-  const { error } = await svc
+  // `.select("id")` makes the revocation PROVABLE. Without it this returned
+  // {ok:true} whenever the statement executed — including when the tenant
+  // filter matched nothing, so revoking another brokerage's invitation, or an
+  // already-accepted one, reported success while the token stayed live.
+  const { data: revoked, error } = await svc
     .from("vendor_invitations")
-    .update({ status: "revoked" })
+    .update({ status: "revoked", updated_at: new Date().toISOString() })
     .eq("id", invitationId)
     .eq("brokerage_id", caller.brokerage_id)
     .eq("status", "pending")
-  return error ? { ok: false, error: error.message } : { ok: true }
+    .select("id")
+  if (error) return { ok: false, error: error.message }
+  if (!revoked || revoked.length === 0) {
+    return {
+      ok: false,
+      error: "Nothing was revoked — that invitation is not a pending invitation of your brokerage (it may already be accepted, expired or revoked).",
+    }
+  }
+  return { ok: true }
 }

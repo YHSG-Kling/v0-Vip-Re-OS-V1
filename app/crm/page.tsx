@@ -36,6 +36,7 @@ import { getBuyerFatigueScore } from "@/app/actions/buyer-fatigue"
 import { scoreLeadWithAI } from "@/app/actions/ai-lead-scoring"
 import { createPortalInviteForContact } from "@/app/actions/portal-invites"
 import { sendSMS } from "@/app/actions/communications"
+import { RecentMessagesCard } from "@/app/crm/components/recent-messages-card"
 import { scheduleAppointment } from "@/app/actions/ai-isa/schedule-appointment"
 import { analyzeCallTranscript, generateCallSummaryEmail } from "@/app/actions/ai-voice-transcription"
 import { AddressAutocomplete } from "@/app/components/ui/address-autocomplete"
@@ -2206,6 +2207,10 @@ export default function CRMPage() {
                       onSaveNote={handleSaveNote}
                       saving={noteSaving}
                     />
+
+                    {/* The actual SMS/email history. Reads through the gated,
+                        brokerage-scoped getRecentCommunications server action. */}
+                    <RecentMessagesCard contactId={selectedContactId} />
 
                     {/* Activity feed — updates optimistically after note save */}
                     {contactActivities.length > 0 && (

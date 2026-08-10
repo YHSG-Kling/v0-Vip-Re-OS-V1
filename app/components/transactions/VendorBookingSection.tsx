@@ -21,6 +21,7 @@ import {
   getAssignedVendorsForTransaction,
   type VendorAvailability,
 } from "@/app/actions/vendor-marketplace"
+import { requestVendorReview } from "@/app/actions/ai-vendor-management"
 
 const SERVICE_TYPES = [
   "inspector", "appraiser", "title", "escrow", "lender",
@@ -84,6 +85,11 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
   const [ratingReview, setRatingReview] = useState("")
   const [ratingPending, setRatingPending] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
+
+  // AI-drafted vendor review request, per completed job.
+  const [reviewJobId, setReviewJobId] = useState<string | null>(null)
+  const [reviewDrafts, setReviewDrafts] = useState<Record<string, string>>({})
+  const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({})
 
   // Load fresh bookings on mount
   useEffect(() => {
@@ -215,6 +221,34 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
     }
   }
 
+  /**
+   * Draft a review request for a COMPLETED vendor job.
+   *
+   * `requestVendorReview` re-derives the tenant from the session and refuses a
+   * job outside it, so the job id sent here is a request, not an authorization.
+   * Nothing is sent to the vendor: the result is a draft the agent copies, so a
+   * failure must show as a failure, never as an empty draft.
+   */
+  async function handleDraftReviewRequest(jobId: string) {
+    setReviewJobId(jobId)
+    setReviewErrors((prev) => ({ ...prev, [jobId]: "" }))
+    try {
+      const result = await requestVendorReview({ jobId })
+      if ((result as any).success && (result as any).reviewRequest) {
+        setReviewDrafts((prev) => ({ ...prev, [jobId]: String((result as any).reviewRequest) }))
+      } else {
+        setReviewErrors((prev) => ({
+          ...prev,
+          [jobId]: (result as any).error ?? "Could not draft a review request.",
+        }))
+      }
+    } catch (err: any) {
+      setReviewErrors((prev) => ({ ...prev, [jobId]: err?.message ?? "Could not draft a review request." }))
+    } finally {
+      setReviewJobId(null)
+    }
+  }
+
   const displayVendors = vendors.length > 0 ? vendors : suggested
 
   return (
@@ -265,16 +299,57 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
                   {jobs.length > 0 && (
                     <div className="space-y-1 border-t pt-2">
                       {jobs.map((job: any) => (
-                        <div key={job.id} className="flex items-center justify-between text-xs">
-                          <span className="capitalize">{String(job.job_title ?? "Job").replace(/_/g, " ")}</span>
-                          <span className="text-muted-foreground">
-                            {String(job.status ?? "pending").replace(/_/g, " ")}
-                            {job.cost_actual != null
-                              ? ` · $${Number(job.cost_actual).toLocaleString()}`
-                              : job.cost_estimate != null
-                                ? ` · est. $${Number(job.cost_estimate).toLocaleString()}`
-                                : ""}
-                          </span>
+                        <div key={job.id} className="space-y-1">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="capitalize">{String(job.job_title ?? "Job").replace(/_/g, " ")}</span>
+                            <span className="text-muted-foreground">
+                              {String(job.status ?? "pending").replace(/_/g, " ")}
+                              {job.cost_actual != null
+                                ? ` · $${Number(job.cost_actual).toLocaleString()}`
+                                : job.cost_estimate != null
+                                  ? ` · est. $${Number(job.cost_estimate).toLocaleString()}`
+                                  : ""}
+                            </span>
+                          </div>
+
+                          {/* Review request — only once the job is COMPLETED, and
+                              only on explicit click: requestVendorReview spends a
+                              model call on the platform key. It returns a DRAFT;
+                              nothing is sent until the agent copies it out. */}
+                          {job.status === "completed" && (
+                            <div className="space-y-1">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-6 px-2 text-xs"
+                                disabled={reviewJobId === job.id}
+                                onClick={() => handleDraftReviewRequest(job.id)}
+                              >
+                                {reviewJobId === job.id ? (
+                                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                                ) : (
+                                  <Star className="h-3 w-3 mr-1" />
+                                )}
+                                Draft review request
+                              </Button>
+                              {reviewDrafts[job.id] && (
+                                <div className="rounded border bg-muted/50 p-2 space-y-1">
+                                  <p className="text-[11px] whitespace-pre-wrap">{reviewDrafts[job.id]}</p>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-6 px-2 text-[11px]"
+                                    onClick={() => navigator.clipboard.writeText(reviewDrafts[job.id])}
+                                  >
+                                    Copy
+                                  </Button>
+                                </div>
+                              )}
+                              {reviewErrors[job.id] && (
+                                <p className="text-[11px] text-red-600">{reviewErrors[job.id]}</p>
+                              )}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>

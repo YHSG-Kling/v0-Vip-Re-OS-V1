@@ -5,11 +5,9 @@
     "app/actions/activities.ts": 2,
     "app/actions/admin/billing.ts": 2,
     "app/actions/admin/commission-agreement.ts": 1,
-    "app/actions/admin/create-subscriber.ts": 1,
     "app/actions/agents.ts": 5,
     "app/actions/ai-auto-response.ts": 4,
     "app/actions/ai-calendar-management.ts": 1,
-    "app/actions/ai-client-gifting.ts": 2,
     "app/actions/ai-closing-workflow.ts": 1,
     "app/actions/ai-cma.ts": 1,
     "app/actions/ai-content-generation.tsx": 4,
@@ -23,14 +21,12 @@
     "app/actions/ai-market-intelligence.ts": 2,
     "app/actions/ai-marketing-automation.ts": 4,
     "app/actions/ai-newsletter.ts": 3,
-    "app/actions/ai-offer-creation.ts": 1,
     "app/actions/ai-predictions.ts": 5,
     "app/actions/ai-referral-management.ts": 1,
     "app/actions/ai-review-automation.ts": 2,
     "app/actions/ai-transaction-coordinator.ts": 2,
-    "app/actions/ai-vendor-management.ts": 2,
+    "app/actions/ai-vendor-management.ts": 1,
     "app/actions/ai-voice-transcription.ts": 1,
-    "app/actions/analytics.ts": 2,
     "app/actions/assistant.ts": 3,
     "app/actions/auth.ts": 3,
     "app/actions/billing.ts": 3,
@@ -40,15 +36,10 @@
     "app/actions/buyer-broker-agreements.ts": 1,
     "app/actions/buyer-execution.ts": 3,
     "app/actions/buyer-financial.ts": 1,
-    "app/actions/buyer-move.ts": 1,
-    "app/actions/buyer-offer/handle-multi-offer.ts": 2,
+    "app/actions/buyer-offer/handle-multi-offer.ts": 1,
     "app/actions/buyer-offer/track-offer-lifecycle.ts": 1,
-    "app/actions/buyer-offers.ts": 1,
     "app/actions/calculators.ts": 3,
-    "app/actions/campaign-sequences.ts": 2,
     "app/actions/cda-portal.ts": 4,
-    "app/actions/ce-provider.ts": 1,
-    "app/actions/communications.ts": 1,
     "app/actions/compliance/manage-required-docs.ts": 1,
     "app/actions/compliance-bridge-actions.ts": 2,
     "app/actions/contacts/update-channel-controls.ts": 1,
@@ -58,7 +49,7 @@
     "app/actions/content-studio.ts": 1,
     "app/actions/copilot.ts": 4,
     "app/actions/creative-playbooks.ts": 1,
-    "app/actions/credit-copilot.ts": 3,
+    "app/actions/credit-copilot.ts": 1,
     "app/actions/crm.ts": 1,
     "app/actions/cron-kernel.ts": 1,
     "app/actions/demo-auth.ts": 3,
@@ -68,13 +59,12 @@
     "app/actions/fb-audience-templates.ts": 1,
     "app/actions/forms-kernel.ts": 1,
     "app/actions/gamification.ts": 1,
-    "app/actions/inbox.ts": 2,
+    "app/actions/inbox.ts": 1,
     "app/actions/journey-tasks.ts": 1,
     "app/actions/lead-assignment/assign-lead.ts": 1,
     "app/actions/lead-import/import-actions.ts": 1,
     "app/actions/lead-intelligence.ts": 6,
     "app/actions/lead-management.ts": 1,
-    "app/actions/lead-readiness/evaluate-readiness.ts": 1,
     "app/actions/lead-signal-ingest.ts": 1,
     "app/actions/learning-modules.ts": 1,
     "app/actions/lifecycle-promo-policy.ts": 1,
@@ -93,43 +83,33 @@
     "app/actions/onboarding/agent-onboarding-actions.ts": 1,
     "app/actions/onboarding/mentor-session.ts": 1,
     "app/actions/onboarding/training.ts": 1,
-    "app/actions/open-house-automation.ts": 3,
+    "app/actions/open-house-automation.ts": 1,
     "app/actions/open-house.ts": 1,
-    "app/actions/partner-orders.ts": 1,
     "app/actions/photo-management.ts": 2,
     "app/actions/podcast-generation.ts": 2,
     "app/actions/portal-lifetime.ts": 1,
-    "app/actions/portal-messages.ts": 1,
-    "app/actions/portal-seller.ts": 2,
     "app/actions/portal-stream.ts": 2,
     "app/actions/privacy/data-subject-requests.ts": 1,
     "app/actions/property-buyer-matching.ts": 2,
     "app/actions/reputation-kernel.ts": 3,
-    "app/actions/seller-coaching.ts": 1,
     "app/actions/seller-listing/execution-engine.ts": 1,
-    "app/actions/seller-offers.ts": 2,
     "app/actions/smart-insights.ts": 1,
     "app/actions/social/generate-social-post.ts": 1,
     "app/actions/social-media-automation.ts": 1,
     "app/actions/social-publishing.ts": 1,
     "app/actions/social-share.ts": 2,
     "app/actions/superadmin/parked-retention.ts": 2,
-    "app/actions/superadmin/platform-controls.ts": 1,
     "app/actions/tour-planner.ts": 2,
     "app/actions/transaction-document-signatures.ts": 2,
     "app/actions/transaction-inspections.ts": 2,
     "app/actions/transaction-stage-machine.ts": 1,
     "app/actions/transaction-transparency.ts": 1,
     "app/actions/user-profile.ts": 1,
-    "app/actions/vendor-budget.ts": 1,
-    "app/actions/vendor-invite.ts": 2,
     "app/actions/vendor-marketplace.ts": 2,
     "app/actions/vendor-payments.ts": 1,
-    "app/actions/vendor-portal.ts": 1,
     "app/actions/vendor-verification.ts": 1,
     "app/actions/video/create-video-project.ts": 5,
     "app/actions/video-content.ts": 1,
-    "app/actions/video-generation.ts": 2,
     "app/actions/video-repurposing.ts": 3,
     "app/components/heartbeat/heartbeat-card.tsx": 1,
     "app/components/portal/FitBadge.tsx": 1,
@@ -302,7 +282,7 @@
     "lib/external/email-verifier.ts": 1,
     "lib/external/exa-client.ts": 1,
     "lib/external/llm-html-extractor.ts": 1,
-    "lib/external/nominatim-geocode.ts": 3,
+    "lib/external/nominatim-geocode.ts": 2,
     "lib/external/socrata-client.ts": 2,
     "lib/external/socrata-market-registry.ts": 2,
     "lib/external/tavily-client.ts": 1,
@@ -658,7 +638,7 @@
     "lib/vendors/billing-calculator.ts": 3,
     "lib/vendors/credit-calculator.ts": 3,
     "lib/vendors/rank.ts": 1,
-    "lib/vendors/vendor-scope.ts": 2,
+    "lib/vendors/vendor-scope.ts": 1,
     "lib/vendors/vendor-validators.ts": 2,
     "lib/video/assistant-options.ts": 1,
     "lib/video/avatar-render-orchestrator.ts": 1,
@@ -703,7 +683,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 8961,
+  "census": 8988,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -789,7 +769,7 @@
     "app/actions/ai-market-intelligence.ts": 4,
     "app/actions/ai-marketing-automation.ts": 8,
     "app/actions/ai-newsletter.ts": 15,
-    "app/actions/ai-offer-creation.ts": 12,
+    "app/actions/ai-offer-creation.ts": 11,
     "app/actions/ai-predictions.ts": 24,
     "app/actions/ai-property-matching.ts": 4,
     "app/actions/ai-referral-management.ts": 5,
@@ -1228,7 +1208,7 @@
     "app/actions/video/distribute-video.ts": 1,
     "app/actions/video/generate-script.ts": 1,
     "app/actions/video-content.ts": 6,
-    "app/actions/video-generation.ts": 20,
+    "app/actions/video-generation.ts": 18,
     "app/actions/video-landing.ts": 3,
     "app/actions/video-repurposing.ts": 13,
     "app/actions/video-repurposing.utils.ts": 3,
@@ -1429,6 +1409,7 @@
     "app/api/cron/newsletter-cadence-tick/route.ts": 1,
     "app/api/cron/newsletter-video-render/route.ts": 1,
     "app/api/cron/objection-library/route.ts": 1,
+    "app/api/cron/offer-expiry/route.ts": 1,
     "app/api/cron/offer-net-sheet/route.ts": 1,
     "app/api/cron/office-hours/route.ts": 1,
     "app/api/cron/onboarding-health/route.ts": 1,
@@ -1967,6 +1948,7 @@
     "app/crm/components/os/timeline-context-panel.tsx": 1,
     "app/crm/components/os/value-delivered-panel.tsx": 1,
     "app/crm/components/reassign-contact-dialog.tsx": 1,
+    "app/crm/components/recent-messages-card.tsx": 1,
     "app/crm/contacts/[contactId]/buyer-overview-client.tsx": 1,
     "app/crm/contacts/[contactId]/components/buyer-coaching-card.tsx": 1,
     "app/crm/contacts/[contactId]/components/buyer-engagement-health-card.tsx": 1,
@@ -2522,6 +2504,7 @@
     "app/dashboard/superadmin/suppression/suppression-manager.tsx": 1,
     "app/dashboard/superadmin/usage-reports/export/route.ts": 1,
     "app/dashboard/superadmin/usage-reports/usage-report-data.ts": 2,
+    "app/dashboard/support/vendor-breakdown-row.tsx": 1,
     "app/dashboard/system/components/os/agent-capability-panel.tsx": 1,
     "app/dashboard/system/components/os/ai-quality-panel.tsx": 1,
     "app/dashboard/system/components/os/living-video-panel.tsx": 1,
@@ -2564,6 +2547,7 @@
     "app/dashboard/vendors/vendor-bills-panel.tsx": 1,
     "app/dashboard/vendors/vendor-charges-panel.tsx": 1,
     "app/dashboard/vendors/vendor-directory-client.tsx": 1,
+    "app/dashboard/vendors/vendor-portal-invite-panel.tsx": 1,
     "app/dashboard/videos/board/video-studio-dialog.tsx": 1,
     "app/dashboard/videos/components/BackgroundPicker.tsx": 1,
     "app/dashboard/videos/components/BrollPicker.tsx": 1,
@@ -2626,7 +2610,9 @@
     "app/mobile/voice/voice-session-button.tsx": 1,
     "app/newsletters/components/newsletter-ai-panel.tsx": 1,
     "app/newsletters/newsletters-client.tsx": 1,
+    "app/open-house/[eventId]/rsvp/[invitationId]/rsvp-buttons.tsx": 1,
     "app/open-house/[eventId]/signin/sign-in-kiosk.tsx": 1,
+    "app/open-house/feedback/[attendeeId]/feedback-form.tsx": 1,
     "app/p/[agentSlug]/profile-lead-capture-form.tsx": 1,
     "app/portal/[contactId]/alerts/[alertId]/alert-match-list.tsx": 1,
     "app/portal/[contactId]/components/DualDependencyBanner.tsx": 1,
@@ -2714,6 +2700,7 @@
     "app/team/[slug]/page.tsx": 1,
     "app/title/components/os/title-command-strip.tsx": 1,
     "app/title/components/os/title-operations-panel.tsx": 1,
+    "app/title/orders/title-order-row.tsx": 1,
     "app/trust/page.tsx": 1,
     "app/types/video-generation.ts": 1,
     "app/unsubscribe/unsubscribe-client.tsx": 1,
@@ -2962,7 +2949,7 @@
     "lib/buyer-broker/gate.ts": 2,
     "lib/buyer-execution/buyer-execution-engine.ts": 4,
     "lib/buyer-execution/governance-guards.ts": 5,
-    "lib/buyer-execution/multi-party-updates.ts": 5,
+    "lib/buyer-execution/multi-party-updates.ts": 6,
     "lib/buyer-execution/rollback-handler.ts": 9,
     "lib/buyer-execution/showing-financial-policy.ts": 1,
     "lib/buyer-execution/voice-assistant-integration.ts": 1,
@@ -2979,6 +2966,7 @@
     "lib/buyer-lifecycle/transition-validator.ts": 6,
     "lib/buyer-offer/compliance-gate.ts": 3,
     "lib/buyer-offer/credentials-helper.ts": 2,
+    "lib/buyer-offer/expire-offers.ts": 2,
     "lib/buyer-offer/lifecycle-event-map.ts": 2,
     "lib/buyer-offer/status-sync.ts": 2,
     "lib/buyer-offers/address-analysis.ts": 1,
@@ -3017,6 +3005,7 @@
     "lib/campaign-sequences/touchpoint-bridge.ts": 3,
     "lib/campaigns/channels.ts": 3,
     "lib/campaigns/contact-sources.ts": 6,
+    "lib/campaigns/enroll-in-sequence.ts": 1,
     "lib/campaigns/roi-calculator.ts": 5,
     "lib/charts/cma-reel-data.ts": 2,
     "lib/charts/explainer-diagram.ts": 5,
@@ -3204,9 +3193,11 @@
     "lib/email/orchestrate-email-preset-send.ts": 1,
     "lib/embed/widget-modes.ts": 4,
     "lib/enrichment/contact-enrichment-core.ts": 6,
-    "lib/enrichment/deal-suppression.ts": 2,
-    "lib/enrichment/deal-vocabulary.ts": 2,
+    "lib/enrichment/deal-suppression.ts": 3,
+    "lib/enrichment/deal-vocabulary.ts": 3,
     "lib/enrichment/identifier-guard.ts": 1,
+    "lib/enrichment/lead-enrichment-core.ts": 3,
+    "lib/enrichment/lead-freshness.ts": 2,
     "lib/entitlements/resolve.ts": 2,
     "lib/errors/auto-retry.ts": 3,
     "lib/errors/collect-error.ts": 2,
@@ -3219,15 +3210,17 @@
     "lib/external/apify-client.ts": 7,
     "lib/external/batchdata-client.ts": 6,
     "lib/external/batchdata-mcp.ts": 2,
-    "lib/external/census-appreciation.ts": 1,
+    "lib/external/census-appreciation.ts": 4,
     "lib/external/email-verifier.ts": 3,
     "lib/external/exa-client.ts": 2,
     "lib/external/exa-intent-normalizer.ts": 1,
+    "lib/external/free-probe.ts": 3,
     "lib/external/geoapify-client.ts": 2,
     "lib/external/llm-html-extractor.ts": 1,
     "lib/external/lob-address-verify.ts": 1,
-    "lib/external/nominatim-geocode.ts": 4,
-    "lib/external/osint-neighborhood.ts": 1,
+    "lib/external/nominatim-geocode.ts": 5,
+    "lib/external/osint-free.ts": 3,
+    "lib/external/osint-neighborhood.ts": 3,
     "lib/external/peopledata-client.ts": 2,
     "lib/external/rentcast-typed.ts": 1,
     "lib/external/socrata-client.ts": 2,
@@ -4834,7 +4827,6 @@
       "getOfferForms",
       "createOfferDotloop",
       "aiCounterOfferStrategy",
-      "submitCompleteOffer",
       "aiAnalyzeOfferStrategy",
       "generateOfferLetter",
       "runCompleteOfferWorkflow",
@@ -7855,7 +7847,6 @@
       "getVideoTemplateById",
       "getScriptVariations",
       "createScriptVariation",
-      "queueVideoGeneration",
       "getVideoQueue",
       "recordVideoEngagementEvent",
       "getVideoPerformanceStats",
@@ -7865,8 +7856,7 @@
       "generateVideoScript",
       "generateVideoFromScript",
       "saveVideoTemplate",
-      "getEducationTemplates",
-      "createAvatarVideo"
+      "getEducationTemplates"
     ],
     "app/actions/video-landing.ts": [
       "publishRenderToWeb",
@@ -8552,6 +8542,9 @@
       "GET"
     ],
     "app/api/cron/objection-library/route.ts": [
+      "GET"
+    ],
+    "app/api/cron/offer-expiry/route.ts": [
       "GET"
     ],
     "app/api/cron/offer-net-sheet/route.ts": [
@@ -10210,6 +10203,9 @@
     ],
     "app/crm/components/reassign-contact-dialog.tsx": [
       "ReassignContactDialog"
+    ],
+    "app/crm/components/recent-messages-card.tsx": [
+      "RecentMessagesCard"
     ],
     "app/crm/contacts/[contactId]/buyer-overview-client.tsx": [
       "BuyerOverviewClient"
@@ -11922,6 +11918,9 @@
       "loadUsageReportRows",
       "usageReportCsv"
     ],
+    "app/dashboard/support/vendor-breakdown-row.tsx": [
+      "VendorBreakdownRow"
+    ],
     "app/dashboard/system/components/os/agent-capability-panel.tsx": [
       "AgentCapabilityPanel"
     ],
@@ -12051,6 +12050,9 @@
     ],
     "app/dashboard/vendors/vendor-directory-client.tsx": [
       "VendorDirectoryClient"
+    ],
+    "app/dashboard/vendors/vendor-portal-invite-panel.tsx": [
+      "VendorPortalInvitePanel"
     ],
     "app/dashboard/videos/board/video-studio-dialog.tsx": [
       "VideoStudioDialog"
@@ -12246,8 +12248,14 @@
     "app/newsletters/newsletters-client.tsx": [
       "NewslettersClient"
     ],
+    "app/open-house/[eventId]/rsvp/[invitationId]/rsvp-buttons.tsx": [
+      "RsvpButtons"
+    ],
     "app/open-house/[eventId]/signin/sign-in-kiosk.tsx": [
       "SignInKiosk"
+    ],
+    "app/open-house/feedback/[attendeeId]/feedback-form.tsx": [
+      "FeedbackForm"
     ],
     "app/p/[agentSlug]/profile-lead-capture-form.tsx": [
       "ProfileLeadCaptureForm"
@@ -12510,6 +12518,9 @@
     ],
     "app/title/components/os/title-operations-panel.tsx": [
       "TitleOperationsPanel"
+    ],
+    "app/title/orders/title-order-row.tsx": [
+      "TitleOrderRow"
     ],
     "app/trust/page.tsx": [
       "generateMetadata"
@@ -13755,6 +13766,7 @@
       "getDiagnosticGovernanceStatus"
     ],
     "lib/buyer-execution/multi-party-updates.ts": [
+      "resolveFinancialGateOverrideAuthority",
       "lenderConfirmFinancialVerification",
       "agentAssistSearchConfiguration",
       "adminOverrideFinancialGate",
@@ -13886,6 +13898,10 @@
     "lib/buyer-offer/credentials-helper.ts": [
       "getAgentProviderCredentials",
       "hasProviderCredentials"
+    ],
+    "lib/buyer-offer/expire-offers.ts": [
+      "expireOffer",
+      "sweepDueOfferExpirations"
     ],
     "lib/buyer-offer/lifecycle-event-map.ts": [
       "deriveOfferState",
@@ -14061,6 +14077,9 @@
       "contactTypeForContact",
       "contactTypeForSource",
       "normalizeContactPersona"
+    ],
+    "lib/campaigns/enroll-in-sequence.ts": [
+      "enrollInSequence"
     ],
     "lib/campaigns/roi-calculator.ts": [
       "recalculateCampaignROI",
@@ -14960,14 +14979,25 @@
     ],
     "lib/enrichment/deal-suppression.ts": [
       "isContactInLiveDeal",
-      "contactsInLiveDeals"
+      "contactsInLiveDeals",
+      "isLeadInLiveDeal"
     ],
     "lib/enrichment/deal-vocabulary.ts": [
       "isListingLive",
-      "isTransactionLive"
+      "isTransactionLive",
+      "leadDealLinkage"
     ],
     "lib/enrichment/identifier-guard.ts": [
       "hasUsableIdentifier"
+    ],
+    "lib/enrichment/lead-enrichment-core.ts": [
+      "queueLeadEnrichment",
+      "queueLeadEnrichmentBestEffort",
+      "listLeadsNeedingEnrichment"
+    ],
+    "lib/enrichment/lead-freshness.ts": [
+      "leadHasEnrichmentEvidence",
+      "leadEnrichmentIsFresh"
     ],
     "lib/entitlements/resolve.ts": [
       "rolloutBucket",
@@ -15042,6 +15072,9 @@
       "batchDataPreferMcp"
     ],
     "lib/external/census-appreciation.ts": [
+      "probeCensusMedianHomeValue",
+      "fetchCensusMedianHomeValue",
+      "probeCensusAppreciation",
       "fetchCensusAppreciation"
     ],
     "lib/external/email-verifier.ts": [
@@ -15056,6 +15089,11 @@
     "lib/external/exa-intent-normalizer.ts": [
       "normalizeExaIntentRow"
     ],
+    "lib/external/free-probe.ts": [
+      "gatewayProbe",
+      "unreachableProbe",
+      "notAttemptedProbe"
+    ],
     "lib/external/geoapify-client.ts": [
       "geoapifyConfigured",
       "fetchNearbyPlaces"
@@ -15069,10 +15107,18 @@
     "lib/external/nominatim-geocode.ts": [
       "buildGeocodeQuery",
       "parseNominatimRow",
+      "geocodeOneDetailed",
       "geocodeOne",
       "createCachedGeocoder"
     ],
+    "lib/external/osint-free.ts": [
+      "planEnrichmentLane",
+      "runFreeOsintLane",
+      "describeFreeLane"
+    ],
     "lib/external/osint-neighborhood.ts": [
+      "hasAnyAmenity",
+      "probeOverpassAmenities",
       "fetchOSINTNeighborhoodData"
     ],
     "lib/external/peopledata-client.ts": [
@@ -20322,5 +20368,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 332
+  "trulyDead": 298
 }

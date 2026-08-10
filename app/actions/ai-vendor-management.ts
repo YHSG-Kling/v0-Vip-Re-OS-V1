@@ -454,7 +454,12 @@ Create:
  * Generate vendor review request with AI-crafted message
  */
 export async function requestVendorReview(params: {
-  agentId: string
+  /**
+   * Ignored — the actor is the session. Kept optional so existing call sites
+   * type-check; it is NOT validated, because validating an identity the function
+   * never uses only forces callers to invent a uuid to get past the door.
+   */
+  agentId?: string
   jobId: string
 }) {
   // 🚨 Was anonymous: a bare job uuid returned another tenant's vendor name and
@@ -462,8 +467,8 @@ export async function requestVendorReview(params: {
   const auth = await requireVendorCaller()
   if (!auth.ok) return { success: false, error: auth.error }
 
-  if (!isValidUUID(params.agentId) || !isValidUUID(params.jobId)) {
-    return { success: false, error: "Invalid IDs" }
+  if (!isValidUUID(params.jobId)) {
+    return { success: false, error: "Invalid job ID" }
   }
 
   const supabase = await createClient()

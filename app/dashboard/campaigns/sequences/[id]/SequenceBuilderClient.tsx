@@ -74,6 +74,7 @@ import {
   deleteSequenceStep,
   reorderSequenceSteps,
   updateCampaignSequence,
+  cancelEnrollment,
 } from "@/app/actions/campaign-sequences"
 import type {
   CampaignSequence,
@@ -180,6 +181,8 @@ export default function SequenceBuilderClient({
 
   const [tab,          setTab]          = useState<"builder" | "analytics">(defaultTab)
   const [steps,        setSteps]        = useState<SequenceStep[]>(initialSteps)
+  /** Enrollment ids currently being cancelled — see the Active Enrollments section. */
+  const [cancellingEnrollmentId, setCancellingEnrollmentId] = useState<string | null>(null)
   const [selectedStep, setSelectedStep] = useState<SequenceStep | null>(null)
   const [busy,         setBusy]         = useState(false)
 
@@ -680,6 +683,67 @@ export default function SequenceBuilderClient({
               </p>
             </section>
           )}
+
+          {/*
+            ACTIVE ENROLLMENTS — the door onto `cancelEnrollment`, which had no caller.
+            Enrolling a contact starts an automated outbound programme against them;
+            without this there was no way to STOP one from the product, only from SQL.
+            The action re-verifies the enrollment's brokerage server-side and proves the
+            update with `.select("id")`, so this button cannot report a cancellation
+            that did not happen.
+          */}
+          <section>
+            <h2 className="text-sm font-semibold text-foreground mb-4">Active Enrollments</h2>
+            <div className="rounded-lg border border-border bg-card divide-y">
+              {enrollments.filter((e) => e.status === "active").length === 0 ? (
+                <p className="p-4 text-xs text-muted-foreground">No one is currently enrolled in this sequence.</p>
+              ) : (
+                enrollments
+                  .filter((e) => e.status === "active")
+                  .map((e) => (
+                    <div key={e.id} className="flex items-center justify-between gap-3 p-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">
+                          {[e.contact?.first_name, e.contact?.last_name].filter(Boolean).join(" ") ||
+                            e.contact?.email ||
+                            (e.lead_id ? "Lead" : "Contact")}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Step {e.current_step}
+                          {e.next_step_at ? ` · next ${new Date(e.next_step_at).toLocaleDateString()}` : ""}
+                          {e.enrolled_at ? ` · enrolled ${new Date(e.enrolled_at).toLocaleDateString()}` : ""}
+                        </p>
+                      </div>
+                      {canEdit && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={cancellingEnrollmentId === e.id}
+                          onClick={async () => {
+                            setCancellingEnrollmentId(e.id)
+                            try {
+                              const res = await cancelEnrollment(e.id, sequence.id)
+                              if (!res.success) {
+                                toast.error(res.error ?? "The enrollment was not cancelled")
+                                return
+                              }
+                              toast.success("Enrollment cancelled — no further steps will send")
+                              router.refresh()
+                            } catch (err: any) {
+                              toast.error(err?.message ?? "The enrollment was not cancelled")
+                            } finally {
+                              setCancellingEnrollmentId(null)
+                            }
+                          }}
+                        >
+                          {cancellingEnrollmentId === e.id ? "Cancelling…" : "Cancel"}
+                        </Button>
+                      )}
+                    </div>
+                  ))
+              )}
+            </div>
+          </section>
 
           {/* Enrollment status pie */}
           <section>

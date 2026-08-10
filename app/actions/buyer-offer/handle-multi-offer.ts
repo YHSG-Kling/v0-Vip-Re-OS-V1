@@ -19,6 +19,43 @@ import { evaluateOfferLimit, limitProximity } from "@/lib/offers/multi-offer-rul
  */
 
 /**
+ * Session gate for this module.
+ *
+ * NOT EXPORTED — this file is `"use server"`, so exporting it would mint another
+ * public endpoint. It answers one question: is the caller a signed-in member of
+ * the brokerage that owns this contact, and what is that brokerage?
+ *
+ * Both reads destructure `error`: supabase-js RESOLVES a refused query, so
+ * `const { data }` alone renders "RLS refused" and "no such contact"
+ * identically. A gate must fail CLOSED and say which it was.
+ */
+async function requireContactTenant(contactId: string): Promise<
+  | { ok: true; userId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const { createClient } = await import("@/lib/supabase/server");
+  const authClient = await createClient();
+  const { data: { user } } = await authClient.auth.getUser();
+  if (!user) return { ok: false, error: "Unauthorized" };
+
+  const svc = createServiceClient();
+  const [callerRes, contactRes] = await Promise.all([
+    svc.from("users").select("brokerage_id").eq("id", user.id).maybeSingle(),
+    svc.from("contacts").select("brokerage_id").eq("id", contactId).maybeSingle(),
+  ]);
+  if (callerRes.error)  return { ok: false, error: "Could not verify the caller" };
+  if (contactRes.error) return { ok: false, error: "Could not read the contact" };
+
+  const callerBrokerageId = (callerRes.data?.brokerage_id ?? null) as string | null;
+  if (!callerBrokerageId) return { ok: false, error: "Brokerage not configured" };
+  if (!contactRes.data) return { ok: false, error: "Contact not found" };
+  if ((contactRes.data.brokerage_id ?? null) !== callerBrokerageId) {
+    return { ok: false, error: "Forbidden" };
+  }
+  return { ok: true, userId: user.id, brokerageId: callerBrokerageId };
+}
+
+/**
  * Check if buyer can submit another offer
  */
 export async function canBuyerSubmitOffer(
@@ -82,21 +119,42 @@ export async function canBuyerSubmitOffer(
 }
 
 /**
- * Check for duplicate offer on same listing
+ * Check for duplicate offer on same listing.
+ *
+ * GATED. This is `"use server"` — a public HTTP endpoint — and it ran entirely
+ * on `createServiceClient()` with no session at all. Anyone who knew (or
+ * guessed) a contact uuid + listing uuid could ask any tenant's database
+ * whether that buyer has a live offer on that property, and get the offer's id
+ * and lifecycle state back. That is deal intelligence about another brokerage's
+ * clients, served to an unauthenticated caller.
+ *
+ * It now proves a session and that the CONTACT belongs to the caller's
+ * brokerage — the same door `emitMultiOfferEvent` below already uses, so the
+ * two halves of this module answer to the same tenant. There is no unattended
+ * caller to strand: this function had no caller of any kind, and its one
+ * in-repo call site (app/actions/buyer-offers.ts:createOffer) runs inside an
+ * agent's session.
+ *
+ * `has_duplicate` counts only NON-TERMINAL offers, so a buyer who was rejected
+ * on a property may offer again.
  */
 export async function checkDuplicateOffer(
   contactId: string,
   listingId: string
-): Promise<{ 
-  success: boolean; 
-  has_duplicate: boolean; 
+): Promise<{
+  success: boolean;
+  has_duplicate: boolean;
   existing_offer_id?: string;
   existing_state?: string;
+  error?: string;
 }> {
   try {
     if (!isValidUUID(contactId) || !isValidUUID(listingId)) {
-      return { success: false, has_duplicate: false };
+      return { success: false, has_duplicate: false, error: "Invalid contact or listing id" };
     }
+
+    const tenant = await requireContactTenant(contactId);
+    if (!tenant.ok) return { success: false, has_duplicate: false, error: tenant.error };
 
     const supabase = createServiceClient();
 
@@ -206,33 +264,15 @@ export async function emitMultiOfferEvent(
     }
 
     // Auth gate — previously unauthenticated, letting any caller forge
-    // multi_offer signals against any contact's activity log.
-    const { createClient } = await import("@/lib/supabase/server")
-    const authClient = await createClient()
-    const { data: { user: authUser } } = await authClient.auth.getUser()
-    if (!authUser) return { success: false, error: "Unauthorized" }
-    const { data: callerRow } = await authClient
-      .from("users")
-      .select("brokerage_id")
-      .eq("id", authUser.id)
-      .maybeSingle()
-    if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
+    // multi_offer signals against any contact's activity log. Now the ONE gate
+    // this module uses, shared with checkDuplicateOffer.
+    const tenant = await requireContactTenant(contactId)
+    if (!tenant.ok) return { success: false, error: tenant.error }
 
     const supabase = createServiceClient();
 
-    // Verify contact belongs to caller's brokerage
-    const { data: contact } = await supabase
-      .from("contacts")
-      .select("brokerage_id")
-      .eq("id", contactId)
-      .maybeSingle()
-    if (!contact) return { success: false, error: "Contact not found" }
-    if (contact.brokerage_id !== callerRow.brokerage_id) {
-      return { success: false, error: "Forbidden" }
-    }
-
     const { error } = await supabase.from("activities").insert({
-      brokerage_id: callerRow.brokerage_id,
+      brokerage_id: tenant.brokerageId,
       entity_type: "contact",
       entity_id: contactId,
       activity_type: "multi_offer_signal",

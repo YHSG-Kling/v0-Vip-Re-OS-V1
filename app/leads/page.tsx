@@ -61,6 +61,7 @@ import {
   rejectLead,
 } from "@/app/actions/lead-management"
 import { convertLeadToContact, listUnassignedLeads } from "@/app/actions/lead-lifecycle"
+import { batchEvaluateLeadReadiness } from "@/app/actions/lead-readiness/evaluate-readiness"
 import { importLeads } from "@/app/actions/lead-management"
 import {
   AlertDialog,
@@ -235,6 +236,16 @@ export default function LeadsPage() {
   const [userId, setUserId] = useState('')
 
   const [leads, setLeads] = useState<Lead[]>([])
+  /**
+   * Readiness state per lead id, from `batchEvaluateLeadReadiness`, which had no
+   * caller. Its own docstring says it is for "dashboard views showing lead pipeline
+   * status" and this is that view: without it the readiness lane was reachable only
+   * one lead at a time from /leads/[leadId], so a pipeline could not be triaged by
+   * who is actually ready. The action is authenticated, intersects the ids with the
+   * caller's brokerage server-side and caps the batch at 200, so passing the visible
+   * page of ids is safe.
+   */
+  const [readiness, setReadiness] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -1689,6 +1700,7 @@ export default function LeadsPage() {
                     </TableHead>
                     <TableHead>Intent</TableHead>
                     <TableHead>Stage</TableHead>
+                    <TableHead>Readiness</TableHead>
                     {isAdminOrBroker && <TableHead>AI-ISA</TableHead>}
                     <TableHead>
                       <button
@@ -1714,14 +1726,14 @@ export default function LeadsPage() {
                 <TableBody>
                   {loading ? (
                     <TableRow>
-                      <TableCell colSpan={isAdminOrBroker ? 11 : 10} className="text-center py-12">
+                      <TableCell colSpan={isAdminOrBroker ? 12 : 11} className="text-center py-12">
                         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground mx-auto" />
                         <p className="text-sm text-muted-foreground mt-2">Loading leads...</p>
                       </TableCell>
                     </TableRow>
                   ) : leads.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={isAdminOrBroker ? 11 : 10} className="text-center py-16">
+                      <TableCell colSpan={isAdminOrBroker ? 12 : 11} className="text-center py-16">
                         <Search className="h-10 w-10 text-muted-foreground/40 mx-auto mb-3" />
                         <p className="text-sm font-medium text-foreground mb-1">No leads match your filters</p>
                         <p className="text-xs text-muted-foreground mb-4">Try clearing filters or importing new leads</p>
@@ -1761,6 +1773,22 @@ export default function LeadsPage() {
                         </TableCell>
                         <TableCell>
                           <LeadStatusBadge lead={lead} />
+                        </TableCell>
+                        <TableCell>
+                          {readiness[lead.id] ? (
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                "capitalize text-xs",
+                                readiness[lead.id] === "broker_review_required" &&
+                                  "border-red-200 bg-red-50 text-red-700",
+                              )}
+                            >
+                              {readiness[lead.id].replace(/_/g, " ")}
+                            </Badge>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
                         </TableCell>
                         {isAdminOrBroker && (
                           <TableCell>

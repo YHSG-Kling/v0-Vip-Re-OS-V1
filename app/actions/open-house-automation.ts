@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
@@ -591,12 +592,31 @@ export async function sendOpenHouseInvitations(params: { eventId: string; contac
 // RSVP HANDLING
 // ============================================
 
+/**
+ * RSVP from an emailed invitation link.
+ *
+ * CREDENTIAL MODEL — read this before touching the client below. The invitee is
+ * an ANONYMOUS visitor: they hold an invitation link, not a platform login, and
+ * most of them never will (they are contacts, not users). The unguessable pair
+ * (eventId, invitationId) IS the credential — both must be supplied and the
+ * invitation must actually belong to that event, which is checked below.
+ *
+ * This ran on `createClient()` (the caller's RLS session). Verified live: the
+ * `open_house_invitations` policy is
+ * `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`, and the
+ * rows `inviteContacts` writes carry the contact's real `brokerage_id` — so for
+ * an anonymous invitee `current_user_brokerage_id()` is NULL, the predicate is
+ * false, and the SELECT was REFUSED. The function's own honest error path then
+ * told every invitee "Could not look up that invitation". **No RSVP from an
+ * emailed link could ever have succeeded.** The service client is the door this
+ * lane needs; the id pair, not a session, is what authorizes it.
+ */
 export async function handleRSVP(params: { eventId: string; invitationId: string; response: "yes" | "maybe" | "no" }) {
   if (!isValidUUID(params.eventId) || !isValidUUID(params.invitationId)) {
     return { success: false, error: "Invalid IDs" }
   }
 
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   try {
     // Destructure `error` (wave 4 slice 2). supabase-js RESOLVES a refused
@@ -1275,7 +1295,15 @@ export async function submitFeedback(params: {
     return { success: false, error: "Invalid attendee ID" }
   }
 
-  const supabase = await createClient()
+  // CREDENTIAL MODEL: identical to handleRSVP above. The person filling this in
+  // is an open-house visitor following the link `sendFeedbackRequestToAttendee`
+  // emails them (`/open-house/feedback/<attendeeId>`); the unguessable attendee
+  // id is the credential. On the RLS session client the
+  // `open_house_attendees` policy
+  // (`brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`)
+  // refused every anonymous read, so this endpoint could only ever answer
+  // "Could not look up that visit" to the very people it was built for.
+  const supabase = createServiceClient()
 
   try {
     // Destructure `error` — a refusal must not read as "Attendee not found"
