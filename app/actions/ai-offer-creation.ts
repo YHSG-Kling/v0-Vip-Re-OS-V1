@@ -787,11 +787,50 @@ export async function generateOfferDraft(params: {
     }
 
     // ── Persist packet on documents row ──────────────────────────────────
+    //
+    // MERGE, NEVER REPLACE. This update used to assign `content` and `metadata`
+    // wholesale, and it runs immediately AFTER the caller has staged the row —
+    // draft-offer-from-voice.ts writes `content = { filledPacket, intake }` and
+    // `metadata.linked_offer_id`, then calls this function. The wholesale assign
+    // destroyed BOTH:
+    //   · `metadata.linked_offer_id` is the ONLY key
+    //     lib/workflow/intelligence/scan-offer-packet.ts uses to find an offer's
+    //     packet. Losing it makes the packet unfindable, forever.
+    //   · `content.filledPacket` is the ONLY thing that scan reads. The object
+    //     built here has no `filledPacket` key at all, so even a found row
+    //     scanned as empty.
+    // Together those made the completeness scan silently unrunnable on the one
+    // path that stages a packet — which the audit gate then read as "nothing
+    // missing" (wave 9, D1). With the gate now failing closed, an un-merged
+    // write here would refuse EVERY offer instead, so this is load-bearing in
+    // both directions.
+    //
+    // The two shapes share no keys, so a top-level merge is lossless: the scan
+    // keeps `filledPacket` + `intake`, packet consumers keep theirs.
     if (params.documentId) {
+      const { data: existingDoc, error: existingErr } = await supabase
+        .from("documents")
+        .select("content, metadata")
+        .eq("id", params.documentId)
+        .eq("brokerage_id", params.brokerageId)
+        .maybeSingle()
+      if (existingErr) {
+        console.error("[AI Offer Creation] Could not read the staged document before merging the packet — refusing to overwrite it blind:", existingErr.message)
+        return handleError(existingErr, "generateOfferDraft")
+      }
+
+      let priorContent: Record<string, unknown> = {}
+      try {
+        const parsed = JSON.parse((existingDoc?.content as string | null) ?? "{}")
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) priorContent = parsed
+      } catch { /* unparseable prior content is replaced, not merged */ }
+      const priorMetadata = (existingDoc?.metadata ?? {}) as Record<string, unknown>
+
       const packetUpdate = {
-        content: JSON.stringify(packet, null, 2),
+        content: JSON.stringify({ ...priorContent, ...packet }, null, 2),
         status: "needs_agent_input",         // NOT draft_ready — packet awaits human finalization
         metadata: {
+          ...priorMetadata,                  // keeps linked_offer_id and anything else staged
           state,
           packet_type: "offer",
           required_forms: forms.required,
@@ -803,12 +842,18 @@ export async function generateOfferDraft(params: {
         },
         updated_at: new Date().toISOString(),
       }
-      await supabase
+      // CHECKED: a silently-dropped update here is what produced the unfindable
+      // packet in the first place, and supabase-js RESOLVES a refused write.
+      const { error: packetWriteErr } = await supabase
         .from("documents")
         .update(packetUpdate)
         .eq("id", params.documentId)
         // tenant anchor (scope burn-down): document must belong to the workflow's brokerage
         .eq("brokerage_id", params.brokerageId)
+      if (packetWriteErr) {
+        console.error("[AI Offer Creation] Packet did not persist to the document row:", packetWriteErr.message)
+        return handleError(packetWriteErr, "generateOfferDraft")
+      }
     }
 
     // ── Notify agent that the packet is ready for review ─────────────────

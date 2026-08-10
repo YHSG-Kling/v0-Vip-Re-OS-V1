@@ -14,15 +14,36 @@
  * notifyComplianceFlag helper. Critical flags also surface to broker /
  * broker_admin so show-stoppers never sit unread.
  *
- * No transaction state changes here — the flag is informational. Resolving
- * the flag (e.g. uploading the missing form) is a separate agent action;
- * the notifications stay until the recipients mark them read.
+ * No transaction state changes here — the flag is informational. The flag is
+ * CLEARED by lib/compliance/offer-flag-resolution.ts:resolveOfferComplianceFlags
+ * (on a passing submit, or when the specific miss it names is supplied); the
+ * notifications stay until the recipients mark them read.
+ *
+ * ── ONE ROW PER MISS, NOT ONE PER ATTEMPT ────────────────────────────────────
+ * This action used to INSERT unconditionally, so every resubmission that still
+ * hit the same miss minted another `status:'open'` row. Nothing ever closed one,
+ * so the queue only ever grew and stopped meaning anything.
+ *
+ * It now UPSERTS on the flag's stable identity. The row write itself lives in
+ * lib/compliance/offer-flag-resolution.ts:recordOfferComplianceFlag, alongside
+ * the resolver that closes it — one module owns the flag row's whole lifecycle,
+ * and it takes an injectable client so the behaviour is provable without
+ * credentials (scripts/offer-flag-loop-simulator.ts). That module documents why
+ * the identity is `flagType + title` and explicitly NOT `documentId`.
+ *
+ * THIS action keeps what only it can do: the auth gate, the tenant + agent
+ * resolution off the offer row, and the notification fan-out.
+ *
+ * The NOTIFICATION fan-out is deliberately NOT deduped. A failed resubmission is
+ * a new event for the humans even when the miss is old — the owner's rule is that
+ * the missing piece goes to the TC and the agent every time it blocks.
  */
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID }          from "@/lib/validations"
 import { notifyComplianceFlag } from "@/lib/notifications/notify-helpers"
+import { recordOfferComplianceFlag } from "@/lib/compliance/offer-flag-resolution"
 
 export interface FlagOfferComplianceParams {
   offerId:    string
@@ -41,6 +62,11 @@ export interface FlagOfferComplianceParams {
 export interface FlagOfferComplianceResult {
   success: boolean
   notified_count?: number
+  /** The stable identity of the miss this flag names — see offer-flag-resolution.ts. */
+  flag_key?: string
+  /** True when an already-open flag for the SAME miss was refreshed instead of
+   *  a second one being minted. */
+  deduped?: boolean
   error?:  string
 }
 
@@ -89,41 +115,32 @@ export async function flagOfferCompliance(
     assignedAgentUserId = (agentRow?.user_id as string | null) ?? null
   }
 
-  // Record the activity (audit trail) — activities.agent_id wants agents.id.
+  // Record the flag row. Delegated to the module that also CLOSES it, so the
+  // raise side and the resolve side can never disagree about what identifies a
+  // miss — see lib/compliance/offer-flag-resolution.ts for the anchor and the
+  // upsert-vs-refuse decision.
   //
-  // THE KEY. This row already supplied the tenant (activities.brokerage_id is
-  // NOT NULL with no default) but omitted `entity_id`, which is NULLABLE — so it
-  // inserted successfully and was then invisible to every reader that asks "what
-  // has been flagged on THIS offer": the canonical key is entity_type='offer'
-  // AND entity_id=<offers.id>. The flag was findable only by scanning the whole
-  // activities table for a JSON substring in `notes`.
-  //
-  // `buyer.offer.compliance.flagged` stays a literal: it is an AUDIT event with
-  // no lifecycle state, so it has no OFFER_EVENT constant by design — see the
-  // vocabulary note in lib/buyer-offer/compliance-gate.ts and the standing
-  // recommendation in docs/wave7-slice-writers.md.
-  const now = new Date().toISOString()
-  const { error: flagActivityError } = await supabase.from("activities").insert({
-    brokerage_id:   offer.brokerage_id,
-    agent_user_id:  raiserUserId,
-    agent_id:       offer.agent_id,
-    contact_id:     offer.contact_id,
-    entity_type:    "offer",
-    entity_id:      offerId,
-    activity_type:  "buyer.offer.compliance.flagged",
+  // The notification fan-out below is the load-bearing human alert (it returns
+  // notified_count, which IS checked by the caller), so a lost audit row does not
+  // stop the flag — but supabase-js RESOLVES a rejected write, and an audit trail
+  // that quietly stopped recording must not be invisible.
+  const recorded = await recordOfferComplianceFlag({
+    offerId,
+    brokerageId:  offer.brokerage_id as string,
+    raiserUserId,
+    // activities.agent_id FKs agents(id); agent_user_id is users-class. Disjoint
+    // spaces — offers.agent_id is already an agents id and goes only to agentId.
+    agentId:      (offer.agent_id as string | null) ?? null,
+    contactId:    (offer.contact_id as string | null) ?? null,
+    flagType,
+    severity,
     title,
-    description:    body ?? title,
-    notes:          JSON.stringify({ offer_id: offerId, flagType, severity, raised_by: raiserUserId, document_id: documentId, raised_at: now }),
-    metadata:       { offer_id: offerId, flagType, severity, raised_by: raiserUserId, document_id: documentId, raised_at: now },
-    status:         "open",
-    priority:       severity === "critical" ? "high" : severity === "high" ? "high" : "medium",
+    body,
+    documentId,
+    client:       supabase,
   })
-  if (flagActivityError) {
-    // The notification fan-out below is the load-bearing human alert (it returns
-    // notified_count, which IS checked by the caller), so a lost audit row does
-    // not stop the flag — but supabase-js RESOLVES a rejected insert, and an
-    // audit trail that quietly stopped recording must not be invisible.
-    console.error(`[flag-compliance] offer ${offerId}: compliance-flag audit row failed to write:`, flagActivityError.message)
+  if (!recorded.success || recorded.error) {
+    console.error(`[flag-compliance] offer ${offerId}: compliance-flag audit row problem:`, recorded.error)
   }
 
   // Fan out the notification. Both the assigned buyer-side agent (so they
@@ -145,5 +162,5 @@ export async function flagOfferCompliance(
     },
   })
 
-  return { success: true, notified_count }
+  return { success: true, notified_count, flag_key: recorded.flag_key, deduped: recorded.deduped }
 }

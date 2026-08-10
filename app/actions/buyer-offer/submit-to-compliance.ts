@@ -15,6 +15,13 @@
  *   - Seller has accepted (offers.seller_response_type = 'accepted' AND
  *     offers.fully_signed_contract_received_at IS NOT NULL).
  *   - No prior transaction has been created (offers.transaction_id IS NULL).
+ *   - The packet completeness scan found nothing outstanding, OR no packet was
+ *     ever staged because this offer was not built through the packet builder.
+ *     A scan that FAULTED — invalid ids, an unreadable document store, or a
+ *     staged packet that could not be parsed — is a REFUSAL, not a pass: it has
+ *     verified zero signatures and zero initials. A never-staged packet is NOT
+ *     a fault: the e-sign path establishes both sides on the offer columns
+ *     above, and the gate event records which evidence was actually used.
  *
  * What this action does on success:
  *   1. Stamps offers.ready_for_compliance_at + offers.compliance_passed_at
@@ -34,6 +41,7 @@ import { createTransactionFromOffer } from "@/lib/transactions"
 import { auditOfferDocuments }       from "@/lib/compliance/required-documents"
 import { scanOfferPacketCompleteness } from "@/lib/workflow/intelligence/scan-offer-packet"
 import { notifyComplianceFlag }       from "@/lib/notifications/notify-helpers"
+import { resolveOfferComplianceFlags } from "@/lib/compliance/offer-flag-resolution"
 
 export interface SubmitToComplianceParams {
   offerId: string
@@ -140,7 +148,61 @@ export async function submitOfferToCompliance(
   })
 
   const hasBlockingMissing = audit.missing_blocking.length > 0
-  const hasPacketBlockers  = packetScan.blockers && packetScan.blockers.length > 0
+  // The scanner synthesises a blocker on EVERY exit that did not walk a packet
+  // — deliberately, so a consumer reading only `blockers` fails closed. But the
+  // never-staged exit is not a finding about this deal's paperwork (see the
+  // scanOutcome note below), so it must not be counted as one here. Faults keep
+  // their blocker and still refuse.
+  const hasPacketBlockers  = packetScan.scanOutcome !== "no_packet_staged"
+    && packetScan.blockers.length > 0
+
+  // THE GATE FAILS CLOSED on a packet check that could not RUN.
+  //
+  // This line used to read ONLY `packetScan.blockers.length`, and the scanner
+  // answered "there is no packet at all" with `blockers: []`. So "fully signed"
+  // and "no paperwork whatsoever" arrived here looking identical and BOTH
+  // passed — a transaction created having verified zero signatures and zero
+  // initials, which is the exact opposite of the owner's rule that every
+  // signature and initial be complete on both sides before a transaction
+  // exists.
+  //
+  // Fixed at BOTH ends. The scanner now returns a real blocker on every exit
+  // that did not walk a packet (so `blockers` alone already refuses, for any
+  // future caller that reads nothing else), and `success` is read HERE as well
+  // so a scan that reports a fault without a finding still cannot pass. The
+  // listing-agreement checkpoint has always read it this way
+  // (execution-engine.ts:markAgreementSigned) — the two checkpoints are the
+  // same run, so they refuse on the same condition.
+  // …WITH ONE DISTINCTION THE FIRST PASS OF THIS FIX DID NOT DRAW, and it
+  // matters in both directions.
+  //
+  // "the packet could not be verified" and "this offer never had a packet" are
+  // NOT the same claim. `app/actions/buyer-offers.ts:createOffer` — the offer
+  // wizard, the main path in the product — writes no `documents` row at all, so
+  // its offers reach here with no packet by design, not by fault. Refusing them
+  // would block every wizard-created deal at compliance: a product outage, not a
+  // compliance improvement.
+  //
+  // Those offers are NOT unverified. Signature completeness for the e-sign path
+  // is established on the OFFER row and is already enforced ABOVE, before this
+  // scan is even called: buyer_signed_at set, plus an executed contract on file
+  // via seller_response_type='accepted' or seller_signed_at, each with
+  // fully_signed_contract_received_at. That IS "both sides signed"; the packet
+  // walk is a SECOND, field-level mechanism that only exists for packet-built
+  // offers.
+  //
+  // So: a FAULT refuses (invalid ids, a refused read, or a packet that exists
+  // and cannot be parsed — something is there and we could not check it), and a
+  // never-staged packet does not. The distinction is carried explicitly as
+  // `scanOutcome` rather than inferred from `documentId`, because a refused read
+  // also has a null document id and is a genuine fault.
+  const packetScanFaulted = packetScan.scanOutcome === "fault"
+  const packetNeverStaged = packetScan.scanOutcome === "no_packet_staged"
+  // Kept as the belt to `scanOutcome`'s braces: a scanner that ever reported a
+  // fault WITHOUT tagging the outcome (a future exit added without setting it)
+  // must still refuse rather than fall through as if the packet were clean.
+  const packetScanRan     = packetScan.success === true
+  const packetUnverified  = packetScanFaulted || (!packetScanRan && !packetNeverStaged)
 
   // Owner's rule: any missing item — document, signature or initial — notifies
   // the TC AND/OR the listing agent. The TC comes from the brokerage roster
@@ -173,13 +235,29 @@ export async function submitOfferToCompliance(
     }
   }
 
-  if (hasBlockingMissing || hasPacketBlockers) {
+  if (hasBlockingMissing || hasPacketBlockers || packetUnverified) {
     // Fan out a critical compliance flag so the agent + TC + compliance_officer
     // all see the unblock work clearly in their bells (high/critical severity
     // routes through multi-channel: in-app + email + SMS-on-consent).
+    //
+    // "There is no packet" travels the SAME path as every other blocking miss —
+    // the owner's step 4 sends the missing piece to the TC and the agent, and
+    // an absent packet is the largest possible missing piece. dealRecipients
+    // (the offer's agent, RESOLVED agents.id → users.id, plus the listing
+    // agent) are already resolved above; notifyComplianceFlag adds the TC and
+    // the compliance officer from the brokerage roster.
     const summaryBits: string[] = []
     if (hasBlockingMissing) summaryBits.push(`${audit.missing_blocking.length} required document(s) missing`)
     if (hasPacketBlockers)  summaryBits.push(`${packetScan.blockers.length} packet blocker(s)`)
+    if (packetUnverified)   summaryBits.push(`packet check could not run (${packetScan.error ?? "no reason given"})`)
+
+    // What the agent must actually DO. The scanner's blocker bodies carry the
+    // remedy for the could-not-run case; a refusal that only names the fault
+    // leaves the TC and agent with nothing to finish and resubmit.
+    const remedies = packetUnverified
+      ? packetScan.blockers.map(b => b.body).filter(Boolean)
+      : []
+
     await notifyComplianceFlag(supabase as any, {
       brokerageId: offer.brokerage_id as string,
       agentUserId: userId,
@@ -188,7 +266,7 @@ export async function submitOfferToCompliance(
         type:        "compliance.submit_blocked",
         severity:    "high",
         title:       `Submit to compliance blocked: ${summaryBits.join(", ")}`,
-        body:        `Missing required: ${audit.missing_blocking.join(", ") || "(none)"}.\nPacket blockers: ${packetScan.blockers.slice(0, 5).map(b => b.title).join("; ") || "(none)"}.`,
+        body:        `Missing required: ${audit.missing_blocking.join(", ") || "(none)"}.\nPacket blockers: ${packetScan.blockers.slice(0, 5).map(b => b.title).join("; ") || "(none)"}.${remedies.length > 0 ? `\nWhat to do: ${remedies.join(" ")}` : ""}`,
         entityType:  "offer",
         entityId:    offerId,
         offerId,
@@ -197,12 +275,67 @@ export async function submitOfferToCompliance(
 
     return {
       success: false,
-      error: `Cannot submit to compliance — ${summaryBits.join(" and ")}. Fix the listed items first.`,
+      error: `Cannot submit to compliance — ${summaryBits.join(" and ")}. Fix the listed items first.${remedies.length > 0 ? ` ${remedies.join(" ")}` : ""}`,
       missing_required: audit.missing_blocking,
       packet_blockers: packetScan.blockers.map(b => ({
         flagType: b.flagType, severity: b.severity, title: b.title,
       })),
     }
+  }
+
+  // 1.55 — "BOTH SIDES", asserted explicitly instead of assumed.
+  //
+  // Obligation 3 of the owner's ruling is that signatures and initials are
+  // complete ON BOTH SIDES. Two altitudes can speak to that, and only one of
+  // them can actually answer it:
+  //
+  //   · the OFFER row — buyer_signed_at, plus an executed contract on file by
+  //     one of the two named paths. Both sides, established from columns, and
+  //     already enforced by the early returns at the top of this function.
+  //     THIS is the assertion.
+  //   · the PACKET — field level. It can only speak about the sides it
+  //     actually contains. `signatureSides` reports what it could show, and a
+  //     side it never mentioned comes back `evidenced:false` — which is
+  //     SILENCE, not a pass. An outstanding block on a side the packet DID
+  //     show is already a blocker above, and that blocker names the side.
+  //
+  // The packet cannot be made to assert both sides today: the fill engine
+  // emits no signature or initial fields at all for state-association forms,
+  // and the only source of side-bearing signature names is a brokerage's own
+  // uploaded field_schema. Evidence in docs/wave9-slice-gate.md. So the
+  // assertion is RECORDED with the column that established each side, and a
+  // packet that could not corroborate it is notified — never silently counted
+  // as corroboration.
+  const sides = packetScan.signatureSides
+  const bothSidesInPacket = sides.buyer.evidenced && sides.seller.evidenced
+  const sidesAbsentFromPacket = [
+    sides.buyer.evidenced  ? null : "buyer",
+    sides.seller.evidenced ? null : "seller",
+  ].filter(Boolean) as string[]
+  // A ONE-SIDED packet is the per-deal signal: this packet DOES carry signature
+  // blocks, and one side's are simply not in it — the buyer-only packet that
+  // used to pass with zero blockers. A packet carrying no signature blocks at
+  // ALL is a different fact: it is every packet the fill engine builds today,
+  // so notifying it per deal would be noise that teaches people to ignore the
+  // bell. That one is recorded on the gate row instead, where it is durable and
+  // where a reader is asking what was verified.
+  const packetIsOneSided = (sides.buyer.evidenced || sides.seller.evidenced) && !bothSidesInPacket
+  const bothSidesRecord = {
+    buyer: {
+      established_by: "offers.buyer_signed_at",
+      at:             offer.buyer_signed_at ?? null,
+    },
+    seller: {
+      established_by: executedViaResponse
+        ? "offers.seller_response_type='accepted' + offers.fully_signed_contract_received_at"
+        : "offers.seller_signed_at + offers.fully_signed_contract_received_at",
+      at:             offer.fully_signed_contract_received_at ?? null,
+    },
+    // Did the FIELD-LEVEL packet independently show a signature block for each
+    // side? A reader of this event must never infer that it did.
+    packet_corroborated:      bothSidesInPacket,
+    packet_sides_not_shown:   sidesAbsentFromPacket,
+    packet_side_evidence:     sides,
   }
 
   // 1.6 — WARNING-level misses still get told to somebody.
@@ -214,10 +347,17 @@ export async function submitOfferToCompliance(
   // "stops the deal" and "nobody ever hears about it".
   const warningDocs  = audit.missing_warning ?? []
   const packetWarns  = packetScan.warnings ?? []
-  if (warningDocs.length > 0 || packetWarns.length > 0) {
+  if (warningDocs.length > 0 || packetWarns.length > 0 || packetIsOneSided) {
     const warnBits: string[] = []
     if (warningDocs.length > 0) warnBits.push(`${warningDocs.length} optional document(s) missing`)
     if (packetWarns.length > 0) warnBits.push(`${packetWarns.length} packet warning(s)`)
+    // Named, not silent. "This packet has buyer signature blocks and no seller
+    // ones" is a fact the TC and the agent are entitled to know, because it is
+    // the difference between a signature that was checked and one that was
+    // taken on the strength of the offer row alone.
+    if (packetIsOneSided) {
+      warnBits.push(`packet is one-sided — no signature block for: ${sidesAbsentFromPacket.join(", ")}`)
+    }
     await notifyComplianceFlag(supabase as any, {
       brokerageId: offer.brokerage_id as string,
       agentUserId: userId,
@@ -228,7 +368,10 @@ export async function submitOfferToCompliance(
         type:       "compliance.submit_warnings",
         severity:   "medium",
         title:      `Submitted with warnings: ${warnBits.join(", ")}`,
-        body:       `Missing (warning): ${warningDocs.join(", ") || "(none)"}.\nPacket warnings: ${packetWarns.slice(0, 5).map(w => w.title).join("; ") || "(none)"}.`,
+        body:       `Missing (warning): ${warningDocs.join(", ") || "(none)"}.\nPacket warnings: ${packetWarns.slice(0, 5).map(w => w.title).join("; ") || "(none)"}.`
+                  + (packetIsOneSided
+                     ? `\nBoth-sides check: the staged packet carries signature blocks, but none naming the ${sidesAbsentFromPacket.join(" or ")} side — so that side was NOT verified field-by-field. It rests on the offer record: ${bothSidesRecord.buyer.established_by} and ${bothSidesRecord.seller.established_by}. Open the executed contract and confirm every ${sidesAbsentFromPacket.join(" and ")} signature and initial is on it.`
+                     : ""),
         entityType: "offer",
         entityId:   offerId,
         offerId,
@@ -283,6 +426,33 @@ export async function submitOfferToCompliance(
       missing_warning:  audit.missing_warning ?? [],
       packet_warnings:  (packetScan.warnings ?? []).map(w => w.title),
       submitted_at:     now,
+      // WHAT WAS ACTUALLY VERIFIED, and by what. The gate row is the only
+      // durable record that this transaction passed compliance; without this
+      // it says "passed" and nothing about the evidence, so a later reader
+      // cannot tell a field-by-field signature check from a column check.
+      // `ran` is the SCAN's own verdict, not an assumption. When no packet was
+      // ever staged (the e-sign path), the field-level walk did not happen and
+      // this record says so plainly, naming what DID establish both sides —
+      // the executed-contract columns enforced at the top of this function.
+      // A gate row that claimed a field-by-field check it never performed would
+      // be the same lie as the empty-blockers pass this wave removed.
+      packet_checked:   {
+        ran:                packetScan.scanOutcome === "scanned",
+        outcome:            packetScan.scanOutcome,
+        document_id:        packetScan.documentId,
+        completion_percent: packetScan.completionPercent,
+        fields_walked:      packetScan.totalFields,
+        both_sides_established_by: packetScan.scanOutcome === "scanned"
+          ? "packet_field_scan + executed_contract_columns"
+          : "executed_contract_columns_only",
+        executed_contract: {
+          buyer_signed_at:                   offer.buyer_signed_at ?? null,
+          seller_response_type:              offer.seller_response_type ?? null,
+          seller_signed_at:                  offer.seller_signed_at ?? null,
+          fully_signed_contract_received_at: offer.fully_signed_contract_received_at ?? null,
+        },
+      },
+      both_sides:       bothSidesRecord,
     },
   })
   if (!gateEmit.success) {
@@ -364,6 +534,25 @@ export async function submitOfferToCompliance(
     // replace it. The has_counter checkbox on the parent (set by
     // issueCounterOffer) is the UI signal. The compliance package reads the
     // full chain via parent_offer_id from the counter back to the original.
+    // THE LOOP CLOSES. Compliance has just verified every required document is
+    // present and every signature/initial complete on both sides, so nothing
+    // outstanding on this offer can still be true. Sweep the flag ledger and
+    // record WHO cleared it and WHEN.
+    //
+    // AFTER the transaction, deliberately: the owner's ruling is "if all are
+    // present, then a transaction is created". A fault in the flag ledger must
+    // not withhold the transaction — but it must not be swallowed either, or we
+    // reproduce the write-only outbox this wave exists to fix.
+    const cleared = await resolveOfferComplianceFlags({
+      offerId,
+      brokerageId: offer.brokerage_id as string,   // from the OFFER row, never a caller
+      actorUserId: userId,                          // users-class; never crossed into agent_id
+      reason: `Compliance gate passed on ${now} — all required documents present, all signatures and initials complete on both sides. Transaction ${result.transactionId} created.`,
+    })
+    if (!cleared.success) {
+      console.error(`[submit-to-compliance] offer ${offerId}: transaction ${result.transactionId} was created but the compliance flag ledger was not cleared:`, cleared.error)
+    }
+
     return { success: true, transaction_id: result.transactionId }
   } catch (err: any) {
     return { success: false, error: err?.message ?? "Transaction creation threw" }
