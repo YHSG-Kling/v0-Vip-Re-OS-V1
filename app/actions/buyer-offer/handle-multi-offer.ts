@@ -137,20 +137,66 @@ export async function canBuyerSubmitOffer(
  *
  * `has_duplicate` counts only NON-TERMINAL offers, so a buyer who was rejected
  * on a property may offer again.
+ *
+ * ── ABSORBED lib/buyer-offer/lifecycle-event-map.ts:detectConflictingOffers ───
+ * That function asked the SAME question (same buyer + same listing, is there a
+ * live offer already?) and has been deleted. This is the survivor. Read side by
+ * side, it had exactly two things this did not, and BOTH are merged in below:
+ *
+ *   1. `excludeOfferId` — leave one offer out of its own conflict scan. Needed
+ *      the moment the check is run for an offer that already exists (an amend or
+ *      a re-submit), where without it the offer collides with itself and every
+ *      such call reports a false duplicate.
+ *   2. the FULL list of live offers, not just the first hit. The single
+ *      `existing_offer_id` is enough to BLOCK, but not enough to TELL the agent
+ *      what to resolve when a buyer has more than one live offer on a property.
+ *
+ * Three things it did were NOT ported, because they are defects, and the class
+ * is fixed here instead:
+ *
+ *   · NO TENANT FILTER. It queried `offers` on a service client by contact +
+ *     listing with no `brokerage_id` scope at all. This function proves a
+ *     session and that the CONTACT belongs to the caller's brokerage
+ *     (`requireContactTenant`) before it reads anything.
+ *   · IT SWALLOWED THE READ ERROR (`const { data: offers } = …`). supabase-js
+ *     RESOLVES a refused query, so a refusal and "this buyer has no offers"
+ *     were the same value, and a refusal read back as "no conflict" — a gate
+ *     failing OPEN. `error` is destructured here and a failed read returns
+ *     `success:false` WITH the message rather than a confident `false`.
+ *   · IT ONLY COUNTED `PENDING`. A COUNTERED offer — a live negotiation — was
+ *     not a conflict. This counts every NON-TERMINAL state, which is the
+ *     superset, and lets the caller decide how much of it binds (the one live
+ *     caller, `app/actions/buyer-offers.ts:createOffer`, deliberately lets a
+ *     stale DRAFT through so an abandoned draft cannot lock a buyer out).
+ *
+ * ⚠ The one caller currently treats a FAILED check as "no duplicate"
+ * (`if (dupe.success && dupe.has_duplicate …)`), i.e. it fails open. That call
+ * site is in app/actions/buyer-offers.ts, which is outside this slice; recorded
+ * in docs/wave7-slice-derivations.md.
  */
 export async function checkDuplicateOffer(
   contactId: string,
-  listingId: string
+  listingId: string,
+  /**
+   * Merged from `detectConflictingOffers`. An offer never conflicts with itself:
+   * pass the offer being amended/re-submitted so it is left out of the scan.
+   */
+  excludeOfferId?: string
 ): Promise<{
   success: boolean;
   has_duplicate: boolean;
   existing_offer_id?: string;
   existing_state?: string;
+  /** Merged from `detectConflictingOffers`: EVERY live offer, not just the first. */
+  conflicting_offer_ids?: string[];
   error?: string;
 }> {
   try {
     if (!isValidUUID(contactId) || !isValidUUID(listingId)) {
       return { success: false, has_duplicate: false, error: "Invalid contact or listing id" };
+    }
+    if (excludeOfferId !== undefined && !isValidUUID(excludeOfferId)) {
+      return { success: false, has_duplicate: false, error: "Invalid offer id to exclude" };
     }
 
     const tenant = await requireContactTenant(contactId);
@@ -158,43 +204,63 @@ export async function checkDuplicateOffer(
 
     const supabase = createServiceClient();
 
-    // Find existing offers for this buyer on this listing
-    const { data: offers, error } = await supabase
+    // Find existing offers for this buyer on this listing, inside the caller's
+    // tenant. `detectConflictingOffers` omitted the brokerage filter entirely
+    // and expressed the exclusion as `.neq("id", excludeOfferId || "")` — an
+    // empty-string uuid comparison, which Postgres rejects as malformed input
+    // rather than matching nothing, so the no-exclusion path was one error away
+    // from returning zero rows. The filter is applied conditionally instead.
+    let query = supabase
       .from("offers")
       .select("id")
       .eq("contact_id", contactId)
-      .eq("listing_id", listingId);
+      .eq("listing_id", listingId)
+      .eq("brokerage_id", tenant.brokerageId);
+    if (excludeOfferId) query = query.neq("id", excludeOfferId);
+
+    const { data: offers, error } = await query;
 
     if (error) throw error;
 
     if (!offers || offers.length === 0) {
-      return { success: true, has_duplicate: false };
+      return { success: true, has_duplicate: false, conflicting_offer_ids: [] };
     }
 
-    // Check if any are still active (not terminal)
+    // Every offer still active (not terminal), not just the first.
+    const conflicting: Array<{ id: string; state: string }> = [];
     for (const offer of offers) {
       const stateResult = await getOfferLifecycleState(offer.id);
       if (stateResult.success && stateResult.data && !stateResult.data.is_terminal) {
-        // The third event this module defines and never raised. Best-effort.
-        await emitMultiOfferEvent(contactId, "duplicate_attempted", {
-          listing_id: listingId,
-          existing_offer_id: offer.id,
-          existing_state: stateResult.data.current_state,
-        }).catch(() => {});
-
-        return {
-          success: true,
-          has_duplicate: true,
-          existing_offer_id: offer.id,
-          existing_state: stateResult.data.current_state
-        };
+        conflicting.push({ id: offer.id, state: stateResult.data.current_state });
       }
     }
 
-    return { success: true, has_duplicate: false };
+    if (conflicting.length === 0) {
+      return { success: true, has_duplicate: false, conflicting_offer_ids: [] };
+    }
+
+    // The third event this module defines and never raised. Raised ONCE per
+    // check, naming the whole conflicting set. Best-effort — a signal that
+    // cannot be recorded must never change the answer.
+    await emitMultiOfferEvent(contactId, "duplicate_attempted", {
+      listing_id: listingId,
+      existing_offer_id: conflicting[0].id,
+      existing_state: conflicting[0].state,
+      conflicting_offer_ids: conflicting.map((c) => c.id),
+    }).catch(() => {});
+
+    return {
+      success: true,
+      has_duplicate: true,
+      existing_offer_id: conflicting[0].id,
+      existing_state: conflicting[0].state,
+      conflicting_offer_ids: conflicting.map((c) => c.id),
+    };
   } catch (error: any) {
     console.error("[System 7.1A] Error checking duplicate offer:", error);
-    return { success: false, has_duplicate: false };
+    // The message is RETURNED, not just logged: a caller that cannot tell
+    // "no duplicate" from "the check did not run" will fail open by default.
+    return { success: false, has_duplicate: false, error: error?.message ?? "Duplicate check failed" };
   }
 }
 

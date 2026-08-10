@@ -2967,7 +2967,7 @@
     "lib/buyer-offer/compliance-gate.ts": 3,
     "lib/buyer-offer/credentials-helper.ts": 2,
     "lib/buyer-offer/expire-offers.ts": 2,
-    "lib/buyer-offer/lifecycle-event-map.ts": 2,
+    "lib/buyer-offer/offer-lifecycle.ts": 2,
     "lib/buyer-offer/status-sync.ts": 2,
     "lib/buyer-offers/address-analysis.ts": 1,
     "lib/buyer-offers/affordability.ts": 4,
@@ -13903,9 +13903,9 @@
       "expireOffer",
       "sweepDueOfferExpirations"
     ],
-    "lib/buyer-offer/lifecycle-event-map.ts": [
-      "deriveOfferState",
-      "detectConflictingOffers"
+    "lib/buyer-offer/offer-lifecycle.ts": [
+      "isTerminalOfferState",
+      "deriveOfferStateFromActivities"
     ],
     "lib/buyer-offer/status-sync.ts": [
       "syncOfferStatus",

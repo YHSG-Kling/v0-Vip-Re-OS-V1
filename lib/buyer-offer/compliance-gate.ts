@@ -8,6 +8,23 @@
  * 
  * This is the constitutional gate that prevents non-compliant offers
  * from advancing to acceptance.
+ *
+ * ── VOCABULARY NOTE ──────────────────────────────────────────────────────────
+ * `buyer.offer.compliance.passed` is deliberately NOT in
+ * `lib/buyer-offer/offer-lifecycle.ts:OFFER_EVENT`. That map is the STATE
+ * MACHINE — `EVENT_TO_STATE` and `EVENT_TO_STATUS` are total
+ * `Record<OfferEvent, …>`, so every name added there must have a state AND a
+ * status. Compliance-passed has neither: it is an AUDIT/GATE event, not a
+ * lifecycle transition (an offer's state is unchanged by passing compliance).
+ * Adding it to OFFER_EVENT would force an invented state mapping.
+ *
+ * So the literal is spelled in exactly ONE module — this one, which is both the
+ * only writer (`emitCompliancePassed`) and the local reader
+ * (`checkCompliancePassed`). See docs/wave7-slice-writers.md for the standing
+ * recommendation: a sibling `OFFER_AUDIT_EVENT` const in offer-lifecycle.ts for
+ * the non-state offer events, which would let the two remaining out-of-module
+ * readers (convert-to-transaction.ts, lib/kernel/transactions.ts) stop spelling
+ * it too.
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
@@ -62,17 +79,52 @@ export async function checkCompliancePassed(
 }
 
 /**
- * Emit compliance.passed event
- * 
+ * Emit compliance.passed event — THE ONLY WRITER OF THIS EVENT.
+ *
  * Called after internal compliance scan OR external compliance approval.
+ *
+ * ── MERGE (wave 7) ───────────────────────────────────────────────────────────
+ * `app/actions/buyer-offer/submit-to-compliance.ts` carried a SECOND inline
+ * insert of `buyer.offer.compliance.passed` (its step 3). Two writers of one
+ * event, disagreeing on the key: this one supplied `entity_id` but NO
+ * `brokerage_id`; that one supplied `brokerage_id` but NO `entity_id`. Both
+ * therefore failed — this one wrote ZERO rows (brokerage_id is NOT NULL with no
+ * default), and that one wrote a row that neither reader can find, because all
+ * three readers gate on `entity_type='offer' AND entity_id=<offers.id>`:
+ *   · lib/buyer-offer/compliance-gate.ts:checkCompliancePassed (just above)
+ *   · app/actions/buyer-offer/convert-to-transaction.ts:110-112
+ *   · lib/kernel/transactions.ts:221-223 (evaluateOfferCompliance)
+ *
+ * The two were MERGED onto this function — the richer audit shape from
+ * submit-to-compliance (title / description / notes / contact_id / agent_id /
+ * status / priority) is carried here, the duplicate insert was deleted, and
+ * submit-to-compliance now calls this. SURVIVOR:
+ * `lib/buyer-offer/compliance-gate.ts:emitCompliancePassed`.
+ *
+ * ── THE TENANT ───────────────────────────────────────────────────────────────
+ * `brokerage_id` comes from `offers.brokerage_id`, NEVER from the caller. This
+ * function is reachable over HTTP through the `"use server"` barrel
+ * (app/actions/compliance-bridge-actions.ts:emitCompliancePassedAction), so a
+ * caller-supplied tenant would let the gate row be filed under someone else's
+ * brokerage.
+ *
+ * ── IDENTITY CLASS ───────────────────────────────────────────────────────────
+ * `activities.agent_id` FKs `agents(id)`; `agent_user_id` is users-class. They
+ * are disjoint spaces. `offers.agent_id` is already an agents id, so it is used
+ * directly for `agent_id`; the caller's `userId` is users-class and only ever
+ * goes to `agent_user_id`. Neither is ever `??`'d into the other.
  */
 export async function emitCompliancePassed(params: {
   offerId: string
   userId: string
   scanResults?: Record<string, any>
   externalApprovalId?: string
+  /** Which path emitted this — e.g. "agent_submit_to_compliance", "manual_bridge_panel". */
+  source?: string
+  /** Human-readable detail for the audit row. Defaults to a generic line. */
+  description?: string
 }): Promise<{ success: boolean; error?: string }> {
-  const { offerId, userId, scanResults, externalApprovalId } = params
+  const { offerId, userId, scanResults, externalApprovalId, source, description } = params
 
   if (!isValidUUID(offerId) || !isValidUUID(userId)) {
     return { success: false, error: "Invalid IDs" }
@@ -80,17 +132,50 @@ export async function emitCompliancePassed(params: {
 
   const supabase = createServiceClient()
 
-  // Agent task (correct location, no changes) — activity_type: buyer.offer.compliance.passed (offer status signal, not a compliance gate log)
+  // THE TENANT + THE KEY, both from the offer row. `error` is destructured:
+  // supabase-js RESOLVES a refused read, so `const { data }` renders "refused"
+  // and "no such offer" identically — and this is a GATE, so it fails CLOSED.
+  const { data: offer, error: offerError } = await supabase
+    .from("offers")
+    .select("id, brokerage_id, contact_id, agent_id")
+    .eq("id", offerId)
+    .maybeSingle()
+
+  if (offerError) {
+    console.error("[System 7.1B] Could not read offer for compliance.passed:", offerError)
+    return { success: false, error: `Could not read the offer: ${offerError.message}` }
+  }
+  if (!offer) return { success: false, error: "Offer not found" }
+  if (!offer.brokerage_id) {
+    // activities.brokerage_id is NOT NULL with no default — without it the
+    // insert writes zero rows and the gate this exists to open never opens.
+    return { success: false, error: "Offer has no brokerage — cannot record the compliance gate" }
+  }
+
+  const now = new Date().toISOString()
+
   const { error } = await supabase.from("activities").insert({
-    entity_type: "offer",
-    entity_id: offerId,
+    // NOT NULL — omitted before, which is why this writer had never once landed.
+    brokerage_id:  offer.brokerage_id,
+    entity_type:   "offer",
+    entity_id:     offerId,
     activity_type: "buyer.offer.compliance.passed",
+    // agents-class from the offer; users-class from the caller. Never crossed.
+    agent_id:      offer.agent_id ?? null,
     agent_user_id: userId,
+    contact_id:    offer.contact_id ?? null,
+    title:         "Compliance gate passed",
+    description:   description ?? `Compliance gate recorded for offer ${offerId}.`,
+    notes:         JSON.stringify({ offer_id: offerId, source: source ?? "compliance_gate", external_approval_id: externalApprovalId ?? null }),
     metadata: {
-      scan_results: scanResults,
+      offer_id:             offerId,
+      scan_results:         scanResults,
       external_approval_id: externalApprovalId,
-      timestamp: new Date().toISOString(),
+      source:               source ?? "compliance_gate",
+      timestamp:            now,
     },
+    status:        "completed",
+    priority:      "high",
   })
 
   if (error) {

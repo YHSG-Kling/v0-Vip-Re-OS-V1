@@ -6,6 +6,7 @@ import { emitLifecycleTransition } from "@/lib/buyer-lifecycle/lifecycle-logger"
 import { gatewayChat } from "@/lib/ai/gateway-chat"
 import { KernelEvent }         from "@/lib/kernel/events"
 import { isValidUUID }         from "@/lib/validations"
+import { OFFER_EVENT }         from "@/lib/buyer-offer/offer-lifecycle"
 import { resolveAgentId }      from "@/lib/kernel/agent-identity"
 import { requireContactAccess } from "@/lib/portal/require-contact-access"
 import { checkDuplicateOffer } from "@/app/actions/buyer-offer/handle-multi-offer"
@@ -675,7 +676,11 @@ export async function createOffer(
     agent_id:      agentId,
     contact_id:    contactId,
     listing_id:    resolvedListingId,
-    activity_type: "buyer.offer.draft.created",
+    // Canonical constant, not a literal — lib/buyer-offer/offer-lifecycle.ts is
+    // the only place an offer event name is spelled. This row already carried
+    // both halves of the key (brokerage_id + entity_type/entity_id), verified on
+    // re-read; only the spelling changed.
+    activity_type: OFFER_EVENT.DRAFT_CREATED,
     title:         "Offer draft created",
     description:   `Offer draft created for ${form.property_address}`,
     notes:         JSON.stringify({ offer_id: offer.id, new_state: "DRAFT" }),

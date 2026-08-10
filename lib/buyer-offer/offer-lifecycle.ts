@@ -165,6 +165,35 @@ export interface OfferHistoryEntry {
   at: string
   /** `activities.agent_id` — agents-class, may be null for an unattended sweep. */
   actorAgentId: string | null
+  /**
+   * The human reason, parsed ONCE from the `notes` JSON blob the writers record
+   * (`withdrawOffer` stores `reason`; the seller-response path stores
+   * `response_type`). The previous derivation surfaced this as `history[].reason`
+   * and every caller re-parsed the blob itself. Parsing it here means no reader
+   * ever touches raw `notes` again — `null` when absent or unparseable, never a
+   * thrown error, because a malformed audit note must not break a state read.
+   */
+  reason: string | null
+}
+
+/**
+ * Pull the human reason out of an activity's `notes` JSON.
+ *
+ * The writers are not uniform about the field name — `withdrawOffer` writes
+ * `reason`, the seller-response path writes `response_type` — so both are read,
+ * in that order. Anything unparseable yields null: `notes` is free text on the
+ * live schema, and a state read must never fail because an audit note is
+ * malformed.
+ */
+function parseReason(notes: string | null): string | null {
+  if (!notes) return null
+  try {
+    const parsed = JSON.parse(notes) as Record<string, unknown>
+    const value = parsed?.reason ?? parsed?.response_type
+    return typeof value === "string" && value.length > 0 ? value : null
+  } catch {
+    return null
+  }
 }
 
 export type DerivedOfferState =
@@ -189,7 +218,7 @@ export async function deriveOfferStateFromActivities(
 ): Promise<DerivedOfferState> {
   const { data, error } = await client
     .from("activities")
-    .select("activity_type, created_at, agent_id")
+    .select("activity_type, created_at, agent_id, notes")
     .eq("entity_type", "offer")
     .eq("entity_id", offerId)
     .in("activity_type", OFFER_LIFECYCLE_EVENT_TYPES as string[])
@@ -201,6 +230,7 @@ export async function deriveOfferStateFromActivities(
     activity_type: string
     created_at: string
     agent_id: string | null
+    notes: string | null
   }>
   if (rows.length === 0) return { ok: false, reason: "Offer has no lifecycle events" }
 
@@ -216,6 +246,7 @@ export async function deriveOfferStateFromActivities(
       state,
       at: row.created_at,
       actorAgentId: row.agent_id ?? null,
+      reason: parseReason(row.notes),
     })
   }
 

@@ -21,6 +21,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
+import { OFFER_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 
 export interface RecordSellerResponseParams {
   offerId:     string
@@ -125,14 +126,49 @@ export async function recordSellerResponse(
   }
 
   // Activity audit — both for the agent's queue + lifecycle reconstruction.
+  //
+  // ── THE ONE SELLER-RESPONSE WRITER WITH A BUTTON IN FRONT OF IT ────────────
+  // This action is what app/components/offer/offer-agent-actions.tsx:100 calls
+  // (rendered by app/crm/contacts/[contactId]/offers/[offerId]/offer-actions-bar.tsx).
+  // It used to write `entity_type:'offer'` with NO `entity_id`, under
+  // `buyer.offer.seller_accepted | seller_rejected | seller_countered` — names
+  // that appear in NO reader's vocabulary anywhere in the tree. So a seller
+  // acceptance recorded through the UI reached neither
+  // track-offer-lifecycle.ts:getOfferLifecycleState, nor
+  // lib/buyer-offer/status-sync.ts:syncOfferStatus, nor the expiry sweep, nor
+  // offer-lifecycle.ts:deriveOfferStateFromActivities: `is_terminal` stayed
+  // false forever and the derived state never left DRAFT.
+  //
+  // Two things fixed, and only two:
+  //   · the KEY — `entity_id` is the offer's id, which is what every reader
+  //     joins on alongside `entity_type='offer'`.
+  //   · the VOCABULARY — the canonical constant from
+  //     lib/buyer-offer/offer-lifecycle.ts. Never a string literal: two writers
+  //     of one event spelling it differently is the entire defect class.
+  //
+  // The human-readable prose is DELIBERATELY unchanged. "Seller accepted" is
+  // what the agent's feed should say; it is the `activity_type` — the machine
+  // vocabulary — that had to become canonical, not the title.
+  //
   // activities.agent_id FKs agents(id); use agent_user_id for users(id).
-  await supabase.from("activities").insert({
+  const RESPONSE_EVENT = {
+    accepted:  OFFER_EVENT.ACCEPTED,
+    rejected:  OFFER_EVENT.REJECTED,
+    countered: OFFER_EVENT.COUNTERED,
+  } as const
+
+  // CHECKED, not fire-and-forget: this row is the ONLY record of the seller's
+  // response the lifecycle can read. supabase-js RESOLVES a rejected insert, so
+  // an unread { error } here is exactly how a seller acceptance can vanish while
+  // the action reports success.
+  const { error: lifecycleEventError } = await supabase.from("activities").insert({
     brokerage_id:   offer.brokerage_id,
     agent_user_id:  userId,
     agent_id:       offer.agent_id,
     contact_id:     offer.contact_id,
     entity_type:    "offer",
-    activity_type:  `buyer.offer.seller_${responseType}`,
+    entity_id:      offerId,
+    activity_type:  RESPONSE_EVENT[responseType],
     title:          `Seller ${responseType}`,
     description:    notes ?? `Seller response recorded: ${responseType}` + (documentUrl ? ` (document attached)` : ""),
     notes:          JSON.stringify({ offer_id: offerId, responseType, documentUrl, source: "agent_action" }),
@@ -140,6 +176,17 @@ export async function recordSellerResponse(
     status:         "completed",
     priority:       responseType === "accepted" ? "high" : "medium",
   })
+
+  if (lifecycleEventError) {
+    // The offers row IS already updated — say so, so the agent doesn't re-record
+    // and double-stamp — but this is a failure, because without this row the
+    // offer's derived state never moves and (for 'accepted') the auto-execute
+    // chain below has nothing to stand on.
+    return {
+      success: false,
+      error: `The seller response was saved on the offer, but its lifecycle event could not be recorded (${lifecycleEventError.message}). The offer's derived state will not move and it will not convert — resolve this before continuing.`,
+    }
+  }
 
   // FULLY EXECUTED (seller accepted) → autonomously run the compliance scan + create the transaction
   // (under contract). No separate "submit to compliance" click — the loop completes itself. Self-

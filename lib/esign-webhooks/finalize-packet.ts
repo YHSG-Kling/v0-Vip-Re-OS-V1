@@ -33,6 +33,7 @@ import { notifyEsignSigned }   from "@/lib/notifications/notify-helpers"
 import { downloadSignedPackage } from "./download-signed-package"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { KernelEvent } from "@/lib/kernel/events"
+import { OFFER_EVENT, EVENT_TO_STATUS } from "@/lib/buyer-offer/offer-lifecycle"
 
 export type ESignProviderName = "dotloop" | "docusign" | "skyslope" | "authentisign"
 
@@ -271,6 +272,10 @@ async function finalizeMatchingOffer(
       agent_id:      agentId,           // agents(id) FK
       contact_id:    matchedOffer.contact_id,
       entity_type:   "offer",
+      // THE OFFER KEY. This row carried entity_type='offer' with NO entity_id,
+      // so it was unreachable from the offer it describes — the same defect
+      // wave 7 closed across the writer set (docs/wave7-offer-lifecycle-audit.md).
+      entity_id:     matchedOffer.id,
       activity_type: isCounterFullyExecuted
                        ? "buyer.offer.counter.fully_executed"
                        : "buyer.offer.buyer_signed",
@@ -285,6 +290,65 @@ async function finalizeMatchingOffer(
       status:        "completed",
       priority:      "high",
     }).select("id").maybeSingle()
+
+    // ── THE LIFECYCLE EVENT (wave 7) ─────────────────────────────────────────
+    // The row above is an AUDIT/QUEUE row: its title and description are written
+    // for the agent's feed, and `buyer.offer.buyer_signed` is not a state in the
+    // canonical machine. Nothing in the tree emitted `buyer.offer.submitted`,
+    // so every real offer's DERIVED state was stuck at DRAFT — which is why the
+    // /api/cron/offer-expiry sweep refused every offer it ever scanned (it
+    // requires PENDING, correctly, and nothing ever reached PENDING).
+    //
+    // This is the moment the offer is in front of the seller. The docblock on
+    // this function already says so in its own words: "Forward to listing agent
+    // and await seller response." So the canonical DRAFT → PENDING transition
+    // belongs exactly here, and it is filed on the offer key.
+    //
+    // ONLY on the buyer-first path. When the counter is fully executed both
+    // sides have signed, and the state that follows is ACCEPTED — which in this
+    // system is reachable ONLY through the compliance gate
+    // (submit-to-compliance.ts emits OFFER_EVENT.ACCEPTED after
+    // buyer.offer.compliance.passed). Emitting an acceptance here would walk
+    // straight past that gate, so this branch deliberately files nothing:
+    // `buyer.offer.counter.fully_executed` above is the audit record, and
+    // compliance remains the only door.
+    if (!isCounterFullyExecuted) {
+      const { error: submittedEventError } = await supabase.from("activities").insert({
+        brokerage_id:  matchedOffer.brokerage_id,
+        agent_id:      agentId,
+        contact_id:    matchedOffer.contact_id,
+        entity_type:   "offer",
+        entity_id:     matchedOffer.id,
+        activity_type: OFFER_EVENT.SUBMITTED,
+        title:         "Offer submitted to the seller",
+        description:   `Buyer signature complete; the offer is with the listing side awaiting a seller response.`,
+        notes:         JSON.stringify({ offer_id: matchedOffer.id, envelopeId, provider, submitted_at: now }),
+        metadata:      { offer_id: matchedOffer.id, envelopeId, provider, submitted_at: now },
+        status:        "completed",
+      })
+
+      // Not fire-and-forget. If this row is lost the offer stays DRAFT forever:
+      // it can never expire on its deadline, and every surface that gates on
+      // PENDING treats a live offer as a draft. Say so rather than move on.
+      if (submittedEventError) {
+        console.error(
+          `[finalize-packet] offer ${matchedOffer.id}: buyer signed but the ${OFFER_EVENT.SUBMITTED} lifecycle event did NOT land — the offer will read as DRAFT:`,
+          submittedEventError.message,
+        )
+      } else {
+        // The operational index the screens read, kept in step with the event.
+        const { error: statusError } = await supabase
+          .from("offers")
+          .update({ status: EVENT_TO_STATUS[OFFER_EVENT.SUBMITTED] })
+          .eq("id", matchedOffer.id)
+        if (statusError) {
+          console.error(
+            `[finalize-packet] offer ${matchedOffer.id}: ${OFFER_EVENT.SUBMITTED} filed but offers.status did not move:`,
+            statusError.message,
+          )
+        }
+      }
+    }
 
     // Resolve agents.id → users.id for the notification recipient
     const { data: agentRow } = await supabase

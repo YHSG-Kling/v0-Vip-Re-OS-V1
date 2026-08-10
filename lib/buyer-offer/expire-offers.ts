@@ -29,31 +29,30 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import {
+  deriveOfferStateFromActivities,
+  EVENT_TO_STATUS,
+  OFFER_EVENT,
+} from "./offer-lifecycle"
 
-/**
- * The lifecycle activity vocabulary this machine derives state from — the same
- * `entity_type='offer'` + `entity_id=<offer id>` key that
- * `lib/buyer-offer/status-sync.ts` reads.
- */
-const LIFECYCLE_ACTIVITY_TYPES = [
-  "buyer.offer.draft.created",
-  "buyer.offer.submitted",
-  "buyer.offer.accepted",
-  "buyer.offer.rejected",
-  "buyer.offer.countered",
-  "buyer.offer.expired",
-  "buyer.offer.withdrawn",
-] as const
-
-const ACTIVITY_TO_STATE: Record<string, string> = {
-  "buyer.offer.draft.created": "DRAFT",
-  "buyer.offer.submitted": "PENDING",
-  "buyer.offer.accepted": "ACCEPTED",
-  "buyer.offer.rejected": "REJECTED",
-  "buyer.offer.countered": "COUNTERED",
-  "buyer.offer.expired": "EXPIRED",
-  "buyer.offer.withdrawn": "WITHDRAWN",
-}
+// DELETED FROM HERE: `LIFECYCLE_ACTIVITY_TYPES` (a 7-name `.in(...)` list),
+// `ACTIVITY_TO_STATE` (a 7-entry activity_type → state map) and the private
+// `readCurrentState()` that applied them.
+// SURVIVOR: lib/buyer-offer/offer-lifecycle.ts:deriveOfferStateFromActivities,
+// over lib/buyer-offer/offer-lifecycle.ts:OFFER_LIFECYCLE_EVENT_TYPES and
+// lib/buyer-offer/offer-lifecycle.ts:EVENT_TO_STATE.
+//
+// This copy existed because the module must stay session-free and the original
+// derivation lived inside a `"use server"` file. The survivor is a plain module
+// that takes a client rather than making one, so the session path and this
+// unattended path now share one table instead of two that drifted.
+//
+// NOTHING was merged onto the survivor from here — every behaviour of
+// `readCurrentState` is present in it, including the load-bearing one: both
+// destructure `error`, because supabase-js RESOLVES a refused query and
+// `const { data }` alone would render "refused" and "no rows" identically. In a
+// sweep that would turn a permissions refusal into "offer not found" and skip
+// the offer silently forever.
 
 export interface ExpireOfferInput {
   offerId: string
@@ -74,36 +73,6 @@ export interface ExpireOfferInput {
 export type ExpireOfferResult =
   | { expired: true }
   | { expired: false; reason: string }
-
-/**
- * Read the derived lifecycle state for one offer.
- *
- * Both the read and every downstream write destructure `error`: supabase-js
- * RESOLVES a refused query, so `const { data }` alone renders "refused" and
- * "no rows" identically — and here that would turn a refusal into
- * "offer not found", which the sweep would then skip silently forever.
- */
-async function readCurrentState(
-  svc: SupabaseClient,
-  offerId: string,
-): Promise<{ ok: true; state: string } | { ok: false; reason: string }> {
-  const { data, error } = await svc
-    .from("activities")
-    .select("activity_type, created_at")
-    .eq("entity_type", "offer")
-    .eq("entity_id", offerId)
-    .in("activity_type", LIFECYCLE_ACTIVITY_TYPES as unknown as string[])
-    .order("created_at", { ascending: false })
-    .limit(1)
-
-  if (error) return { ok: false, reason: `Could not read offer lifecycle: ${error.message}` }
-  const latest = (data ?? [])[0] as { activity_type: string } | undefined
-  if (!latest) return { ok: false, reason: "Offer has no lifecycle events" }
-
-  const state = ACTIVITY_TO_STATE[latest.activity_type]
-  if (!state) return { ok: false, reason: `Unknown lifecycle event ${latest.activity_type}` }
-  return { ok: true, state }
-}
 
 /**
  * Expire ONE offer. Refuses unless the deadline genuinely passed and the offer
@@ -138,7 +107,15 @@ export async function expireOffer(
     return { expired: false, reason: "The response deadline has not passed yet" }
   }
 
-  const state = await readCurrentState(svc, input.offerId)
+  // The PENDING refusal is unchanged in kind, but it is now derived over the
+  // FULL canonical vocabulary rather than seven of its fourteen names. That
+  // makes the refusal STRICTER, never looser: an offer whose latest event is
+  // `buyer.offer.counter.received` or `buyer.offer.signature.requested` used to
+  // fall through this module's `.in(...)` filter entirely, so the state read
+  // back was whatever older event preceded it — a countered offer could read
+  // PENDING and be expired out from under a live negotiation. It now reads
+  // COUNTERED / DRAFT and is refused.
+  const state = await deriveOfferStateFromActivities(svc, input.offerId)
   if (!state.ok) return { expired: false, reason: state.reason }
   if (state.state !== "PENDING") {
     return { expired: false, reason: `Only PENDING offers can expire (currently ${state.state})` }
@@ -147,7 +124,9 @@ export async function expireOffer(
   const { error: activityError } = await svc.from("activities").insert({
     brokerage_id: input.brokerageId,
     agent_id: input.actorAgentId,
-    activity_type: "buyer.offer.expired",
+    // The constant, not a string literal — a writer that respells the event is
+    // invisible to every reader, which is the defect class this wave closes.
+    activity_type: OFFER_EVENT.EXPIRED,
     title: "Offer expired",
     description: "Offer expired: deadline passed",
     notes: JSON.stringify({
@@ -167,11 +146,14 @@ export async function expireOffer(
   }
 
   // `.select()` so the count is PROVEN, not intended. Live schema: offers.status
-  // is free text (verified — no CHECK on `offers.status` in pg_constraint), and
-  // 'expired' is the literal `lib/buyer-offer/status-sync.ts` maps this event to.
+  // is free text (verified — no CHECK on `offers.status` in pg_constraint), so
+  // the literal is load-bearing only through the screens that compare against
+  // it. It is read from the ONE map that also drives
+  // lib/buyer-offer/status-sync.ts:syncOfferStatus — a hardcoded 'expired' here
+  // is exactly how the sweep and the sync would drift apart.
   const { data: updated, error: statusError } = await svc
     .from("offers")
-    .update({ status: "expired" })
+    .update({ status: EVENT_TO_STATUS[OFFER_EVENT.EXPIRED] })
     .eq("id", input.offerId)
     .eq("brokerage_id", input.brokerageId)
     .select("id")

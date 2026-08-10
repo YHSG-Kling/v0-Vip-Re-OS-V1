@@ -90,13 +90,26 @@ export async function flagOfferCompliance(
   }
 
   // Record the activity (audit trail) — activities.agent_id wants agents.id.
+  //
+  // THE KEY. This row already supplied the tenant (activities.brokerage_id is
+  // NOT NULL with no default) but omitted `entity_id`, which is NULLABLE — so it
+  // inserted successfully and was then invisible to every reader that asks "what
+  // has been flagged on THIS offer": the canonical key is entity_type='offer'
+  // AND entity_id=<offers.id>. The flag was findable only by scanning the whole
+  // activities table for a JSON substring in `notes`.
+  //
+  // `buyer.offer.compliance.flagged` stays a literal: it is an AUDIT event with
+  // no lifecycle state, so it has no OFFER_EVENT constant by design — see the
+  // vocabulary note in lib/buyer-offer/compliance-gate.ts and the standing
+  // recommendation in docs/wave7-slice-writers.md.
   const now = new Date().toISOString()
-  await supabase.from("activities").insert({
+  const { error: flagActivityError } = await supabase.from("activities").insert({
     brokerage_id:   offer.brokerage_id,
     agent_user_id:  raiserUserId,
     agent_id:       offer.agent_id,
     contact_id:     offer.contact_id,
     entity_type:    "offer",
+    entity_id:      offerId,
     activity_type:  "buyer.offer.compliance.flagged",
     title,
     description:    body ?? title,
@@ -105,6 +118,13 @@ export async function flagOfferCompliance(
     status:         "open",
     priority:       severity === "critical" ? "high" : severity === "high" ? "high" : "medium",
   })
+  if (flagActivityError) {
+    // The notification fan-out below is the load-bearing human alert (it returns
+    // notified_count, which IS checked by the caller), so a lost audit row does
+    // not stop the flag — but supabase-js RESOLVES a rejected insert, and an
+    // audit trail that quietly stopped recording must not be invisible.
+    console.error(`[flag-compliance] offer ${offerId}: compliance-flag audit row failed to write:`, flagActivityError.message)
+  }
 
   // Fan out the notification. Both the assigned buyer-side agent (so they
   // can fix it) and all TCs + compliance_officers in the brokerage (so they

@@ -28,6 +28,8 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID }          from "@/lib/validations"
+import { OFFER_EVENT }          from "@/lib/buyer-offer/offer-lifecycle"
+import { emitCompliancePassed } from "@/lib/buyer-offer/compliance-gate"
 import { createTransactionFromOffer } from "@/lib/transactions"
 import { auditOfferDocuments }       from "@/lib/compliance/required-documents"
 import { scanOfferPacketCompleteness } from "@/lib/workflow/intelligence/scan-offer-packet"
@@ -235,44 +237,100 @@ export async function submitOfferToCompliance(
   }
 
   // 2. Stamp readiness + compliance pass on the offer.
-  await supabase
+  //
+  // CHECKED, not fire-and-forget: `offers.compliance_passed_at` is the column
+  // lib/transactions/offer-bridge.ts:assertOfferReadyForTransaction refuses on
+  // ("compliance has not passed on this offer"). supabase-js RESOLVES a rejected
+  // update, so an unread { error } here let step 4 walk straight into a throw
+  // whose message named compliance rather than the failed write.
+  const { error: stampError } = await supabase
     .from("offers")
     .update({
       ready_for_compliance_at: now,
       compliance_passed_at:    now,
     })
     .eq("id", offerId)
+  if (stampError) {
+    return { success: false, error: `Compliance stamp could not be written to the offer (${stampError.message}) — nothing downstream was created.` }
+  }
 
-  // 3. Activities: compliance.passed + accepted. Both follow the convention
-  //    used by track-offer-lifecycle.ts — offer_id stored in notes JSON.
+  // 3. THE GATE EVENT — delegated, not duplicated.
+  //
+  // This step used to carry its OWN `buyer.offer.compliance.passed` insert with
+  // `entity_type:'offer'` and NO `entity_id`, while
+  // lib/buyer-offer/compliance-gate.ts:emitCompliancePassed wrote the SAME event
+  // WITH `entity_id` (and no brokerage_id). Two writers of one event disagreeing
+  // on the key, and BOTH broken. All three readers require
+  // `entity_type='offer' AND entity_id=<offers.id>`:
+  // convert-to-transaction.ts:110-112, lib/kernel/transactions.ts:221-223, and
+  // compliance-gate.ts:checkCompliancePassed itself.
+  //
+  // MERGED — this insert's richer audit shape (title/description/notes/
+  // contact_id/agent_id/status/priority) was carried onto the survivor and this
+  // copy deleted. SURVIVOR: `lib/buyer-offer/compliance-gate.ts:emitCompliancePassed`.
+  // The survivor takes brokerage_id + contact_id + agent_id from the OFFER row,
+  // so nothing here has to hand it a tenant.
+  //
+  // FAILS CLOSED: this row IS the gate the transaction lane reads. Creating a
+  // transaction after it failed to land would produce a transaction whose gate
+  // event does not exist.
+  const gateEmit = await emitCompliancePassed({
+    offerId,
+    userId,
+    source:      "agent_submit_to_compliance",
+    description: `Agent submitted offer ${offerId} to compliance review. Executed contract on file.`,
+    scanResults: {
+      missing_warning:  audit.missing_warning ?? [],
+      packet_warnings:  (packetScan.warnings ?? []).map(w => w.title),
+      submitted_at:     now,
+    },
+  })
+  if (!gateEmit.success) {
+    return { success: false, error: `Compliance gate event could not be recorded (${gateEmit.error}) — the transaction was NOT created, because the gate the transaction lane reads does not exist.` }
+  }
+
+  // 3b. The lifecycle transition to ACCEPTED.
+  //
+  // RE-KEYED. This was written with `entity_type:'contact'` and no `entity_id`,
+  // so the one event in the system that means "this offer is accepted" was
+  // unreachable from the offer: every derivation
+  // (track-offer-lifecycle.ts:getOfferLifecycleState,
+  // lib/buyer-offer/status-sync.ts, lib/buyer-offer/expire-offers.ts,
+  // offer-lifecycle.ts:deriveOfferStateFromActivities) filters
+  // entity_type='offer' + entity_id=<offers.id>.
+  //
+  // ONE ROW, NOT TWO. A second contact-keyed copy was considered and rejected on
+  // evidence: no reader in the tree looks for `buyer.offer.*` under a contact
+  // key. The contact-keyed activity readers all match a CONTACT-NATIVE
+  // activity_type (`buyer.offer.lifecycle` in
+  // lib/buyer-lifecycle/extensions/multi-offer-guards.ts:76-78,
+  // `contact.lifecycle.sync` in contact-lifecycle-sync.ts:219-221), and the
+  // contact timeline surfaces reach this row through `contact_id`, which is
+  // still populated below. A duplicate row would also be counted twice by
+  // `deriveOfferStateFromActivities`' history and by the counter-round cap in
+  // respond-to-counter.ts.
+  //
   // activities.agent_id FKs agents(id); use agent_user_id for users(id).
-  await supabase.from("activities").insert({
+  const { error: acceptedEventError } = await supabase.from("activities").insert({
     brokerage_id:   offer.brokerage_id,
     agent_user_id:  userId,
     agent_id:       offer.agent_id,
     contact_id:     offer.contact_id,
     entity_type:    "offer",
-    activity_type:  "buyer.offer.compliance.passed",
-    title:          "Compliance gate passed",
-    description:    `Agent submitted offer ${offerId} to compliance review. Executed contract on file.`,
-    notes:          JSON.stringify({ offer_id: offerId, source: "agent_submit_to_compliance" }),
-    metadata:       { offer_id: offerId, submitted_at: now },
-    status:         "completed",
-    priority:       "high",
-  })
-
-  await supabase.from("activities").insert({
-    brokerage_id:   offer.brokerage_id,
-    agent_user_id:  userId,
-    agent_id:       offer.agent_id,
-    contact_id:     offer.contact_id,
-    entity_type:    "contact",
-    activity_type:  "buyer.offer.accepted",
+    entity_id:      offerId,
+    activity_type:  OFFER_EVENT.ACCEPTED,
     title:          "Offer accepted — under contract",
     description:    `Offer ${offerId} is fully executed; transitioning to UNDER_CONTRACT.`,
     notes:          JSON.stringify({ offer_id: offerId, previous_state: "PENDING", new_state: "ACCEPTED", source: "agent_submit_to_compliance" }),
+    metadata:       { offer_id: offerId, source: "agent_submit_to_compliance", accepted_at: now },
     status:         "completed",
   })
+  if (acceptedEventError) {
+    // FAILS CLOSED for the same reason as the gate above: creating the
+    // transaction while the lifecycle still derives PENDING would leave the
+    // offer permanently mid-flight (the expiry sweep keys on PENDING).
+    return { success: false, error: `Acceptance lifecycle event could not be recorded (${acceptedEventError.message}) — the transaction was NOT created. Retry the submit.` }
+  }
 
   // 4. Create the transaction — same canonical creator the legacy chain
   //    used. Seeds milestones + deadlines, populates participants (buyer,
