@@ -729,10 +729,30 @@ console.log("\n═══ 6. Both activities writers (m372) ═══")
   // resolved; the expiry path was missed — the m356 shape exactly, where
   // fixing the site a detector named left siblings broken. So every EXPIRED
   // offer lost its lifecycle event while submitted/withdrawn/response were fine.
+  // WAVE 7 MOVED THE FOURTH WRITE, AND THIS ASSERTION HAD TO FOLLOW IT.
+  //
+  // It used to require exactly four `agent_id: await resolveAgentId(` literals
+  // in this file. The expiry path no longer inserts here at all: it delegates to
+  // lib/buyer-offer/expire-offers.ts:expireOffer, which is session-free so the
+  // cron and the action share one writer. The resolve still happens in this file
+  // — it is just handed over as `actorAgentId` instead of being spelled inline.
+  //
+  // Counting a spelling would have made a correct consolidation look like a
+  // regression, which is the m346/m361/m362 mistake this very file keeps
+  // re-learning. So assert the CONSTRUCT on both sides of the move: every
+  // identity this file produces for an activities write is RESOLVED (four sites,
+  // never a raw users id), and the write that moved still lands an agents-class
+  // id in the agents-FK column.
   const tol = code("app/actions/buyer-offer/track-offer-lifecycle.ts")
-  ok("all FOUR activities writes in track-offer-lifecycle resolve to an agents\n    id — the expiry path wrote systemUserId raw",
-    (tol.match(/agent_id: await resolveAgentId\(/g) ?? []).length === 4 &&
-    !/agent_id: systemUserId,/.test(tol))
+  ok("every activities identity in track-offer-lifecycle is RESOLVED to an agents\n    id — four sites, none writing a users id raw",
+    (tol.match(/await resolveAgentId\(/g) ?? []).length === 4 &&
+    !/agent_id: systemUserId,/.test(tol) &&
+    !/agent_id: gate\.userId/.test(tol))
+  const exp = code("lib/buyer-offer/expire-offers.ts")
+  ok("...and the expiry write that MOVED out of that file still puts an\n    agents-class id in activities.agent_id (resolved by the caller, never a users id)",
+    /actorAgentId: string \| null/.test(exp) &&
+    /agent_id: input\.actorAgentId,/.test(exp) &&
+    /actorAgentId: await resolveAgentId\(/.test(tol))
 
   // (b) The superadmin audit line was FK-rejected and the catch discarded it,
   // so provisioning a subscriber never once produced an audit row. A superadmin

@@ -61,16 +61,30 @@ for (const role of ["vendor", "contact", "tc", "", null] as const) {
   check(`${String(role ?? "null")} cannot invite vendors`, !canInviteVendors(role as any))
 }
 
-// The invite action's own gate and the shared constant must not drift.
+// THE MIRROR IS GONE, AND THAT IS THE POINT.
+//
+// This used to regex a local `INVITE_ALLOWED_ROLES = new Set([...])` out of
+// app/actions/vendor-invite.ts and compare it, member by member, against
+// VENDOR_INVITE_ROLES — a "these two copies must not drift" assertion. Wave 6
+// removed the second copy: the action now calls the shared predicate
+// `canInviteVendors(caller.user_type)` directly, so there is exactly ONE role
+// list on the platform and drift is not possible rather than merely detected.
+//
+// Asserting the mirror still exists would have demanded the duplicate be
+// restored to keep a proof green — a guard forcing the anti-pattern it was
+// written to police. So assert the stronger, simpler property: the action holds
+// NO private role list, and it gates through the one shared door.
 const inviteSrc = src("app/actions/vendor-invite.ts")
 {
-  const m = inviteSrc.match(/INVITE_ALLOWED_ROLES = new Set\(\[([^\]]+)\]\)/)
-  const actionRoles = (m?.[1] ?? "").split(",").map((s) => s.trim().replace(/["']/g, "")).filter(Boolean)
-  check("invite action gate == VENDOR_INVITE_ROLES (mirror can't drift)",
-    actionRoles.length === VENDOR_INVITE_ROLES.size && actionRoles.every((r) => VENDOR_INVITE_ROLES.has(r)),
-    `action: [${actionRoles.join(", ")}]`)
-  check("invite action gate includes agent AND team_lead",
-    actionRoles.includes("agent") && actionRoles.includes("team_lead"))
+  check("the invite action keeps NO private copy of the role list — the mirror\n    was collapsed onto lib/vendors/vendor-scope.ts, so it cannot drift",
+    !/INVITE_ALLOWED_ROLES\s*=\s*new Set/.test(inviteSrc),
+    `local set present: ${/INVITE_ALLOWED_ROLES\s*=\s*new Set/.test(inviteSrc)}`)
+  check("...and it gates through the shared predicate canInviteVendors()",
+    /if \(!canInviteVendors\(caller\.user_type\)\)/.test(inviteSrc))
+  // The membership question the deleted assertion really cared about, asked of
+  // the surviving single source of truth instead of a copy of it.
+  check("the one surviving role list still admits agent AND team_lead",
+    VENDOR_INVITE_ROLES.has("agent") && VENDOR_INVITE_ROLES.has("team_lead"))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

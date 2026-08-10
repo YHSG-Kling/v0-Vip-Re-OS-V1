@@ -37,9 +37,12 @@ type ServiceClient = ReturnType<typeof createServiceClient>
 
 export type VendorActorScope = "brokerage" | "team" | "agent"
 
-/** Roles that may INVITE a vendor to the platform — mirrors the
- *  INVITE_ALLOWED_ROLES gate in app/actions/vendor-invite.ts (round 15 opened
- *  invites to every tier; round 37 adds attribution, not new gates). */
+/** Roles that may INVITE a vendor to the platform. THE source of truth, not a
+ *  mirror of one: app/actions/vendor-invite.ts used to carry a parallel
+ *  INVITE_ALLOWED_ROLES set and now gates through `canInviteVendors` below, so
+ *  this list cannot drift out of step with the action — there is nothing left to
+ *  drift from. (Round 15 opened invites to every tier; round 37 added
+ *  attribution, not new gates.) */
 export const VENDOR_INVITE_ROLES: ReadonlySet<string> = new Set([
   "broker", "broker_admin", "admin", "superadmin", "team_lead", "agent",
 ])

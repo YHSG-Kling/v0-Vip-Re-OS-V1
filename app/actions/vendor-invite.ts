@@ -5,8 +5,10 @@
  *
  * inviteVendorToPlatformAction:
  *   Caller: any admin / broker / team_lead / agent within a brokerage (round 15
- *   opened invites to every tier — INVITE_ALLOWED_ROLES below is the gate, and
- *   lib/vendors/vendor-scope.ts mirrors it as VENDOR_INVITE_ROLES).
+ *   opened invites to every tier). The gate is the SHARED predicate
+ *   lib/vendors/vendor-scope.ts:canInviteVendors — this file no longer keeps a
+ *   local INVITE_ALLOWED_ROLES copy, so there is one role list, not two that
+ *   have to be kept in step.
  *   Creates a vendor_invitations row with a cryptographically random token,
  *   sends a Supabase invite email pointing the vendor to /vendor-invite/[token].
  *
