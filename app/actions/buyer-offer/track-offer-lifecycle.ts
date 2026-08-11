@@ -147,8 +147,23 @@ async function requireOfferActor(offerId: string): Promise<
  *   refusal  → "Could not read offer lifecycle: …" (was "Offer not found")
  * No caller matches on that string; all three in-file callers and both external
  * callers only check `success` and pass `error` through to the operator.
+ *
+ * ── UNGATED ON PURPOSE, AND NOT EXPORTED ─────────────────────────────────────
+ * This is the INTERNAL read. It is not exported, so it mints no endpoint: this
+ * module is `"use server"`, and every export here is a public HTTP entry point.
+ * The gated entry point is `getOfferLifecycleState` immediately below.
+ *
+ * The split exists because the callers are two different kinds of caller:
+ *
+ *   · The three writers in this file (`submitOffer`, `withdrawOffer`,
+ *     `recordSellerResponse`) have ALREADY proved the session and the offer's
+ *     tenant through `requireOfferActor` before they get here. Sending them
+ *     through the gated wrapper would re-prove the same two facts with two more
+ *     round trips per call and could not refuse anything the writer had not
+ *     already refused.
+ *   · The exported wrapper serves untrusted callers, and gates.
  */
-export async function getOfferLifecycleState(
+async function readOfferLifecycleState(
   offerId: string
 ): Promise<{ success: boolean; data?: OfferLifecycleState; error?: string }> {
   try {
@@ -185,6 +200,66 @@ export async function getOfferLifecycleState(
 }
 
 /**
+ * Get current lifecycle state for an offer — THE PUBLIC ENTRY POINT.
+ *
+ * GATED. This is `"use server"`, so a public HTTP endpoint, and it authenticated
+ * nothing while reading through `createServiceClient()` (RLS not in play). An
+ * offer uuid was the entire authorization: any caller could learn whether
+ * another brokerage's offer is PENDING, COUNTERED, ACCEPTED or dead, when it
+ * last moved, and — through `history` — who moved it and why. That is the state
+ * of another firm's live negotiation.
+ *
+ * `requireOfferActor()` (already in this file, used by every writer here) is the
+ * right door: it proves a session and that the OFFER belongs to the caller's
+ * brokerage, taking the tenant from `offers.brokerage_id` rather than from the
+ * caller.
+ *
+ * INTERNAL CALLERS ARE NOT STRANDED BY THIS — each was read before gating:
+ *
+ *   · `submitOffer`, `withdrawOffer`, `recordSellerResponse` (this file) all
+ *     call `requireOfferActor` FIRST and now read through the ungated internal
+ *     `readOfferLifecycleState` above, so the gate is proved exactly once.
+ *   · `app/actions/buyer-offer/convert-to-transaction.ts:convertOfferToTransaction`
+ *     is itself a session action: it calls `auth.getUser()` and then refuses an
+ *     offer whose `brokerage_id` differs from the caller's. It runs with a
+ *     cookie session, so this gate can only agree with the check it already
+ *     makes. It keeps calling this export.
+ *   · `app/actions/buyer-offer/handle-multi-offer.ts` called this once PER OFFER
+ *     in three loops. Those now go to the canonical pure derivation
+ *     (lib/buyer-offer/offer-lifecycle.ts:deriveOfferStateFromActivities)
+ *     behind that module's own contact-level gate, so the loops neither
+ *     re-authenticate per offer nor read through a public endpoint.
+ *
+ * The unattended lanes never used this export and still do not: the hourly
+ * /api/cron/offer-expiry sweep runs lib/buyer-offer/expire-offers.ts through its
+ * own service-credential door, and lib/buyer-offer/status-sync.ts reads the same
+ * canonical derivation directly. Nothing that legitimately has no cookie session
+ * is routed through a `"use server"` export here.
+ */
+export async function getOfferLifecycleState(
+  offerId: string
+): Promise<{ success: boolean; data?: OfferLifecycleState; error?: string }> {
+  // The gate runs INSIDE the try for the same reason every other export in this
+  // file does: a `"use server"` export that throws surfaces to the caller as an
+  // unhandled rejection rather than as a refusal, and a caller that receives a
+  // rejection instead of `{ success: false }` has no `success` to test — which is
+  // how a gate failure becomes an unhandled condition instead of a "no".
+  try {
+    if (!isValidUUID(offerId)) {
+      return { success: false, error: "Invalid offer ID" };
+    }
+
+    const gate = await requireOfferActor(offerId);
+    if (!gate.ok) return { success: false, error: gate.error };
+
+    return await readOfferLifecycleState(offerId);
+  } catch (error: any) {
+    console.error("[System 7.1A] Error gating offer lifecycle state:", error);
+    return { success: false, error: error?.message ?? "Could not read the offer lifecycle state" };
+  }
+}
+
+/**
  * Submit offer (DRAFT → PENDING)
  *
  * GATED. This is `"use server"` — a public HTTP endpoint — and it authenticated
@@ -214,8 +289,9 @@ export async function submitOffer(
     const gate = await requireOfferActor(offerId);
     if (!gate.ok) return { success: false, error: gate.error };
 
-    // Check current state
-    const stateResult = await getOfferLifecycleState(offerId);
+    // Check current state. The UNGATED internal read — `requireOfferActor`
+    // above already proved the session and this offer's tenant.
+    const stateResult = await readOfferLifecycleState(offerId);
     if (!stateResult.success || !stateResult.data) {
       return { success: false, error: stateResult.error };
     }
@@ -270,8 +346,9 @@ export async function withdrawOffer(
     const gate = await requireOfferActor(offerId);
     if (!gate.ok) return { success: false, error: gate.error };
 
-    // Check current state
-    const stateResult = await getOfferLifecycleState(offerId);
+    // Check current state. The UNGATED internal read — `requireOfferActor`
+    // above already proved the session and this offer's tenant.
+    const stateResult = await readOfferLifecycleState(offerId);
     if (!stateResult.success || !stateResult.data) {
       return { success: false, error: stateResult.error };
     }
@@ -336,8 +413,9 @@ export async function recordSellerResponse(
     const gate = await requireOfferActor(offerId);
     if (!gate.ok) return { success: false, error: gate.error };
 
-    // Check current state
-    const stateResult = await getOfferLifecycleState(offerId);
+    // Check current state. The UNGATED internal read — `requireOfferActor`
+    // above already proved the session and this offer's tenant.
+    const stateResult = await readOfferLifecycleState(offerId);
     if (!stateResult.success || !stateResult.data) {
       return { success: false, error: stateResult.error };
     }

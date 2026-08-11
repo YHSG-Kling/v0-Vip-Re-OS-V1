@@ -9,7 +9,21 @@ import { isValidUUID }         from "@/lib/validations"
 import { OFFER_EVENT }         from "@/lib/buyer-offer/offer-lifecycle"
 import { resolveAgentId }      from "@/lib/kernel/agent-identity"
 import { requireContactAccess } from "@/lib/portal/require-contact-access"
-import { checkDuplicateOffer } from "@/app/actions/buyer-offer/handle-multi-offer"
+// The LIMIT gate, imported under a name the call site cannot misread. The export
+// is `canBuyerSubmitOffer` (singular) and the LIFECYCLE gate below is
+// `canBuyerSubmitOffers` (plural) — one letter apart, two different questions.
+// The alias is the whole disambiguation this slice could make: renaming the
+// export itself would have to re-baseline scripts/orphan-export-baseline.json,
+// which is outside this slice (reported, not done).
+import {
+  checkDuplicateOffer,
+  canBuyerSubmitOffer as checkPendingOfferLimit,
+} from "@/app/actions/buyer-offer/handle-multi-offer"
+// The LIFECYCLE gate — the SAME function the three offer surfaces render from
+// (/offers, /offers/new and the contact page), so the action and the UI cannot
+// disagree about whether this buyer may be making offers.
+import { canBuyerSubmitOffers } from "@/app/actions/buyer-lifecycle-core"
+import { MAX_PENDING_OFFERS } from "@/lib/offers/multi-offer-rules"
 
 // ─── STAFF GATE ───────────────────────────────────────────────────────────────
 // Several exports below are agent-only writes on a buyer's file — creating the
@@ -513,6 +527,34 @@ Return ONLY valid JSON: { "recommended_price": number, "recommended_earnest": nu
 
 // ─── CREATE OFFER ─────────────────────────────────────────────────────────────
 
+/**
+ * WHAT TO DO ABOUT IT — one remedy per blocker the LIFECYCLE gate can raise.
+ *
+ * Keyed on the blocker vocabulary of
+ * lib/buyer-lifecycle/gating-helpers.ts:isOfferAllowed, which is the only thing
+ * that produces these strings. A refusal that names the rule and withholds the
+ * remedy is the dead end this sequence of waves keeps removing, so the gate's
+ * own `reason` is returned WITH the way out rather than instead of it.
+ *
+ * A non-exported const in a `"use server"` file is fine — the build rule is that
+ * a "use server" file may only EXPORT async functions.
+ */
+const OFFER_LIFECYCLE_GATE_REMEDY: Record<string, string> = {
+  no_buyer_state:
+    "This buyer has no recorded lifecycle state at all, so nothing can vouch for where they are in the journey. Take them through intake on the contact's Buyer tab (that records the first transition) and verify their finances, then create the offer.",
+  lifecycle_gate_not_enabled:
+    "The offer_creation gate opens at BUYER_OFFER_ELIGIBLE. Advance the buyer to that stage on the contact's Buyer tab — normally after a tour — and the offer can be created.",
+  financial_verification_required:
+    "Verify the buyer's finances on the contact's Financial Verification panel (proof of funds for a cash buyer, pre-approval for a financed one). If the deal cannot wait, an admin, a broker, or THIS buyer's agent of record can lift the financing gate with a written justification, which is recorded as the override and lifts this refusal with it.",
+}
+
+/**
+ * The catch-all, used when the gate raises a blocker this map has not been
+ * taught. It still points somewhere real rather than leaving a dead end.
+ */
+const OFFER_LIFECYCLE_GATE_DEFAULT_REMEDY =
+  "Open the buyer's Buyer tab on the contact record — the gate panel there names which requirement is outstanding and who can clear it."
+
 // AUTHENTICATED → now also AUTHORIZED. The previous version proved a session
 // existed and then ignored it: `contactId`, `brokerageId` and `agentUserId` all
 // came from the caller and none was checked against that session. Any signed-in
@@ -542,12 +584,70 @@ export async function createOffer(
   // the user id, which would write a wrong/invalid FK value.
   const agentId = await resolveAgentId(supabase, agentUserId)
 
+  // ── GATE 1 of 2: THE LIFECYCLE GATE ────────────────────────────────────────
+  //
+  // "MAY THIS BUYER BE MAKING OFFERS AT ALL?" — buyer-lifecycle-core.ts
+  // :canBuyerSubmitOffers → lib/buyer-lifecycle/gating-helpers.ts:isOfferAllowed:
+  // is their lifecycle state at or past BUYER_OFFER_ELIGIBLE, and are they
+  // financially verified.
+  //
+  // THIS IS WHERE IT HAD TO BIND. Three surfaces call this gate to decide what to
+  // RENDER — /offers, /offers/new (which redirects away on a refusal) and the
+  // contact page — and the server action that WRITES the offer row consulted
+  // nothing. A gate the UI enforces is a suggestion: this export is directly
+  // invocable, and every path that is not the wizard (a stale tab, the upload
+  // route, an agent-assistant tool call) went straight past it.
+  //
+  // BINDING IT HERE CANNOT LOCK THE WIZARD OUT: /offers/new already hard-refuses
+  // the same call before it renders, so any buyer who reaches the wizard has
+  // already passed exactly this gate. What changes is only that the paths which
+  // never asked now have to.
+  //
+  // THE OVERRIDE IS ALREADY SETTLED, AND NO SECOND ONE IS INVENTED HERE. The
+  // owner's ruling — "admin or agent can override the financing gate" — is
+  // expressed as RECORDED STATE, not as a flag on the call:
+  // lib/buyer-execution/multi-party-updates.ts:adminOverrideFinancialGate checks
+  // authority (admin/broker brokerage-wide, or the agent OF RECORD on this
+  // contact) and then writes a financial-verification event, which
+  // checkFinancialVerification reads back and isOfferAllowed consults. So an
+  // override that has been granted lifts THIS refusal automatically, through the
+  // same gate, with the actor and the written justification on the record.
+  // Adding an `isOverride` parameter to createOffer would be a second, weaker
+  // override mechanism with no authority check and no audit — so there is none.
+  const lifecycleGate = await canBuyerSubmitOffers(contactId)
+  if (!lifecycleGate.allowed) {
+    const remedies = (lifecycleGate.blockers ?? [])
+      .map((blocker) => OFFER_LIFECYCLE_GATE_REMEDY[blocker])
+      .filter((r): r is string => !!r)
+    const remedy = remedies.length > 0 ? remedies.join(" ") : OFFER_LIFECYCLE_GATE_DEFAULT_REMEDY
+    return {
+      success: false,
+      error: `${lifecycleGate.reason ?? "This buyer is not eligible to submit offers"} — ${remedy}`,
+    }
+  }
+
   // ── Financial verification gate (System J3.1 — buyer cannot make offers
   //    until verified or explicitly bypassed by the agent). Previously this
   //    gate was UI-only — the panel toggled `buyer_financial_profiles.verified`
   //    but no backend caller ever checked it, so any client could POST and
   //    create an offer for an unverified buyer. Enforce here at the API
   //    boundary.
+  //
+  //    KEPT ALONGSIDE GATE 1, AND NOT COLLAPSED INTO IT, because the two read
+  //    DIFFERENT stores and this one is the stricter of the pair: this is the
+  //    `buyer_financial_profiles.verified` COLUMN that
+  //    app/actions/buyer-financial.ts:markFinanciallyVerified sets, while gate
+  //    1's financial half is the ACTIVITY trail that
+  //    lib/buyer-lifecycle/financial-verification.ts:checkFinancialVerification
+  //    reads. REPORTED, NOT SILENTLY CHANGED: the agent bypass on the Financial
+  //    Verification panel goes through markFinanciallyVerified and DOES set this
+  //    column, but the emergency lane (buyer-execution.ts
+  //    :adminOverrideFinancialVerification → adminOverrideFinancialGate) writes
+  //    only the activity, so an override granted through THAT lane lifts gate 1
+  //    and is still stopped here. That gap predates this slice and belongs to
+  //    the two modules that own the two stores; it is recorded rather than
+  //    papered over, because widening a financial gate is not something to do as
+  //    a side effect of wiring a different one.
   const { data: finProfile } = await supabase
     .from("buyer_financial_profiles")
     .select("verified")
@@ -580,6 +680,45 @@ export async function createOffer(
       return { success: false, error: "Forbidden: listing is not in your brokerage" }
     }
     resolvedListingId = form.listing_id
+  }
+
+  // ── GATE 2 of 2: THE PENDING-OFFER LIMIT ───────────────────────────────────
+  //
+  // "HOW MANY OFFERS DOES THIS BUYER ALREADY HAVE OUT?" — a DIFFERENT question
+  // from gate 1, which is why both are here and neither is collapsed into the
+  // other. Gate 1 knows nothing about how many offers are live; this one knows
+  // nothing about the buyer's stage or their finances. A buyer can pass either
+  // and fail the other.
+  //
+  // Until now the cap existed only in a client banner
+  // (app/components/offer/multi-offer-status-banner.tsx), which says in its own
+  // header that it "does not block creation" — and nothing else did either, so
+  // MAX_PENDING_OFFERS bound nowhere. It binds here.
+  //
+  // FAILS CLOSED. `success:false` means the count did not run — a refused
+  // activities read, an unreadable lifecycle trail — and a limit that cannot be
+  // verified must refuse, not wave the offer through on a count of zero. Every
+  // table is EMPTY pre-rollout, so "nothing came back" is exactly the shape a
+  // refusal takes here.
+  //
+  // NO OVERRIDE, DELIBERATELY. The settled owner ruling covers the FINANCING
+  // gate (gate 1). Nothing has ever been ruled about overriding the pending cap,
+  // and inventing an override for it here would be inventing policy — the
+  // remedy is to resolve one of the offers that is actually holding a slot, and
+  // the refusal names them.
+  const limitGate = await checkPendingOfferLimit(contactId)
+  if (!limitGate.success) {
+    return {
+      success: false,
+      error: `The ${MAX_PENDING_OFFERS}-pending-offer limit could not be checked for this buyer (${limitGate.reason ?? "the check did not run"}), so no offer was created. Retry; if it keeps failing, this buyer's offer lifecycle trail cannot be read and needs an admin — an unverifiable limit is not an open one.`,
+    }
+  }
+  if (!limitGate.can_submit) {
+    const holding = limitGate.pending_offer_ids ?? []
+    return {
+      success: false,
+      error: `${limitGate.reason ?? `Maximum ${MAX_PENDING_OFFERS} pending offers reached`} (${limitGate.pending_count ?? MAX_PENDING_OFFERS} pending). Withdraw or resolve one of this buyer's pending offers first${holding.length > 0 ? ` — ${holding.join(", ")}` : ""}; they are listed on the contact's Offers tab, and a seller response or a withdrawal frees the slot immediately.`,
+    }
   }
 
   // ── MULTI-OFFER GOVERNANCE (System 7.1A Domain 2) ──────────────────────────
