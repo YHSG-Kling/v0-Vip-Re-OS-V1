@@ -48,29 +48,47 @@ export async function recordClientOfferDecision(input: {
   const price = (offer as any).offer_price ? `$${Number((offer as any).offer_price).toLocaleString("en-US")}` : "the offer"
   const where = listing?.address ? ` on ${listing.address}` : ""
 
-  // The ledger — the client's word, timestamped.
-  await svc.from("lifecycle_events").insert({
-    brokerage_id: (offer as any).brokerage_id,
+  // The owning agent, resolved ONCE and reused: it stamps the engagement row below and it is the
+  // task's assignee further down. Both `offers.agent_id` and `listings.agent_id` are AGENTS-class
+  // (see lib/compliance/offer-flag-resolution.ts), so this coalesce stays inside one id space —
+  // it is not a users/agents swap.
+  const owningAgentId: string | null = (offer as any).agent_id ?? listing?.agent_id ?? null
+  const owningBrokerageId: string | null = (offer as any).brokerage_id ?? null
+
+  // The ledger — the client's word, timestamped. `.then(ok, err)` used to stand in for an error
+  // check here: supabase-js RESOLVES a refused write, so the reject arm never ran and the failure
+  // was dropped either way. Destructured now.
+  const { error: ledgerError } = await svc.from("lifecycle_events").insert({
+    brokerage_id: owningBrokerageId,
     entity_type: "offer",
     entity_id: input.offerId,
     event_type: "client_offer_decision",
     metadata: { decision, side: side.toLowerCase(), contact_id: input.contactId, note: note || null },
-  }).then(() => {}, () => {})
+  })
+  if (ledgerError) console.error("[portal-offer-decision] lifecycle event NOT recorded:", ledgerError.message)
 
-  // The engagement stream the recognition rails already read.
-  await svc.from("client_portal_activity").insert({
+  // The engagement stream the recognition rails already read. THE TENANT AND THE OWNING AGENT ARE
+  // THE POINT: this row's SELECT policy admits the agent side only through
+  // has_brokerage_access(brokerage_id) or agent_id = current_user_agent_id(). Written with both
+  // null — as it was — the seller's accept/counter/decline is visible to the SELLER and to nobody
+  // who can act on it. Both columns are nullable, so the insert succeeded and nothing complained.
+  const activityRow = {
+    brokerage_id: owningBrokerageId,
     contact_id: input.contactId,
+    agent_id: owningAgentId,
     activity_type: "offer_decision",
     metadata: { offer_id: input.offerId, decision },
-  }).then(() => {}, () => {})
+  }
+  const { error: activityError } = await svc.from("client_portal_activity").insert(activityRow)
+  if (activityError) console.error("[portal-offer-decision] portal activity NOT recorded:", activityError.message)
 
   // The agent's execute-this task (NOT-NULL assignee contract honored).
-  const assignee = (offer as any).agent_id ?? listing?.agent_id ?? null
+  const assignee = owningAgentId
   if (!assignee) {
     return { success: false, error: "No agent is attached to this offer yet — message your agent directly and they'll take it from here." }
   }
   const { error: taskError } = await svc.from("tasks").insert({
-    brokerage_id: (offer as any).brokerage_id,
+    brokerage_id: owningBrokerageId,
     transaction_id: (offer as any).transaction_id ?? null,
     contact_id: input.contactId,
     assigned_to_agent_id: assignee,

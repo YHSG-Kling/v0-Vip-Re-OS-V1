@@ -507,13 +507,21 @@ export async function runBuyerSearchStories(svc: Svc, brokerageId: string, now: 
     if (await alreadyProposed(svc, brokerageId, tag)) continue
 
     const listingIds = [...new Set(metas.map((m) => m.listing_id).filter(Boolean))] as string[]
-    const [{ data: buyer }, { count: portalCount }, { data: listingRows }] = await Promise.all([
+    const [{ data: buyer }, { count: portalCount, error: portalCountError }, { data: listingRows }] = await Promise.all([
       svc.from("contacts").select("first_name").eq("id", contactId).maybeSingle(),
-      svc.from("client_portal_activity").select("id", { count: "exact", head: true }).eq("contact_id", contactId).gte("created_at", since),
+      // Tenant-bounded even though contactId came from a brokerage-scoped scan: this is the
+      // SERVICE client, so RLS is not the bound — the filter is. It is writable now only because
+      // the portal-activity writers stamp brokerage_id; before that, scoping this read would have
+      // returned zero for every buyer. The count feeds "how engaged has this buyer been", so a
+      // refused read reporting 0 would author a story saying they were quiet. Destructured below.
+      svc.from("client_portal_activity").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("contact_id", contactId).gte("created_at", since),
       listingIds.length
         ? svc.from("listings").select("id, address, status").in("id", listingIds.slice(0, 20))
         : Promise.resolve({ data: [] } as any),
     ])
+    if (portalCountError) {
+      console.error(`[client-story-drafts] portal-activity count refused for contact ${contactId} — story understates engagement:`, portalCountError.message)
+    }
     const listings = ((listingRows ?? []) as any[])
     const brief = buyerStoryBrief({
       buyerFirstName: (buyer as any)?.first_name ?? null,

@@ -430,12 +430,26 @@ export async function generateDailyBriefing(
     const since24 = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
     const owningAgentId = agentsId
 
-    const { data: acts } = await supabase
+    // THE READ SIDE OF THE SAME TENANT DEFECT. This is a SERVICE-client read (RLS bypassed), and
+    // it carried no tenant bound at all: it took the newest 500 activity rows PLATFORM-WIDE and
+    // then narrowed by contacts this agent owns. Two consequences, one of them silent and bad —
+    //   · it reads other brokerages' client engagement to build one agent's briefing; and
+    //   · the 500-row cap is spent on rows that will be discarded, so a busy neighbouring tenant
+    //     pushes this agent's OWN clients out of the window and their briefing quietly loses the
+    //     signals it exists to surface. "Nothing came back" is never health.
+    // Scoping by brokerage_id is only possible because the writers now stamp it; that is the
+    // whole point of stamping them. The error is destructured for the same reason as everywhere
+    // else: supabase-js RESOLVES a refused read, so a refusal arrived as "a quiet evening".
+    const { data: acts, error: actsError } = await supabase
       .from("client_portal_activity")
       .select("contact_id, activity_type, created_at")
+      .eq("brokerage_id", brokerageId)
       .gte("created_at", since24)
       .order("created_at", { ascending: false })
       .limit(500)
+    if (actsError) {
+      console.error("[DailyBriefing] portal-activity read refused — 'I saw you' is incomplete, not empty:", actsError.message)
+    }
     const actsByContact = new Map<string, { count: number; latestType: string | null }>()
     for (const a of ((acts ?? []) as Array<{ contact_id: string | null; activity_type: string | null }>)) {
       if (!a.contact_id) continue

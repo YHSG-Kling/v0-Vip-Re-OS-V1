@@ -857,12 +857,21 @@ export async function emitSellerPortalViewed(contactId: string, moduleName?: str
 
   // Track which module was viewed in client_portal_activity for analytics
   if (moduleName) {
-    supabase.from("client_portal_activity").insert({
+    // `.then(ok, err)` CANNOT REPORT THIS. supabase-js RESOLVES a refused write
+    // rather than rejecting, so the rejection arm never ran and a denied insert
+    // left no trace anywhere — the one thing an analytics row exists to avoid.
+    // Awaited and destructured; still non-fatal, because a lost view-count must
+    // not stop a seller seeing their own portal.
+    const viewRow = {
       contact_id: contactId,
       brokerage_id: access.brokerageId,
       activity_type: "portal_module_viewed",
       metadata: { module: moduleName, viewed_at: new Date().toISOString() },
-    }).then(() => {}, (err) => console.error("[portal-seller] activity tracking failed:", err))
+    }
+    const { error: viewError } = await supabase.from("client_portal_activity").insert(viewRow)
+    if (viewError) {
+      console.error(`[portal-seller] module-view activity NOT recorded for contact ${contactId}: ${viewError.message}`)
+    }
   }
 
   await processKernelEvent({

@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { requireActiveBBA } from "@/lib/buyer-broker/gate"
 import { guardShowingFinancialGate } from "@/lib/buyer-execution/showing-financial-policy"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 
 export async function requestShowing(data: {
   contactId: string
@@ -54,11 +55,17 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
     // requestShowing fires from the buyer portal, the auth user is the
     // contact, not a brokerage staff user, so users.brokerage_id resolves
     // to null and downstream notifications/activities lose tenancy).
-    const { data: contactBrokerage } = await supabase
+    // The error is destructured because this read is what gives the showing its TENANT: a refused
+    // read resolves (supabase-js does not throw) and used to arrive as a clean `null`, so the
+    // ledger row and the notification below quietly lost their tenancy instead of saying so.
+    const { data: contactBrokerage, error: contactBrokerageError } = await supabase
       .from("contacts")
       .select("brokerage_id")
       .eq("id", data.contactId)
       .maybeSingle()
+    if (contactBrokerageError) {
+      console.error("[showings] contact tenancy read refused — downstream rows lose brokerage scope:", contactBrokerageError.message)
+    }
     const brokerageId: string | null = contactBrokerage?.brokerage_id ?? null
     // The auth user id feeds only the assigned-agent fallback below; on the
     // sessionless caller lane it comes from the caller's verified actor.
@@ -71,11 +78,16 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
     // Agreement with their assigned agent. Skip when there's no assigned
     // agent (yet) — those are pre-representation inquiries that go through
     // the lead-pickup flow, not the BBA-gated showing flow.
-    const { data: contactForBBA } = await supabase
+    // Also the source of the OWNING AGENT stamped on the portal-activity row below, so its error
+    // is destructured too — a refused read here is not "this buyer has no agent".
+    const { data: contactForBBA, error: contactForBBAError } = await supabase
       .from("contacts")
       .select("agent_id")
       .eq("id", data.contactId)
       .maybeSingle()
+    if (contactForBBAError) {
+      console.error("[showings] contact agent read refused — activity row loses its agent stamp:", contactForBBAError.message)
+    }
     if (contactForBBA?.agent_id) {
       const gate = await requireActiveBBA({
         buyerContactId: data.contactId,
@@ -171,14 +183,35 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
     // This is the entry point for the agent to action the request — no calendar_events yet,
     // those are written only when the agent confirms.
     try {
-      // Resolve the contact's assigned agent to surface the activity on the right agent's feed
-      const { data: contact } = await supabase
+      // Resolve the contact's assigned agent to surface the activity on the right
+      // agent's feed.
+      //
+      // THE FALLBACK USED TO COALESCE TWO DISJOINT ID SPACES. It read
+      // `contact?.agent_id ?? authUserId`: `contacts.agent_id` is an AGENTS.id
+      // and `authUserId` is a USERS.id, so a contact with no assigned agent put a
+      // users id into `activities.agent_id` — a column every agent feed filters
+      // by agents.id. The row then belonged to nobody: it either FK-failed or
+      // landed where no query looks, and the showing request the buyer just made
+      // reached no one. This is the class m350 and m390 were written for.
+      //
+      // RESOLVE, never `??`. The caller's users id is translated into their
+      // agents id; if they have no agents row in this tenant there is no agent
+      // feed to write to, and the activity is skipped with a log rather than
+      // addressed to an id that cannot match.
+      const { data: contact, error: contactErr } = await supabase
         .from("contacts")
         .select("agent_id")
         .eq("id", data.contactId)
         .maybeSingle()
+      if (contactErr) {
+        console.error(`[showings] could not read the contact's assigned agent (${contactErr.message}) — the request is saved, but no agent feed row was written.`)
+      }
 
-      const assignedAgentId = contact?.agent_id ?? authUserId
+      const callerAgentId = authUserId ? await resolveAgentId(supabase, authUserId) : null
+      const assignedAgentId = (contact?.agent_id as string | null) ?? callerAgentId
+      if (!assignedAgentId) {
+        console.error(`[showings] showing request ${data.contactId}: no agents-class id could be resolved for the contact or the caller — nobody was given the request to action.`)
+      }
 
       if (assignedAgentId) {
         await supabase.from("activities").insert({
@@ -197,20 +230,36 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
       }
     } catch { /* non-critical */ }
 
-    // Log portal activity (best-effort)
-    try {
-      await supabase.from("client_portal_activity").insert({
-        contact_id:    data.contactId,
-        activity_type: "request_showing",
-        metadata: {
-          property_address:   data.propertyAddress,
-          mls_number:         data.mlsNumber ?? null,
-          listing_id:         data.listingId ?? null,
-          showing_request_id: showing.id,
-          source:             data.source ?? 'buyer_portal',
-        },
-      })
-    } catch { /* non-critical */ }
+    // The buyer's showing ask, on the engagement ledger. TENANT-STAMPED, and that is the whole
+    // repair: this row's SELECT policy admits the agent side only via
+    // has_brokerage_access(brokerage_id) or agent_id = current_user_agent_id(). Written with both
+    // columns null — as it was — the ledger entry was readable by the BUYER and by platform
+    // admins, and by neither the agent it exists to inform nor their broker. Both columns are
+    // nullable so the insert succeeded, which is exactly why nobody noticed.
+    //
+    // `contactForBBA.agent_id` is the contact's assigned agent and is AGENTS-class, the same class
+    // this column FKs — a straight copy, never the auth user id (that is USERS-class and disjoint).
+    // The bare try/catch that used to wrap this caught NOTHING: supabase-js RESOLVES a refused
+    // write rather than throwing, so a rejected insert left no trace at all.
+    const portalActivityRow = {
+      brokerage_id:  brokerageId,
+      contact_id:    data.contactId,
+      agent_id:      contactForBBA?.agent_id ?? null,
+      activity_type: "request_showing",
+      metadata: {
+        property_address:   data.propertyAddress,
+        mls_number:         data.mlsNumber ?? null,
+        listing_id:         data.listingId ?? null,
+        showing_request_id: showing.id,
+        source:             data.source ?? 'buyer_portal',
+      },
+    }
+    const { error: portalActivityError } = await supabase
+      .from("client_portal_activity")
+      .insert(portalActivityRow)
+    if (portalActivityError) {
+      console.error("[showings] portal activity 'request_showing' NOT recorded:", portalActivityError.message)
+    }
 
     // Notify the assigned (buyer) agent in-app.
     // contacts.agent_id stores agents.id (NOT users.id), but

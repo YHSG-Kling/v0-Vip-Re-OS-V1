@@ -8,7 +8,9 @@
 // comps-grounded plan + the offer-confidence reel). The buyer self-qualifies; the team convenes.
 // Mirrors the requestShowing buyer-as-actor pattern (client_portal_activity + agent notification).
 
-import { createClient } from "@/lib/supabase/server"
+// No session client is imported any more: all five actions authorize through requireContactAccess
+// (which owns the auth read) and then act with the service client, because a portal contact cannot
+// read their own contacts row or write notifications under their RLS.
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireContactAccess } from "@/lib/portal/require-contact-access"
 import { buildOfferHelpAcknowledgement, type OfferHelpOutcome } from "@/lib/agents/offer-strategy-producer"
@@ -25,12 +27,15 @@ type ResolvedContact =
  *  NOT the auth user (the buyer's portal user is not the agent). Mirrors requestShowing.
  *  supabase-js RESOLVES a refused read, so a denied row used to arrive as "Contact not found" —
  *  a clean negative for what is actually a failure. The two are now distinct. */
-async function resolveContactAgent(supabase: any, contactId: string): Promise<ResolvedContact> {
-  const { data: contact, error: contactError } = await supabase
+async function resolveContactAgent(supabase: any, contactId: string, expectBrokerageId?: string): Promise<ResolvedContact> {
+  // When the caller has already been through the gate, the gate's brokerage_id is applied as a
+  // filter too: the service client bypasses RLS, so the tenant bound has to be written down.
+  let q = supabase
     .from("contacts")
     .select("id, first_name, last_name, brokerage_id, agent_id")
     .eq("id", contactId)
-    .maybeSingle()
+  if (expectBrokerageId) q = q.eq("brokerage_id", expectBrokerageId)
+  const { data: contact, error: contactError } = await q.maybeSingle()
   if (contactError) {
     console.error("[buyer-offer-tools] contact read refused:", contactError.message)
     return { ok: false, reason: "unreadable" }
@@ -70,7 +75,35 @@ async function recordPortalActivity(
   return true
 }
 
+/** THE GATE'S REFUSAL, SAID TO A BUYER. `requireContactAccess` answers in internal vocabulary
+ *  ("Forbidden"), and a buyer told "Forbidden" learns nothing they can act on. Every branch below
+ *  names the NEXT MOVE, because a refusal that only says no is a dead end on a self-serve surface.
+ *  One mapper, shared by all four gated tools — a second auth pattern is what wave 14 removed. */
+function accessRefusal(error: "Unauthorized" | "Contact not found" | "Forbidden" | "Access check failed"): string {
+  switch (error) {
+    case "Unauthorized":
+      return "Please sign in to your portal and try again."
+    case "Forbidden":
+      return "You're signed in with a different account than this page belongs to — sign in with the email your agent invited you at, or reply to their last message."
+    case "Contact not found":
+      return "We couldn't find your client record — reply to your agent's last message and they'll get this to the right place."
+    default:
+      return "We couldn't verify your account just now — please try again in a moment."
+  }
+}
+
 type NotifyResult = { ok: boolean; reason?: "no_agent" | "write_failed" }
+
+/** WHAT THE BUYER IS TOLD WHEN THE AGENT WAS NOT REACHED. These actions exist to move a human,
+ *  so "the alert did not land" is the buyer's outcome, not an internal detail — and it names the
+ *  route that does not depend on the rail that just failed. `recorded` is folded in so the
+ *  sentence never claims a ledger entry that was refused. */
+function notifyRefusal(reason: NotifyResult["reason"], recorded: boolean, what: string): string {
+  const saved = recorded ? `We've recorded ${what}` : `We couldn't record ${what} either`
+  return reason === "no_agent"
+    ? `No agent is assigned to your account yet. ${saved} — message the office from your portal's Messages tab and someone will pick this up.`
+    : `We couldn't alert your agent just now. ${saved} — message them from your portal's Messages tab so nothing waits on this.`
+}
 
 async function notifyAgent(
   supabase: any,
@@ -129,6 +162,12 @@ async function writeBuyerThreadMessage(
 /**
  * signalAffordabilityChecked — the buyer ran the affordability numbers on a property. Record the
  * activity + notify the agent that the buyer is actively evaluating a specific home (high intent).
+ *
+ * Gated on the SAME helper as requestOfferHelp: it took a bare contactId and wrote a
+ * notification + a ledger row through the service client, so any authenticated user could raise
+ * "your buyer is running the numbers" on someone else's client. And the whole point of the button
+ * is that a human hears about it — so `success` now tracks whether the agent was actually told,
+ * not whether the function reached its last line.
  */
 export async function signalAffordabilityChecked(input: {
   contactId: string
@@ -137,18 +176,23 @@ export async function signalAffordabilityChecked(input: {
   price: number
   monthlyEstimate: number
   verdict: string
-}): Promise<{ success: boolean; error?: string }> {
+}): Promise<{ success: boolean; notified?: boolean; recorded?: boolean; error?: string }> {
   try {
-    const supabase = await createClient()
-    const resolved = await resolveContactAgent(supabase, input.contactId)
+    const access = await requireContactAccess(input.contactId)
+    if (!access.ok) return { success: false, error: accessRefusal(access.error) }
+
+    // Authorized above; the service client is used deliberately from here (a portal client's own
+    // contacts/notifications rows are not reliably readable/writable under their RLS).
+    const svc = createServiceClient()
+    const resolved = await resolveContactAgent(svc, input.contactId, access.brokerageId)
     if (!resolved.ok) {
       return resolved.reason === "unreadable"
         ? { success: false, error: "We couldn't reach your account just now — please try again." }
-        : { success: false, error: "Contact not found" }
+        : { success: false, error: "We couldn't find your client record — reply to your agent's last message and they'll pick this up." }
     }
     const { contact, agentUserId } = resolved
 
-    await recordPortalActivity(supabase, {
+    const recorded = await recordPortalActivity(svc, {
       contactId: input.contactId, brokerageId: contact.brokerage_id, agentId: contact.agent_id,
       activityType: "affordability_checked", propertyId: input.propertyId,
       metadata: {
@@ -159,14 +203,18 @@ export async function signalAffordabilityChecked(input: {
     })
 
     const money = (n: number) => `$${Math.round(n).toLocaleString()}`
-    await notifyAgent(supabase, {
+    const notified = await notifyAgent(svc, {
       agentUserId, brokerageId: contact.brokerage_id,
       type: "buyer.affordability_checked",
       title: "Buyer is running the numbers",
       body: `${contact.first_name ?? "Your buyer"} checked affordability on ${input.propertyAddress} — ~${money(input.monthlyEstimate)}/mo (${input.verdict.replace(/_/g, " ")}). They're evaluating this home.`,
       entityId: input.contactId,
     })
-    return { success: true }
+    if (!notified.ok) {
+      // Never tell a buyer their agent has been notified when nobody was.
+      return { success: false, notified: false, recorded, error: notifyRefusal(notified.reason, recorded, "your interest in this home") }
+    }
+    return { success: true, notified: true, recorded }
   } catch (e: any) {
     return { success: false, error: e?.message ?? "failed" }
   }
@@ -193,9 +241,11 @@ export async function requestOfferHelp(input: {
     // This writes to the buyer's own message thread with the service client, so the caller must
     // be proven to belong to this contact (or be staff on it) before anything is written.
     const access = await requireContactAccess(input.contactId)
-    if (!access.ok) {
-      return { success: false, error: access.error === "Unauthorized" ? "Please sign in to your portal and try again." : access.error }
-    }
+    // Only "Unauthorized" used to be translated; "Forbidden", "Contact not found" and "Access
+    // check failed" were handed to the BUYER verbatim. Bringing the four siblings up to this
+    // action's standard surfaced that this action did not fully meet it either — all five now
+    // speak through the one mapper, so a refusal always names the next move.
+    if (!access.ok) return { success: false, error: accessRefusal(access.error) }
 
     // Authorized above; the service client is used deliberately from here (a portal client's
     // own contacts/notifications rows are not reliably readable/writable under their RLS).
@@ -275,19 +325,46 @@ export async function requestOfferHelp(input: {
  * lookup + the (cache/Perplexity-first, non-paid) AVM → estimated value + specs, so the
  * affordability tool works on the whole market, not just saved homes. Researching a specific
  * address is a HIGH-intent signal — recorded quietly for the agent (no notification spam).
+ *
+ * GATED, but on a DIFFERENT contract from its three siblings, and deliberately so.
+ *
+ * Why it is gated: it spends the CONTACT'S BROKERAGE'S RentCast budget (`getRentcastAVM` is keyed
+ * by brokerage_id) and writes a ledger row onto that contact's agent's feed — both on a bare
+ * contactId, so any authenticated user could bill a stranger's provider account and plant activity
+ * on their client. That is the same hole as the siblings and it closes the same way.
+ *
+ * Why its RETURN is shaped differently: this action sends NO notification. The deliverable is the
+ * analysis in the buyer's hands, and the ledger row is a quiet by-product the buyer was never
+ * promised. Failing the whole call because a bookkeeping insert was refused would take away the
+ * thing the buyer actually asked for in exchange for nothing — so `success` stays bound to the
+ * analysis and `recorded` reports the ledger honestly alongside it, rather than being swallowed.
+ * The one thing that must never happen is a caller BUILDING a promise on an assumption; `recorded`
+ * is on the wire so a future toast cannot claim the agent saw this without checking.
+ *
+ * (Second live bug closed by the switch to the service client below: the contact read ran on the
+ * PORTAL user's session, which cannot read `contacts` under RLS — so `brokerageId` was null for
+ * every real buyer and the RentCast branch was dead, silently. The buyer always got the fallback.)
  */
 export async function analyzeAddressForBuyer(input: {
   contactId: string
   address: string
-}): Promise<{ success: boolean; analysis?: import("@/lib/buyer-offers/address-analysis").AddressAnalysis; error?: string }> {
+}): Promise<{ success: boolean; analysis?: import("@/lib/buyer-offers/address-analysis").AddressAnalysis; recorded?: boolean; error?: string }> {
   try {
     const address = (input.address ?? "").trim()
     if (address.length < 5) return { success: false, error: "Enter a full address" }
-    const supabase = await createClient()
-    const { data: contact, error: contactError } = await supabase.from("contacts").select("id, brokerage_id, agent_id").eq("id", input.contactId).maybeSingle()
-    if (contactError) console.error("[buyer-offer-tools] contact read refused:", contactError.message)
-    const brokerageId = (contact as { brokerage_id: string | null } | null)?.brokerage_id ?? null
-    const contactAgentId = (contact as { agent_id: string | null } | null)?.agent_id ?? null
+
+    const access = await requireContactAccess(input.contactId)
+    if (!access.ok) return { success: false, error: accessRefusal(access.error) }
+
+    const svc = createServiceClient()
+    const resolved = await resolveContactAgent(svc, input.contactId, access.brokerageId)
+    if (!resolved.ok) {
+      return resolved.reason === "unreadable"
+        ? { success: false, error: "We couldn't reach your account just now — please try again." }
+        : { success: false, error: "We couldn't find your client record — reply to your agent's last message and they'll pick this up." }
+    }
+    const brokerageId = resolved.contact.brokerage_id
+    const contactAgentId = resolved.contact.agent_id
 
     const [{ lookupPropertyByAddress }, { getRentcastAVM }, { getCurrentAvm }, { buildAddressAnalysis }] = await Promise.all([
       import("@/lib/property/address-lookup"),
@@ -313,14 +390,16 @@ export async function analyzeAddressForBuyer(input: {
     }
     const analysis = buildAddressAnalysis(lookup as any, avm, range)
 
-    // Quiet high-intent signal — the buyer is researching a specific home.
-    await recordPortalActivity(supabase, {
+    // Quiet high-intent signal — the buyer is researching a specific home. Reported, not asserted:
+    // the analysis is the deliverable and stands on its own, but the ledger's outcome rides back
+    // so nothing downstream can assume the agent can see this.
+    const recorded = await recordPortalActivity(svc, {
       contactId: input.contactId, brokerageId, agentId: contactAgentId,
       activityType: "address_analyzed",
       metadata: { address, estimated_value: analysis.estimatedValue, source: "buyer_portal" },
     })
 
-    return { success: true, analysis }
+    return { success: true, analysis, recorded }
   } catch (e: any) {
     return { success: false, error: e?.message ?? "failed" }
   }
@@ -331,37 +410,47 @@ export async function analyzeAddressForBuyer(input: {
  * agent's take. A HIGH-intent moment (they're close to choosing) — notify the agent WHICH homes
  * they're weighing so the agent can guide the decision. Fires only on the explicit ask (never on
  * mere browsing) — signal, not noise.
+ *
+ * Gated on the same helper as requestOfferHelp, and `success` means the agent was reached: the
+ * buyer clicked this because they want a human's take, so an undelivered alert is their outcome.
  */
 export async function requestComparisonReview(input: {
   contactId: string
   addresses: string[]
-}): Promise<{ success: boolean; error?: string }> {
+}): Promise<{ success: boolean; notified?: boolean; recorded?: boolean; error?: string }> {
   try {
-    const supabase = await createClient()
-    const resolved = await resolveContactAgent(supabase, input.contactId)
-    if (!resolved.ok) {
-      return resolved.reason === "unreadable"
-        ? { success: false, error: "We couldn't reach your account just now — please try again." }
-        : { success: false, error: "Contact not found" }
-    }
-    const { contact, agentUserId } = resolved
     const homes = (input.addresses ?? []).filter(Boolean).slice(0, 4)
     if (homes.length < 2) return { success: false, error: "Pick at least two homes to compare" }
 
-    await recordPortalActivity(supabase, {
+    const access = await requireContactAccess(input.contactId)
+    if (!access.ok) return { success: false, error: accessRefusal(access.error) }
+
+    const svc = createServiceClient()
+    const resolved = await resolveContactAgent(svc, input.contactId, access.brokerageId)
+    if (!resolved.ok) {
+      return resolved.reason === "unreadable"
+        ? { success: false, error: "We couldn't reach your account just now — please try again." }
+        : { success: false, error: "We couldn't find your client record — reply to your agent's last message and they'll pick this up." }
+    }
+    const { contact, agentUserId } = resolved
+
+    const recorded = await recordPortalActivity(svc, {
       contactId: input.contactId, brokerageId: contact.brokerage_id, agentId: contact.agent_id,
       activityType: "comparison_review_requested",
       metadata: { addresses: homes, source: "buyer_portal" },
     })
 
-    await notifyAgent(supabase, {
+    const notified = await notifyAgent(svc, {
       agentUserId, brokerageId: contact.brokerage_id,
       type: "buyer.comparison_review_requested",
       title: "Buyer is weighing their finalists",
       body: `${contact.first_name ?? "Your buyer"} is comparing ${homes.join(" vs ")} and wants your take — they're close to choosing.`,
       entityId: input.contactId,
     })
-    return { success: true }
+    if (!notified.ok) {
+      return { success: false, notified: false, recorded, error: notifyRefusal(notified.reason, recorded, "the homes you're weighing") }
+    }
+    return { success: true, notified: true, recorded }
   } catch (e: any) {
     return { success: false, error: e?.message ?? "failed" }
   }
@@ -372,36 +461,46 @@ export async function requestComparisonReview(input: {
  * want to get (back) to offer-ready. Notify the agent to connect them with a lender. The agent is
  * the right owner pre-offer (the Finance Manager owns the in-deal lender side); this keeps the
  * buyer's self-serve tool honest — an expired approval shouldn't masquerade as a real ceiling.
+ *
+ * Gated on the same helper as requestOfferHelp, and `success` means the agent was reached. This is
+ * the sibling where a false "sent" costs the most: a buyer who believes a lender introduction is
+ * in motion stops chasing it, and walks into an offer on an expired approval.
  */
 export async function requestPreApprovalRefresh(input: {
   contactId: string
   propertyId: string
   propertyAddress: string
-}): Promise<{ success: boolean; error?: string }> {
+}): Promise<{ success: boolean; notified?: boolean; recorded?: boolean; error?: string }> {
   try {
-    const supabase = await createClient()
-    const resolved = await resolveContactAgent(supabase, input.contactId)
+    const access = await requireContactAccess(input.contactId)
+    if (!access.ok) return { success: false, error: accessRefusal(access.error) }
+
+    const svc = createServiceClient()
+    const resolved = await resolveContactAgent(svc, input.contactId, access.brokerageId)
     if (!resolved.ok) {
       return resolved.reason === "unreadable"
         ? { success: false, error: "We couldn't reach your account just now — please try again." }
-        : { success: false, error: "Contact not found" }
+        : { success: false, error: "We couldn't find your client record — reply to your agent's last message and they'll pick this up." }
     }
     const { contact, agentUserId } = resolved
 
-    await recordPortalActivity(supabase, {
+    const recorded = await recordPortalActivity(svc, {
       contactId: input.contactId, brokerageId: contact.brokerage_id, agentId: contact.agent_id,
       activityType: "preapproval_refresh_requested", propertyId: input.propertyId,
       metadata: { property_id: input.propertyId, property_address: input.propertyAddress, source: "buyer_portal" },
     })
 
-    await notifyAgent(supabase, {
+    const notified = await notifyAgent(svc, {
       agentUserId, brokerageId: contact.brokerage_id,
       type: "buyer.preapproval_refresh_requested",
       title: "Buyer wants to refresh their pre-approval",
       body: `${contact.first_name ?? "Your buyer"} is evaluating ${input.propertyAddress} and asked to refresh their pre-approval — connect them with a lender to get back to offer-ready.`,
       entityId: input.contactId,
     })
-    return { success: true }
+    if (!notified.ok) {
+      return { success: false, notified: false, recorded, error: notifyRefusal(notified.reason, recorded, "your pre-approval request") }
+    }
+    return { success: true, notified: true, recorded }
   } catch (e: any) {
     return { success: false, error: e?.message ?? "failed" }
   }

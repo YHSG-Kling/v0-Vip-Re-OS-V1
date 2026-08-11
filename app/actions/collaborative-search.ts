@@ -426,23 +426,63 @@ export async function markAsFinalist(searchId: string, propertyId: string, isFin
 
 // ==================== ACTIVITY TRACKING ====================
 
+/**
+ * The collaborative-search engagement ledger. TENANT-STAMPED, which is the repair: the row's
+ * SELECT policy admits the agent side only through has_brokerage_access(brokerage_id) or
+ * agent_id = current_user_agent_id(), so a row written with both columns null — as this one was —
+ * is readable by the client who generated it and by platform admins, and by nobody who can act on
+ * it. The column is nullable, so the write succeeded and the signal simply never arrived.
+ *
+ * The tenant cannot come from the session (the caller is a portal contact, whose users row has no
+ * brokerage), so it comes from the CONTACT, through the shared portal gate — which also closes the
+ * hole that this took a bare contactId from a client component and would happily plant activity on
+ * any contact in the database. Same gate as the buyer-offer tools; not a second auth pattern.
+ */
 export async function trackPortalActivity(
   contactId: string,
   activityType: string,
   activityData?: Record<string, any>,
   propertyId?: string,
-) {
-  if (!COLLAB_SEARCH_AVAILABLE) return
-  const supabase = await createClient()
+): Promise<{ recorded: boolean; reason?: string }> {
+  if (!COLLAB_SEARCH_AVAILABLE) return { recorded: false, reason: "disabled" }
 
-  const { error } = await supabase.from("client_portal_activity").insert({
+  const { requireContactAccess } = await import("@/lib/portal/require-contact-access")
+  const access = await requireContactAccess(contactId)
+  if (!access.ok) {
+    console.error("[collaborative-search] activity NOT recorded — caller is not on this contact:", access.error)
+    return { recorded: false, reason: access.error }
+  }
+
+  // Service client from here: the gate has proven the caller, and a portal contact cannot read
+  // their own contacts row (to find the owning agent) or satisfy the staff INSERT lane under RLS.
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+
+  // contacts.agent_id is AGENTS-class, the same class this column FKs — a straight copy. The
+  // caller's users.id is a DISJOINT space and is never substituted for it.
+  const { data: owner, error: ownerError } = await svc
+    .from("contacts")
+    .select("agent_id")
+    .eq("id", contactId)
+    .eq("brokerage_id", access.brokerageId)
+    .maybeSingle()
+  if (ownerError) {
+    console.error("[collaborative-search] owning-agent read refused — activity row loses its agent stamp:", ownerError.message)
+  }
+
+  const activityRow = {
+    brokerage_id: access.brokerageId,
     contact_id: contactId,
+    agent_id: (owner as { agent_id: string | null } | null)?.agent_id ?? null,
     activity_type: activityType,
     metadata: activityData || {},
-    property_id: propertyId,
-  })
+    property_id: propertyId ?? null,
+  }
+  const { error } = await svc.from("client_portal_activity").insert(activityRow)
 
   if (error) {
-    console.error("[v0] Error tracking activity:", error)
+    console.error(`[collaborative-search] activity '${activityType}' NOT recorded:`, error.message)
+    return { recorded: false, reason: error.message }
   }
+  return { recorded: true }
 }

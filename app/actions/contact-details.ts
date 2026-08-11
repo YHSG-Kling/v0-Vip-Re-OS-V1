@@ -234,6 +234,13 @@ export async function getContactActivity(contactId: string) {
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
       .limit(50),
+    // This is the surface W15-3's unstamped writes were invisible ON: the agent's contact pane.
+    // The read itself is correct (session client, so RLS is the tenant bound, filtered to the
+    // already-authorized contact) — it is the WRITES that had to start carrying brokerage_id and
+    // agent_id for the agent's policy lane to admit their own client's rows.
+    // Its error is no longer dropped: supabase-js RESOLVES a refused read, so a refusal used to
+    // arrive here as an empty list and render as "this client has done nothing", which is the one
+    // conclusion an empty result never licenses.
     supabase
       .from("client_portal_activity")
       .select("id, contact_id, activity_type, metadata, created_at")
@@ -270,6 +277,17 @@ export async function getContactActivity(contactId: string) {
       notes: item.metadata ? JSON.stringify(item.metadata) : "Portal activity",
     }))
   ].sort((a, b) => new Date(b.activity_date).getTime() - new Date(a.activity_date).getTime())
+
+  // `error: null` was hard-coded, so a refused sub-read rendered as a short feed with no warning.
+  // Partial is reported as partial: the rows that DID come back are still returned.
+  const readErrors = [
+    ["conversations", conversations.error], ["messages", messages.error], ["tasks", tasks.error],
+    ["activities", activities.error], ["portal activity", portalActivity.error],
+  ].filter(([, e]) => e) as Array<[string, { message: string }]>
+  if (readErrors.length > 0) {
+    for (const [name, e] of readErrors) console.error(`[contact-details] ${name} read refused:`, e.message)
+    return { activity, error: `Some activity couldn't be loaded (${readErrors.map(([n]) => n).join(", ")}) — this timeline is incomplete, not empty.` }
+  }
 
   return { activity, error: null }
 }
