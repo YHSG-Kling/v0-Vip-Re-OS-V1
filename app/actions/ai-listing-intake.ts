@@ -1272,11 +1272,46 @@ export async function generateListingAgreement(params: {
         : "/dashboard/listings/new",
     }
 
+    // MERGE, NEVER REPLACE — the listing twin of the offer-side defect fixed in
+    // wave 9 (ai-offer-creation.ts:generateOfferDraft).
+    //
+    // Both listing staging paths INSERT the document with
+    // `content = { intake, filledPacket }` and then call this function
+    // immediately (draft-listing-from-voice.ts, api/workflow/intake/listing).
+    // Assigning `content` wholesale replaced that with a prefill shape carrying
+    // NO `filledPacket`, and assigning `metadata` wholesale dropped whatever the
+    // stager had put there. `filledPacket` is the ONLY thing
+    // scanListingPacketCompleteness reads, so the completeness scan was left
+    // permanently unable to verify an AI-staged listing agreement — and with
+    // that scan now failing closed, an un-merged write here would refuse every
+    // AI-staged listing at markAgreementSigned instead. Load-bearing in both
+    // directions, exactly as on the offer side.
+    //
+    // The two shapes share no keys, so a top-level merge is lossless.
     if (params.documentId) {
+      const { data: existingDoc, error: existingErr } = await supabase
+        .from("documents")
+        .select("content, metadata")
+        .eq("id", params.documentId)
+        .eq("brokerage_id", params.brokerageId)
+        .maybeSingle()
+      if (existingErr) {
+        console.error("[AI Listing Intake] Could not read the staged document before merging the packet — refusing to overwrite it blind:", existingErr.message)
+        return handleError(existingErr, "generateListingAgreement")
+      }
+
+      let priorContent: Record<string, unknown> = {}
+      try {
+        const parsed = JSON.parse((existingDoc?.content as string | null) ?? "{}")
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) priorContent = parsed
+      } catch { /* unparseable prior content is replaced, not merged */ }
+      const priorMetadata = (existingDoc?.metadata ?? {}) as Record<string, unknown>
+
       const packetUpdate = {
-        content: JSON.stringify(packet, null, 2),
+        content: JSON.stringify({ ...priorContent, ...packet }, null, 2),
         status: "needs_agent_input",
         metadata: {
+          ...priorMetadata,           // keeps packet_type and anything else staged
           state,
           packet_type: "listing_agreement",
           required_forms: forms.required,
@@ -1288,12 +1323,18 @@ export async function generateListingAgreement(params: {
         },
         updated_at: new Date().toISOString(),
       }
-      await supabase
+      // CHECKED: a silently-dropped update here is what produced the unverifiable
+      // packet, and supabase-js RESOLVES a refused write.
+      const { error: packetWriteErr } = await supabase
         .from("documents")
         .update(packetUpdate)
         .eq("id", params.documentId)
         // tenant anchor (scope burn-down): document must belong to the workflow's brokerage
         .eq("brokerage_id", params.brokerageId)
+      if (packetWriteErr) {
+        console.error("[AI Listing Intake] Packet did not persist to the document row:", packetWriteErr.message)
+        return handleError(packetWriteErr, "generateListingAgreement")
+      }
     }
 
     // Notify the agent — the packet awaits their review/finalization

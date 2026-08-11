@@ -99,6 +99,122 @@ export function planInboundFiling(
   }))
 }
 
+// ─── COMPLETING THE LINK THE CONFIRM BRANCH OPENS ───────────────────────────
+//
+// The CONFIRM branch files an outside agent's paperwork against the LISTING and
+// marks it `metadata.awaiting_offer_link`, because at that moment no offer row
+// exists to key it to. NOTHING EVER COMPLETED THAT LINK. The rows counted
+// toward the listing forever and never toward the offer whose compliance gate
+// needs them — `auditOfferDocuments` reads `metadata.linked_offer_id`, and the
+// buyer-signature attestation refuses without a document on file FOR THE OFFER.
+//
+// The link is completed by whichever surface turns the confirmed email into an
+// offer row. There are exactly two (`docs/wave11-slice-listing.md` names them):
+// `app/api/offers/upload/route.ts` (the agent picks the buyer and uploads the
+// contract — the surface the `offer_intake_review` notification asks for) and
+// the AUTO branch of `offer-intake.ts` (the sender was already a known contact).
+//
+// WHICH ROWS. This is the whole difficulty, and it is why the decision is a
+// pure function with a proof rather than a WHERE clause: two outside agents can
+// both email offers on the SAME listing, and both sets sit there awaiting a
+// link. Stamping every pending row on the listing with the first offer created
+// would count ANOTHER DEAL'S PAPERWORK toward this one — a worse failure than
+// the one being fixed, because it is invisible and it passes a gate.
+//
+// So the rows are grouped by the SENDER, which is the deal boundary an email
+// lane actually has, and a group is chosen only when something identifies it.
+// When more than one sender is waiting and nothing picks between them, NOTHING
+// is linked and the ambiguity is reported — never guessed.
+
+/** `documents.metadata` keys this lane writes and reads. Named, not spelled. */
+export const AWAITING_OFFER_LINK_KEY = "awaiting_offer_link"
+export const LINKED_OFFER_ID_KEY     = "linked_offer_id"
+
+export interface PendingInboundDocument {
+  id: string
+  /** metadata.file_name — what the attachment was called in the email. */
+  fileName:      string | null
+  /** metadata.from_email — WHO sent it. The deal boundary. */
+  fromEmail:     string | null
+  /** metadata.linked_offer_id — non-null means this row is already spoken for. */
+  linkedOfferId: string | null
+}
+
+export interface InboundOfferLinkPlan {
+  /** documents.id to stamp with this offer. Empty when nothing may be linked. */
+  link:      string[]
+  /** The sender whose paperwork was chosen (null when none / unknown sender). */
+  sender:    string | null
+  /** Every distinct sender still awaiting a link on this listing. */
+  senders:   string[]
+  /** More than one sender waiting and nothing identified which — link NOTHING. */
+  ambiguous: boolean
+  reason:
+    | "no_pending"           // nothing is waiting
+    | "matched_sender"       // the caller knew the sender and that sender is waiting
+    | "sender_not_pending"   // the caller knew the sender and they are NOT waiting
+    | "matched_file"         // the uploaded file is one of the emailed attachments
+    | "only_sender"          // exactly one sender waiting, so there is nothing to confuse
+    | "ambiguous_senders"    // several senders waiting, nothing to choose between them
+}
+
+const normalizeKey = (s: string | null | undefined): string => (s ?? "").trim().toLowerCase()
+
+/**
+ * PURE. Decide WHICH pending inbound documents belong to the offer just created.
+ *
+ *   · `preferFromEmail` is AUTHORITATIVE when supplied: the caller knows who
+ *     sent this deal's paperwork, so a different sender's pending rows are a
+ *     different deal and are left alone even if they are the only ones waiting.
+ *   · `preferFileName` identifies the group when the agent uploads the very PDF
+ *     that arrived by email (the confirm notification tells them to).
+ *   · A single waiting sender is unambiguous on its own.
+ *   · Otherwise NOTHING is linked and `ambiguous` says so.
+ */
+export function planInboundOfferLink(
+  pending: PendingInboundDocument[],
+  opts: { preferFromEmail?: string | null; preferFileName?: string | null } = {},
+): InboundOfferLinkPlan {
+  const unlinked = pending.filter(p => !p.linkedOfferId)
+  const groups = new Map<string, PendingInboundDocument[]>()
+  for (const row of unlinked) {
+    const key = normalizeKey(row.fromEmail)
+    const bucket = groups.get(key)
+    if (bucket) bucket.push(row)
+    else groups.set(key, [row])
+  }
+  const senders = Array.from(groups.keys()).map(k => (k === "" ? "(unknown sender)" : k))
+
+  const done = (
+    key: string | null,
+    reason: InboundOfferLinkPlan["reason"],
+    ambiguous = false,
+  ): InboundOfferLinkPlan => ({
+    link:      key === null ? [] : (groups.get(key) ?? []).map(r => r.id),
+    sender:    key === null || key === "" ? null : key,
+    senders,
+    ambiguous,
+    reason,
+  })
+
+  if (unlinked.length === 0) return done(null, "no_pending")
+
+  const wanted = normalizeKey(opts.preferFromEmail)
+  if (wanted !== "") {
+    return groups.has(wanted) ? done(wanted, "matched_sender") : done(null, "sender_not_pending")
+  }
+
+  const wantedFile = normalizeKey(opts.preferFileName)
+  if (wantedFile !== "") {
+    const hit = unlinked.find(r => normalizeKey(r.fileName) === wantedFile)
+    if (hit) return done(normalizeKey(hit.fromEmail), "matched_file")
+  }
+
+  if (groups.size === 1) return done(Array.from(groups.keys())[0], "only_sender")
+
+  return done(null, "ambiguous_senders", true)
+}
+
 export type OfferIntakeDecision = "auto" | "confirm" | "skip"
 
 /**

@@ -47,7 +47,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { uploadDocument } from "@/lib/documents/upload-document"
 import {
   looksLikeOffer, matchListingByAddress, assessOfferIntake, planInboundFiling,
-  type ListingLite,
+  planInboundOfferLink, AWAITING_OFFER_LINK_KEY, LINKED_OFFER_ID_KEY,
+  type ListingLite, type PendingInboundDocument, type InboundOfferLinkPlan,
 } from "./offer-detect"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -198,6 +199,23 @@ export async function tryIngestInboundOffer(
       console.error(`[offer-intake] offer ${offerId}: ${filed.errors.length} inbound document(s) could not be filed:`, filed.errors.join(" | "))
     }
 
+    // An earlier email from this SAME sender may already have been filed
+    // against the listing awaiting an offer (the confirm branch runs whenever
+    // the sender was not yet a known contact). Now there is an offer to key it
+    // to. The sender is known here, so it is passed as AUTHORITATIVE: another
+    // agent's pending paperwork on this listing is a different deal and is left
+    // exactly where it is.
+    const relinked = await linkInboundDocumentsToOffer({
+      brokerageId: input.brokerageId,
+      listingId:   match.id,
+      offerId,
+      contactId:   input.senderContactId,
+      fromEmail:   input.fromEmail,
+    }, svc)
+    if (relinked.errors.length > 0) {
+      console.error(`[offer-intake] offer ${offerId}: inbound link errors:`, relinked.errors.join(" | "))
+    }
+
     // Kick AI extraction — on completion it hands off (data_steward → listing_concierge) the
     // comparison-ready offer for the net sheet.
     const { extractOfferFromPdf } = await import("@/lib/offers/offer-extractor")
@@ -282,6 +300,151 @@ async function fileInboundPdfs(
   }
 
   return { documentIds, errors }
+}
+
+export interface InboundLinkResult {
+  /** documents.id actually stamped with this offer. */
+  linkedDocumentIds: string[]
+  /** The plan that was executed — reason, sender, and the ambiguity flag. */
+  plan:   InboundOfferLinkPlan
+  /** Reads/writes that were REFUSED. Never swallowed: a lost link is silent. */
+  errors: string[]
+}
+
+/**
+ * COMPLETE THE LINK THE CONFIRM BRANCH OPENED.
+ *
+ * The confirm branch files the outside agent's paperwork against the LISTING and
+ * marks it `metadata.awaiting_offer_link`, because no offer row exists yet.
+ * Nothing ever finished the job, so those documents counted toward the listing
+ * forever and never toward the offer — `auditOfferDocuments` matches
+ * `metadata.linked_offer_id`, and the buyer-signature attestation refuses
+ * outright without a document on file for THAT offer. This is what turns an
+ * emailed contract into paperwork the offer's compliance gate can count.
+ *
+ * WHAT IS MATCHED, and why it is this narrow:
+ *   · this brokerage and this listing (columns, both re-asserted on the WRITE);
+ *   · still awaiting a link, and not already linked to some other offer;
+ *   · and — the part that matters — only ONE SENDER'S documents, chosen by
+ *     `planInboundOfferLink`. Two outside agents can be waiting on the same
+ *     listing; stamping both sets would count another deal's paperwork toward
+ *     this offer, which is worse than the gap being closed because it PASSES a
+ *     gate. When nothing identifies the sender, nothing is linked and the
+ *     caller is handed the ambiguity to report.
+ *
+ * The metadata blob is MERGED, never assigned wholesale — the load-bearing bug
+ * of wave 9 (`generateOfferDraft` replaced a document's metadata and destroyed
+ * the only key the packet scan could find it by) and the one the wave-10 proof
+ * reintroduces as a negative control.
+ */
+export async function linkInboundDocumentsToOffer(
+  params: {
+    brokerageId: string
+    listingId:   string
+    offerId:     string
+    /** The buyer contact for the new offer — filled in where the row has none. */
+    contactId?:  string | null
+    /** AUTHORITATIVE when known: only this sender's documents may be linked. */
+    fromEmail?:  string | null
+    /** The file the agent just uploaded, which identifies the emailed group. */
+    fileName?:   string | null
+  },
+  client?: Svc,
+): Promise<InboundLinkResult> {
+  const svc = client ?? createServiceClient()
+  const errors: string[] = []
+
+  // `error` is destructured: supabase-js RESOLVES a refused read, so `const
+  // { data }` renders "the query was refused" and "nothing is waiting"
+  // identically — and pre-rollout these tables are EMPTY, so an empty result is
+  // never evidence of health.
+  const { data: rows, error: readErr } = await svc
+    .from("documents")
+    .select("id, metadata, contact_id")
+    .eq("brokerage_id", params.brokerageId)
+    .eq("listing_id",   params.listingId)
+    .filter(`metadata->>${AWAITING_OFFER_LINK_KEY}`, "eq", "true")
+
+  if (readErr) {
+    errors.push(`could not read the documents awaiting an offer link: ${readErr.message}`)
+    return {
+      linkedDocumentIds: [],
+      plan: { link: [], sender: null, senders: [], ambiguous: false, reason: "no_pending" },
+      errors,
+    }
+  }
+
+  const pending: PendingInboundDocument[] = (rows ?? []).map((r: any) => {
+    const meta = (r.metadata ?? {}) as Record<string, unknown>
+    return {
+      id:            r.id as string,
+      fileName:      (meta.file_name as string | null) ?? null,
+      fromEmail:     (meta.from_email as string | null) ?? null,
+      linkedOfferId: (meta[LINKED_OFFER_ID_KEY] as string | null) ?? null,
+    }
+  })
+
+  const plan = planInboundOfferLink(pending, {
+    preferFromEmail: params.fromEmail ?? null,
+    preferFileName:  params.fileName  ?? null,
+  })
+
+  const byId = new Map((rows ?? []).map((r: any) => [r.id as string, r]))
+  const linkedDocumentIds: string[] = []
+  const linkedAt = new Date().toISOString()
+
+  for (const id of plan.link) {
+    const row = byId.get(id)
+    if (!row) continue
+    const existing = ((row.metadata ?? {}) as Record<string, unknown>)
+    // The payload, built ABOVE the call rather than inline.
+    //
+    // Two comments used to live inside the `.update({...})` object literal and
+    // pushed `.eq("brokerage_id")` past the 500-character window
+    // scripts/tenant-scope-guard.ts examines after a tenant-table `from(...)`
+    // call, so a genuinely tenant-scoped write was reported as unscoped. (Do not
+    // name that call literally here — the guard scans raw source, so the mention
+    // itself would register as a query. That is exactly how this comment failed
+    // the guard on its first draft.) The right
+    // answer is neither to widen that window nor to bank the finding as
+    // baseline debt — both blunt a guard that exists to make cross-tenant reads
+    // impossible by CI. Hoisting the payload keeps the query byte-identical and
+    // puts the tenant filter back where the guard can see it.
+    //
+    // metadata is MERGED: every provenance key the confirm branch wrote — the
+    // sender, the subject, when it arrived, the attachment index — survives.
+    // contact_id is only ever FILLED IN, never overwritten: the buyer is known
+    // now, and the confirm branch had nobody to file it under.
+    const linkPayload = {
+      metadata: {
+        ...existing,
+        [LINKED_OFFER_ID_KEY]:     params.offerId,
+        [AWAITING_OFFER_LINK_KEY]: false,
+        offer_linked_at:           linkedAt,
+      },
+      contact_id: (row.contact_id as string | null) ?? params.contactId ?? null,
+      updated_at: linkedAt,
+    }
+    const { error: updErr, data: updated } = await svc
+      .from("documents")
+      .update(linkPayload)
+      .eq("id", id)
+      .eq("brokerage_id", params.brokerageId)
+      .eq("listing_id",   params.listingId)
+      // Re-asserted on the WRITE so a concurrent ingest cannot link the same
+      // paperwork to two offers: the second update matches 0 rows.
+      .filter(`metadata->>${LINKED_OFFER_ID_KEY}`, "is", null)
+      .select("id")
+
+    if (updErr) { errors.push(`${id}: ${updErr.message}`); continue }
+    if ((updated ?? []).length === 0) {
+      errors.push(`${id}: already linked to another offer — left untouched`)
+      continue
+    }
+    linkedDocumentIds.push(id)
+  }
+
+  return { linkedDocumentIds, plan, errors }
 }
 
 async function resolveListingAgentUser(svc: Svc, agentId: string | null): Promise<string | null> {

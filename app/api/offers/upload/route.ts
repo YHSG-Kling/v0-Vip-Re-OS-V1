@@ -7,6 +7,7 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { uploadDocument } from "@/lib/documents/upload-document"
 import { INBOUND_CONTRACT_DOCUMENT_TYPE } from "@/lib/inbound-mail/offer-detect"
+import { linkInboundDocumentsToOffer } from "@/lib/inbound-mail/offer-intake"
 
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
@@ -142,6 +143,51 @@ export async function POST(req: NextRequest) {
     console.error(`[offers/upload] offer ${offer.id}: PDF stored but NOT filed in the document ledger:`, filed.error)
   }
 
+  // ── 2c. COMPLETE THE INBOUND LINK ────────────────────────────────────────
+  //
+  // THIS is the surface the `offer_intake_review` notification asks for: "an
+  // email that looks like an offer for <address> arrived, N documents are
+  // already filed to the listing's deal file — confirm the buyer to create the
+  // offer." Confirming the buyer means exactly this route. The documents that
+  // email filed carry `metadata.awaiting_offer_link` and a `listing_id` because
+  // no offer row existed yet, and NOTHING ever finished the link, so they
+  // counted toward the listing forever and never toward the offer whose
+  // compliance gate needs them.
+  //
+  // The uploaded file name is passed as the hint because the agent is uploading
+  // the very PDF that arrived by email; when several outside agents are waiting
+  // on the same listing that is what tells their paperwork apart. If nothing
+  // can tell them apart, NOTHING is linked — a mis-link counts another deal's
+  // paperwork toward this one and passes a gate with it.
+  const inboundLink = await linkInboundDocumentsToOffer({
+    brokerageId,
+    listingId,
+    offerId:   offer.id,
+    contactId,
+    fileName:  file.name,
+  })
+  if (inboundLink.errors.length > 0) {
+    console.error(`[offers/upload] offer ${offer.id}: inbound link errors:`, inboundLink.errors.join(" | "))
+  }
+  // An ambiguity is not an error and must not be silent either: the emailed
+  // paperwork is still sitting on the listing, and the agent is the only one
+  // who can say whose it is. Told on the same notification rail the intake used
+  // to open the loop, and it NAMES what to do.
+  if (inboundLink.plan.ambiguous) {
+    await serviceClient.from("notifications").insert({
+      user_id:      user.id,
+      brokerage_id: brokerageId,
+      type:         "offer_intake_review",
+      title:        "Emailed offer documents were NOT attached to this offer",
+      body:         `${inboundLink.plan.senders.length} different senders (${inboundLink.plan.senders.join(", ")}) have offer paperwork emailed for this listing and still waiting for an offer, so none of it was attached — attaching the wrong sender's contract would count another buyer's paperwork toward this deal. `
+                  + `Upload the PDF that came from this buyer's agent (same file name as the email attachment) and it will be matched, or file their documents from the deal file.`,
+      entity_type:  "offer",
+      entity_id:    offer.id,
+      priority:     "high",
+      is_read:      false,
+    })
+  }
+
   // lifecycle_events + OFFER_UPLOADED kernel event (non-blocking)
   await supabase.from("lifecycle_events").insert({
     brokerage_id:  brokerageId,
@@ -175,5 +221,10 @@ export async function POST(req: NextRequest) {
     offer_id: offer.id,
     document_url: publicUrl,
     extraction_status: "pending",
+    // What became of the paperwork that arrived by email for this listing.
+    inbound_documents_linked: inboundLink.linkedDocumentIds.length,
+    inbound_link_reason:      inboundLink.plan.reason,
+    inbound_link_ambiguous:   inboundLink.plan.ambiguous,
+    inbound_link_senders:     inboundLink.plan.senders,
   })
 }

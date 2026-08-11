@@ -158,8 +158,20 @@ console.log("\n[checkpoint 2 — signed listing agreement → live listing]")
 console.log("\n[one rule, not two copies of it]")
 {
   const scan = src("lib/workflow/intelligence/scan-offer-packet.ts")
+  // THE CONSTRUCT, not the spelling. This used to name the two ARGUMENT
+  // EXPRESSIONS verbatim (`analyzeFilledPacket(filledPacket)` and
+  // `analyzeFilledPacket((parsed?.filledPacket`), so re-binding the packet to a
+  // differently-named local — which is all wave 11 did to the listing scan on
+  // its way to fixing the lookup — read as "the shared rule was abandoned".
+  // What must be true is that EACH scan reaches the one analyzer, whatever it
+  // hands it; asserted by splitting the module at the listing scan.
+  const boundary = scan.indexOf("export async function scanListingPacketCompleteness")
+  const offerHalf   = boundary > 0 ? scan.slice(0, boundary) : scan
+  const listingHalf = boundary > 0 ? scan.slice(boundary)    : ""
   check("both scans call the shared analyzer",
-    scan.includes("analyzeFilledPacket(filledPacket)") && scan.includes("analyzeFilledPacket((parsed?.filledPacket"))
+    boundary > 0 &&
+    /analyzeFilledPacket\(/.test(offerHalf) && /analyzeFilledPacket\(/.test(listingHalf),
+    "one checkpoint walking its own copy of the rule is how the two gates drift apart")
   check("…and the old inline copy of the signature rule is gone",
     !/const SIGNATURE_HINTS/.test(scan))
   check("required-vs-warning comes from the ONE settings cascade for both",

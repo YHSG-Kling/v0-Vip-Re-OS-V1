@@ -46,8 +46,10 @@ import {
 } from "../lib/buyer-offer/buyer-signature-evidence"
 import {
   planInboundFiling,
+  planInboundOfferLink,
   STAGED_PACKET_DOCUMENT_TYPE,
 } from "../lib/inbound-mail/offer-detect"
+import { linkInboundDocumentsToOffer } from "../lib/inbound-mail/offer-intake"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -86,11 +88,13 @@ function makeStub(store: Store, opts: StubOpts = {}) {
       const st: any = { op: "select", filters: {}, json: {}, payload: null, order: null, asc: true, single: false }
       const rows = () => store[table] ?? []
       const b: any = {
-        select() { st.op = "select"; return b },
+        // `.select()` after an insert/update is RETURNING, not a new query —
+        // the linker uses it to learn how many rows its WHERE actually matched.
+        select() { if (st.op !== "select") st.returning = true; return b },
         insert(p: any) { st.op = "insert"; st.payload = p; return b },
         update(p: any) { st.op = "update"; st.payload = p; return b },
         eq(c: string, v: any) { st.filters[c] = v; return b },
-        filter(c: string, _o: string, v: any) { st.json[c] = v; return b },
+        filter(c: string, o: string, v: any) { st.json[c] = { op: o, value: v }; return b },
         order(c: string, o?: { ascending?: boolean }) { st.order = c; st.asc = o?.ascending !== false; return b },
         limit() { return b },
         maybeSingle() { st.single = true; return b },
@@ -98,9 +102,16 @@ function makeStub(store: Store, opts: StubOpts = {}) {
       }
       const matches = (r: Row) => {
         for (const [k, v] of Object.entries(st.filters)) if (r[k] !== v) return false
-        for (const [k, v] of Object.entries(st.json)) {
+        for (const [k, spec] of Object.entries(st.json) as Array<[string, any]>) {
           const m = /^metadata->>(.+)$/.exec(k)
-          if (m && (r.metadata ?? {})[m[1]] !== v) return false
+          if (!m) continue
+          // `->>` is a TEXT cast: jsonb `true` reads as "true", and a JSON null
+          // (or an absent key) reads as SQL NULL. Getting this wrong is how a
+          // stub agrees with code the database would refuse.
+          const raw  = (r.metadata ?? {})[m[1]]
+          const text = raw === undefined || raw === null ? null : String(raw)
+          if (spec.op === "is" && spec.value === null) { if (text !== null) return false; continue }
+          if (text !== (spec.value === null ? null : String(spec.value))) return false
         }
         return true
       }
@@ -115,8 +126,9 @@ function makeStub(store: Store, opts: StubOpts = {}) {
         }
         if (st.op === "update") {
           if (opts.updateError) return { data: null, error: { message: opts.updateError } }
-          for (const r of rows().filter(matches)) Object.assign(r, st.payload)
-          return { data: null, error: null }
+          const hit = rows().filter(matches)
+          for (const r of hit) Object.assign(r, st.payload)
+          return { data: st.returning ? hit.map(r => ({ id: r.id })) : null, error: null }
         }
         if (st.op === "insert") {
           if (opts.insertError) return { data: null, error: { message: opts.insertError } }
@@ -481,6 +493,176 @@ async function main() {
     // somebody on the path that already reaches the TC and the agent.
     check("a contested attestation is raised on the existing compliance-flag path",
       /ai_corroboration/.test(stc) && /compliance\.submit_warnings/.test(stc))
+  }
+
+  // ── L4 · PURE: whose paperwork is it? ────────────────────────────────────
+  //
+  // Wave 10 made the CONFIRM branch FILE the outside agent's attachments
+  // instead of discarding them; they carry `metadata.awaiting_offer_link` and a
+  // listing, because no offer row exists yet. NOTHING EVER COMPLETED THE LINK,
+  // so they counted toward the listing forever and never toward the offer whose
+  // compliance gate needs them — and the attestation, which requires a document
+  // on file FOR THE OFFER, refused them.
+  //
+  // The hard half is not the stamp, it is WHICH rows: two outside agents can be
+  // waiting on the same listing, and linking both sets counts another deal's
+  // paperwork toward this one — invisibly, and through a gate.
+  console.log("\n[the inbound link is completed, and never guessed]")
+  {
+    const a1 = { id: "d1", fileName: "RPA_signed.pdf", fromEmail: "agent.a@brokerB.com", linkedOfferId: null }
+    const a2 = { id: "d2", fileName: "Addendum.pdf",   fromEmail: "Agent.A@brokerB.com", linkedOfferId: null }
+    const b1 = { id: "d3", fileName: "Contract.pdf",   fromEmail: "agent.b@brokerC.com", linkedOfferId: null }
+
+    const one = planInboundOfferLink([a1, a2])
+    check("one sender waiting ⇒ all of that sender's pages link, not just the contract",
+      one.link.join(",") === "d1,d2" && one.reason === "only_sender" && one.ambiguous === false)
+    check("…and the sender is case-folded, so one agent is one group",
+      one.senders.length === 1)
+
+    const two = planInboundOfferLink([a1, a2, b1])
+    check("TWO senders waiting and nothing to choose ⇒ NOTHING is linked",
+      two.link.length === 0 && two.ambiguous === true && two.reason === "ambiguous_senders",
+      "a mis-link counts another deal's paperwork toward this offer, and passes a gate with it")
+    check("…and both senders are reported so a human can settle it",
+      two.senders.length === 2)
+
+    const byFile = planInboundOfferLink([a1, a2, b1], { preferFileName: "rpa_signed.PDF" })
+    check("the PDF the agent uploads identifies the group it came from",
+      byFile.link.join(",") === "d1,d2" && byFile.reason === "matched_file" && byFile.ambiguous === false)
+
+    const bySender = planInboundOfferLink([a1, a2, b1], { preferFromEmail: "agent.b@brokerC.com" })
+    check("a known sender is AUTHORITATIVE — only their paperwork links",
+      bySender.link.join(",") === "d3" && bySender.reason === "matched_sender")
+    const absent = planInboundOfferLink([a1, a2], { preferFromEmail: "someone.else@x.com" })
+    check("…and a known sender who is NOT waiting links nothing, even with one group present",
+      absent.link.length === 0 && absent.reason === "sender_not_pending",
+      "falling back would attach a different deal's contract to this offer")
+
+    const already = planInboundOfferLink([{ ...a1, linkedOfferId: "some-other-offer" }])
+    check("a row already spoken for is never re-linked",
+      already.link.length === 0 && already.reason === "no_pending")
+    check("nothing waiting ⇒ no plan, and no invented row",
+      planInboundOfferLink([]).link.length === 0)
+  }
+
+  // ── L4 · THE WRITER: the stamp, against a stub store ─────────────────────
+  console.log("\n[the pending documents actually reach the offer]")
+  {
+    const LISTING = "22222222-2222-4222-8222-222222222222"
+    const pendingDocs = (): Row[] => ([
+      { id: "p1", brokerage_id: BROKERAGE, listing_id: LISTING, contact_id: null,
+        metadata: { file_name: "RPA_signed.pdf", from_email: "a@b.com", awaiting_offer_link: true, linked_offer_id: null, intake_source: "inbound_email", subject: "Offer on 12 Oak" } },
+      { id: "p2", brokerage_id: BROKERAGE, listing_id: LISTING, contact_id: null,
+        metadata: { file_name: "Addendum.pdf", from_email: "a@b.com", awaiting_offer_link: true, linked_offer_id: null, intake_source: "inbound_email" } },
+    ])
+
+    const store: Store = { offers: [], users: [], documents: pendingDocs(), activities: [] }
+    const res = await linkInboundDocumentsToOffer(
+      { brokerageId: BROKERAGE, listingId: LISTING, offerId: OFFER, contactId: CONTACT, fileName: "RPA_signed.pdf" },
+      makeStub(store),
+    )
+    check("every page of that sender's email is stamped with the offer",
+      res.linkedDocumentIds.length === 2 && res.errors.length === 0,
+      `linked ${res.linkedDocumentIds.length}, errors: ${res.errors.join("; ")}`)
+    check("…on the key auditOfferDocuments actually counts",
+      store.documents.every(d => d.metadata?.linked_offer_id === OFFER))
+    check("…and they stop claiming to be waiting",
+      store.documents.every(d => d.metadata?.awaiting_offer_link === false))
+    // The class wave 9 was built on: a wholesale metadata assignment destroys
+    // the provenance the lane spent two waves recording.
+    check("existing metadata keys SURVIVE — the blob is MERGED, never replaced",
+      store.documents[0].metadata?.from_email === "a@b.com" &&
+      store.documents[0].metadata?.intake_source === "inbound_email" &&
+      store.documents[0].metadata?.subject === "Offer on 12 Oak")
+    check("…and the buyer is filled in where the confirm branch had nobody",
+      store.documents.every(d => d.contact_id === CONTACT))
+
+    // Tenant + deal boundaries are on the WRITE, not only on the read.
+    const foreign: Store = { offers: [], users: [], activities: [], documents: [
+      ...pendingDocs(),
+      { id: "x1", brokerage_id: OTHER_BROK, listing_id: LISTING, contact_id: null,
+        metadata: { file_name: "Someone_Else.pdf", from_email: "a@b.com", awaiting_offer_link: true, linked_offer_id: null } },
+    ]}
+    const r2 = await linkInboundDocumentsToOffer(
+      { brokerageId: BROKERAGE, listingId: LISTING, offerId: OFFER, fileName: "RPA_signed.pdf" },
+      makeStub(foreign),
+    )
+    check("a pending row in ANOTHER brokerage is never linked",
+      r2.linkedDocumentIds.length === 2 &&
+      foreign.documents.find(d => d.id === "x1")!.metadata.linked_offer_id === null)
+
+    // Two senders, no hint: nothing moves, and the ambiguity comes back so the
+    // caller can say so rather than silently doing nothing.
+    const contested: Store = { offers: [], users: [], activities: [], documents: [
+      ...pendingDocs(),
+      { id: "q1", brokerage_id: BROKERAGE, listing_id: LISTING, contact_id: null,
+        metadata: { file_name: "Other_Contract.pdf", from_email: "c@d.com", awaiting_offer_link: true, linked_offer_id: null } },
+    ]}
+    const r3 = await linkInboundDocumentsToOffer(
+      { brokerageId: BROKERAGE, listingId: LISTING, offerId: OFFER },
+      makeStub(contested),
+    )
+    check("two senders and no hint ⇒ nothing is stamped, and the caller is told",
+      r3.linkedDocumentIds.length === 0 && r3.plan.ambiguous === true &&
+      contested.documents.every(d => d.metadata.linked_offer_id === null))
+
+    // A refused read RESOLVES in supabase-js. Pre-rollout these tables are
+    // EMPTY, so "nothing came back" must never be reported as "nothing to do".
+    const refusedStore: Store = { offers: [], users: [], activities: [], documents: pendingDocs() }
+    const r4 = await linkInboundDocumentsToOffer(
+      { brokerageId: BROKERAGE, listingId: LISTING, offerId: OFFER, fileName: "RPA_signed.pdf" },
+      makeStub(refusedStore, { readError: "permission denied for table documents" }),
+    )
+    check("a REFUSED read is reported, not read as 'nothing was waiting'",
+      r4.linkedDocumentIds.length === 0 && r4.errors.length === 1 &&
+      /permission denied/.test(r4.errors[0]))
+
+    const refusedWrite: Store = { offers: [], users: [], activities: [], documents: pendingDocs() }
+    const r5 = await linkInboundDocumentsToOffer(
+      { brokerageId: BROKERAGE, listingId: LISTING, offerId: OFFER, fileName: "RPA_signed.pdf" },
+      makeStub(refusedWrite, { updateError: "row level security" }),
+    )
+    check("a REFUSED write is reported per row, never counted as linked",
+      r5.linkedDocumentIds.length === 0 && r5.errors.length === 2)
+
+    // Idempotent: running it twice cannot re-stamp, and a row another offer
+    // already claimed is reported rather than stolen.
+    const again = await linkInboundDocumentsToOffer(
+      { brokerageId: BROKERAGE, listingId: LISTING, offerId: "77777777-7777-4777-8777-777777777aaa", fileName: "RPA_signed.pdf" },
+      makeStub(store),
+    )
+    check("a second offer cannot steal paperwork already linked to the first",
+      again.linkedDocumentIds.length === 0 &&
+      store.documents.every(d => d.metadata.linked_offer_id === OFFER))
+  }
+
+  // ── L4 · STRUCTURE: the link is completed where the offer is created ──────
+  console.log("\n[both surfaces that create the offer complete the link]")
+  {
+    const intake = src("lib/inbound-mail/offer-intake.ts")
+    const linkBound = intake.match(/export async function (linkInboundDocumentsToOffer)/)
+    check("the linker lives with the lane that opened the loop", !!linkBound)
+    check("…and the AUTO branch completes it with the sender it already knows",
+      new RegExp(`${linkBound?.[1]}\\(\\{[\\s\\S]{0,400}fromEmail:`).test(intake),
+      "without the sender, an unrelated agent's pending paperwork could be adopted")
+    // MERGED, not replaced — asserted on the write itself.
+    const upd = intake.slice(intake.indexOf("linkInboundDocumentsToOffer"))
+    check("the metadata write SPREADS the existing blob",
+      /metadata:\s*\{\s*\.\.\./.test(upd),
+      "a wholesale assignment here destroys the provenance both prior waves recorded")
+    check("…and the WRITE re-asserts the tenant, the listing and the unlinked state",
+      /\.eq\("brokerage_id"/.test(upd) && /\.eq\("listing_id"/.test(upd) &&
+      /\.filter\(`metadata->>\$\{LINKED_OFFER_ID_KEY\}`,\s*"is",\s*null\)/.test(upd))
+
+    const route = src("app/api/offers/upload/route.ts")
+    check("the manual upload route — the surface the intake notification asks for — completes it too",
+      /linkInboundDocumentsToOffer\(/.test(route))
+    const called = route.match(/const\s+(\w+)\s*=\s*await\s+linkInboundDocumentsToOffer\(/)
+    check("…identifying the sender by the file the agent just uploaded",
+      new RegExp(`linkInboundDocumentsToOffer\\(\\{[\\s\\S]{0,300}fileName:\\s*file\\.name`).test(route))
+    check("…and an ambiguity is told to a human instead of being swallowed",
+      !!called && new RegExp(`${called![1]}\\.plan\\.ambiguous`).test(route) &&
+      /from\(\s*"notifications"\s*\)/.test(route.slice(route.indexOf(`${called![1]}.plan.ambiguous`))))
   }
 
   console.log("\n──────────────────────────────────────────────────")
