@@ -1282,6 +1282,12 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   document_templates: "deal_coordinator",
   documents: "deal_coordinator",
   generated_documents: "deal_coordinator",
+  // m387 — the worklist of storage objects whose owning database row was never
+  // created (the bytes uploaded, the follow-up failed). It is a ledger about the
+  // INTEGRITY of the data layer itself rather than about any one deal, which is
+  // the Data Steward's charter; the Deal Coordinator owns the documents, not the
+  // reconciliation of the bucket they live in.
+  storage_orphaned_objects: "data_steward",
   lender_applications: "deal_coordinator",
   milestone_template_items: "deal_coordinator",
   negotiation_strategies: "deal_coordinator",
