@@ -63,11 +63,11 @@ export default async function TransactionsPage() {
     : { data: null }
 
   // Fetch transactions using server action (proper architecture pattern)
-  // getTransactions returns { success, data } or { success: false, error }
-  const txResult = await getTransactions({
-    agent_id: agentId,
-    ...(brokerageId ? { brokerage_id: brokerageId } : {}),
-  })
+  // getTransactions returns { success, data } or { success: false, error }.
+  // Agent and tenant are resolved from the SESSION inside the action now — this
+  // page no longer hands them in, because an argument the action ignores reads
+  // as though it were honoured.
+  const txResult = await getTransactions()
   const transactions = (txResult && "data" in txResult ? txResult.data : null) ?? []
 
   // Fetch deal_health_scores separately — no FK join supported from transactions

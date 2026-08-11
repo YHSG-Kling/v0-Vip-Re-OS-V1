@@ -408,10 +408,27 @@ export async function listPartnersWithReferrals(): Promise<{
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error("Unauthorized")
 
-  const { agentId, brokerageId, userId } = await getAgentContext()
+  const { agentId, brokerageId } = await getAgentContext()
+
+  // ABSORBED (wave 16) from the retired /api/dashboard/data `referrals` branch:
+  // a refused read reported as a FAILURE, and an unresolved identity refused
+  // rather than filtered on.
+  //
+  // Both reads below run on the SERVICE client, which has no RLS to fall back
+  // on, and neither destructured `error` — so a refusal arrived as `undefined`,
+  // became `[]`, and rendered "you have no referral partners". The identity was
+  // not checked either: with a null agentId this filtered `agent_id=eq.null`,
+  // which is not the same query anyone intended and is certainly not this
+  // agent's book.
+  if (!brokerageId) throw new Error("Your account is not linked to a brokerage yet.")
+  if (!agentId) throw new Error("Agent profile not found. Please complete onboarding.")
+
   const db = createServiceClient()
 
-  const [{ data: partners }, { data: referrals }] = await Promise.all([
+  const [
+    { data: partners, error: partnersError },
+    { data: referrals, error: referralsError },
+  ] = await Promise.all([
     db
       .from("referral_partners")
       .select("*")
@@ -427,6 +444,9 @@ export async function listPartnersWithReferrals(): Promise<{
       .order("created_at", { ascending: false })
       .limit(200),
   ])
+
+  if (partnersError) throw new Error(`Could not load referral partners: ${partnersError.message}`)
+  if (referralsError) throw new Error(`Could not load referrals: ${referralsError.message}`)
 
   return {
     partners: (partners ?? []) as ReferralPartnerRow[],

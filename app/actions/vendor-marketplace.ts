@@ -9,6 +9,17 @@ import { compareVendors, pickBestVendor } from "@/lib/vendors/rank"
 // VENDOR DIRECTORY & SEARCH
 // ============================================
 
+/**
+ * ABSORBED (wave 16) from the retired /api/dashboard/data `vendors` branch: a
+ * refused read reported as a FAILURE rather than as an empty result.
+ *
+ * Two reads here resolved without their `error` ever being looked at:
+ *   · the identity read. A refusal made `brokerageId` undefined, which silently
+ *     demoted the caller to the global-vendors-only branch — the brokerage's own
+ *     bench simply vanished and the screen said the marketplace was thin.
+ *   · the vendor_ratings read, whose refusal rendered every vendor as unrated.
+ * The tenant itself was already session-derived; that part was sound.
+ */
 export async function searchVendors(filters: {
   serviceType?: string
   name?: string
@@ -22,11 +33,13 @@ export async function searchVendors(filters: {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
 
-  const { data: profile } = await supabase
+  const { data: profile, error: profileError } = await supabase
     .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
+
+  if (profileError) throw new Error(`Could not resolve your brokerage: ${profileError.message}`)
 
   const brokerageId = profile?.brokerage_id
 
@@ -75,10 +88,12 @@ export async function searchVendors(filters: {
   // Get vendor ratings for each vendor
   const vendorIds = vendors?.map(v => v.id) || []
   
-  const { data: ratings } = await supabase
+  const { data: ratings, error: ratingsError } = await supabase
     .from("vendor_ratings")
     .select("*")
     .in("vendor_id", vendorIds)
+
+  if (ratingsError) throw new Error(`Could not load vendor ratings: ${ratingsError.message}`)
 
   const ratingsMap = new Map(ratings?.map(r => [r.vendor_id, r]))
 

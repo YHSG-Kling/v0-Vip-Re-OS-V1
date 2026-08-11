@@ -41,8 +41,17 @@ export async function getContacts(params?: {
     const { agentId, brokerageId, userType } = await getAgentContext()
     const supabase = await createClient()
 
+    // ABSORBED (wave 16) from the retired /api/dashboard/data `contacts` branch:
+    // a caller who may not be told anything is REFUSED, never handed a
+    // successful empty list. This used to return `{ success: true, contacts: [] }`,
+    // which renders "you have no contacts" for a session that has no tenant at
+    // all — and pre-rollout that is indistinguishable from the truth.
     if (!brokerageId) {
-      return { success: true, contacts: [] }
+      return {
+        success: false,
+        error: "Your account is not linked to a brokerage yet.",
+        contacts: [] as any[],
+      }
     }
 
     const limit = Math.min(Math.max(Math.floor(params?.limit ?? 100), 1), 500)

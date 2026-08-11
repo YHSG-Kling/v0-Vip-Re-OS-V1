@@ -3,7 +3,7 @@
 import { createServiceClient } from "@/lib/supabase/service";
 import { isValidUUID } from "@/lib/validations";
 import {
-  deriveOfferStateFromActivities,
+  deriveOfferStatesFromActivities,
   isTerminalOfferState,
   type OfferState,
 } from "@/lib/buyer-offer/offer-lifecycle";
@@ -62,73 +62,67 @@ interface DerivedOfferSummary {
 }
 
 /**
- * Derive the lifecycle state of MANY offers.
+ * Derive the lifecycle state of MANY offers — ONE `activities` read.
  *
  * WHY THIS CALLS THE LIB AND NOT `getOfferLifecycleState`:
  *
  * Every reader in this file used to call
  * `track-offer-lifecycle.ts:getOfferLifecycleState` once per offer. That export
- * is now SESSION-GATED (it was one of the three open `"use server"` reads this
- * slice closed), so calling it in a loop would re-prove the caller's session and
- * re-read the offer's tenant once per offer — N extra round trips to answer a
- * question this module's own gate (`requireContactTenant`) has already settled
- * for the whole set. It would also gate on the OFFER's brokerage per offer,
- * which is the same tenant the contact gate already established.
+ * is now SESSION-GATED (it was one of the three open `"use server"` reads a
+ * previous slice closed), so calling it in a loop would re-prove the caller's
+ * session and re-read the offer's tenant once per offer — N extra round trips to
+ * answer a question this module's own gate (`requireContactTenant`) has already
+ * settled for the whole set. It would also gate on the OFFER's brokerage per
+ * offer, which is the same tenant the contact gate already established.
  *
- * So the loop goes to the CANONICAL derivation directly —
- * lib/buyer-offer/offer-lifecycle.ts:deriveOfferStateFromActivities — which is a
- * pure reader over an injected client and is the single source of truth for
- * "what state is this offer in". No second derivation is introduced here: this
- * function only fans the canonical one out and collects its answers.
+ * So this goes to the CANONICAL derivation directly —
+ * lib/buyer-offer/offer-lifecycle.ts:deriveOfferStatesFromActivities. No second
+ * derivation is introduced here and none could be: the batch entry point and the
+ * single-offer one share one private reducer on that module, so nothing in this
+ * file decides what an activity row means.
  *
- * READABILITY IS ESTABLISHED ONCE, POSITIVELY. `deriveOfferStateFromActivities`
- * reports "this offer has no lifecycle events" and "the activities read was
- * REFUSED" through the same `{ ok: false }` channel, separated only by wording —
- * and a gate must never tell those apart by matching a sentence. So one probe
- * read runs first over the whole offer set with its `error` destructured: if the
- * trail cannot be read, every caller below refuses. If it CAN be read, an offer
- * with no events genuinely has none (createOffer tolerates a failed
- * `buyer.offer.draft.created` write and says so loudly), and skipping it is
- * correct rather than a swallowed refusal.
+ * THE PROBE IS GONE, AND THE GUARANTEE IS STRICTLY STRONGER FOR IT.
  *
- * KNOWN LIMIT, stated rather than hidden: this is still one activities read per
- * offer, issued concurrently. A true single-query batch needs a batch entry
- * point on the canonical module itself (`deriveOfferStatesFromActivities`), and
- * lib/buyer-offer/offer-lifecycle.ts is outside this slice — folding the rows
- * here instead would mint the second derivation the offer lane spent a wave
- * deleting.
+ * There used to be a preceding `.limit(1)` probe read over the whole offer set,
+ * for one reason: the per-offer derivation reported "this offer has no lifecycle
+ * events" and "the activities read was REFUSED" through the same `{ ok: false }`
+ * channel, separated only by wording, and a gate must never tell those apart by
+ * matching a sentence. The probe established readability positively so that a
+ * later `{ ok: false }` could be treated as genuine absence.
+ *
+ * The batch read destructures its own `error` and reports a refusal ONCE, at the
+ * top of its result, in a field no per-offer answer can occupy — so "unreadable"
+ * and "no events" now separate AT THE SOURCE and the probe has nothing left to
+ * establish. What it also removes is a real hole: the probe proved that ONE read
+ * of the set succeeded, after which each of the N per-offer reads could still be
+ * refused individually and would then be skipped as "no events". Now there is
+ * one read, and if it is refused every caller below refuses. Nothing is skipped
+ * on a refusal, because a refusal never reaches the per-offer level.
+ *
+ * An offer that IS readable and has no events is still skipped, and that is
+ * still correct: createOffer tolerates a failed `buyer.offer.draft.created`
+ * write and says so loudly, so such an offer genuinely has no state to report.
  */
 async function deriveStatesForOffers(
   supabase: ReturnType<typeof createServiceClient>,
   offerIds: string[],
 ): Promise<{ ok: true; states: DerivedOfferSummary[] } | { ok: false; error: string }> {
-  if (offerIds.length === 0) return { ok: true, states: [] };
-
-  // The probe. `error` is destructured because supabase-js RESOLVES a refused
-  // query — without this, "the trail is unreadable" and "this buyer's offers
-  // have no events yet" arrive as the same value, and the limit gate below
-  // would report a pending count of zero for a buyer at the cap.
-  const { error: probeError } = await supabase
-    .from("activities")
-    .select("id")
-    .eq("entity_type", "offer")
-    .in("entity_id", offerIds)
-    .limit(1);
-
-  if (probeError) {
-    return { ok: false, error: `Could not read offer lifecycle events: ${probeError.message}` };
+  // No empty-list special case here on purpose: `deriveOfferStatesFromActivities`
+  // owns that rule (an empty `.in(...)` is a trap) and owns it in ONE place.
+  const derived = await deriveOfferStatesFromActivities(supabase as any, offerIds);
+  if (!derived.ok) {
+    // THE REFUSAL, CARRIED WHOLE. Every caller below turns this into a
+    // `success:false`. A limit gate that cannot read the trail must never report
+    // a pending count of zero.
+    return { ok: false, error: derived.reason };
   }
 
-  const derived = await Promise.all(
-    offerIds.map(async (offerId) => ({
-      offerId,
-      result: await deriveOfferStateFromActivities(supabase as any, offerId),
-    })),
-  );
-
   const states: DerivedOfferSummary[] = [];
-  for (const { offerId, result } of derived) {
-    if (!result.ok) continue; // proven readable above ⇒ genuinely no events
+  for (const offerId of offerIds) {
+    const result = derived.states.get(offerId);
+    // Reached only when the read SUCCEEDED, so `!ok` here means exactly one
+    // thing: this offer has no lifecycle events.
+    if (!result || !result.ok) continue;
     states.push({
       offerId,
       state: result.state,
@@ -190,8 +184,10 @@ async function requireContactTenant(contactId: string): Promise<
  * door `checkDuplicateOffer` and `emitMultiOfferEvent` already used.
  *
  * FAILS CLOSED IN BOTH DIRECTIONS. A refused read no longer resolves into a
- * pending count of zero: `deriveStatesForOffers` establishes readability first,
- * and the `offers` read below destructures `error`. Pre-rollout every table is
+ * pending count of zero: `deriveStatesForOffers` carries the batch derivation's
+ * own refusal out whole, and the `offers` read below destructures `error`. A
+ * refused lifecycle read can therefore never arrive here as "zero pending" —
+ * it arrives as `success:false` and this gate refuses. Pre-rollout every table is
  * EMPTY, so "nothing came back" can never be the thing that lets an offer
  * through — the caller gets `success:false` and must refuse.
  *
@@ -443,9 +439,9 @@ export async function checkDuplicateOffer(
  * `offers` read is additionally anchored on the tenant that gate resolved from
  * the CONTACT ROW, never from the caller.
  *
- * Both reads destructure `error`, and the lifecycle derivation establishes
- * readability before any offer is dropped from the list: an empty list must mean
- * "no live offers", never "the read was refused".
+ * Both reads destructure `error`, and the lifecycle derivation reports a refused
+ * read as a refusal of the whole call before any offer is dropped from the list:
+ * an empty list must mean "no live offers", never "the read was refused".
  */
 export async function getBuyerActiveOffers(
   contactId: string

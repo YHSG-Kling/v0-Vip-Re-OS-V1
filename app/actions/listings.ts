@@ -6,6 +6,8 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { handleError } from "@/lib/errors"
 import { assignTierToListing } from "@/lib/listings/tier-assigner"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 /**
  * CRUD operations for listings
@@ -33,13 +35,57 @@ async function requireCaller(): Promise<
   return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
 }
 
+/**
+ * ABSORBED (wave 16) from the retired /api/dashboard/data `listings` branch: the
+ * SESSION-DERIVED tenant filter and the session-pinned agent scope.
+ *
+ * This delegated straight through with whatever the caller passed, and the
+ * service applies `agent_id` only when given and no tenant filter at all — so
+ * `getListings()` returned every listing on the platform and
+ * `getListings({ agentId })` returned any agent's book. The tenant now comes
+ * from the session and is not overridable; a caller-supplied agent id may only
+ * NARROW, and only for a broker/admin inside their own tenant.
+ */
 export async function getListings(params?: {
   agentId?: string
   status?: string
   stage?: string
   limit?: number
 }) {
-  return getListingsService(params)
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) {
+    return { success: false as const, error: "Not authenticated", listings: [] as unknown[] }
+  }
+  if (!ctx.brokerageId) {
+    return {
+      success: false as const,
+      error: "Your account is not linked to a brokerage yet.",
+      listings: [] as unknown[],
+    }
+  }
+
+  if (params?.agentId && !UUID_REGEX.test(params.agentId)) {
+    return { success: false as const, error: "Invalid agent ID", listings: [] as unknown[] }
+  }
+
+  // agents.id from the session — never a users.id, never a caller's claim.
+  let agentFilter: string | undefined
+  if (isAdminOrBroker({ user_type: ctx.userType })) {
+    agentFilter = params?.agentId
+  } else {
+    if (!ctx.agentId) {
+      return { success: false as const, error: "Agent profile not found", listings: [] as unknown[] }
+    }
+    agentFilter = ctx.agentId
+  }
+
+  return getListingsService({
+    status: params?.status,
+    stage: params?.stage,
+    limit: params?.limit,
+    agentId: agentFilter,
+    brokerageId: ctx.brokerageId,
+  })
 }
 
 // UUID validation regex
@@ -86,8 +132,19 @@ export async function createListing(params: {
   propertyType?: string
   listingType?: string
 }) {
+  // ADJACENT WRITER FIX (wave 16, not a merge): this never supplied the tenant,
+  // and createListingService writes whatever it is given — so every row created
+  // through this door carried a NULL brokerage_id and was therefore invisible to
+  // the tenant-filtered reader above (and visible to any policy that admits an
+  // untenanted row). Same class as the ai-auto-response stamp.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false as const, error: "Your account is not linked to a brokerage yet." }
+  }
+
   const result = await createListingService({
     agentId: params.agentId,
+    brokerageId: ctx.brokerageId,
     sellerContactId: params.sellerId,
     address: params.address,
     city: params.city,

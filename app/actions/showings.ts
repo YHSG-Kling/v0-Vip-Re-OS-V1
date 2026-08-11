@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache"
 import { requireActiveBBA } from "@/lib/buyer-broker/gate"
 import { guardShowingFinancialGate } from "@/lib/buyer-execution/showing-financial-policy"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 export async function requestShowing(data: {
   contactId: string
@@ -357,9 +358,62 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
   }
 }
 
+/**
+ * ABSORBED (wave 16) from the retired /api/dashboard/data `showings` branch:
+ * the session gate, the tenant boundary, and a refused read reported as a
+ * FAILURE instead of an empty list.
+ *
+ * Three things were wrong and all three are the same family:
+ *   · no session of any kind — the contact id came from the caller and was the
+ *     only filter, so any signed-in browser could read any brokerage's buyer's
+ *     showing history by id;
+ *   · both the `if (error)` path and the catch returned `[]`, so a refusal
+ *     rendered as "this buyer has never asked to see anything";
+ *   · the request rows themselves are not reliably tenant-stamped — the public
+ *     landing-page capture in app/actions/listing-landing.ts writes one with no
+ *     brokerage anchor at all. So the boundary is enforced on the CONTACT, which
+ *     is always stamped, rather than on a column that would silently hide the
+ *     agent's own rows. Same shape as documents.ts:getDocuments.
+ *
+ * The result is now discriminated. hooks/use-contact-dashboard.ts already
+ * accepted both shapes, so nothing downstream had to be told.
+ */
 export async function getShowings(contactId: string) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated", showings: [] as any[] }
+    if (!ctx.brokerageId) {
+      return { success: false, error: "Your account is not linked to a brokerage yet.", showings: [] as any[] }
+    }
+
     const supabase = await createClient()
+
+    // The tenant boundary, session-derived: this contact must be one of ours.
+    //
+    // `error` is destructured. The previous shape leaned on `!owner` to cover a
+    // refused lookup as well as a missing row, and it did fail CLOSED — but it
+    // answered an OUTAGE with the word "Forbidden", which reads as a decision
+    // somebody made about this caller. It is the same conflation wave 15 removed
+    // from lib/portal/require-contact-access.ts: failing closed is the floor,
+    // not the whole obligation, and a caller told "Forbidden" will not retry.
+    const { data: owner, error: ownerError } = await supabase
+      .from("contacts")
+      .select("brokerage_id")
+      .eq("id", contactId)
+      .maybeSingle()
+
+    if (ownerError) {
+      console.error("[showings] getShowings tenant check refused:", ownerError.message)
+      return {
+        success: false,
+        error: "We couldn't verify this contact just now — please try again.",
+        showings: [] as any[],
+      }
+    }
+
+    if (!owner || owner.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden", showings: [] as any[] }
+    }
 
     const { data, error } = await supabase
       .from("showing_requests")
@@ -368,14 +422,14 @@ export async function getShowings(contactId: string) {
       .order("created_at", { ascending: false })
 
     if (error) {
-      console.error("[v0] Error fetching showings:", error)
-      return []
+      console.error("[showings] getShowings read refused:", error.message)
+      return { success: false, error: `Could not load showings: ${error.message}`, showings: [] as any[] }
     }
 
-    return data || []
-  } catch (error) {
-    console.error("[v0] Error in getShowings:", error)
-    return []
+    return { success: true, showings: (data ?? []) as any[] }
+  } catch (error: any) {
+    console.error("[showings] getShowings failed:", error?.message)
+    return { success: false, error: error?.message ?? "Could not load showings", showings: [] as any[] }
   }
 }
 

@@ -7,6 +7,7 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // ============================================================================
 // AI SHOWING MANAGEMENT SYSTEM
@@ -33,19 +34,46 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
  * recorded in docs/wave13-outcome.md rather than papered over here; the app-side
  * anchor below is correct either way and does not depend on it.
  */
-export async function getTours(agentId: string) {
+/**
+ * ABSORBED from the retired /api/dashboard/data `tours` branch: the tenant
+ * filter and the session gate landed in wave 15; wave 16 finished the pair by
+ * resolving the AGENT from the session too.
+ *
+ * The tenant filter alone bounded the id to one brokerage but did not stop a
+ * colleague reading it: any agent could pass any other agent's id and get their
+ * tour book back. The id is now the caller's own agents.id unless the caller
+ * administers the brokerage, in which case it may only NARROW inside the tenant
+ * the filter above already pinned.
+ */
+export async function getTours(agentId?: string) {
   try {
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated", tours: [] }
     if (!ctx.brokerageId) return { success: false, error: "Your account is not linked to a brokerage yet.", tours: [] }
 
+    if (agentId && !isValidUUID(agentId)) {
+      return { success: false, error: "Invalid agent ID", tours: [] }
+    }
+
+    // agents.id, from the session. Never a users.id, never a caller's claim.
+    let agentFilter: string | undefined
+    if (isAdminOrBroker({ user_type: ctx.userType })) {
+      agentFilter = agentId
+    } else {
+      if (!ctx.agentId) return { success: false, error: "Agent profile not found", tours: [] }
+      agentFilter = ctx.agentId
+    }
+
     const supabase = await createClient()
-    const { data, error } = await supabase
+    let query = supabase
       .from("tours")
       .select("*, showings(*)")
       .eq("brokerage_id", ctx.brokerageId)
-      .eq("agent_id", agentId)
       .order("tour_date", { ascending: false })
+
+    if (agentFilter) query = query.eq("agent_id", agentFilter)
+
+    const { data, error } = await query
 
     if (error) throw error
     return { success: true, tours: data || [] }

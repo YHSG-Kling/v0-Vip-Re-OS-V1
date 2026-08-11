@@ -125,7 +125,6 @@
     "app/settings/email-templates/template-preview.tsx": 1,
     "hooks/use-click-outside.ts": 1,
     "hooks/use-contact-dashboard.ts": 1,
-    "hooks/use-dashboard-data.ts": 19,
     "hooks/use-debounce.ts": 1,
     "hooks/use-local-storage.ts": 1,
     "hooks/use-media-query.ts": 7,
@@ -678,7 +677,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 9026,
+  "census": 9007,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1479,7 +1478,6 @@
     "app/api/cron/weekly-ai-metrics/route.ts": 1,
     "app/api/cron/weekly-income-digest/route.ts": 1,
     "app/api/dashboard/badge-counts/route.ts": 1,
-    "app/api/dashboard/data/route.ts": 1,
     "app/api/dashboard/operations/route.ts": 1,
     "app/api/dashboard/reporting/route.ts": 1,
     "app/api/deal-health/cron/route.ts": 1,
@@ -2724,7 +2722,6 @@
     "app/workflows/workflows-content.tsx": 1,
     "hooks/use-click-outside.ts": 1,
     "hooks/use-contact-dashboard.ts": 1,
-    "hooks/use-dashboard-data.ts": 19,
     "hooks/use-debounce.ts": 1,
     "hooks/use-local-storage.ts": 1,
     "hooks/use-media-query.ts": 8,
@@ -2966,7 +2963,7 @@
     "lib/buyer-offer/compliance-gate.ts": 3,
     "lib/buyer-offer/credentials-helper.ts": 2,
     "lib/buyer-offer/expire-offers.ts": 2,
-    "lib/buyer-offer/offer-lifecycle.ts": 2,
+    "lib/buyer-offer/offer-lifecycle.ts": 3,
     "lib/buyer-offer/status-sync.ts": 2,
     "lib/buyer-offers/address-analysis.ts": 1,
     "lib/buyer-offers/affordability.ts": 4,
@@ -8783,9 +8780,6 @@
     "app/api/dashboard/badge-counts/route.ts": [
       "GET"
     ],
-    "app/api/dashboard/data/route.ts": [
-      "GET"
-    ],
     "app/api/dashboard/operations/route.ts": [
       "GET"
     ],
@@ -12616,27 +12610,6 @@
     "hooks/use-contact-dashboard.ts": [
       "useContactDashboard"
     ],
-    "hooks/use-dashboard-data.ts": [
-      "useDashboardData",
-      "useTransactions",
-      "useContacts",
-      "useListings",
-      "useAppointments",
-      "useShowings",
-      "useOffers",
-      "useReferrals",
-      "useReviews",
-      "useExpenses",
-      "useCommissions",
-      "useOpenHouses",
-      "useTasks",
-      "useNotifications",
-      "useDocuments",
-      "useAgents",
-      "useTours",
-      "useVendors",
-      "useCommunications"
-    ],
     "hooks/use-debounce.ts": [
       "useDebounce"
     ],
@@ -13932,7 +13905,8 @@
     ],
     "lib/buyer-offer/offer-lifecycle.ts": [
       "isTerminalOfferState",
-      "deriveOfferStateFromActivities"
+      "deriveOfferStateFromActivities",
+      "deriveOfferStatesFromActivities"
     ],
     "lib/buyer-offer/status-sync.ts": [
       "syncOfferStatus",
@@ -20434,5 +20408,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 289
+  "trulyDead": 269
 }

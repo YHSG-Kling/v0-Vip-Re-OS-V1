@@ -1,5 +1,19 @@
 # Wave 14 — the four carried items, and the buyer's offer button
 
+> **STATUS: this is a PRE-DISPATCH audit. All four carried items below were
+> closed in wave 14 itself; the text describing them as open is the record of
+> what was found, not of what is true now.** It is left standing rather than
+> edited, because a ledger rewritten after the fact stops being evidence. Wave
+> 15 and wave 16 both had to re-derive this, so the resolutions are stated here
+> once, each re-verified against the tree on 2026-08-11:
+>
+> | item | resolution, verified today |
+> |---|---|
+> | **C1** `seedTransactionMilestones` had no caller and a docstring claiming one | **CLOSED.** Its old body was a strictly-lesser duplicate and was collapsed onto `lib/transactions/milestone-service.ts:seedJourneyMilestones`. It is now the idempotent RE-SEED it always claimed to be, and it is *called*: `lib/transactions/closing-orchestration.ts:540`. |
+> | **C2** `runClosingOrchestration` read five tables and checked `error` on one | **CLOSED.** All three bare reads now destructure: `closing-orchestration.ts:447` (`txnsError`), `:611` (`openError`), `:734` (`lostError`), and the result carries a discriminated `outcome` so a refusal cannot be reported as a clean sweep. |
+> | **C3** `tours_agent_own` compared `tours.agent_id` (agents-class) to `auth.uid()` (users-class) | **CLOSED by DDL** — `supabase/migrations/m389-tours-agent-own-resolves-the-agent-id.sql`, and generalised to 21 more policies by `m390`/`m391`. |
+> | **C4** `canBuyerSubmitOffer` vs `canBuyerSubmitOffers` differed by one character | **CLOSED.** Renamed to `checkPendingOfferLimit` (the LIMIT gate) and `checkBuyerOfferEligibility` (the ELIGIBILITY gate); the orphan-export re-baseline it was blocked on was taken deliberately. No occurrence of either old name survives outside the comments that record the rename. |
+
 ## The new ask, audited before anything is built
 
 > the buyer can click a button to submit an offer on a property which is a

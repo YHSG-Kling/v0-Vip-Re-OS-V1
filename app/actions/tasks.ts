@@ -3,9 +3,20 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { handleError } from "@/lib/errors"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 /**
- * Get all tasks for a user or filtered by parameters
+ * Get all tasks for a user or filtered by parameters.
+ *
+ * ABSORBED (wave 16) from the retired /api/dashboard/data `tasks` branch: the
+ * SESSION-DERIVED tenant filter and the session-pinned assignee scope.
+ *
+ * Every filter here was optional and caller-supplied and none was applied by
+ * default, so `getTasks()` returned every task on the platform and
+ * `getTasks({ assignedTo })` returned any agent's worklist by id. The tenant is
+ * now applied unconditionally and first; `assignedTo` may only NARROW, and only
+ * for a broker/admin inside their own tenant.
  */
 export async function getTasks(params?: {
   assignedTo?: string
@@ -15,14 +26,31 @@ export async function getTasks(params?: {
   status?: string
 }) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated", tasks: [] }
+    if (!ctx.brokerageId) {
+      return { success: false, error: "Your account is not linked to a brokerage yet.", tasks: [] }
+    }
+
+    // tasks.assigned_to_agent_id → agents.id. Resolved from the session, never
+    // substituted from users.id.
+    let assigneeFilter: string | undefined
+    if (isAdminOrBroker({ user_type: ctx.userType })) {
+      assigneeFilter = params?.assignedTo
+    } else {
+      if (!ctx.agentId) return { success: false, error: "Agent profile not found", tasks: [] }
+      assigneeFilter = ctx.agentId
+    }
+
     const supabase = await createClient()
 
     let query = supabase
       .from("tasks")
       .select("*, assigned_agent:agents!tasks_assigned_to_agent_id_fkey(id, first_name, last_name)")
+      .eq("brokerage_id", ctx.brokerageId)
       .order("due_date", { ascending: true })
 
-    if (params?.assignedTo) query = query.eq("assigned_to_agent_id", params.assignedTo)
+    if (assigneeFilter) query = query.eq("assigned_to_agent_id", assigneeFilter)
     if (params?.contactId) query = query.eq("contact_id", params.contactId)
     if (params?.listingId) query = query.eq("listing_id", params.listingId)
     if (params?.transactionId) query = query.eq("transaction_id", params.transactionId)

@@ -9,6 +9,10 @@ import { handleError } from "@/lib/errors"
 
 export async function getListingsService(params?: {
   agentId?: string
+  /** Tenant anchor. app/actions/listings.ts:getListings resolves this from the
+   *  SESSION and always supplies it; it exists as a parameter only because this
+   *  layer takes no session of its own. */
+  brokerageId?: string
   status?: string
   stage?: string
   limit?: number
@@ -22,6 +26,7 @@ export async function getListingsService(params?: {
       .select("*, seller:seller_contact_id(first_name, last_name), agent:agent_id(first_name, last_name)")
       .order("created_at", { ascending: false })
 
+    if (params?.brokerageId) query = query.eq("brokerage_id", params.brokerageId)
     if (params?.agentId) query = query.eq("agent_id", params.agentId)
     if (params?.status) query = query.eq("status", params.status)
     if (params?.stage) query = query.eq("lifecycle_stage", params.stage)

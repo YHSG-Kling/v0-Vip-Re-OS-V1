@@ -22,14 +22,40 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
  * - brokerage_id: ownership context
  */
 
-export async function getAppointments(params?: { agentId?: string; contactId?: string; startDate?: string; endDate?: string }) {
+/**
+ * ABSORBED (wave 16) from the retired /api/dashboard/data `appointments` branch:
+ * the SESSION-DERIVED tenant filter, applied unconditionally BEFORE any
+ * caller-supplied parameter is considered.
+ *
+ * This had no scope of any kind — every filter was optional and caller-supplied,
+ * so `getAppointments()` returned every calendar event on the platform and
+ * `getAppointments({ contactId })` returned any brokerage's contact's calendar.
+ *
+ * The `agentId` parameter is GONE rather than filtered on. The calendar table
+ * has no agents.id column at all — it carries `agent_user_id`, a users.id, which
+ * the live writer in this same file does not stamp (it puts the agent in
+ * `metadata`). Honouring the parameter against either column would have returned
+ * zero rows while reporting success; substituting one id space for the other is
+ * the exact defect this lane exists to refuse. Per-agent narrowing needs the
+ * writer fixed first, and that is a feature, not a filter.
+ */
+export async function getAppointments(params?: { contactId?: string; startDate?: string; endDate?: string }) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated", appointments: [] }
+    if (!ctx.brokerageId) {
+      return { success: false, error: "Your account is not linked to a brokerage yet.", appointments: [] }
+    }
+
     const supabase = await createClient()
-    
-    // Query calendar_events (canonical calendar table per Kernel OS)
+
+    // Query calendar_events (canonical calendar table per Kernel OS).
+    // The tenant anchor is session-derived and applied first; everything below
+    // may only NARROW it.
     let query = supabase
       .from("calendar_events")
       .select("*")
+      .eq("brokerage_id", ctx.brokerageId)
       .order("start_at", { ascending: true })
 
     // Filter by contact (entity_type='contact' and entity_id=contactId)

@@ -411,35 +411,61 @@ async function main() {
     )
 
     // THE N+1, AND WHY IT IS NOT SOLVED BY CALLING A GATED ENDPOINT IN A LOOP.
+    //
+    // Matches EITHER canonical entry point — the single-offer
+    // `deriveOfferStateFromActivities` or the batch
+    // `deriveOfferStatesFromActivities` that wave 16 added. Both live in
+    // lib/buyer-offer/offer-lifecycle.ts and the batch is the single-offer one's
+    // own engine, so there is still exactly ONE derivation; pinning this
+    // assertion to the singular spelling would have made the batch fix look like
+    // a regression, which is the difference between asserting a CONSTRUCT and
+    // asserting a name.
     const usesCanonicalDerivation = (text: string) =>
-      /deriveOfferStateFromActivities/.test(text) &&
+      /deriveOfferStates?FromActivities/.test(text) &&
       !/from\s*"\.\/track-offer-lifecycle"/.test(text)
     controlled(
       "the per-offer loops read the canonical derivation, not the gated endpoint once per offer",
       usesCanonicalDerivation, MULTI,
-      patched(MULTI, 'import {\n  deriveOfferStateFromActivities,',
-        'import { getOfferLifecycleState } from "./track-offer-lifecycle";\nimport {\n  deriveOfferStateFromActivities,',
+      patched(MULTI, 'import {\n  deriveOfferStatesFromActivities,',
+        'import { getOfferLifecycleState } from "./track-offer-lifecycle";\nimport {\n  deriveOfferStatesFromActivities,',
         "the per-offer import of the session-gated lifecycle export put back"),
     )
 
-    // READABILITY IS ESTABLISHED, NOT ASSUMED. The derivation reports "no events"
-    // and "refused" through one channel; the module must not tell them apart by
-    // matching a sentence, so it probes the trail once with `error` destructured.
-    // THE CONSTRUCT: the readability probe destructures `error`, and its refusal
-    // returns before any per-offer state is skipped.
-    const probesBeforeSkipping = (text: string) => {
-      const probeVar = (/const \{ error: (\w+) \} = await[\s\S]{0,300}?\.limit\(1\);/.exec(text) ?? [])[1]
-      if (!probeVar) return false
-      const declared = text.indexOf(`const { error: ${probeVar} }`)
-      const refuses = new RegExp(`if \\(${probeVar}\\) \\{`).test(text)
-      const derives = text.indexOf("deriveOfferStateFromActivities(")
-      return refuses && declared !== -1 && declared < derives
+    // READABILITY IS ESTABLISHED, NOT ASSUMED — AND IT IS ESTABLISHED FOR THE
+    // WHOLE SET, ONCE.
+    //
+    // This used to assert a separate probe read (`.limit(1)` with `error`
+    // destructured) that ran before the per-offer loop. Wave 16 removed the
+    // probe, and removing it was a STRENGTHENING, not a regression: the probe
+    // proved only that ONE read of the set succeeded, after which each of the N
+    // per-offer reads could still be refused individually and would then be
+    // skipped as "this offer has no events". With a single batched read there is
+    // no per-offer read left to be refused, so a refusal can no longer reach the
+    // level where skipping happens.
+    //
+    // THE CONSTRUCT, which is what actually protects the gate: the set-level
+    // derivation's refusal is RETURNED — not logged, not defaulted — and it is
+    // returned BEFORE the loop that skips offers. A limit gate that cannot read
+    // the trail must never report a pending count of zero.
+    const refusesSetBeforeSkipping = (text: string) => {
+      const body = /async function deriveStatesForOffers\b[\s\S]*?\n\}/.exec(text)?.[0]
+      if (!body) return false
+      // the batch call, its refusal branch, and the skipping loop, in that order
+      const derives = body.indexOf("deriveOfferStatesFromActivities(")
+      const refuses = /if\s*\(!\s*\w+\.ok\s*\)\s*\{[\s\S]{0,400}?return\s*\{\s*ok:\s*false/.exec(body)
+      const skips = body.indexOf("continue;")
+      return (
+        derives !== -1 &&
+        !!refuses &&
+        refuses.index > derives &&
+        (skips === -1 || refuses.index < skips)
+      )
     }
     controlled(
       "an unreadable lifecycle trail refuses the whole count rather than skipping offers one by one",
-      probesBeforeSkipping, MULTI,
-      patched(MULTI, "const { error: probeError }", "const { data: probeIgnored }",
-        "the probe stops destructuring `error`, so a refusal reads as an empty trail"),
+      refusesSetBeforeSkipping, MULTI,
+      patched(MULTI, "  if (!derived.ok) {", "  if (false) {",
+        "the set-level refusal branch made unreachable, so a refused read falls through to the skipping loop"),
     )
   }
 
