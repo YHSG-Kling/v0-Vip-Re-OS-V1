@@ -52,6 +52,12 @@ export const CRON_REGISTRY: CronEntry[] = [
   // published reels + FAQ landing pages, then raise geo_visibility_gap signals
   // that the manager-signals cron turns into gated regenerate_faq proposals.
   { path: "/api/cron/geo-citation-monitor",           schedule: "37 8 * * *" },
+  // Storage orphan sweep — retry the removes that the compensating delete in
+  // lib/storage/put-and-sign.ts could not complete. Off-peak and daily: the
+  // worklist only ever holds objects whose UNDO was refused, so it is short by
+  // construction, and a refused remove is rarely transient enough to be worth
+  // hammering hourly.
+  { path: "/api/cron/storage-orphan-sweep",           schedule: "48 4 * * *" },
   // Idle-hands initiative — managers fill silence with governed work (hourly).
   { path: "/api/cron/idle-hands",                     schedule: "5 * * * *" }, // (staggered r43)
   // Client Pulse — the weekly "what your team did for you" for sellers + buyers.

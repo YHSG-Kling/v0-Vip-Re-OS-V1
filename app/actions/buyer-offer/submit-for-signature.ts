@@ -8,6 +8,44 @@ import { checkCompliancePassed, syncOfferStatus } from "@/lib/buyer-offer"
 import { OFFER_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 import { getTransactionProviderByName } from "@/lib/integrations/providers/provider-resolver"
 import { logEventAndTrigger } from "@/lib/events/event-helpers"
+import {
+  planOutboundWatch,
+  OUTSIDE_LISTING_AGENT_EMAIL_KEY,
+  OUTSIDE_LISTING_AGENT_NAME_KEY,
+  OUTBOUND_WATCH_ARMED_AT_KEY,
+  type OutboundSignerRole,
+} from "@/lib/inbound-mail/offer-detect"
+
+// ── WAVE 12, R2 — WHO WE SENT IT TO IS RECORDED HERE ────────────────────────
+//
+// Owner's ruling: "if we send an offer out to an outsdie listing agents property
+// listing for our buyers, you can check for the returned email from that listing
+// agent."
+//
+// This is the surface that dispatches the packet, and it is the right place: it
+// is the first point at which the recipient list is known to be final (the
+// wizard's step-4 signers, or the auto-pull from the buyer's CRM contact) and
+// the last point before the paperwork leaves the building. Nothing earlier in
+// the buyer-offer chain has the recipients — `prefill-offer.ts` and
+// `buyer-offers.ts:createOffer` build the offer from the PROPERTY, and on an
+// outside listing they set `listing_id` null with the address on
+// `property_address`, which is precisely why there is no listing row to hang a
+// counterparty off and why it has to be recorded on the offer itself.
+//
+// `offers.metadata` is a live jsonb column and is where it goes — no column is
+// invented. The write MERGES: a wholesale metadata assignment destroying
+// `linked_offer_id` is the load-bearing defect of wave 9 and does not come back.
+//
+// The ROLE `listing_agent` already exists in the send UI (FormWizard step 4
+// renders a "Listing Agent" row with name + email). This action's parameter type
+// admitted only buyer/co_buyer/agent, so that address was flattened into "agent"
+// and lost — indistinguishable from OUR OWN buyer's agent, which is why it can
+// never be guessed back out of the signer list.
+
+/** What the provider is told. Providers understand parties, not our deal roles. */
+function providerRole(role: OutboundSignerRole | string): "buyer" | "co_buyer" | "agent" {
+  return role === "co_buyer" ? "co_buyer" : role === "buyer" ? "buyer" : "agent"
+}
 
 interface SubmitForSignatureParams {
   offerId: string
@@ -16,7 +54,8 @@ interface SubmitForSignatureParams {
   signers?: Array<{
     name: string
     email: string
-    role: "buyer" | "co_buyer" | "agent"
+    /** `listing_agent` is the COUNTERPARTY on an outside listing — see the header. */
+    role: OutboundSignerRole
   }>
   /** OPTIONAL signature placement tags (from the wizard's anchor plan, anchorsForProvider). When
    *  present they're forwarded to the provider so the marks place automatically. Absent → the agent
@@ -61,7 +100,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
   // provider — the webhook matches on that column.
   const { data: offer, error: offerError } = await supabase
     .from("offers")
-    .select("id, contact_id, listing_id, brokerage_id, esign_provider, provider_envelope_id, property_address, buyer_commission_acknowledged_at, disclosed_commission_payer")
+    .select("id, contact_id, listing_id, brokerage_id, esign_provider, provider_envelope_id, property_address, buyer_commission_acknowledged_at, disclosed_commission_payer, metadata")
     .eq("id", offerId)
     .single()
 
@@ -78,7 +117,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
   // AUTO-PULL the buyer signer from the offer's CRM contact when the caller didn't pass signers —
   // the e-sign provider should get the buyer's name + email automatically (no manual re-typing). A
   // contact with no email on file is surfaced as a blocker, never faked.
-  let signers = params.signers ?? []
+  let signers: Array<{ name: string; email: string; role: OutboundSignerRole }> = params.signers ?? []
   if (signers.length === 0) {
     const { buildSignersFromContacts } = await import("@/lib/intelligence/offer-signers")
     let buyer: { first_name?: string | null; last_name?: string | null; email?: string | null } | null = null
@@ -92,6 +131,20 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
     if (signers.length === 0) {
       return { success: false, error: "No buyer email on file to send for signature — add the buyer's email first.", blockerType: "missing_signer_email" }
     }
+  }
+
+  // WHO THE REPLY WILL COME FROM. Pure, so the three cases — in-house listing
+  // (nothing to watch), outside listing with a counterparty (armed), outside
+  // listing without one (REFUSED, and it says what is missing) — are provable
+  // without a database. It never guesses the address out of the other signers:
+  // our own buyer's agent is role `agent` too, and picking "an agent" would
+  // record OUR side as the counterparty and route our own mail into the deal.
+  const outboundWatch = planOutboundWatch({
+    listingId: (offer.listing_id as string | null) ?? null,
+    signers,
+  })
+  if (outboundWatch.refusal) {
+    console.warn(`[submit-for-signature] offer ${offerId}: outbound reply watch NOT armed — ${outboundWatch.refusal}`)
   }
 
   // ── EVERY `activities` WRITE IN THIS FILE NOW CARRIES THE TENANT AND THE KEY ─
@@ -268,7 +321,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
       await provider.sendForSignature({
         externalTransactionId: envelopeId,
         documentId:            offerId,
-        signers:               signers.map((s) => ({ email: s.email, name: s.name, role: s.role })),
+        signers:               signers.map((s) => ({ email: s.email, name: s.name, role: providerRole(s.role) })),
         // Forward the provider-shaped placement tags when the caller supplied them (the wizard's
         // anchor plan) so the provider places the marks automatically instead of manual tabbing.
         ...(params.tags && params.tags.length > 0 ? { tags: params.tags } : {}),
@@ -325,14 +378,29 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
   // key finalize-packet matches a signed envelope on — was never stamped. The
   // offer would then sit at its old status forever and never convert. Same file,
   // same rule as the eventError check above.
+  //
+  // The outbound watch rides ALONG with it rather than on a second write, so a
+  // packet that went out and a record of who it went to can never disagree. The
+  // blob is MERGED on top of what the offer already carries — never assigned.
+  const sentAt = new Date().toISOString()
+  const priorMetadata = ((offer.metadata ?? {}) as Record<string, unknown>)
+  const dispatchPayload = {
+    esign_status:         "sent",
+    esign_sent_at:        sentAt,
+    esign_provider:       credential?.platform ?? offer.esign_provider ?? null,
+    provider_envelope_id: envelopeId ?? offer.provider_envelope_id ?? null,
+    metadata: outboundWatch.armed
+      ? {
+          ...priorMetadata,
+          [OUTSIDE_LISTING_AGENT_EMAIL_KEY]: outboundWatch.email,
+          [OUTSIDE_LISTING_AGENT_NAME_KEY]:  outboundWatch.name,
+          [OUTBOUND_WATCH_ARMED_AT_KEY]:     sentAt,
+        }
+      : priorMetadata,
+  }
   const { error: offerUpdateError } = await supabase
     .from("offers")
-    .update({
-      esign_status:         "sent",
-      esign_sent_at:        new Date().toISOString(),
-      esign_provider:       credential?.platform ?? offer.esign_provider ?? null,
-      provider_envelope_id: envelopeId ?? offer.provider_envelope_id ?? null,
-    })
+    .update(dispatchPayload)
     .eq("id", offerId)
 
   if (offerUpdateError) {
@@ -386,5 +454,12 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
     providerError,
     // Non-null ⇒ the events landed but offers.status did not follow.
     statusSyncError,
+    // Non-null ⇒ this offer is on an OUTSIDE listing and no reply from the
+    // listing agent can be routed back to it, because we do not know their
+    // address. Surfaced, never silent: the packet is out either way, but the
+    // deal's mail will land unfiled until this is supplied.
+    outboundWatchError: outboundWatch.refusal,
+    // true ⇒ a reply from the recorded listing agent will be routed to this offer.
+    outboundWatchArmed: outboundWatch.armed,
   }
 }

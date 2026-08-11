@@ -14,6 +14,7 @@ import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { incrementUsage } from "@/lib/usage"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { ingestOfferLostSignalAction } from "@/app/actions/lead-signal-ingest"
+import { CONTRACT_TERM_COLUMNS } from "@/lib/transactions/contract-terms"
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 // Every seller-side offer action (accept / counter / reject / portal-link /
@@ -52,12 +53,17 @@ async function verifyListingInCallerBrokerage(
 
 // Column list kept out of the query chain so the tenant filters on the query
 // itself stay auditable.
+//
+// THE CONTRACT TERMS COME FROM ONE PLACE. This list hand-typed all twelve of
+// them, as did the comparison query below and the offer->transaction bridge —
+// three copies that could disagree, and disagreeing is exactly how they came to
+// be dropped at the bridge in the first place. lib/transactions/contract-terms.ts
+// is now the single definition; only the columns that are NOT contract terms are
+// spelled out here.
 const OFFER_LIST_COLUMNS =
-  "id, offer_number, offer_price, earnest_money, closing_date, financing_type, " +
-  "down_payment_amount, down_payment_percent, appraisal_contingency_days, " +
-  "financing_contingency_days, inspection_period_days, escalation_clause, " +
-  "escalation_cap, appraisal_gap, closing_cost_contribution, due_diligence_fee, " +
-  "possession_terms, contingencies, buyer_notes, seller_net_estimate, " +
+  `${CONTRACT_TERM_COLUMNS.join(", ")}, ` +
+  "id, offer_number, offer_price, earnest_money, closing_date, " +
+  "contingencies, buyer_notes, seller_net_estimate, " +
   "ai_recommendation, ai_analysis, ai_extraction_status, ai_extracted_data, " +
   "offer_document_url, offer_document_name, status, offer_type, parent_offer_id, " +
   "current_round, is_winning_offer, submitted_at, response_deadline, " +
@@ -564,13 +570,7 @@ export async function triggerOfferComparison(params: {
 
   const { data: offersRaw } = await supabase
     .from("offers")
-    .select(`
-      id, offer_number, offer_price, earnest_money,
-      closing_date, financing_type, down_payment_amount, down_payment_percent,
-      appraisal_contingency_days, financing_contingency_days, inspection_period_days,
-      escalation_clause, escalation_cap, appraisal_gap, closing_cost_contribution,
-      possession_terms, contingencies, seller_net_estimate
-    `)
+    .select(`${CONTRACT_TERM_COLUMNS.join(", ")}, id, offer_number, offer_price, earnest_money, closing_date, contingencies, seller_net_estimate`)
     .eq("listing_id", listingId)
     .eq("brokerage_id", brokerageId)
     .not("status", "in", '("rejected","countered")')
@@ -579,13 +579,22 @@ export async function triggerOfferComparison(params: {
     return { success: false, error: "At least 2 active offers are required for AI comparison" }
   }
 
+  // THE BROKERAGE'S REAL RATE, not a house default. This read `0.06` with a
+  // comment saying the real rate was configurable elsewhere — so every net-to-
+  // seller figure in the comparison, and the ranking built on top of it, was
+  // computed at a rate the brokerage may never have charged. The resolver was
+  // already here, used by the duplicate comparison action that this one absorbed
+  // (see the note below), and is carried across rather than left to die with it.
+  const commissionResult = await resolveCommissionRate(agentUserId)
+  if ("error" in commissionResult) return { success: false, error: commissionResult.error }
+
   const result = await analyzeAndCompareOffers({
     listingId,
     brokerageId,
     agentUserId,
     listPrice: listing?.list_price ?? 0,
     offers: offersRaw as any,
-    commissionRate: 0.06,  // default — brokerage-configurable via commission_adjustments
+    commissionRate: commissionResult.totalRate,
   })
 
   return result
@@ -825,97 +834,25 @@ REASONING: [2-3 sentences]`,
   }
 }
 
-export async function analyzeMultipleOffers(listingId: string, _userId?: string) {
-  if (!isValidUUID(listingId)) return { success: false, error: "Invalid listing ID" }
-
-  // Auth gate — burns paid AI inference + inserts a comparison row.
-  const auth = await requireCaller()
-  if (!auth.ok) return { success: false, error: auth.error }
-  const userId = auth.userId
-
-  if (!await verifyListingInCallerBrokerage(listingId, auth.brokerageId)) {
-    return { success: false, error: "Forbidden" }
-  }
-
-  const supabase = createServiceClient()
-
-  const { data: offers } = await supabase
-    .from("offers")
-    .select(`*, buyer:contacts(id, first_name, last_name)`)
-    .eq("listing_id", listingId)
-    .eq("brokerage_id", auth.brokerageId)
-    .in("status", ["pending", "countered"])
-
-  if (!offers || offers.length === 0) {
-    return { success: false, error: "No offers to compare" }
-  }
-
-  const commissionResult = await resolveCommissionRate(userId)
-  if ("error" in commissionResult) return { success: false, error: commissionResult.error }
-  const { brokerageId, totalRate } = commissionResult
-
-  const offerComparisons = offers.map((offer) => {
-    const net = calcNetToSeller({
-      offer_price:              offer.offer_price,
-      closing_cost_contribution: offer.closing_cost_contribution ?? null,
-      commission_rate:          totalRate,
-    })
-    return {
-      offer_id:             offer.id,
-      buyer_name:           `${(offer.buyer as any)?.first_name ?? "Unknown"} ${(offer.buyer as any)?.last_name ?? "Buyer"}`,
-      offer_price:          offer.offer_price,
-      net_to_seller:        net,
-      down_payment_percent: offer.down_payment_percent,
-      financing_type:       offer.financing_type,
-      contingencies_count:  offer.contingencies?.length ?? 0,
-      closing_date:         offer.closing_date,
-      days_to_close:        offer.closing_date
-        ? Math.floor((new Date(offer.closing_date).getTime() - Date.now()) / 86400000)
-        : 0,
-    }
-  })
-
-  // Sort descending by net_to_seller so index [0] is always the best offer.
-  offerComparisons.sort((a, b) => b.net_to_seller - a.net_to_seller)
-
-  await incrementUsage(userId, "llm_calls", 1)
-
-  const { text: comparison } = await generateText({
-    model: "openai/gpt-4o-mini",
-    prompt: `Compare these ${offers.length} offers and rank from best to worst.
-
-${offerComparisons.map((o, i) => `
-Offer ${i + 1} (${o.buyer_name}):
-  Price: $${o.offer_price.toLocaleString()}, Net: $${o.net_to_seller.toLocaleString()}
-  Down: ${o.down_payment_percent}%, Financing: ${o.financing_type}
-  Contingencies: ${o.contingencies_count}, Days to Close: ${o.days_to_close}
-`).join("")}
-
-Provide: 1) RANKED LIST with reasoning 2) COMPARISON MATRIX 3) OVERALL RECOMMENDATION 4) NEGOTIATION STRATEGY`,
-  })
-
-  const netByOffer: Record<string, number> = {}
-  offerComparisons.forEach(o => { netByOffer[o.offer_id] = o.net_to_seller })
-
-  const { data: _compData, error: compInsertError } = await supabase.from("offer_comparison").insert({
-    listing_id:              listingId,
-    brokerage_id:            brokerageId,
-    agent_id:                await resolveAgentId(supabase as any, userId),
-    created_by:              userId,
-    offer_ids:               offers.map(o => o.id),
-    ai_recommendation:       comparison.substring(0, 500),
-    ai_analysis_notes:       comparison,
-    net_to_seller_by_offer:  netByOffer,
-    comparison_matrix:       offerComparisons,
-    recommended_offer_id:    offerComparisons[0]?.offer_id ?? null,
-  })
-
-  if (compInsertError) {
-    return { success: false, error: "Failed to persist comparison: " + compInsertError.message }
-  }
-
-  return { success: true, comparison, offers: offerComparisons }
-}
+// ── analyzeMultipleOffers WAS HERE — SURVIVOR: app/actions/seller-offers.ts:triggerOfferComparison ──
+//
+// Two implementations of one capability: compare this listing's active offers,
+// rank them by net to seller, and persist the result to `offer_comparison`. They
+// were not variants — they were the same feature written twice, with different
+// offer filters and two different commission rates, so which comparison a seller
+// saw depended on which surface happened to call.
+//
+// The survivor delegates to lib/offers/offer-analyzer.ts:analyzeAndCompareOffers,
+// which is also what lib/kernel/offers.ts:compareOffers uses — one analyzer, one
+// persisted shape. What the deleted copy had and the survivor did not is the
+// COMMISSION RATE: it resolved the brokerage's real configured rate through
+// resolveCommissionRate, while the survivor hardcoded 0.06. That was merged onto
+// the survivor FIRST (above); only then was this removed.
+//
+// It became callable-by-nobody when the seller portal stopped invoking it on
+// every page load — it re-burned paid inference per render to rebuild a
+// comparison that was already persisted. That is why it surfaced now; it is not
+// why it was deleted. The capability is intact at the survivor.
 
 export async function calculateNetSheet(params: {
   purchase_price:      number

@@ -221,25 +221,35 @@ export async function uploadDocument(
   const fileBuffer = Buffer.from(file.base64, "base64")
 
   let publicUrl: string
+  // Non-null once the bytes are really in the bucket — the compensating handle
+  // for the failure paths BELOW this point, which used to leave the file behind.
+  let storedObjectPath: string | null = null
 
-  // Try to upload to storage bucket
-  const { data: uploadData, error: uploadError } = await supabase.storage
-    .from("client-documents")
-    .upload(filePath, fileBuffer, {
-      contentType: file.type,
-      upsert: false,
-    })
+  // Store and sign as ONE step. client-documents is a PRIVATE bucket (m278), so
+  // a public URL 403s; and when the signing failed the previous shape carried on
+  // with an empty URL, writing a client_documents row pointing nowhere while the
+  // uploaded file stayed in the bucket forever. putAndSign undoes the upload
+  // instead, which leaves us in exactly the same state as an upload that never
+  // happened — so BOTH failure stages take the existing database fallback.
+  const { putAndSign, removeOrRecordOrphan } = await import("@/lib/storage/put-and-sign")
+  const stored = await putAndSign(supabase, {
+    bucket:      "client-documents",
+    path:        filePath,
+    body:        fileBuffer,
+    contentType: file.type,
+    brokerageId: ctx.brokerageId,
+    reason:      "client_document_upload",
+  })
 
-  if (uploadError) {
-    console.error("[v0] Storage upload error:", uploadError)
+  if (!stored.ok) {
+    console.error(`[v0] Storage ${stored.stage} error:`, stored.error)
     // If bucket doesn't exist or upload fails, store base64 directly in database
     // This is a fallback - recommend setting up storage bucket properly
     publicUrl = `data:${file.type};base64,${file.base64.substring(0, 100)}...` // Truncated for DB
     console.log("[v0] Using database fallback for document storage")
   } else {
-    // Signed URL — client-documents is a PRIVATE bucket (m278); a public URL 403s.
-    const { signedDocUrl } = await import("@/lib/storage/signed-doc-url")
-    publicUrl = await signedDocUrl(supabase, "client-documents", filePath)
+    publicUrl = stored.signedUrl
+    storedObjectPath = stored.path
   }
 
   // Create document record - supports both contact_id (clients) and user_id (agents)
@@ -260,6 +270,17 @@ export async function uploadDocument(
 
   if (docError) {
     console.error("Document record error:", docError)
+    // The bytes landed but the row that would have referenced them was refused.
+    // Service client: the worklist fallback is service-role only.
+    if (storedObjectPath) {
+      await removeOrRecordOrphan(svc, {
+        bucket:      "client-documents",
+        objectPath:  storedObjectPath,
+        reason:      "client_document_row_refused",
+        detail:      docError.message,
+        brokerageId: ctx.brokerageId,
+      })
+    }
     throw new Error("Failed to create document record")
   }
 

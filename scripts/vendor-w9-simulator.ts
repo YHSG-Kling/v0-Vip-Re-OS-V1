@@ -128,8 +128,27 @@ console.log("\n[4 · capture — existing client-documents rail, portal-gated]")
   const action = src("app/actions/vendor-w9.ts")
   check("upload is portal-gated (requireVendorActor — the caller must BE the vendor)",
     action.includes("requireVendorActor(input.vendorId)"))
+  // The BUCKET is the property, not the call shape that reaches it. Wave 12
+  // moved every upload-then-sign pair onto lib/storage/put-and-sign.ts, which
+  // takes the bucket as a parameter and undoes the upload when the URL cannot be
+  // minted — so the old `.storage.from("client-documents").upload(` spelling is
+  // gone while the thing this check exists to protect (a certified W-9 landing
+  // in the non-public tenant bucket, and no second storage path appearing
+  // beside it) is unchanged and now strictly better.
+  // EVERY bucket named in this file must be that one. Asserting merely that the
+  // name APPEARS is satisfied by the compensating-delete call further down, so
+  // the upload itself could be repointed at another bucket with the check still
+  // green — verified by reintroducing exactly that bug. The property is "this
+  // action touches one bucket and it is the tenant's private one".
+  const bucketsNamed = [...action.matchAll(/bucket:\s*"([^"]+)"/g)].map(m => m[1])
   check("PDF lands in the EXISTING 'client-documents' storage bucket (no new storage path)",
-    action.includes('.from("client-documents")') && action.includes(".upload("))
+    bucketsNamed.length >= 1
+    && bucketsNamed.every(b => b === "client-documents")
+    && !/\.storage\s*\n?\s*\.from\("(?!client-documents)[^"]+"\)/.test(action),
+    bucketsNamed.length ? `buckets named here: ${[...new Set(bucketsNamed)].join(", ")}` : "no bucket is named at all")
+  check("…and a failed URL does not leave the W-9 orphaned in that bucket",
+    /putAndSign\(/.test(action) && /removeOrRecordOrphan|!stored\.ok/.test(action),
+    "the bytes are a vendor's certified tax document; an upload with no row pointing at it is the worst kind to strand")
   check("a client_documents row records the doc (document_type 'vendor_w9')",
     action.includes('from("client_documents")') && action.includes('"vendor_w9"'))
   check("structured basics upsert onto vendor_tax_documents (one row per vendor)",

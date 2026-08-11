@@ -7,8 +7,9 @@ import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/app/components/ui/tabs"
 import { NetSheetCalculator } from "@/components/portal/NetSheetCalculator"
-import { analyzeMultipleOffers, recordSellerView } from "@/app/actions/seller-offers"
-import { getSellerOffers } from "@/app/actions/portal-seller"
+import { InteractiveNetSheet } from "@/components/features/offers/interactive-net-sheet"
+import { recordSellerView } from "@/app/actions/seller-offers"
+import { getSellerOffers, getSellerNetSheetInputs, getSellerOfferComparison } from "@/app/actions/portal-seller"
 import { CheckCircle2, Clock, FileText, ArrowLeft, PartyPopper, Filter, DollarSign, Calendar, Home } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { SignatureStatusBadge } from "@/app/components/shared/SignatureStatusBadge"
@@ -97,6 +98,68 @@ function formatCurrency(amount: number | null): string {
     currency: "USD",
     maximumFractionDigits: 0,
   }).format(amount)
+}
+
+/**
+ * THE INTERACTIVE NET SHEET, ON THE SELLER'S SCREEN (wave 12, R4b).
+ *
+ * `app/components/features/offers/interactive-net-sheet.tsx` has always declared
+ * itself "reusable by the seller portal (read-only mode via `readOnly`)" and has
+ * always taken the prop — and its only importer was the AGENT's offer view. This
+ * is the wire. It sits ALONGSIDE `NetSheetCalculator`, which is a different
+ * thing and stays: the calculator is the seller's single-offer what-if they
+ * drive with sliders; this ranks every RELEASED offer by what the seller
+ * actually keeps after costs, which is the number that decides the deal.
+ *
+ * The commission provenance travels with it. On the agent's page a defaulted
+ * rate is labelled as an estimate rather than presented as the agreed rate; the
+ * seller's screen is where that honesty matters most, so the same banner renders
+ * here from the same resolver.
+ */
+function SellerInteractiveNetSheet({
+  inputs,
+}: {
+  inputs: Awaited<ReturnType<typeof getSellerNetSheetInputs>>
+}) {
+  if (inputs.error) {
+    return (
+      <Card className="border-amber-200 bg-amber-50">
+        <CardContent className="py-4 text-sm text-amber-900">
+          The interactive net sheet could not be loaded: {inputs.error}. Nothing below is missing because you have no
+          offers — the figures simply could not be read.
+        </CardContent>
+      </Card>
+    )
+  }
+  if (!inputs.costs || inputs.offers.length === 0) return null
+
+  return (
+    <div className="space-y-2">
+      <div
+        className={cn(
+          "flex items-center gap-2 text-xs rounded px-3 py-2 border",
+          inputs.commission?.isEstimate
+            ? "text-amber-800 bg-amber-50 border-amber-200"
+            : "text-blue-700 bg-blue-50 border-blue-200",
+        )}
+      >
+        {inputs.commission?.isEstimate ? "⚠ Commission is an estimate — " : "Commission per listing agreement — "}
+        {inputs.commission?.label}
+        {inputs.commission && !inputs.commission.isFlatFee && ` (${(inputs.commission.rate * 100).toFixed(2)}% total)`}
+      </div>
+      <InteractiveNetSheet
+        listingAddress={inputs.listingAddress}
+        offers={inputs.offers}
+        initialCosts={inputs.costs}
+        closingCostSection={inputs.closingCostSection}
+        readOnly
+      />
+      <p className="text-xs text-muted-foreground">
+        Read-only: these are your agent&apos;s working assumptions. Ask them to adjust the payoff, taxes or HOA with you
+        and this will update.
+      </p>
+    </div>
+  )
 }
 
 export default async function OffersPage({ params }: { params: Promise<{ contactId: string }> }) {
@@ -310,9 +373,24 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
   const sellerOfferResult = await getSellerOffers(contactId)
   const sellerOffersLoadError = sellerOfferResult.error
   const listPrice = sellerOfferResult.listPrice ?? listing.list_price ?? null
-  offers = (sellerOfferResult.offers ?? []).filter((o: any) =>
-    ["pending", "submitted", "under_review", "countered"].includes(o.status)
-  )
+  // THE RELEASE GATE (wave 12, R4a). `presented_to_seller_at` is stamped only by
+  // app/actions/offers/present-to-seller.ts:presentOfferToSeller — the listing
+  // agent approving this offer for this seller. NULL means it must not be here.
+  // getSellerOffers already applies this for a seller's own session; repeating it
+  // on the render means an agent PREVIEWING this page sees exactly what the
+  // seller sees, and a future caller of that reader cannot widen this screen by
+  // accident. Status stays a separate, weaker filter — it is not the gate, and
+  // it never was: `offers.status` carries no CHECK constraint, so an inbound row
+  // written as "submitted" would otherwise be on this screen before any agent
+  // had opened it.
+  offers = (sellerOfferResult.offers ?? [])
+    .filter((o: any) => !!o.presented_to_seller_at)
+    .filter((o: any) => ["pending", "submitted", "under_review", "countered"].includes(o.status))
+
+  // Both are read once, in parallel, and only when there is something released.
+  const [netSheetInputs, persistedComparison] = offers.length > 0
+    ? await Promise.all([getSellerNetSheetInputs(contactId), getSellerOfferComparison(contactId)])
+    : [null, null]
 
   // SELLER VIEWED. `offers.seller_viewed_at` is what the agent-side offers
   // manager reads to say "your seller has seen this offer", and
@@ -399,7 +477,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
                   You have {recentOfferActivities.length} new offer{recentOfferActivities.length > 1 ? "s" : ""}!
                 </p>
                 <p className="text-sm text-green-700">
-                  Your agent is reviewing and will present the details to you.
+                  Your agent has released it below, with the interactive net sheet.
                 </p>
               </div>
             </div>
@@ -540,17 +618,26 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
             state={listing.state ?? null}
           />
         </div>
+
+        {/* The agent's net-proceeds breakdown for THIS offer, read-only. The
+            calculator above is the seller's own what-if; this is the line-by-line
+            the agent is working from, so the two screens quote one set of costs. */}
+        {netSheetInputs && <SellerInteractiveNetSheet inputs={netSheetInputs} />}
       </div>
     )
   }
 
-  // Multiple offers view
-  let analysis: any = { success: false }
-  try {
-    analysis = await analyzeMultipleOffers(listing.id, "")
-  } catch (e) {
-    // Continue without AI analysis
-  }
+  // Multiple offers view.
+  //
+  // THE COMPARISON IS READ, NOT RECOMPUTED (wave 12, R4c). This used to call
+  // analyzeMultipleOffers(listing.id, "") on EVERY page load — re-burning paid
+  // inference on each refresh, and, for an actual seller, never returning
+  // anything at all: that action authenticates through a brokerage-staff gate a
+  // portal contact cannot pass, so the "AI Analysis" card was permanently blank
+  // for the only person it was written for. The comparison the agent generated is
+  // persisted; getSellerOfferComparison reads that row back behind the portal's
+  // own authorization and reports honestly when it does not line up with the
+  // offers this seller is allowed to see.
 
   // Net-to-you insight: the highest offer isn't always the most money in the seller's pocket.
   const offersWithNet = offers.filter((o: any) => o.seller_net_estimate != null)
@@ -577,7 +664,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
                 You have {recentOfferActivities.length} new offer{recentOfferActivities.length > 1 ? "s" : ""}!
               </p>
               <p className="text-sm text-green-700">
-                Your agent is reviewing and will present the details to you.
+                Your agent has released them below, with the full comparison and net sheet.
               </p>
             </div>
           </div>
@@ -628,51 +715,122 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
         </Card>
       )}
 
-      {/* AI Recommendation */}
-      {analysis.success && analysis.analysis && (
-        <Card className="border-blue-200 bg-blue-50">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <span className="text-2xl">🤖</span>
-              AI Analysis
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <p className="text-sm">{analysis.analysis.comparison_summary}</p>
-            {analysis.analysis.strengths && (
-              <div>
-                <p className="font-semibold text-sm mb-2">
-                  Key Strengths of Offer {analysis.analysis.recommended_offer}:
-                </p>
-                <ul className="space-y-1">
-                  {analysis.analysis.strengths.map((strength: string, i: number) => (
-                    <li key={i} className="text-sm flex items-start gap-2">
-                      <CheckCircle2 className="h-4 w-4 text-green-600 mt-0.5" />
-                      {strength}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {analysis.analysis.concerns && analysis.analysis.concerns.length > 0 && (
-              <div>
-                <p className="font-semibold text-sm mb-2">Potential Concerns:</p>
-                <ul className="space-y-1">
-                  {analysis.analysis.concerns.map((concern: string, i: number) => (
-                    <li key={i} className="text-sm flex items-start gap-2">
-                      <span className="text-orange-600">⚠️</span>
-                      {concern}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
+      {/* THE FULL COMPARISON — the one the agent generated, read back from where
+          it was persisted. Never regenerated here, and never shown at all when it
+          reaches offers this seller has not been released. */}
+      {persistedComparison?.error && (
+        <Card className="border-amber-200 bg-amber-50">
+          <CardContent className="py-4 text-sm text-amber-900">
+            Your agent&apos;s full comparison could not be loaded: {persistedComparison.error}. That is a read failure,
+            not an empty comparison — the table below still shows the terms of each offer.
           </CardContent>
         </Card>
       )}
 
-      {/* Comparison Table - Use offer_amount instead of offer_price */}
+      {persistedComparison?.coverage === "withheld" && (
+        <Card className="border-amber-200 bg-amber-50">
+          <CardContent className="py-4 text-sm text-amber-900">
+            Your agent has a full comparison in progress that includes an offer they have not walked you through yet, so
+            it is not shown here. Ask them to release it and it will appear.
+          </CardContent>
+        </Card>
+      )}
+
+      {persistedComparison?.coverage === "none" && !persistedComparison.error && (
+        <Card className="border-blue-200 bg-blue-50">
+          <CardContent className="py-4 text-sm text-blue-900">
+            Your agent has not generated the full side-by-side comparison for these offers yet. The table below is the
+            headline terms only — it is not the complete analysis.
+          </CardContent>
+        </Card>
+      )}
+
+      {persistedComparison && (persistedComparison.coverage === "exact" || persistedComparison.coverage === "stale") && (
+        <Card className="border-blue-200 bg-blue-50">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <span className="text-2xl">📊</span>
+              Your Agent&apos;s Full Comparison
+            </CardTitle>
+            {persistedComparison.generatedAt && (
+              <p className="text-xs text-blue-800">
+                Prepared {new Date(persistedComparison.generatedAt).toLocaleString()}
+              </p>
+            )}
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {persistedComparison.coverage === "stale" && (
+              <p className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                ⚠ This comparison was prepared before {persistedComparison.missingOfferCount} of the offer
+                {persistedComparison.missingOfferCount > 1 ? "s" : ""} now on your screen. Ask your agent to refresh it
+                before you decide.
+              </p>
+            )}
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left">
+                    <th className="py-2 font-semibold">Offer</th>
+                    <th className="py-2 text-right font-semibold">Price</th>
+                    <th className="py-2 text-right font-semibold">Net to you</th>
+                    <th className="py-2 text-right font-semibold">Financing</th>
+                    <th className="py-2 text-right font-semibold">Down</th>
+                    <th className="py-2 text-right font-semibold">Contingencies</th>
+                    <th className="py-2 text-right font-semibold">Days to close</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {persistedComparison.rows.map((row) => (
+                    <tr key={row.offerId} className="border-b border-border/40">
+                      <td className="py-2 font-medium">
+                        {row.buyerLabel}
+                        {row.isRecommended && (
+                          <Badge variant="outline" className="ml-2 text-[10px] text-green-700 border-green-300">
+                            your agent&apos;s pick
+                          </Badge>
+                        )}
+                      </td>
+                      <td className="py-2 text-right tabular-nums">{formatCurrency(row.offerPrice)}</td>
+                      <td className="py-2 text-right tabular-nums font-semibold text-green-700">
+                        {formatCurrency(row.netToSeller)}
+                      </td>
+                      <td className="py-2 text-right">{row.financingType ?? "Not specified"}</td>
+                      <td className="py-2 text-right">
+                        {row.downPaymentPercent != null ? `${row.downPaymentPercent}%` : "—"}
+                      </td>
+                      <td className="py-2 text-right">{row.contingenciesCount ?? "—"}</td>
+                      <td className="py-2 text-right">{row.daysToClose ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {persistedComparison.recommendation && (
+              <div>
+                <p className="font-semibold text-sm mb-1 flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-green-600" />
+                  What your agent found
+                </p>
+                <p className="text-sm whitespace-pre-line">{persistedComparison.recommendation}</p>
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Your agent holds the full write-up and will walk you through it. Nothing here is a decision.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Interactive net sheet — every released offer ranked by what you KEEP. */}
+      {netSheetInputs && <SellerInteractiveNetSheet inputs={netSheetInputs} />}
+
+      {/* Headline terms at a glance. Deliberately NOT presented as the complete
+          comparison — the card above is that, and when it is missing the notice
+          above says so rather than letting this stand in for it silently. */}
       <Card>
+        <CardHeader className="pb-0">
+          <CardTitle className="text-sm text-muted-foreground">Headline terms at a glance</CardTitle>
+        </CardHeader>
         <CardContent className="p-6 overflow-x-auto">
           <table className="w-full">
             <thead>

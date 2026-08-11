@@ -1,3 +1,7 @@
+import {
+  CONTRACT_TERM_COLUMNS,
+  copyContractTerms,
+} from "./contract-terms"
 import { createServiceClient } from "@/lib/supabase/service"
 import { ensureRequiredMilestones, seedJourneyMilestones } from "./milestone-service"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
@@ -59,6 +63,19 @@ export function deriveContractDeadlines(input: {
     closingDate:        closing,
   }
 }
+
+/**
+ * The offer columns the bridge reads. Hoisted OUT of the query chain on purpose:
+ * scripts/tenant-scope-guard.ts examines the 500 characters that follow a
+ * `.from("<table>")` looking for scoping evidence, and a select list long enough
+ * to push `.eq("id", …)` past that window would read as an unscoped query.
+ */
+const OFFER_BRIDGE_COLUMNS = [
+  "id", "agent_id", "contact_id", "listing_id", "offer_price", "closing_date",
+  "property_address", "earnest_money", "earnest_money_due_at", "earnest_money_due_days",
+  "esign_provider", "provider_envelope_id",
+  ...CONTRACT_TERM_COLUMNS,
+].join(", ")
 
 /**
  * Canonical "is this offer eligible to become a transaction?" gate. Reads SOURCE-OF-TRUTH
@@ -185,9 +202,11 @@ export async function createTransactionFromOffer(params: {
   // with the canonical external-provider tracking columns (m106). Without this,
   // sync-from-provider can't pull documents for transactions whose provider isn't
   // Dotloop (which is the only one with a dedicated legacy column).
+  // The column list is OFFER_BRIDGE_COLUMNS (above) — it carries every contract
+  // TERM as well as the identity and date columns.
   const { data: offer, error: offerError } = await supabase
     .from("offers")
-    .select("id, agent_id, contact_id, listing_id, offer_price, closing_date, property_address, earnest_money, earnest_money_due_at, earnest_money_due_days, inspection_period_days, appraisal_contingency_days, financing_contingency_days, esign_provider, provider_envelope_id")
+    .select(OFFER_BRIDGE_COLUMNS)
     .eq("id", params.offerId)
     .maybeSingle()
 
@@ -269,9 +288,17 @@ export async function createTransactionFromOffer(params: {
       closingDate:        params.contractTerms.closingDate,
     },
   })
+  // THE CONTRACT TERMS THEMSELVES (m387). Copied 1:1 off the offer — same column
+  // names on both sides — and spread FIRST in the payload below so that the
+  // explicitly named columns after it always win. A term and a deadline are
+  // different facts (see CONTRACT_TERM_COLUMNS) and the two name sets are
+  // disjoint, so nothing here can overwrite a date the derivation above produced.
+  const contractTerms = copyContractTerms(offer as unknown as Record<string, unknown>)
+
   const { data: transaction, error: txnError } = await supabase
     .from("transactions")
     .insert({
+      ...contractTerms,
       brokerage_id:         params.brokerageId,
       agent_id:             (offer as any).agent_id,
       contact_id:           clientContactId,             // live FK — OUR client (seller on 'seller' deals)
@@ -408,7 +435,11 @@ export async function createTransactionFromOffer(params: {
   try {
     const { computeNetProceeds, defaultSellerCosts } = await import("@/lib/offers/net-sheet-calc")
     const offerPrice = Number((offer as any).offer_price) || 0
-    const buyerCredit = 0 // closing_cost_contribution is not on this offer select — estimate lines say so
+    // The seller's closing-cost contribution IS a contract term and is now read
+    // (CONTRACT_TERM_COLUMNS). It was hard-zeroed here only because the select
+    // did not carry it, which understated the buyer's credit and overstated the
+    // seller's net on every offer that negotiated one.
+    const buyerCredit = Number((offer as any).closing_cost_contribution) || 0
     const costs = defaultSellerCosts({ listPrice: offerPrice, commissionRateDecimal: 0.06, hoaDuesMonthly: null })
     await supabase.from("transaction_cost_breakdown").upsert({
       transaction_id: transaction.id,

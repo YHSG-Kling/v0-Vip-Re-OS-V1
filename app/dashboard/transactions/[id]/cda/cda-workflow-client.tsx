@@ -270,20 +270,35 @@ export function CDAWorkflowClient({
     try {
       const supabase = createClient()
       const path = `transactions/${transaction.id}/${kind}/${Date.now()}_${file.name}`
-      const { error: uploadError } = await supabase.storage.from("transaction-documents").upload(path, file)
-      if (uploadError) {
-        setArtifactError(`Upload failed: ${uploadError.message}`)
+      // Store and sign as ONE step — the previous shape returned after the bytes
+      // were already in the bucket whenever the signer failed, leaving a final CD
+      // or a commission-check copy behind with no CDA artifact row.
+      const { putAndSign, removeOrRecordOrphan } = await import("@/lib/storage/put-and-sign")
+      const stored = await putAndSign(supabase, {
+        bucket:      "transaction-documents",
+        path,
+        body:        file,
+        contentType: file.type || undefined,
+        reason:      `cda_${kind}_upload`,
+      })
+      if (!stored.ok) {
+        setArtifactError(`Upload failed: ${stored.error}`)
         return
       }
-      const { signedDocUrl } = await import("@/lib/storage/signed-doc-url")
-      const storageUrl = await signedDocUrl(supabase, "transaction-documents", path)
       const res = await recordCdaClosingArtifactAction({
         cdaId: cda.id,
         kind,
         fileName: file.name,
-        fileUrl: storageUrl,
+        fileUrl: stored.signedUrl,
       })
       if (!res?.success) {
+        // The action refused; nothing references the file. Undo the upload.
+        await removeOrRecordOrphan(supabase, {
+          bucket:     "transaction-documents",
+          objectPath: stored.path,
+          reason:     `cda_${kind}_record_refused`,
+          detail:     ("error" in res && res.error) || "the CDA artifact record was refused",
+        })
         setArtifactError(("error" in res && res.error) || "Could not record the document.")
         return
       }
@@ -336,20 +351,33 @@ export function CDAWorkflowClient({
     try {
       const supabase = createClient()
       const path = `transactions/${transaction.id}/preliminary-cd/${Date.now()}_${file.name}`
-      const { error: uploadError } = await supabase.storage.from("transaction-documents").upload(path, file)
-      if (uploadError) {
-        setPrelimError(`Upload failed: ${uploadError.message}`)
+      // Store and sign as ONE step — same defect as the artifact upload above.
+      const { putAndSign, removeOrRecordOrphan } = await import("@/lib/storage/put-and-sign")
+      const stored = await putAndSign(supabase, {
+        bucket:      "transaction-documents",
+        path,
+        body:        file,
+        contentType: file.type || undefined,
+        reason:      "preliminary_cd_upload",
+      })
+      if (!stored.ok) {
+        setPrelimError(`Upload failed: ${stored.error}`)
         return
       }
-      const { signedDocUrl } = await import("@/lib/storage/signed-doc-url")
-      const storageUrl = await signedDocUrl(supabase, "transaction-documents", path)
       const res = await uploadPreliminaryCdAction({
         transactionId:  transaction.id,
         fileName:       file.name,
-        fileUrl:        storageUrl,
+        fileUrl:        stored.signedUrl,
         uploadedByRole: prelimRole,
       })
       if (!res?.success) {
+        // The action refused; nothing references the file. Undo the upload.
+        await removeOrRecordOrphan(supabase, {
+          bucket:     "transaction-documents",
+          objectPath: stored.path,
+          reason:     "preliminary_cd_record_refused",
+          detail:     res?.error ?? "the preliminary CD record was refused",
+        })
         setPrelimError(res?.error ?? "Could not record the preliminary CD.")
         return
       }

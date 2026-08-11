@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
-import { Upload, Sparkles, Link, RefreshCw, Loader2, Target, AlertCircle, Wrench, TrendingDown, CheckCircle2, ShieldAlert, RotateCcw } from "lucide-react"
+import { Upload, Sparkles, Link, RefreshCw, Loader2, Target, AlertCircle, Wrench, TrendingDown, CheckCircle2, ShieldAlert, RotateCcw, Eye, EyeOff } from "lucide-react"
 import {
   evaluateSellerDecisionReadiness,
   validateSellerDecisionReversal,
@@ -37,6 +37,11 @@ import {
   getTransactionByListingId,
   getRepairNegotiationItems,
 } from "@/app/actions/seller-offers"
+import {
+  presentOfferToSeller,
+  unpresentOfferFromSeller,
+  getOfferPresentationStates,
+} from "@/app/actions/offers/present-to-seller"
 import { aiNegotiationAdvisor } from "@/app/actions/ai-predictions"
 import { negotiationCoPilot } from "@/app/actions/negotiation-copilot"
 import { SellerDecisionReadinessCard } from "./components/seller-decision-readiness-card"
@@ -132,6 +137,69 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
     setRefreshError(null)
     setOffers(res.offers as unknown as Offer[])
   }, [listing.id])
+  // ── SELLER RELEASE STATE (wave 12, R4a) ────────────────────────────────────
+  // `offers.presented_to_seller_at` is the gate on the seller portal: NULL means
+  // the seller must not see the offer. The reader that loads the rows above
+  // predates the column, so the release state is read separately, through the
+  // same authenticated gate that writes it.
+  const [presentation, setPresentation] = useState<Record<string, { presentedAt: string | null; note: string | null }>>({})
+  const [presentationError, setPresentationError] = useState<string | null>(null)
+  const [releasingOfferId, setReleasingOfferId] = useState<string | null>(null)
+
+  const refreshPresentation = useCallback(async () => {
+    const res = await getOfferPresentationStates(listing.id)
+    if (!res.success) {
+      // A refused read must never render as "not released yet" — that would show
+      // an agent a Release button for an offer the seller can already see.
+      setPresentationError(res.error ?? "Could not read which offers your seller can see")
+      return
+    }
+    setPresentationError(null)
+    const next: Record<string, { presentedAt: string | null; note: string | null }> = {}
+    for (const s of res.states) next[s.offerId] = { presentedAt: s.presentedAt, note: s.note }
+    setPresentation(next)
+  }, [listing.id])
+
+  useEffect(() => { void refreshPresentation() }, [refreshPresentation])
+
+  function handleRelease(offerId: string) {
+    setReleasingOfferId(offerId)
+    startTransition(async () => {
+      const result = await presentOfferToSeller({ offerId, listingId: listing.id })
+      setReleasingOfferId(null)
+      if (!result.success) {
+        toast({ title: "Not released", description: result.error, variant: "destructive" })
+        return
+      }
+      await refreshPresentation()
+      const warning = (result.warnings ?? [])[0]
+      toast({
+        title: result.alreadyPresented ? "Already visible to your seller" : "Released to your seller",
+        description: warning ?? "It is on their portal now, with the interactive net sheet.",
+        variant: warning ? "destructive" : undefined,
+      })
+    })
+  }
+
+  function handleUnrelease(offerId: string) {
+    setReleasingOfferId(offerId)
+    startTransition(async () => {
+      const result = await unpresentOfferFromSeller({ offerId, listingId: listing.id })
+      setReleasingOfferId(null)
+      if (!result.success) {
+        toast({ title: "Not retracted", description: result.error, variant: "destructive" })
+        return
+      }
+      await refreshPresentation()
+      const warning = (result.warnings ?? [])[0]
+      toast({
+        title: "Hidden from your seller again",
+        description: warning ?? "The offer and its portal alert are no longer on their screen.",
+        variant: warning ? "destructive" : undefined,
+      })
+    })
+  }
+
   const [activeTab, setActiveTab] = useState("overview")
   const [counterTarget, setCounterTarget] = useState<Offer | null>(null)
   const [aiResult, setAiResult] = useState<Record<string, unknown> | null>(null)
@@ -497,6 +565,13 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
         </div>
       )}
 
+      {presentationError && (
+        <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+          Could not read which of these offers your seller can see: {presentationError}. Treat the release state below as
+          unknown until this loads.
+        </div>
+      )}
+
       {/* AI recommendation banner */}
       {aiResult && (
         <AIRecommendationBanner
@@ -593,6 +668,51 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                       )
                     })()}
                   </div>
+
+                  {/* SELLER RELEASE — the owner's gate. Until this is clicked the
+                      offer is invisible on the seller's portal, whatever its
+                      status says. Reversible: an offer released by mistake is
+                      retracted here and its portal alert goes with it. */}
+                  {(() => {
+                    const state = presentation[offer.id]
+                    const released = !!state?.presentedAt
+                    const busy = releasingOfferId === offer.id
+                    return (
+                      <div className="mx-1 flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-2">
+                        {released ? (
+                          <span className="flex items-center gap-1.5 text-xs font-medium text-green-800">
+                            <Eye className="h-3.5 w-3.5" />
+                            Visible to your seller since{" "}
+                            {new Date(state!.presentedAt as string).toLocaleDateString()}
+                          </span>
+                        ) : (
+                          <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                            <EyeOff className="h-3.5 w-3.5" />
+                            Not released — your seller cannot see this offer
+                          </span>
+                        )}
+                        {state?.note && (
+                          <span className="text-xs text-muted-foreground italic">&ldquo;{state.note}&rdquo;</span>
+                        )}
+                        <Button
+                          size="sm"
+                          variant={released ? "ghost" : "default"}
+                          className="h-7 text-xs ml-auto"
+                          disabled={busy || isPending || !!presentationError}
+                          onClick={() => (released ? handleUnrelease(offer.id) : handleRelease(offer.id))}
+                        >
+                          {busy ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : released ? (
+                            "Hide from seller"
+                          ) : (
+                            "Release to seller portal"
+                          )}
+                        </Button>
+                      </div>
+                    )
+                  })()}
+
                   <SellerNetSheetCard
                     offer={offer}
                     listing={{

@@ -61,21 +61,27 @@ export async function POST(req: NextRequest) {
   const fileName = `${brokerageId}/${listingId}/${Date.now()}-${file.name.replace(/\s+/g, "_")}`
   const fileBuffer = await file.arrayBuffer()
 
-  const { data: storageData, error: storageError } = await serviceClient.storage
-    .from("offer-documents")
-    .upload(fileName, fileBuffer, {
-      contentType: "application/pdf",
-      upsert: false,
-    })
+  // Signed URL for the AI extractor — offer-documents is a PRIVATE bucket, so a
+  // public URL would 403 and the extraction would silently fail (m278). putAndSign
+  // does the upload and the signing as ONE step with a compensating delete: the
+  // old shape returned here after the bytes had already landed, leaving a
+  // client's contract in the bucket with no offers row and no documents row
+  // pointing at it, and nothing in the tree has ever swept a bucket.
+  const { putAndSign, removeOrRecordOrphan } = await import("@/lib/storage/put-and-sign")
+  const stored = await putAndSign(serviceClient, {
+    bucket:      "offer-documents",
+    path:        fileName,
+    body:        fileBuffer,
+    contentType: "application/pdf",
+    brokerageId,
+    reason:      "agent_upload_outside_offer",
+  })
 
-  if (storageError) {
-    return NextResponse.json({ error: storageError.message }, { status: 500 })
+  if (!stored.ok) {
+    return NextResponse.json({ error: stored.error }, { status: 500 })
   }
 
-  // Signed URL for the AI extractor — offer-documents is a PRIVATE bucket, so a
-  // public URL would 403 and the extraction would silently fail (m278).
-  const { signedDocUrl } = await import("@/lib/storage/signed-doc-url")
-  const publicUrl = await signedDocUrl(serviceClient, "offer-documents", storageData.path)
+  const publicUrl = stored.signedUrl
 
   // ── 2. INSERT offers row with ai_extraction_status='pending' ──────────────
   const { data: offer, error: insertError } = await supabase
@@ -107,6 +113,21 @@ export async function POST(req: NextRequest) {
     .single()
 
   if (insertError || !offer) {
+    // The bytes are already in the bucket and no row will ever point at them.
+    // Undo the upload rather than leaving a contract behind a refused insert.
+    const compensation = await removeOrRecordOrphan(serviceClient, {
+      bucket:      "offer-documents",
+      objectPath:  stored.path,
+      reason:      "offer_insert_refused",
+      detail:      insertError?.message ?? "the offers insert returned no row",
+      brokerageId,
+    })
+    if (!compensation.orphanRemoved) {
+      console.error(
+        `[offers/upload] offer insert failed AND the uploaded PDF could not be removed: ${stored.path} ` +
+        `(worklist row written: ${compensation.orphanRecorded})`,
+      )
+    }
     return NextResponse.json({ error: insertError?.message ?? "Insert failed" }, { status: 500 })
   }
 
@@ -173,19 +194,45 @@ export async function POST(req: NextRequest) {
   // paperwork is still sitting on the listing, and the agent is the only one
   // who can say whose it is. Told on the same notification rail the intake used
   // to open the loop, and it NAMES what to do.
-  if (inboundLink.plan.ambiguous) {
-    await serviceClient.from("notifications").insert({
+  // A PARTIAL LINK IS ALSO SOMETHING A HUMAN HAS TO HEAR. Since wave 12 the
+  // pending rows are grouped by CONVERSATION (mailbox + sender + subject), which
+  // is finer than the sender alone — deliberately, because splitting one deal in
+  // two fails safely while merging two deals fails invisibly. "Safely" is only
+  // true if the leftovers are VISIBLE: pages that stay on `awaiting_offer_link`
+  // never reach this offer's compliance count, which is the whole defect the
+  // linker exists to close. So the notification fires on BOTH shapes — nothing
+  // linked because nothing could be told apart, and something linked while other
+  // pages stayed behind — and says which happened.
+  const linkedNothingAmbiguously = inboundLink.plan.ambiguous
+  const leftSomeBehind = inboundLink.linkedDocumentIds.length > 0 && inboundLink.plan.remaining > 0
+  if (linkedNothingAmbiguously || leftSomeBehind) {
+    const notice = linkedNothingAmbiguously
+      ? {
+          title: "Emailed offer documents were NOT attached to this offer",
+          body:
+            `${inboundLink.plan.senders.length} separate email conversations (${inboundLink.plan.senders.join(", ")}) have offer paperwork waiting on this listing, so none of it was attached — attaching the wrong one would count another buyer's paperwork toward this deal. `
+          + "Upload the PDF that came from this buyer's agent (same file name as the email attachment) and it will be matched, or file their documents from the deal file.",
+        }
+      : {
+          title: "Some emailed documents were left off this offer",
+          body:
+            `${inboundLink.linkedDocumentIds.length} document(s) were attached to this offer, but ${inboundLink.plan.remaining} more are still waiting on this listing from a different email conversation (${inboundLink.plan.senders.join(", ")}). `
+          + "If they belong to this deal, attach them from the deal file — until then they do not count toward this offer's paperwork.",
+        }
+    const { error: noticeError } = await serviceClient.from("notifications").insert({
       user_id:      user.id,
       brokerage_id: brokerageId,
       type:         "offer_intake_review",
-      title:        "Emailed offer documents were NOT attached to this offer",
-      body:         `${inboundLink.plan.senders.length} different senders (${inboundLink.plan.senders.join(", ")}) have offer paperwork emailed for this listing and still waiting for an offer, so none of it was attached — attaching the wrong sender's contract would count another buyer's paperwork toward this deal. `
-                  + `Upload the PDF that came from this buyer's agent (same file name as the email attachment) and it will be matched, or file their documents from the deal file.`,
+      title:        notice.title,
+      body:         notice.body,
       entity_type:  "offer",
       entity_id:    offer.id,
       priority:     "high",
       is_read:      false,
     })
+    if (noticeError) {
+      console.error(`[offers/upload] offer ${offer.id}: the inbound-link notice was NOT delivered:`, noticeError.message)
+    }
   }
 
   // lifecycle_events + OFFER_UPLOADED kernel event (non-blocking)

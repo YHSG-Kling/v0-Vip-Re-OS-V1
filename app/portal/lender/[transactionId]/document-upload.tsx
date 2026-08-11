@@ -71,26 +71,44 @@ export function LenderDocumentUpload({
         // Upload to Supabase Storage — real path, never a local placeholder
         const supabase = createClient()
         const filePath = `transactions/${transactionId}/lender/${Date.now()}_${file.name}`
-        const { error: uploadErr } = await supabase.storage
-          .from("transaction-documents")
-          .upload(filePath, file, { upsert: false, contentType: file.type })
+        // Store and sign as ONE step: the previous shape bailed after the bytes
+        // were already in the bucket whenever the signer failed, leaving a loan
+        // document in the tenant bucket with no row referencing it.
+        const { putAndSign, removeOrRecordOrphan } = await import("@/lib/storage/put-and-sign")
+        const stored = await putAndSign(supabase, {
+          bucket:      "transaction-documents",
+          path:        filePath,
+          body:        file,
+          contentType: file.type,
+          reason:      "lender_portal_document_upload",
+        })
 
-        if (uploadErr) {
-          setError(`Upload failed: ${uploadErr.message}`)
+        if (!stored.ok) {
+          setError(`Upload failed: ${stored.error}`)
           clearInterval(progressInterval)
           return
         }
 
-        const { signedDocUrl } = await import("@/lib/storage/signed-doc-url")
-        const publicUrl = await signedDocUrl(supabase, "transaction-documents", filePath)
-
-        await uploadLenderDocument({
-          transactionId,
-          lenderId,
-          documentType: selectedType,
-          fileName: file.name,
-          fileUrl: publicUrl,
-        })
+        try {
+          await uploadLenderDocument({
+            transactionId,
+            lenderId,
+            documentType: selectedType,
+            fileName: file.name,
+            fileUrl: stored.signedUrl,
+          })
+        } catch (recordErr: any) {
+          // Nothing references the file now — undo the upload before rethrowing
+          // to the outer handler, which owns the message the lender sees.
+          await removeOrRecordOrphan(supabase, {
+            bucket:     "transaction-documents",
+            objectPath: stored.path,
+            reason:     "lender_document_record_refused",
+            detail:     recordErr?.message ?? String(recordErr),
+          })
+          clearInterval(progressInterval)
+          throw recordErr
+        }
 
         clearInterval(progressInterval)
         setUploadProgress(100)

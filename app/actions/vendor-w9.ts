@@ -80,16 +80,26 @@ export async function uploadVendorW9Action(input: UploadVendorW9Input): Promise<
   const svc = createServiceClient()
 
   // ── EXISTING doc rail: client-documents bucket (round-28 storage rail) ──────
+  // putAndSign puts the bytes and mints the URL as one step and undoes the
+  // upload when the URL cannot be minted. The old shape signed separately and
+  // carried on with an empty string, writing a client_documents row whose
+  // document_url pointed nowhere — and when a later write refused, the W-9 PDF
+  // stayed in the tenant bucket with nothing referencing it.
   const safeName = (input.file.name || "w9.pdf").replace(/[^\w.\-]+/g, "_")
   const filePath = `vendors/${actor.vendorId}/w9/${Date.now()}_${safeName}`
-  const { error: uploadError } = await supabase.storage
-    .from("client-documents")
-    .upload(filePath, fileBuffer, { contentType: input.file.type, upsert: false })
-  if (uploadError) {
-    return { success: false, error: `Upload failed: ${uploadError.message}` }
+  const { putAndSign, removeOrRecordOrphan } = await import("@/lib/storage/put-and-sign")
+  const stored = await putAndSign(supabase, {
+    bucket:      "client-documents",
+    path:        filePath,
+    body:        fileBuffer,
+    contentType: input.file.type,
+    brokerageId: actor.brokerageId,
+    reason:      "vendor_w9_upload",
+  })
+  if (!stored.ok) {
+    return { success: false, error: `Upload failed: ${stored.error}` }
   }
-  const { signedDocUrl } = await import("@/lib/storage/signed-doc-url")
-  const documentUrl = await signedDocUrl(supabase, "client-documents", filePath)
+  const documentUrl = stored.signedUrl
 
   // The client_documents row — same table the vendor documents surface already
   // reads (fetchVendorAgreements matches uploaded_by = vendor user).
@@ -106,6 +116,16 @@ export async function uploadVendorW9Action(input: UploadVendorW9Input): Promise<
     .select("id")
     .maybeSingle()
   if (docErr) {
+    // Nothing will reference the PDF now — take it back out of the bucket.
+    // Service client: this ledger is service-role only, and the vendor's own
+    // credential could not write a worklist row if the delete were refused.
+    await removeOrRecordOrphan(svc, {
+      bucket:      "client-documents",
+      objectPath:  stored.path,
+      reason:      "vendor_w9_document_row_refused",
+      detail:      docErr.message,
+      brokerageId: actor.brokerageId,
+    })
     return { success: false, error: `Could not record the document: ${docErr.message}` }
   }
 

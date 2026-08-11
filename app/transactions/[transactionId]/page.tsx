@@ -238,26 +238,45 @@ export default function AgentTransactionDetailPage() {
     setUploadingDoc(true)
     const supabase = createClient()
     const path = `transactions/${transactionId}/documents/${Date.now()}_${file.name}`
-    const { error: uploadError } = await supabase.storage.from("transaction-documents").upload(path, file)
-    if (uploadError) {
+    // Store and sign as ONE step: the previous shape bailed after the bytes were
+    // already in the bucket whenever the signer failed, leaving a deal document
+    // no row ever pointed at. putAndSign undoes the upload on that path.
+    const { putAndSign, removeOrRecordOrphan } = await import("@/lib/storage/put-and-sign")
+    const stored = await putAndSign(supabase, {
+      bucket:      "transaction-documents",
+      path,
+      body:        file,
+      contentType: file.type || undefined,
+      reason:      "transaction_document_upload",
+    })
+    if (!stored.ok) {
       setUploadingDoc(false)
       return
     }
-    const { signedDocUrl } = await import("@/lib/storage/signed-doc-url")
-    const storageUrl = await signedDocUrl(supabase, "transaction-documents", path)
-    const { data: inserted } = await supabase
+    const { data: inserted, error: insertError } = await supabase
       .from("transaction_documents")
       .insert({
         transaction_id: transactionId,
         doc_label: file.name,
         doc_type: "upload",
         status: "requested",
-        storage_url: storageUrl,
+        storage_url: stored.signedUrl,
         uploaded_at: new Date().toISOString(),
       })
       .select("id, doc_type, doc_label, status, storage_url, uploaded_at, uploaded_by, notes")
       .single()
-    if (inserted) setDocuments((prev) => [inserted, ...prev])
+    if (insertError || !inserted) {
+      // The row that would have referenced the file was refused — take the file
+      // back out rather than leaving it behind a failure we already know about.
+      await removeOrRecordOrphan(supabase, {
+        bucket:     "transaction-documents",
+        objectPath: stored.path,
+        reason:     "transaction_document_row_refused",
+        detail:     insertError?.message ?? "the transaction_documents insert returned no row",
+      })
+    } else {
+      setDocuments((prev) => [inserted, ...prev])
+    }
     setUploadingDoc(false)
     if (fileInputRef.current) fileInputRef.current.value = ""
   }

@@ -193,7 +193,7 @@
     "lib/analytics/prediction-accuracy.ts": 16,
     "lib/analytics/territory-coverage.ts": 2,
     "lib/analytics/territory-roi.ts": 3,
-    "lib/auth/isa-actor.ts": 2,
+    "lib/auth/isa-actor.ts": 1,
     "lib/auth/permissions.ts": 2,
     "lib/auth/provision-isa-actor.ts": 1,
     "lib/auth/resolve-user-role.ts": 2,
@@ -621,7 +621,7 @@
     "lib/transactions/contingency-deadlines.ts": 2,
     "lib/transactions/coordination-status.ts": 1,
     "lib/transactions/deal-vendor-notify.ts": 1,
-    "lib/transactions/earnest-terms.ts": 3,
+    "lib/transactions/earnest-terms.ts": 1,
     "lib/transactions/final-compliance-check.ts": 1,
     "lib/transactions/milestone-service.ts": 1,
     "lib/transactions/offer-bridge.ts": 1,
@@ -678,7 +678,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 8986,
+  "census": 9024,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -850,7 +850,7 @@
     "app/actions/coming-soon-content.ts": 1,
     "app/actions/command-center.ts": 3,
     "app/actions/communications.ts": 11,
-    "app/actions/compliance/dashboard.ts": 1,
+    "app/actions/compliance/dashboard.ts": 2,
     "app/actions/compliance/manage-required-docs.ts": 5,
     "app/actions/compliance/seed-required-docs.ts": 1,
     "app/actions/compliance-bridge-actions.ts": 3,
@@ -1007,6 +1007,7 @@
     "app/actions/objection-training.ts": 5,
     "app/actions/observability/observability-actions.ts": 3,
     "app/actions/offer-kernel-actions.ts": 3,
+    "app/actions/offers/present-to-seller.ts": 3,
     "app/actions/onboarding/agent-onboarding-actions.ts": 2,
     "app/actions/onboarding/brand.ts": 7,
     "app/actions/onboarding/daily-plan.ts": 1,
@@ -1043,7 +1044,7 @@
     "app/actions/portal-messages.ts": 5,
     "app/actions/portal-nl-search.ts": 1,
     "app/actions/portal-offer-decision.ts": 1,
-    "app/actions/portal-seller.ts": 8,
+    "app/actions/portal-seller.ts": 10,
     "app/actions/portal-settings.ts": 3,
     "app/actions/portal-stream.ts": 5,
     "app/actions/predictive-listing.ts": 5,
@@ -1078,7 +1079,7 @@
     "app/actions/seller-equity.ts": 1,
     "app/actions/seller-listing/execution-engine.ts": 23,
     "app/actions/seller-listing/record-lifecycle-event.ts": 1,
-    "app/actions/seller-offers.ts": 14,
+    "app/actions/seller-offers.ts": 13,
     "app/actions/seller-open-house.ts": 14,
     "app/actions/seller-showing-sentiment.ts": 2,
     "app/actions/seller-showings.ts": 13,
@@ -1458,6 +1459,7 @@
     "app/api/cron/sphere-weekly/route.ts": 1,
     "app/api/cron/stale-contact-monitor/route.ts": 1,
     "app/api/cron/stale-lead-monitor/route.ts": 1,
+    "app/api/cron/storage-orphan-sweep/route.ts": 1,
     "app/api/cron/stripe-drift/route.ts": 1,
     "app/api/cron/support-sla/route.ts": 1,
     "app/api/cron/sync-facebook-audiences/route.ts": 1,
@@ -2172,6 +2174,7 @@
     "app/dashboard/compliance/components/os/flagged-files-panel.tsx": 1,
     "app/dashboard/compliance/components/os/missing-disclosures-panel.tsx": 1,
     "app/dashboard/compliance/components/os/policy-reporting-panel.tsx": 1,
+    "app/dashboard/compliance/queue/flag-row-actions.tsx": 1,
     "app/dashboard/compliance/regulatory-changes-panel.tsx": 1,
     "app/dashboard/components/vendor-bookings-panel.tsx": 1,
     "app/dashboard/content/approvals/approval-tools-panel.tsx": 1,
@@ -2959,6 +2962,7 @@
     "lib/buyer-lifecycle/lifecycle-definitions.ts": 8,
     "lib/buyer-lifecycle/lifecycle-logger.ts": 6,
     "lib/buyer-lifecycle/transition-validator.ts": 6,
+    "lib/buyer-offer/buyer-signature-evidence.ts": 5,
     "lib/buyer-offer/compliance-gate.ts": 3,
     "lib/buyer-offer/credentials-helper.ts": 2,
     "lib/buyer-offer/expire-offers.ts": 2,
@@ -3059,8 +3063,10 @@
     "lib/compliance/license-readiness.ts": 2,
     "lib/compliance/manager-eval-harness.ts": 1,
     "lib/compliance/manager-governance-scorecard.ts": 2,
+    "lib/compliance/offer-flag-resolution.ts": 3,
     "lib/compliance/phone-scrub-runner.ts": 2,
     "lib/compliance/phone-scrub.ts": 4,
+    "lib/compliance/raise-offer-flag.ts": 4,
     "lib/compliance/required-doc-presets.ts": 2,
     "lib/compliance/required-documents.ts": 3,
     "lib/compliance/signature-completeness.ts": 1,
@@ -3270,8 +3276,8 @@
     "lib/inbound-mail/deal-doc-intake.ts": 1,
     "lib/inbound-mail/deal-doc-router.ts": 2,
     "lib/inbound-mail/oauth-fetchers.ts": 2,
-    "lib/inbound-mail/offer-detect.ts": 3,
-    "lib/inbound-mail/offer-intake.ts": 1,
+    "lib/inbound-mail/offer-detect.ts": 6,
+    "lib/inbound-mail/offer-intake.ts": 3,
     "lib/inbound-mail/providers.ts": 4,
     "lib/inbound-mail/resolve-user-provider.ts": 2,
     "lib/inbox/smart-replies.ts": 1,
@@ -3801,9 +3807,10 @@
     "lib/newsletter/seo-score.ts": 3,
     "lib/notifications/brokerage-admins.ts": 2,
     "lib/notifications/buyer-preferences.ts": 3,
-    "lib/notifications/notify-helpers.ts": 2,
+    "lib/notifications/notify-helpers.ts": 3,
     "lib/notifications/platform-staff.ts": 2,
     "lib/notifications/route-resolver.ts": 1,
+    "lib/notifications/transaction-parties-packet.ts": 8,
     "lib/offers/buyer-closing-costs.ts": 2,
     "lib/offers/closing-cost-accuracy.ts": 12,
     "lib/offers/commission-disclosure.ts": 3,
@@ -4051,6 +4058,8 @@
     "lib/state-forms/field-defs.ts": 2,
     "lib/state-forms/registry.ts": 2,
     "lib/storage/buckets.ts": 2,
+    "lib/storage/orphan-sweeper.ts": 1,
+    "lib/storage/put-and-sign.ts": 2,
     "lib/storage/signed-doc-url.ts": 1,
     "lib/strategy-learning/close-strategy-loop.ts": 2,
     "lib/strategy-learning/strategy-insights.ts": 2,
@@ -4081,6 +4090,7 @@
     "lib/transactions/compliance-checks-seeder.ts": 1,
     "lib/transactions/contingency-deadlines.ts": 3,
     "lib/transactions/contract-governance.ts": 2,
+    "lib/transactions/contract-terms.ts": 1,
     "lib/transactions/coordination-status.ts": 3,
     "lib/transactions/deadline-monitor.ts": 1,
     "lib/transactions/deal-type-resolver.ts": 1,
@@ -4094,7 +4104,7 @@
     "lib/transactions/milestone-catalog.ts": 3,
     "lib/transactions/milestone-identity.ts": 2,
     "lib/transactions/milestone-service.ts": 7,
-    "lib/transactions/offer-bridge.ts": 2,
+    "lib/transactions/offer-bridge.ts": 3,
     "lib/transactions/offer-execution-state.ts": 2,
     "lib/transactions/participant-populator.ts": 1,
     "lib/transactions/role-guard.ts": 6,
@@ -5414,7 +5424,8 @@
       "listAnnouncementTeamsAction"
     ],
     "app/actions/compliance/dashboard.ts": [
-      "getComplianceDashboard"
+      "getComplianceDashboard",
+      "resolveComplianceFlagAction"
     ],
     "app/actions/compliance/manage-required-docs.ts": [
       "addRequiredDocument",
@@ -6485,6 +6496,11 @@
       "rejectOfferAction",
       "withdrawOfferAction"
     ],
+    "app/actions/offers/present-to-seller.ts": [
+      "presentOfferToSeller",
+      "unpresentOfferFromSeller",
+      "getOfferPresentationStates"
+    ],
     "app/actions/onboarding/agent-onboarding-actions.ts": [
       "fetchMyOnboardingDashboard",
       "completeMyOnboardingStep"
@@ -6739,6 +6755,8 @@
       "getListingDetails",
       "getShowingInsights",
       "getSellerOffers",
+      "getSellerNetSheetInputs",
+      "getSellerOfferComparison",
       "getMarketPosition",
       "getSellerVendors",
       "getSellerDocuments",
@@ -6980,7 +6998,6 @@
       "getRepairNegotiationItems",
       "getMlsNumberByAddress",
       "analyzeOffer",
-      "analyzeMultipleOffers",
       "calculateNetSheet"
     ],
     "app/actions/seller-open-house.ts": [
@@ -8704,6 +8721,9 @@
       "GET"
     ],
     "app/api/cron/stale-lead-monitor/route.ts": [
+      "GET"
+    ],
+    "app/api/cron/storage-orphan-sweep/route.ts": [
       "GET"
     ],
     "app/api/cron/stripe-drift/route.ts": [
@@ -10889,6 +10909,9 @@
     ],
     "app/dashboard/compliance/components/os/policy-reporting-panel.tsx": [
       "PolicyReportingPanel"
+    ],
+    "app/dashboard/compliance/queue/flag-row-actions.tsx": [
+      "FlagRowActions"
     ],
     "app/dashboard/compliance/regulatory-changes-panel.tsx": [
       "RegulatoryChangesPanel"
@@ -13886,6 +13909,13 @@
       "validateReactivation",
       "validateBulkTransitions"
     ],
+    "lib/buyer-offer/buyer-signature-evidence.ts": [
+      "isOutsideOriginated",
+      "describeBuyerSignatureEvidence",
+      "buyerSignatureEstablishedBy",
+      "buyerSignatureRefusal",
+      "attestBuyerSignature"
+    ],
     "lib/buyer-offer/compliance-gate.ts": [
       "checkCompliancePassed",
       "emitCompliancePassed",
@@ -14324,6 +14354,11 @@
       "buildManagerGovernanceScorecard",
       "summarizeGovernance"
     ],
+    "lib/compliance/offer-flag-resolution.ts": [
+      "complianceFlagKey",
+      "recordOfferComplianceFlag",
+      "resolveOfferComplianceFlags"
+    ],
     "lib/compliance/phone-scrub-runner.ts": [
       "scrubAndElectPhones",
       "scrubPhonesForPatch"
@@ -14333,6 +14368,12 @@
       "dispositionOf",
       "electScrubbedPhones",
       "electionToColumnPatch"
+    ],
+    "lib/compliance/raise-offer-flag.ts": [
+      "raiseOfferComplianceFlag",
+      "resolveUnattendedRaiserUserId",
+      "emReceiptFlagSubject",
+      "emReceiptFlagRaisedWithin"
     ],
     "lib/compliance/required-doc-presets.ts": [
       "getRequiredDocPresetsForState",
@@ -15343,10 +15384,15 @@
     "lib/inbound-mail/offer-detect.ts": [
       "looksLikeOffer",
       "matchListingByAddress",
-      "assessOfferIntake"
+      "planInboundFiling",
+      "planInboundOfferLink",
+      "assessOfferIntake",
+      "planOutboundWatch"
     ],
     "lib/inbound-mail/offer-intake.ts": [
-      "tryIngestInboundOffer"
+      "tryIngestInboundOffer",
+      "tryRouteOutboundOfferReply",
+      "linkInboundDocumentsToOffer"
     ],
     "lib/inbound-mail/providers.ts": [
       "detectInboundProvider",
@@ -18143,7 +18189,8 @@
     ],
     "lib/notifications/notify-helpers.ts": [
       "notifyEsignSigned",
-      "notifyComplianceFlag"
+      "notifyComplianceFlag",
+      "notifyTransactionParties"
     ],
     "lib/notifications/platform-staff.ts": [
       "resolvePlatformStaffIds",
@@ -18151,6 +18198,16 @@
     ],
     "lib/notifications/route-resolver.ts": [
       "resolveNotificationHref"
+    ],
+    "lib/notifications/transaction-parties-packet.ts": [
+      "isPrincipalRole",
+      "rosterForPrincipal",
+      "composeSubject",
+      "composeStaffMessage",
+      "composeClientMessage",
+      "composeCounterpartyMessage",
+      "toHtml",
+      "displayContingencies"
     ],
     "lib/offers/buyer-closing-costs.ts": [
       "estimateBuyerClosingCosts",
@@ -19434,6 +19491,13 @@
       "ensureBucket",
       "uploadBufferToBucket"
     ],
+    "lib/storage/orphan-sweeper.ts": [
+      "sweepStorageOrphans"
+    ],
+    "lib/storage/put-and-sign.ts": [
+      "putAndSign",
+      "removeOrRecordOrphan"
+    ],
     "lib/storage/signed-doc-url.ts": [
       "signedDocUrl"
     ],
@@ -19557,6 +19621,9 @@
       "setContractDate",
       "assertAdjustmentsUnlocked"
     ],
+    "lib/transactions/contract-terms.ts": [
+      "copyContractTerms"
+    ],
     "lib/transactions/coordination-status.ts": [
       "isMilestoneStatus",
       "isDeadlineStatus",
@@ -19615,6 +19682,7 @@
       "getMilestones"
     ],
     "lib/transactions/offer-bridge.ts": [
+      "deriveContractDeadlines",
       "assertOfferReadyForTransaction",
       "createTransactionFromOffer"
     ],
@@ -20364,5 +20432,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 292
+  "trulyDead": 290
 }

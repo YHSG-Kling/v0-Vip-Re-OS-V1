@@ -178,9 +178,17 @@ export function InteractiveNetSheet({
             <NumberField label="Other prorated fees" value={otherProratedFees} onChange={setOtherProratedFees} readOnly={readOnly} />
             <NumberField label="Transaction fee (flat)" value={transactionFee} onChange={setTransactionFee} readOnly={readOnly} />
           </div>
+          {/* The payoff warning is the single most important line on this sheet —
+              a defaulted $0 overstates net proceeds by the whole mortgage balance.
+              In READ-ONLY (seller portal) mode the fields are disabled, so the
+              agent-facing instruction "enter the real payoff before presenting"
+              names an action the reader cannot take; the warning itself must NOT
+              be softened or dropped, only addressed to whoever is reading it. */}
           {mortgagePayoff === 0 && (
             <p className="mt-2 text-xs text-red-700">
-              ⛔ Payoff is still $0 — every net figure above overstates what the seller keeps. Enter the real payoff before presenting.
+              {readOnly
+                ? "⛔ Mortgage payoff is still $0 — every net figure above overstates what you would keep. Ask your agent to enter your real payoff before you rely on these numbers."
+                : "⛔ Payoff is still $0 — every net figure above overstates what the seller keeps. Enter the real payoff before presenting."}
             </p>
           )}
 

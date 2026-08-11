@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
 import { requireVendorActor, PortalAuthError } from "@/lib/kernel/portal-auth"
-import { signedDocUrl } from "@/lib/storage/signed-doc-url"
+import { putAndSign, removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
 
 // ─── Upload helpers (module-private — a "use server" file may only EXPORT
 //     async functions, and these are deliberately not endpoints) ─────────────
@@ -459,18 +459,23 @@ export async function uploadVendorJobDocument(data: {
   // PRIVATE bucket (verified live: storage.buckets.public = false). Vendor job
   // documents are deal files — inspection reports, invoices — and must not be
   // world-readable, so this is deliberately not the public `documents` bucket.
-  const { error: uploadError } = await supabase.storage
-    .from("transaction-documents")
-    .upload(objectPath, bytes, {
-      contentType: guessContentType(safeName),
-      upsert: false,
-    })
+  // Store and sign as ONE step. The previous shape signed separately and, when
+  // the signer failed, wrote the row with a null storage_url while the file
+  // stayed in the bucket — a confidential deal file with nothing pointing at it.
+  const stored = await putAndSign(supabase, {
+    bucket:      "transaction-documents",
+    path:        objectPath,
+    body:        bytes,
+    contentType: guessContentType(safeName),
+    brokerageId: gate.brokerageId,
+    reason:      "vendor_job_document_upload",
+  })
 
-  if (uploadError) {
-    throw new Error(`The file could not be stored — ${uploadError.message}`)
+  if (!stored.ok) {
+    throw new Error(`The file could not be stored — ${stored.error}`)
   }
 
-  const storageUrl = await signedDocUrl(supabase, "transaction-documents", objectPath)
+  const storageUrl = stored.signedUrl
 
   // Create document record — use correct transaction_documents schema
   const { data: document, error: docError } = await supabase
@@ -491,9 +496,28 @@ export async function uploadVendorJobDocument(data: {
     .maybeSingle()
 
   // Do not leave an orphaned object behind a failed row — otherwise every
-  // retry adds another unreferenced copy of a confidential file.
+  // retry adds another unreferenced copy of a confidential file. The previous
+  // form was `.remove([...]).catch(() => {})`: supabase-js RESOLVES a refused
+  // remove, so the catch never ran and a refusal was silently swallowed.
+  // removeOrRecordOrphan reads the error and, when the remove is genuinely
+  // refused, files the object on the sweeper's worklist instead of losing it.
   if (docError || !document) {
-    await supabase.storage.from("transaction-documents").remove([objectPath]).catch(() => {})
+    // Service client only for the compensation: the worklist it falls back to is
+    // service-role only, and the vendor's own credential could not write it.
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const compensation = await removeOrRecordOrphan(createServiceClient(), {
+      bucket:      "transaction-documents",
+      objectPath:  stored.path,
+      reason:      "vendor_job_document_row_refused",
+      detail:      docError?.message ?? "the transaction_documents insert returned no row",
+      brokerageId: gate.brokerageId,
+    })
+    if (!compensation.orphanRemoved) {
+      console.error(
+        `[vendor-portal] the vendor job document row failed AND its file could not be removed: ${stored.path} ` +
+        `(worklist row written: ${compensation.orphanRecorded})`,
+      )
+    }
     throw docError ?? new Error("The document record could not be created")
   }
 

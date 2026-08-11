@@ -513,17 +513,23 @@ async function main() {
     const a2 = { id: "d2", fileName: "Addendum.pdf",   fromEmail: "Agent.A@brokerB.com", linkedOfferId: null }
     const b1 = { id: "d3", fileName: "Contract.pdf",   fromEmail: "agent.b@brokerC.com", linkedOfferId: null }
 
+    // These assert the BEHAVIOUR, not the `reason` spelling. Wave 12 re-keyed
+    // the grouping from the sender to the mailbox + conversation and renamed the
+    // reasons with it (`only_sender` → `only_group`), which broke this block on
+    // a string while every property it actually cares about was unchanged. What
+    // matters is WHICH ROWS LINK and WHETHER THE PLAN REFUSES — a rename cannot
+    // fake either, and a regression cannot hide behind either.
     const one = planInboundOfferLink([a1, a2])
-    check("one sender waiting ⇒ all of that sender's pages link, not just the contract",
-      one.link.join(",") === "d1,d2" && one.reason === "only_sender" && one.ambiguous === false)
+    check("one group waiting ⇒ all of that group's pages link, not just the contract",
+      one.link.join(",") === "d1,d2" && one.ambiguous === false)
     check("…and the sender is case-folded, so one agent is one group",
       one.senders.length === 1)
 
     const two = planInboundOfferLink([a1, a2, b1])
-    check("TWO senders waiting and nothing to choose ⇒ NOTHING is linked",
-      two.link.length === 0 && two.ambiguous === true && two.reason === "ambiguous_senders",
+    check("TWO groups waiting and nothing to choose ⇒ NOTHING is linked",
+      two.link.length === 0 && two.ambiguous === true,
       "a mis-link counts another deal's paperwork toward this offer, and passes a gate with it")
-    check("…and both senders are reported so a human can settle it",
+    check("…and both groups are reported so a human can settle it",
       two.senders.length === 2)
 
     const byFile = planInboundOfferLink([a1, a2, b1], { preferFileName: "rpa_signed.PDF" })
@@ -537,6 +543,37 @@ async function main() {
     check("…and a known sender who is NOT waiting links nothing, even with one group present",
       absent.link.length === 0 && absent.reason === "sender_not_pending",
       "falling back would attach a different deal's contract to this offer")
+
+    // THE SPLIT MUST BE VISIBLE. Wave 12's key is mailbox + sender + subject,
+    // finer than wave 11's sender alone. That is the right direction — splitting
+    // one deal in two fails safely, merging two deals fails invisibly — but only
+    // if the leftovers are reported. Silently linking one conversation and
+    // abandoning the rest re-creates the exact defect the linker exists to
+    // close: pages that sit on `awaiting_offer_link` forever and never reach the
+    // offer's compliance count.
+    const split = planInboundOfferLink(
+      [
+        { ...a1, subject: "Offer on 12 Oak" },
+        { ...a2, subject: "Revised offer — 12 Oak" },
+      ],
+      { preferFileName: "rpa_signed.PDF" },
+    )
+    check("a conversation SPLIT links only its own pages…",
+      split.link.join(",") === "d1")
+    check("…and REPORTS the pages it left behind, so nobody thinks the deal file is complete",
+      split.remaining === 1,
+      "an unreported residue never counts toward the offer and nothing says so")
+    check("a clean single-group link reports NO residue",
+      planInboundOfferLink([a1, a2]).remaining === 0)
+    check("a mailbox that owns nothing here links nothing and says the rows are foreign",
+      (() => {
+        const p = planInboundOfferLink(
+          [{ ...a1, mailboxKey: "user-A" }, { ...a2, mailboxKey: "user-A" }],
+          { mailboxKey: "user-B" },
+        )
+        return p.link.length === 0 && p.foreignMailbox === 2 && p.reason === "foreign_mailbox_only"
+      })(),
+      "paperwork in another agent's inbox is another agent's deal")
 
     const already = planInboundOfferLink([{ ...a1, linkedOfferId: "some-other-offer" }])
     check("a row already spoken for is never re-linked",
@@ -552,8 +589,15 @@ async function main() {
     const pendingDocs = (): Row[] => ([
       { id: "p1", brokerage_id: BROKERAGE, listing_id: LISTING, contact_id: null,
         metadata: { file_name: "RPA_signed.pdf", from_email: "a@b.com", awaiting_offer_link: true, linked_offer_id: null, intake_source: "inbound_email", subject: "Offer on 12 Oak" } },
+      // SAME SUBJECT as p1, because they are two attachments on ONE email:
+      // `fileInboundPdfs` writes one provenance blob to every attachment it
+      // files, so in production these always agree. Wave 11 grouped by sender
+      // and this field was irrelevant; wave 12 groups by CONVERSATION, and a
+      // fixture where two pages of one email disagree about the subject models
+      // something that cannot happen while hiding the case that can (see the
+      // split-residue check below).
       { id: "p2", brokerage_id: BROKERAGE, listing_id: LISTING, contact_id: null,
-        metadata: { file_name: "Addendum.pdf", from_email: "a@b.com", awaiting_offer_link: true, linked_offer_id: null, intake_source: "inbound_email" } },
+        metadata: { file_name: "Addendum.pdf", from_email: "a@b.com", awaiting_offer_link: true, linked_offer_id: null, intake_source: "inbound_email", subject: "Offer on 12 Oak" } },
     ])
 
     const store: Store = { offers: [], users: [], documents: pendingDocs(), activities: [] }

@@ -58,15 +58,22 @@ export async function uploadProfilePhoto(
     const fileName = `${contactId}-${Date.now()}.${fileExt}`
     const filePath = `avatars/${fileName}`
 
-    const { error: uploadError } = await supabase.storage.from("client-documents").upload(filePath, file)
-
-    if (uploadError) {
-      return { success: false, error: uploadError.message }
-    }
-
     // Signed URL — client-documents is a PRIVATE bucket (m278); getPublicUrl 403s.
-    const { signedDocUrl } = await import("@/lib/storage/signed-doc-url")
-    const avatarUrl = await signedDocUrl(supabase, "client-documents", filePath)
+    // putAndSign stores and signs as one step and undoes the upload when the URL
+    // cannot be minted, so a failed photo upload does not leave an image sitting
+    // in a tenant document bucket that nothing references.
+    const { putAndSign, removeOrRecordOrphan } = await import("@/lib/storage/put-and-sign")
+    const stored = await putAndSign(supabase, {
+      bucket: "client-documents",
+      path:   filePath,
+      body:   file,
+      reason: "portal_profile_photo",
+    })
+
+    if (!stored.ok) {
+      return { success: false, error: stored.error }
+    }
+    const avatarUrl = stored.signedUrl
 
     // Update contact with new avatar URL
     const { error: updateError } = await supabase
@@ -75,6 +82,16 @@ export async function uploadProfilePhoto(
       .eq("id", contactId)
 
     if (updateError) {
+      // The photo is in the bucket and no row points at it. Compensate with the
+      // service client: the worklist this falls back to is service-role only, so
+      // the portal session could not write it if the delete were also refused.
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      await removeOrRecordOrphan(createServiceClient(), {
+        bucket:     "client-documents",
+        objectPath: stored.path,
+        reason:     "portal_profile_photo_row_refused",
+        detail:     `contact ${contactId}: ${updateError.message}`,
+      })
       return { success: false, error: updateError.message }
     }
 

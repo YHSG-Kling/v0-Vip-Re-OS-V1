@@ -19,6 +19,16 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import {
+  defaultSellerCosts,
+  resolveAgreedCommission,
+  type OfferNetInput,
+  type SellerCosts,
+} from "@/lib/offers/net-sheet-calc"
+import {
+  deriveNetSheetClosingCostSection,
+  type NetSheetClosingCostSection,
+} from "@/lib/offers/seller-closing-costs"
+import {
   resolveSellerContext,
   getShowingStats,
   getRecentFeedback,
@@ -343,9 +353,59 @@ export async function getShowingInsights(contactId: string) {
 
 // ─── OFFER DATA ───────────────────────────────────────────────────────────────
 
+// Column list hoisted out of the query chain so the tenant + release filters on
+// the query itself stay auditable.
+const SELLER_OFFER_COLUMNS = `
+      id, listing_id, contact_id, transaction_id,
+      offer_price, offer_amount:offer_price, status,
+      created_at, submitted_at, offer_date:submitted_at,
+      expiration_date:response_deadline, expires_at:response_deadline,
+      close_date:closing_date, closing_date,
+      earnest_money, down_payment_percent, financing_type, contingencies,
+      closing_cost_contribution, seller_net_estimate, notes,
+      presented_to_seller_at, seller_presentation_note,
+      esign_status, esign_provider, esign_sent_at, esign_completed_at, buyer_signed_at,
+      buyer:contacts(id, first_name, last_name, email, phone)
+    `
+
+/** The seller's own listing, matched on either seller key, tenant-anchored. */
+async function resolveSellerListingRow(
+  svc: ReturnType<typeof createServiceClient>,
+  contactId: string,
+  brokerageId: string,
+): Promise<{ listing: any | null; error: string | null }> {
+  const { data, error } = await svc
+    .from("listings")
+    .select("id, list_price, address, city, state, brokerage_id, hoa_dues, commission_rate")
+    .or(`seller_contact_id.eq.${contactId},contact_id.eq.${contactId}`)
+    .eq("brokerage_id", brokerageId)
+    .order("listing_date", { ascending: false })
+    .limit(1)
+  if (error) return { listing: null, error: error.message }
+  return { listing: data?.[0] ?? null, error: null }
+}
+
+/** First name + last initial — what a portal seller may know about a buyer. */
+function redactBuyerName(buyer: { first_name?: string | null; last_name?: string | null } | null): string {
+  if (!buyer) return "Buyer"
+  const first = (buyer.first_name ?? "").trim() || "Buyer"
+  const initial = buyer.last_name ? ` ${buyer.last_name.trim().charAt(0).toUpperCase()}.` : ""
+  return `${first}${initial}`
+}
+
 /**
  * Every offer on the seller's listing — THE reader for the seller portal's
  * Offers screen (`app/portal/[contactId]/offers/page.tsx`).
+ *
+ * THE RELEASE GATE (wave 12, R4a). `offers.presented_to_seller_at` is NULL until
+ * the listing agent releases the offer through
+ * `app/actions/offers/present-to-seller.ts:presentOfferToSeller`. NULL means the
+ * seller must not see it, and the filter below is applied ONLY for the seller's
+ * own session: this same reader serves brokerage staff, who are working the deal
+ * and must see everything on the listing, released or not. Status is deliberately
+ * NOT the gate — `offers.status` carries no CHECK constraint, so an inbound row
+ * written as "submitted" would otherwise land on the seller's screen the instant
+ * the webhook returned.
  *
  * BUYER PII IS SCOPED BY WHO IS ASKING. `requireContactAccess` admits two very
  * different callers: the SELLER themselves in their portal, and staff of the
@@ -377,38 +437,23 @@ export async function getSellerOffers(contactId: string) {
   // seller key: `seller_contact_id` is the canonical one, but portal surfaces
   // have historically resolved a seller's listing through `contact_id`, and a
   // listing keyed only the other way must not read back as "no listing".
-  const { data: listings, error: listingErr } = await supabase
-    .from("listings")
-    .select("id, list_price, address, city, state, brokerage_id")
-    .or(`seller_contact_id.eq.${contactId},contact_id.eq.${contactId}`)
-    .eq("brokerage_id", access.brokerageId)
-    .order("listing_date", { ascending: false })
-    .limit(1)
   // supabase-js resolves a refused query — an empty list must not be reported
   // as "you have no offers" when the read was actually denied.
-  if (listingErr) return { offers: [], listPrice: null, error: listingErr.message }
-
-  const listing = listings?.[0]
+  const { listing, error: listingErr } = await resolveSellerListingRow(supabase, contactId, access.brokerageId)
+  if (listingErr) return { offers: [], listPrice: null, error: listingErr }
 
   if (!listing) {
     return { offers: [], listPrice: null, error: null }
   }
 
-  const { data: offers, error: offersErr } = await supabase
+  let offersQuery = supabase
     .from("offers")
-    .select(`
-      id, listing_id, contact_id, transaction_id,
-      offer_price, offer_amount:offer_price, status,
-      created_at, submitted_at, offer_date:submitted_at,
-      expiration_date:response_deadline, expires_at:response_deadline,
-      close_date:closing_date, closing_date,
-      earnest_money, down_payment_percent, financing_type, contingencies,
-      seller_net_estimate, notes,
-      esign_status, esign_provider, esign_sent_at, esign_completed_at, buyer_signed_at,
-      buyer:contacts(id, first_name, last_name, email, phone)
-    `)
+    .select(SELLER_OFFER_COLUMNS)
     .eq("listing_id", listing.id)
-    .order("offer_price", { ascending: false })
+  if (access.isContactSelf) {
+    offersQuery = offersQuery.not("presented_to_seller_at", "is", null)
+  }
+  const { data: offers, error: offersErr } = await offersQuery.order("offer_price", { ascending: false })
   if (offersErr) return { offers: [], listPrice: listing.list_price, error: offersErr.message }
 
   const scoped = (offers ?? []).map((o: any) => {
@@ -435,6 +480,235 @@ export async function getSellerOffers(contactId: string) {
     offers: scoped,
     listPrice: listing.list_price,
     error: null as string | null,
+  }
+}
+
+// ─── INTERACTIVE NET SHEET INPUTS (R4b) ───────────────────────────────────────
+
+export interface SellerNetSheetInputs {
+  listingAddress: string | null
+  /** Only RELEASED offers. An offer the agent has not approved is not an input. */
+  offers: OfferNetInput[]
+  costs: Omit<SellerCosts, "buyerClosingCredit"> | null
+  closingCostSection: NetSheetClosingCostSection | null
+  /** Commission provenance — never present a default as the agreed rate. */
+  commission: { label: string; isEstimate: boolean; rate: number; isFlatFee: boolean } | null
+  error: string | null
+}
+
+/**
+ * Everything `app/components/features/offers/interactive-net-sheet.tsx` needs to
+ * render on the SELLER's screen in read-only mode.
+ *
+ * That component's own header has always said it is "reusable by the seller
+ * portal (read-only mode via `readOnly`)" — and until this wave its only importer
+ * was the agent's offer view. This is the missing wire. It is NOT a replacement
+ * for `NetSheetCalculator`: that one is the seller's single-offer what-if they
+ * edit; this one RANKS the released offers by what the seller actually keeps.
+ *
+ * The cost assumptions carry the same honesty the agent's page carries. The
+ * seller pays BOTH sides of the commission, so a listing-side-only rate
+ * understates the commission and overstates the net — on the screen where the
+ * seller forms an opinion about which offer to take. `resolveAgreedCommission`
+ * is the one resolver, and it flags anything below an executed agreement as an
+ * estimate so the label can say so.
+ */
+export async function getSellerNetSheetInputs(contactId: string): Promise<SellerNetSheetInputs> {
+  const empty: SellerNetSheetInputs = {
+    listingAddress: null, offers: [], costs: null, closingCostSection: null, commission: null, error: null,
+  }
+
+  const access = await requireContactAccess(contactId)
+  if (!access.ok) return { ...empty, error: "Forbidden" }
+
+  const svc = createServiceClient()
+  const { listing, error: listingErr } = await resolveSellerListingRow(svc, contactId, access.brokerageId)
+  if (listingErr) return { ...empty, error: listingErr }
+  if (!listing) return empty
+
+  const { data: released, error: releasedErr } = await svc
+    .from("offers")
+    .select("id, offer_price, financing_type, closing_cost_contribution, status, contact_id, buyer:contacts(first_name, last_name)")
+    .eq("listing_id", listing.id)
+    .eq("brokerage_id", access.brokerageId)
+    .not("presented_to_seller_at", "is", null)
+    .order("offer_price", { ascending: false })
+  if (releasedErr) return { ...empty, listingAddress: listing.address ?? null, error: releasedErr.message }
+
+  // The net sheet is a seller-facing artifact even when staff are previewing it,
+  // so the buyer label is the redacted one on both paths.
+  const netInputs: OfferNetInput[] = (released ?? []).map((o: any) => ({
+    offerId: o.id,
+    buyerName: redactBuyerName(o.buyer ?? null),
+    offerPrice: Number(o.offer_price ?? 0),
+    financingType: o.financing_type ?? null,
+    buyerClosingCredit: o.closing_cost_contribution != null ? Number(o.closing_cost_contribution) : 0,
+  }))
+
+  const { data: agreement, error: agreementErr } = await svc
+    .from("listing_agreements")
+    .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee, fully_executed_at")
+    .eq("listing_id", listing.id)
+    .eq("brokerage_id", access.brokerageId)
+    .order("fully_executed_at", { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle()
+  if (agreementErr) {
+    return { ...empty, listingAddress: listing.address ?? null, error: agreementErr.message }
+  }
+
+  const listPrice = listing.list_price != null ? Number(listing.list_price) : null
+  const agreed = resolveAgreedCommission({
+    agreement: agreement as any,
+    listingCommissionRatePercent: listing.commission_rate ?? null,
+    referencePrice: listPrice,
+  })
+
+  const costs = defaultSellerCosts({
+    listPrice,
+    commissionRateDecimal: agreed.rate,
+    hoaDuesMonthly: listing.hoa_dues != null ? Number(listing.hoa_dues) : null,
+    transactionFee: (agreement as any)?.seller_transaction_fee ?? null,
+  })
+  const closingCostSection = deriveNetSheetClosingCostSection(listPrice, listing.state ?? null)
+  if (closingCostSection) costs.otherProratedFees = closingCostSection.midpoint
+
+  return {
+    listingAddress: listing.address ?? null,
+    offers: netInputs,
+    costs,
+    closingCostSection,
+    commission: { label: agreed.label, isEstimate: agreed.isEstimate, rate: agreed.rate, isFlatFee: agreed.isFlatFee },
+    error: null,
+  }
+}
+
+// ─── THE PERSISTED MULTI-OFFER COMPARISON (R4c) ───────────────────────────────
+
+export type SellerComparisonCoverage = "exact" | "stale" | "withheld" | "none"
+
+export interface SellerOfferComparison {
+  coverage: SellerComparisonCoverage
+  generatedAt: string | null
+  /** Per-offer rows, buyer identity redacted to what a seller may know. */
+  rows: Array<{
+    offerId: string
+    buyerLabel: string
+    offerPrice: number | null
+    netToSeller: number | null
+    financingType: string | null
+    downPaymentPercent: number | null
+    contingenciesCount: number | null
+    daysToClose: number | null
+    isRecommended: boolean
+  }>
+  recommendation: string | null
+  /** Released offers this comparison does not cover (coverage === "stale"). */
+  missingOfferCount: number
+  error: string | null
+}
+
+/**
+ * The SELLER's door onto the comparison the agent already generated and PERSISTED
+ * (`offer_comparison`, written by seller-offers.ts:analyzeMultipleOffers and
+ * kernel/offers.ts:compareOffersForListing).
+ *
+ * This does NOT build a fourth comparison and does NOT re-run inference. The
+ * portal used to call `analyzeMultipleOffers` on EVERY page load, which both
+ * re-burned paid AI and could never have worked for an actual seller — that
+ * action authenticates through a brokerage-staff gate a portal contact cannot
+ * pass. `loadLatestOfferComparison` is its agent-side twin; this is the same read
+ * behind the portal's own authorization, with two rules the agent's copy does not
+ * need:
+ *
+ *  1. A comparison that covers an offer the agent has NOT released must not leak
+ *     it. If the persisted row names any offer outside the released set, nothing
+ *     is rendered and the seller is told a comparison exists but is not theirs to
+ *     see yet.
+ *  2. The persisted matrix carries the buyer's FULL name (the analyzer builds it
+ *     from first_name + last_name). A portal seller gets first name + last
+ *     initial here, exactly as they do on the offer cards.
+ */
+export async function getSellerOfferComparison(contactId: string): Promise<SellerOfferComparison> {
+  const empty: SellerOfferComparison = {
+    coverage: "none", generatedAt: null, rows: [], recommendation: null, missingOfferCount: 0, error: null,
+  }
+
+  const access = await requireContactAccess(contactId)
+  if (!access.ok) return { ...empty, error: "Forbidden" }
+
+  const svc = createServiceClient()
+  const { listing, error: listingErr } = await resolveSellerListingRow(svc, contactId, access.brokerageId)
+  if (listingErr) return { ...empty, error: listingErr }
+  if (!listing) return empty
+
+  const { data: released, error: releasedErr } = await svc
+    .from("offers")
+    .select("id, offer_price, buyer:contacts(first_name, last_name)")
+    .eq("listing_id", listing.id)
+    .eq("brokerage_id", access.brokerageId)
+    .not("presented_to_seller_at", "is", null)
+  if (releasedErr) return { ...empty, error: releasedErr.message }
+
+  const releasedIds = new Set((released ?? []).map((o: any) => o.id))
+  const labelById = new Map<string, string>()
+  ;(released ?? []).forEach((o: any) => {
+    labelById.set(o.id, redactBuyerName(o.buyer ?? null))
+  })
+  if (releasedIds.size === 0) return empty
+
+  const { data: comparison, error: compErr } = await svc
+    .from("offer_comparison")
+    .select("id, offer_ids, comparison_matrix, net_to_seller_by_offer, ai_recommendation, recommended_offer_id, created_at")
+    .eq("listing_id", listing.id)
+    .eq("brokerage_id", access.brokerageId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (compErr) return { ...empty, error: compErr.message }
+  if (!comparison) return empty
+
+  const comparedIds: string[] = Array.isArray(comparison.offer_ids) ? comparison.offer_ids.filter(Boolean) : []
+  if (comparedIds.length === 0) return empty
+
+  // RULE 1 — a comparison that reaches beyond what the seller may see is withheld
+  // whole. Filtering it down would still tell the seller how many other offers
+  // exist and how theirs rank against them.
+  const coversUnreleased = comparedIds.some((id) => !releasedIds.has(id))
+  if (coversUnreleased) {
+    return { ...empty, coverage: "withheld", generatedAt: comparison.created_at ?? null }
+  }
+
+  const matrix: any[] = Array.isArray(comparison.comparison_matrix) ? comparison.comparison_matrix : []
+  const netByOffer: Record<string, number> = (comparison.net_to_seller_by_offer ?? {}) as Record<string, number>
+
+  const rows = comparedIds.map((offerId) => {
+    const m = matrix.find((row: any) => row?.offer_id === offerId) ?? {}
+    const net = netByOffer[offerId]
+    return {
+      offerId,
+      // RULE 2 — the persisted buyer_name is discarded, not trusted.
+      buyerLabel: labelById.get(offerId) ?? "Buyer",
+      offerPrice: m.offer_price != null ? Number(m.offer_price) : null,
+      netToSeller: net != null ? Number(net) : (m.net_to_seller != null ? Number(m.net_to_seller) : null),
+      financingType: m.financing_type ?? null,
+      downPaymentPercent: m.down_payment_percent != null ? Number(m.down_payment_percent) : null,
+      contingenciesCount: m.contingencies_count != null ? Number(m.contingencies_count) : null,
+      daysToClose: m.days_to_close != null ? Number(m.days_to_close) : null,
+      isRecommended: comparison.recommended_offer_id === offerId,
+    }
+  })
+  rows.sort((a, b) => (b.netToSeller ?? b.offerPrice ?? 0) - (a.netToSeller ?? a.offerPrice ?? 0))
+
+  const missingOfferCount = [...releasedIds].filter((id) => !comparedIds.includes(id as string)).length
+
+  return {
+    coverage: missingOfferCount > 0 ? "stale" : "exact",
+    generatedAt: comparison.created_at ?? null,
+    rows,
+    recommendation: comparison.ai_recommendation ?? null,
+    missingOfferCount,
+    error: null,
   }
 }
 

@@ -388,12 +388,27 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
       if (!result.success || !result.offerId) { setError(result.error ?? "Failed to create offer"); return }
       setState(prev => ({ ...prev, offerId: result.offerId, esignProvider: esignProvider }))
 
+      // THE ROLE TRAVELS. This used to collapse `listing_agent` and `seller`
+      // into a flat "agent" here, at the caller, because the action's parameter
+      // type admitted only buyer/co_buyer/agent. Step 4 of this very wizard
+      // renders a "Listing Agent" row and collects their name and email — and
+      // that address was thrown away one line before it left the browser.
+      //
+      // On an OUTSIDE listing that address is the only key the deal's return
+      // mail will ever have: `offers.listing_id` is null, there is no `listings`
+      // row, and the inbound address match cannot fire. Flattened to "agent" it
+      // is also indistinguishable from OUR OWN buyer's agent, so it cannot be
+      // recovered downstream by guessing.
+      //
+      // The action now takes the real role and narrows it itself for the e-sign
+      // provider (which understands parties, not our deal roles) while keeping
+      // the counterparty for the reply watch.
       await submitForSignature({
         offerId: result.offerId,
         userId: agentUserId,
         signers: state.signers
           .filter(s => s.email)
-          .map(s => ({ name: s.name, email: s.email, role: s.role === "seller" || s.role === "listing_agent" ? "agent" : s.role === "co_buyer" ? "co_buyer" : s.role === "buyer" ? "buyer" : "agent" })),
+          .map(s => ({ name: s.name, email: s.email, role: s.role })),
       })
       setStep(6)
     } catch (e: unknown) {

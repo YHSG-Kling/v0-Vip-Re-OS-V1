@@ -187,22 +187,54 @@ export async function POST(request: NextRequest) {
     }
 
     // EMAIL → OFFER lookout (runs BEFORE the known-contact requirement, since an outside agent
-    // emailing an offer is NOT a known contact). If this is an offer for an in-house listing
-    // (matched by address, not sender), the offer flow owns it: auto-ingest when the buyer is a
-    // known sender contact, else surface a one-tap confirm to the listing agent. Best-effort.
+    // emailing an offer is NOT a known contact).
+    //
+    // WHOSE MAILBOX THIS IS, PASSED THROUGH (wave 12, R1). This route already
+    // resolves the credential that owns the inbox and used to hand the offer
+    // lane only the SENDER — the one identity an outside buyer's agent does not
+    // have with us. The mailbox owner is the authority the owner's ruling names:
+    // watch the LISTING AGENT's inbox for the listing's address. `agent_user_id`
+    // is a `users.id` and `listings.agent_id` is an `agents.id`; the intake
+    // RESOLVES between them and never coalesces one into the other.
+    //
+    // The transactional lane frequently resolves no agent at all. That is passed
+    // through as null, and the intake keeps its brokerage-wide fallback and
+    // records that the match was unkeyed — the working path is not deleted.
+    const mailbox = {
+      userId:  resolvedCredential?.agent_user_id ?? null,
+      address: resolvedCredential?.account_id ?? email.toEmail ?? null,
+    }
     if (brokerageId && email.attachments.some((a) => a.mime === "application/pdf")) {
       try {
-        const { tryIngestInboundOffer } = await import("@/lib/inbound-mail/offer-intake")
+        const { tryIngestInboundOffer, tryRouteOutboundOfferReply } = await import("@/lib/inbound-mail/offer-intake")
         const intake = await tryIngestInboundOffer({
           brokerageId,
           subject:         email.subject ?? null,
           bodyText:        email.bodyText ?? null,
           fromEmail:       email.fromEmail ?? null,
           senderContactId: contactId,
+          mailbox,
           attachments:     email.attachments.map((a) => ({ fileName: a.fileName, mime: a.mime, contentB64: a.contentB64 ?? null })),
         }, supabase)
         if (intake.handled) {
           results.push({ email_from: email.fromEmail, uploads: 0 })
+          continue
+        }
+        // THE OUTBOUND RECIPROCAL (wave 12, R2). We sent our buyer's offer OUT to
+        // an outside listing agent; this is their reply coming back. It cannot
+        // reach the branch above: an outside listing has no `listings` row, so
+        // `offers.listing_id` is null and there is nothing for the address match
+        // to compare against. The counterparty address recorded at send time is
+        // the only key this mail will ever have.
+        const replied = await tryRouteOutboundOfferReply({
+          brokerageId,
+          subject:     email.subject ?? null,
+          fromEmail:   email.fromEmail ?? null,
+          mailbox,
+          attachments: email.attachments.map((a) => ({ fileName: a.fileName, mime: a.mime, contentB64: a.contentB64 ?? null })),
+        }, supabase)
+        if (replied.handled) {
+          results.push({ email_from: email.fromEmail, uploads: replied.documentIds?.length ?? 0 })
           continue
         }
         // Not an offer — but maybe another deal doc (signed contract / inspection / appraisal /
@@ -242,7 +274,7 @@ export async function POST(request: NextRequest) {
           // The mailbox OWNER is the agent the portal routed this lead to — the
           // contact is created assigned to them (owner's rule: portal leads are
           // agent-assigned contacts, never cold raw leads).
-          await ingestPortalLead(supabase, brokerageId, portalLead, resolvedCredential?.agent_user_id ?? null)
+          await ingestPortalLead(supabase, brokerageId, portalLead, mailbox.userId)
           results.push({ email_from: email.fromEmail, uploads: 0 })
           continue
         }
