@@ -35,6 +35,8 @@ import { revalidatePath } from "next/cache"
 import { resolveMilestoneIdentity } from "@/lib/transactions/milestone-identity"
 import {
   readHazardInsurance,
+  selectHazardService,
+  HAZARD_NOT_OUR_SIDE_NOTE,
   type HazardServiceRow,
   type HazardPolicyRecord,
   type HazardInsuranceView,
@@ -75,6 +77,14 @@ interface TransactionScope {
   brokerageId: string
   closeDate: string | null
   dealType: string | null
+  /**
+   * Do WE represent the buyer on this deal? deal_type buyer|dual, or a legacy
+   * row with no side recorded (there is no honest way to call those seller-side,
+   * and the hazard step only ever reaches a journey that thinks it is a buyer's).
+   * FALSE means the buyer is the OTHER brokerage's client — the one condition
+   * under which "no policy on file" says nothing at all about the deal.
+   */
+  representsBuyer: boolean
   /** contacts.id of the BUYER. Never an agents.id / users.id / leads.id. */
   buyerContactId: string | null
   teamId: string | null
@@ -137,17 +147,28 @@ async function loadTransactionScope(
       brokerageId,
       closeDate: (tx.close_date as string | null) ?? null,
       dealType,
+      representsBuyer: buyerSide,
       buyerContactId,
       teamId,
     },
   }
 }
 
-/** Read the deal's insurance engagement row, tenant-scoped. */
-async function loadInsuranceService(
+/**
+ * Read the deal's insurance engagement rows, tenant-scoped, NEWEST FIRST.
+ *
+ * ALL of them, not just the newest one. `requestInsuranceQuoteAction` inserts a
+ * fresh row per quote request and there is no uniqueness on the pair, so a deal
+ * can hold several; taking `[0]` meant that requesting one more comparison quote
+ * AFTER binding hid the bound policy behind a bare newer row, and the panel then
+ * reported "quote in progress" over coverage that was on file. The choice of
+ * WHICH row is the coverage record is the pure `selectHazardService`, shared
+ * with every other reader so they cannot pick differently.
+ */
+async function loadInsuranceServices(
   transactionId: string,
   brokerageId: string,
-): Promise<{ ok: true; row: HazardServiceRow | null } | { ok: false; error: string }> {
+): Promise<{ ok: true; rows: HazardServiceRow[] } | { ok: false; error: string }> {
   const svc = createServiceClient()
   const { data, error } = await svc
     .from("transaction_vendor_services")
@@ -156,7 +177,7 @@ async function loadInsuranceService(
     .eq("brokerage_id", brokerageId)
     .eq("service_type", "insurance_quote")
     .order("created_at", { ascending: false })
-    .limit(1)
+    .limit(50)
   // A refused read RESOLVES to data:null, which is indistinguishable from "no
   // policy on file" — and those are opposite facts on this screen. Report the
   // failure rather than rendering "not yet provided" over a policy that exists.
@@ -164,7 +185,7 @@ async function loadInsuranceService(
     console.error("[hazard-insurance] insurance service read failed:", error.message)
     return { ok: false, error: "Could not read this deal's insurance record" }
   }
-  return { ok: true, row: ((data ?? [])[0] as unknown as HazardServiceRow) ?? null }
+  return { ok: true, rows: ((data ?? []) as unknown as HazardServiceRow[]) }
 }
 
 // ─── READ ────────────────────────────────────────────────────────────────────
@@ -178,9 +199,14 @@ export async function getTransactionHazardInsuranceAction(
   transactionId: string,
   brokerageId?: string,
 ): Promise<HazardInsuranceView> {
+  // The refusal shape. `ok:false` with a `status` of NULL is the only way this
+  // action reports "we could not look" — it never degrades to a posture, because
+  // a posture of "none" and a refused query are opposite facts that supabase-js
+  // hands back as the same value, and the panel would render the refusal as a
+  // red "no coverage on this deal" blocker.
   const empty: HazardInsuranceView = {
     ok: false, status: null, recommendations: [], recommendationNote: null,
-    buyerContactId: null, closeDate: null,
+    buyerContactId: null, closeDate: null, representsBuyer: true, sideNote: null,
   }
 
   const auth = await requireCallerForBrokerage(brokerageId)
@@ -189,16 +215,25 @@ export async function getTransactionHazardInsuranceAction(
   const scoped = await loadTransactionScope(transactionId, auth.brokerageId)
   if (!scoped.ok) return { ...empty, error: scoped.error }
   const scope = scoped.scope
+  const sideNote = scope.representsBuyer ? null : HAZARD_NOT_OUR_SIDE_NOTE
 
-  const service = await loadInsuranceService(transactionId, auth.brokerageId)
-  if (!service.ok) {
-    return { ...empty, error: service.error, closeDate: scope.closeDate, buyerContactId: scope.buyerContactId }
+  const services = await loadInsuranceServices(transactionId, auth.brokerageId)
+  if (!services.ok) {
+    return {
+      ...empty,
+      error: services.error,
+      closeDate: scope.closeDate,
+      buyerContactId: scope.buyerContactId,
+      representsBuyer: scope.representsBuyer,
+      sideNote,
+    }
   }
 
   const status = readHazardInsurance({
-    service: service.row,
+    service: selectHazardService(services.rows),
     closeDate: scope.closeDate,
     now: new Date(),
+    representsBuyer: scope.representsBuyer,
   })
 
   const { recommendations, note } = await resolveInsuranceRecommendations(scope)
@@ -210,6 +245,8 @@ export async function getTransactionHazardInsuranceAction(
     recommendationNote: note,
     buyerContactId: scope.buyerContactId,
     closeDate: scope.closeDate,
+    representsBuyer: scope.representsBuyer,
+    sideNote,
   }
 }
 
@@ -237,6 +274,19 @@ export async function getTransactionHazardInsuranceAction(
 async function resolveInsuranceRecommendations(
   scope: TransactionScope,
 ): Promise<{ recommendations: InsuranceVendorRecommendation[]; note: string | null }> {
+  // SELLER-SIDE DEAL: there is no buyer of ours to recommend a carrier TO. The
+  // old message here told the agent to "link the buyer contact" — i.e. to attach
+  // the other brokerage's client to our deal, which is the exact mistake the
+  // offer bridge documents at length (portal cards and drip enrollment firing at
+  // someone we do not represent). Say what is true instead of issuing an
+  // instruction that would be harmful to follow.
+  if (!scope.representsBuyer) {
+    return {
+      recommendations: [],
+      note: "This is a seller-side deal — the buyer is the other brokerage's client, so there is no one here to recommend a carrier to.",
+    }
+  }
+
   if (!scope.buyerContactId) {
     return {
       recommendations: [],
@@ -446,10 +496,16 @@ export async function recordHazardPolicyAction(
   policy.bound_at = new Date().toISOString()
   policy.bound_by = auth.userId
 
-  const existing = await loadInsuranceService(input.transactionId, auth.brokerageId)
+  // WHICH row this policy lands on is the SAME question the panel and the cron
+  // answer when they read it back — so it is answered by the same pure selector.
+  // Writing to "the newest engagement" instead would put a second policy on the
+  // deal every time a comparison quote was requested after binding, and the
+  // readers would then have to guess which one is the coverage.
+  const existing = await loadInsuranceServices(input.transactionId, auth.brokerageId)
   if (!existing.ok) return { success: false, error: existing.error }
+  const existingRow = selectHazardService(existing.rows)
 
-  if (existing.row) {
+  if (existingRow) {
     // The engagement already exists (a quote was requested). Binding COMPLETES
     // it — it does not open a second insurance row beside it. A binder filed on
     // a previous attempt is superseded by the new document id, so the policy
@@ -459,12 +515,12 @@ export async function recordHazardPolicyAction(
       .update({
         policy,
         status:      "bound",
-        vendor_id:   vendorId ?? existing.row.vendor_id ?? null,
+        vendor_id:   vendorId ?? existingRow.vendor_id ?? null,
         vendor_name: carrier,
         notes:       input.notes?.trim() || null,
         updated_at:  new Date().toISOString(),
       })
-      .eq("id", existing.row.id)
+      .eq("id", existingRow.id)
       .eq("brokerage_id", auth.brokerageId)
     if (updateError) {
       console.error("[hazard-insurance] policy update failed:", updateError.message)

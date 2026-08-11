@@ -33,6 +33,7 @@ import {
   hazardReminderHeadline,
   HAZARD_EVIDENCE_LEAD_DAYS,
   type HazardServiceRow,
+  selectHazardService,
 } from "./hazard-insurance"
 
 type Severity = "low" | "medium" | "high" | "urgent"
@@ -309,7 +310,13 @@ function detectHazardInsuranceUnbound(ctx: TransactionContext, ev: TransactionEv
   if (milestone?.status === "completed" || milestone?.completed_at) return null
 
   const status = readHazardInsurance({
-    service: ev.insuranceServices[0] ?? null,
+    // ONE SELECTOR. Taking [0] meant the closing engine and the agent's hazard
+    // panel could name DIFFERENT engagements off the same list — the panel uses
+    // selectHazardService (which prefers a real, non-cancelled engagement),
+    // whereas [0] is whatever the query happened to return first. Two surfaces
+    // disagreeing about which policy is the deal's is worse than either being
+    // wrong, because each looks authoritative on its own screen.
+    service: selectHazardService(ev.insuranceServices),
     closeDate: ctx.closeDate,
     now: new Date(),
   })

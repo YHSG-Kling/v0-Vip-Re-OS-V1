@@ -149,7 +149,12 @@ export async function createTransaction(transactionData: {
   }
 
   if (data) {
-    await generateMilestones(data.id, transactionData.transaction_type)
+    // The result is READ. A refused or refused-to-run seeding used to vanish
+    // here, leaving a deal with no journey and nothing saying so.
+    const seeded = await generateMilestones(data.id, transactionData.transaction_type)
+    if (!seeded.success) {
+      console.error(`[createTransaction] deal ${data.id} created but its milestones were NOT seeded:`, seeded.error)
+    }
 
     if (transactionData.commissionPercentage != null) {
       const { data: userData } = await supabase.auth.getUser()
@@ -233,8 +238,44 @@ export async function updateTransaction(
 // MILESTONES
 // ============================================
 
-export async function generateMilestones(transactionId: string, transactionType: string) {
+export async function generateMilestones(
+  transactionId: string,
+  transactionType: string,
+  brokerageId?: string | null,
+) {
   const supabase = await createClient()
+
+  // THE TENANT IS STAMPED, AND WITHOUT IT THIS DOES NOTHING VISIBLE.
+  //
+  // `transaction_milestones.brokerage_id` is NULLABLE with no default (verified
+  // against the live schema), so omitting it did not fail — the rows landed
+  // UNTENANTED. Every hazard reader, including completeHazardMilestone, filters
+  // `.eq("brokerage_id", …)`, so on a directly-created transaction the whole
+  // journey — the client-visible "Homeowner's Insurance Bound" step included —
+  // was written and then invisible to the surfaces that exist to act on it.
+  // Silently, because createTransaction ignored this function's return value.
+  //
+  // Derived from the transaction when the caller does not supply it, so no
+  // existing caller has to change to become correct.
+  let tenantId = brokerageId ?? null
+  if (!tenantId) {
+    const { data: txn, error: txnError } = await supabase
+      .from("transactions")
+      .select("brokerage_id")
+      .eq("id", transactionId)
+      .maybeSingle()
+    if (txnError) {
+      console.error("[generateMilestones] could not read the deal's tenant:", txnError.message)
+      return { success: false, error: `Could not resolve the transaction's brokerage: ${txnError.message}` }
+    }
+    tenantId = (txn?.brokerage_id as string | null) ?? null
+  }
+  if (!tenantId) {
+    // Refuse rather than write a journey nothing can read. An untenanted
+    // milestone is worse than no milestone: it looks seeded and acts absent.
+    console.error(`[generateMilestones] transaction ${transactionId} has no brokerage — milestones NOT seeded`)
+    return { success: false, error: "This transaction has no brokerage, so its milestones would be invisible to every reader." }
+  }
 
   // Build the journey from the SINGLE canonical catalog (milestone-catalog.ts), so a
   // directly-created transaction gets the SAME canonical identities, display names, and
@@ -243,6 +284,7 @@ export async function generateMilestones(transactionId: string, transactionType:
   // the human label; is_client_visible is the curated default (agent-overridable).
   const journey = milestoneJourneyFor(transactionType)
   const milestonesWithTransactionId = journey.map((m) => ({
+    brokerage_id: tenantId,
     transaction_id: transactionId,
     milestone_name: m.name,
     milestone_type: m.id,

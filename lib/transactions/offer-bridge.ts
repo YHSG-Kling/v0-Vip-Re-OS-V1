@@ -411,7 +411,17 @@ export async function createTransactionFromOffer(params: {
   // from the canonical catalog), then ensure the deadline-critical set — which dedupes
   // by identity, so it fills the deadline dates + mirrors them rather than duplicating.
   // An offer transaction now carries the same rich journey a directly-created one does.
-  await seedJourneyMilestones(transaction.id, params.brokerageId, "purchase")
+  // THE JOURNEY FOLLOWS THE DEAL SIDE. This was the literal "purchase" while
+  // `dealType` — resolved a few lines above from ground truth and written to
+  // transactions.deal_type — sat unused, so a SELLER-side deal was seeded the
+  // buyer's milestone journey and the seller's own steps never appeared. The
+  // catalog already splits the two (milestone-catalog.ts:milestoneJourneyFor
+  // switches on "sale"); nothing was missing except passing the side we had.
+  await seedJourneyMilestones(
+    transaction.id,
+    params.brokerageId,
+    dealType === "seller" ? "sale" : "purchase",
+  )
   await ensureRequiredMilestones(
     transaction.id,
     params.brokerageId,

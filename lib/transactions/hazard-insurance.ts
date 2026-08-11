@@ -45,6 +45,28 @@
  * NOTHING HERE IS EVER ASSERTED. Every posture is derived from the stored
  * record; there is no "insured: true" field anywhere, because a field like that
  * can be set by someone who never saw a binder.
+ *
+ * ── TWO THINGS AN ABSENCE CAN MEAN, AND THEY ARE NOT THE SAME ───────────────
+ * The load-bearing state here is an EMPTY record, so this module has to be
+ * exact about what emptiness means before it raises anything on it:
+ *
+ *   · WHOSE DEAL IS IT. `representsBuyer`. On a seller-side deal the buyer's
+ *     carrier answers to another brokerage and we never see the binder, so
+ *     "nothing on file" means WE WERE NOT TOLD. A closing blocker raised on
+ *     that silence is a finding manufactured out of data we could not have had,
+ *     so `blocksClosing` is never raised on that side.
+ *
+ *   · WHICH ROW IS THE RECORD. `selectHazardService`. A deal can hold several
+ *     insurance engagements — a fresh transaction_vendor_services row is
+ *     written per quote request and nothing makes the pair unique — so "the
+ *     newest one" stops being the coverage record the moment a comparison quote
+ *     follows a binding, and the deal then reads as uninsured while a policy
+ *     sits one row away. Every reader resolves the row through the same pure
+ *     function so they cannot pick differently.
+ *
+ * Neither of those can be answered here from an empty value: "the query was
+ * refused" is the CALLER's fact to carry (supabase-js resolves a refusal), and
+ * this module never turns a missing input into a verdict of "covered".
  */
 
 import { daysUntil, REMINDER_WINDOWS } from "@/lib/vendors/insurance-posture"
@@ -171,6 +193,20 @@ export interface HazardInsuranceStatus {
   missingEvidenceDocument: boolean
   /** True when the absence (or lapse) of coverage is now a closing problem. */
   blocksClosing: boolean
+
+  /**
+   * TRUE when WE represent the buyer on this deal (deal_type buyer | dual, or a
+   * legacy row with no side recorded — see the caller). FALSE on a seller-side
+   * deal, where the buyer is the OTHER brokerage's client.
+   *
+   * This is not decoration. On a seller-side deal we hold no record of the
+   * buyer's policy and have no right to expect one, so "nothing on file" means
+   * WE WERE NEVER TOLD — not "there is no coverage". `blocksClosing` is
+   * therefore never raised on that side: an urgent alarm derived from an absence
+   * we could not have observed is a fabricated finding, exactly the class this
+   * module exists to prevent.
+   */
+  representsBuyer: boolean
 }
 
 const money = (n: number) =>
@@ -184,20 +220,80 @@ function daysTo(target: string | null | undefined, now: Date): number | null {
 }
 
 /**
+ * PURE: is there actually a policy in this record?
+ *
+ * ONE definition, because two would drift. An empty object is not a policy —
+ * `{}` must read as nothing on file rather than as a bound policy with every
+ * field blank, and the same answer has to hold for the code that CHOOSES which
+ * engagement to read (`selectHazardService`) and the code that reads it
+ * (`readHazardInsurance`). If those two disagreed, the selector could hand the
+ * evaluator a row it considers policy-bearing and the evaluator would render it
+ * as "not yet provided".
+ *
+ * MODULE-PRIVATE ON PURPOSE. Callers outside this file never choose the
+ * definition of "on file" — they receive the verdict.
+ */
+function policyOnFile(policy: HazardPolicyRecord | null | undefined): boolean {
+  return (
+    !!policy &&
+    typeof policy === "object" &&
+    Object.values(policy).some((v) => v !== null && v !== undefined && v !== "")
+  )
+}
+
+/**
+ * PURE: WHICH insurance engagement is this deal's coverage record.
+ *
+ * `transaction_vendor_services` has no uniqueness on (transaction_id,
+ * service_type) and `requestInsuranceQuoteAction` INSERTS a fresh
+ * service_type='insurance_quote' row on every quote request — so a buyer who
+ * shops three carriers leaves three rows on the deal. Taking "the newest one"
+ * is wrong in the one case that matters: bind a policy, then request one more
+ * comparison quote, and the newest row is a bare quote with no policy. The
+ * panel would report "quote in progress" and the closing detector would open an
+ * URGENT hazard_insurance_unbound over coverage that IS on file — a reader
+ * announcing the opposite of the truth.
+ *
+ * The rule: the deal's coverage record is the most recent engagement that
+ * actually CARRIES a policy; only when none does do we fall back to the most
+ * recent engagement, which is then correctly read as "quoted, not bound".
+ *
+ * `rows` must be ordered NEWEST FIRST (the callers order by created_at desc);
+ * this preserves that preference within each class rather than imposing its own.
+ */
+export function selectHazardService(
+  rows: HazardServiceRow[] | null | undefined,
+): HazardServiceRow | null {
+  const list = rows ?? []
+  return list.find((r) => policyOnFile(r?.policy ?? null)) ?? list[0] ?? null
+}
+
+/**
  * PURE: read the deal's hazard-insurance posture.
  *
  * `service` is the transaction_vendor_services row with
  * service_type='insurance_quote', or null when the deal has no insurance
  * engagement at all. `closeDate` is transactions.close_date (ISO), or null.
+ *
+ * `representsBuyer` says whether the buyer on this deal is OUR client. It
+ * defaults to TRUE so that a caller which has not yet resolved the deal side
+ * keeps the pre-existing behaviour exactly — the honest default for a step that
+ * only exists on buyer journeys — and a caller that HAS resolved it (the
+ * transaction panel) passes the real answer and stops manufacturing a closing
+ * blocker out of the other brokerage's paperwork.
  */
 export function readHazardInsurance(input: {
   service: HazardServiceRow | null
   closeDate: string | null
   now: Date
+  representsBuyer?: boolean
 }): HazardInsuranceStatus {
   const { service, closeDate, now } = input
+  const representsBuyer = input.representsBuyer !== false
 
   const daysToClose = daysTo(closeDate, now)
+  /** Inside the lead-time window AND the coverage is ours to chase. */
+  const pressing = representsBuyer && pressingNow(daysToClose)
   const evidenceDueDate =
     closeDate && !Number.isNaN(Date.parse(closeDate))
       ? isoDay(new Date(Date.parse(closeDate) - HAZARD_EVIDENCE_LEAD_DAYS * 86_400_000))
@@ -205,9 +301,10 @@ export function readHazardInsurance(input: {
 
   const base: HazardInsuranceStatus = {
     posture: "none",
-    label: "Not yet provided",
-    detail:
-      "No homeowner's insurance has been recorded for this purchase. A lender will not fund without evidence of coverage.",
+    label: representsBuyer ? "Not yet provided" : "Not our side",
+    detail: representsBuyer
+      ? "No homeowner's insurance has been recorded for this purchase. A lender will not fund without evidence of coverage."
+      : "We represent the seller on this deal, so the buyer's homeowner's policy is the buying brokerage's to carry. Nothing has been recorded here — which means we were not told, not that coverage is missing.",
     hasPolicyOnFile: false,
     carrier: null,
     policyNumber: null,
@@ -227,11 +324,12 @@ export function readHazardInsurance(input: {
     expiresBeforeClosing: false,
     missingEvidenceDocument: false,
     blocksClosing: false,
+    representsBuyer,
   }
 
   // ── No engagement at all ──────────────────────────────────────────────────
   if (!service) {
-    return { ...base, blocksClosing: pressingNow(daysToClose) }
+    return { ...base, blocksClosing: pressing }
   }
 
   const withVendor: HazardInsuranceStatus = {
@@ -242,12 +340,10 @@ export function readHazardInsurance(input: {
   }
 
   const policy = service.policy ?? null
-  const hasPolicy =
-    !!policy &&
-    typeof policy === "object" &&
-    // An empty object is not a policy. Treat it as nothing on file rather than
-    // letting `{}` render as a bound policy with every field blank.
-    Object.values(policy).some((v) => v !== null && v !== undefined && v !== "")
+  // An empty object is not a policy. ONE definition, shared with the selector
+  // above, so "which row is the coverage record" and "does that row hold a
+  // policy" can never answer differently.
+  const hasPolicy = policyOnFile(policy)
 
   // ── Engagement exists, no policy record yet ───────────────────────────────
   if (!hasPolicy) {
@@ -261,7 +357,7 @@ export function readHazardInsurance(input: {
         detail:
           `The buyer approved ${service.vendor_name ?? "a carrier"}${quoted != null ? ` at ${money(quoted)}/yr` : ""}, ` +
           `but no policy has been bound and no binder is on file. An approved quote is not coverage.`,
-        blocksClosing: pressingNow(daysToClose),
+        blocksClosing: pressing,
       }
     }
     return {
@@ -271,7 +367,7 @@ export function readHazardInsurance(input: {
       detail:
         `${service.vendor_name ?? "A carrier"} has been engaged (${status || "no status"}), ` +
         `but no policy has been bound and no binder is on file.`,
-      blocksClosing: pressingNow(daysToClose),
+      blocksClosing: pressing,
     }
   }
 
@@ -305,7 +401,7 @@ export function readHazardInsurance(input: {
       posture: "expiry_unknown",
       label: "Expiry unknown",
       detail: `${carrierLabel} is recorded but the policy carries no readable expiry date, so coverage at closing cannot be confirmed either way. ${evidenceLine}`,
-      blocksClosing: pressingNow(daysToClose),
+      blocksClosing: pressing,
     }
   }
 
@@ -315,7 +411,7 @@ export function readHazardInsurance(input: {
       posture: "lapsed",
       label: `Coverage lapsed ${Math.abs(daysToExpiry)}d ago`,
       detail: `${carrierLabel}'s policy expired on ${p.expiry}. There is no coverage in force. ${evidenceLine}`,
-      blocksClosing: pressingNow(daysToClose),
+      blocksClosing: pressing,
     }
   }
 
@@ -339,7 +435,7 @@ export function readHazardInsurance(input: {
     //     underwrites the document. Going quiet the moment somebody types a
     //     carrier name would be the worst possible behaviour here: the record
     //     looks complete and the funding still fails.
-    blocksClosing: expiresBeforeClosing || (missingEvidenceDocument && pressingNow(daysToClose)),
+    blocksClosing: representsBuyer && (expiresBeforeClosing || (missingEvidenceDocument && pressing)),
   }
 
   if (expiresBeforeClosing) {
@@ -404,7 +500,25 @@ export interface HazardInsuranceView {
   recommendationNote: string | null
   buyerContactId: string | null
   closeDate: string | null
+  /** Do WE represent the buyer? Mirrors HazardInsuranceStatus.representsBuyer and
+   *  is carried on the view as well so the panel can state the side even on the
+   *  paths where `status` is null (a refused read). */
+  representsBuyer: boolean
+  /** Present ONLY on a deal whose buyer is not our client — the one line that
+   *  keeps "we have no record" from being read as "there is no coverage". */
+  sideNote: string | null
 }
+
+/**
+ * The standing note a seller-side deal's panel shows INSTEAD of a closing
+ * blocker. Exported so the action that builds the view and the panel that
+ * renders it state the same thing, and so nothing has to re-derive the
+ * reasoning: on a seller-side deal the buyer's carrier answers to another
+ * brokerage, we never see the binder, and an alarm raised on that silence would
+ * be an alarm raised on data we could not have had.
+ */
+export const HAZARD_NOT_OUR_SIDE_NOTE =
+  "We represent the seller on this deal, so the buyer's homeowner's policy is the buying brokerage's obligation. Anything shown here is only what we were told — an empty record is NOT evidence that coverage is missing, and it is not a closing item this side can chase."
 
 /** Inside the lead-time window (and not already past the close date). */
 function pressingNow(daysToClose: number | null): boolean {

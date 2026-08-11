@@ -161,9 +161,22 @@ export function HazardInsuranceSection({
         {/* The verdict, in words, always naming the fact it comes from. */}
         <p className="text-sm">{s.detail}</p>
 
-        {/* The deadline. Stated whenever there is a close date, whether or not a
-            policy exists — an agent should not have to compute it. */}
-        {s.evidenceDueDate && (
+        {/* SELLER-SIDE DEAL. Stated BEFORE anything else on this card, because
+            every other line here would otherwise be read as a fact about the
+            deal rather than a fact about our records. The buyer's carrier
+            answers to another brokerage: we never see the binder, so an empty
+            panel is silence, not absence of coverage — and the evaluator has
+            already refused to raise a closing blocker on it. */}
+        {view.sideNote && (
+          <div className="rounded-md border border-muted bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            {view.sideNote}
+          </div>
+        )}
+
+        {/* The deadline. Stated whenever there is a close date AND the coverage
+            is ours to chase — an agent should not have to compute it, and should
+            not be handed a due date for another brokerage's paperwork. */}
+        {view.representsBuyer && s.evidenceDueDate && (
           <div
             className={`rounded-md border px-3 py-2 text-xs ${
               s.blocksClosing
@@ -282,7 +295,13 @@ export function HazardInsuranceSection({
           </div>
         )}
 
-        {/* ── Recommendation half ─────────────────────────────────────────── */}
+        {/* ── Recommendation half ───────────────────────────────────────────
+            BUYER SIDE ONLY. There is nobody to recommend a carrier to on a
+            seller-side deal, and the buyer's portal marketplace link below
+            points at another brokerage's client. The action already returns an
+            empty list with a stated reason; the whole half is withheld rather
+            than rendered as an emptiness the agent has to interpret. */}
+        {view.representsBuyer && (
         <div className="border-t pt-3">
           <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Insurance vendors on your marketplace
@@ -344,6 +363,7 @@ export function HazardInsuranceSection({
             </p>
           )}
         </div>
+        )}
       </CardContent>
     </Card>
   )
