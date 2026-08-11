@@ -215,8 +215,46 @@ has a target.
     watched go red.
 
   **Still open, and deliberately left open:** whether any of the 173 is live.
-  That is one query, and it should be run the moment the connection recovers.
   The migrations make the answer safe either way; they do not make it known.
+
+  **Retried an hour later, and the retry narrowed the cause rather than
+  answering the question.** `get_project` returns `ACTIVE_HEALTHY` — so this is
+  not a paused project, not a wrong project ref, and not the database being
+  down. But **every path that reaches the database still fails**, each with its
+  own wording for the same underlying timeout:
+
+  | call | result |
+  |---|---|
+  | `get_project` (management API) | ✅ `ACTIVE_HEALTHY` |
+  | `execute_sql` — even `select 1` | ✗ `Connection terminated due to connection timeout` |
+  | `get_advisors` (security lints) | ✗ `Failed to run project user check` |
+  | `list_migrations` | ✗ `Failed to list database migrations` |
+  | `list_tables` | ✗ `Failed to run sql query` |
+
+  There is no `.env.local` on disk and no `DATABASE_URL`/`POSTGRES_URL` in the
+  environment, so there is no second route from this session. The limit is the
+  session's DB connectivity, not the database.
+
+  **The question is ten seconds of work for anyone who can reach the SQL
+  editor**, so it is written out here rather than left as a description:
+
+  ```sql
+  select c.relname as tbl, p.polname, p.polcmd, (0 = any(p.polroles)) as to_public
+  from   pg_policy p
+  join   pg_class     c on c.oid = p.polrelid
+  join   pg_namespace n on n.oid = c.relnamespace
+  where  n.nspname = 'public'
+    and  p.polpermissive
+    and  p.polcmd = '*'
+    and  coalesce(btrim(pg_get_expr(p.polqual, p.polrelid)), '') = 'true'
+  order  by 1, 2;
+  ```
+
+  **ZERO rows** ⇒ the legacy `scripts/330` RLS block never ran here; m392/m393
+  are no-ops and the guard is pure regression insurance. **Any rows** ⇒ a live
+  cross-tenant hole on those tables, and m392 drops the ones that can be dropped
+  safely while m393 names the ones needing a hand-written tenant-scoped
+  replacement first.
 - `docs/wave14-audit.md` still describes C1/C2/C4 as open.
 
 ## Outcome
