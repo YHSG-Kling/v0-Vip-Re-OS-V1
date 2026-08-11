@@ -52,9 +52,52 @@ export async function requireContactAccess(contactId: string): Promise<ContactAc
 
   const callerType = ((callerRow as { user_type?: string | null } | null)?.user_type) ?? null
 
-  const isContactSelf =
+  // ── WHO COUNTS AS "THE CONTACT THEMSELVES" ──────────────────────────────────
+  //
+  // This gate recognised a buyer by TWO facts. The portal LAYOUT
+  // (app/portal/[contactId]/layout.tsx) recognises them by more, and its extra
+  // rule is the ordinary case rather than an edge: an ACCEPTED, UNEXPIRED
+  // `portal_contact_invites` row matching the caller's address. An agent invites
+  // someone at their work address, or the contact row predates the invite, and
+  // the two addresses differ.
+  //
+  // Until now that buyer PASSED the layout, saw their portal, and was then
+  // refused by every action gated on this helper — they could read the page and
+  // not use it. That regression arrived the moment wave 14 correctly gated
+  // requestOfferHelp: gating against a narrower rule than the surface already
+  // admits does not tighten security, it breaks the feature for real users while
+  // leaving the ungated siblings wide open.
+  //
+  // A gate must never be WIDER than the surface it protects, and never NARROWER
+  // than the surface that already admits the caller. This is the narrower case.
+  // The invite check below is deliberately a strict NARROWING of the layout's
+  // rule — same table, same contact, same address, and it additionally requires
+  // the row to be BOTH accepted and unexpired.
+  let isContactSelf =
     contact.contact_user_id === authUser.id ||
     !!(contact.email && authUser.email && contact.email.toLowerCase() === authUser.email.toLowerCase())
+
+  if (!isContactSelf && authUser.email) {
+    // `error` is destructured, unlike the layout's copy of this read: supabase-js
+    // RESOLVES a refused query, so `const { data }` there reports a denied read
+    // as "no invite" and quietly denies a legitimate buyer. Here a refused read
+    // fails CLOSED and says so, rather than being laundered into "Forbidden" —
+    // which reads as a decision when it was actually an outage.
+    const { data: invite, error: inviteErr } = await svc
+      .from("portal_contact_invites")
+      .select("status, expires_at")
+      .eq("contact_id", contactId)
+      .eq("email", authUser.email)
+      .maybeSingle()
+
+    if (inviteErr) return { ok: false, error: "Access check failed" }
+
+    const expiresAt = (invite as { expires_at?: string | null } | null)?.expires_at
+    const unexpired = !!expiresAt && new Date(expiresAt).getTime() > Date.now()
+    if ((invite as { status?: string | null } | null)?.status === "accepted" && unexpired) {
+      isContactSelf = true
+    }
+  }
 
   if (isContactSelf) {
     return {

@@ -122,14 +122,30 @@ export default async function PortalLayout({
     // Rule 3 (legacy): kept for compatibility — same logic as 2b for non-agent staff
     // if it didn't match above (e.g. cross-brokerage admin). No-op when 2b passes.
 
-    // Rule 4: Accepted portal invite for this contact
+    // Rule 4: Accepted portal invite for this contact.
+    //
+    // `error` is destructured. supabase-js RESOLVES a refused query, so the
+    // previous `const { data: invite }` turned "this read was denied" into "there
+    // is no invite" and bounced a legitimate buyer to the login page with no way
+    // to tell an outage from a decision. The redirect still happens — failing
+    // CLOSED on an unreadable invite is right — but it is now logged as the
+    // refusal it is, so the buyer support ticket has something behind it.
+    //
+    // lib/portal/require-contact-access.ts applies the SAME rule (accepted AND
+    // unexpired) so an action can never refuse a buyer this page just admitted.
     if (!accessGranted) {
-      const { data: invite } = await supabase
+      const { data: invite, error: inviteError } = await supabase
         .from("portal_contact_invites")
         .select("status, expires_at")
         .eq("contact_id", contactId)
         .eq("email", user.email ?? "")
         .maybeSingle()
+      if (inviteError) {
+        console.error(
+          `[portal] invite check REFUSED for contact ${contactId} (${inviteError.message}) — ` +
+          "denying access, but this is an unreadable invite, not a missing one.",
+        )
+      }
       if (invite?.status === "accepted" && new Date(invite.expires_at) > new Date()) {
         accessGranted = true
       }
