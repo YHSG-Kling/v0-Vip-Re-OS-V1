@@ -44,8 +44,18 @@ export default async function PhoneSettingsPage() {
   // Agent roster for the port-in card. getAgents() runs on the COOKIE client, so
   // RLS (agents_read_brokerage) scopes it to the caller's own brokerage — the
   // page never names a tenant. manuallyAddAgentPhone re-checks tenancy anyway.
+  // getAgents now returns a DISCRIMINATED result: [] had to mean "no agents",
+  // "you may not see the roster" and "the read was refused" all at once, and
+  // supabase-js resolves a refused query so the caller could not tell them
+  // apart. This page is admin-only, so the role gate it gained costs nothing
+  // here; an unreadable roster simply yields no port-in options rather than a
+  // silently empty picker that looks like a brokerage with no agents.
   const { getAgents } = await import("@/app/actions/agents")
-  const agentRows = await getAgents().catch(() => [] as any[])
+  const rosterResult = await getAgents().catch(() => ({ ok: false as const, error: "roster unavailable" }))
+  if (!rosterResult.ok) {
+    console.error("[phone-settings] agent roster unavailable:", rosterResult.error)
+  }
+  const agentRows = rosterResult.ok ? rosterResult.agents : []
   const portInAgents: PortInAgentOption[] = (agentRows as any[])
     .map((a) => ({
       agentId: a?.id as string,

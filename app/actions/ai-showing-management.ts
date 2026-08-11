@@ -6,6 +6,7 @@ import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 // ============================================================================
 // AI SHOWING MANAGEMENT SYSTEM
@@ -16,12 +17,33 @@ import { handleError } from "@/lib/errors"
 // TOUR MANAGEMENT
 // ============================================================================
 
+/**
+ * MERGE from the dashboard-data lane (wave 13): the tenant anchor.
+ *
+ * `hooks/use-dashboard-data.ts` names this as the survivor for the `tours` type,
+ * and the endpoint it replaces applied a brokerage filter that this did not —
+ * the agent id came from the caller and nothing else narrowed the read.
+ *
+ * FOUND WHILE MERGING, and worth more than the merge: the RLS policy on `tours`
+ * is `tours_agent_own: (agent_id = auth.uid())`. `tours.agent_id` is a FOREIGN
+ * KEY TO `agents` (verified against the live schema) and `auth.uid()` is a
+ * `users.id` — DISJOINT id spaces, so that policy can never match a single row.
+ * Only `tours_broker_admin` grants anything, which means an ordinary agent
+ * cannot read their OWN tours at all. That is a database-side fix and is
+ * recorded in docs/wave13-outcome.md rather than papered over here; the app-side
+ * anchor below is correct either way and does not depend on it.
+ */
 export async function getTours(agentId: string) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated", tours: [] }
+    if (!ctx.brokerageId) return { success: false, error: "Your account is not linked to a brokerage yet.", tours: [] }
+
     const supabase = await createClient()
     const { data, error } = await supabase
       .from("tours")
       .select("*, showings(*)")
+      .eq("brokerage_id", ctx.brokerageId)
       .eq("agent_id", agentId)
       .order("tour_date", { ascending: false })
 

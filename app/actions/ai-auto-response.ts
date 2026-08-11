@@ -128,12 +128,23 @@ export async function generateAIResponse(params: {
   // (routed model + fair-use quota + usage log), compliance-constrained prompt.
   const aiResponse = await generateSmartReply(context)
 
-  // Log the AI response
-  const { agentId } = await getAgentContext()
+  // Log the AI response.
+  //
+  // THE TENANT IS STAMPED. `messages.brokerage_id` is nullable with no backfill,
+  // and this writer omitted it — so every AI auto-response landed with a NULL
+  // tenant and was invisible to any brokerage-filtered reader of that table.
+  // A row nothing can find is the same as a row that was never written, except
+  // that it still went out to the contact.
+  //
+  // The insert result is READ. supabase-js resolves a refused write, so an
+  // unchecked insert reports success while the outbound message it was meant to
+  // record does not exist.
+  const { agentId, brokerageId } = await getAgentContext()
   // messages live cols: conversation_id, contact_id, agent_id, type, direction,
   // subject, body, status, compliance_checked. No content/channel/is_ai_generated/
   // sent_at/compliance_approved fields. ai_auto provenance lives in `type`.
-  await supabase.from("messages").insert({
+  const { error: logError } = await supabase.from("messages").insert({
+    brokerage_id: brokerageId,
     conversation_id: params.conversationId,
     contact_id: params.contactId,
     agent_id: agentId,
@@ -143,6 +154,9 @@ export async function generateAIResponse(params: {
     status: "queued",
     compliance_checked: false,
   })
+  if (logError) {
+    console.error("[ai-auto-response] the AI reply was generated but NOT logged:", logError.message)
+  }
 
   return { success: true, response: aiResponse }
 }

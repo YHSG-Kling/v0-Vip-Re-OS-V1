@@ -27,30 +27,96 @@ const BROKER_ADMIN_ROLES = new Set([
 
 // ==================== AGENT CRUD ====================
 
-export async function getAgents(brokerageId?: string) {
-  const supabase = await createClient()
+/**
+ * THE BROKERAGE ROSTER.
+ *
+ * MERGE from the dashboard-data lane (wave 13). `hooks/use-dashboard-data.ts`
+ * names this function as the survivor for the `agents` type, and the endpoint it
+ * replaces held two properties this one lacked. Both are carried here BEFORE
+ * that lane is removed, because a deletion that drops capability is the mistake
+ * this whole burn-down exists to avoid.
+ *
+ *   · THE TENANT IS DERIVED, NOT ACCEPTED. `brokerageId` was an OPTIONAL
+ *     CALLER-SUPPLIED argument, and omitting it dropped the filter entirely.
+ *     RLS on `agents` confines the read to the caller's brokerage
+ *     (`agents_read_brokerage`), so this was never the cross-tenant leak it
+ *     looks like — verified against the live policy rather than assumed. It was
+ *     still a filter the caller could choose not to apply, and a tenant boundary
+ *     that depends on the caller passing an argument is not a boundary. It is
+ *     now resolved from the session and the parameter is gone.
+ *   · A ROSTER IS NOT PUBLIC WITHIN THE TENANT. The endpoint restricted it to
+ *     broker / admin / superadmin; this had no role gate at all. The one real
+ *     caller is an ADMIN page (app/dashboard/admin/phone-settings), so the gate
+ *     costs no working surface — checked before adding it.
+ *
+ * Returns a discriminated result rather than a bare array: `[]` had to mean
+ * "no agents", "you may not see this" and "the read was refused" all at once,
+ * and supabase-js resolves a refused query, so the caller could not tell them
+ * apart even in principle.
+ */
+export async function getAgents(): Promise<
+  { ok: true; agents: unknown[] } | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Not authenticated" }
+  if (!ctx.brokerageId) return { ok: false, error: "Your account is not linked to a brokerage yet." }
+  if (!BROKER_ADMIN_ROLES.has(ctx.userType)) {
+    return { ok: false, error: "Only brokers / admins / team leads can view the full agent roster." }
+  }
 
-  let query = supabase
+  const supabase = await createClient()
+  const { data, error } = await supabase
     .from("agents")
     .select(`
       *,
       user:users(id, name, email, avatar_url)
     `)
+    .eq("brokerage_id", ctx.brokerageId)
     .eq("is_active", true)
     .order("created_at", { ascending: false })
 
-  if (brokerageId) {
-    query = query.eq("brokerage_id", brokerageId)
-  }
-
-  const { data, error } = await query
-
   if (error) {
-    console.error("Error fetching agents:", error)
-    return []
+    console.error("[getAgents] roster read refused:", error.message)
+    return { ok: false, error: `Could not load the agent roster: ${error.message}` }
   }
 
-  return data || []
+  return { ok: true, agents: data ?? [] }
+}
+
+/**
+ * MAY THE CALLER READ THIS AGENT'S MONEY?
+ *
+ * Their own, always. Anyone else's, only as a broker / admin / team lead in the
+ * SAME brokerage. `agent_commissions` and `business_expenses` are both
+ * brokerage-scoped by RLS (verified against the live policies), so the exposure
+ * was never cross-tenant — but INSIDE a brokerage the agent id came straight
+ * from the caller with no ownership check, so one agent could read a colleague's
+ * commission and expense ledgers by passing their id. Pay is not team-readable.
+ */
+async function requireAgentLedgerAccess(
+  agentId: string,
+): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {
+  if (!isValidUUID(agentId)) return { ok: false, error: "Invalid agent ID" }
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Not authenticated" }
+  if (!ctx.brokerageId) return { ok: false, error: "Your account is not linked to a brokerage yet." }
+  if (ctx.agentId === agentId) return { ok: true, brokerageId: ctx.brokerageId }
+  if (!BROKER_ADMIN_ROLES.has(ctx.userType)) {
+    return { ok: false, error: "You can only view your own commissions and expenses." }
+  }
+  // A broker/admin may look at their OWN brokerage's agents, not an id from
+  // anywhere. The agents row is the thing that carries the tenant.
+  const svc = createServiceClient()
+  const { data, error } = await svc
+    .from("agents")
+    .select("brokerage_id")
+    .eq("id", agentId)
+    .maybeSingle()
+  if (error) return { ok: false, error: `Could not verify that agent: ${error.message}` }
+  if (!data || data.brokerage_id !== ctx.brokerageId) {
+    return { ok: false, error: "That agent is not in your brokerage." }
+  }
+  return { ok: true, brokerageId: ctx.brokerageId }
 }
 
 export async function getAgentById(agentId: string) {
@@ -462,6 +528,11 @@ async function checkAndAwardAchievements(agentId: string, currentPoints: number)
 // ==================== COMMISSION TRACKING ====================
 
 export async function getAgentCommissions(agentId: string, year?: number) {
+  // Their own ledger, or a broker/admin looking at their own brokerage's agent.
+  // See requireAgentLedgerAccess — the id used to come straight from the caller.
+  const access = await requireAgentLedgerAccess(agentId)
+  if (!access.ok) return { ok: false as const, error: access.error, commissions: [] }
+
   const supabase = await createClient()
 
   const currentYear = year || new Date().getFullYear()
@@ -474,17 +545,21 @@ export async function getAgentCommissions(agentId: string, year?: number) {
       *,
       transaction:transactions(id, property_address, purchase_price, status)
     `)
+    .eq("brokerage_id", access.brokerageId)
     .eq("agent_id", agentId)
     .gte("close_date", startDate)
     .lte("close_date", endDate)
     .order("close_date", { ascending: false })
 
+  // A refused read is NOT an empty ledger. supabase-js resolves a denied query,
+  // so returning [] here rendered "you earned nothing this year" for a
+  // permission failure — on the one screen where that is least acceptable.
   if (error) {
-    console.error("Error fetching agent commissions:", error)
-    return []
+    console.error("[getAgentCommissions] read refused:", error.message)
+    return { ok: false as const, error: `Could not load commissions: ${error.message}`, commissions: [] }
   }
 
-  return data || []
+  return { ok: true as const, error: null, commissions: data ?? [] }
 }
 
 /**
@@ -637,6 +712,10 @@ async function updateAgentYTDStats(agentId: string) {
 // ==================== EXPENSES ====================
 
 export async function getAgentExpenses(agentId: string, year?: number) {
+  // Same rule as commissions: your own, or your brokerage's if you administer it.
+  const access = await requireAgentLedgerAccess(agentId)
+  if (!access.ok) return { ok: false as const, error: access.error, expenses: [] }
+
   const supabase = await createClient()
 
   const currentYear = year || new Date().getFullYear()
@@ -646,17 +725,18 @@ export async function getAgentExpenses(agentId: string, year?: number) {
   const { data, error } = await supabase
     .from("business_expenses")
     .select("*")
+    .eq("brokerage_id", access.brokerageId)
     .eq("agent_id", agentId)
     .gte("expense_date", startDate)
     .lte("expense_date", endDate)
     .order("expense_date", { ascending: false })
 
   if (error) {
-    console.error("Error fetching agent expenses:", error)
-    return []
+    console.error("[getAgentExpenses] read refused:", error.message)
+    return { ok: false as const, error: `Could not load expenses: ${error.message}`, expenses: [] }
   }
 
-  return data || []
+  return { ok: true as const, error: null, expenses: data ?? [] }
 }
 
 /**

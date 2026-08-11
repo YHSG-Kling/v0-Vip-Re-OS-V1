@@ -1,14 +1,47 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
-import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 
-// Consolidated API endpoint for fetching dashboard data.
-// Reduces duplicate API routes and centralises data fetching.
+// Consolidated read endpoint for the dashboard data hooks
+// (hooks/use-dashboard-data.ts). Nothing else calls it.
 //
-// SECURITY:
-//   - agent_id is NEVER accepted from query params — always resolved from session.
-//   - brokerage_id is NEVER accepted from query params — resolved from users table.
-//   - Both are derived server-side from the authenticated session only.
+// ── WHAT THIS LANE IS, AND WHAT IT IS NOT (wave 13, L3) ──────────────────────
+// A read-both verdict was owed here against how the dashboard fetches these
+// same entities today. The answer, argued from CAPABILITY and not from import
+// counts, is in the header of hooks/use-dashboard-data.ts: every branch below
+// is a strict SUBSET of a live server action that the app already renders from,
+// and the one capability this lane appeared to add — client-side revalidation
+// after a mutation — is available over those richer readers already
+// (hooks/use-contact-dashboard.ts wraps server actions in SWR and gets the same
+// `mutate` handle, with no HTTP hop and no second auth round trip).
+//
+// So this lane is the LOSER of a duplicate pair. It is NOT deleted yet, because
+// the method requires the merge FIRST and three things this route does that its
+// survivors do not are still unmerged — they are listed in the hook header under
+// MERGE DEBT. Until those land this file is the merge SOURCE, so it stays, and
+// it stays CORRECT.
+//
+// ── SECURITY INVARIANTS (all three are proven by
+//    scripts/dashboard-data-layer-simulator.ts) ─────────────────────────────
+//   1. SCOPE IS SESSION-DERIVED ONLY. agent_id and brokerage_id are never read
+//      from the query string. A query parameter may NARROW a branch; it may
+//      never replace or widen the session scope. (`communications` used to let
+//      `contact_id` REPLACE the agent filter outright — any signed-in browser
+//      could read any contact's message history in any brokerage. An HTTP route
+//      is reachable by anyone with a URL bar, so "nothing calls it" never made
+//      that safe.)
+//   2. A REFUSED READ IS A FAILURE, NEVER AN EMPTY LIST. supabase-js RESOLVES a
+//      refused query, so `const { data }` renders "permission denied" and "you
+//      have no transactions" identically. Every branch here builds a query and
+//      exactly ONE place awaits it, with `error` destructured — there is no
+//      second read that could quietly drop its error on the floor.
+//   3. AN UNKNOWN OR UNPRIVILEGED REQUEST REFUSES. Unknown `type` → 400. A
+//      non-broker asking for the team roster → 403, not `[]`; an empty list is
+//      indistinguishable from "your brokerage has no agents".
+
+function refuse(status: number, error: string) {
+  return NextResponse.json({ success: false, error }, { status })
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -18,273 +51,276 @@ export async function GET(request: NextRequest) {
     } = await supabase.auth.getUser()
 
     if (!user) {
-      return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 })
+      return refuse(401, "Unauthorized")
     }
 
     const { searchParams } = new URL(request.url)
     const dataType = searchParams.get("type")
 
-    // Resolve agentId from agents table — NEVER from query params (security invariant)
-    const agentId = await resolveAgentId(supabase, user.id)
-
-    // Resolve brokerageId from users table — NEVER from query params
-    const { data: userData } = await supabase
+    // Tenant + role in ONE read. The role used to be fetched a second time
+    // inside the roster branch, which meant a second chance to swallow an error.
+    const { data: userRow, error: identityError } = await supabase
       .from("users")
-      .select("brokerage_id")
+      .select("brokerage_id, user_type")
       .eq("id", user.id)
       .maybeSingle()
 
-    const brokerageId = userData?.brokerage_id
-    if (!brokerageId) {
-      return NextResponse.json(
-        { success: false, error: "Brokerage not configured" },
-        { status: 403 }
-      )
+    if (identityError) {
+      return refuse(502, `Identity read refused: ${identityError.message}`)
     }
+
+    const brokerageId = userRow?.brokerage_id
+    if (!brokerageId) {
+      return refuse(403, "Brokerage not configured")
+    }
+
+    // BROKERAGE-SCOPED resolve, not the unscoped one. A user holding agents rows
+    // in two brokerages got whichever row was oldest, paired with the brokerage
+    // from `users` — a mismatched (agentId, brokerageId) pair that makes every
+    // branch below return zero rows while reporting success.
+    const agentId = await resolveAgentIdInBrokerage(supabase, user.id, brokerageId)
 
     if (!agentId) {
-      return NextResponse.json(
-        { success: false, error: "Agent profile not found" },
-        { status: 403 }
-      )
+      return refuse(403, "Agent profile not found")
     }
 
-    let data: any = null
+    // The ONLY caller-supplied parameter besides `type`. It NARROWS — the
+    // session scope is applied unconditionally before it is considered.
+    const contactIdFilter = searchParams.get("contact_id")
+
+    // Each branch BUILDS a query; none of them awaits one. The single await
+    // below is the only place a row ever arrives, so the error check cannot be
+    // forgotten in one branch and remembered in another.
+    let query: any = null
 
     switch (dataType) {
       case "transactions": {
-        const { data: transactions } = await supabase
+        query = supabase
           .from("transactions")
           .select("*, listings(*), contacts(*)")
           .eq("agent_id", agentId)
           .eq("brokerage_id", brokerageId)
           .order("created_at", { ascending: false })
-        data = transactions || []
         break
       }
 
       case "contacts": {
         // contacts.agent_id → agents.id (FK corrected + backfilled in migration 114)
-        const { data: contacts } = await supabase
+        query = supabase
           .from("contacts")
           .select("*")
           .eq("agent_id", agentId)
           .eq("brokerage_id", brokerageId)
           .is("deleted_at", null)
           .order("created_at", { ascending: false })
-        data = contacts || []
         break
       }
 
       case "listings": {
-        const { data: listings } = await supabase
+        query = supabase
           .from("listings")
           .select("*")
           .eq("agent_id", agentId)
           .eq("brokerage_id", brokerageId)
           .order("created_at", { ascending: false })
-        data = listings || []
         break
       }
 
       case "appointments": {
-        const { data: appointments } = await supabase
+        query = supabase
           .from("showings")
           .select("*")
           .eq("agent_id", agentId)
           .eq("brokerage_id", brokerageId)
           .gte("scheduled_at", new Date().toISOString())
           .order("scheduled_at", { ascending: true })
-        data = appointments || []
         break
       }
 
       case "showings": {
-        // showings.brokerage_id added to scope correctly
-        const { data: showings } = await supabase
+        query = supabase
           .from("showings")
           .select("*, listings(*), contacts(*)")
           .eq("agent_id", agentId)
           .eq("brokerage_id", brokerageId)
           .order("scheduled_at", { ascending: false })
-        data = showings || []
         break
       }
 
       case "offers": {
-        // offers.brokerage_id added to scope correctly
-        const { data: offers } = await supabase
+        query = supabase
           .from("offers")
           .select("*, listings(*), contacts(*)")
           .eq("agent_id", agentId)
           .eq("brokerage_id", brokerageId)
           .order("created_at", { ascending: false })
-        data = offers || []
         break
       }
 
       case "referrals": {
-        // referrals.brokerage_id added to scope correctly
-        const { data: referrals } = await supabase
+        query = supabase
           .from("referrals")
           .select("*")
           .eq("agent_id", agentId)
           .eq("brokerage_id", brokerageId)
           .order("created_at", { ascending: false })
-        data = referrals || []
         break
       }
 
       case "reviews": {
-        const { data: reviews } = await supabase
+        query = supabase
           .from("agent_reviews")
           .select("*, contacts(*)")
           .eq("agent_id", agentId)
           .eq("brokerage_id", brokerageId)
           .order("created_at", { ascending: false })
-        data = reviews || []
         break
       }
 
       case "expenses": {
-        const { data: expenses } = await supabase
+        // brokerage_id added — this was the one entity branch scoped by a single
+        // column. Both live writers (financials.ts:logScopedExpense and
+        // agents.ts:addAgentExpense) stamp the tenant at the insert, so the
+        // filter costs no rows and the branch now matches its siblings.
+        query = supabase
           .from("business_expenses")
           .select("*")
           .eq("agent_id", agentId)
+          .eq("brokerage_id", brokerageId)
           .order("expense_date", { ascending: false })
-        data = expenses || []
         break
       }
 
       case "commissions": {
-        const { data: commissions } = await supabase
+        query = supabase
           .from("agent_commissions")
           .select("*, transactions(*)")
           .eq("agent_id", agentId)
           .eq("brokerage_id", brokerageId)
           .order("created_at", { ascending: false })
-        data = commissions || []
         break
       }
 
       case "open_houses": {
-        const { data: openHouses } = await supabase
+        query = supabase
           .from("open_house_events")
           .select("*, listings(*)")
           .eq("agent_id", agentId)
           .eq("brokerage_id", brokerageId)
           .order("event_date", { ascending: false })
-        data = openHouses || []
         break
       }
 
       case "tasks": {
-        const { data: tasks } = await supabase
+        query = supabase
           .from("tasks")
           .select("*")
           .eq("assigned_to_agent_id", agentId)
           .eq("brokerage_id", brokerageId)
           .order("due_date", { ascending: true })
-        data = tasks || []
         break
       }
 
       case "notifications": {
-        // notifications.user_id stores auth user ID (users.id), not agents.id
-        const { data: notifications } = await supabase
+        // notifications.user_id stores the auth user id (users.id), not agents.id
+        query = supabase
           .from("notifications")
           .select("*")
           .eq("user_id", user.id)
           .eq("brokerage_id", brokerageId)
           .order("created_at", { ascending: false })
           .limit(50)
-        data = notifications || []
         break
       }
 
       case "documents": {
-        const { data: documents } = await supabase
+        query = supabase
           .from("transaction_documents")
           .select("*, transactions(*)")
           .eq("uploaded_by", user.id)
           .eq("brokerage_id", brokerageId)
           .order("created_at", { ascending: false })
-        data = documents || []
         break
       }
 
       case "agents": {
-        // Broker/admin view only — verify role before exposing team roster
-        const { data: userRow } = await supabase
-          .from("users")
-          .select("user_type")
-          .eq("id", user.id)
-          .maybeSingle()
-
-        if (
-          userRow?.user_type === "broker" ||
-          userRow?.user_type === "admin" ||
-          userRow?.user_type === "superadmin"
-        ) {
-          const { data: agents } = await supabase
-            .from("agents")
-            .select("*")
-            .eq("brokerage_id", brokerageId)
-            .order("created_at", { ascending: false })
-          data = agents || []
-        } else {
-          data = []
+        // Broker/admin view only. A plain agent is REFUSED rather than handed an
+        // empty array — "[] because you may not see this" and "[] because the
+        // roster is empty" must not render as the same screen.
+        const role = userRow?.user_type
+        if (role !== "broker" && role !== "admin" && role !== "superadmin") {
+          return refuse(403, "Team roster requires a broker or admin role")
         }
+        query = supabase
+          .from("agents")
+          .select("*")
+          .eq("brokerage_id", brokerageId)
+          .order("created_at", { ascending: false })
         break
       }
 
       case "tours": {
-        const { data: tours } = await supabase
+        query = supabase
           .from("tours")
           .select("*, tour_stops(*, listings(*)), contacts(*)")
           .eq("agent_id", agentId)
           .eq("brokerage_id", brokerageId)
           .order("tour_date", { ascending: false })
-        data = tours || []
         break
       }
 
       case "vendors": {
-        // vendors.brokerage_id added — was previously missing (zero brokerage scoping)
-        const { data: vendors } = await supabase
+        // Brokerage-level by nature — a vendor belongs to the tenant, not to one
+        // agent. The tenant filter is still session-derived.
+        query = supabase
           .from("vendors")
           .select("*")
           .eq("brokerage_id", brokerageId)
           .order("rating", { ascending: false })
-        data = vendors || []
         break
       }
 
       case "communications": {
-        const contactId = searchParams.get("contact_id")
-        let commQuery = supabase
+        // THE FIX. The agent filter is applied UNCONDITIONALLY and first; a
+        // caller-supplied contact id may only narrow what is already the
+        // caller's own correspondence. The previous shape swapped one for the
+        // other, so `?type=communications&contact_id=<any uuid>` returned
+        // another brokerage's buyer's message history to any signed-in browser.
+        //
+        // No tenant column is filtered here on purpose: messages.brokerage_id is
+        // NULLABLE (added by migration 030 with no backfill) and at least one
+        // live writer — app/actions/ai-auto-response.ts — does not stamp it, so
+        // a tenant filter would silently hide the agent's own rows. agent_id is
+        // an agents.id resolved from the session and owned by exactly one
+        // brokerage, which forecloses the cross-tenant read on its own.
+        query = supabase
           .from("messages")
           .select("*, contacts(*)")
+          .eq("agent_id", agentId)
           .order("created_at", { ascending: false })
           .limit(100)
 
-        if (contactId) {
-          commQuery = commQuery.eq("contact_id", contactId)
-        } else {
-          commQuery = commQuery.eq("agent_id", agentId)
+        if (contactIdFilter) {
+          query = query.eq("contact_id", contactIdFilter)
         }
-
-        const { data: communications } = await commQuery
-        data = communications || []
         break
       }
 
       default:
-        return NextResponse.json(
-          { success: false, error: `Unknown data type: ${dataType}` },
-          { status: 400 }
-        )
+        return refuse(400, `Unknown data type: ${dataType}`)
     }
+
+    // THE ONLY READ. `error` is destructured here and nowhere is it optional:
+    // a refused query resolves, so without this the endpoint would report an
+    // empty book as cheerfully as a denied one — and every table is empty
+    // pre-rollout, which is exactly when that lie is hardest to notice.
+    const { data: rows, error: readError } = await query
+
+    if (readError) {
+      return refuse(502, `Read refused for "${dataType}": ${readError.message}`)
+    }
+
+    const data = rows ?? []
 
     return NextResponse.json({
       success: true,
@@ -293,9 +329,6 @@ export async function GET(request: NextRequest) {
     })
   } catch (error: any) {
     console.error("[Dashboard Data API] Error:", error)
-    return NextResponse.json(
-      { success: false, error: error.message || "Internal server error" },
-      { status: 500 }
-    )
+    return refuse(500, error?.message || "Internal server error")
   }
 }
