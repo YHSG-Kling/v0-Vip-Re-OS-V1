@@ -40,6 +40,65 @@ export function matchListingByAddress(text: string, listings: ListingLite[]): Li
   return null
 }
 
+// ─── WHAT OF AN INBOUND EMAIL GETS FILED, AND AS WHAT ───────────────────────
+//
+// Lives here, with the rest of this lane's PURE half, for two reasons: it is
+// I/O-free like everything else in this file, and the properties below have to
+// be provable without a storage bucket or a database. `offer-intake.ts` is the
+// only caller.
+//
+// THE DEFECT IT CLOSES (obligation 4 of the owner's ruling — "some documents
+// won't be one of ours and submitted from the outside buyer and need to be read
+// and counted in the transaction paperwork"): intake wrote the PDF to storage,
+// set `offers.offer_document_url` and created NO `documents` row, so
+// `auditOfferDocuments` — which counts only `documents` — could not see the most
+// important paper in the deal. And it only ever touched `pdfs[0]`, so the
+// addenda, disclosures and pre-approval travelling with an outside agent's
+// contract were dropped entirely.
+
+/**
+ * The `documents.document_type` that means "a STAGED PACKET" — the key
+ * `lib/workflow/intelligence/scan-offer-packet.ts` finds an offer's packet by.
+ * Named so the rule below is a comparison against the real thing rather than a
+ * promise in a comment.
+ */
+export const STAGED_PACKET_DOCUMENT_TYPE = "offer"
+
+/**
+ * `document_type` hints for inbound paper. Free-form strings (the column has no
+ * CHECK — verified against the live schema); the CLASSIFIER is what produces the
+ * `classification` the compliance audit actually counts.
+ */
+export const INBOUND_CONTRACT_DOCUMENT_TYPE   = "inbound_offer_contract"
+export const INBOUND_ATTACHMENT_DOCUMENT_TYPE = "inbound_offer_attachment"
+
+export interface InboundFilingPlanEntry {
+  index:        number
+  fileName:     string
+  role:         "contract" | "attachment"
+  documentType: string
+}
+
+/**
+ * PURE. One plan entry per inbound PDF.
+ *
+ *   1. EVERY attachment is filed — never just the first.
+ *   2. NOTHING is filed as the staged-packet type. An inbound PDF has no
+ *      `content.filledPacket`, and since wave 9 a staged document that carries
+ *      no packet is an explicit FAULT at the compliance gate — so filing one
+ *      under that type would have refused every inbound offer.
+ */
+export function planInboundFiling(
+  pdfs: Array<{ fileName: string }>,
+): InboundFilingPlanEntry[] {
+  return pdfs.map((pdf, index) => ({
+    index,
+    fileName:     pdf.fileName,
+    role:         index === 0 ? "contract" : "attachment",
+    documentType: index === 0 ? INBOUND_CONTRACT_DOCUMENT_TYPE : INBOUND_ATTACHMENT_DOCUMENT_TYPE,
+  }))
+}
+
 export type OfferIntakeDecision = "auto" | "confirm" | "skip"
 
 /**

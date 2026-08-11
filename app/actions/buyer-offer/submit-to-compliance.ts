@@ -42,6 +42,11 @@ import { auditOfferDocuments }       from "@/lib/compliance/required-documents"
 import { scanOfferPacketCompleteness } from "@/lib/workflow/intelligence/scan-offer-packet"
 import { notifyComplianceFlag }       from "@/lib/notifications/notify-helpers"
 import { resolveOfferComplianceFlags } from "@/lib/compliance/offer-flag-resolution"
+import {
+  describeBuyerSignatureEvidence,
+  buyerSignatureEstablishedBy,
+  buyerSignatureRefusal,
+} from "@/lib/buyer-offer/buyer-signature-evidence"
 
 export interface SubmitToComplianceParams {
   offerId: string
@@ -75,18 +80,34 @@ export async function submitOfferToCompliance(
   //    the transaction. Counters have parent_offer_id set + seller_signed_at
   //    rather than seller_response_type='accepted', so we accept either path
   //    to "executed contract on file".
-  const { data: offer } = await supabase
+  // `error` is destructured: supabase-js RESOLVES a refused read, and this is
+  // THE gate — a refused read must not render as "offer not found" and must
+  // certainly not render as "buyer has not signed".
+  const { data: offer, error: offerReadError } = await supabase
     .from("offers")
-    .select("id, brokerage_id, contact_id, agent_id, transaction_id, parent_offer_id, offer_type, buyer_signed_at, seller_signed_at, seller_response_type, fully_signed_contract_received_at, ready_for_compliance_at, compliance_passed_at, closing_date, inspection_period_days, appraisal_contingency_days, financing_contingency_days, earnest_money, listing_id, property_address")
+    // metadata / form_source / provider_envelope_id / offer_document_url are
+    // read for the buyer-signature EVIDENCE question below — what established
+    // the signature, not merely that a timestamp is present.
+    .select("id, brokerage_id, contact_id, agent_id, transaction_id, parent_offer_id, offer_type, buyer_signed_at, seller_signed_at, seller_response_type, fully_signed_contract_received_at, ready_for_compliance_at, compliance_passed_at, closing_date, inspection_period_days, appraisal_contingency_days, financing_contingency_days, earnest_money, listing_id, property_address, metadata, form_source, provider_envelope_id, offer_document_url")
     .eq("id", offerId)
     .maybeSingle()
+  if (offerReadError) return { success: false, error: `Could not read the offer: ${offerReadError.message}` }
   if (!offer) return { success: false, error: "Offer not found" }
 
   if (offer.transaction_id) {
     return { success: false, error: "Offer already converted to a transaction" }
   }
-  if (!offer.buyer_signed_at) {
-    return { success: false, error: "Buyer has not signed yet — cannot submit to compliance" }
+
+  // THE BUYER SIDE, UNCHANGED IN WHAT IT REQUIRES. `buyer_signed_at` must be
+  // set. What changed this wave is that more than one kind of evidence may
+  // establish it, and the gate now reads WHICH — see
+  // lib/buyer-offer/buyer-signature-evidence.ts. `null` here still means nothing
+  // established it, and that is still a refusal; the wording now names the
+  // evidence an outside-originated offer can actually produce, instead of
+  // telling an agent to wait for a webhook that will never fire.
+  const buyerEvidence = describeBuyerSignatureEvidence(offer as any)
+  if (!buyerEvidence) {
+    return { success: false, error: `Cannot submit to compliance. ${buyerSignatureRefusal(offer as any)}` }
   }
 
   // Two valid paths to "executed contract on file":
@@ -320,10 +341,20 @@ export async function submitOfferToCompliance(
   // bell. That one is recorded on the gate row instead, where it is durable and
   // where a reader is asking what was verified.
   const packetIsOneSided = (sides.buyer.evidenced || sides.seller.evidenced) && !bothSidesInPacket
+  // THE BUYER SIDE NAMES ITS EVIDENCE, not merely its column.
+  //
+  // "offers.buyer_signed_at" was true and useless: it said a timestamp existed,
+  // never what put it there. Now that the column has two admissible writers —
+  // our e-sign webhook, and a named human attesting to the executed contract on
+  // file — a gate row that does not distinguish them cannot be audited at all.
+  // `established_by` therefore carries the SOURCE, and for an attestation the
+  // whole record travels with it: who, when, which document, and what the
+  // classifier could (or could not) see on that document.
   const bothSidesRecord = {
     buyer: {
-      established_by: "offers.buyer_signed_at",
+      established_by: buyerSignatureEstablishedBy(buyerEvidence),
       at:             offer.buyer_signed_at ?? null,
+      evidence:       buyerEvidence,
     },
     seller: {
       established_by: executedViaResponse
@@ -347,10 +378,29 @@ export async function submitOfferToCompliance(
   // "stops the deal" and "nobody ever hears about it".
   const warningDocs  = audit.missing_warning ?? []
   const packetWarns  = packetScan.warnings ?? []
-  if (warningDocs.length > 0 || packetWarns.length > 0 || packetIsOneSided) {
+  // THE ATTESTATION AND THE SCANNER DISAGREE.
+  //
+  // A buyer signature established by human attestation carries the classifier's
+  // reading of the SAME document beside it. When the classifier positively
+  // reported that it could not find the buyer's signature on that page, the two
+  // records contradict each other. That does NOT reverse the attestation — a
+  // model's reading of a scan is not authority over a person holding the paper,
+  // and `evaluateExecution` returns "not executed" for a blob it never got, so
+  // treating it as a veto would block honest deals. But it is exactly the kind of
+  // disagreement nobody should discover after closing, so it is NAMED to the TC
+  // and the agent on the existing warning path. `checked` is load-bearing:
+  // unchecked is silence, not agreement.
+  const attestationContested =
+    buyerEvidence.source === "attested_executed_contract" &&
+    buyerEvidence.ai_corroboration?.checked === true &&
+    buyerEvidence.ai_corroboration?.executed === false
+  if (warningDocs.length > 0 || packetWarns.length > 0 || packetIsOneSided || attestationContested) {
     const warnBits: string[] = []
     if (warningDocs.length > 0) warnBits.push(`${warningDocs.length} optional document(s) missing`)
     if (packetWarns.length > 0) warnBits.push(`${packetWarns.length} packet warning(s)`)
+    if (attestationContested) {
+      warnBits.push("the document scan could not find the buyer signature that was attested")
+    }
     // Named, not silent. "This packet has buyer signature blocks and no seller
     // ones" is a fact the TC and the agent are entitled to know, because it is
     // the difference between a signature that was checked and one that was
@@ -371,6 +421,9 @@ export async function submitOfferToCompliance(
         body:       `Missing (warning): ${warningDocs.join(", ") || "(none)"}.\nPacket warnings: ${packetWarns.slice(0, 5).map(w => w.title).join("; ") || "(none)"}.`
                   + (packetIsOneSided
                      ? `\nBoth-sides check: the staged packet carries signature blocks, but none naming the ${sidesAbsentFromPacket.join(" or ")} side — so that side was NOT verified field-by-field. It rests on the offer record: ${bothSidesRecord.buyer.established_by} and ${bothSidesRecord.seller.established_by}. Open the executed contract and confirm every ${sidesAbsentFromPacket.join(" and ")} signature and initial is on it.`
+                     : "")
+                  + (attestationContested
+                     ? `\nBuyer signature — ATTESTED BUT CONTESTED: ${buyerEvidence.attested_by_name ?? buyerEvidence.attested_by_user_id ?? "someone"} attested on ${buyerEvidence.attested_at} that the executed contract carries the buyer's signature dated ${buyerEvidence.signed_at}, but the document scan of that same file reports ${buyerEvidence.ai_corroboration?.missing.join(", ") || "the buyer signature"} as not found. The attestation stands — a person holding the contract outranks a model reading a scan — but open the document and confirm before closing.`
                      : ""),
         entityType: "offer",
         entityId:   offerId,
@@ -445,6 +498,15 @@ export async function submitOfferToCompliance(
         both_sides_established_by: packetScan.scanOutcome === "scanned"
           ? "packet_field_scan + executed_contract_columns"
           : "executed_contract_columns_only",
+        // EXTENDING wave 9's vocabulary rather than forking it. The line above
+        // records the ALTITUDE the check ran at (field-level packet walk vs the
+        // offer's columns). This one records what put the buyer's timestamp in
+        // that column in the first place, which used to have exactly one
+        // possible answer and now has two. A reader asking "was this signature
+        // machine-verified or attested by a person?" gets an answer here rather
+        // than having to know which webhook writes which column.
+        buyer_signature_source:         buyerEvidence.source,
+        buyer_signature_established_by: buyerSignatureEstablishedBy(buyerEvidence),
         executed_contract: {
           buyer_signed_at:                   offer.buyer_signed_at ?? null,
           seller_response_type:              offer.seller_response_type ?? null,

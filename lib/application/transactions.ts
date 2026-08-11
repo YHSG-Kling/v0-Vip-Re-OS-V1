@@ -7,6 +7,7 @@ import { runPipelineSimple } from "@/lib/ai"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { syncStampToAgentLedger } from "@/lib/commission/ledger-sync"
 import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
+import { rosterForPrincipal } from "@/lib/notifications/transaction-parties-packet"
 
 // ============================================
 // HELPERS
@@ -1892,6 +1893,19 @@ export async function celebrateMilestone(transactionId: string, milestone: strin
 // CLIENT PORTAL DASHBOARD DATA
 // ============================================
 
+/** Which side of the deal the portal viewer is on — buyer, seller, or unknown.
+ *  Unknown is deliberate and safe: the roster redaction drops BOTH principals
+ *  rather than guess. */
+function resolveViewerSide(
+  viewerContactId: string | null | undefined,
+  transaction: { buyer_contact_id?: string | null; seller_contact_id?: string | null },
+): "buyer" | "seller" | null {
+  if (!viewerContactId) return null
+  if (viewerContactId === transaction.seller_contact_id) return "seller"
+  if (viewerContactId === transaction.buyer_contact_id)  return "buyer"
+  return null
+}
+
 export async function loadClientDashboard(transactionId: string, contactId?: string) {
   const supabase = await createClient()
   
@@ -2115,13 +2129,37 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
     checklistSummary,
     delayInfo,
     updates: combinedUpdates,
-    team: teamContacts.map((p: any) => ({
-      id: p.id,
+    // THE CLIENT'S VIEW OF THE ROSTER, REDACTED AT THE SAME BOUNDARY THE
+    // TRANSACTION-CREATED NOTICE USES (lib/notifications/transaction-parties-packet.ts).
+    // transaction_participants holds BOTH principals with their email + phone, and
+    // this panel handed the whole table to whichever side opened the portal — the
+    // buyer could read the seller's personal email and phone number, and vice versa.
+    // One rule, one implementation: a principal sees the professionals plus their
+    // OWN row; the counterparty principal is dropped whole. When the viewer's side
+    // can't be resolved, BOTH principals are dropped rather than risk the leak.
+    team: rosterForPrincipal(
+      teamContacts.map((p: any) => ({
+        role:    p.role ?? "party",
+        name:    p.name ?? "",
+        company: p.company ?? null,
+        email:   p.email ?? null,
+        phone:   p.phone ?? null,
+      })),
+      // The VIEWER's side — the caller-supplied contactId when the portal knows
+      // who is looking, falling back to the deal's own resolved contact. An
+      // unresolved side yields null, which drops BOTH principals.
+      resolveViewerSide(contactId ?? portalContactId, transaction),
+    ).map((p, i) => ({
+      id: (teamContacts as any[]).find((t: any) => t.role === p.role && t.name === p.name)?.id ?? `party-${i}`,
       role: p.role,
       name: p.name,
-      company: p.company,
-      email: p.email,
-      phone: p.phone,
+      // NORMALISED to null, not left `undefined`. `PartyContact` declares these
+      // optional, so they arrive as `string | null | undefined`; the portal reads
+      // one shape for "absent" and an absent field must not depend on WHICH kind
+      // of absent it is. Redacted and never-supplied both mean "nothing to show".
+      company: p.company ?? null,
+      email: p.email ?? null,
+      phone: p.phone ?? null,
     })),
     // The ids the page's own controls need. All three are already on the row
     // above (the select is `*`), so this costs no extra query — their absence

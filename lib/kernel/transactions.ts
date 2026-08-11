@@ -384,9 +384,22 @@ export async function createTransactionFromCompliantAcceptedOffer(
   if (!contractDate) {
     return { success: false, error: "contract_date required to create transaction" }
   }
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- earnestMoney is
+  // deliberately NOT turned into a due date here (see contractTerms below).
+  void earnestMoney
 
   try {
-    const { createTransactionFromOffer } = await import("@/lib/transactions/offer-bridge")
+    const { createTransactionFromOffer, deriveContractDeadlines } = await import("@/lib/transactions/offer-bridge")
+
+    // ONE derivation, shared with the bridge (no second copy of the date math).
+    const fallbackDeadlines = deriveContractDeadlines({
+      contractDate,
+      inspectionPeriodDays:     inspectionPeriodDays     ?? null,
+      appraisalContingencyDays: appraisalContingencyDays ?? null,
+      financingContingencyDays: financingContingencyDays ?? null,
+      offerClosingDate:         closingDate ?? null,
+    })
+
     const result = await createTransactionFromOffer({
       offerId,
       brokerageId,
@@ -394,20 +407,21 @@ export async function createTransactionFromCompliantAcceptedOffer(
       // listing-agent) → 'seller' OR 'dual' (in-house buyer on our listing). No need to declare it.
       contractDate,
       compliancePassedAt,
+      // CONTRACT-ANCHORED, NOT CLOCK-ANCHORED. These were `Date.now() + days`,
+      // i.e. "N days from whenever this button was clicked" — on any deal whose
+      // contract date is not today (a backdated execution, an inbound offer
+      // processed days later) every contingency deadline silently moved. The
+      // bridge derives the same terms from contract_date + the offer's own
+      // day columns; these stay as an explicit, TZ-safe fallback in the same
+      // frame of reference. earnestMoneyDue is NOT passed: a due date invented
+      // from "there is an earnest amount" (the old `now + 3 days`) is fabricated
+      // data — the bridge derives the real one from
+      // offers.earnest_money_due_days / earnest_money_due_at or leaves it unset.
       contractTerms: {
-        closingDate,
-        inspectionDeadline: inspectionPeriodDays
-          ? new Date(Date.now() + inspectionPeriodDays * 86400000).toISOString().split("T")[0]
-          : undefined,
-        financingDeadline: financingContingencyDays
-          ? new Date(Date.now() + financingContingencyDays * 86400000).toISOString().split("T")[0]
-          : undefined,
-        appraisalDeadline: appraisalContingencyDays
-          ? new Date(Date.now() + appraisalContingencyDays * 86400000).toISOString().split("T")[0]
-          : undefined,
-        earnestMoneyDue: earnestMoney
-          ? new Date(Date.now() + 3 * 86400000).toISOString().split("T")[0]
-          : undefined,
+        closingDate:        fallbackDeadlines.closingDate        ?? undefined,
+        inspectionDeadline: fallbackDeadlines.inspectionDeadline ?? undefined,
+        financingDeadline:  fallbackDeadlines.financingDeadline  ?? undefined,
+        appraisalDeadline:  fallbackDeadlines.appraisalDeadline  ?? undefined,
       },
     })
 

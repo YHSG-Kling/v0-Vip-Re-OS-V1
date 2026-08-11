@@ -97,10 +97,44 @@ export function OfferAgentActions({ offerId, agentUserId, state, onResult }: Off
     startTransition(async () => {
       try {
         const url = prompt("Seller-signed contract URL (storage URL or leave blank to upload separately):") ?? ""
-        const r = await recordSellerResponse({
+        let r = await recordSellerResponse({
           offerId, userId: agentUserId, responseType: "accepted",
           documentUrl: url || undefined,
         })
+
+        // THE ATTESTATION THE REFUSAL ASKS FOR — answerable from here.
+        //
+        // An offer from an outside buyer's agent was signed on THEIR paperwork,
+        // so our e-sign webhook never fires and `offers.buyer_signed_at` stays
+        // null. The action now names the evidence that CAN establish it and
+        // flags `needs_buyer_signature_attestation`. Without this branch the
+        // agent is told exactly what is required and given no control to supply
+        // it — a refusal nobody can answer is the same dead end, one step later.
+        //
+        // Retried ONLY on that explicit flag, never on a generic failure, and
+        // the attestation is TYPED by a person: it is a statement they are
+        // accountable for, which is why the action rejects a click or a stray
+        // character. Cancelling leaves the original refusal on screen.
+        if (!r.success && r.needs_buyer_signature_attestation) {
+          const signedAt = prompt(
+            "The buyer signed on the outside agent's paperwork, so we never saw the signature land.\n\n" +
+            "What DATE does the buyer's signature on the executed contract bear? (YYYY-MM-DD)"
+          ) ?? ""
+          if (signedAt.trim()) {
+            const attestation = prompt(
+              "In your own words: who holds the executed contract, and confirm it carries the buyer's signature.\n\n" +
+              "This is recorded against your name as the attestor."
+            ) ?? ""
+            if (attestation.trim()) {
+              r = await recordSellerResponse({
+                offerId, userId: agentUserId, responseType: "accepted",
+                documentUrl: url || undefined,
+                buyerSignature: { signedAt: signedAt.trim(), attestation: attestation.trim() },
+              })
+            }
+          }
+        }
+
         report("accepted", r.success, r.success
           ? "Seller acceptance recorded. Submit to compliance next."
           : `Failed: ${r.error}`)

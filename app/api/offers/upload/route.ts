@@ -5,6 +5,8 @@ import { extractOfferFromPdf } from "@/lib/offers/offer-extractor"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { uploadDocument } from "@/lib/documents/upload-document"
+import { INBOUND_CONTRACT_DOCUMENT_TYPE } from "@/lib/inbound-mail/offer-detect"
 
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
@@ -91,6 +93,12 @@ export async function POST(req: NextRequest) {
       current_round:        1,
       status:               "submitted",
       submitted_at:         new Date().toISOString(),
+      // THE ORIGIN, RECORDED. Same column and same literal the email-intake lane
+      // writes. `manual` already means "paperwork our engine did not produce"
+      // (live CHECK: portal_upload|dotloop|docusign|skyslope|authentisign|
+      // in_app|manual), so this needs no new column — it was simply left NULL
+      // here, which made an outside offer indistinguishable from one of ours.
+      form_source:          "manual",
       created_at:           new Date().toISOString(),
       updated_at:           new Date().toISOString(),
     })
@@ -99,6 +107,39 @@ export async function POST(req: NextRequest) {
 
   if (insertError || !offer) {
     return NextResponse.json({ error: insertError?.message ?? "Insert failed" }, { status: 500 })
+  }
+
+  // ── 2b. FILE THE CONTRACT IN THE DOCUMENT LEDGER ─────────────────────────
+  //
+  // This route stored the PDF and set `offers.offer_document_url` and stopped —
+  // it created NO `documents` row. `auditOfferDocuments` counts ONLY `documents`
+  // keyed by `metadata.linked_offer_id`, so the executed contract an agent had
+  // just uploaded by hand could not be read or counted toward the transaction
+  // paperwork, which is the owner's obligation 4 stated directly. It is also a
+  // precondition of the buyer-signature attestation, which refuses without a
+  // document on file — so without this, attesting an outside offer uploaded here
+  // was impossible.
+  //
+  // The SAME two helpers the email-intake lane uses, deliberately: one filing
+  // convention, not a second one that drifts. NOT `document_type:'offer'` —
+  // that is the staged-packet key the completeness scanner searches, and an
+  // inbound PDF has no `filledPacket`, so filing it there would make the scan
+  // FAULT and refuse every offer that came in this way.
+  const filed = await uploadDocument({
+    brokerageId,
+    storageUrl:   publicUrl,
+    fileName:     file.name,
+    documentType: INBOUND_CONTRACT_DOCUMENT_TYPE,
+    contactId,
+    offerId:      offer.id,
+    listingId,
+    metadata: { upload_source: "agent_upload_outside_offer", linked_offer_id: offer.id },
+  })
+  if (!filed.success) {
+    // Not fatal to the upload — the offer and its PDF exist — but it must not be
+    // silent: an unfiled contract cannot be counted, and the agent would later
+    // hit an attestation refusal with no way to understand why.
+    console.error(`[offers/upload] offer ${offer.id}: PDF stored but NOT filed in the document ledger:`, filed.error)
   }
 
   // lifecycle_events + OFFER_UPLOADED kernel event (non-blocking)

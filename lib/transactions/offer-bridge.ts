@@ -2,7 +2,63 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { ensureRequiredMilestones, seedJourneyMilestones } from "./milestone-service"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { populateInitialParticipants } from "./participant-populator"
-import { deriveEarnestDueDate } from "./earnest-terms"
+import { deriveEarnestDueDate, addDaysToDateString, isCalendarDate } from "./earnest-terms"
+
+/**
+ * PURE. Derive the three standard contingency DEADLINE DATES that the
+ * transaction row carries as first-class columns (inspection_deadline,
+ * appraisal_deadline, financing_deadline) plus the closing date.
+ *
+ * Precedence, per term:
+ *   1. contract_date + the offer's contingency-DAY column — TZ-safe UTC day math
+ *      off the EXECUTION date, which is what the contract actually says
+ *      ("inspection within 10 days of execution").
+ *   2. the caller-supplied term, but ONLY when it is a real calendar date.
+ *
+ * WHY THE ORDER: every caller (submit-to-compliance, seller-offers, the kernel
+ * converter) computed these as `Date.now() + days`, i.e. days from the moment
+ * the button was clicked. On any deal whose contract date is not today — a
+ * backdated execution, an inbound offer processed days later — that silently
+ * moved every deadline. Deriving here, from the contract date, fixes the class
+ * once for all four accept flows instead of in three separate copies.
+ */
+export function deriveContractDeadlines(input: {
+  contractDate:              string | null | undefined
+  inspectionPeriodDays?:     number | null
+  appraisalContingencyDays?: number | null
+  financingContingencyDays?: number | null
+  offerClosingDate?:         string | null
+  fallback?: {
+    inspectionDeadline?: string
+    appraisalDeadline?:  string
+    financingDeadline?:  string
+    closingDate?:        string
+  }
+}): {
+  inspectionDeadline: string | null
+  appraisalDeadline:  string | null
+  financingDeadline:  string | null
+  closingDate:        string | null
+} {
+  const base = input.contractDate ? String(input.contractDate).slice(0, 10) : null
+  const fromDays = (days: number | null | undefined, fallback: string | undefined): string | null => {
+    if (base && isCalendarDate(base) && typeof days === "number" && Number.isFinite(days)) {
+      return addDaysToDateString(base, days)
+    }
+    return isCalendarDate(fallback) ? fallback.slice(0, 10) : null
+  }
+  const closing = isCalendarDate(input.offerClosingDate)
+    ? String(input.offerClosingDate).slice(0, 10)
+    : isCalendarDate(input.fallback?.closingDate)
+      ? input.fallback!.closingDate!.slice(0, 10)
+      : null
+  return {
+    inspectionDeadline: fromDays(input.inspectionPeriodDays,     input.fallback?.inspectionDeadline),
+    appraisalDeadline:  fromDays(input.appraisalContingencyDays, input.fallback?.appraisalDeadline),
+    financingDeadline:  fromDays(input.financingContingencyDays, input.fallback?.financingDeadline),
+    closingDate:        closing,
+  }
+}
 
 /**
  * Canonical "is this offer eligible to become a transaction?" gate. Reads SOURCE-OF-TRUTH
@@ -131,7 +187,7 @@ export async function createTransactionFromOffer(params: {
   // Dotloop (which is the only one with a dedicated legacy column).
   const { data: offer, error: offerError } = await supabase
     .from("offers")
-    .select("id, agent_id, contact_id, listing_id, offer_price, closing_date, property_address, earnest_money, earnest_money_due_at, earnest_money_due_days, esign_provider, provider_envelope_id")
+    .select("id, agent_id, contact_id, listing_id, offer_price, closing_date, property_address, earnest_money, earnest_money_due_at, earnest_money_due_days, inspection_period_days, appraisal_contingency_days, financing_contingency_days, esign_provider, provider_envelope_id")
     .eq("id", params.offerId)
     .maybeSingle()
 
@@ -190,6 +246,29 @@ export async function createTransactionFromOffer(params: {
   // chain never fails the insert.
   const dealName = resolvedAddress
     ?? `Transaction ${params.offerId.slice(0, 8)}`
+
+  // CONTRACT DATES AS FIRST-CLASS TRANSACTION COLUMNS. Until now the bridge
+  // persisted the closing date and the three contingency deadlines ONLY as
+  // milestone target_dates — while transactions.close_date, .inspection_deadline,
+  // .appraisal_deadline and .financing_deadline (all live columns) stayed NULL
+  // forever on every offer-created deal. Six real readers key off those columns
+  // (kernel/fire-drills, kernel/team-query, kernel/client-pulse ×2,
+  // managers/deliberation, workflow/intelligence/proactive-checks), so the
+  // deal-health, client-pulse and fire-drill rails saw a deal with no dates at
+  // all. Derived from the CONTRACT date (not "now") — see deriveContractDeadlines.
+  const contractDeadlines = deriveContractDeadlines({
+    contractDate:              params.contractDate,
+    inspectionPeriodDays:      (offer as any).inspection_period_days      as number | null,
+    appraisalContingencyDays:  (offer as any).appraisal_contingency_days  as number | null,
+    financingContingencyDays:  (offer as any).financing_contingency_days  as number | null,
+    offerClosingDate:          (offer as any).closing_date                as string | null,
+    fallback: {
+      inspectionDeadline: params.contractTerms.inspectionDeadline,
+      appraisalDeadline:  params.contractTerms.appraisalDeadline,
+      financingDeadline:  params.contractTerms.financingDeadline,
+      closingDate:        params.contractTerms.closingDate,
+    },
+  })
   const { data: transaction, error: txnError } = await supabase
     .from("transactions")
     .insert({
@@ -212,6 +291,15 @@ export async function createTransactionFromOffer(params: {
       // the amount is currency ("Earnest Deposit: $X"), never a date.
       earnest_money:        (offer as any).earnest_money ?? null,
       contract_date:        params.contractDate,
+      // The dates the deal now lives by — persisted ON the transaction, not only
+      // as milestones. close_date is the canonical closing date every finance /
+      // commission / scorecard reader uses; the three deadlines feed the
+      // contingency + deal-health rails.
+      close_date:           contractDeadlines.closingDate,
+      estimated_close_date: contractDeadlines.closingDate,
+      inspection_deadline:  contractDeadlines.inspectionDeadline,
+      appraisal_deadline:   contractDeadlines.appraisalDeadline,
+      financing_deadline:   contractDeadlines.financingDeadline,
       compliance_passed_at: params.compliancePassedAt,
       stage:                "UNDER_CONTRACT",
       status:               "under_contract",
@@ -281,8 +369,11 @@ export async function createTransactionFromOffer(params: {
   // ensureRequiredMilestones looks up dates by snake_case milestone_name key
   // e.g. contractTerms["closing_date"], contractTerms["inspection_deadline"]
   // Normalise camelCase keys from the offer bridge params before passing in
+  // Milestone dates come from the SAME derivation the transaction columns above
+  // used, so a deadline can never read one date on the deal row and a different
+  // one on its milestone card.
   const normalisedTerms: Record<string, string> = {}
-  const { closingDate, inspectionDeadline, appraisalDeadline, financingDeadline } = params.contractTerms
+  const { closingDate, inspectionDeadline, appraisalDeadline, financingDeadline } = contractDeadlines
   if (closingDate)        normalisedTerms["closing_date"]        = closingDate
   if (inspectionDeadline) normalisedTerms["inspection_deadline"] = inspectionDeadline
   if (appraisalDeadline)  normalisedTerms["appraisal_deadline"]  = appraisalDeadline
@@ -383,8 +474,8 @@ export async function createTransactionFromOffer(params: {
         earnest_money_due:      earnestDueDate ?? null,
         earnest_money_due_days: (offer as any).earnest_money_due_days ?? null,
         title_company:          titleCompany,
-        inspection_deadline:    params.contractTerms.inspectionDeadline ?? null,
-        closing_date:           params.contractTerms.closingDate ?? null,
+        inspection_deadline:    contractDeadlines.inspectionDeadline,
+        closing_date:           contractDeadlines.closingDate,
         created_from_offer:     params.offerId,
       },
     })
@@ -404,5 +495,41 @@ export async function createTransactionFromOffer(params: {
     console.error("[offer-bridge] populateInitialParticipants failed (non-fatal):", err?.message ?? err)
   }
 
-  return { success: true, transactionId: transaction.id }
+  // ── OBLIGATION 5, SECOND HALF: tell the parties. ──────────────────────────
+  // Terms and dates are now saved (above); this is where every party learns
+  // them. Runs AFTER populateInitialParticipants on purpose — the roster it
+  // writes IS the recipient list and the contact-info block of the message.
+  // Idempotent (marker on activities), audience-scoped (staff vs client vs
+  // outside professional), and HONEST: a fan-out that reached nobody is logged
+  // as not-sent, never swallowed. Never throws — a notification failure must
+  // not roll back a created transaction, but it must not be invisible either.
+  let partiesNotified: { sent: boolean; already_notified: boolean; errors: string[] } | null = null
+  try {
+    const { notifyTransactionParties } = await import("@/lib/notifications/notify-helpers")
+    partiesNotified = await notifyTransactionParties(supabase as any, {
+      transactionId: transaction.id,
+      brokerageId:   params.brokerageId,
+    })
+    if (!partiesNotified.sent && !partiesNotified.already_notified) {
+      console.error(
+        `[offer-bridge] transaction ${transaction.id} created but NO party was notified:`,
+        partiesNotified.errors.join(" | "),
+      )
+    } else if (partiesNotified.errors.length > 0) {
+      console.warn(
+        `[offer-bridge] party notification for ${transaction.id} completed with issues:`,
+        partiesNotified.errors.join(" | "),
+      )
+    }
+  } catch (err: any) {
+    console.error("[offer-bridge] notifyTransactionParties threw (non-fatal):", err?.message ?? err)
+  }
+
+  return {
+    success: true,
+    transactionId: transaction.id,
+    // Reported, not assumed: callers (and the e2e proof) can see whether the
+    // parties were actually told.
+    partiesNotified: partiesNotified?.sent ?? false,
+  }
 }
