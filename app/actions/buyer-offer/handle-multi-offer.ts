@@ -21,27 +21,29 @@ import { evaluateOfferLimit, limitProximity } from "@/lib/offers/multi-offer-rul
  * Per System 5.1D: Multi-offer support WITHOUT state corruption
  * Limit rule lives in the pure lib/offers/multi-offer-rules.ts (unit-tested).
  *
- * ── TWO GATES, ONE LETTER APART. READ THIS BEFORE TOUCHING EITHER ────────────
+ * ── TWO GATES, AND THEY USED TO BE ONE LETTER APART ─────────────────────────
  *
- *   this file:                       canBuyerSubmitOffer  (SINGULAR)
- *   app/actions/buyer-lifecycle-core: canBuyerSubmitOffers (PLURAL)
+ *   this file:                        checkPendingOfferLimit    (was canBuyerSubmitOffer)
+ *   app/actions/buyer-lifecycle-core: checkBuyerOfferEligibility (was canBuyerSubmitOffers)
  *
  * They answer DIFFERENT questions and neither is a duplicate of the other:
  *
- *   · SINGULAR — the LIMIT gate. "How many offers does this buyer already have
+ *   · THE LIMIT GATE (here). "How many offers does this buyer already have
  *     PENDING, and is that under the cap?" Pure rule in
  *     lib/offers/multi-offer-rules.ts:evaluateOfferLimit. Knows nothing about
  *     the buyer's lifecycle stage or their finances.
- *   · PLURAL — the LIFECYCLE gate. "Is this buyer far enough along, and
+ *   · THE ELIGIBILITY GATE (there). "Is this buyer far enough along, and
  *     financially verified, to be making offers at all?"
  *     (lib/buyer-lifecycle/gating-helpers.ts:isOfferAllowed.) Knows nothing
  *     about how many offers are already out.
  *
  * A buyer can pass either and fail the other, so app/actions/buyer-offers.ts
- * :createOffer binds BOTH — and imports THIS one under the alias
- * `checkPendingOfferLimit` so the call site cannot be misread. The export keeps
- * its name only because renaming it would have to re-baseline
- * scripts/orphan-export-baseline.json, which is outside this slice.
+ * :createOffer binds BOTH. The names were `canBuyerSubmitOffer` and
+ * `canBuyerSubmitOffers` — singular and plural, two different questions, and a
+ * call site that reached for the wrong one read as correct. Renaming them was
+ * blocked only on an orphan-export re-baseline (wave 14, C4); the names now say
+ * WHICH question each answers, and the alias the call sites used to need is gone
+ * because the export itself is unambiguous.
  */
 
 /**
@@ -178,7 +180,7 @@ async function requireContactTenant(contactId: string): Promise<
 /**
  * THE LIMIT GATE — how many offers does this buyer already have PENDING?
  *
- * (Not the lifecycle gate. See the two-gates note at the top of this file.)
+ * (Not the eligibility gate. See the two-gates note at the top of this file.)
  *
  * GATED. This is `"use server"` — a public HTTP endpoint — and it ran entirely
  * on `createServiceClient()` with no `auth.getUser()` and no tenant check, so
@@ -196,7 +198,7 @@ async function requireContactTenant(contactId: string): Promise<
  * `pending_offer_ids` is returned so a refusal downstream can NAME what to
  * resolve instead of telling the agent only that they are at a limit.
  */
-export async function canBuyerSubmitOffer(
+export async function checkPendingOfferLimit(
   contactId: string
 ): Promise<{
   success: boolean;

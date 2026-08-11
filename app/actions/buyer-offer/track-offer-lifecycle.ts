@@ -464,7 +464,7 @@ export async function recordSellerResponse(
  *     terminal state in this machine (`is_terminal`), so the buyer's offer —
  *     real money, a real deadline — became unrespondable, and
  *     `getOfferLifecycleState` is what `submitOffer`, `withdrawOffer`,
- *     `recordSellerResponse`, `canBuyerSubmitOffer` and the buyer-facing
+ *     `recordSellerResponse`, `checkPendingOfferLimit` and the buyer-facing
  *     multi-offer banner all gate on.
  *  2. **The tenant of the audit row came from the caller.** `brokerage_id` was
  *     read off whatever `users` row the caller named, so the expiry event could

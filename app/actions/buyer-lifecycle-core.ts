@@ -275,9 +275,23 @@ export async function canBuyerScheduleTours(contactId: string): Promise<GatingRe
 }
 
 /**
- * Check if buyer can submit offers
+ * THE LIFECYCLE ELIGIBILITY GATE — "is this buyer far enough along, and
+ * financially verified, to be making offers AT ALL?"
+ *
+ * Renamed from `canBuyerSubmitOffers` (wave 14, C4). There is a SECOND, entirely
+ * different offer gate — app/actions/buyer-offer/handle-multi-offer.ts
+ * :checkPendingOfferLimit, the LIMIT gate ("how many offers does this buyer
+ * already have PENDING, and is that under the cap?"). The two used to be called
+ * `canBuyerSubmitOffers` and `canBuyerSubmitOffer`: one character apart, two
+ * different questions, and a call site that read the wrong one looked correct.
+ * Both are real, both are enforced at app/actions/buyer-offers.ts:createOffer,
+ * and neither is a duplicate of the other — a buyer can pass either and fail the
+ * other. The names now say WHICH question each answers.
+ *
+ * This one knows nothing about how many offers are already out; it answers from
+ * lib/buyer-lifecycle/gating-helpers.ts:isOfferAllowed.
  */
-export async function canBuyerSubmitOffers(contactId: string): Promise<GatingResult> {
+export async function checkBuyerOfferEligibility(contactId: string): Promise<GatingResult> {
   if (!isValidUUID(contactId)) {
     return { allowed: false, reason: "Invalid contact ID" }
   }

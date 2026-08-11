@@ -12,7 +12,8 @@
  *   banner consulted them to decide what to RENDER; the action that writes the
  *   row consulted nothing, and it is directly invocable.
  *
- * L1b — `canBuyerSubmitOffer`, `getBuyerActiveOffers` and
+ * L1b — `checkPendingOfferLimit` (then named `canBuyerSubmitOffer`),
+ *   `getBuyerActiveOffers` and
  *   `getOfferLifecycleState` were `"use server"` exports — public HTTP endpoints
  *   — reading through `createServiceClient()` (RLS bypassed) with no
  *   `auth.getUser()` and no tenant check. `getBuyerActiveOffers` is called from
@@ -318,7 +319,7 @@ async function main() {
     const logged: unknown[] = []
     const realError = console.error
     console.error = (...a: unknown[]) => { logged.push(a) }
-    const limit  = await multi.canBuyerSubmitOffer(CONTACT)
+    const limit  = await multi.checkPendingOfferLimit(CONTACT)
     const active = await multi.getBuyerActiveOffers(CONTACT)
     const state  = await track.getOfferLifecycleState(OFFER_A)
     console.error = realError
@@ -331,7 +332,7 @@ async function main() {
       r?.can_submit !== true
 
     controlled(
-      "canBuyerSubmitOffer refuses a caller who has proved nothing",
+      "checkPendingOfferLimit refuses a caller who has proved nothing",
       refusedWithNoData, limit,
       {
         subject: { success: true, can_submit: true, pending_count: 0, pending_offer_ids: [] },
@@ -496,19 +497,34 @@ async function main() {
   }
 
   // ══ 5 · STRUCTURE: L1a — both gates bind where the row is written ══════════
+  //
+  // Both gate identifiers are resolved FROM THE IMPORT STATEMENTS, so the
+  // assertions follow a rename instead of breaking on one. Hoisted to this scope
+  // because the refusal-wording section further down resolves its variables
+  // through the same two names.
+  const lifecycleGateName =
+    (/import \{\s*(\w+)[^}]*\}\s*from\s*"@\/app\/actions\/buyer-lifecycle-core"/.exec(src("app/actions/buyer-offers.ts")) ?? [])[1]
+  // Alias or no alias: `x as y` binds the local name y, a bare `x` binds x. The
+  // gates used to be named one letter apart (canBuyerSubmitOffer /
+  // canBuyerSubmitOffers) and the alias at this call site was the only thing
+  // keeping it readable; wave 14 C4 renamed the exports themselves, so the alias
+  // is gone and the CONSTRUCT — the LIMIT gate is imported from the multi-offer
+  // module and bound before the insert — is what this resolves, not a spelling.
+  const limitGateName = ((
+    /import \{([^}]*)\}\s*from\s*"@\/app\/actions\/buyer-offer\/handle-multi-offer"/
+      .exec(src("app/actions/buyer-offers.ts"))?.[1] ?? ""
+  ).split(",")
+    .map((s) => s.trim())
+    .find((s) => /limit/i.test(s)) ?? "")
+    .split(/\s+as\s+/).pop()?.trim()
+
   console.log("\n[createOffer: the two gates bind before the offer row exists]")
   {
     const OFFERS = src("app/actions/buyer-offers.ts")
 
-    // Both gate identifiers are resolved FROM THE IMPORT STATEMENTS, so the
-    // assertion follows a rename instead of breaking on one.
-    const lifecycleGateName =
-      (/import \{\s*(\w+)[^}]*\}\s*from\s*"@\/app\/actions\/buyer-lifecycle-core"/.exec(OFFERS) ?? [])[1]
-    const limitGateName =
-      (/canBuyerSubmitOffer as (\w+)/.exec(OFFERS) ?? [])[1]
     check("the LIFECYCLE gate is imported from the module the three pages use",
       !!lifecycleGateName, `resolved: ${lifecycleGateName ?? "(none)"}`)
-    check("the LIMIT gate is imported under an alias, so the two one-letter-apart names cannot be confused",
+    check("the LIMIT gate is imported from the multi-offer module under a name that states its question",
       !!limitGateName, `resolved: ${limitGateName ?? "(none)"}`)
 
     /** THE CONSTRUCT: both gates are called before the row is inserted. */
@@ -563,8 +579,14 @@ async function main() {
   {
     const OFFERS = src("app/actions/buyer-offers.ts")
     const body = exportedBodies(OFFERS).get("createOffer") ?? ""
-    const lifecycleVar = (/const (\w+) = await canBuyerSubmitOffers\(/.exec(body) ?? [])[1]
-    const limitVar     = (/const (\w+) = await checkPendingOfferLimit\(/.exec(body) ?? [])[1]
+    // Both variables are found through the identifiers resolved from the IMPORTS
+    // above, so a rename of either gate moves this assertion with it.
+    const lifecycleVar = lifecycleGateName
+      ? (new RegExp(`const (\\w+) = await ${lifecycleGateName}\\(`).exec(body) ?? [])[1]
+      : undefined
+    const limitVar = limitGateName
+      ? (new RegExp(`const (\\w+) = await ${limitGateName}\\(`).exec(body) ?? [])[1]
+      : undefined
 
     const carriesGateReason = (text: string) => {
       const b = exportedBodies(text).get("createOffer") ?? ""

@@ -5,12 +5,14 @@ import Link from "next/link"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Layers, AlertTriangle, CheckCircle2, ShieldAlert } from "lucide-react"
-// The LIMIT gate, aliased so this call site cannot be confused with the
-// LIFECYCLE gate (`canBuyerSubmitOffers`, plural, in buyer-lifecycle-core.ts).
-// Both are real, they answer different questions, and their names are one letter
-// apart — see the note at the top of handle-multi-offer.ts.
+// The LIMIT gate — "how many offers are already PENDING for this buyer?". The
+// other offer gate is `checkBuyerOfferEligibility` in buyer-lifecycle-core.ts
+// ("may this buyer be making offers at all?"). Both are real and they answer
+// different questions; they were `canBuyerSubmitOffer` / `canBuyerSubmitOffers`
+// until wave 14 C4 renamed them — see the note at the top of
+// handle-multi-offer.ts.
 import {
-  canBuyerSubmitOffer as checkPendingOfferLimit,
+  checkPendingOfferLimit,
   getBuyerActiveOffers,
 } from "@/app/actions/buyer-offer/handle-multi-offer"
 import { MAX_PENDING_OFFERS, limitProximity, type LimitProximity } from "@/lib/offers/multi-offer-rules"

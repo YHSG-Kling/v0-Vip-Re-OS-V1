@@ -97,12 +97,26 @@ export function BuyerOfferToolsCard({
     })
   }
 
+  // The toast now SAYS WHAT HAPPENED. It used to promise "your agent is preparing your offer
+  // plan" on every click, including the ones that produced nothing — and a toast is all the buyer
+  // got, so a refresh erased even that. The server returns the same sentence it wrote to the
+  // buyer's portal message thread, so the transient and the durable record cannot disagree, and
+  // neither carries a recommended price (the agent approves the plan and delivers the number).
   function helpMakeOffer() {
     startOffer(async () => {
       const r = await requestOfferHelp({ contactId, propertyId, propertyAddress })
-      toast(r.success
-        ? { title: "Your agent is preparing your offer plan", description: "They'll reach out with a recommended price and terms." }
-        : { title: "Couldn't send the request", description: r.error ?? "Try again", variant: "destructive" })
+      if (!r.success) {
+        toast({ title: "Couldn't send the request", description: r.error ?? "Try again", variant: "destructive" })
+        return
+      }
+      toast({
+        title: r.duplicate
+          ? "Your agent already has this request"
+          : r.accelerated
+          ? "Your agent is preparing your offer plan"
+          : "Your agent has been notified",
+        description: r.message ?? "They'll be in touch about this home. It's saved to your messages.",
+      })
     })
   }
 

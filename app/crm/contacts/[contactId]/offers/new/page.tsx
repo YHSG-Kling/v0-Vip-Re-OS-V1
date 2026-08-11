@@ -1,7 +1,7 @@
 import { redirect }                from "next/navigation"
 import { createClient }           from "@/lib/supabase/server"
 import { startOfferDraft }        from "@/app/actions/buyer-offers"
-import { canBuyerSubmitOffers }   from "@/app/actions/buyer-lifecycle-core"
+import { checkBuyerOfferEligibility } from "@/app/actions/buyer-lifecycle-core"
 import { NewOfferPageClient }     from "./new-offer-page-client"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
@@ -66,7 +66,7 @@ export default async function NewOfferPage({ params, searchParams }: Props) {
   if (!contact) redirect(`/dashboard/buyers`)
 
   // Server-side gate: reject direct URL navigation for locked buyers
-  const offerGate = await canBuyerSubmitOffers(contactId)
+  const offerGate = await checkBuyerOfferEligibility(contactId)
   if (!offerGate.allowed) {
     redirect(`/crm/contacts/${contactId}/offers`)
   }

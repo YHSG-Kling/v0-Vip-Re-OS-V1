@@ -617,7 +617,7 @@
     "lib/transactions/buyer-move.ts": 3,
     "lib/transactions/cda-esign.ts": 1,
     "lib/transactions/cda-field-classifier.ts": 2,
-    "lib/transactions/closing-orchestration.ts": 2,
+    "lib/transactions/closing-orchestration.ts": 1,
     "lib/transactions/contingency-deadlines.ts": 2,
     "lib/transactions/coordination-status.ts": 1,
     "lib/transactions/deal-vendor-notify.ts": 1,
@@ -678,7 +678,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 9024,
+  "census": 9026,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2808,7 +2808,7 @@
     "lib/agents/marketing-agent.ts": 1,
     "lib/agents/offer-ready-decision.ts": 1,
     "lib/agents/offer-ready-detector.ts": 1,
-    "lib/agents/offer-strategy-producer.ts": 2,
+    "lib/agents/offer-strategy-producer.ts": 3,
     "lib/agents/outcomes.ts": 2,
     "lib/agents/persona-context.ts": 1,
     "lib/agents/recruit-outreach-producer.ts": 4,
@@ -4099,7 +4099,7 @@
     "lib/transactions/earnest-terms.ts": 4,
     "lib/transactions/final-compliance-check.ts": 2,
     "lib/transactions/gift-order-trigger.ts": 1,
-    "lib/transactions/hazard-insurance.ts": 3,
+    "lib/transactions/hazard-insurance.ts": 4,
     "lib/transactions/milestone-auto-trigger.ts": 1,
     "lib/transactions/milestone-catalog.ts": 3,
     "lib/transactions/milestone-identity.ts": 2,
@@ -5162,7 +5162,7 @@
       "validateBuyerReactivation",
       "canBuyerSearchProperties",
       "canBuyerScheduleTours",
-      "canBuyerSubmitOffers",
+      "checkBuyerOfferEligibility",
       "getBuyerEnabledGates",
       "checkBuyerFinancialVerification",
       "getBuyerFinancialStatus",
@@ -5190,7 +5190,7 @@
       "flagOfferCompliance"
     ],
     "app/actions/buyer-offer/handle-multi-offer.ts": [
-      "canBuyerSubmitOffer",
+      "checkPendingOfferLimit",
       "checkDuplicateOffer",
       "getBuyerActiveOffers",
       "emitMultiOfferEvent"
@@ -13005,6 +13005,7 @@
     ],
     "lib/agents/offer-strategy-producer.ts": [
       "buildOfferStrategyMessage",
+      "buildOfferHelpAcknowledgement",
       "produceOfferStrategyBrief"
     ],
     "lib/agents/outcomes.ts": [
@@ -19656,6 +19657,7 @@
       "checkAndTriggerGiftOrder"
     ],
     "lib/transactions/hazard-insurance.ts": [
+      "selectHazardService",
       "readHazardInsurance",
       "hazardSeverity",
       "hazardReminderHeadline"
@@ -20432,5 +20434,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 290
+  "trulyDead": 289
 }

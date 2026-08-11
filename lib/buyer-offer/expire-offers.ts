@@ -19,7 +19,7 @@
  * Nothing ever did. So in practice **no offer on the platform has ever expired
  * on its own**: `offers.response_deadline` passes, the offer stays PENDING, and
  * every surface that gates on lifecycle state (`submitOffer`, `withdrawOffer`,
- * `recordSellerResponse`, `canBuyerSubmitOffer`, the buyer multi-offer banner)
+ * `recordSellerResponse`, `checkPendingOfferLimit`, the buyer multi-offer banner)
  * keeps treating a dead offer as live. This module is that missing door: it takes
  * a service client and does the work, so the session-gated action and the cron
  * each get their own entrance to the SAME logic — no fake identity, and the

@@ -9,20 +9,20 @@ import { isValidUUID }         from "@/lib/validations"
 import { OFFER_EVENT }         from "@/lib/buyer-offer/offer-lifecycle"
 import { resolveAgentId }      from "@/lib/kernel/agent-identity"
 import { requireContactAccess } from "@/lib/portal/require-contact-access"
-// The LIMIT gate, imported under a name the call site cannot misread. The export
-// is `canBuyerSubmitOffer` (singular) and the LIFECYCLE gate below is
-// `canBuyerSubmitOffers` (plural) — one letter apart, two different questions.
-// The alias is the whole disambiguation this slice could make: renaming the
-// export itself would have to re-baseline scripts/orphan-export-baseline.json,
-// which is outside this slice (reported, not done).
+// The LIMIT gate — "how many offers does this buyer already have PENDING?".
+// It and the ELIGIBILITY gate below were `canBuyerSubmitOffer` and
+// `canBuyerSubmitOffers`: one letter apart, two different questions, so this
+// call site imported the singular under an alias to stay readable. The exports
+// were renamed (wave 14, C4) and each name now states its own question, so the
+// alias is gone.
 import {
   checkDuplicateOffer,
-  canBuyerSubmitOffer as checkPendingOfferLimit,
+  checkPendingOfferLimit,
 } from "@/app/actions/buyer-offer/handle-multi-offer"
-// The LIFECYCLE gate — the SAME function the three offer surfaces render from
+// The ELIGIBILITY gate — the SAME function the three offer surfaces render from
 // (/offers, /offers/new and the contact page), so the action and the UI cannot
-// disagree about whether this buyer may be making offers.
-import { canBuyerSubmitOffers } from "@/app/actions/buyer-lifecycle-core"
+// disagree about whether this buyer may be making offers at all.
+import { checkBuyerOfferEligibility } from "@/app/actions/buyer-lifecycle-core"
 import { MAX_PENDING_OFFERS } from "@/lib/offers/multi-offer-rules"
 
 // ─── STAFF GATE ───────────────────────────────────────────────────────────────
@@ -584,10 +584,10 @@ export async function createOffer(
   // the user id, which would write a wrong/invalid FK value.
   const agentId = await resolveAgentId(supabase, agentUserId)
 
-  // ── GATE 1 of 2: THE LIFECYCLE GATE ────────────────────────────────────────
+  // ── GATE 1 of 2: THE LIFECYCLE ELIGIBILITY GATE ────────────────────────────
   //
   // "MAY THIS BUYER BE MAKING OFFERS AT ALL?" — buyer-lifecycle-core.ts
-  // :canBuyerSubmitOffers → lib/buyer-lifecycle/gating-helpers.ts:isOfferAllowed:
+  // :checkBuyerOfferEligibility → lib/buyer-lifecycle/gating-helpers.ts:isOfferAllowed:
   // is their lifecycle state at or past BUYER_OFFER_ELIGIBLE, and are they
   // financially verified.
   //
@@ -614,7 +614,7 @@ export async function createOffer(
   // same gate, with the actor and the written justification on the record.
   // Adding an `isOverride` parameter to createOffer would be a second, weaker
   // override mechanism with no authority check and no audit — so there is none.
-  const lifecycleGate = await canBuyerSubmitOffers(contactId)
+  const lifecycleGate = await checkBuyerOfferEligibility(contactId)
   if (!lifecycleGate.allowed) {
     const remedies = (lifecycleGate.blockers ?? [])
       .map((blocker) => OFFER_LIFECYCLE_GATE_REMEDY[blocker])

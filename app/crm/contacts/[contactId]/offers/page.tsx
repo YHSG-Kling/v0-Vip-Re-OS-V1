@@ -2,7 +2,7 @@ import { redirect } from "next/navigation"
 import { createServiceClient } from "@/lib/supabase/service"
 import { createClient }        from "@/lib/supabase/server"
 import { OffersClient }        from "./offers-client"
-import { canBuyerSubmitOffers } from "@/app/actions/buyer-lifecycle-core"
+import { checkBuyerOfferEligibility } from "@/app/actions/buyer-lifecycle-core"
 import { getBuyerOffers }       from "@/app/actions/buyer-offers"
 import { resolveAgentId }       from "@/lib/kernel/agent-identity"
 import { Alert, AlertDescription } from "@/components/ui/alert"
@@ -64,7 +64,7 @@ export default async function BuyerOffersPage({ params }: PageProps) {
   }
 
   // Lifecycle gate check
-  const offerGateResult = await canBuyerSubmitOffers(buyerId)
+  const offerGateResult = await checkBuyerOfferEligibility(buyerId)
 
   // Load existing offers through the SURVIVOR reader
   // (`app/actions/buyer-offers.ts:getBuyerOffers`) rather than the inline

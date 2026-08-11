@@ -110,8 +110,29 @@ export interface CreateTransactionInput {
 export interface SeedMilestonesInput {
   transactionId: string
   brokerageId:   string
-  contractDate:  string
-  contractTerms: {
+  /**
+   * transactions.deal_type as it is actually written by the two creators:
+   * 'buyer' | 'seller' | 'dual' (offer-bridge) and 'purchase' | 'sale' | 'lease'
+   * (createManualTransaction). Only the SELL side changes the journey, so
+   * 'seller' and 'sale' select the seller catalog and anything else — including
+   * a legacy NULL — selects the buyer one. Never guessed from the caller.
+   */
+  dealType?:     string | null
+  /**
+   * The dates the deal already lives by, read off the transaction row by the
+   * caller. Used to FILL deadline target dates on the required milestones and to
+   * mirror them into transaction_deadlines + calendar_events — the job
+   * ensureRequiredMilestones does. Absent terms stay absent: nothing here
+   * invents a date.
+   *
+   * There is deliberately NO contractDate field any more. The old body used it
+   * for `contract_date + days_from_contract` template math that this function no
+   * longer performs (see the note on the function), and a parameter that is
+   * accepted and ignored is the same lie as a docstring describing wiring that
+   * does not exist. The one canonical contract-anchored derivation lives at
+   * lib/transactions/offer-bridge.ts:deriveContractDeadlines.
+   */
+  contractTerms?: {
     closingDate?:        string
     inspectionDeadline?: string
     appraisalDeadline?:  string
@@ -449,79 +470,145 @@ export async function createTransactionFromCompliantAcceptedOffer(
   }
 }
 
-// ─── 4. SEED TRANSACTION MILESTONES ─────────────────────────────────────────
+// ─── 4. RE-SEED A TRANSACTION'S MILESTONES (the idempotent RETRY entry point) ─
 /**
- * Seeds milestones from the brokerage default template.
- * Called by offer-bridge internally, but exposed here for idempotent retry.
- * Guards against duplicate seeding: checks if milestones already exist first.
+ * THE RETRY ENTRY POINT FOR A TRANSACTION THAT ENDED UP WITH NO MILESTONES.
+ *
+ * WHAT THIS USED TO BE, AND WHY IT IS NOT THAT ANY MORE (wave 14, C1).
+ *
+ * Its docstring said "Called by offer-bridge internally, but exposed here for
+ * idempotent retry." Neither half was true: the bridge calls
+ * lib/transactions/milestone-service.ts:seedJourneyMilestones, and nothing
+ * anywhere called this. The false comment is exactly why nobody noticed.
+ *
+ * Read side by side against the live seeder, the OLD BODY was a strictly lesser
+ * second seeder, and the verdict is from CAPABILITY, not from having no caller:
+ *
+ *   · ITS SOURCE CANNOT PRODUCE A ROW. It read transaction_milestone_templates +
+ *     milestone_template_items. Nothing in this tree WRITES either table — they
+ *     are on the known-writerless list in scripts/writerless-read-sweep.ts — so
+ *     `template?.id` is null on every live run and the function returned
+ *     `{ count: 0 }` every time. That is not an extra capability to preserve; it
+ *     is a seeder that cannot seed.
+ *   · ITS ROWS CARRIED THE IDENTITY DEFECT IT DOCUMENTED. milestone_name was the
+ *     template's DISPLAY TITLE and milestone_type was whatever the template
+ *     carried (usually null), while every completion path matches on the
+ *     canonical snake_case identity — so its milestones could never complete and
+ *     sat "pending" in the client portal forever. The catalog + identity design
+ *     (milestone-catalog.ts + milestone-identity.ts) exists to make that
+ *     impossible. Porting the template path would have re-imported the class, so
+ *     it was NOT ported: the defect is fixed at the survivor, never carried over.
+ *   · ITS IDEMPOTENCY GUARD WAS COARSER AND FAILED OPEN. `.eq("transaction_id")`
+ *     with no brokerage scope, counting ALL milestones (so one stray row muted
+ *     re-seeding entirely), and `.then(r => ({ count: r.count ?? 0 }))` DROPPED
+ *     the error — supabase-js resolves a refused query, so a denied count read
+ *     as zero and the function seeded on top of whatever was already there.
+ *   · IT ACCEPTED contractTerms AND NEVER READ THEM. The deadline capability it
+ *     advertised in its own signature did not exist.
+ *
+ * So the seeding JOB has one survivor and it is named:
+ *   lib/transactions/milestone-service.ts:seedJourneyMilestones
+ * (plus its companion ensureRequiredMilestones for the deadline-critical set +
+ * the transaction_deadlines / calendar_events mirror).
+ *
+ * WHAT SURVIVES HERE IS THE CAPABILITY THE NAME PROMISED AND NOBODY BUILT: a
+ * kernel-level, idempotent RE-SEED. It is real and it was missing. The bridge
+ * inserts the transaction row FIRST and seeds after, and seedJourneyMilestones
+ * THROWS on a refused insert — so a transaction whose seeding failed is already
+ * committed, carries zero milestones, and had no way back. A transaction with no
+ * milestones is invisible to five of the nine closing detectors (inspection
+ * window/overdue, earnest money, walkthrough, CDA), which is a deal the closing
+ * lane silently has nothing to say about.
+ *
+ * This function is now a caller of the survivor, not a second seeder: no second
+ * milestone vocabulary is introduced, and the rows it produces are the same rows
+ * the bridge would have written. It is WIRED — lib/transactions/
+ * closing-orchestration.ts:runClosingOrchestration invokes it for exactly the
+ * transactions described above, and reports what it did rather than healing
+ * silently.
+ *
+ * FAILS CLOSED. The existence check destructures `error`: if we cannot READ what
+ * is already there we do not seed, because "the read was refused" and "this deal
+ * has no milestones" are the same value in supabase-js and only one of them is a
+ * reason to write.
  */
 export async function seedTransactionMilestones(
   params: SeedMilestonesInput
-): Promise<KernelTxResult<{ count: number }>> {
-  const { transactionId, brokerageId, contractDate, contractTerms } = params
+): Promise<KernelTxResult<{
+  /** Milestones on the transaction AFTER this call. */
+  count:   number
+  /** True only when this call actually created rows. */
+  seeded:  boolean
+  /**
+   * What this call DID, as a required discriminant rather than an inference off
+   * `count`: 'already_seeded' (the deal had milestones and was left alone) or
+   * 'seeded' (this call created them). A refusal never reaches here — it comes
+   * back as success:false with the message.
+   */
+  outcome: "already_seeded" | "seeded"
+}>> {
+  const { transactionId, brokerageId, dealType, contractTerms } = params
   if (!isValidUUID(transactionId)) return { success: false, error: "Invalid transaction ID" }
+  if (!isValidUUID(brokerageId))   return { success: false, error: "Invalid brokerage ID" }
 
   const supabase = createServiceClient()
 
-  // Idempotency guard — don't re-seed if milestones already exist
-  const { count } = await supabase
+  // Idempotency guard, tenant-scoped and error-checked. A refused read is NOT
+  // "this transaction has no milestones" — it is "we could not look", and
+  // seeding on that basis is how a deal gets a duplicate journey.
+  const { data: existing, error: existingError } = await supabase
     .from("transaction_milestones")
-    .select("id", { count: "exact", head: true })
-    .eq("transaction_id", transactionId)
-    .then(r => ({ count: r.count ?? 0 }))
-
-  if (count > 0) {
-    return { success: true, data: { count } }
-  }
-
-  // Load default brokerage template
-  const { data: template } = await supabase
-    .from("transaction_milestone_templates")
     .select("id")
+    .eq("transaction_id", transactionId)
     .eq("brokerage_id", brokerageId)
-    .eq("is_default", true)
-    .maybeSingle()
 
-  if (!template?.id) {
-    return { success: true, data: { count: 0 } }  // no template configured — not an error
+  if (existingError) {
+    return { success: false, error: `Could not read existing milestones: ${existingError.message}` }
+  }
+  if ((existing?.length ?? 0) > 0) {
+    return { success: true, data: { count: existing!.length, seeded: false, outcome: "already_seeded" } }
   }
 
-  const { data: items } = await supabase
-    .from("milestone_template_items")
-    .select("title, description, milestone_type, days_from_contract")
-    .eq("template_id", template.id)
+  // THE JOURNEY FOLLOWS THE DEAL SIDE — same rule the bridge applies, same two
+  // catalogs. 'seller' (offer-bridge vocabulary) and 'sale' (manual-transaction
+  // vocabulary) both mean the sell side; everything else, NULL included, is the
+  // buyer journey.
+  const side = dealType === "seller" || dealType === "sale" ? "sale" : "purchase"
 
-  if (!items?.length) return { success: true, data: { count: 0 } }
+  // ensureRequiredMilestones looks the dates up by their snake_case term keys —
+  // the same normalisation the bridge does before calling it, so a milestone
+  // card can never show a different date than the transaction row it came from.
+  const normalisedTerms: Record<string, string> = {}
+  if (contractTerms?.closingDate)        normalisedTerms["closing_date"]        = contractTerms.closingDate
+  if (contractTerms?.inspectionDeadline) normalisedTerms["inspection_deadline"] = contractTerms.inspectionDeadline
+  if (contractTerms?.appraisalDeadline)  normalisedTerms["appraisal_deadline"]  = contractTerms.appraisalDeadline
+  if (contractTerms?.financingDeadline)  normalisedTerms["financing_deadline"]  = contractTerms.financingDeadline
+  if (contractTerms?.earnestMoneyDue)    normalisedTerms["earnest_money_due"]   = contractTerms.earnestMoneyDue
 
-  const baseDate = new Date(contractDate)
-  // ⚠️ TRANSPARENCY BUG (flagged for a data-model reconciliation): milestone_name is seeded from the
-  // template item's DISPLAY TITLE (e.g. "Clear to Close", "Home Inspection"), and milestone_type is
-  // whatever the template carries (often null). But several completion paths complete a milestone by
-  // its SNAKE_CASE canonical name (cda_delivered, gift_ordered) on the milestone_name column, or by
-  // milestone_type. Those match 0 rows against this data, so the milestone never completes and the
-  // client portal shows it stuck "pending". FIX: give each milestone a canonical, brokerage-independent
-  // identifier — populate milestone_template_items.milestone_type with a MILESTONE_NAMES value, seed
-  // transaction_milestones.milestone_type from it, and complete milestones by milestone_type (keep the
-  // free-text title for display only).
-  const rows = items.map(item => ({
-    transaction_id:    transactionId,
-    brokerage_id:      brokerageId,
-    title:             item.title,
-    milestone_name:    item.title,
-    description:       item.description ?? null,
-    milestone_type:    item.milestone_type ?? null,
-    target_date:       item.days_from_contract
-      ? new Date(baseDate.getTime() + item.days_from_contract * 86400000).toISOString().split("T")[0]
-      : null,
-    is_client_visible: false,
-    status:            "pending",
-    created_at:        new Date().toISOString(),
-  }))
+  try {
+    const { seedJourneyMilestones, ensureRequiredMilestones } =
+      await import("@/lib/transactions/milestone-service")
+    // Order matters and matches the bridge: the full journey first (celebratory
+    // + deadline + compliance milestones from the canonical catalog), then the
+    // deadline-critical set, which dedupes by canonical identity and therefore
+    // FILLS dates on the journey rows rather than duplicating them.
+    await seedJourneyMilestones(transactionId, brokerageId, side)
+    await ensureRequiredMilestones(transactionId, brokerageId, normalisedTerms)
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) }
+  }
 
-  const { error } = await supabase.from("transaction_milestones").insert(rows)
-  if (error) return { success: false, error: error.message }
+  const { data: after, error: afterError } = await supabase
+    .from("transaction_milestones")
+    .select("id")
+    .eq("transaction_id", transactionId)
+    .eq("brokerage_id", brokerageId)
 
-  return { success: true, data: { count: rows.length } }
+  if (afterError) {
+    return { success: false, error: `Seeded, but the verification read failed: ${afterError.message}` }
+  }
+
+  return { success: true, data: { count: after?.length ?? 0, seeded: true, outcome: "seeded" } }
 }
 
 // ─── 5. LINK OFFER TO TRANSACTION ────────────────────────────────────────────

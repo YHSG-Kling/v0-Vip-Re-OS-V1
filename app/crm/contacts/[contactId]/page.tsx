@@ -3,7 +3,7 @@ import { createClient }             from "@/lib/supabase/server"
 import { BuyerOverviewClient }      from "./buyer-overview-client"
 import { SellerLifetimeOverview }   from "./seller-lifetime-overview"
 import { getBuyerEnabledGates }     from "@/app/actions/buyer-lifecycle-core"
-import { canBuyerSubmitOffers }     from "@/app/actions/buyer-lifecycle-core"
+import { checkBuyerOfferEligibility } from "@/app/actions/buyer-lifecycle-core"
 import { ContactQuickActions }      from "@/components/contact/ContactQuickActions"
 import { AddressingCard }           from "@/components/contact/AddressingCard"
 import { StrategySessionCard }      from "@/components/contact/StrategySessionCard"
@@ -97,7 +97,7 @@ export default async function ContactDetailPage({ params }: PageProps) {
     // regardless of lifecycle state or financial verification. It also pulled server-only
     // gating code (and the service-role client) into a CLIENT bundle, which is what finally
     // broke the production build.
-    canBuyerSubmitOffers(contactId),
+    checkBuyerOfferEligibility(contactId),
     // Segment memberships — written by the workflow "add to segment" step
     // (lib/workflow/adapters/segment-ops.ts). Active memberships only.
     supabase
