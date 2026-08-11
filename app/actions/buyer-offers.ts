@@ -639,15 +639,19 @@ export async function createOffer(
   //    app/actions/buyer-financial.ts:markFinanciallyVerified sets, while gate
   //    1's financial half is the ACTIVITY trail that
   //    lib/buyer-lifecycle/financial-verification.ts:checkFinancialVerification
-  //    reads. REPORTED, NOT SILENTLY CHANGED: the agent bypass on the Financial
-  //    Verification panel goes through markFinanciallyVerified and DOES set this
-  //    column, but the emergency lane (buyer-execution.ts
-  //    :adminOverrideFinancialVerification → adminOverrideFinancialGate) writes
-  //    only the activity, so an override granted through THAT lane lifts gate 1
-  //    and is still stopped here. That gap predates this slice and belongs to
-  //    the two modules that own the two stores; it is recorded rather than
-  //    papered over, because widening a financial gate is not something to do as
-  //    a side effect of wiring a different one.
+  //    reads. BOTH OVERRIDE LANES NOW LIFT BOTH STORES. The agent bypass on the
+  //    Financial Verification panel goes through markFinanciallyVerified and
+  //    always set this column; the emergency lane (buyer-execution.ts
+  //    :adminOverrideFinancialVerification → multi-party-updates.ts
+  //    :adminOverrideFinancialGate) used to write ONLY the activity, so an
+  //    override granted there opened gate 1 and was then stopped dead HERE — the
+  //    agent told "not financially verified" moments after an authorised
+  //    override said otherwise, with nothing explaining the contradiction. That
+  //    was the owner's ruling ("admin or agent can override the financing gate")
+  //    being defeated rather than enforced. The fix completed the OVERRIDE, not
+  //    weakened the GATE: this check is exactly as strict for everyone who has
+  //    not been granted one, and the override refuses out loud if it cannot lift
+  //    both stores.
   const { data: finProfile } = await supabase
     .from("buyer_financial_profiles")
     .select("verified")

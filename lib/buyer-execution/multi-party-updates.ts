@@ -445,6 +445,64 @@ export async function adminOverrideFinancialGate(params: {
     }
   })
 
+  // ── THE OVERRIDE HAS TO LIFT BOTH STORES, OR IT DOES NOT LIFT THE GATE ─────
+  //
+  // Owner ruling: "admin or agent can override the financing gate." Until now
+  // this lane honoured half of it. There are TWO stores of "financially
+  // verified" and they are read by DIFFERENT gates:
+  //
+  //   · the ACTIVITY trail, which emitFinancialVerificationEvent above writes
+  //     and lib/buyer-lifecycle/financial-verification.ts:checkFinancialVerification
+  //     reads back — this is what isOfferAllowed consults; and
+  //   · the buyer_financial_profiles.verified COLUMN, which the Financial
+  //     Verification panel's own bypass (buyer-financial.ts:markFinanciallyVerified)
+  //     sets and which app/actions/buyer-offers.ts:createOffer checks directly.
+  //
+  // So an override granted through THIS emergency lane opened the lifecycle gate
+  // and was then stopped dead at the offer action by a column it never touched —
+  // the agent was told the buyer "is not financially verified" moments after an
+  // authorised override said otherwise, with nothing on screen explaining the
+  // contradiction. That is the ruling being defeated, not enforced.
+  //
+  // The fix completes the OVERRIDE rather than weakening the GATE: the stricter
+  // column check at createOffer stays exactly as strict for everyone who has not
+  // been granted an override. Authority was established above (resolveFinancial-
+  // GateOverrideAuthority) and re-read from the database, so this write is
+  // downstream of the same decision, not a second, looser one.
+  //
+  // UPDATE, not upsert: a profile row is created when the buyer's financial
+  // details are captured, and inventing one here would fabricate a financial
+  // profile for a buyer who has never had one. If no row exists there is nothing
+  // to verify and the caller is told, rather than the override reporting a
+  // success the offer action will contradict.
+  const { data: liftedRows, error: columnError } = await supabase
+    .from('buyer_financial_profiles')
+    .update({
+      verified: true,
+      verified_by: adminId,
+      verified_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('contact_id', contactId)
+    .select('id')
+
+  if (columnError) {
+    return {
+      success: false,
+      error:
+        `The override was recorded but the buyer's financial profile could not be updated (${columnError.message}), ` +
+        'so submitting an offer would still be refused. Nothing was half-applied silently — retry the override.',
+    }
+  }
+  if (!liftedRows || liftedRows.length === 0) {
+    return {
+      success: false,
+      error:
+        'This buyer has no financial profile yet, so there is nothing to override. ' +
+        'Capture their financing details (cash or pre-approval) first, then override if it is still needed.',
+    }
+  }
+
   return { success: true }
 }
 
