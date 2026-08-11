@@ -78,6 +78,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { evaluateExecution } from "@/lib/compliance/signature-completeness"
+import { OFFER_AUDIT_EVENT } from "./offer-lifecycle"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -92,7 +93,7 @@ type Svc = ReturnType<typeof createServiceClient>
  * evidenced changes neither — the offer is exactly where it was. So the literal
  * is spelled in ONE module, this one, which is its only writer.
  */
-export const BUYER_SIGNATURE_ATTESTED_EVENT = "buyer.offer.signature.attested"
+export const BUYER_SIGNATURE_ATTESTED_EVENT = OFFER_AUDIT_EVENT.SIGNATURE_ATTESTED
 
 /** The `offers.metadata` key the evidence record lives under. */
 export const BUYER_SIGNATURE_EVIDENCE_KEY = "buyer_signature_evidence"

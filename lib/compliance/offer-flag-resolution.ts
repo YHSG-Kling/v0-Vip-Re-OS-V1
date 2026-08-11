@@ -24,7 +24,7 @@
 //
 // THIS lane is the buyer-offer audit gate, and it lives in `activities`:
 //   entity_type='offer' AND entity_id=<offers.id>
-//   AND activity_type='buyer.offer.compliance.flagged'
+//   AND activity_type=OFFER_AUDIT_EVENT.COMPLIANCE_FLAGGED
 // It had no lifecycle at all. That is the defect closed here.
 //
 // ── THE RESOLUTION ANCHOR, and why it is what it is ──────────────────────────
@@ -93,13 +93,14 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
+import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 
 type Svc = ReturnType<typeof createServiceClient>
 
 /** The activity_type every buyer-offer compliance flag is filed under. */
-export const OFFER_COMPLIANCE_FLAG_EVENT = "buyer.offer.compliance.flagged"
+export const OFFER_COMPLIANCE_FLAG_EVENT = OFFER_AUDIT_EVENT.COMPLIANCE_FLAGGED
 /** The audit event written when one or more of those flags are cleared. */
-export const OFFER_COMPLIANCE_RESOLVED_EVENT = "buyer.offer.compliance.resolved"
+export const OFFER_COMPLIANCE_RESOLVED_EVENT = OFFER_AUDIT_EVENT.COMPLIANCE_RESOLVED
 
 /** activities.status values this lane uses. The column is free-form varchar
  *  (verified against the live DB: no CHECK constraint on activities). */

@@ -29,6 +29,7 @@ import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { rawRoleVariantsFor, type CanonicalRole } from "@/lib/security/types"
 import { resolveAgentRecordToUserId } from "@/lib/kernel/agent-identity-resolver"
+import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 import {
   composeClientMessage,
   composeCounterpartyMessage,
@@ -125,7 +126,7 @@ export async function notifyEsignSigned(
   await supabase.from("notifications").insert({
     user_id:       input.agentUserId,
     brokerage_id:  input.brokerageId,
-    type:          "buyer.offer.buyer_signed",
+    type:          OFFER_AUDIT_EVENT.BUYER_SIGNED,
     title:         "Buyer signed the offer",
     body:          `Envelope completed via ${input.provider}. Forward to the listing agent and await the seller's response.`,
     entity_type:   "offer",

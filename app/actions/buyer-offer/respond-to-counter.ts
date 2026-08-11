@@ -5,7 +5,7 @@ import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { checkCompliancePassed, syncOfferStatus } from "@/lib/buyer-offer"
-import { OFFER_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
+import { OFFER_EVENT, OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 
 interface RespondToCounterParams {
   offerId: string
@@ -122,7 +122,7 @@ export async function respondToCounter(params: RespondToCounterParams) {
         // Audit event, not a lifecycle transition — see the vocabulary note in
         // lib/buyer-offer/compliance-gate.ts for why these have no OFFER_EVENT
         // constant. Keyed to the offer so the block is visible on the offer.
-        activity_type: "buyer.offer.block",
+        activity_type: OFFER_AUDIT_EVENT.BLOCKED,
         title: "Counter acceptance blocked: compliance gate failed",
         description: "Cannot accept counter: compliance.passed event not found",
         notes: JSON.stringify({ offer_id: offerId, reason: "compliance_gate_failed", attempted_action: "accept_counter" }),

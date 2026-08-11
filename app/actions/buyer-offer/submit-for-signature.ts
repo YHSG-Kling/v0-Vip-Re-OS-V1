@@ -5,7 +5,7 @@ import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { checkCompliancePassed, syncOfferStatus } from "@/lib/buyer-offer"
-import { OFFER_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
+import { OFFER_EVENT, OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 import { getTransactionProviderByName } from "@/lib/integrations/providers/provider-resolver"
 import { logEventAndTrigger } from "@/lib/events/event-helpers"
 import {
@@ -177,7 +177,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
   if (!offer.buyer_commission_acknowledged_at) {
     const { error: blockError } = await supabase.from("activities").insert({
       brokerage_id:  brokerageId,
-      activity_type: "buyer.offer.block",
+      activity_type: OFFER_AUDIT_EVENT.BLOCKED,
       agent_id:      actorAgentId,
       entity_type:   "offer",
       entity_id:     offerId,
@@ -232,7 +232,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
     // Emit block event
     const { error: blockError } = await supabase.from("activities").insert({
       brokerage_id:  brokerageId,
-      activity_type: "buyer.offer.block",
+      activity_type: OFFER_AUDIT_EVENT.BLOCKED,
       agent_id:      actorAgentId,
       entity_type:   "offer",
       entity_id:     offerId,
@@ -329,7 +329,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
 
       const { error: providerEventError } = await supabase.from("activities").insert({
         brokerage_id:  brokerageId,
-        activity_type: "buyer.offer.provider.signature.requested",
+        activity_type: OFFER_AUDIT_EVENT.PROVIDER_SIGNATURE_REQUESTED,
         agent_id:      actorAgentId,
         contact_id:    offer.contact_id,
         entity_type:   "offer",
@@ -358,7 +358,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
       // rather than swallowed, so a feed that never records faults is detectable.
       const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
       await sentinelWrite(supabase, supabase.from("activities").insert({
-        activity_type: "buyer.offer.provider.signature.failed",
+        activity_type: OFFER_AUDIT_EVENT.PROVIDER_SIGNATURE_FAILED,
         agent_id:      actorAgentId,
         entity_type:   "offer",
         entity_id:     offerId,
@@ -431,7 +431,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
   if (offer.contact_id) {
     await logEventAndTrigger({
       brokerage_id: offer.brokerage_id,
-      event_type: "buyer.offer.signature.sent_to_contact",
+      event_type: OFFER_AUDIT_EVENT.SIGNATURE_SENT_TO_CONTACT,
       user_id:    userId,
       payload: {
         offerId,

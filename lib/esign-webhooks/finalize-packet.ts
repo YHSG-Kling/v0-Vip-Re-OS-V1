@@ -33,7 +33,7 @@ import { notifyEsignSigned }   from "@/lib/notifications/notify-helpers"
 import { downloadSignedPackage } from "./download-signed-package"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { KernelEvent } from "@/lib/kernel/events"
-import { OFFER_EVENT, EVENT_TO_STATUS } from "@/lib/buyer-offer/offer-lifecycle"
+import { OFFER_EVENT, EVENT_TO_STATUS, OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 
 export type ESignProviderName = "dotloop" | "docusign" | "skyslope" | "authentisign"
 
@@ -277,8 +277,8 @@ async function finalizeMatchingOffer(
       // wave 7 closed across the writer set (docs/wave7-offer-lifecycle-audit.md).
       entity_id:     matchedOffer.id,
       activity_type: isCounterFullyExecuted
-                       ? "buyer.offer.counter.fully_executed"
-                       : "buyer.offer.buyer_signed",
+                       ? OFFER_AUDIT_EVENT.COUNTER_FULLY_EXECUTED
+                       : OFFER_AUDIT_EVENT.BUYER_SIGNED,
       title:         isCounterFullyExecuted
                        ? "Counter fully executed — both sides signed"
                        : "Buyer signed the offer",

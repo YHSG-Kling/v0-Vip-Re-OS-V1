@@ -21,6 +21,7 @@ import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver
 import { KernelEvent }         from "@/lib/kernel/events"
 import { processKernelEvent }  from "@/lib/kernel/notification-engine"
 import { isValidUUID }         from "@/lib/validations"
+import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -202,7 +203,7 @@ export async function emitTransactionEvent(params: {
 /**
  * Checks whether a compliance.passed activity exists for the offer.
  * Source of truth: activities table, entity_type='offer', entity_id=offerId,
- * activity_type='buyer.offer.compliance.passed'.
+ * activity_type=OFFER_AUDIT_EVENT.COMPLIANCE_PASSED.
  *
  * Does NOT accept/reject the offer — read-only.
  */
@@ -220,7 +221,7 @@ export async function evaluateOfferCompliance(
     .select("id, created_at")
     .eq("entity_type", "offer")
     .eq("entity_id", offerId)
-    .eq("activity_type", "buyer.offer.compliance.passed")
+    .eq("activity_type", OFFER_AUDIT_EVENT.COMPLIANCE_PASSED)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()

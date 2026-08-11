@@ -18,15 +18,17 @@
  * lifecycle transition (an offer's state is unchanged by passing compliance).
  * Adding it to OFFER_EVENT would force an invented state mapping.
  *
- * So the literal is spelled in exactly ONE module — this one, which is both the
- * only writer (`emitCompliancePassed`) and the local reader
- * (`checkCompliancePassed`). See docs/wave7-slice-writers.md for the standing
- * recommendation: a sibling `OFFER_AUDIT_EVENT` const in offer-lifecycle.ts for
- * the non-state offer events, which would let the two remaining out-of-module
- * readers (convert-to-transaction.ts, lib/kernel/transactions.ts) stop spelling
- * it too.
+ * THAT RECOMMENDATION IS NOW DONE (wave 13). The standing note here — and in
+ * docs/wave7-slice-writers.md — asked for a sibling `OFFER_AUDIT_EVENT` const in
+ * offer-lifecycle.ts covering the non-state offer events, so the out-of-module
+ * readers (convert-to-transaction.ts, lib/kernel/transactions.ts) could stop
+ * spelling the literal. It exists, every reader and writer imports it, and the
+ * two vocabularies are held disjoint by a type that fails to compile if a name
+ * ever appears in both — so "an audit event must never be given a state" is
+ * enforced by the compiler rather than by this comment.
  */
 
+import { OFFER_AUDIT_EVENT } from "./offer-lifecycle"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 
@@ -57,7 +59,7 @@ export async function checkCompliancePassed(
     .select("id, created_at")
     .eq("entity_type", "offer")
     .eq("entity_id", offerId)
-    .eq("activity_type", "buyer.offer.compliance.passed")
+    .eq("activity_type", OFFER_AUDIT_EVENT.COMPLIANCE_PASSED)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()
@@ -159,7 +161,7 @@ export async function emitCompliancePassed(params: {
     brokerage_id:  offer.brokerage_id,
     entity_type:   "offer",
     entity_id:     offerId,
-    activity_type: "buyer.offer.compliance.passed",
+    activity_type: OFFER_AUDIT_EVENT.COMPLIANCE_PASSED,
     // agents-class from the offer; users-class from the caller. Never crossed.
     agent_id:      offer.agent_id ?? null,
     agent_user_id: userId,

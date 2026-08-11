@@ -90,6 +90,66 @@ export const OFFER_EVENT = {
 export type OfferEvent = typeof OFFER_EVENT[keyof typeof OFFER_EVENT]
 
 /**
+ * THE AUDIT EVENTS — the other half of this lane's vocabulary.
+ *
+ * These are things that HAPPENED and must be on the record: a gate refused, a
+ * packet passed compliance, a provider was asked for a signature and failed. They
+ * are NOT transitions, and their absence from `EVENT_TO_STATE` is deliberate and
+ * correct — an offer does not change state because someone was told "no". Waves
+ * 7 and 11 both recorded that leaving them as bare string literals was the
+ * remaining gap, and named this const as the fix rather than a state mapping.
+ *
+ * Why a SIBLING const rather than more keys on OFFER_EVENT: `EVENT_TO_STATE` and
+ * `EVENT_TO_STATUS` are typed `Record<OfferEvent, …>`, so every name added to
+ * OFFER_EVENT is a name the compiler DEMANDS a state for. Putting an audit event
+ * there would force somebody to invent a transition for it — which is exactly the
+ * mistake this separation prevents.
+ */
+export const OFFER_AUDIT_EVENT = {
+  /** A gate refused. The offer is unchanged; the refusal is the record. */
+  BLOCKED:                    "buyer.offer.block",
+  /** The compliance audit gate's verdicts. */
+  COMPLIANCE_PASSED:          "buyer.offer.compliance.passed",
+  COMPLIANCE_FLAGGED:         "buyer.offer.compliance.flagged",
+  COMPLIANCE_RESOLVED:        "buyer.offer.compliance.resolved",
+  /** Signature evidence, ours and the provider's. */
+  BUYER_SIGNED:               "buyer.offer.buyer_signed",
+  SIGNATURE_SENT_TO_CONTACT:  "buyer.offer.signature.sent_to_contact",
+  SIGNATURE_ATTESTED:         "buyer.offer.signature.attested",
+  PROVIDER_SIGNATURE_REQUESTED: "buyer.offer.provider.signature.requested",
+  PROVIDER_SIGNATURE_FAILED:  "buyer.offer.provider.signature.failed",
+  ESIGN_COMPLETED:            "buyer.offer.esign.completed",
+  /** Counter paperwork moving, as distinct from the counter being ACCEPTED. */
+  COUNTER_SELLER_SIGNED:      "buyer.offer.counter.seller_signed",
+  COUNTER_FULLY_EXECUTED:     "buyer.offer.counter.fully_executed",
+  COUNTER_EXTERNAL_RECEIVED:  "buyer.offer.counter.external_received",
+  /** Bookkeeping the lifecycle tracker writes about itself. */
+  LIFECYCLE:                  "buyer.offer.lifecycle",
+  TERMINAL:                   "buyer.offer.terminal",
+} as const
+
+export type OfferAuditEvent = typeof OFFER_AUDIT_EVENT[keyof typeof OFFER_AUDIT_EVENT]
+
+/**
+ * THE TWO VOCABULARIES ARE DISJOINT, AND THE COMPILER ENFORCES IT.
+ *
+ * Not a comment promising it — a type that fails to compile the moment a name
+ * appears in both. Without this, the separation above is a convention, and a
+ * convention is what the whole `OFFER_EVENT` const exists because we did not
+ * have.
+ */
+type _AuditIsNeverALifecycleEvent =
+  Extract<OfferAuditEvent, OfferEvent> extends never ? true : never
+const _auditVocabularyIsDisjoint: _AuditIsNeverALifecycleEvent = true
+void _auditVocabularyIsDisjoint
+
+/** Every name this lane writes, for a reader that must recognise all of them. */
+export const OFFER_ALL_EVENT_TYPES: readonly string[] = [
+  ...Object.values(OFFER_EVENT),
+  ...Object.values(OFFER_AUDIT_EVENT),
+]
+
+/**
  * Event → state.
  *
  * `SIGNATURE_REQUESTED` is deliberately DRAFT, not PENDING: asking the buyer to

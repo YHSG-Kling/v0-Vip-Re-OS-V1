@@ -4,6 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { logEventAndTrigger } from "@/lib/events"
 import { finalizeVoiceCockpitPacket } from "@/lib/esign-webhooks/finalize-packet"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
+import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DOTLOOP WEBHOOK HANDLER
@@ -163,7 +164,7 @@ export async function POST(request: NextRequest) {
 
           await logEventAndTrigger({
             brokerage_id: "",
-            event_type: "buyer.offer.esign.completed",
+            event_type: OFFER_AUDIT_EVENT.ESIGN_COMPLETED,
             user_id:    matchedOffer.contact_id,
             payload:    { offerId: matchedOffer.id, loop_id, provider: "dotloop" },
             source:     "webhook",

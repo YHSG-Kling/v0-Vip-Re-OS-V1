@@ -34,6 +34,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID }          from "@/lib/validations"
 import { OFFER_EVENT }          from "@/lib/buyer-offer/offer-lifecycle"
 import { notifyComplianceFlag } from "@/lib/notifications/notify-helpers"
+import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 
 export interface RecordSellerSignedCounterParams {
   /** The buyer's original offer (or prior counter) being countered. */
@@ -193,8 +194,8 @@ export async function recordSellerSignedCounter(
     entity_type:    "offer",
     entity_id:      counterId,
     activity_type:  source === "external"
-                     ? "buyer.offer.counter.external_received"
-                     : "buyer.offer.counter.seller_signed",
+                     ? OFFER_AUDIT_EVENT.COUNTER_EXTERNAL_RECEIVED
+                     : OFFER_AUDIT_EVENT.COUNTER_SELLER_SIGNED,
     title:          `Counter received from seller${source === "external" ? " (external)" : ""}`,
     description:    `Round ${round} counter — seller has signed; awaiting buyer signature.`,
     notes:          JSON.stringify({
@@ -254,7 +255,7 @@ export async function recordSellerSignedCounter(
     agentUserId:   raiserUserId,
     transactionId: null,
     flag: {
-      type:        "buyer.offer.counter.seller_signed",
+      type:        OFFER_AUDIT_EVENT.COUNTER_SELLER_SIGNED,
       severity:    "medium",
       title:       `Seller-signed counter on file — buyer signature needed`,
       body:        `Round ${round} counter has come back from the seller side. Open the offer, review terms, and dispatch to the buyer for signature.`,
