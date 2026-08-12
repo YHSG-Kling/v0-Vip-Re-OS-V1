@@ -277,3 +277,61 @@ Roughly a sixth would fail loudly and get fixed within the hour; the rest would
 quietly start producing rows nobody can read. The triage therefore has to
 classify **by client and by tenancy class**, per site, before the migration —
 not just count the sites.
+
+## W22-4 — the escape is masking a LIVE functional bug: 108 writes their own surfaces cannot read
+
+Triaging the platform-class candidates reversed my own call on all three, and
+then turned up something bigger than the triage.
+
+**I was wrong about `automation_errors`, `cron_execution_logs` and
+`system_health_checks`.** I leaned platform-class because they are
+infrastructure ledgers and `system-health` felt platform-gated. Reading it:
+`HEALTH_READER_ROLES = ["superadmin", "admin", "broker"]` — **broker is a tenant
+role** — and every one of those reads filters `.eq("brokerage_id",
+ctx.brokerageId)`. `automation_errors` is worse still: `workflows.ts:531` reads
+it `.eq("brokerage_id", brokerageId)` as an **ownership check**, returning
+`"Forbidden"` when it misses. So the automations console cannot see *or resolve*
+any untenanted error row. All three are tenant-class. Bucketing by table name
+would have exempted 21 sites that needed the opposite treatment.
+
+That is the specific case. The general one:
+
+| | |
+|---|---|
+| escape tables with an unstamped writer **and** a `.eq("brokerage_id", …)` reader | **46** |
+| unstamped writer sites on those tables | **108** |
+
+`NULL = <uuid>` is NULL, never true. **Every one of those 108 writes is already
+producing a row that its own reading surface filters out** — right now, with the
+escape still in place. The escape only ever widened *other* tenants' access to
+these rows; it never made them visible to the tenant that should own them.
+
+Heaviest: `automation_errors` 17, `notifications` 16, then
+`cron_execution_logs` / `open_house_attendees` / `sequence_step_executions` at 4,
+and `open_house_invitations` / `open_house_rsvp_tracking` /
+`smart_assistant_suggestions` / `social_posts` at 3.
+
+*(Method caveat, stated because it matters: a reader counts if a
+`.eq("brokerage_id", …)` appears within 400 characters of a `.from("<table>")`
+that is not an insert. That is a heuristic — it can miss a filter applied
+further away and can pair the wrong reader with a table. The three tables above
+were confirmed by reading. The other 43 have not been, and the count should be
+treated as a strong signal to check, not as a verified total.)*
+
+### What this changes
+
+**#156 stops being only a security fix.** The framing so far has been "the escape
+lets other tenants see untenanted rows" — true, and it is why m394 mattered. But
+the same NULL that opens the row to everyone else **closes it to its owner**,
+because every tenant-scoped reader uses equality. So:
+
+- Stamping these writers is not merely a precondition for removing the escape.
+  It **fixes a bug that is live today**, and it can ship *before* any policy
+  change, on its own merits, with no migration and no blast radius.
+- That is a materially safer sequence than the one recorded earlier. Fix the
+  writers first because they are broken; remove the escape afterwards because it
+  is then merely redundant rather than load-bearing.
+- It also explains the shape of what waves 20 and 21 kept finding. `ai_insights`
+  (64/64 untenanted), `compliance_flags` (invisible fair-housing flags),
+  `ai_autopilot_plans`, `conversation_intelligence` — none of those were isolated.
+  They were the first six of a hundred and eight.
