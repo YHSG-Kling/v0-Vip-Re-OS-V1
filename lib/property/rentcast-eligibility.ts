@@ -61,18 +61,26 @@
 // ledger outage would be an invented decision. A fail-open verdict is therefore
 // honoured AND SURFACED: `budget.degraded` says the verdict was fail-open.
 //
-// ─── A LIMITATION, STATED RATHER THAN PAPERED OVER ──────────────────────────
-// `resolveScopedConnection` (READ ONLY for this slice) swallows a refused
-// platform_credentials read inside `readOwnerCredential` and returns null, so a
-// REFUSED row read and an ABSENT row are indistinguishable to any caller of it,
-// including this gate. `idx_check_unreadable` therefore only fires when the
-// resolver THROWS. Fixing that requires changing resolve-scoped.ts to
-// distinguish the two, which is outside this slice's write scope and is recorded
-// as a handoff rather than guessed at here. This module does not open a second,
-// rival read of the same table to work around it: the gate and
+// ─── THE LIMITATION THAT USED TO BE STATED HERE IS CLOSED ───────────────────
+// This header used to record, honestly, that the connection resolver collapsed a
+// REFUSED credential read into the same null it returns for an ABSENT one — so
+// `idx_check_unreadable` could only fire if the resolver THREW, and the resolver
+// never threw. A fail-closed branch that cannot run is a comment.
+//
+// That is fixed at the source. `resolveScopedConnectionResult` (the discriminated
+// sibling of `resolveScopedConnection`, in the same module, over the same cascade)
+// reports `connected` / `not_connected` / `unreadable`, and the cascade now STOPS
+// on an unreadable tier instead of descending into a less-specific owner's
+// credential. This gate consumes that third state directly, so
+// `idx_check_unreadable` is now REACHABLE from a refused read — the ordinary way
+// a credential read fails — and not only from a thrown one.
+//
+// The gate still does not open a second, rival read of the same store: it and
 // `IDXBrokerClient.forBrokerage` MUST resolve IDX through the same resolver, or
 // they can disagree about whether a tenant "has IDX" — and a gate that disagrees
-// with the client it guards is worse than no gate.
+// with the client it guards is worse than no gate. The discriminated function IS
+// that resolver; the compatibility wrapper the client calls is a one-line
+// projection of it, so the two cannot drift.
 
 // ─── WHY THIS MODULE IS NOT MARKED `server-only`, AND ITS TWO REAL READS ARE
 //     DYNAMIC IMPORTS ───────────────────────────────────────────────────────
@@ -87,7 +95,7 @@
 // client→server-only guard follows dynamic imports too, so a client module that
 // reached this file would still be caught. It only means the module can be
 // LOADED anywhere while its privileged reads still happen on the server.
-import type { ScopedConnection } from "@/lib/connections/resolve-scoped"
+import type { ScopedConnectionResult } from "@/lib/connections/resolve-scoped"
 import type { ConnectionScope } from "@/lib/connections/scope"
 import { resolveVendorAction } from "@/lib/vendor-governance/vendor-policy"
 
@@ -191,10 +199,14 @@ function platformRentcastKey(): string | null {
 /**
  * Does THIS TENANT have their own IDX Broker credential connected?
  *
- * Resolved through `resolveScopedConnection` — the SAME resolver
- * `IDXBrokerClient.forBrokerage` uses to pick which IDX credential to call
- * with — so the gate and the client can never disagree about whether a tenant
- * "has IDX".
+ * Resolved through `resolveScopedConnectionResult` — the SAME resolver
+ * `IDXBrokerClient.forBrokerage` uses to pick which IDX credential to call with
+ * (the client calls `resolveScopedConnection`, which is a one-line projection of
+ * this function), so the gate and the client can never disagree about whether a
+ * tenant "has IDX". The discriminated form is used here because this gate is the
+ * one caller whose CORRECTNESS depends on telling "there is no IDX credential"
+ * from "the IDX credential could not be read": the first means spend RentCast,
+ * the second means we cannot prove we are allowed to.
  *
  * THREE things make a hit count, and each one is load-bearing:
  *
@@ -221,24 +233,34 @@ function platformRentcastKey(): string | null {
 async function resolveTenantIdxConnection(
   ctx: RentcastEligibilityContext,
 ): Promise<TenantIdxConnection> {
-  let conn: ScopedConnection | null
+  let resolved: ScopedConnectionResult
   try {
-    const { resolveScopedConnection } = await import("@/lib/connections/resolve-scoped")
-    conn = await resolveScopedConnection(IDX_PROVIDER, {
+    const { resolveScopedConnectionResult } = await import("@/lib/connections/resolve-scoped")
+    resolved = await resolveScopedConnectionResult(IDX_PROVIDER, {
       agentUserId: ctx.agentUserId ?? null,
       teamId: ctx.teamId ?? null,
       brokerageId: ctx.brokerageId,
     })
   } catch (err) {
-    // A THROW is the only unreadability this gate can observe — see the module
-    // header for why a REFUSED row read is invisible here and what fixing that
-    // would take. Never downgraded to "not connected".
+    // The module could not even be loaded. Still unreadable; never downgraded to
+    // "not connected".
     return {
       status: "unreadable",
       detail: `the IDX Broker connection could not be resolved for this tenant (${(err as Error)?.message ?? "unknown error"}), so it is not known whether they have their own feed`,
     }
   }
-  if (!conn) return { status: "not_connected" }
+  // THE REACHABLE BRANCH. A refused credential read — the ordinary way a read
+  // fails, which supabase-js RESOLVES rather than throws — now arrives here as
+  // its own state instead of as an indistinguishable null.
+  if (resolved.status === "unreadable") {
+    const where = resolved.ownerType ? `at ${resolved.ownerType} scope` : "in the legacy credential store"
+    return {
+      status: "unreadable",
+      detail: `the IDX Broker connection could not be read ${where} (${resolved.detail}), so it is not known whether this tenant has their own feed`,
+    }
+  }
+  if (resolved.status === "not_connected") return { status: "not_connected" }
+  const conn = resolved.connection
   if (conn.ownerType === "platform") return { status: "not_connected" }
   if (!conn.apiKey) return { status: "not_connected" }
   return { status: "connected", ownerType: conn.ownerType }

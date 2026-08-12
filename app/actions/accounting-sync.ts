@@ -3,7 +3,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
-import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { QuickBooksProvider, type AccountingWriteResult } from "@/lib/providers/accounting/quickbooks"
 
 // ─── GET PROVIDER CONNECTION STATUS ──────────────────────────────────────────

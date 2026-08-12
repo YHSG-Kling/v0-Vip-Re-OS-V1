@@ -12,6 +12,33 @@
 // (lib/voice/twilio-outbound.ts) pre-flights it for outbound voice dials.
 //
 // Fail-open: a budget read error never blocks a customer flow (advisory cap).
+//
+// ── WHY THE TIER READ DESTRUCTURES `error` (wave 19) ─────────────────────────
+// checkVendorBudget performs TWO reads. The ledger read always honoured the
+// fail-open contract below; the plan-tier read did not. It was written
+//
+//     const { data: brokerage } = await supabase
+//     const planTier = brokerage?.plan_tier ?? "solo_agent"
+//
+// and supabase-js RESOLVES a refused query rather than throwing, so a REFUSED
+// tier read arrived as `data: null` and silently became the most restrictive
+// tier on the platform. An enterprise tenant could then be measured against a
+// $50 ceiling that is not its ceiling and told it was over budget — a verdict
+// that looks measured and is not. Both reads now report their degradation the
+// same way. This did NOT invert the fail-open contract: an unreadable ledger
+// still returns allowed:true, and the tier branch does the same.
+//
+// ── WHY TWO DEGRADATION FLAGS AND NOT ONE ────────────────────────────────────
+// "We do not know how much was SPENT" and "we do not know what the CEILING is"
+// are different unknowns with different consequences, and one boolean cannot
+// carry both — provably, because of the third case: a tenant record that is
+// genuinely ABSENT (maybeSingle returns null with NO error) is not a refusal.
+// There the verdict is fully measurable and may legitimately refuse, so the
+// fail-open flag must stay OFF — yet the ceiling it refused against was still
+// ASSUMED rather than read, and a caller that has to say "you are over budget"
+// out loud needs to know that. `degraded` keeps its original meaning (this
+// verdict is fail-open, do not trust it); `degradedTier` / `degradedSpend` name
+// WHICH half was not readable, so a surface can explain itself honestly.
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -28,7 +55,41 @@ export interface VendorBudgetResult extends VendorBudgetEval {
    * budget system never silences a consented client communication.
    */
   degraded?: boolean
+  /**
+   * True when `budget` / `planTier` were ASSUMED rather than read from the
+   * tenant's own record — either the tier read was REFUSED, or the record is
+   * absent. The ceiling in this result is therefore a platform default, not
+   * this tenant's ceiling. A caller that renders or explains a budget verdict
+   * ("you are approaching / over your limit") MUST NOT state the ceiling as
+   * fact while this is set; it is the difference between a measured claim and
+   * an assumed one, and only the tier half of the result can say so.
+   */
+  degradedTier?: boolean
+  /**
+   * True when `spent` / `percent` are NOT a measured figure — the month-to-date
+   * ledger read was refused (or was never reached because the tier read failed
+   * first). Distinct from `degradedTier`: an unknown spend and an unknown
+   * ceiling degrade different halves of the same verdict and can occur alone.
+   */
+  degradedSpend?: boolean
 }
+
+/**
+ * The tier assumed when the tenant's own plan tier could not be read.
+ *
+ * Deliberately the MOST RESTRICTIVE tier, kept as-is from before this wave. It
+ * is the right assumption for the money — the ceilings guard the PLATFORM's
+ * vendor bill, and quietly assuming a large ceiling for a tenant whose tier we
+ * could not read is how an unreadable record becomes an uncapped one. The known
+ * objection is that it is also the assumption most likely to produce a false
+ * "over budget" for a large customer; that harm is removed by construction
+ * rather than by raising the assumption, because every path that assumes a tier
+ * either returns allowed:true (a refused read fails open, exactly as a refused
+ * ledger read does) or sets `degradedTier` so no caller can present the ceiling
+ * as measured. Raising the assumed ceiling instead would have traded a false
+ * refusal for silent unbounded spend on an unreadable record.
+ */
+const ASSUMED_TIER_ON_UNREADABLE = "solo_agent"
 
 /** First day of the current calendar month at 00:00 UTC (ISO). */
 function startOfMonthIso(now = new Date()): string {
@@ -47,12 +108,32 @@ export async function checkVendorBudget(params: {
   try {
     const supabase = createServiceClient()
 
-    const { data: brokerage } = await supabase
+    const { data: brokerage, error: tierError } = await supabase
       .from("brokerages")
       .select("plan_tier")
       .eq("id", params.brokerageId)
       .maybeSingle()
-    const planTier = brokerage?.plan_tier ?? "solo_agent"
+
+    if (tierError) {
+      // Fail open — the SAME contract the ledger branch below has always held,
+      // now applied to the read that used to drop its error. We never learned
+      // the ceiling, so we cannot honestly measure anything against it: no
+      // verdict is computed and none is implied. Both halves are unknown here —
+      // the ledger was never reached.
+      return {
+        allowed: true, spent: 0, budget: DEFAULT_VENDOR_BUDGET, percent: 0, softWarning: false,
+        planTier: ASSUMED_TIER_ON_UNREADABLE, degraded: true, degradedTier: true, degradedSpend: true,
+      }
+    }
+
+    // An ABSENT record is not a refusal. maybeSingle resolves `null` with no
+    // error when no row matches, and that answer is trustworthy: the verdict
+    // below is fully measured and may legitimately refuse. What it is NOT is
+    // measured against this tenant's own ceiling — so `degraded` stays off and
+    // `degradedTier` carries the assumption on its own. This is the case a
+    // single boolean cannot describe.
+    const tierAssumed = !brokerage?.plan_tier
+    const planTier = brokerage?.plan_tier ?? ASSUMED_TIER_ON_UNREADABLE
     const budget = vendorBudgetForTier(planTier)
 
     const { data: rows, error } = await supabase
@@ -64,15 +145,22 @@ export async function checkVendorBudget(params: {
     if (error) {
       // Fail open — a ledger read error must never take a customer flow down.
       // `degraded` tells egress pre-flights this verdict is fail-open so they can
-      // ledger the breakage (and still send).
-      return { allowed: true, spent: 0, budget, percent: 0, softWarning: false, planTier, degraded: true }
+      // ledger the breakage (and still send). The ceiling here IS real (it was
+      // read above), so only the spend half is degraded.
+      return {
+        allowed: true, spent: 0, budget, percent: 0, softWarning: false, planTier,
+        degraded: true, degradedTier: tierAssumed, degradedSpend: true,
+      }
     }
 
     const spent = (rows ?? []).reduce((s, r: any) => s + (Number(r.total_cost) || 0), 0)
-    return { ...evaluateVendorBudget(spent, budget, params.addCost ?? 0), planTier }
+    return { ...evaluateVendorBudget(spent, budget, params.addCost ?? 0), planTier, degradedTier: tierAssumed }
   } catch {
     // Same fail-open contract for a thrown failure (client construction, network).
-    return { allowed: true, spent: 0, budget: DEFAULT_VENDOR_BUDGET, percent: 0, softWarning: false, planTier: "solo_agent", degraded: true }
+    return {
+      allowed: true, spent: 0, budget: DEFAULT_VENDOR_BUDGET, percent: 0, softWarning: false,
+      planTier: ASSUMED_TIER_ON_UNREADABLE, degraded: true, degradedTier: true, degradedSpend: true,
+    }
   }
 }
 

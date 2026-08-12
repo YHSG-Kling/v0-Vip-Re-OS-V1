@@ -199,7 +199,12 @@ function assertGateUsesTheClientsResolver(): boolean {
   // The gate and IDXBrokerClient.forBrokerage MUST consult the same resolver, or
   // they can disagree about whether a tenant "has IDX" — and a gate that
   // disagrees with the client it guards is worse than no gate.
-  const sameResolver = /resolveScopedConnection\(\s*IDX_PROVIDER|resolveScopedConnection\(\s*"idxbroker"/.test(src)
+  // `resolveScopedConnectionResult` is the DISCRIMINATED form of the same
+  // resolver in the same module — `resolveScopedConnection` is a one-line
+  // projection of it — so either name satisfies "the same resolver the client
+  // uses". Wave 19 repointed this gate onto the discriminated form so
+  // `idx_check_unreadable` became reachable.
+  const sameResolver = /resolveScopedConnection(?:Result)?\(\s*IDX_PROVIDER|resolveScopedConnection(?:Result)?\(\s*"idxbroker"/.test(src)
   const noRivalRead = !/\.from\(\s*["'](platform_credentials|agent_api_credentials|integration_credentials)["']\s*\)/.test(src)
   return check(
     "E2b the gate resolves IDX through the SAME resolver the client uses, with no rival read",
@@ -446,8 +451,8 @@ function main(): void {
       "the gate resolving IDX through a rival read instead of the client's resolver",
       {
         file: F.gate,
-        find: `    conn = await resolveScopedConnection(IDX_PROVIDER, {`,
-        replace: `    const anySvc: any = null; conn = await anySvc.from("platform_credentials").select("*"); void ((x: any) => x)({`,
+        find: `    resolved = await resolveScopedConnectionResult(IDX_PROVIDER, {`,
+        replace: `    const anySvc: any = null; resolved = await anySvc.from("platform_credentials").select("*"); void ((x: any) => x)({`,
       },
       assertGateUsesTheClientsResolver,
     )
