@@ -6,8 +6,13 @@ recorded, one is bigger, and one is not the fix I described.
 
 ## W21-1 — `ai_predictions`: three writers, and one of them already does it right
 
-Two of the three `ai_predictions` inserts omit `brokerage_id`:
-`app/actions/ai-predictions.ts:301` and `:1984`.
+Two of the three `ai_predictions` inserts omit `brokerage_id`.
+
+**CORRECTION (mine, caught by the agent before it wrote anything).** I named
+them as `:301` and `:1984`. The count is right and one line number is wrong:
+**`:301` was already stamped** in commit `f25e8a5`, and the second unstamped
+writer is **`:857`** in `predictDealCloseProbability` — wave 20's edits shifted
+it. So two writers already did this correctly in-tree, not one.
 
 **The third one stamps it.** `lib/analytics/ai-prediction-outcomes.ts:89` writes
 `brokerage_id: input.brokerageId` alongside the rest of the row. So this is a
@@ -45,9 +50,14 @@ So the defect is **the opposite of what I assumed**. Both tables' SELECT policie
 are `is_platform_admin() OR has_brokerage_access(brokerage_id) OR (is_agent_role()
 AND agent_id = current_user_agent_id())`. `has_brokerage_access` explicitly
 guards `target_brokerage_id IS NOT NULL`, so on an untenanted row **that middle
-lane is dead** and only the third one fires. The rows are not leaking — they are
-**invisible to the broker and to platform admin**, visible only to the one agent
-who happens to be the writer.
+lane is dead**. The rows are not leaking — they are **invisible to the broker**,
+visible only to the one agent who happens to be the writer.
+
+**CORRECTION (mine).** I wrote "invisible to the broker *and to platform admin*".
+That is wrong: `is_platform_admin()` is the policy's **first** disjunct and never
+reads `brokerage_id`, so a platform admin sees untenanted rows fine. Measured —
+broker of the owning brokerage **0**, platform admin **1**. Only the broker half
+of the claim survives, and it is the half the fix revives.
 
 Stamping the tenant therefore has **no reader to update and nothing to break**:
 the readers already filter by agent or by lead, and the change only revives the
@@ -131,6 +141,40 @@ no ceiling, no percentages, no vendor names. A degradation flag is none of those
 reach `BrokerageBudgetView` without leaking a single number. Any fix that starts
 surfacing amounts to brokerages to "explain" the degradation has broken the
 contract and is wrong.
+
+## W21-5 — RECORDED, not built: m394's qualifier left 38 tenant tables anon-insertable
+
+Found while verifying W21-2, not by looking for it. `ai_autopilot_plans` and
+`conversation_intelligence` both carry `FOR INSERT WITH CHECK (true)` granted to
+**PUBLIC** — and both are still that way after m394, because m394's qualifier is
+*"an INSERT-true-to-PUBLIC policy on a table that ALSO carries the escape"* and
+neither table carries the escape.
+
+That qualifier was the right call and I would take it again — it is what saved
+`listing_inquiries`, the real public inquiry form, from being narrowed. But it
+draws the line at the escape, and the escape is not the same thing as being a
+tenant table. Measured:
+
+| | |
+|---|---|
+| `INSERT WITH CHECK (true)` to PUBLIC, total | **74** |
+| narrowed by m394 (on escape-carrying tables) | 16 |
+| left standing | **58** |
+| of those, on tables that carry a `brokerage_id` column | **38** |
+
+Thirty-eight tenant tables where an anonymous caller can still insert. The list
+includes `agent_monthly_earnings`, `agent_points_log`, `communications`,
+`document_requests`, `document_downloads`, `automation_logs`,
+`push_notification_queue`, `transaction_pending_actions` and
+`newsletter_scheduled_sends` — none of which is a public write surface, and one
+of which is an earnings ledger.
+
+`listing_inquiries` is also in that 38, which is exactly why this is **not**
+dispatchable as a blanket narrowing. It needs the same per-table census W20-3
+got — *does any anonymous writer actually exist for this table* — which for the
+sixteen came back "fifteen no, one yes". Doing that for 38 is its own wave, and
+starting it now while an agent is mid-flight in the same area is how two
+migrations collide.
 
 ## Recorded, NOT to be built — still owner rulings (task #156)
 
