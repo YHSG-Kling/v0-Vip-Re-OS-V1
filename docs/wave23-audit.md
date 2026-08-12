@@ -201,3 +201,37 @@ change was needed — the registry entry was appended to record what it now hold
 
 Typecheck EXIT=0. Guard chain **223/223** including `test:sweep`, run after the
 last edit, in two halves.
+
+## Post-wave: the two unresolved tables, read — and a number of mine corrected
+
+Both were resolved by reading the actual predicate:
+
+- **`smart_assistant_suggestions` — IS in the already-broken class.**
+  `app/actions/contact-details.ts:193` reads `.eq("brokerage_id", brokerageId)`
+  (alongside `agent_id` and a `metadata->>contact_id` link). Three unstamped
+  writers; its untenanted rows are invisible to the contact detail surface.
+- **`open_house_invitations` — is NOT.** Every read is **event-scoped**
+  (`open-house-automation.ts:730` is `.select("*").eq("event_id", eventId)`),
+  and the public RSVP page reads by `id` through the **service client**. No
+  brokerage equality anywhere, so an untenanted invitation stays visible to its
+  own surfaces. It is still an unstamped tenant row — a #156 concern — but not a
+  live functional bug, and it should not be fixed as though it were.
+
+**CORRECTION to my own figure.** I published the heuristic as "roughly 60–70%
+true" on the strength of three of five reproducing. That was wrong, and wrong in
+the *cautious* direction: `smart_assistant_suggestions` did reproduce, and the
+second-pass grep that said otherwise was the faulty instrument — the same class
+of error as the ~93-vs-15 miscount above, and the second time in one wave that
+my quick shell check lost to a careful scan.
+
+The honest figure is **4 of 5**, with `open_house_invitations` the single true
+negative. That does not change the method — every table still gets its reader
+read before it is called broken — but the record should say what was measured
+rather than the more flattering-to-caution version.
+
+**Running total of confirmed tenant-class tables: nine.** `notifications` and
+`automation_errors` (fixed this wave), `cron_execution_logs`,
+`system_health_checks`, `sequence_step_executions`, `open_house_attendees`,
+`social_posts`, `smart_assistant_suggestions`, plus the
+`ai_insights` / `compliance_flags` / `ai_predictions` family from waves 20–21.
+One confirmed **not** in the class: `open_house_invitations`.
