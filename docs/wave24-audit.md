@@ -125,3 +125,45 @@ success returned.
 
 Typecheck EXIT=0. Guard chain **223/223** including `test:sweep`, run after the
 last edit, in two halves.
+
+## The remaining work, measured honestly
+
+Re-run of `scratchpad/escape-writer-census.js` **with** the back-fill-trigger
+list (an earlier run omitted it, which made trigger-covered tables re-count as
+hard and produced a non-comparable number — that run should be ignored):
+
+| | before waves 23–24 | after |
+|---|---|---|
+| unstamped insert sites | 211 across 87 tables | **166 across 83** |
+| covered by a back-fill trigger | 55 | 55 |
+| with a spread that may stamp | 10 | 9 |
+| **HARD — no trigger, no spread** | **146** | **102** |
+
+**44 hard sites closed** across waves 23–24.
+
+**The shape of what is left has changed, and that matters more than the count.**
+The heavy concentrations are gone — `automation_errors` (17) and `notifications`
+(16) were the two largest and are done. What remains is a genuine long tail:
+roughly 77 tables at one or two sites each, headed by `agent_badges` (2) and a
+long run of singletons like `agent_assistant_tool_calls`, `agent_avatar_assets`
+and `ai_tool_usage`.
+
+That changes the economics of the remaining work. There is no longer a table
+where fixing one file closes a dozen defects. Each of the ~77 needs its **reader
+read first** to establish whether it is tenant-class at all — and the record on
+that is: I have been wrong about a table's class twice by reasoning from its
+name, and wrong about site counts in both directions on tables I had not read.
+
+So the remaining tail is **not** a single dispatchable wave. It is either:
+
+1. batched by *reader family* — tables whose readers live in the same surface,
+   so one reading pass settles several; or
+2. deferred behind #156's migration, which after the ruling is cleanup, and
+   which would surface the remainder as **failing inserts** rather than silent
+   ones. That is a legitimate option now that the tenant-class heavy hitters are
+   fixed: the failure mode changes from invisible to loud, and loud is
+   debuggable.
+
+Option 2 is a real choice rather than a shortcut, but it is an **owner call**,
+because it trades a period of visible breakage for finding the stragglers. It
+should not be taken unilaterally.
