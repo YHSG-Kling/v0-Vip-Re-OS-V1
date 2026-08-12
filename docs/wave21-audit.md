@@ -172,9 +172,35 @@ of which is an earnings ledger.
 `listing_inquiries` is also in that 38, which is exactly why this is **not**
 dispatchable as a blanket narrowing. It needs the same per-table census W20-3
 got — *does any anonymous writer actually exist for this table* — which for the
-sixteen came back "fifteen no, one yes". Doing that for 38 is its own wave, and
-starting it now while an agent is mid-flight in the same area is how two
-migrations collide.
+sixteen came back "fifteen no, one yes".
+
+### The census, run — so wave 22 starts from data rather than re-deriving it
+
+**34 of the 38 have no browser-client file touching them at all.** Six have no
+call site anywhere in `app/` or `lib/` (`agent_metrics`, `agent_notifications`,
+`appointments`, `lead_conversation_history`, `lead_external_behavior`,
+`lead_social_intelligence`) — an anonymous-insert grant protecting a table
+nothing writes.
+
+Four are touched by a browser client, and three of those resolve immediately:
+
+| table | browser surface | logged out? |
+|---|---|---|
+| `ai_autopilot_actions` | `app/dashboard/agent/page.tsx` | no — agent dashboard |
+| `closing_gifts` | `app/transactions/[transactionId]/page.tsx` | no — transaction detail |
+| `newsletter_scheduled_sends` | `app/dashboard/marketing/studio/marketing-studio-client.tsx` | no — marketing studio |
+| `listing_inquiries` | `app/listings/[listingId]/public-info-form.tsx` | **YES** |
+
+A browser client on an authenticated page carries the user's JWT and queries as
+`authenticated`, not `anon` — so the first three do not need the grant either.
+
+**So the ratio is 37 no, 1 yes**, and the one is the inquiry form that m394's
+qualifier was written to protect in the first place. That makes wave 22 a
+narrowing with a single named carve-out, the same shape as m394's
+`tool_usage_sessions` — not an open question. What it still needs before
+dispatch is the per-table confirmation that each of the 34 is genuinely
+service-client or session-client written, which is the step that turned up
+`ai-prediction-outcomes.ts:76` this wave when it was assumed rather than read.
 
 ## Recorded, NOT to be built — still owner rulings (task #156)
 
