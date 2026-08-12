@@ -35,6 +35,16 @@ export async function deliverAlertResults(
 
   if (!contact) return { sent: 0, channelsUsed: [], errors: ["contact_not_found"] }
 
+  // RESOLVE THE AGENT ONCE, ABOVE THE CHANNEL BRANCHES.
+  //
+  // Two rows below are addressed to the contact's agent — the in-app
+  // `notifications` row (which needs the agent's users.id, a DISJOINT space from
+  // `contacts.agent_id`) and the `smart_assistant_suggestions` row (which needs
+  // that same agent's TENANT). This used to be resolved inside the in_app branch
+  // only, so the suggestion had no way to reach it and was written untenanted.
+  // Resolved once per action, not once per row, and not per channel.
+  const alertRecipient = await resolveAgentRecipient(supabase, contact.agent_id ?? null)
+
   const n = properties.length
   // BOTH OF THESE LINKS WERE BROKEN FOR THE BUYER.
   //
@@ -143,7 +153,6 @@ export async function deliverAlertResults(
   // Found by this wave's own guard (C7) rather than by the census: it was already
   // brokerage-stamped, so the tenant scan had nothing to say about it.
   if (channels.includes("in_app")) {
-    const alertRecipient = await resolveAgentRecipient(supabase, contact.agent_id ?? null)
     if (!alertRecipient.ok) {
       errors.push(`in_app: ${alertRecipient.reason}`)
     } else if (!alertRecipient.userId) {
@@ -176,9 +185,28 @@ export async function deliverAlertResults(
   }
 
   // ── Smart assistant suggestion for agent ──────────────────────────────────
-  try {
-    await supabase.from("smart_assistant_suggestions").insert({
-      agent_id:            contact.agent_id ?? null,
+  //
+  // TENANT: the agent's `users.brokerage_id`, not this function's `brokerageId`
+  // argument and not `agents.brokerage_id`. `getContactCopilotSuggestions`
+  // (app/actions/contact-details.ts) reads this table
+  // `.eq("agent_id", ctx.agentId).eq("brokerage_id", ctx.brokerageId)` where BOTH
+  // come from one `getAgentContext()` — and that context's `brokerageId` IS the
+  // session user's `users.brokerage_id`. Any other brokerage leaves the row as
+  // invisible as NULL did, which is wave 23's badge-count lesson on this table.
+  //
+  // NO AGENT, NO ROW. Both readers of this table AND the agent's suggestion queue
+  // filter on `agent_id`, so a suggestion with no agent reaches nobody; writing
+  // one untenanted as well would just be an invisible row. Named instead.
+  if (!alertRecipient.ok) {
+    errors.push(`suggestion: ${alertRecipient.reason}`)
+  } else if (!contact.agent_id) {
+    errors.push("suggestion: this contact has no agent — a suggestion nobody can read was not written")
+  } else if (!alertRecipient.brokerageId) {
+    errors.push("suggestion: the contact's agent has no users.brokerage_id — nothing to stamp, so nothing was written")
+  } else {
+    const { error: suggestionError } = await supabase.from("smart_assistant_suggestions").insert({
+      agent_id:            contact.agent_id,
+      brokerage_id:        alertRecipient.brokerageId,
       title:               `${n} new ${n === 1 ? "property" : "properties"} match ${contact.first_name} ${contact.last_name}'s alert`,
       description:         `Properties delivered via: ${channelsUsed.join(", ")}. Review and add top matches to tour plan.`,
       context_type:        "property_alert",
@@ -187,7 +215,11 @@ export async function deliverAlertResults(
       priority:            n >= 3 ? "high" : "medium",
       status:              "pending",
     })
-  } catch (_) { /* non-fatal */ }
+    // supabase-js RESOLVES a refused insert, so the try/catch that used to wrap
+    // this saw nothing at all — the suggestion was "non-fatal" in the sense that
+    // its failure was unobservable.
+    if (suggestionError) errors.push(`suggestion: ${suggestionError.message}`)
+  }
 
   // Update delivered_at on results
   await supabase

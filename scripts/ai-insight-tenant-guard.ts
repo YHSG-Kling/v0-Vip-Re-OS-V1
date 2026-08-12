@@ -541,17 +541,69 @@ function resolveRowObject(src: string, openParen: number): { open: number; viaRo
   while ((d = decl.exec(src)) !== null) {
     if (d.index >= openParen) break
     const bodyStart = d.index + d[0].length
-    // The initializer runs to the end of the statement; bounded generously and
-    // then cut at the next declaration so it cannot swallow a later one.
-    const nextDecl = src.slice(bodyStart).search(/\n\s*(?:const|let|var|return|await|if)\b/)
-    const bodyEnd = nextDecl === -1 ? Math.min(src.length, bodyStart + 4000) : bodyStart + nextDecl
+    const bodyEnd = initializerEnd(src, bodyStart)
     const arrow = findArrowObject(src, bodyStart, bodyEnd)
     if (arrow !== null) best = arrow
   }
   return best === null ? null : { open: best, viaRowMapper: true }
 }
 
-/** The `{` of the first `=> ({ … })` between `lo` and `hi`, string-aware. */
+/**
+ * The end of the initializer expression that starts at `start` (just past an
+ * `=`), as an index into `src`. DEPTH-TRACKED, not line-oriented.
+ *
+ * The line-oriented version this replaced cut the initializer at the first
+ * newline followed by `const` / `let` / `var` / `return` / `await` / `if` — which
+ * is inside the mapper for any row builder with a block body, because such a body
+ * opens with exactly those keywords. `lib/social/orchestrate-social-preset-
+ * publish.ts` binds `const rowsToInsert = preset.target_platforms.map((platform)
+ * => { const raw = … ; return { brokerage_id: …, … } })`, and the cut landed on
+ * that inner `const`, three lines before the row object. The scan then reported a
+ * correctly-stamped writer as unprovable.
+ *
+ * Depth tracking gets it right for free: everything between `.map(` and its
+ * matching `)` is at depth ≥ 1, so no newline inside the mapper can end the
+ * statement. A `;`, or a newline at depth 0, does.
+ */
+function initializerEnd(src: string, start: number): number {
+  const cap = Math.min(src.length, start + 8000)
+  let i = start
+  let depth = 0
+  while (i < cap) {
+    const c = src[i]
+    if (c === '"' || c === "'" || c === "`") { i = skipString(src, i); continue }
+    if (c === "(" || c === "{" || c === "[") { depth++; i++; continue }
+    if (c === ")" || c === "}" || c === "]") {
+      if (depth === 0) return i // the enclosing group closed — the statement is over
+      depth--; i++; continue
+    }
+    if (depth === 0 && c === ";") return i
+    if (depth === 0 && c === "\n") return i
+    i++
+  }
+  return cap
+}
+
+/**
+ * The `{` of the first row object produced by an arrow function between `lo` and
+ * `hi`, string-aware. TWO SPELLINGS, because both are real in this tree:
+ *
+ *   · `=> ({ … })`                 — the concise body.
+ *   · `=> { … return { … } }`      — the BLOCK body, whose row object is behind a
+ *                                    `return`, not behind the arrow.
+ *
+ * Wave 24 added the second. `lib/social/orchestrate-social-preset-publish.ts`
+ * expands a preset into one `social_posts` row per platform with
+ * `preset.target_platforms.map((platform) => { … return { brokerage_id: …, … } })`
+ * — CORRECTLY STAMPED, and reported by the concise-body-only scan as "insert
+ * argument resolves to no object literal", i.e. an offender. A guard that calls a
+ * correct writer broken is the failure mode that gets a guard switched off, and
+ * it is the same class as the shorthand-property false red wave 23 found.
+ *
+ * The block body's `{` is skipped WHOLE and the search resumes after it when no
+ * `return {` is found inside, so an arrow that returns something other than an
+ * object literal does not swallow the rest of the window.
+ */
 function findArrowObject(src: string, lo: number, hi: number): number | null {
   let i = lo
   while (i < hi) {
@@ -565,6 +617,40 @@ function findArrowObject(src: string, lo: number, hi: number): number | null {
         while (k < hi && /\s/.test(src[k])) k++
         if (src[k] === "{") return k
       }
+      if (src[j] === "{") {
+        // A BLOCK body. Its row object is whatever a `return` hands back, so the
+        // search is scoped to the block and anchored on `return {` rather than on
+        // the arrow. Bounded by the block's own extent, never past it.
+        const blockEnd = Math.min(skipBalanced(src, j), hi)
+        const ret = findReturnObject(src, j + 1, blockEnd)
+        if (ret !== null) return ret
+        i = blockEnd
+        continue
+      }
+      i = j
+      continue
+    }
+    i++
+  }
+  return null
+}
+
+/**
+ * The `{` of the first `return { … }` (or `return ({ … })`) between `lo` and
+ * `hi`, string-aware. The parenthesised form is accepted because it is the same
+ * row object with a redundant wrapper — rejecting it would make a correct writer
+ * unprovable on a formatting choice, which is the false-red class again.
+ */
+function findReturnObject(src: string, lo: number, hi: number): number | null {
+  let i = lo
+  while (i < hi) {
+    const c = src[i]
+    if (c === '"' || c === "'" || c === "`") { i = skipString(src, i); continue }
+    if (c === "r" && /^return\b/.test(src.slice(i, i + 7)) && !/[A-Za-z0-9_$.]/.test(src[i - 1] ?? " ")) {
+      let j = i + 6
+      while (j < hi && /\s/.test(src[j])) j++
+      if (src[j] === "(") { j++; while (j < hi && /\s/.test(src[j])) j++ }
+      if (src[j] === "{") return j
       i = j
       continue
     }
@@ -702,11 +788,26 @@ function brokeragePredicateVerdict(
   }
 }
 
-/** Does the assignment owning the read at `fromIndex` destructure `error`? */
+/**
+ * Does the assignment owning the read at `fromIndex` destructure `error`?
+ *
+ * THE LAST OPEN ASSIGNMENT, NOT THE FIRST. `.exec` returns the earliest match,
+ * and this tree writes no semicolons — so `[^;]*$` let an assignment from an
+ * EARLIER statement stretch all the way to the read and answer on its behalf.
+ * Measured on `app/actions/seller-open-house.ts:endOpenHouseEvent`, where the
+ * attendee read was NOT destructured and the helper reported `{error: updateErr}`
+ * from the `open_house_events` update three lines above it: a false GREEN on the
+ * exact property the assertion exists to catch. Wave 24 takes the LAST `const {…}
+ * = await` in the window and requires no `;` between it and the read.
+ */
 function destructuresError(src: string, fromIndex: number): { ok: boolean; bindings: string } {
   const before = src.slice(Math.max(0, fromIndex - 400), fromIndex)
-  const assign = /const\s*\{([^}]*)\}\s*=\s*await\s*[^;]*$/.exec(before)
-  const bindings = assign ? assign[1] : ""
+  const decl = /const\s*\{([^}]*)\}\s*=\s*await\b/g
+  let m: RegExpExecArray | null
+  let last: RegExpExecArray | null = null
+  while ((m = decl.exec(before)) !== null) last = m
+  let bindings = ""
+  if (last && !/;/.test(before.slice(last.index + last[0].length))) bindings = last[1]
   return { ok: /\berror\b/.test(bindings), bindings }
 }
 
@@ -1193,6 +1294,350 @@ function assertNoAgentIdInNotificationRecipient(): boolean {
   return a && b
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// WAVE 24 — six more tables, every one triaged by READING ITS READER
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Same invariant, extended again rather than copied. Six tables were dispatched;
+// reading them corrected the brief in BOTH directions, which is the whole reason
+// the class is decided by the reader and the count by the scanner:
+//
+//   · `smart_assistant_suggestions` — 3 unstamped, as briefed. Reader:
+//     `app/actions/contact-details.ts:getContactCopilotSuggestions`, which pairs
+//     `.eq("agent_id", ctx.agentId)` with `.eq("brokerage_id", ctx.brokerageId)`
+//     from ONE `getAgentContext()` — so the value to stamp is the OWNING AGENT'S
+//     `users.brokerage_id`, resolved through `agents.user_id`, not the caller's
+//     brokerage and not `agents.brokerage_id`. (Wave 23's badge-count lesson: a
+//     wrong tenant hides the row exactly as NULL does.)
+//   · `sequence_step_executions` — 4 unstamped, as briefed, all in one file.
+//     Reader: `lib/campaign-sequences/channel-order-runner.ts`, which counts
+//     `status='sent'` and `replied_at` within `.eq("brokerage_id", …)`. Every
+//     execution was outside that window, so the channel-order advisory was
+//     computed over an empty set for every brokerage. The tenant comes off
+//     `sequence_enrollments.brokerage_id`, already read at step 1.
+//   · `open_house_attendees` — TWO unstamped, not four. Reader:
+//     `app/actions/seller-open-house.ts:endOpenHouseEvent`, `.eq("event_id", …)
+//     .eq("brokerage_id", <caller's users.brokerage_id>)`. The tenant is the
+//     EVENT'S, which is also the ownership check.
+//   · `cron_execution_logs` — FIVE unstamped, not four, and the important one is
+//     not a missing key: `lib/kernel/cron-logging.ts:createCronRunContext`
+//     ACCEPTED `brokerage_id` and dropped it, so the column no caller could fill
+//     was the one `system-health.ts:getCronExecutionLogs` filters on.
+//   · `social_posts` — ZERO unstamped, not three. All 22 insert sites across 51
+//     files already stamp. The brief's 3 came from W22-4's proximity heuristic;
+//     reading them, the table is clean.
+//   · `system_health_checks` — ZERO unstamped. One writer, and it already stamps
+//     `service.brokerage_id` off the `service_status` row it is checking.
+//
+// NEITHER a back-fill trigger NOR a net anywhere: `pg_trigger` returns zero
+// non-internal triggers for all six, measured live. The application stamp is the
+// only mechanism, as it was for the wave-23 pair.
+//
+//   D1  ZERO BASELINE ON ALL SIX. Same construct, same depth-1 rule, same app/
+//       + lib/ scoping (S3's reason).
+//   D2  THE WRITERS STILL EXIST, per file and table — A2's reason.
+//   D3  EVERY CONFIRMED READER STILL ANDS ITS BROKERAGE PREDICATE, and reads its
+//       `error` where the owning assignment is visible to the scanner. These are
+//       the six predicates that decide what a stamped row is worth.
+//   D4  THE UNTENANTED CRON ROWS ARE EXACTLY THE DEFENDED ONES. `brokerage_id:
+//       null` counts as a stamp for D1 (an explicit decision is not an omission),
+//       so the allow-list is what stops `: null` becoming a way to turn D1 green
+//       without thinking. Three writes, two files, one class: a run that swept
+//       EVERY brokerage.
+//   D5  …AND THE PLATFORM READERS THAT MAKE THOSE ROWS READABLE STILL CARRY NO
+//       BROKERAGE PREDICATE. This is D4's defence asserted rather than claimed:
+//       `pl-truth-engine.ts:getCronHealth` and `scraping.ts:
+//       loadScrapingDiagnostics` both read this ledger cross-tenant, which is
+//       what makes an untenanted platform run VISIBLE rather than lost. The day
+//       either one gains a brokerage predicate, the allow-list stops being
+//       defensible — so the assertion is on the ABSENCE of one.
+//   D6  `createCronRunContext` STAMPS THE TENANT IT WAS GIVEN. D1 is satisfied by
+//       any value; the defect here was specifically that the accepted input never
+//       reached the row, so this asserts the VALUE EXPRESSION carries it.
+//   D7  THE BLOCK-BODIED ROW MAPPER IS RESOLVED, NOT MERELY ABSENT. A writer the
+//       scanner cannot resolve is an offender, so "unstamped: 0" is only worth
+//       something if the scan can actually see through every fan-out shape in the
+//       tree. `lib/social/orchestrate-social-preset-publish.ts` uses `.map(x => {
+//       … return {…} })`, which the wave-23 scanner could not follow — it called
+//       a correctly-stamped writer unprovable.
+
+const W24_TABLES = [
+  "smart_assistant_suggestions",
+  "sequence_step_executions",
+  "open_house_attendees",
+  "cron_execution_logs",
+  "social_posts",
+  "system_health_checks",
+] as const
+
+/** A2's reason, per table and file: D1 is green against a file with no writers left. */
+const W24_WRITER_FLOORS: Array<{ file: string; table: string; floor: number }> = [
+  { file: "app/actions/ai-reply-coach.ts", table: "smart_assistant_suggestions", floor: 1 },
+  { file: "lib/fatigue/fatigue-calculator.ts", table: "smart_assistant_suggestions", floor: 1 },
+  { file: "lib/property-alerts/alert-notifier.ts", table: "smart_assistant_suggestions", floor: 1 },
+  { file: "lib/campaign-sequences/step-executor.ts", table: "sequence_step_executions", floor: 4 },
+  { file: "app/actions/open-house-automation.ts", table: "open_house_attendees", floor: 2 },
+  { file: "lib/kernel/cron-logging.ts", table: "cron_execution_logs", floor: 2 },
+  { file: "app/api/cron/health-check/route.ts", table: "cron_execution_logs", floor: 2 },
+  { file: "app/api/cron/contact-enrichment/route.ts", table: "cron_execution_logs", floor: 1 },
+  { file: "lib/social/orchestrate-social-preset-publish.ts", table: "social_posts", floor: 1 },
+  { file: "app/actions/social-publishing.ts", table: "social_posts", floor: 2 },
+  { file: "app/api/cron/health-check/route.ts", table: "system_health_checks", floor: 1 },
+]
+
+/**
+ * THE ONLY WAVE-24 SITES ALLOWED TO STAMP `brokerage_id: null` ON PURPOSE.
+ *
+ * Three writes, two files, one class: the run swept EVERY brokerage, so no
+ * brokerage is what it is about. `contact-enrichment` iterates every active
+ * tenant and reports their sum; `health-check` polls `service_status` for all of
+ * them, once on the success path and once from the OUTER CATCH — where the
+ * failure can fire before any service row is even known.
+ *
+ * Defensible rather than lost, and D5 is what keeps that true: both platform
+ * readers of this ledger carry NO brokerage predicate, so these rows are read by
+ * the surface that should see a platform-wide run. The per-tenant findings of
+ * both crons are written elsewhere and ARE stamped — `system_health_checks` rows
+ * carry each `service_status` row's own brokerage.
+ *
+ * Note what is NOT here: `lib/kernel/cron-logging.ts`. Its `?? null` is the
+ * absence of a tenant the CALLER declared, not a decision this file makes — D6
+ * asserts it carries the input, and a bare `null` there would be a stray.
+ */
+const W24_EXPLICIT_NULL_TENANT_SITES: ReadonlySet<string> = new Set([
+  "app/api/cron/contact-enrichment/route.ts",
+  "app/api/cron/health-check/route.ts",
+])
+
+interface TenantReaderCase {
+  label: string
+  file: string
+  table: string
+  fn: string
+  /**
+   * False ONLY where the read is built in stages (`let q = supabase.from(…)` …
+   * `const { data, error } = await q`), which the walk-back to the owning
+   * assignment cannot see. Asserting it there would report the PREVIOUS
+   * statement's bindings — a false GREEN on the exact property being asserted,
+   * which is worse than no assertion. The predicate is still asserted.
+   */
+  assertError: boolean
+}
+
+/** The readers that decide whether a stamped row is worth anything. */
+const W24_READERS: TenantReaderCase[] = [
+  {
+    label: "the contact copilot suggestion queue",
+    file: "app/actions/contact-details.ts",
+    table: "smart_assistant_suggestions",
+    fn: "getContactCopilotSuggestions",
+    // Staged query builder — see TenantReaderCase.assertError. The real read IS
+    // destructured (`const { data, error } = await query`).
+    assertError: false,
+  },
+  {
+    label: "the channel-order learner",
+    file: "lib/campaign-sequences/channel-order-runner.ts",
+    table: "sequence_step_executions",
+    fn: "runChannelOrderLearning",
+    assertError: true,
+  },
+  {
+    label: "the open-house attendee scorer",
+    file: "app/actions/seller-open-house.ts",
+    table: "open_house_attendees",
+    fn: "endOpenHouseEvent",
+    assertError: true,
+  },
+  {
+    label: "the broker cron-run history",
+    file: "app/actions/system-health.ts",
+    table: "cron_execution_logs",
+    fn: "getCronExecutionLogs",
+    assertError: true,
+  },
+  {
+    label: "the service health history",
+    file: "app/actions/system-health.ts",
+    table: "system_health_checks",
+    fn: "getServiceHealthHistory",
+    assertError: true,
+  },
+  {
+    label: "the social-post brand-compliance ownership check",
+    file: "app/actions/social/generate-social-post.ts",
+    table: "social_posts",
+    fn: "stampPostBrandCompliance",
+    assertError: true,
+  },
+]
+
+/**
+ * The cross-tenant readers that make an untenanted `cron_execution_logs` row
+ * readable. Asserted to have NO brokerage predicate — see D5.
+ */
+const W24_PLATFORM_READERS: Array<{ label: string; file: string; fn: string }> = [
+  { label: "getCronHealth (7-day run/failure counts)", file: "app/actions/pl-truth-engine.ts", fn: "getCronHealth" },
+  { label: "loadScrapingDiagnostics (cron run history)", file: "lib/kernel/scraping.ts", fn: "loadScrapingDiagnostics" },
+]
+
+const PRESET_FANOUT = "lib/social/orchestrate-social-preset-publish.ts"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D1 — zero baseline across all six wave-24 tables
+// ─────────────────────────────────────────────────────────────────────────────
+function assertWaveTwentyFourInsertsStampTenant(): boolean {
+  const offenders: string[] = []
+  let total = 0
+  for (const table of W24_TABLES) {
+    for (const f of filesTouchingProd(table)) {
+      if (!existsSync(resolve(ROOT, f))) continue
+      for (const s of insertSites(f, table)) {
+        total++
+        if (!s.hasObjectArg) {
+          offenders.push(`${f}:${s.line} ${table} (insert argument resolves to no object literal — cannot prove the stamp)`)
+          continue
+        }
+        if (!s.keys.includes("brokerage_id")) offenders.push(`${f}:${s.line} ${table}`)
+      }
+    }
+  }
+  return check(
+    `D1  all ${total} insert site(s) across ${W24_TABLES.length} wave-24 table(s) declare brokerage_id at the TOP LEVEL of the row`,
+    offenders.length === 0,
+    offenders.length === 0 ? "" : `unstamped: ${offenders.join(", ")}`,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D2 — the wave-24 writers still exist
+// ─────────────────────────────────────────────────────────────────────────────
+function assertWaveTwentyFourWritersStillExist(): boolean {
+  const short: string[] = []
+  for (const { file, table, floor } of W24_WRITER_FLOORS) {
+    const n = existsSync(resolve(ROOT, file)) ? insertSites(file, table).length : 0
+    if (n < floor) short.push(`${file} ${table}: ${n} < ${floor}`)
+  }
+  return check(
+    `D2  every wave-24 writer still exists (${W24_WRITER_FLOORS.length} table/file floors)`,
+    short.length === 0,
+    short.length === 0 ? "" : `writers disappeared rather than being stamped — ${short.join("; ")}`,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D3 — every confirmed reader still narrows, and reads its error
+// ─────────────────────────────────────────────────────────────────────────────
+function assertWaveTwentyFourReadersNarrow(): boolean {
+  let all = true
+  for (const r of W24_READERS) {
+    const chain = tableChain(r.file, r.table, r.fn)
+    if (!chain) {
+      all = check(`D3  ${r.label} read found`, false, `no ${r.table} read found in ${r.fn} (${r.file})`) && all
+      continue
+    }
+    const v = brokeragePredicateVerdict(chain)
+    all = check(`D3  ${r.label} ANDs a brokerage predicate on ${r.table} (${r.fn})`, v.narrowed, v.detail) && all
+    if (!r.assertError) continue
+    const e = destructuresError(chain.src, chain.fromIndex)
+    all = check(
+      `D3  ${r.label} destructures \`error\` (supabase-js RESOLVES a refusal — it must not read as "nothing there")`,
+      e.ok,
+      e.ok ? "" : `bindings were: {${e.bindings.trim()}}`,
+    ) && all
+  }
+  return all
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D4 — the untenanted cron rows are exactly the defended ones
+// ─────────────────────────────────────────────────────────────────────────────
+function assertWaveTwentyFourExplicitNullsAreAllowListed(): boolean {
+  const found = new Set<string>()
+  const strays: string[] = []
+  for (const table of W24_TABLES) {
+    for (const f of filesTouchingProd(table)) {
+      if (!existsSync(resolve(ROOT, f))) continue
+      for (const s of insertSites(f, table)) {
+        const stamp = s.props.find((p) => p.key === "brokerage_id")
+        if (!stamp) continue
+        if (!/^null$/.test(stamp.value.trim())) continue
+        found.add(f)
+        if (!W24_EXPLICIT_NULL_TENANT_SITES.has(f)) strays.push(`${f}:${s.line} ${table}`)
+      }
+    }
+  }
+  const missing = [...W24_EXPLICIT_NULL_TENANT_SITES].filter((f) => !found.has(f))
+  const ok = strays.length === 0 && missing.length === 0
+  return check(
+    `D4  exactly the ${W24_EXPLICIT_NULL_TENANT_SITES.size} defended file(s) stamp \`brokerage_id: null\` on purpose`,
+    ok,
+    ok
+      ? ""
+      : [
+          strays.length ? `NEW untenanted write not on the allow-list: ${strays.join(", ")}` : "",
+          missing.length ? `allow-listed site no longer writes untenanted (update the list deliberately): ${missing.join(", ")}` : "",
+        ].filter(Boolean).join(" · "),
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D5 — D4's defence: the platform readers carry NO brokerage predicate
+// ─────────────────────────────────────────────────────────────────────────────
+function assertPlatformCronReadersStayCrossTenant(): boolean {
+  let all = true
+  for (const p of W24_PLATFORM_READERS) {
+    const chain = tableChain(p.file, "cron_execution_logs", p.fn)
+    if (!chain) {
+      all = check(`D5  ${p.label} read found`, false, `no cron_execution_logs read found in ${p.fn} (${p.file})`) && all
+      continue
+    }
+    const narrowed = chain.links.some((l) => CONJUNCTIVE.has(l.method) && /["']brokerage_id["']/.test(l.args))
+    all = check(
+      `D5  ${p.label} still reads cron_execution_logs WITHOUT a brokerage predicate — which is what makes the allow-listed untenanted rows readable`,
+      !narrowed,
+      narrowed
+        ? "a brokerage predicate appeared here: the three deliberately-untenanted platform-sweep rows are now invisible to their own surface, so the D4 allow-list is no longer defensible and those writes must be reconsidered — not silently kept"
+        : "",
+    ) && all
+  }
+  return all
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D6 — createCronRunContext stamps the tenant it was GIVEN
+// ─────────────────────────────────────────────────────────────────────────────
+function assertCronContextCarriesItsInputTenant(): boolean {
+  const file = "lib/kernel/cron-logging.ts"
+  const sites = existsSync(resolve(ROOT, file)) ? insertSites(file, "cron_execution_logs") : []
+  const carriers = sites.filter((s) => {
+    const stamp = s.props.find((p) => p.key === "brokerage_id")
+    return stamp ? /\binput\s*\.\s*brokerage_id\b/.test(stamp.value) : false
+  })
+  return check(
+    `D6  both cron-kernel writers stamp the tenant their INPUT declared (found ${carriers.length}/${sites.length})`,
+    carriers.length === sites.length && sites.length >= 2,
+    carriers.length === sites.length && sites.length >= 2
+      ? ""
+      : "the accepted `brokerage_id` is being dropped again — CreateCronRunContextInput has always carried it and the row never did, which is why the broker health page could not show a scoped run",
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D7 — the block-bodied row mapper is RESOLVED, not merely absent
+// ─────────────────────────────────────────────────────────────────────────────
+function assertBlockBodiedRowMapperResolves(): boolean {
+  const sites = existsSync(resolve(ROOT, PRESET_FANOUT)) ? insertSites(PRESET_FANOUT, "social_posts") : []
+  const resolved = sites.filter((s) => s.hasObjectArg && s.viaRowMapper)
+  return check(
+    `D7  the \`.map(x => { … return {…} })\` fan-out in ${PRESET_FANOUT} RESOLVES to its row object (${resolved.length}/${sites.length})`,
+    sites.length >= 1 && resolved.length === sites.length,
+    sites.length === 0
+      ? "the fan-out writer is gone — D1's zero baseline no longer proves the block-body shape can be seen at all"
+      : "a correctly-stamped writer is unprovable again: the scan cannot follow a BLOCK arrow body to its `return {…}`, and D1 reports it as an offender rather than reading it",
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // NEGATIVE CONTROLS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1248,7 +1693,9 @@ function controlled(label: string, c: Control, fn: () => boolean): void {
 // ─────────────────────────────────────────────────────────────────────────────
 function main(): void {
   console.log(
-    "TENANT-STAMP GUARD — ai_insights · ai_predictions · ai_autopilot_plans · conversation_intelligence · notifications · automation_errors\n",
+    "TENANT-STAMP GUARD — ai_insights · ai_predictions · ai_autopilot_plans · conversation_intelligence · notifications · " +
+      "automation_errors · smart_assistant_suggestions · sequence_step_executions · open_house_attendees · cron_execution_logs · " +
+      "social_posts · system_health_checks\n",
   )
 
   console.log("ASSERTIONS")
@@ -1270,13 +1717,20 @@ function main(): void {
   assertConsoleOwnershipCheckNarrows()
   assertExplicitNullTenantsAreAllowListed()
   assertNoAgentIdInNotificationRecipient()
+  assertWaveTwentyFourInsertsStampTenant()
+  assertWaveTwentyFourWritersStillExist()
+  assertWaveTwentyFourReadersNarrow()
+  assertWaveTwentyFourExplicitNullsAreAllowListed()
+  assertPlatformCronReadersStayCrossTenant()
+  assertCronContextCarriesItsInputTenant()
+  assertBlockBodiedRowMapperResolves()
 
   for (const table of TENANT_TABLES) {
     const files = filesTouching(table)
     const n = files.reduce((acc, f) => acc + (existsSync(resolve(ROOT, f)) ? insertSites(f, table).length : 0), 0)
     console.log(`\n  ${table}: ${files.length} file(s) · ${n} insert site(s)`)
   }
-  for (const table of W23_TABLES) {
+  for (const table of [...W23_TABLES, ...W24_TABLES]) {
     const files = filesTouchingProd(table)
     const sites = files.flatMap((f) => (existsSync(resolve(ROOT, f)) ? insertSites(f, table) : []))
     const mapped = sites.filter((s) => s.viaRowMapper).length
@@ -1897,6 +2351,182 @@ function main(): void {
         }
       }
     }
+
+    // ── WAVE 24 ──────────────────────────────────────────────────────────────
+
+    // 37. A `sequence_step_executions` writer loses its stamp — the W24 defect on
+    //     the ledger the channel-order learner counts. The find-string reaches
+    //     into `sequence_id` because THREE writers in this file use the same
+    //     `brokerageId` anchor; the 8-space indent belongs to the authority-gate
+    //     one alone.
+    controlled(
+      "a sequence_step_executions insert loses brokerage_id",
+      {
+        file: "lib/campaign-sequences/step-executor.ts",
+        find: "        brokerage_id: brokerageId,\n        sequence_id: enrollment.sequence_id,",
+        replace: "        sequence_id: enrollment.sequence_id,",
+      },
+      assertWaveTwentyFourInsertsStampTenant,
+    )
+
+    // 38. THE DEPTH-1 DEMOTION CONTROL, on smart_assistant_suggestions — and this
+    //     is the shape the real row already had: the alert and contact ids are
+    //     serialized into `action_payload_json`, so `brokerage_id` sitting beside
+    //     them looks exactly like a stamp and is one level too deep to be one.
+    controlled(
+      "smart_assistant_suggestions: brokerage_id demoted into the action_payload_json object (present as text, absent as a stamp)",
+      {
+        file: "lib/property-alerts/alert-notifier.ts",
+        find: "      brokerage_id:        alertRecipient.brokerageId,\n",
+        replace: "",
+      },
+      () => {
+        const p = resolve(ROOT, "lib/property-alerts/alert-notifier.ts")
+        const cur = readFileSync(p, "utf8")
+        const nested = cur.replace(
+          "JSON.stringify({ alert_id: alert.id, contact_id: alert.contact_id })",
+          "JSON.stringify({ brokerage_id: alertRecipient.brokerageId, alert_id: alert.id, contact_id: alert.contact_id })",
+        )
+        if (nested === cur) {
+          failures.push("smart_assistant_suggestions nested-stamp control second patch did not apply")
+          return false
+        }
+        writeFileSync(p, nested)
+        return assertWaveTwentyFourInsertsStampTenant()
+      },
+    )
+
+    // 39. THE BLOCK-BODIED FAN-OUT loses its stamp. Ten notifications writers are
+    //     the concise `=> ({…})` shape and control 25 covers those; this is the
+    //     OTHER one — `=> { … return {…} }` — and if the scan could not follow it,
+    //     D1 would be red for the wrong reason and this control would prove
+    //     nothing. D7 is what separates the two, and it is asserted above.
+    controlled(
+      "the BLOCK-bodied social_posts fan-out loses brokerage_id (`.map(x => { … return {…} })`)",
+      {
+        file: PRESET_FANOUT,
+        find: "      brokerage_id:   args.brokerageId,\n",
+        replace: "",
+      },
+      assertWaveTwentyFourInsertsStampTenant,
+    )
+
+    // 40. THE ARGUMENT BECOMES UNPROVABLE. `.insert(rowsToInsert)` resolves to a
+    //     row object; `.insert(rowsToInsert.slice(0))` does not. A stamp that
+    //     cannot be seen is not a stamp that can be trusted, so D1 must call this
+    //     an offender rather than pass over it — and D7 must say WHICH shape
+    //     stopped resolving.
+    controlled(
+      "a social_posts insert argument stops resolving to a row object (unprovable is an OFFENDER, not a pass)",
+      {
+        file: PRESET_FANOUT,
+        find: ".insert(rowsToInsert)",
+        replace: ".insert(rowsToInsert.slice(0))",
+      },
+      () => assertWaveTwentyFourInsertsStampTenant() && assertBlockBodiedRowMapperResolves(),
+    )
+
+    // 41. An `open_house_attendees` writer loses its stamp — the row then falls
+    //     out of `endOpenHouseEvent`'s `.eq("event_id", …).eq("brokerage_id", …)`
+    //     and the attendee is never scored.
+    controlled(
+      "an open_house_attendees insert loses brokerage_id",
+      {
+        file: "app/actions/open-house-automation.ts",
+        find: "          brokerage_id: event.brokerage_id,\n          contact_id: params.contactId,",
+        replace: "          contact_id: params.contactId,",
+      },
+      assertWaveTwentyFourInsertsStampTenant,
+    )
+
+    // 42. A wave-24 writer DELETED rather than stamped — D1 alone goes green.
+    controlled(
+      "a wave-24 writer removed rather than stamped",
+      {
+        file: "lib/campaign-sequences/step-executor.ts",
+        find: 'from("sequence_step_executions")',
+        replace: 'from("sequence_step_executions_disabled")',
+      },
+      assertWaveTwentyFourWritersStillExist,
+    )
+
+    // 43. The channel-order learner loses its brokerage predicate — it would then
+    //     rank channels over every tenant's sends at once and advise each
+    //     brokerage from the platform's aggregate.
+    controlled(
+      "the channel-order learner loses its brokerage predicate",
+      {
+        file: "lib/campaign-sequences/channel-order-runner.ts",
+        find: '    .eq("brokerage_id", brokerageId)\n',
+        replace: "",
+      },
+      assertWaveTwentyFourReadersNarrow,
+    )
+
+    // 44. The broker cron-run history loses its brokerage predicate.
+    controlled(
+      "the broker cron-run history loses its brokerage predicate",
+      {
+        file: "app/actions/system-health.ts",
+        find: '    .eq("brokerage_id", ctx.brokerageId)\n    .order("started_at", { ascending: false })',
+        replace: '    .order("started_at", { ascending: false })',
+      },
+      assertWaveTwentyFourReadersNarrow,
+    )
+
+    // 45. THE CONTROL THAT PROVES THE `destructuresError` FIX. The attendee read
+    //     stops destructuring `error`. Under the OLD walk-back — first match,
+    //     `[^;]*$` in a tree with no semicolons — this stayed GREEN, because the
+    //     `open_house_events` UPDATE three lines above answered on its behalf.
+    //     That was a false green on the exact property being asserted.
+    controlled(
+      "the open-house attendee read stops destructuring `error` (the false-green the last-match walk-back closed)",
+      {
+        file: "app/actions/seller-open-house.ts",
+        find: "const { data: attendees, error: attendeesError } = await supabase",
+        replace: "const { data: attendees } = await supabase",
+      },
+      assertWaveTwentyFourReadersNarrow,
+    )
+
+    // 46. A FOURTH untenanted cron write appears — `brokerage_id: null` used to
+    //     turn D1 green without thinking. D1 stays green BY DESIGN (an explicit
+    //     decision is not an omission); D4 is what must catch it.
+    controlled(
+      "a NEW cron site starts stamping `brokerage_id: null` (D1 green by design — D4 must go red)",
+      {
+        file: "lib/kernel/cron-logging.ts",
+        find: "        brokerage_id: input.brokerage_id ?? null,",
+        replace: "        brokerage_id: null,",
+      },
+      assertWaveTwentyFourExplicitNullsAreAllowListed,
+    )
+
+    // 47. …and the same patch is the D6 defect: the accepted tenant dropped again,
+    //     which is exactly how this column came to be NULL for every caller.
+    controlled(
+      "createCronRunContext stops carrying the brokerage_id it was given",
+      {
+        file: "lib/kernel/cron-logging.ts",
+        find: "        brokerage_id: input.brokerage_id ?? null,",
+        replace: "        brokerage_id: null,",
+      },
+      assertCronContextCarriesItsInputTenant,
+    )
+
+    // 48. D4'S DEFENCE GOES AWAY. `getCronHealth` gains a brokerage predicate, so
+    //     the three deliberately-untenanted platform-sweep rows stop being visible
+    //     anywhere — at which point keeping them untenanted is no longer a
+    //     defensible decision, it is just a hole. D5 must notice.
+    controlled(
+      "the platform cron reader gains a brokerage predicate (the untenanted sweep rows go dark)",
+      {
+        file: "app/actions/pl-truth-engine.ts",
+        find: '      .gte("started_at", sevenDaysAgo)',
+        replace: '      .eq("brokerage_id", auth.brokerageId)\n      .gte("started_at", sevenDaysAgo)',
+      },
+      assertPlatformCronReadersStayCrossTenant,
+    )
 
     // ── SPECIFICITY CONTROLS (these must stay GREEN) ─────────────────────────
 

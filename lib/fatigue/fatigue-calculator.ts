@@ -1,6 +1,10 @@
 "use server"
 
 import { createServiceClient } from "@/lib/supabase/service"
+// agents.id → { users.id, users.brokerage_id }. The ONE crossing helper: both
+// `fatigue_alerts.agent_user_id` (a users FK) and the tenant this file's
+// smart_assistant_suggestions row must carry come from it.
+import { resolveAgentRecipient } from "@/lib/notifications/recipient-tenant"
 import { BUYER_ACTIVE_STAGES } from "@/lib/contacts/buyer-stage"
 import { generateText }        from "ai"
 import { KernelEvent }         from "@/lib/kernel/events"
@@ -231,12 +235,15 @@ export async function calculateFatigue(
       // Insert fatigue_alert. pass 13: fatigue_alerts.agent_user_id FKs users(id)
       // but contacts.agent_id is agents.id — the raw stamp FK-threw and every
       // fatigue alert died unnoticed. Resolve to the owning agent's auth user id.
-      let fatigueAgentUserId: string | null = null
-      if (contact?.agent_id) {
-        const { data: owningAgent } = await supabase
-          .from("agents").select("user_id").eq("id", contact.agent_id).maybeSingle()
-        fatigueAgentUserId = owningAgent?.user_id ?? null
-      }
+      //
+      // ONE RESOLVER, TWO ANSWERS, RESOLVED ONCE. The ad-hoc `agents.select
+      // ("user_id")` this replaced destructured no `error`, so a refused lookup
+      // arrived as "this agent has no user" and was indistinguishable from it.
+      // The shared resolver returns the crossing (`agents.id` → `users.id`) AND
+      // that user's `users.brokerage_id`, which is the value the suggestion below
+      // has to carry.
+      const owningAgent = await resolveAgentRecipient(supabase, contact?.agent_id ?? null)
+      const fatigueAgentUserId: string | null = owningAgent.ok ? owningAgent.userId : null
       const { data: alert } = await supabase
         .from("fatigue_alerts")
         .insert({
@@ -252,17 +259,42 @@ export async function calculateFatigue(
         .select("id")
         .single()
 
-      // Insert smart_assistant_suggestion
-      await supabase.from("smart_assistant_suggestions").insert({
-        agent_id:           contact?.agent_id ?? null,
-        title:              `${buyerName} showing signs of search fatigue`,
-        description:        alertMessage,
-        context_type:       "buyer_fatigue",
-        action_type:        "view_buyer",
-        action_payload_json: JSON.stringify({ contact_id: contactId }),
-        priority:           riskLevel === "critical" ? "high" : "medium",
-        status:             "pending",
-      })
+      // Insert smart_assistant_suggestion.
+      //
+      // TENANT: the OWNING AGENT'S `users.brokerage_id` — deliberately not this
+      // function's `brokerageId` argument, even though the two agree on every
+      // live row today. `getContactCopilotSuggestions` reads this table
+      // `.eq("agent_id", ctx.agentId).eq("brokerage_id", ctx.brokerageId)` with
+      // both halves from one `getAgentContext()`, and that context's brokerage IS
+      // `users.brokerage_id`. Stamping the anchor's brokerage instead would be
+      // stamping a value the reader does not compute — wave 23's badge-count
+      // lesson, which is that a wrong tenant hides the row exactly as NULL does.
+      //
+      // NO AGENT (or an unreadable one) → NO ROW. Both readers filter `agent_id`,
+      // so an unattributed suggestion is invisible whatever it is stamped with.
+      if (!owningAgent.ok) {
+        console.error(`[fatigue] suggestion skipped — agent tenant unresolved: ${owningAgent.reason}`)
+      } else if (!contact?.agent_id || !owningAgent.brokerageId) {
+        console.error(
+          `[fatigue] suggestion skipped for contact ${contactId} — ` +
+          "the contact has no agent, or that agent has no users.brokerage_id; a suggestion nobody can read was not written",
+        )
+      } else {
+        const { error: suggestionError } = await supabase.from("smart_assistant_suggestions").insert({
+          agent_id:           contact.agent_id,
+          brokerage_id:       owningAgent.brokerageId,
+          title:              `${buyerName} showing signs of search fatigue`,
+          description:        alertMessage,
+          context_type:       "buyer_fatigue",
+          action_type:        "view_buyer",
+          action_payload_json: JSON.stringify({ contact_id: contactId }),
+          priority:           riskLevel === "critical" ? "high" : "medium",
+          status:             "pending",
+        })
+        if (suggestionError) {
+          console.error("[fatigue] smart_assistant_suggestions insert refused:", suggestionError.message)
+        }
+      }
 
       // lifecycle_events sub-event
       await supabase.from("lifecycle_events").insert({

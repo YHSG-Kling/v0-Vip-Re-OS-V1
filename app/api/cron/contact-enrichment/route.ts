@@ -224,6 +224,20 @@ export async function GET(request: Request) {
     // after — the wrong shape).
     const totalProcessed = results.newEnrichments.success + results.lifeChangeChecks.success
     const { error: logError } = await supabase.from("cron_execution_logs").insert({
+      // DELIBERATELY UNTENANTED, and pinned as such by the tenant-stamp guard's
+      // allow-list. This row is the summary of ONE run that iterated EVERY active
+      // brokerage — `results` aggregates enrichments and life-change checks across
+      // all of them and `records_processed` is their sum. There is no brokerage
+      // this row is about, and stamping any one of them would file a
+      // platform-wide sweep inside a single tenant's health page while hiding it
+      // from the other tenants it also describes.
+      //
+      // It is READABLE where it belongs, which is what separates this from an
+      // omission: `app/actions/pl-truth-engine.ts:getCronHealth` and
+      // `lib/kernel/scraping.ts:loadScrapingDiagnostics` both read this ledger
+      // with NO brokerage predicate. Per-brokerage enrichment outcomes are
+      // recorded by the core against each brokerage's own rows, not here.
+      brokerage_id: null,
       cron_path: "contact-enrichment",
       cron_name: "Contact enrichment",
       status: "completed",

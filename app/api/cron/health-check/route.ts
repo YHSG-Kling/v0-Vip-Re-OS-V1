@@ -523,7 +523,16 @@ export async function POST(request: NextRequest) {
     // and cron_health_snapshot, which reads this ledger, would have called the
     // job healthy while the tables it feeds stayed empty.
     const wroteNothing = writeFailures.length > 0
-    await supabase.from("cron_execution_logs").insert({
+    const { error: runLogError } = await supabase.from("cron_execution_logs").insert({
+      // DELIBERATELY UNTENANTED (allow-listed in the tenant-stamp guard). This
+      // run polls `service_status` for EVERY brokerage — `services` is unfiltered
+      // unless a manual trigger names one — and `results` / `writeFailures`
+      // aggregate across all of them. The per-brokerage findings are the
+      // `system_health_checks` rows above, each stamped with the service row's own
+      // `brokerage_id`; this row is the sweep, and the sweep belongs to nobody.
+      // Readable on the two no-predicate platform readers of this ledger
+      // (pl-truth-engine:getCronHealth, scraping:loadScrapingDiagnostics).
+      brokerage_id: null,
       cron_path: "/api/cron/health-check",
       cron_name: "System Health Check",
       status: wroteNothing ? "failed" : "completed",
@@ -536,6 +545,12 @@ export async function POST(request: NextRequest) {
       completed_at: new Date().toISOString(),
       metadata: { results, writeFailures, skippedDecommissioned },
     })
+    // A monitoring job whose OWN run record was refused reported a clean tick
+    // over a write that never landed — the same "green over an absence" this
+    // route already fixed for `service_status` and `health_check_history`.
+    if (runLogError) {
+      console.error("[health-check] cron_execution_logs write refused:", runLogError.message)
+    }
 
     return NextResponse.json({
       success: !wroteNothing,
@@ -549,8 +564,16 @@ export async function POST(request: NextRequest) {
     const durationMs = Date.now() - startTime
     console.error("Health check cron failed:", error)
 
-    // Log failure
-    await supabase.from("cron_execution_logs").insert({
+    // Log failure.
+    //
+    // THE OUTER CATCH OF A PLATFORM-WIDE SWEEP — the wave-23 class exactly, and
+    // allow-listed for the same reason. Nothing here can attribute the failure to
+    // a tenant: it fires before any service row is known (a refused
+    // `service_status` read reaches this path), so there is no record to resolve
+    // a brokerage through and inventing one would report a platform outage as one
+    // brokerage's problem.
+    const { error: failureLogError } = await supabase.from("cron_execution_logs").insert({
+      brokerage_id: null,
       cron_path: "/api/cron/health-check",
       cron_name: "System Health Check",
       status: "failed",
@@ -559,6 +582,9 @@ export async function POST(request: NextRequest) {
       started_at: new Date(startTime).toISOString(),
       completed_at: new Date().toISOString(),
     })
+    if (failureLogError) {
+      console.error("[health-check] failure cron_execution_logs write refused:", failureLogError.message)
+    }
 
     return NextResponse.json(
       { error: "Health check failed", message: error instanceof Error ? error.message : "Unknown" },

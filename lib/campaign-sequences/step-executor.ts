@@ -146,8 +146,17 @@ export async function executeSequenceStep(
     )
 
     if (!gateResult.allowed) {
-      await supabase.from("sequence_step_executions").insert({
+      // TENANT: `sequence_enrollments.brokerage_id`, read at step 1 — the record
+      // this execution is filed against. `runChannelOrderLearning`
+      // (lib/campaign-sequences/channel-order-runner.ts:23) reads this ledger
+      // `.eq("brokerage_id", brokerageId)` with a `brokerages.id` handed to it by
+      // the weekly learning cron, and the enrollment's brokerage IS that id.
+      // Unstamped, every authority-blocked step was excluded from the channel
+      // learner's window — so the learner ranked channels over the sends that
+      // happened and never over the ones the compliance gate stopped.
+      const { error: blockedLedgerError } = await supabase.from("sequence_step_executions").insert({
         enrollment_id: enrollmentId,
+        brokerage_id: brokerageId,
         sequence_id: enrollment.sequence_id,
         step_id: step.id,
         contact_id: contactId,
@@ -156,6 +165,9 @@ export async function executeSequenceStep(
         blocked_reason: gateResult.reason ?? "Authority gate blocked",
         sent_at: null,
       })
+      if (blockedLedgerError) {
+        console.error("[executeSequenceStep] authority_blocked ledger write refused:", blockedLedgerError.message)
+      }
 
       await processKernelEvent({
         event: KernelEvent.AUTHORITY_BLOCKED,
@@ -355,14 +367,18 @@ export async function executeSequenceStep(
     const defers  = (previousOutputs.__defers as Record<string, number> | undefined) ?? {}
     const decision = decideDeferral(defers[stepKey] ?? 0)
 
-    await supabase.from("sequence_step_executions").insert({
-      enrollment_id: enrollmentId, sequence_id: enrollment.sequence_id, step_id: step.id,
+    // Same tenant, same source: the enrollment this deferral belongs to.
+    const { error: deferralLedgerError } = await supabase.from("sequence_step_executions").insert({
+      enrollment_id: enrollmentId, brokerage_id: brokerageId, sequence_id: enrollment.sequence_id, step_id: step.id,
       contact_id: contactId, channel: step.channel, status: "skipped",
       blocked_reason: `over-touch deferral (attempt ${decision.attempt}/${MAX_DEFERS}): ${dispatchResult.error ?? ""}`.trim(),
       sent_at: null,
       provider_key: dispatchResult.providerKey ?? null,
       started_at: stepStartedAt, finished_at: now, duration_ms: durationMs,
     })
+    if (deferralLedgerError) {
+      console.error("[executeSequenceStep] deferral ledger write refused:", deferralLedgerError.message)
+    }
 
     if (decision.action === "reschedule") {
       // Retry the SAME step (current_step unchanged) after the backoff — touch preserved.
@@ -422,10 +438,17 @@ export async function executeSequenceStep(
   // ── Step 10: the per-step ledger (ONE row, every path — m302) ──────────────
   // Carries what the dropped workflow_step_runs duplicate used to hold: the
   // step's output under its variable name, the provider that actually carried
-  // it, and the dispatch timing. Awaited, so a write failure surfaces instead
-  // of being swallowed the way the duplicate's .catch(() => {}) swallowed it.
-  await supabase.from("sequence_step_executions").insert({
+  // it, and the dispatch timing. Awaited — but awaiting is not observing:
+  // supabase-js RESOLVES a refused insert, so until this was destructured a
+  // refusal was swallowed exactly as the duplicate's `.catch(() => {})` was.
+  //
+  // THIS is the row `runChannelOrderLearning` counts (`status = 'sent'`, plus
+  // `replied_at`). Unstamped it fell outside that reader's
+  // `.eq("brokerage_id", …)`, so the channel-order advisory was computed over an
+  // empty window for every brokerage and could only ever recommend nothing.
+  const { error: stepLedgerError } = await supabase.from("sequence_step_executions").insert({
     enrollment_id: enrollmentId,
+    brokerage_id: brokerageId,
     sequence_id: enrollment.sequence_id,
     step_id: step.id,
     contact_id: contactId,
@@ -441,6 +464,9 @@ export async function executeSequenceStep(
     finished_at: now,
     duration_ms: durationMs,
   })
+  if (stepLedgerError) {
+    console.error("[executeSequenceStep] step ledger write refused:", stepLedgerError.message)
+  }
 
   // ── Step 12: isa_outreach_log + message_provider_logs ─────────────────────
   let isaOutreachLogId: string | null = null
@@ -535,8 +561,13 @@ async function logAndSkip(
   supabase: ReturnType<typeof createServiceClient>,
   opts: { enrollmentId: string; enrollment: any; step: any; contactId: string | null; reason: string }
 ) {
-  await supabase.from("sequence_step_executions").insert({
+  // The tenant comes off the enrollment record this helper is already handed —
+  // the same `sequence_enrollments.brokerage_id` its three sibling writers use.
+  // Never the caller's, never guessed: an execution belongs to the enrollment it
+  // executes, and that is the id the channel-order learner compares.
+  const { error: skipLedgerError } = await supabase.from("sequence_step_executions").insert({
     enrollment_id: opts.enrollmentId,
+    brokerage_id: opts.enrollment.brokerage_id,
     sequence_id: opts.enrollment.sequence_id,
     step_id: opts.step.id,
     contact_id: opts.contactId,
@@ -545,6 +576,9 @@ async function logAndSkip(
     blocked_reason: opts.reason,
     sent_at: null,
   })
+  if (skipLedgerError) {
+    console.error("[executeSequenceStep] skip ledger write refused:", skipLedgerError.message)
+  }
 }
 
 // ─── Helper: advance enrollment ───────────────────────────────────────────────

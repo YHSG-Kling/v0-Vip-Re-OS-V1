@@ -111,10 +111,37 @@ export async function recordVisitor(params: {
 
     // If contact_id is provided, use direct insert
     if (params.contactId) {
+      // TENANT: the EVENT'S brokerage, read from the record this attendee is
+      // filed against — the same anchor `app/api/open-house/attend/route.ts` and
+      // `lib/kernel/open-house.ts` already use for this table, so there is one
+      // way an attendee gets its tenant rather than two.
+      //
+      // The event is also OWNERSHIP-CHECKED against the caller's brokerage here.
+      // `endOpenHouseEvent` reads attendees `.eq("event_id", …).eq("brokerage_id",
+      // <caller's users.brokerage_id>)`, so an attendee whose event belongs to
+      // another brokerage is unreadable however it is stamped — and stamping the
+      // caller's brokerage on another tenant's event would file the row across
+      // the boundary. Refuse instead.
+      const { data: event, error: eventErr } = await supabase
+        .from("open_house_events")
+        .select("id, brokerage_id")
+        .eq("id", params.openHouseId)
+        .maybeSingle()
+      if (eventErr) {
+        return { success: false, error: `Could not verify the open house: ${eventErr.message}` }
+      }
+      if (!event) {
+        return { success: false, error: "Open house event not found" }
+      }
+      if (event.brokerage_id !== userRow.brokerage_id) {
+        return { success: false, error: "Forbidden: this open house belongs to another brokerage" }
+      }
+
       const { data, error } = await supabase
         .from("open_house_attendees")
         .insert({
           event_id: params.openHouseId,
+          brokerage_id: event.brokerage_id,
           contact_id: params.contactId,
           name: `${params.firstName ?? ""} ${params.lastName ?? ""}`.trim(),
           email: params.email,
@@ -1504,11 +1531,39 @@ export async function checkInAttendee(params: {
       return { success: false, error: "Already checked in" }
     }
 
-    // Create attendee record
-    const { data: attendee } = await supabase
+    // TENANT: the EVENT'S brokerage — the record this attendee is filed against.
+    // Nothing else in this function's scope carries one (it takes no caller
+    // context at all), and `endOpenHouseEvent` pairs `event_id` with the caller's
+    // brokerage when it reads attendees back, so the event is the only anchor
+    // that can make this row readable by the surface that owns it.
+    const { data: event, error: eventErr } = await supabase
+      .from("open_house_events")
+      .select("id, brokerage_id")
+      .eq("id", params.eventId)
+      .maybeSingle()
+    if (eventErr) {
+      return { success: false, error: `Could not verify the open house: ${eventErr.message}` }
+    }
+    if (!event) {
+      return { success: false, error: "Open house event not found" }
+    }
+
+    // Create attendee record.
+    //
+    // THE INSERT IS DESTRUCTURED, AND IT MATTERS MORE HERE THAN THE STAMP:
+    // `open_house_attendees.contact_id` is NOT NULL on the live schema and this
+    // writer sends no contact at all, so every call has been refused 23502 —
+    // while `const { data: attendee }` read the refusal as "no row returned" and
+    // the function returned `{ success: true, data: null }`. Resolving an email
+    // to a contact (or creating one, the way the public sign-in route does) is a
+    // product decision, so it is NAMED here rather than guessed at: this action
+    // currently has no callers in the tree, and the check-in surface uses
+    // `app/actions/seller-open-house.ts:checkInAttendee` instead.
+    const { data: attendee, error: attendeeErr } = await supabase
       .from("open_house_attendees")
       .insert({
         event_id: params.eventId,
+        brokerage_id: event.brokerage_id,
         email: params.contactEmail,
         name: params.contactName,
         phone: params.contactPhone ?? null,
@@ -1521,6 +1576,10 @@ export async function checkInAttendee(params: {
       })
       .select()
       .maybeSingle()
+
+    if (attendeeErr) {
+      return { success: false, error: attendeeErr.message }
+    }
 
     revalidatePath("/dashboard/open-house")
     return { success: true, data: attendee }

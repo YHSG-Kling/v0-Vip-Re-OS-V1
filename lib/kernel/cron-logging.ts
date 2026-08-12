@@ -74,16 +74,39 @@ export async function createCronRunContext(
 
     // Persist immediately so cron_name is stored in cron_execution_logs
     // from the very first moment. recordCronStart() then updates status to 'running'.
+    //
+    // THE TENANT WAS ACCEPTED AND THEN DROPPED. `CreateCronRunContextInput`
+    // has carried `brokerage_id?` since it was written, and the returned
+    // `CronRunContext` reports it back — but the row itself never received it, so
+    // a caller that passed one got no effect anywhere. Two things read the column
+    // and both were reading a NULL that no caller could change:
+    //
+    //   · `app/actions/system-health.ts:getCronExecutionLogs` filters
+    //     `.eq("brokerage_id", ctx.brokerageId)` for the broker health page, and
+    //     `NULL = <uuid>` is NULL — so a scoped run could never appear on the
+    //     surface of the brokerage it ran for.
+    //   · `recordCronSuccess` / `recordCronFailure` below read `logEntry
+    //     .brokerage_id` and fall back to the literal string `"system"` when it is
+    //     null, which is what every kernel event from this module has carried.
+    //
+    // NULL IS STILL THE RIGHT ANSWER FOR A PLATFORM-WIDE SWEEP, and that is the
+    // majority of this tree's crons: a run that iterates every brokerage belongs
+    // to none of them, and filing it under one would put a platform outage inside
+    // a single tenant's console. Those rows are NOT lost — two surfaces read this
+    // ledger with NO brokerage predicate at all (`app/actions/pl-truth-engine.ts:
+    // getCronHealth` and `lib/kernel/scraping.ts:loadScrapingDiagnostics`), which
+    // is what makes an untenanted platform run readable rather than invisible.
     const supabase = createServiceClient()
     const { error: insertError } = await supabase
       .from("cron_execution_logs")
       .insert({
-        id:          context_id, // correlation key (no context_id column; id is the key)
-        cron_name:   input.cron_name,
-        cron_path:   input.cron_path,
-        status:      "started",
+        id:           context_id, // correlation key (no context_id column; id is the key)
+        brokerage_id: input.brokerage_id ?? null,
+        cron_name:    input.cron_name,
+        cron_path:    input.cron_path,
+        status:       "started",
         started_at,
-        metadata:    input.params ? { params: input.params } : {},
+        metadata:     input.params ? { params: input.params } : {},
       })
 
     if (insertError) {
@@ -106,6 +129,18 @@ export async function createCronRunContext(
 export interface RecordCronStartInput {
   context_id: string
   input_count?: number  // optional: number of items to process
+  /**
+   * Optional tenant, for the FALLBACK INSERT path below only.
+   *
+   * That path runs when `createCronRunContext`'s row is missing, so it is
+   * reconstructing a row from nothing — it already loses `cron_path` to the
+   * literal "unknown". Without this, it also loses the tenant, and the
+   * reconstructed row can never appear on the brokerage health page even when
+   * the run was scoped. Callers that hold the context can pass
+   * `context.brokerage_id` straight through; a platform-wide sweep passes
+   * nothing and the row stays untenanted, which is correct for it.
+   */
+  brokerage_id?: string
 }
 
 export async function recordCronStart(
@@ -131,11 +166,12 @@ export async function recordCronStart(
       const { error: insertError } = await supabase
         .from("cron_execution_logs")
         .insert({
-          id:         input.context_id,
-          cron_path:  "unknown", // NOT NULL; original context lost on this fallback path
-          status:     "started",
-          started_at: new Date().toISOString(),
-          metadata:   { input_count: input.input_count },
+          id:           input.context_id,
+          brokerage_id: input.brokerage_id ?? null, // see RecordCronStartInput
+          cron_path:    "unknown", // NOT NULL; original context lost on this fallback path
+          status:       "started",
+          started_at:   new Date().toISOString(),
+          metadata:     { input_count: input.input_count },
         })
       if (insertError) {
         console.error("[cron-kernel] recordCronStart fallback insert error:", insertError.message)

@@ -355,11 +355,22 @@ export async function endOpenHouseEvent(params: {
 
   if (updateErr) return { success: false, error: updateErr.message }
 
-  const { data: attendees } = await supabase
+  // THE READER THAT DECIDES WHETHER AN ATTENDEE EXISTS AT ALL — it drives the
+  // scoring loop below and the OPEN_HOUSE_ATTENDEE_CAPTURED events after it.
+  // supabase-js RESOLVES a refused query, so `const { data: attendees }` alone
+  // read a refusal as "nobody came": the event closed, every attendee went
+  // unscored, no capture event fired, and the action returned success. This is
+  // also the equality that makes an UNSTAMPED attendee invisible — `NULL =
+  // <uuid>` is never true — so the two failure modes were indistinguishable here.
+  const { data: attendees, error: attendeesError } = await supabase
     .from("open_house_attendees")
     .select("id, arrival_time, check_in_time, working_with_agent, interest_level, notes")
     .eq("event_id", params.eventId)
     .eq("brokerage_id", auth.brokerageId)
+
+  if (attendeesError) {
+    return { success: false, error: `Could not read this event's attendees: ${attendeesError.message}` }
+  }
 
   if (attendees?.length) {
     for (const attendee of attendees) {
