@@ -20,6 +20,13 @@ import { createServiceClient } from '@/lib/supabase/service'
 export async function triggerInitialScoring(leadId: string): Promise<void> {
   const supabase = createServiceClient()
 
+  // TENANT ANCHOR, HOISTED ABOVE THE TRY. The catch below files an
+  // automation_errors row and `lead` is scoped inside the try, so the anchor has
+  // to live out here. Re-reading the lead from inside the error handler is the
+  // trap: that read can itself be refused, and code that reports a failure must
+  // never be able to lose it.
+  let scoringBrokerageId: string | null = null
+
   try {
     // Fetch the lead data for scoring
     const { data: lead, error: fetchError } = await supabase
@@ -31,6 +38,10 @@ export async function triggerInitialScoring(leadId: string): Promise<void> {
     if (fetchError || !lead) {
       throw new Error('Lead not found for scoring')
     }
+
+    // The lead is the record this scoring run — and any failure of it — is filed
+    // against.
+    scoringBrokerageId = (lead.brokerage_id as string | null) ?? null
 
     // Calculate lead score based on available data
     let score = 0
@@ -76,10 +87,23 @@ export async function triggerInitialScoring(leadId: string): Promise<void> {
     // Log error but don't throw - scoring failure shouldn't block promotion
     console.error(`[v0] Initial scoring failed for lead ${leadId}:`, error.message)
     
-    // Record scoring failure in automation_errors
-    await supabase
+    // Record scoring failure in automation_errors. TENANT: the hoisted anchor.
+    // Null means the lead was never read (the "Lead not found for scoring" path),
+    // which is precisely the case with no tenant to attribute the failure to —
+    // and the failure is already on the console line above, so nothing is lost by
+    // declining to file a row the automations console can neither see nor
+    // resolve (`workflows.ts:531` treats `.eq("brokerage_id", …)` as an ownership
+    // check and returns "Forbidden" on a miss).
+    if (!scoringBrokerageId) {
+      console.error(
+        `[v0] Initial scoring: no brokerage resolved for lead ${leadId} before the failure — automation_errors row NOT written rather than written where the console can neither see nor resolve it`,
+      )
+      return
+    }
+    const { error: scoringLogError } = await supabase
       .from('automation_errors')
       .insert({
+        brokerage_id: scoringBrokerageId,
         workflow_name: 'initial_lead_scoring',
         error_message: error.message,
         context_json: JSON.stringify({ leadId }),
@@ -87,5 +111,8 @@ export async function triggerInitialScoring(leadId: string): Promise<void> {
         status: 'open',
         created_at: new Date().toISOString(),
       })
+    if (scoringLogError) {
+      console.error('[v0] Initial scoring: automation_errors insert refused:', scoringLogError.message)
+    }
   }
 }

@@ -38,6 +38,7 @@ import { generateObject } from "@/lib/ai/generate"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import { resolveAgentRecipient } from "@/lib/notifications/recipient-tenant"
 import { z } from "zod"
 
 // ==================== TYPES ====================
@@ -785,18 +786,42 @@ export async function certifyAgent(params: {
       })
       .eq("id", params.agentId)
 
-    // Send certification notification — params.agentId is agents.id; notifications
-    // targets users.id, so resolve the agent's user (the congrats never arrived).
-    const { data: certAgent } = await supabase
-      .from("agents").select("user_id").eq("id", params.agentId).maybeSingle()
-    await supabase.from("notifications").insert({
-      user_id: certAgent?.user_id ?? params.agentId,
-      type: "certification_achieved",
-      title: "Congratulations! You're Certified!",
-      body: "Welcome to the team. You now have full access to the platform.",
-      priority: "high",
-      created_at: new Date().toISOString(),
-    })
+    // Send certification notification.
+    //
+    // RECIPIENT + TENANT, resolved ONCE through the record this row is filed
+    // against: `params.agentId` is an agents.id, and `notifications.user_id` is
+    // `REFERENCES users(id)` — DISJOINT spaces. The previous
+    // `certAgent?.user_id ?? params.agentId` fell back ACROSS that boundary, so
+    // whenever the agents read came back empty (or was refused, which arrives
+    // identically when `error` is not destructured) the insert carried an
+    // agents.id into a users FK and Postgres refused it 23503. The congrats did
+    // not arrive late; it did not arrive.
+    //
+    // The tenant is the RECIPIENT's `users.brokerage_id` — the exact value
+    // app/api/dashboard/badge-counts/route.ts:62 compares against. Unstamped,
+    // `NULL = <uuid>` is NULL and the certification never counts toward the
+    // bell, on the one notification whose entire job is to be seen.
+    const certRecipient = await resolveAgentRecipient(supabase, params.agentId)
+    if (!certRecipient.ok) {
+      console.error(`[ai-agent-onboarding] certifyAgent: ${certRecipient.reason} — certification notification NOT written`)
+    } else if (!certRecipient.userId || !certRecipient.brokerageId) {
+      console.error(
+        `[ai-agent-onboarding] certifyAgent: agent ${params.agentId} resolves to no user or no brokerage — certification notification NOT written rather than written where the bell cannot count it`,
+      )
+    } else {
+      const { error: certNotifyError } = await supabase.from("notifications").insert({
+        user_id: certRecipient.userId,
+        brokerage_id: certRecipient.brokerageId,
+        type: "certification_achieved",
+        title: "Congratulations! You're Certified!",
+        body: "Welcome to the team. You now have full access to the platform.",
+        priority: "high",
+        created_at: new Date().toISOString(),
+      })
+      if (certNotifyError) {
+        console.error("[ai-agent-onboarding] certification notification insert refused:", certNotifyError.message)
+      }
+    }
 
     revalidatePath("/dashboard/admin/users")
 

@@ -5,6 +5,9 @@ import { getAgentContext } from "@/lib/identity"
 import { agentIdForUser } from "@/lib/agents/agent-for-user"
 import { logCreditStatusUpdated } from "@/lib/events"
 import { dispatchSms } from "@/lib/providers/dispatch"
+// The ONE way a notifications row gets its tenant — the recipient's
+// users.brokerage_id, the exact value badge-counts compares against.
+import { resolveRecipientBrokerageId, resolveAgentRecipient } from "@/lib/notifications/recipient-tenant"
 
 // =====================================================
 // CREDIT COPILOT SERVER ACTIONS
@@ -223,16 +226,36 @@ export async function handlePartnerStatusUpdate(payload: any) {
   const supabase = await createServerClient()
   const { contact_id, partner_id, old_status, new_status, user_id } = payload
 
-  // Create notification
+  // Create notification.
+  //
+  // TENANT — the RECIPIENT's `users.brokerage_id`, resolved ONCE here and reused
+  // below rather than re-derived. `user_id` is a users.id; the `agents` row read
+  // further down for the tasks insert is a DIFFERENT id space and its
+  // `brokerage_id` is NOT what badge-counts compares against, so it is not
+  // borrowed for this stamp.
+  const statusTenant = await resolveRecipientBrokerageId(supabase, user_id)
+  if (!statusTenant.ok) {
+    console.error(`[credit-copilot] handlePartnerStatusUpdate: ${statusTenant.reason} — status notification NOT written`)
+  }
   if (user_id) {
-    await supabase.from("notifications").insert({
-      user_id: user_id,
-      type: "partner_status_update",
-      title: "Partner Status Updated",
-      body: `Credit partner status changed from ${old_status} to ${new_status}.`,
-      entity_type: "contact",
-      entity_id: contact_id,
-    })
+    if (!statusTenant.ok || !statusTenant.brokerageId) {
+      console.error(
+        `[credit-copilot] handlePartnerStatusUpdate: no brokerage resolves for recipient ${user_id} — status notification NOT written rather than written where the bell cannot count it`,
+      )
+    } else {
+      const { error: statusNotifyError } = await supabase.from("notifications").insert({
+        user_id: user_id,
+        brokerage_id: statusTenant.brokerageId,
+        type: "partner_status_update",
+        title: "Partner Status Updated",
+        body: `Credit partner status changed from ${old_status} to ${new_status}.`,
+        entity_type: "contact",
+        entity_id: contact_id,
+      })
+      if (statusNotifyError) {
+        console.error("[credit-copilot] partner_status_update notification insert refused:", statusNotifyError.message)
+      }
+    }
   }
 
   // Create follow-up task based on new status
@@ -265,17 +288,35 @@ export async function handleTargetReached(payload: any) {
     })
     .eq("id", contact_id)
 
-  // Create celebration notification
+  // Create celebration notification.
+  //
+  // TENANT — the RECIPIENT's `users.brokerage_id` (the one resolver; see
+  // lib/notifications/recipient-tenant.ts). `user_id` is a users.id and is never
+  // interchanged with the `agents.id` resolved below for the follow-up task.
+  const targetTenant = await resolveRecipientBrokerageId(supabase, user_id)
+  if (!targetTenant.ok) {
+    console.error(`[credit-copilot] handleTargetReached: ${targetTenant.reason} — celebration notification NOT written`)
+  }
   if (user_id) {
-    await supabase.from("notifications").insert({
-      user_id: user_id,
-      type: "credit_target_reached",
-      title: "Client Reached Credit Target!",
-      body: `Your client reached their target credit score of ${target_score}. Time to re-engage for home buying!`,
-      entity_type: "contact",
-      entity_id: contact_id,
-      priority: "high",
-    })
+    if (!targetTenant.ok || !targetTenant.brokerageId) {
+      console.error(
+        `[credit-copilot] handleTargetReached: no brokerage resolves for recipient ${user_id} — celebration notification NOT written rather than written where the bell cannot count it`,
+      )
+    } else {
+      const { error: targetNotifyError } = await supabase.from("notifications").insert({
+        user_id: user_id,
+        brokerage_id: targetTenant.brokerageId,
+        type: "credit_target_reached",
+        title: "Client Reached Credit Target!",
+        body: `Your client reached their target credit score of ${target_score}. Time to re-engage for home buying!`,
+        entity_type: "contact",
+        entity_id: contact_id,
+        priority: "high",
+      })
+      if (targetNotifyError) {
+        console.error("[credit-copilot] credit_target_reached notification insert refused:", targetNotifyError.message)
+      }
+    }
   }
 
   // Create follow-up task
@@ -720,18 +761,46 @@ export async function trackCreditUsage(agentId: string, amount: number) {
   const percentUsed = (newUsed / limit) * 100
 
   if (percentUsed >= 80) {
-    // Send warning notification. notifications.user_id is a users.id; agentId is an
-    // agents.id here, so resolve the owning user.
-    const { data: ownerAgent } = await supabase
-      .from("agents").select("user_id").eq("id", agentId).maybeSingle()
-    await supabase.from("notifications").insert({
-      user_id: ownerAgent?.user_id ?? user.id,
-      type: "credit_budget_warning",
-      title: "Credit Budget Alert",
-      body: `You've used ${percentUsed.toFixed(0)}% of your monthly credit budget ($${newUsed.toLocaleString()} of $${limit.toLocaleString()})`,
-      // priority check allows low|medium|high|critical ('urgent' violated it)
-      priority: percentUsed >= 100 ? "critical" : "high",
-    })
+    // Send warning notification. `notifications.user_id` is a users.id; `agentId`
+    // is an agents.id here, so the owning user is RESOLVED — never substituted.
+    //
+    // The recipient is decided FIRST, then the tenant is resolved from whichever
+    // recipient that turned out to be, because badge-counts compares against the
+    // brokerage of the user the row is ADDRESSED to. The pre-existing fallback to
+    // the caller (`user.id`) is preserved — this budget belongs to an agent whose
+    // agents row may not resolve, and the caller is the one who triggered the
+    // spend — but it now only fires on a genuine "no such agent", not on a
+    // REFUSED read, which used to arrive identically and silently redirect
+    // another agent's budget alert to whoever called.
+    const budgetOwner = await resolveAgentRecipient(supabase, agentId)
+    if (!budgetOwner.ok) {
+      console.error(`[credit-copilot] trackCreditUsage: ${budgetOwner.reason} — budget warning NOT written`)
+    } else {
+      const budgetRecipientId = budgetOwner.userId ?? user.id
+      const budgetTenant = budgetOwner.userId
+        ? { ok: true as const, brokerageId: budgetOwner.brokerageId }
+        : await resolveRecipientBrokerageId(supabase, user.id)
+      if (!budgetTenant.ok) {
+        console.error(`[credit-copilot] trackCreditUsage: ${budgetTenant.reason} — budget warning NOT written`)
+      } else if (!budgetTenant.brokerageId) {
+        console.error(
+          `[credit-copilot] trackCreditUsage: no brokerage resolves for recipient ${budgetRecipientId} — budget warning NOT written rather than written where the bell cannot count it`,
+        )
+      } else {
+        const { error: budgetNotifyError } = await supabase.from("notifications").insert({
+          user_id: budgetRecipientId,
+          brokerage_id: budgetTenant.brokerageId,
+          type: "credit_budget_warning",
+          title: "Credit Budget Alert",
+          body: `You've used ${percentUsed.toFixed(0)}% of your monthly credit budget ($${newUsed.toLocaleString()} of $${limit.toLocaleString()})`,
+          // priority check allows low|medium|high|critical ('urgent' violated it)
+          priority: percentUsed >= 100 ? "critical" : "high",
+        })
+        if (budgetNotifyError) {
+          console.error("[credit-copilot] credit_budget_warning notification insert refused:", budgetNotifyError.message)
+        }
+      }
+    }
   }
 
   return {

@@ -154,19 +154,36 @@ export async function ingestMessageService(
     })
 
     if (!validation.allowed) {
+      // TENANT — `contact.brokerage_id`, from the contact this message is filed
+      // against, already read and error-checked at STEP 1 above. Resolved once,
+      // not re-fetched here. Unstamped, a role violation is invisible in the
+      // automations console AND un-resolvable through it (`workflows.ts:531`
+      // treats the same predicate as an ownership check and returns "Forbidden"
+      // on a miss), so a messaging-rule breach would be recorded where the
+      // brokerage that must act on it can never reach it.
       if (validation.shouldLog) {
-        await supabase.from('automation_errors').insert({
-          workflow_name: 'communication_spine_role_violation',
-          error_message: validation.reason || 'Role-based messaging rule violated',
-          severity: 'medium',
-          status: 'open',
-          context_json: JSON.stringify({
-            authorType,
-            contactId: params.contactId,
-            conversationId: convResult.conversationId,
-          }),
-          created_at: new Date().toISOString(),
-        })
+        if (!contact.brokerage_id) {
+          console.error(
+            `[communication-spine] role violation for contact ${params.contactId}: contact carries no brokerage_id — automation_errors row NOT written rather than written where the console can neither see nor resolve it`,
+          )
+        } else {
+          const { error: roleViolationLogError } = await supabase.from('automation_errors').insert({
+            brokerage_id: contact.brokerage_id,
+            workflow_name: 'communication_spine_role_violation',
+            error_message: validation.reason || 'Role-based messaging rule violated',
+            severity: 'medium',
+            status: 'open',
+            context_json: JSON.stringify({
+              authorType,
+              contactId: params.contactId,
+              conversationId: convResult.conversationId,
+            }),
+            created_at: new Date().toISOString(),
+          })
+          if (roleViolationLogError) {
+            console.error('[communication-spine] automation_errors insert refused:', roleViolationLogError.message)
+          }
+        }
       }
       return { success: false, error: validation.reason }
     }

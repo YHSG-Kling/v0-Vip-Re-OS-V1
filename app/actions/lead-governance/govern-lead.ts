@@ -277,8 +277,24 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
   } catch (error: any) {
     console.error(`[LeadGovernance] Error governing lead ${leadId}:`, error.message)
 
-    // Log to automation_errors
-    await supabase.from('automation_errors').insert({
+    // Log to automation_errors.
+    //
+    // TENANT — `brokerageId`, the caller's brokerage, resolved from the session
+    // ABOVE the try block, so the catch always holds it: an anchor resolved
+    // inside the try is not an anchor a catch can use. This row is the one the
+    // automations console reads, and that console does not merely filter by
+    // tenant — `app/actions/workflows.ts:531` uses
+    // `.eq("brokerage_id", brokerageId)` as an OWNERSHIP CHECK and returns
+    // "Forbidden" on a miss, so an unstamped governance failure is not just
+    // invisible, it is UNRESOLVABLE: the retry/acknowledge path refuses it
+    // forever. (`NULL = <uuid>` is NULL, never true.)
+    //
+    // `lead_id` is deliberately NOT stamped: the most common way to reach this
+    // catch is `Lead ${leadId} not found`, and `automation_errors.lead_id`
+    // REFERENCES leads(id) — filing the error would then fail on the very id
+    // that caused it.
+    const { error: governanceErrorLogError } = await supabase.from('automation_errors').insert({
+      brokerage_id: brokerageId,
       workflow_name: 'lead_governance',
       error_message: error.message,
       context_json: JSON.stringify({ leadId }),
@@ -286,6 +302,11 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
       status: 'open',
       created_at: new Date().toISOString(),
     })
+    if (governanceErrorLogError) {
+      // Named, never swallowed: the ORIGINAL failure is already in `error` and is
+      // returned below, so a failure to FILE it cannot be allowed to replace it.
+      console.error('[LeadGovernance] automation_errors insert refused:', governanceErrorLogError.message)
+    }
 
     return {
       success: false,

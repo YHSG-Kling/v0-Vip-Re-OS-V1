@@ -125,3 +125,79 @@ The eight confirmed tenant-class tables so far: `notifications`,
 `automation_errors`, `cron_execution_logs`, `system_health_checks`,
 `sequence_step_executions`, `open_house_attendees`, `social_posts`, and (from
 waves 20–21) the `ai_insights` / `compliance_flags` / `ai_predictions` family.
+
+## Outcome
+
+The agent corrected this audit's census, my own re-check was the faulty
+instrument, and the sharpest finding was one nobody had asked for.
+
+### The counts
+
+**`notifications` is 15, not 16.** `app/api/widget/intake/route.ts:228` was
+already stamped — via a **shorthand property** (`brokerage_id,`), which the
+scanner's `key:` pattern reported as a false red. **`automation_errors` is
+exactly 17**, plus one the census could never have seen: **`lead-acquisition-
+handlers.ts:34` was stamping `brokerage_id: null` explicitly**, which no
+"unstamped writer" scan will ever flag.
+
+**Neither table has a back-fill trigger** — zero non-internal triggers on both,
+measured. Unlike the wave-21 tables there is no net at all; the application
+stamp is the only mechanism.
+
+### The correction that mattered most
+
+`automation_errors` is **not** un-resolvable everywhere.
+`app/actions/workflows.ts:531` is, but `lib/platform/ai-ops.ts:73` reads it
+**cross-tenant with no brokerage predicate**, and the superadmin console
+resolves **by id alone**. That asymmetry is load-bearing: it is what makes
+**six deliberate untenanted writes defensible rather than lost** — five cron
+*outer* catches and the Engine-1 distribution failure, all on failures no record
+can attribute to a tenant, where stamping one would file a platform outage
+inside a single brokerage's console. All six were proven readable and resolvable
+on the platform console, all six replaced fire-and-forget with a destructured
+insert that cannot mask the original error, and an allow-list pins them so a
+seventh cannot quietly appear.
+
+### The live proof is the one worth keeping
+
+Two identical notifications to one agent: the badge counts **1, not 2** —
+unstamped 0, stamped 1 — **while RLS admits both**. So the escape was never what
+hid the row. **The reader's equality was.** That is the W22-4 thesis
+demonstrated end to end rather than argued, and it is why this work needed no
+migration.
+
+### My own re-check was wrong
+
+Checking the agent's count, a quick shell scan reported ~93 unstamped
+`notifications` sites against its 15. Three spot-checks settled it: two stamp
+`brokerage_id` on the **same line** as `user_id` and my regex required
+line-start, and the third is `.insert(rows)` with the rows built above. **My
+instrument was the broken one.** The agent's scanner had already been hardened
+for exactly these shapes — and hardened by *its own controls failing*, not by
+inspection: it had grepped only double quotes while 6 of 17 files use
+`from('automation_errors')`, it ran its insert window past the next `.from(` and
+invented 26 phantom sites, and it could not resolve `.map(… => ({…}))` fan-outs,
+leaving 10 writers unprovable.
+
+### Found beyond the brief
+
+Two id-space defects fixed — `alert-notifier.ts:133` and
+`cda-workflow-client.tsx:721` both put an `agents.id` into
+`notifications.user_id`, reporting delivery for rows that never landed. And one
+**not** fixed and correctly so: `handoff-queue-panel.tsx` receives an `agentId`
+prop that one caller fills with an `agents.id` and another with a `users.id`,
+while the component uses it as both. It is wrong in one caller either way, and
+which one is a **contract decision** — named, not guessed.
+
+**Readers repaired too:** `badge-counts` (a refused read silently rendered every
+badge zero), and both suppression reads now fail **closed** rather than
+re-sending.
+
+**21 assertions · 34 negative controls red · 5 specificity controls green.**
+Guard extended rather than added, so no `package.json` or `MAINTENANCE_DOMAINS`
+change was needed — the registry entry was appended to record what it now holds.
+
+### Verification
+
+Typecheck EXIT=0. Guard chain **223/223** including `test:sweep`, run after the
+last edit, in two halves.

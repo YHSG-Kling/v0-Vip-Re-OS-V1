@@ -117,9 +117,37 @@ export async function GET(req: NextRequest) {
     }
   } catch (err: any) {
     errors.push(`Earnings rollup failed: ${err.message}`)
-    void supabase
+    // PLATFORM-WIDE FAILURE, WRITTEN DELIBERATELY UNTENANTED — the one place in
+    // this wave where no tenant is the honest answer, and it is defended rather
+    // than assumed.
+    //
+    // This catch is the OUTER catch of a sweep that runs across EVERY brokerage
+    // (the per-item failures are caught inside the loop and pushed to `errors`).
+    // What failed is the job, not one tenant's work, so there is no record to
+    // resolve a tenant through and inventing one would attribute a platform
+    // outage to whichever brokerage happened to be first.
+    //
+    // Writing it untenanted is not "a row nobody can read", which is the rule
+    // this wave otherwise follows. Measured, not assumed: `lib/platform/ai-ops.ts:73`
+    // reads `automation_errors` CROSS-TENANT on the service client with NO
+    // brokerage predicate (`.not("status","in","(resolved,dismissed)")`), its row
+    // type carries `brokerageId: string | null` explicitly, and
+    // `app/actions/superadmin/ai-ops.ts:resolveAutomationErrorAction` resolves by
+    // id with no brokerage predicate either. So this row IS visible and IS
+    // resolvable — on the platform AI-ops console, which is exactly the audience
+    // a platform-wide cron failure belongs to, and is invisible to tenants, which
+    // is exactly right for a failure that is not theirs.
+    //
+    // The `void` fire-and-forget it replaces discarded the insert's own outcome,
+    // so a refused error-log looked identical to a filed one.
+    const { error: earnings_rollup_log_error } = await supabase
       .from("automation_errors")
-      .insert({ workflow_name: "earnings-rollup", error_message: err.message, severity: "error", created_at: ranAt })
+      .insert({ brokerage_id: null, workflow_name: "earnings-rollup", error_message: err.message, severity: "error", created_at: ranAt })
+    if (earnings_rollup_log_error) {
+      // The ORIGINAL failure is already in `errors` and in the response body, so a
+      // failure to FILE it is reported beside it and never replaces it.
+      console.error("[EarningsRollup] automation_errors insert refused:", earnings_rollup_log_error.message)
+    }
     await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
   }
 

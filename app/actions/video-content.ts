@@ -10,6 +10,9 @@ import { resolveProvider } from "@/lib/kernel/providers"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
+// The ONE way a notifications row gets its tenant — the recipient's
+// users.brokerage_id, the exact value badge-counts compares against.
+import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenant"
 
 // =====================================================
 // VIDEO CONTENT GENERATION SERVER ACTIONS
@@ -102,16 +105,34 @@ export async function handleVideoGenerated(payload: any) {
   const supabase = await createServerClient()
   const { video_id, video_type, listing_id, user_id } = payload
 
-  // Create notification for agent to review
+  // Create notification for agent to review.
+  //
+  // TENANT — the RECIPIENT's `users.brokerage_id`, the one resolver (see
+  // lib/notifications/recipient-tenant.ts). `user_id` here is a users.id; the
+  // `agents.id` this file resolves elsewhere via resolveAgentId is a DISJOINT
+  // space and is never substituted for it.
   if (user_id) {
-    await supabase.from("notifications").insert({
-      user_id: user_id,
-      type: "video_ready",
-      title: "Video Ready for Review",
-      body: `Your ${video_type} video is ready. Review and publish when ready.`,
-      entity_type: "video",
-      entity_id: video_id,
-    })
+    const readyTenant = await resolveRecipientBrokerageId(supabase, user_id)
+    if (!readyTenant.ok) {
+      console.error(`[video-content] handleVideoGenerated: ${readyTenant.reason} — video_ready notification NOT written`)
+    } else if (!readyTenant.brokerageId) {
+      console.error(
+        `[video-content] handleVideoGenerated: recipient ${user_id} has no brokerage — video_ready notification NOT written rather than written where the bell cannot count it`,
+      )
+    } else {
+      const { error: readyNotifyError } = await supabase.from("notifications").insert({
+        user_id: user_id,
+        brokerage_id: readyTenant.brokerageId,
+        type: "video_ready",
+        title: "Video Ready for Review",
+        body: `Your ${video_type} video is ready. Review and publish when ready.`,
+        entity_type: "video",
+        entity_id: video_id,
+      })
+      if (readyNotifyError) {
+        console.error("[video-content] video_ready notification insert refused:", readyNotifyError.message)
+      }
+    }
   }
 
   return { success: true }
@@ -157,16 +178,30 @@ export async function handleVideoPublished(payload: any) {
     })
     .eq("id", video_id)
 
-  // Create celebration notification
+  // Create celebration notification. TENANT: the RECIPIENT's
+  // `users.brokerage_id` — the one resolver.
   if (user_id) {
-    await supabase.from("notifications").insert({
-      user_id: user_id,
-      type: "video_published",
-      title: "Video Published!",
-      body: `Your video has been published to ${platforms?.join(", ") || "your channels"}.`,
-      entity_type: "video",
-      entity_id: video_id,
-    })
+    const publishedTenant = await resolveRecipientBrokerageId(supabase, user_id)
+    if (!publishedTenant.ok) {
+      console.error(`[video-content] handleVideoPublished: ${publishedTenant.reason} — video_published notification NOT written`)
+    } else if (!publishedTenant.brokerageId) {
+      console.error(
+        `[video-content] handleVideoPublished: recipient ${user_id} has no brokerage — video_published notification NOT written rather than written where the bell cannot count it`,
+      )
+    } else {
+      const { error: publishedNotifyError } = await supabase.from("notifications").insert({
+        user_id: user_id,
+        brokerage_id: publishedTenant.brokerageId,
+        type: "video_published",
+        title: "Video Published!",
+        body: `Your video has been published to ${platforms?.join(", ") || "your channels"}.`,
+        entity_type: "video",
+        entity_id: video_id,
+      })
+      if (publishedNotifyError) {
+        console.error("[video-content] video_published notification insert refused:", publishedNotifyError.message)
+      }
+    }
   }
 
   return { success: true }
@@ -176,16 +211,32 @@ export async function handleHighEngagement(payload: any) {
   const supabase = await createServerClient()
   const { video_id, engagement_type, engagement_count, user_id } = payload
 
-  // Create notification for high engagement
+  // Create notification for high engagement. TENANT: the RECIPIENT's
+  // `users.brokerage_id` — the one resolver. Note the `agents` read further down
+  // in this same function yields an `agents.brokerage_id`; it is deliberately NOT
+  // reused here, because the badge reader compares against the users row.
   if (user_id) {
-    await supabase.from("notifications").insert({
-      user_id: user_id,
-      type: "video_engagement",
-      title: "Video Performing Well!",
-      body: `Your video has ${engagement_count} ${engagement_type}. Great job!`,
-      entity_type: "video",
-      entity_id: video_id,
-    })
+    const engagementTenant = await resolveRecipientBrokerageId(supabase, user_id)
+    if (!engagementTenant.ok) {
+      console.error(`[video-content] handleHighEngagement: ${engagementTenant.reason} — video_engagement notification NOT written`)
+    } else if (!engagementTenant.brokerageId) {
+      console.error(
+        `[video-content] handleHighEngagement: recipient ${user_id} has no brokerage — video_engagement notification NOT written rather than written where the bell cannot count it`,
+      )
+    } else {
+      const { error: engagementNotifyError } = await supabase.from("notifications").insert({
+        user_id: user_id,
+        brokerage_id: engagementTenant.brokerageId,
+        type: "video_engagement",
+        title: "Video Performing Well!",
+        body: `Your video has ${engagement_count} ${engagement_type}. Great job!`,
+        entity_type: "video",
+        entity_id: video_id,
+      })
+      if (engagementNotifyError) {
+        console.error("[video-content] video_engagement notification insert refused:", engagementNotifyError.message)
+      }
+    }
   }
 
   // Create task to engage with comments if applicable

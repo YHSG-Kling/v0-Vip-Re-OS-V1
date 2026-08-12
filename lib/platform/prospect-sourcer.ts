@@ -28,6 +28,9 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { composeProspectOutreach, type ProspectRole } from "@/lib/platform/growth-funnel"
+// The ONE way a notifications row gets its tenant — the recipient's
+// users.brokerage_id, the exact value badge-counts compares against.
+import { resolveRecipientBrokerageIds } from "@/lib/notifications/recipient-tenant"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -151,29 +154,54 @@ export async function sourcePlatformProspects(
   try {
     const { data: brandRow } = await svc.from("platform_settings").select("product_brand").limit(1).maybeSingle()
     const brandName = ((brandRow as any)?.product_brand?.name as string | null) ?? null
-    const { data: staff } = await svc.from("users")
+    // `error` is destructured: a refused staff read would otherwise report as
+    // "there is no platform staff", and the digest would silently reach nobody
+    // while `digestSent` stayed false for a reason nobody could see.
+    //
+    // TENANT — the RECIPIENT's `users.brokerage_id`, resolved ONCE for the whole
+    // digest. Platform staff read this digest through the same badge-count route
+    // as everyone else, and that route ANDs `.eq("brokerage_id", …)` against
+    // their own users row, so an untenanted digest is invisible to exactly the
+    // people it is written for. See lib/notifications/platform-staff.ts for the
+    // measurement behind that.
+    const { data: staff, error: staffError } = await svc.from("users")
       .select("id")
       .in("platform_role", ["superadmin", "marketing", "support"])
       .limit(10)
+    if (staffError) out.errors.push(`digest staff read refused: ${staffError.message}`)
     const staffRows = (staff ?? []) as Array<{ id: string }>
-    if (staffRows.length > 0) {
+    const digestTenants = await resolveRecipientBrokerageIds(svc, staffRows.map((s) => s.id))
+    if (!digestTenants.ok) out.errors.push(`digest: ${digestTenants.reason}`)
+    if (staffRows.length > 0 && digestTenants.ok) {
       const lines = captured.length > 0
         ? captured.slice(0, 10).map((c) => {
             const draft = composeProspectOutreach({ name: c.name, roleInterest: c.role, company: null, brandName })
             return `· ${c.name} (${c.role}) — ${c.note}${c.sourceUrl ? ` — ${c.sourceUrl}` : ""}\n  Draft: ${draft.subject}`
           }).join("\n")
         : "No new OS-intent prospects captured this week (provider-gated: zero also means the scrape lane isn't configured)."
+      let digestDelivered = 0
       for (const s of staffRows) {
-        await svc.from("notifications").insert({
+        const digestBrokerageId = digestTenants.brokerageIds.get(s.id) ?? null
+        if (!digestBrokerageId) {
+          out.errors.push(`digest: staff ${s.id} has no brokerage — digest NOT written rather than written where the bell cannot count it`)
+          continue
+        }
+        const { error: digestError } = await svc.from("notifications").insert({
           user_id: s.id,
+          brokerage_id: digestBrokerageId,
           type: "platform_prospect_digest",
           title: `🎯 Platform prospects — week ${week}: ${captured.length} new`,
           body: `${lines}\n\nWork the funnel in the superadmin growth board. Nothing auto-sends. [week:${week}]`,
           priority: "medium",
           is_read: false,
-        }).then(() => {}, () => {})
+        })
+        if (digestError) out.errors.push(`digest ${s.id}: ${digestError.message}`)
+        else digestDelivered++
       }
-      out.digestSent = true
+      // `digestSent` used to be true whenever staff EXISTED, because the insert
+      // was `.then(() => {}, () => {})` — a fire-and-forget that discarded both
+      // outcomes. It now means what it says.
+      out.digestSent = digestDelivered > 0
     }
   } catch (e: any) {
     out.errors.push(`digest: ${e?.message ?? String(e)}`)

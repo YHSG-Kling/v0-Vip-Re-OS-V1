@@ -99,14 +99,29 @@ export async function logVendorUsage(event: VendorUsageEvent): Promise<UsageLogR
     if (error) {
       console.error('[v0] [VENDOR GOVERNANCE] Failed to log usage:', error)
       
-      // Log failure to automation_errors (but don't fail upstream)
-      await supabase.from('automation_errors').insert({
+      // Log failure to automation_errors (but don't fail upstream).
+      //
+      // TENANT — `event.brokerageId`, a REQUIRED field of this function's own
+      // parameter, so nothing is resolved and nothing can fail while resolving.
+      // It was already present in this call, spelled `brokerageId` and nested
+      // inside `context_json` — the same letters at the wrong depth, stamping
+      // nothing, because every reader filters `.eq("brokerage_id", …)` at depth 1
+      // and `workflows.ts:531` uses that predicate as an OWNERSHIP check. A
+      // brokerage losing vendor-cost attribution could neither see nor
+      // acknowledge that it had.
+      const { error: usageLogError } = await supabase.from('automation_errors').insert({
+        brokerage_id: event.brokerageId,
         workflow_name: 'vendor_usage_logging',
         error_message: `Failed to log ${event.vendorName} usage: ${error.message}`,
         severity: 'medium',
         status: 'open',
         context_json: JSON.stringify({ ...event }),
       })
+      if (usageLogError) {
+        // The original usage-tracking failure is returned below and is never
+        // replaced by a failure to file it.
+        console.error('[VENDOR GOVERNANCE] automation_errors insert refused:', usageLogError.message)
+      }
 
       return {
         success: false,
@@ -116,13 +131,21 @@ export async function logVendorUsage(event: VendorUsageEvent): Promise<UsageLogR
 
     // If anomaly detected, log it
     if (anomaly.detected) {
-      await supabase.from('automation_errors').insert({
+      // TENANT — `event.brokerageId`, the same anchor as above: the brokerage
+      // whose vendor spend the anomaly is about, and the only party who can judge
+      // whether it is real. Same nested-`brokerageId`-in-`context_json` trap, same
+      // depth-1 fix.
+      const { error: anomalyLogError } = await supabase.from('automation_errors').insert({
+        brokerage_id: event.brokerageId,
         workflow_name: 'vendor_usage_anomaly',
         error_message: `Anomaly detected: ${anomaly.reason}`,
         severity: 'low',
         status: 'open',
         context_json: JSON.stringify({ usageId: data.id, ...event }),
       })
+      if (anomalyLogError) {
+        console.error('[VENDOR GOVERNANCE] automation_errors anomaly insert refused:', anomalyLogError.message)
+      }
     }
 
     return {

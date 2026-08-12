@@ -192,7 +192,17 @@ export async function triggerDirectMailCampaign(context: DirectMailContext) {
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error)
 
-    await supabase.from('automation_errors').insert({
+    // TENANT — `context.brokerageId`, the brokerage this mailing was being sent
+    // for. It is a PARAMETER of the enclosing function, so the catch holds it
+    // unconditionally; nothing is resolved inside the error handler.
+    //
+    // Note it was already serialized INSIDE `context_json` — the same letters, at
+    // the wrong depth, stamping nothing. `automation_errors` readers filter
+    // `.eq("brokerage_id", …)` at depth 1 (`workflows.ts:531` as an OWNERSHIP
+    // check that returns "Forbidden" on a miss), so a nested copy leaves the
+    // failure both invisible and un-resolvable in the automations console.
+    const { error: directMailLogError } = await supabase.from('automation_errors').insert({
+      brokerage_id:  context.brokerageId,
       workflow_name: 'ai_isa_direct_mail',
       error_message: msg,
       context_json:  JSON.stringify(context),
@@ -200,6 +210,11 @@ export async function triggerDirectMailCampaign(context: DirectMailContext) {
       status:        'open',
       created_at:    new Date().toISOString(),
     })
+    if (directMailLogError) {
+      // The original failure is returned below; a failure to FILE it is reported
+      // beside it, never in place of it.
+      console.error('[direct-mail-trigger] automation_errors insert refused:', directMailLogError.message)
+    }
 
     return { success: false, error: msg }
   }

@@ -11,7 +11,7 @@ import { LessonCard, SpotlightLessonCard } from "@/app/components/portal/LessonC
 import { LessonDetailDrawer } from "@/app/components/portal/LessonDetailDrawer"
 import type { LessonFeedResult, LessonFeedItem } from "@/app/actions/portal-education"
 import { markResourceCompleted } from "@/app/actions/ai-client-portal"
-import { createClient } from "@/lib/supabase/client"
+import { notifyPortalEducationCompleted } from "@/app/actions/portal-education"
 
 interface LearnClientProps {
   contactId: string
@@ -111,16 +111,21 @@ export default function LearnClient({ contactId, initialFeed, agentId, contactFi
           lesson.key === lessonKey ? { ...lesson, isCompleted: true } : lesson
         )
 
-        // Fire agent notification if all lessons are now complete
+        // Fire agent notification if all lessons are now complete.
+        //
+        // This used to insert into `notifications` from the browser, on the
+        // contact's own session, passing `agentId` — a `contacts.agent_id`, i.e.
+        // an `agents.id` — as `notifications.user_id`, which is
+        // `REFERENCES users(id)`. Those are DISJOINT spaces, so every one of
+        // those inserts was refused 23503 and the `.catch()` never saw it
+        // (supabase-js RESOLVES a refused query). It also had no honest tenant to
+        // stamp, and an unstamped row is filtered out of the badge count anyway.
+        //
+        // The write now lives in the server action, which resolves the recipient
+        // and the tenant from the CONTACT record under an access check. See
+        // notifyPortalEducationCompleted in app/actions/portal-education.ts.
         if (newCompletedCount >= current.totalCount && agentId) {
-          const supabase = createClient()
-          supabase.from("notifications").insert({
-            user_id: agentId,
-            type: "portal_education_completed",
-            title: `${contactFirstName ?? "Your client"} completed all portal lessons`,
-            entity_type: "contact",
-            entity_id: contactId,
-          }).then(() => {}).catch(() => {})
+          notifyPortalEducationCompleted({ contactId, contactFirstName }).catch(() => {})
         }
 
         return {

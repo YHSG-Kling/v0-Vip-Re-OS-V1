@@ -18,6 +18,9 @@ import { staticLessonModuleId, isUuid, bridgeStaticLessonCompletion } from "@/li
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import type { PortalView } from "@/lib/kernel/portal"
+// The ONE way a notifications row gets its tenant — the recipient's
+// users.brokerage_id, the exact value badge-counts compares against.
+import { resolveAgentRecipient } from "@/lib/notifications/recipient-tenant"
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 async function requireContactAccess(contactId: string): Promise<
@@ -319,6 +322,103 @@ export async function markLessonRead(params: MarkLessonReadParams): Promise<{ su
   }).catch(err => {
     console.error("[PortalEducation] Error emitting kernel event:", err)
   })
+
+  return { success: true }
+}
+
+// ─── PORTAL EDUCATION COMPLETED → NOTIFY THE SUPERVISING AGENT ───────────────
+
+/**
+ * Tell the contact's supervising agent that the client has finished every portal
+ * lesson.
+ *
+ * MOVED HERE FROM THE CLIENT. `app/portal/[contactId]/learn/learn-client.tsx`
+ * used to write this `notifications` row itself, from the browser, on the
+ * contact's own session, and it was broken twice over:
+ *
+ *   1. IT WROTE AN `agents.id` INTO `notifications.user_id`. The prop it used is
+ *      `contact.agent_id`, and `contacts.agent_id` is an `agents.id` (migration
+ *      111), while `notifications.user_id` is `REFERENCES users(id)` — DISJOINT
+ *      spaces. Every one of these inserts was refused 23503, and the call site
+ *      was `.then(() => {}).catch(() => {})`, which catches nothing at all
+ *      because supabase-js RESOLVES a refused query. The agent has never been
+ *      told, and nothing anywhere recorded that.
+ *   2. IT COULD NOT HONESTLY STAMP A TENANT. A client component has no
+ *      trustworthy brokerage to stamp — anything it sent would be a prop, and
+ *      stamping the wrong one is the same dark bell as stamping none.
+ *
+ * Both are answered by resolving server-side, from the RECORD the row is filed
+ * against: `requireContactAccess` already reads the contact and yields its
+ * brokerage, and the agents row supplies the recipient's users.id. The tenant is
+ * then the RECIPIENT's `users.brokerage_id` — the one resolver, and the exact
+ * value app/api/dashboard/badge-counts/route.ts:62 compares against.
+ */
+export async function notifyPortalEducationCompleted(params: {
+  contactId: string
+  contactFirstName?: string | null
+}): Promise<{ success: boolean; error?: string }> {
+  const access = await requireContactAccess(params.contactId)
+  if (!access.ok) return { success: false, error: "Forbidden" }
+
+  const service = createServiceClient()
+
+  // The supervising agent comes from the CONTACT record, not from the caller —
+  // a portal contact is not an agent and must not name one.
+  const { data: contactRow, error: contactError } = await service
+    .from("contacts")
+    .select("agent_id")
+    .eq("id", params.contactId)
+    .maybeSingle()
+  if (contactError) {
+    console.error("[PortalEducation] notifyPortalEducationCompleted: contacts lookup refused:", contactError.message)
+    return { success: false, error: "Could not resolve the supervising agent" }
+  }
+  const agentId = (contactRow as { agent_id: string | null } | null)?.agent_id ?? null
+  if (!agentId) return { success: false, error: "This contact has no supervising agent" }
+
+  const recipient = await resolveAgentRecipient(service, agentId)
+  if (!recipient.ok) {
+    console.error(`[PortalEducation] notifyPortalEducationCompleted: ${recipient.reason}`)
+    return { success: false, error: "Could not resolve the supervising agent" }
+  }
+  if (!recipient.userId || !recipient.brokerageId) {
+    console.error(
+      `[PortalEducation] notifyPortalEducationCompleted: agent ${agentId} resolves to no user or no brokerage — completion notification NOT written rather than written where the bell cannot count it`,
+    )
+    return { success: false, error: "Could not resolve the supervising agent" }
+  }
+
+  // Idempotent: one completion notice per contact. The dedupe read is
+  // tenant-scoped for the same reason the write is — an untenanted or foreign
+  // prior row must not suppress this one — and destructures `error`, because a
+  // refused dedupe read that arrives as "no prior row" would send a duplicate.
+  const { data: prior, error: priorError } = await service
+    .from("notifications")
+    .select("id")
+    .eq("brokerage_id", recipient.brokerageId)
+    .eq("user_id", recipient.userId)
+    .eq("type", "portal_education_completed")
+    .eq("entity_id", params.contactId)
+    .limit(1)
+    .maybeSingle()
+  if (priorError) {
+    console.error("[PortalEducation] notifyPortalEducationCompleted: dedupe read refused:", priorError.message)
+    return { success: false, error: "Could not check for a prior notification" }
+  }
+  if (prior) return { success: true }
+
+  const { error: insertError } = await service.from("notifications").insert({
+    user_id: recipient.userId,
+    brokerage_id: recipient.brokerageId,
+    type: "portal_education_completed",
+    title: `${params.contactFirstName ?? "Your client"} completed all portal lessons`,
+    entity_type: "contact",
+    entity_id: params.contactId,
+  })
+  if (insertError) {
+    console.error("[PortalEducation] notifyPortalEducationCompleted: insert refused:", insertError.message)
+    return { success: false, error: "Failed to notify the agent" }
+  }
 
   return { success: true }
 }

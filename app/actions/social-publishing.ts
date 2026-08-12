@@ -6,6 +6,9 @@ import { revalidatePath } from "next/cache"
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { runComplianceGate } from "@/lib/kernel/marketing/real-estate-compliance-gate"
+// The ONE way a notifications row gets its tenant — the recipient's
+// users.brokerage_id, the exact value badge-counts compares against.
+import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenant"
 
 // =====================================================
 // AUTH HELPER
@@ -82,12 +85,20 @@ export async function handleContentApproved(payload: any) {
   const supabase = createServiceClient()
   const { content_id } = payload
 
-  // Verify post belongs to caller's brokerage before mutating
-  const { data: post } = await supabase
+  // Verify post belongs to caller's brokerage before mutating. `error` is
+  // destructured because this read is an OWNERSHIP GATE and also supplies the
+  // recipient of the notification below: supabase-js RESOLVES a refusal, so
+  // without it a refused read is indistinguishable from "no such post" — and a
+  // gate must fail closed for a reason it can name.
+  const { data: post, error: postLookupError } = await supabase
     .from("social_posts")
     .select("brokerage_id, user_id, status, scheduled_for")
     .eq("id", content_id)
     .maybeSingle()
+  if (postLookupError) {
+    console.error("[social-publishing] handleContentApproved: social_posts lookup refused:", postLookupError.message)
+    return { success: false, error: "Post not found" }
+  }
   if (!post) return { success: false, error: "Post not found" }
   if (post.brokerage_id !== caller.brokerageId) return { success: false, error: "Forbidden" }
 
@@ -110,15 +121,35 @@ export async function handleContentApproved(payload: any) {
     .eq("id", content_id)
     .eq("brokerage_id", caller.brokerageId)
 
-  await supabase.from("notifications").insert({
-    user_id: post.user_id,
-    type: "content_approved",
-    title: "Content Approved",
-    body: "Your social media content has been approved and is ready to publish.",
-    entity_type: "social_post",
-    entity_id: content_id,
-    created_at: new Date().toISOString(),
-  })
+  // TENANT — the RECIPIENT's `users.brokerage_id`, resolved once. It is NOT taken
+  // from `post.brokerage_id` even though that value is already in hand and was
+  // just checked equal to `caller.brokerageId`: badge-counts computes the
+  // brokerage from the SESSION USER's `users` row, so a row stamped with any
+  // other brokerage is filtered out exactly as surely as an unstamped one. The
+  // post's tenancy is the authorization question (answered above); the
+  // recipient's is the visibility question.
+  const approvalTenant = await resolveRecipientBrokerageId(supabase, post.user_id)
+  if (!approvalTenant.ok) {
+    console.error(`[social-publishing] handleContentApproved: ${approvalTenant.reason} — approval notification NOT written`)
+  } else if (!post.user_id || !approvalTenant.brokerageId) {
+    console.error(
+      `[social-publishing] handleContentApproved: post ${content_id} has no recipient user or the recipient has no brokerage — approval notification NOT written rather than written where the bell cannot count it`,
+    )
+  } else {
+    const { error: approvalNotifyError } = await supabase.from("notifications").insert({
+      user_id: post.user_id,
+      brokerage_id: approvalTenant.brokerageId,
+      type: "content_approved",
+      title: "Content Approved",
+      body: "Your social media content has been approved and is ready to publish.",
+      entity_type: "social_post",
+      entity_id: content_id,
+      created_at: new Date().toISOString(),
+    })
+    if (approvalNotifyError) {
+      console.error("[social-publishing] content_approved notification insert refused:", approvalNotifyError.message)
+    }
+  }
 
   return { success: true }
 }

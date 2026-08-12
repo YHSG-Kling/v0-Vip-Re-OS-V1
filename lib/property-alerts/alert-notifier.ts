@@ -3,6 +3,9 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchEmail, dispatchSms } from "@/lib/providers/dispatch"
+// agents.id → users.id, the one crossing helper; notifications.user_id is a
+// users FK and contacts.agent_id is an agents FK.
+import { resolveAgentRecipient } from "@/lib/notifications/recipient-tenant"
 import type { AlertProperty } from "./alert-matcher"
 
 export interface DeliverResult {
@@ -128,10 +131,27 @@ export async function deliverAlertResults(
   }
 
   // ── In-app notification ───────────────────────────────────────────────────
+  //
+  // `contacts.agent_id` is `REFERENCES agents(id)` (measured on the live schema,
+  // not inferred from the name), and `notifications.user_id` is
+  // `REFERENCES users(id)` — DISJOINT. Writing the agents id straight in made
+  // Postgres refuse the row 23503, and the insert destructured nothing, so the
+  // in-app channel reported `channelsUsed.push("in_app")` and `sent++` for a
+  // notification that never existed. The id is RESOLVED across the boundary, and
+  // the channel is only claimed when the row actually lands.
+  //
+  // Found by this wave's own guard (C7) rather than by the census: it was already
+  // brokerage-stamped, so the tenant scan had nothing to say about it.
   if (channels.includes("in_app")) {
-    try {
-      await supabase.from("notifications").insert({
-        user_id:     contact.agent_id ?? null,
+    const alertRecipient = await resolveAgentRecipient(supabase, contact.agent_id ?? null)
+    if (!alertRecipient.ok) {
+      errors.push(`in_app: ${alertRecipient.reason}`)
+    } else if (!alertRecipient.userId) {
+      errors.push("in_app: the contact's agent has no user account — nothing was delivered")
+    } else {
+      try {
+        const { error: alertNotifyError } = await supabase.from("notifications").insert({
+        user_id:     alertRecipient.userId,
         brokerage_id: brokerageId,
         type:        "property_alert",
         title:       `${n} new ${n === 1 ? "property" : "properties"} match ${contact.first_name}'s search`,
@@ -141,10 +161,17 @@ export async function deliverAlertResults(
         priority:    n >= 5 ? "high" : "medium",
         channel:     "in_app",
       })
-      channelsUsed.push("in_app")
-      sent++
-    } catch (err: any) {
-      errors.push(`in_app: ${err?.message}`)
+        // supabase-js RESOLVES a refused insert, so the surrounding try/catch never
+        // saw the FK rejection — the channel was reported delivered either way.
+        if (alertNotifyError) {
+          errors.push(`in_app: ${alertNotifyError.message}`)
+        } else {
+          channelsUsed.push("in_app")
+          sent++
+        }
+      } catch (err: any) {
+        errors.push(`in_app: ${err?.message}`)
+      }
     }
   }
 

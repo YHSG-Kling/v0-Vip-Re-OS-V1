@@ -20,12 +20,22 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    // Resolve brokerage + role from users row (source of truth per spec)
-    const { data: userData } = await supabase
+    // Resolve brokerage + role from users row (source of truth per spec).
+    //
+    // `error` is destructured: supabase-js RESOLVES a refused read, so without it
+    // a refusal arrives as `data: null`, `brokerageId` falls to null, and EVERY
+    // badge on the page silently reports zero — indistinguishable from a quiet
+    // day. This one value is also the tenant every notification writer must stamp
+    // (see lib/notifications/recipient-tenant.ts): `.eq("brokerage_id", …)` below
+    // compares against exactly this, and `NULL = <uuid>` is NULL, never true.
+    const { data: userData, error: userLookupError } = await supabase
       .from("users")
       .select("id, brokerage_id, user_type")
       .eq("id", user.id)
       .maybeSingle()
+    if (userLookupError) {
+      console.error("[badge-counts] users lookup refused:", userLookupError.message)
+    }
 
     const brokerageId = userData?.brokerage_id ?? null
     const userType: string = userData?.user_type ?? "agent"
@@ -118,6 +128,17 @@ export async function GET() {
             .is("assigned_at", null)
         : Promise.resolve({ count: 0 }),
     ])
+
+    // A COUNT query carries its refusal in `error` too, and `count` comes back
+    // null — which `?? 0` then renders as "no unread notifications". The response
+    // contract is deliberately unchanged (this route never fails navigation), but
+    // the refusal is no longer silent.
+    if ((notificationsResult as { error?: { message: string } | null }).error) {
+      console.error(
+        "[badge-counts] unread notifications count refused:",
+        (notificationsResult as { error: { message: string } }).error.message,
+      )
+    }
 
     return NextResponse.json({
       unread_notifications: notificationsResult.count ?? 0,

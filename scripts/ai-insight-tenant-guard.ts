@@ -119,6 +119,72 @@
  * A guard that trusted the trigger would be a comment asserting a gate, which is
  * the exact defect wave 20 named. The stamp is asserted in the source.
  *
+ * ── WAVE 23: THE TWO HEAVIEST TABLES, AND A READER EVERY USER SEES ───────────
+ *
+ * EXTENDED AGAIN rather than copied, for wave 21's reason: "no writer files a row
+ * without its tenant" is ONE invariant and this file already owns its scanner.
+ * `notifications` and `automation_errors` are the two heaviest escape tables in
+ * W22-4's census (16 and 17 unstamped sites), and both are TENANT-CLASS — decided
+ * by reading their readers, never their names.
+ *
+ * BOTH FAIL THE SAME WAY, AND IT IS NOT THE LEAK. Both carry the escape
+ * (`brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`), so RLS
+ * admits an untenanted row to everyone. But every application reader ANDs an
+ * EQUALITY predicate, and `NULL = <uuid>` is NULL, never true — so the row is
+ * filtered out of the surface that owns it:
+ *
+ *   · `app/api/dashboard/badge-counts/route.ts` — THE UNREAD BADGE COUNT EVERY
+ *     USER SEES. It resolves `brokerage_id` from the SESSION USER's `users` row
+ *     and then filters `.eq("brokerage_id", …).eq("user_id", …).eq("is_read", false)`.
+ *     An unstamped notification is written and never counted: the row exists, the
+ *     bell stays dark.
+ *   · `app/api/cron/qbr-invitations/route.ts` and
+ *     `lib/transactions/stranded-offer-reaper.ts` use their reads to decide
+ *     "have we already told them?", so an unstamped row ALSO FAILS TO SUPPRESS —
+ *     the same QBR invitation and the same stranded-offer alert fire again.
+ *   · `app/actions/workflows.ts:retryFailedWorkflow` reads `automation_errors`
+ *     `.eq("brokerage_id", brokerageId)` as an OWNERSHIP CHECK and returns
+ *     "Forbidden" on a miss. An untenanted automation error is therefore invisible
+ *     in the automations console AND UN-RESOLVABLE THROUGH IT, forever.
+ *   · `app/actions/system-health.ts:getAutomationErrors` filters the same way, and
+ *     its `HEALTH_READER_ROLES` is ["superadmin","admin","broker"] — broker is a
+ *     TENANT role, which is what settles the class.
+ *
+ * NEITHER TABLE HAS A BACK-FILL TRIGGER. Measured live: `pg_trigger` returns zero
+ * non-internal triggers for both. Unlike the wave-21 tables there is no net at
+ * all — the application stamp is the only mechanism.
+ *
+ *   C1  ZERO BASELINE ON BOTH TABLES, across app/ and lib/. Same construct, same
+ *       depth-1 rule. Scoped to the production surfaces on purpose: the
+ *       `scripts/*-simulator.ts` proofs carry defective inserts as STRING
+ *       FIXTURES (their own negative-control patch text), and a source scan that
+ *       blanked string contents could not find `.from("<table>")` at all. That is
+ *       a scoping decision with a reason, not an exemption of a real writer —
+ *       specificity control S3 keeps it honest.
+ *   C2  THE WRITERS STILL EXIST, per file. A2's reason on both tables.
+ *   C3  THE BADGE COUNT STILL NARROWS BY BROKERAGE, and its `users` read
+ *       destructures `error`. That read produces the value every writer stamps;
+ *       refused, it yields `brokerageId = null` and EVERY badge silently reports
+ *       zero.
+ *   C4  BOTH SUPPRESSION READS still AND a brokerage predicate AND destructure
+ *       `error`. A refused dedupe read that arrives as "no prior row" duplicates
+ *       the message — the identical outcome to the unstamped row this wave fixed,
+ *       reached by the other door.
+ *   C5  THE AUTOMATIONS-CONSOLE OWNERSHIP CHECK still ANDs its brokerage
+ *       predicate. Dropping it would turn "Forbidden" into "any brokerage may
+ *       resolve any error".
+ *   C6  THE EXPLICITLY-UNTENANTED SITES ARE EXACTLY THE DEFENDED SIX.
+ *       `brokerage_id: null` at depth 1 counts as a stamp for C1 — an explicit,
+ *       greppable decision is not the same thing as an omission — which would
+ *       otherwise make `brokerage_id: null` a way to turn C1 green without
+ *       thinking. C6 pins the allow-list so a seventh cannot appear quietly.
+ *   C7  NO `notifications` WRITER PUTS AN AGENT ID IN `user_id`.
+ *       `notifications.user_id` is `REFERENCES users(id)`, and `agents.id` is a
+ *       DISJOINT space — three sites were passing one (widget intake, agent
+ *       certification, the portal learn client), so those inserts were refused
+ *       23503 and the refusals were discarded. Asserted on the VALUE EXPRESSION at
+ *       depth 1, which is where the id space is visible.
+ *
  * ── HOW THIS PROOF IS BUILT ──────────────────────────────────────────────────
  *   · CONSTRUCTS, never spellings. The insert argument is located by a
  *     string-aware balanced-delimiter scan (template literals, nested objects
@@ -257,12 +323,29 @@ function skipBalanced(src: string, open: number): number {
   return i
 }
 
-/** The keys declared at DEPTH 1 of the object literal opening at `open`. */
-function topLevelKeys(src: string, open: number): string[] {
-  const keys: string[] = []
+/**
+ * The properties declared at DEPTH 1 of the object literal opening at `open`,
+ * with the source text of each value.
+ *
+ * SHORTHAND COUNTS. `{ brokerage_id, type, title }` stamps the tenant exactly as
+ * `{ brokerage_id: brokerage_id, … }` does, and requiring the colon reported
+ * `app/api/widget/intake/route.ts` as unstamped when it was not — a FALSE RED,
+ * which is the failure mode that gets a guard switched off. An identifier at key
+ * position followed by `,` or `}` is a shorthand property; its value text is the
+ * identifier itself.
+ */
+function topLevelProps(src: string, open: number): Array<{ key: string; value: string }> {
+  const props: Array<{ key: string; value: string }> = []
   let depth = 0
   let i = open
   let atKeyPosition = false
+  let pending: { key: string; from: number } | null = null
+  const closePending = (end: number) => {
+    if (pending) {
+      props.push({ key: pending.key, value: src.slice(pending.from, end).trim() })
+      pending = null
+    }
+  }
   while (i < src.length) {
     const c = src[i]
     if (c === '"' || c === "'" || c === "`") { i = skipString(src, i); continue }
@@ -275,17 +358,23 @@ function topLevelKeys(src: string, open: number): string[] {
     }
     if (c === "}" || c === ")" || c === "]") {
       depth--
-      if (depth === 0) return keys
+      if (depth === 0) { closePending(i); return props }
       i++
       continue
     }
     if (depth === 1) {
-      if (c === ",") { atKeyPosition = true; i++; continue }
+      if (c === ",") { closePending(i); atKeyPosition = true; i++; continue }
       if (atKeyPosition && /[A-Za-z_$]/.test(c)) {
         const m = /^[A-Za-z0-9_$]+/.exec(src.slice(i))
         if (m) {
-          const after = src.slice(i + m[0].length).match(/^\s*:/)
-          if (after) keys.push(m[0])
+          const rest = src.slice(i + m[0].length)
+          if (/^\s*:/.test(rest)) {
+            const colon = i + m[0].length + rest.indexOf(":")
+            pending = { key: m[0], from: colon + 1 }
+          } else if (/^\s*[,}]/.test(rest)) {
+            // Shorthand property — the identifier IS both key and value.
+            props.push({ key: m[0], value: m[0] })
+          }
           i += m[0].length
           atKeyPosition = false
           continue
@@ -295,14 +384,23 @@ function topLevelKeys(src: string, open: number): string[] {
     }
     i++
   }
-  return keys
+  closePending(i)
+  return props
+}
+
+/** The keys declared at DEPTH 1 of the object literal opening at `open`. */
+function topLevelKeys(src: string, open: number): string[] {
+  return topLevelProps(src, open).map((p) => p.key)
 }
 
 interface InsertSite {
   file: string
   line: number
   keys: string[]
+  props: Array<{ key: string; value: string }>
   hasObjectArg: boolean
+  /** True when the row object was reached through a `.map(… => ({…}))` fan-out. */
+  viaRowMapper: boolean
 }
 
 /**
@@ -382,22 +480,97 @@ function insertSites(file: string, table: string): InsertSite[] {
   while ((m = from.exec(src)) !== null) {
     const after = m.index + m[0].length
     // The chain that follows, bounded so a `.insert(` many statements later is
-    // never mistaken for this one's.
-    const window = src.slice(after, after + 4000)
+    // never mistaken for this one's — AND CUT AT THE NEXT `.from(`, because a
+    // READ on this table followed by an INSERT on a DIFFERENT one otherwise gets
+    // attributed here. That produced 26 phantom sites across the two wave-23
+    // tables, each of them "unstamped" rows belonging to another table entirely.
+    let window = src.slice(after, after + 4000)
+    const nextFrom = window.search(/\.\s*from\s*\(/)
+    if (nextFrom !== -1) window = window.slice(0, nextFrom)
     const ins = /^[\s\S]{0,400}?\.\s*(?:insert|upsert)\s*\(/.exec(window)
     if (!ins) continue
     const openParen = after + ins[0].length - 1
-    // The argument. `.insert({…})` and `.insert([{…}])` both reach an object.
-    let i = openParen + 1
-    while (i < src.length && /[\s[]/.test(src[i])) i++
     const line = src.slice(0, m.index).split("\n").length
-    if (src[i] !== "{") {
-      sites.push({ file, line, keys: [], hasObjectArg: false })
+    const resolved = resolveRowObject(src, openParen)
+    if (resolved === null) {
+      sites.push({ file, line, keys: [], props: [], hasObjectArg: false, viaRowMapper: false })
       continue
     }
-    sites.push({ file, line, keys: topLevelKeys(src, i), hasObjectArg: true })
+    const props = topLevelProps(src, resolved.open)
+    sites.push({ file, line, keys: props.map((p) => p.key), props, hasObjectArg: true, viaRowMapper: resolved.viaRowMapper })
   }
   return sites
+}
+
+/**
+ * The `{` that opens the ROW object of an insert whose argument list starts at
+ * `openParen`.
+ *
+ * Three shapes reach a row object, and a fan-out insert is a real writer:
+ *   1. `.insert({ … })` / `.insert([{ … }])`  — the direct object.
+ *   2. `.insert(xs.map((x) => ({ … })))`      — an INLINE row mapper.
+ *   3. `.insert(rows)` where `const rows = xs.map((x) => ({ … }))` earlier in
+ *      the file — a NAMED row mapper.
+ *
+ * Shapes 2 and 3 are how ten of this tree's `notifications` writers are spelled
+ * (every multi-recipient fan-out), and treating them as "argument is not an
+ * object literal — cannot prove the stamp" would have made the zero baseline
+ * unachievable for a correctly-stamped tree. `null` still means genuinely
+ * unresolvable, which stays an offender: a stamp that cannot be seen is not a
+ * stamp that can be trusted.
+ */
+function resolveRowObject(src: string, openParen: number): { open: number; viaRowMapper: boolean } | null {
+  const close = skipBalanced(src, openParen)
+  const argText = src.slice(openParen + 1, close - 1)
+
+  // 1 — the direct object, optionally inside an array literal.
+  let i = openParen + 1
+  while (i < close && /[\s[]/.test(src[i])) i++
+  if (src[i] === "{") return { open: i, viaRowMapper: false }
+
+  // 2 — an inline `… => ({ … })` row mapper anywhere in the argument.
+  const inline = findArrowObject(src, openParen + 1, close - 1)
+  if (inline !== null) return { open: inline, viaRowMapper: true }
+
+  // 3 — a bare identifier argument, bound earlier to a row mapper.
+  const ident = /^\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*$/.exec(argText)
+  if (!ident) return null
+  const decl = new RegExp(`(?:const|let|var)\\s+${ident[1]}\\s*(?::[^=]*)?=`, "g")
+  let d: RegExpExecArray | null
+  let best: number | null = null
+  while ((d = decl.exec(src)) !== null) {
+    if (d.index >= openParen) break
+    const bodyStart = d.index + d[0].length
+    // The initializer runs to the end of the statement; bounded generously and
+    // then cut at the next declaration so it cannot swallow a later one.
+    const nextDecl = src.slice(bodyStart).search(/\n\s*(?:const|let|var|return|await|if)\b/)
+    const bodyEnd = nextDecl === -1 ? Math.min(src.length, bodyStart + 4000) : bodyStart + nextDecl
+    const arrow = findArrowObject(src, bodyStart, bodyEnd)
+    if (arrow !== null) best = arrow
+  }
+  return best === null ? null : { open: best, viaRowMapper: true }
+}
+
+/** The `{` of the first `=> ({ … })` between `lo` and `hi`, string-aware. */
+function findArrowObject(src: string, lo: number, hi: number): number | null {
+  let i = lo
+  while (i < hi) {
+    const c = src[i]
+    if (c === '"' || c === "'" || c === "`") { i = skipString(src, i); continue }
+    if (c === "=" && src[i + 1] === ">") {
+      let j = i + 2
+      while (j < hi && /\s/.test(src[j])) j++
+      if (src[j] === "(") {
+        let k = j + 1
+        while (k < hi && /\s/.test(src[k])) k++
+        if (src[k] === "{") return k
+      }
+      i = j
+      continue
+    }
+    i++
+  }
+  return null
 }
 
 /** The `ai_insights` sites — A1/A2 keep their exact original meaning. */
@@ -710,6 +883,316 @@ function assertLeadPredictionsReaderDestructuresError(): boolean {
   )
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// WAVE 23 — notifications · automation_errors
+// ═════════════════════════════════════════════════════════════════════════════
+
+const BADGE_READER = "app/api/dashboard/badge-counts/route.ts"
+const QBR_READER = "app/api/cron/qbr-invitations/route.ts"
+const STRANDED_READER = "lib/transactions/stranded-offer-reaper.ts"
+const CONSOLE_OWNERSHIP = "app/actions/workflows.ts"
+
+/** The two heaviest escape tables in W22-4's census. Both tenant-class BY THEIR READERS. */
+const W23_TABLES = ["notifications", "automation_errors"] as const
+
+/**
+ * Writer floors, per file and table. A2's reason: C1 is just as green against a
+ * file with no writers left in it, and "we deleted the feature" is not "we fixed
+ * it". One floor per file this wave touched.
+ */
+const W23_WRITER_FLOORS: Array<{ file: string; table: string; floor: number }> = [
+  { file: "app/actions/ai-agent-onboarding.ts", table: "notifications", floor: 1 },
+  { file: "app/actions/assistant.ts", table: "notifications", floor: 1 },
+  { file: "app/actions/copilot.ts", table: "notifications", floor: 2 },
+  { file: "app/actions/credit-copilot.ts", table: "notifications", floor: 3 },
+  { file: "app/actions/social-publishing.ts", table: "notifications", floor: 1 },
+  { file: "app/actions/video-content.ts", table: "notifications", floor: 3 },
+  { file: "app/actions/portal-education.ts", table: "notifications", floor: 1 },
+  { file: "app/api/widget/intake/route.ts", table: "notifications", floor: 1 },
+  { file: "lib/kernel/onboarding-reminders.ts", table: "notifications", floor: 1 },
+  { file: "lib/notifications/platform-staff.ts", table: "notifications", floor: 1 },
+  { file: "lib/platform/prospect-sourcer.ts", table: "notifications", floor: 1 },
+  { file: "app/actions/lead-governance/govern-lead.ts", table: "automation_errors", floor: 1 },
+  { file: "lib/ai-isa/direct-mail-trigger.ts", table: "automation_errors", floor: 1 },
+  { file: "lib/communication-spine/ingest-message-service.ts", table: "automation_errors", floor: 1 },
+  { file: "lib/communication-spine/message-persister.ts", table: "automation_errors", floor: 1 },
+  { file: "lib/contact-promotion/promote-lead-to-contact.ts", table: "automation_errors", floor: 2 },
+  { file: "lib/lead-promotion/initial-scorer.ts", table: "automation_errors", floor: 1 },
+  { file: "lib/lead-readiness/readiness-logger.ts", table: "automation_errors", floor: 2 },
+  { file: "lib/vendor-governance/usage-logger.ts", table: "automation_errors", floor: 2 },
+]
+
+/**
+ * THE ONLY SITES ALLOWED TO STAMP `brokerage_id: null` ON PURPOSE.
+ *
+ * Six writes, one class: an OUTER catch on a sweep that spans every brokerage
+ * (five cron routes), plus Engine 1's platform lead-distribution failure, which
+ * is about a lead deliberately created with `brokerage_id: null` and which no
+ * tenant is permitted to see. There is no record to resolve a tenant through, and
+ * inventing one would file a platform outage inside one brokerage's console.
+ *
+ * These rows are NOT unreadable, which is what makes the exception defensible
+ * rather than a loophole. Measured: `lib/platform/ai-ops.ts:73` reads
+ * `automation_errors` cross-tenant on the service client with NO brokerage
+ * predicate and its row type carries `brokerageId: string | null`; and
+ * `app/actions/superadmin/ai-ops.ts:resolveAutomationErrorAction` resolves by id
+ * with no brokerage predicate either. So the platform AI-ops console — the right
+ * audience for a platform-wide failure — both sees and resolves them.
+ *
+ * The list is pinned because C1 counts `brokerage_id: null` as a stamp (an
+ * explicit decision is not an omission), which would otherwise make `: null` a
+ * way to turn C1 green without thinking.
+ */
+const EXPLICIT_NULL_TENANT_SITES: ReadonlySet<string> = new Set([
+  "app/api/cron/earnings-rollup/route.ts",
+  "app/api/cron/engagement-scores/route.ts",
+  "app/api/cron/referral-asks/route.ts",
+  "app/api/cron/seller-updates/route.ts",
+  "app/api/cron/team-heatmap-snapshot/route.ts",
+  "lib/lead-pipeline/pipeline-processor.ts",
+])
+
+/**
+ * Production surfaces only — `app/` and `lib/`.
+ *
+ * `scripts/*-simulator.ts` are excluded BY CONSTRUCTION, with a reason: they
+ * carry defective `.from("<table>").insert({…})` calls as STRING FIXTURES (their
+ * own negative-control patch text, e.g. `scripts/wave11-slice-loops-simulator.ts`
+ * and `scripts/automation-error-collection-simulator.ts`). Those are not writers,
+ * and a scanner cannot tell them apart without blanking string contents — which
+ * would also blank the `"<table>"` argument this scan matches on. Specificity
+ * control S3 proves the exclusion is scoped to `scripts/` and does not quietly
+ * cover a real writer under `app/` or `lib/`.
+ */
+function filesTouchingProd(table: string): string[] {
+  // BOTH QUOTE STYLES. `filesTouching` greps only `from("<table>")`, and this
+  // tree writes `from('automation_errors')` with SINGLE quotes in six of the
+  // seventeen files — including every one in lib/communication-spine,
+  // lib/vendor-governance and lib/lead-promotion. Greppping one style silently
+  // dropped those files from the scan, and C1 then went green over writers it had
+  // never looked at. Caught by a negative control staying green, which is exactly
+  // what the applied-check and the control discipline are for.
+  const found = new Set<string>()
+  for (const needle of [`from("${table}")`, `from('${table}')`]) {
+    try {
+      const out = execFileSync("git", ["grep", "-l", "--", needle, "--", "app", "lib"], {
+        cwd: ROOT,
+        encoding: "utf8",
+      })
+      for (const f of out.split("\n")) {
+        if (f.endsWith(".ts") || f.endsWith(".tsx")) found.add(f)
+      }
+    } catch {
+      /* no match for this quote style */
+    }
+  }
+  return [...found].sort()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C1 — zero baseline on notifications + automation_errors
+// ─────────────────────────────────────────────────────────────────────────────
+function assertWaveTwentyThreeInsertsStampTenant(): boolean {
+  const offenders: string[] = []
+  let total = 0
+  for (const table of W23_TABLES) {
+    for (const f of filesTouchingProd(table)) {
+      if (!existsSync(resolve(ROOT, f))) continue
+      for (const s of insertSites(f, table)) {
+        total++
+        if (!s.hasObjectArg) {
+          offenders.push(`${f}:${s.line} ${table} (insert argument resolves to no object literal — cannot prove the stamp)`)
+          continue
+        }
+        if (!s.keys.includes("brokerage_id")) offenders.push(`${f}:${s.line} ${table}`)
+      }
+    }
+  }
+  return check(
+    `C1  all ${total} insert site(s) across ${W23_TABLES.length} wave-23 table(s) declare brokerage_id at the TOP LEVEL of the row`,
+    offenders.length === 0,
+    offenders.length === 0 ? "" : `unstamped: ${offenders.join(", ")}`,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C2 — the wave-23 writers still exist
+// ─────────────────────────────────────────────────────────────────────────────
+function assertWaveTwentyThreeWritersStillExist(): boolean {
+  const short: string[] = []
+  for (const { file, table, floor } of W23_WRITER_FLOORS) {
+    const n = existsSync(resolve(ROOT, file)) ? insertSites(file, table).length : 0
+    if (n < floor) short.push(`${file} ${table}: ${n} < ${floor}`)
+  }
+  return check(
+    `C2  every wave-23 writer still exists (${W23_WRITER_FLOORS.length} table/file floors)`,
+    short.length === 0,
+    short.length === 0 ? "" : `writers disappeared rather than being stamped — ${short.join("; ")}`,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C3 — the badge count: the reader every user sees
+// ─────────────────────────────────────────────────────────────────────────────
+function assertBadgeCountNarrowsByBrokerage(): boolean {
+  const chain = tableChain(BADGE_READER, "notifications")
+  if (!chain) {
+    return check("C3  the badge count narrows by brokerage", false, `no notifications read found in ${BADGE_READER}`)
+  }
+  const v = brokeragePredicateVerdict(chain)
+  const narrowed = check(
+    "C3a the unread-badge count ANDs a brokerage predicate onto the notifications read (the value every writer must stamp)",
+    v.narrowed,
+    v.detail,
+  )
+  // The `users` read that PRODUCES that value. Refused, it yields brokerageId
+  // null and every badge on the page silently reports zero.
+  const src = blankComments(raw(BADGE_READER))
+  const usersFrom = src.indexOf('.from("users")')
+  const e = usersFrom === -1 ? { ok: false, bindings: "" } : destructuresError(src, usersFrom)
+  const errored = check(
+    "C3b the `users` read that resolves that brokerage destructures `error` (a refusal must not read as 'no brokerage, all badges zero')",
+    e.ok,
+    e.ok ? "" : `bindings were: {${e.bindings.trim()}}`,
+  )
+  return narrowed && errored
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C4 — the two suppression reads
+// ─────────────────────────────────────────────────────────────────────────────
+function assertSuppressionReadsAreTenantScoped(): boolean {
+  let all = true
+  for (const [label, file] of [
+    ["QBR invitation de-duplication", QBR_READER],
+    ["stranded-offer re-notify suppression", STRANDED_READER],
+  ] as const) {
+    const chain = tableChain(file, "notifications")
+    if (!chain) {
+      all = check(`C4  ${label} read found`, false, `no notifications read found in ${file}`) && all
+      continue
+    }
+    const v = brokeragePredicateVerdict(chain)
+    all = check(`C4  ${label} ANDs a brokerage predicate (${file})`, v.narrowed, v.detail) && all
+    const e = destructuresError(chain.src, chain.fromIndex)
+    all = check(
+      `C4  ${label} destructures \`error\` (a refused suppression read must not read as "we have not told them yet")`,
+      e.ok,
+      e.ok ? "" : `bindings were: {${e.bindings.trim()}}`,
+    ) && all
+  }
+  return all
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C5 — the automations-console ownership check
+// ─────────────────────────────────────────────────────────────────────────────
+function assertConsoleOwnershipCheckNarrows(): boolean {
+  const chain = tableChain(CONSOLE_OWNERSHIP, "automation_errors", "retryFailedWorkflow")
+  if (!chain) {
+    return check(
+      "C5  the automations-console ownership check narrows by brokerage",
+      false,
+      `no automation_errors read found in retryFailedWorkflow (${CONSOLE_OWNERSHIP})`,
+    )
+  }
+  const v = brokeragePredicateVerdict(chain)
+  return check(
+    'C5  retryFailedWorkflow ANDs a brokerage predicate — without it "Forbidden" becomes "any brokerage may resolve any error"',
+    v.narrowed,
+    v.detail,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C6 — the explicitly-untenanted allow-list is exactly the defended six
+// ─────────────────────────────────────────────────────────────────────────────
+function assertExplicitNullTenantsAreAllowListed(): boolean {
+  const found = new Set<string>()
+  const strays: string[] = []
+  for (const table of W23_TABLES) {
+    for (const f of filesTouchingProd(table)) {
+      if (!existsSync(resolve(ROOT, f))) continue
+      for (const s of insertSites(f, table)) {
+        const stamp = s.props.find((p) => p.key === "brokerage_id")
+        if (!stamp) continue
+        if (!/^null$/.test(stamp.value.trim())) continue
+        found.add(f)
+        if (!EXPLICIT_NULL_TENANT_SITES.has(f)) strays.push(`${f}:${s.line} ${table}`)
+      }
+    }
+  }
+  const missing = [...EXPLICIT_NULL_TENANT_SITES].filter((f) => !found.has(f))
+  const ok = strays.length === 0 && missing.length === 0
+  return check(
+    `C6  exactly the ${EXPLICIT_NULL_TENANT_SITES.size} defended sites stamp \`brokerage_id: null\` on purpose`,
+    ok,
+    ok
+      ? ""
+      : [
+          strays.length ? `NEW untenanted write not on the allow-list: ${strays.join(", ")}` : "",
+          missing.length ? `allow-listed site no longer writes untenanted (update the list deliberately): ${missing.join(", ")}` : "",
+        ].filter(Boolean).join(" · "),
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C7 — no notifications writer puts an AGENT id in `user_id`
+// ─────────────────────────────────────────────────────────────────────────────
+function assertNoAgentIdInNotificationRecipient(): boolean {
+  const columnOffenders: string[] = []
+  const fallbackOffenders: string[] = []
+  for (const f of filesTouchingProd("notifications")) {
+    if (!existsSync(resolve(ROOT, f))) continue
+    for (const s of insertSites(f, "notifications")) {
+      const recipient = s.props.find((p) => p.key === "user_id")
+      if (!recipient) continue
+      const v = recipient.value
+
+      // C7a — A COLUMN READ, not a variable name. `contacts.agent_id`,
+      // `transactions.agent_id` and `listings.agent_id` are all
+      // `REFERENCES agents(id)` on the live schema, so `<row>.agent_id` in a
+      // `REFERENCES users(id)` column is an id-space crossing established by the
+      // SCHEMA rather than by spelling. `agents.user_id` (`.user_id` present) is
+      // the RESOLVED form and is correct.
+      //
+      // Deliberately NOT flagged: a bare local named `agentId`. Three of those
+      // exist in this tree and all three hold a users.id resolved a line earlier
+      // (lib/kernel/manager-signals.ts, lib/kernel/stalled-deferrals-runner.ts).
+      // A guard that flags names rather than constructs is the defect wave 20
+      // named, pointed at identifiers instead of comments.
+      if (/(?:^|[^A-Za-z0-9_$.])[A-Za-z0-9_$]+(?:\?)?\.agent_id\b/.test(v) && !/\.user_id\b/.test(v)) {
+        columnOffenders.push(`${f}:${s.line} → user_id: ${v.slice(0, 60)}`)
+      }
+
+      // C7b — RESOLVE, never `??`. `certAgent?.user_id ?? params.agentId` was the
+      // actual shape at the agent-certification site: a resolved users.id with a
+      // fallback into the agents space, so the moment the resolve came back empty
+      // (or was refused — the read destructured no `error`) the row carried an
+      // agents.id and was refused 23503. A `??` whose left side is a resolved
+      // `.user_id` and whose right side is not is that defect exactly.
+      const nullish = v.split("??")
+      if (nullish.length > 1 && /\.user_id\b|\buserId\b/.test(nullish[0])) {
+        const tail = nullish.slice(1).join("??")
+        if (!/\.user_id\b|\buserId\b|\buser\.id\b/.test(tail)) {
+          fallbackOffenders.push(`${f}:${s.line} → user_id: ${v.slice(0, 80)}`)
+        }
+      }
+    }
+  }
+  const a = check(
+    "C7a no notifications writer passes a `<row>.agent_id` as `user_id` (agents.id is DISJOINT from users.id — the FK refuses it 23503)",
+    columnOffenders.length === 0,
+    columnOffenders.join(", "),
+  )
+  const b = check(
+    "C7b no notifications writer `??`s a resolved users.id into a non-users fallback (RESOLVE between id spaces, never default across them)",
+    fallbackOffenders.length === 0,
+    fallbackOffenders.join(", "),
+  )
+  return a && b
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // NEGATIVE CONTROLS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -764,7 +1247,9 @@ function controlled(label: string, c: Control, fn: () => boolean): void {
 
 // ─────────────────────────────────────────────────────────────────────────────
 function main(): void {
-  console.log("TENANT-STAMP GUARD — ai_insights · ai_predictions · ai_autopilot_plans · conversation_intelligence\n")
+  console.log(
+    "TENANT-STAMP GUARD — ai_insights · ai_predictions · ai_autopilot_plans · conversation_intelligence · notifications · automation_errors\n",
+  )
 
   console.log("ASSERTIONS")
   assertEveryInsertStampsTenant()
@@ -778,11 +1263,24 @@ function main(): void {
   assertLeadPredictionsEntityTypeWideningKept()
   assertLeadPredictionsReaderDestructuresError()
   assertSnapshotDedupeIsTenantScoped()
+  assertWaveTwentyThreeInsertsStampTenant()
+  assertWaveTwentyThreeWritersStillExist()
+  assertBadgeCountNarrowsByBrokerage()
+  assertSuppressionReadsAreTenantScoped()
+  assertConsoleOwnershipCheckNarrows()
+  assertExplicitNullTenantsAreAllowListed()
+  assertNoAgentIdInNotificationRecipient()
 
   for (const table of TENANT_TABLES) {
     const files = filesTouching(table)
     const n = files.reduce((acc, f) => acc + (existsSync(resolve(ROOT, f)) ? insertSites(f, table).length : 0), 0)
     console.log(`\n  ${table}: ${files.length} file(s) · ${n} insert site(s)`)
+  }
+  for (const table of W23_TABLES) {
+    const files = filesTouchingProd(table)
+    const sites = files.flatMap((f) => (existsSync(resolve(ROOT, f)) ? insertSites(f, table) : []))
+    const mapped = sites.filter((s) => s.viaRowMapper).length
+    console.log(`\n  ${table}: ${files.length} app/lib file(s) · ${sites.length} insert site(s) (${mapped} via a row mapper)`)
   }
 
   if (RUN_NEGATIVE) {
@@ -1155,6 +1653,375 @@ function main(): void {
       },
       assertSnapshotDedupeIsTenantScoped,
     )
+
+    // ── WAVE 23 ──────────────────────────────────────────────────────────────
+
+    // 23. A DIRECT notifications writer loses its stamp — the W23-1 defect
+    //     exactly, on the table whose reader is the unread badge count.
+    controlled(
+      "a direct notifications insert loses brokerage_id",
+      {
+        file: "app/actions/video-content.ts",
+        find: '        brokerage_id: readyTenant.brokerageId,\n        type: "video_ready",',
+        replace: '        type: "video_ready",',
+      },
+      assertWaveTwentyThreeInsertsStampTenant,
+    )
+
+    // 24. THE DEPTH-1 DEMOTION CONTROL, on notifications. `brokerage_id` moved
+    //     into the nested `entity_id`-adjacent payload — the three letters are
+    //     still in the call, at the wrong depth, stamping nothing. A substring
+    //     match cannot tell this from a fix.
+    controlled(
+      "notifications: brokerage_id demoted into a NESTED object (present as text, absent as a stamp)",
+      {
+        file: "app/actions/video-content.ts",
+        find: '        brokerage_id: publishedTenant.brokerageId,\n        type: "video_published",',
+        replace: '        type: "video_published",',
+      },
+      () => {
+        const p = resolve(ROOT, "app/actions/video-content.ts")
+        const cur = readFileSync(p, "utf8")
+        const nested = cur.replace(
+          '        entity_type: "video",\n        entity_id: video_id,\n      })\n      if (publishedNotifyError) {',
+          '        entity_type: "video",\n        entity_id: { brokerage_id: publishedTenant.brokerageId, id: video_id },\n      })\n      if (publishedNotifyError) {',
+        )
+        if (nested === cur) {
+          failures.push("notifications nested-stamp control second patch did not apply")
+          return false
+        }
+        writeFileSync(p, nested)
+        return assertWaveTwentyThreeInsertsStampTenant()
+      },
+    )
+
+    // 25. A MAPPED (fan-out) notifications writer loses its stamp. Ten of this
+    //     tree's notifications writers are spelled `.insert(rows)` with
+    //     `const rows = xs.map(x => ({ … }))` elsewhere — if the scan cannot see
+    //     through that shape, every one of them is invisible to C1 and the zero
+    //     baseline means nothing. This control proves it CAN.
+    controlled(
+      "a MAPPED notifications insert loses brokerage_id (the .map(… => ({…})) fan-out shape)",
+      {
+        file: "lib/notifications/brokerage-admins.ts",
+        find: "    user_id:      id,\n    brokerage_id: brokerageId,",
+        replace: "    user_id:      id,",
+      },
+      assertWaveTwentyThreeInsertsStampTenant,
+    )
+
+    // 26. An automation_errors writer loses its stamp — the W23-2 defect, on the
+    //     table whose reader returns "Forbidden" when the predicate misses.
+    controlled(
+      "an automation_errors insert loses brokerage_id",
+      {
+        file: "lib/vendor-governance/usage-logger.ts",
+        find: "        brokerage_id: event.brokerageId,\n        workflow_name: 'vendor_usage_logging',",
+        replace: "        workflow_name: 'vendor_usage_logging',",
+      },
+      assertWaveTwentyThreeInsertsStampTenant,
+    )
+
+    // 27. THE DEPTH-1 DEMOTION CONTROL, on automation_errors — and this is the
+    //     shape the real defect had: `brokerageId` was ALREADY in the call,
+    //     serialized inside `context_json`, stamping nothing.
+    controlled(
+      "automation_errors: brokerage_id demoted into the context_json payload (present as text, absent as a stamp)",
+      {
+        file: "lib/communication-spine/message-persister.ts",
+        find: "      brokerage_id: context.brokerageId,\n      workflow_name: 'communication_spine_persist_message',",
+        replace: "      workflow_name: 'communication_spine_persist_message',",
+      },
+      () => {
+        const p = resolve(ROOT, "lib/communication-spine/message-persister.ts")
+        const cur = readFileSync(p, "utf8")
+        const nested = cur.replace(
+          "      context_json: JSON.stringify({\n        contactId: context.contactId,",
+          "      context_json: JSON.stringify({\n        brokerage_id: context.brokerageId,\n        contactId: context.contactId,",
+        )
+        if (nested === cur) {
+          failures.push("automation_errors nested-stamp control second patch did not apply")
+          return false
+        }
+        writeFileSync(p, nested)
+        return assertWaveTwentyThreeInsertsStampTenant()
+      },
+    )
+
+    // 28. A wave-23 writer DELETED rather than stamped — C1 alone goes green.
+    controlled(
+      "a wave-23 writer removed rather than stamped",
+      {
+        file: "lib/lead-readiness/readiness-logger.ts",
+        find: 'from("automation_errors")',
+        replace: 'from("automation_errors_disabled")',
+      },
+      assertWaveTwentyThreeWritersStillExist,
+    )
+
+    // 29. The badge count loses its brokerage predicate — the read that made the
+    //     unstamped rows invisible in the first place.
+    controlled(
+      "the unread-badge count loses its brokerage predicate",
+      {
+        file: BADGE_READER,
+        find: '.eq("brokerage_id", brokerageId)\n        .eq("user_id", user.id)',
+        replace: '.eq("user_id", user.id)',
+      },
+      assertBadgeCountNarrowsByBrokerage,
+    )
+
+    // 30. …and the `users` read that PRODUCES that brokerage stops destructuring
+    //     `error`, so a refusal renders every badge as zero.
+    controlled(
+      "the badge route's `users` read stops destructuring `error`",
+      {
+        file: BADGE_READER,
+        find: "const { data: userData, error: userLookupError } = await supabase",
+        replace: "const { data: userData } = await supabase",
+      },
+      assertBadgeCountNarrowsByBrokerage,
+    )
+
+    // 31. The QBR suppression read loses its brokerage predicate — it would then
+    //     dedupe against every tenant's invitations at once.
+    controlled(
+      "the QBR suppression read loses its brokerage predicate",
+      {
+        file: QBR_READER,
+        find: '.select("user_id").eq("brokerage_id", b.id)',
+        replace: '.select("user_id")',
+      },
+      assertSuppressionReadsAreTenantScoped,
+    )
+
+    // 32. The stranded-offer suppression read stops destructuring `error`, so a
+    //     refusal reads as "we have not told them yet" and re-alerts.
+    controlled(
+      "the stranded-offer suppression read stops destructuring `error`",
+      {
+        file: STRANDED_READER,
+        find: "const { data: prior, error: priorError } = await svc",
+        replace: "const { data: prior } = await svc",
+      },
+      assertSuppressionReadsAreTenantScoped,
+    )
+
+    // 33. The automations-console OWNERSHIP check loses its brokerage predicate —
+    //     "Forbidden" becomes "any brokerage may resolve any error".
+    controlled(
+      "retryFailedWorkflow's ownership predicate removed",
+      {
+        file: CONSOLE_OWNERSHIP,
+        find: '      .eq("id", workflowId)\n      .eq("brokerage_id", brokerageId)\n      .maybeSingle()',
+        replace: '      .eq("id", workflowId)\n      .maybeSingle()',
+      },
+      assertConsoleOwnershipCheckNarrows,
+    )
+
+    // 34. A SEVENTH untenanted write appears — `brokerage_id: null` used as a way
+    //     to turn C1 green without thinking. C1 stays green by design (an explicit
+    //     decision is not an omission); C6 is what must catch it.
+    controlled(
+      "a NEW site starts stamping `brokerage_id: null` (C1 green by design — C6 must go red)",
+      {
+        file: "lib/vendor-governance/usage-logger.ts",
+        find: "        brokerage_id: event.brokerageId,\n        workflow_name: 'vendor_usage_anomaly',",
+        replace: "        brokerage_id: null,\n        workflow_name: 'vendor_usage_anomaly',",
+      },
+      assertExplicitNullTenantsAreAllowListed,
+    )
+
+    // 35. A `<row>.agent_id` column read is passed as `notifications.user_id`
+    //     again — the crossing that made these writers fail 23503 on every call,
+    //     invisibly, because the refusal was never destructured.
+    controlled(
+      "a <row>.agent_id column read is written into notifications.user_id",
+      {
+        file: "lib/property-alerts/alert-notifier.ts",
+        find: "        user_id:     alertRecipient.userId,",
+        replace: "        user_id:     contact.agent_id ?? null,",
+      },
+      assertNoAgentIdInNotificationRecipient,
+    )
+
+    // 36. The `??`-across-id-spaces shape returns — a resolved users.id with an
+    //     agents.id fallback, which is what the agent-certification writer had.
+    controlled(
+      "a resolved users.id is `??`'d into a non-users fallback",
+      {
+        file: "app/actions/ai-agent-onboarding.ts",
+        find: "        user_id: certRecipient.userId,",
+        replace: "        user_id: certRecipient.userId ?? params.agentId,",
+      },
+      assertNoAgentIdInNotificationRecipient,
+    )
+
+    // S4. THE SPECIFICITY CONTROL FOR C7. A bare local named `agentId` that HOLDS
+    //     a users.id — the shape lib/kernel/manager-signals.ts and
+    //     lib/kernel/stalled-deferrals-runner.ts both use after resolving — must
+    //     stay GREEN. C7 asserts a schema fact, not a naming convention; a guard
+    //     that flagged the name would have demanded "fixes" to two already-correct
+    //     writers and taught everyone to ignore it.
+    {
+      const c: Control = {
+        file: "app/actions/video-content.ts",
+        find: "        user_id: user_id,\n        brokerage_id: readyTenant.brokerageId,",
+        replace: "        user_id: agentId,\n        brokerage_id: readyTenant.brokerageId,",
+      }
+      const before = raw(c.file)
+      const patched = before.replace(c.find, c.replace)
+      if (patched === before) {
+        console.log("  ✗ SPECIFICITY CONTROL S4 a bare local named agentId — PATCH DID NOT APPLY")
+        failures.push("specificity control did not apply: bare agentId local")
+      } else {
+        const beforeSha = sha(c.file)
+        writeFileSync(resolve(ROOT, c.file), patched)
+        let stillGreen = false
+        try {
+          const marker = failures.length
+          stillGreen = assertNoAgentIdInNotificationRecipient()
+          while (failures.length > marker) failures.pop()
+        } finally {
+          writeFileSync(resolve(ROOT, c.file), before)
+          if (sha(c.file) !== beforeSha) {
+            failures.push(`FAILED TO RESTORE ${c.file}`)
+            console.log(`  ✗ FAILED TO RESTORE ${c.file}`)
+          }
+        }
+        if (stillGreen) {
+          console.log("  ✓ SPECIFICITY CONTROL S4 a bare local named `agentId` — stayed GREEN (C7 asserts a schema fact, not a naming convention)")
+        } else {
+          console.log("  ✗ SPECIFICITY CONTROL S4 — went RED; C7 is flagging names rather than constructs")
+          failures.push("C7 specificity control went red: the assertion is name-based")
+        }
+      }
+    }
+
+    // ── SPECIFICITY CONTROLS (these must stay GREEN) ─────────────────────────
+
+    // S1. THE STATEMENT-LEVEL CONTROL, on a wave-23 table. The same stamped
+    //     insert split across chained lines — a line-oriented scan anchored on
+    //     "the line after .insert(" sails past this. The construct scan must
+    //     still find the stamp and stay GREEN.
+    {
+      const c: Control = {
+        file: "lib/vendor-governance/usage-logger.ts",
+        find: "      const { error: usageLogError } = await supabase.from('automation_errors').insert({\n        brokerage_id: event.brokerageId,",
+        replace:
+          "      const { error: usageLogError } = await supabase\n        .from('automation_errors')\n\n        .insert({\n        brokerage_id: event.brokerageId,",
+      }
+      const before = raw(c.file)
+      const patched = before.replace(c.find, c.replace)
+      if (patched === before) {
+        console.log("  ✗ SPECIFICITY CONTROL S1 the automation_errors insert split across chained lines — PATCH DID NOT APPLY")
+        failures.push("specificity control did not apply: wrapped automation_errors insert")
+      } else {
+        const beforeSha = sha(c.file)
+        writeFileSync(resolve(ROOT, c.file), patched)
+        let stillGreen = false
+        try {
+          const marker = failures.length
+          stillGreen = assertWaveTwentyThreeInsertsStampTenant()
+          while (failures.length > marker) failures.pop()
+        } finally {
+          writeFileSync(resolve(ROOT, c.file), before)
+          if (sha(c.file) !== beforeSha) {
+            failures.push(`FAILED TO RESTORE ${c.file}`)
+            console.log(`  ✗ FAILED TO RESTORE ${c.file}`)
+          }
+        }
+        if (stillGreen) {
+          console.log("  ✓ SPECIFICITY CONTROL S1 the automation_errors insert split across chained lines — stayed GREEN (statement-level, as required)")
+        } else {
+          console.log("  ✗ SPECIFICITY CONTROL S1 — went RED; the scan is line-oriented")
+          failures.push("wrapped automation_errors control went red: scan is line-oriented")
+        }
+      }
+    }
+
+    // S2. THE WINDOW-BOUNDARY CONTROL. A READ on a wave-23 table immediately
+    //     followed by an INSERT on a DIFFERENT table must NOT be attributed here.
+    //     Without the `.from(` cut this produced 26 phantom "unstamped" sites.
+    {
+      const c: Control = {
+        file: "lib/lead-readiness/readiness-logger.ts",
+        find: '  console.error("[ReadinessLogger] Readiness anomaly detected for lead:", leadId, anomalyDescription)',
+        replace:
+          '  await supabase.from("automation_errors").select("id").eq("id", leadId)\n' +
+          '  await supabase.from("some_other_table").insert({ id: leadId })\n' +
+          '  console.error("[ReadinessLogger] Readiness anomaly detected for lead:", leadId, anomalyDescription)',
+      }
+      const before = raw(c.file)
+      const patched = before.replace(c.find, c.replace)
+      if (patched === before) {
+        console.log("  ✗ SPECIFICITY CONTROL S2 read-then-other-table-insert — PATCH DID NOT APPLY")
+        failures.push("specificity control did not apply: window boundary")
+      } else {
+        const beforeSha = sha(c.file)
+        writeFileSync(resolve(ROOT, c.file), patched)
+        let stillGreen = false
+        try {
+          const marker = failures.length
+          stillGreen = assertWaveTwentyThreeInsertsStampTenant()
+          while (failures.length > marker) failures.pop()
+        } finally {
+          writeFileSync(resolve(ROOT, c.file), before)
+          if (sha(c.file) !== beforeSha) {
+            failures.push(`FAILED TO RESTORE ${c.file}`)
+            console.log(`  ✗ FAILED TO RESTORE ${c.file}`)
+          }
+        }
+        if (stillGreen) {
+          console.log("  ✓ SPECIFICITY CONTROL S2 a READ on the table followed by an INSERT on another — stayed GREEN (window cut at the next .from()")
+        } else {
+          console.log("  ✗ SPECIFICITY CONTROL S2 — went RED; the insert window runs past the next .from()")
+          failures.push("window-boundary control went red")
+        }
+      }
+    }
+
+    // S3. THE SCOPE CONTROL. C1 excludes `scripts/` because the simulators carry
+    //     defective inserts as STRING FIXTURES. That exclusion must be scoped to
+    //     scripts/ and must NOT quietly cover a real writer under app/ or lib/ —
+    //     so an unstamped insert added to a lib/ file goes RED while the identical
+    //     text added to a scripts/ file stays GREEN.
+    {
+      const libFile = "lib/vendor-governance/usage-logger.ts"
+      const scriptFile = "scripts/ai-ops-simulator.ts"
+      const stub = '\nawait supabase.from("automation_errors").insert({ workflow_name: "s3_probe" })\n'
+      const libBefore = raw(libFile)
+      const scriptBefore = raw(scriptFile)
+      const libSha = sha(libFile)
+      const scriptSha = sha(scriptFile)
+      let scriptStayedGreen = false
+      let libWentRed = false
+      try {
+        writeFileSync(resolve(ROOT, scriptFile), scriptBefore + stub)
+        const m1 = failures.length
+        scriptStayedGreen = assertWaveTwentyThreeInsertsStampTenant()
+        while (failures.length > m1) failures.pop()
+        writeFileSync(resolve(ROOT, libFile), libBefore + stub)
+        const m2 = failures.length
+        libWentRed = !assertWaveTwentyThreeInsertsStampTenant()
+        while (failures.length > m2) failures.pop()
+      } finally {
+        writeFileSync(resolve(ROOT, scriptFile), scriptBefore)
+        writeFileSync(resolve(ROOT, libFile), libBefore)
+        if (sha(scriptFile) !== scriptSha || sha(libFile) !== libSha) {
+          failures.push("FAILED TO RESTORE the S3 control files")
+          console.log("  ✗ FAILED TO RESTORE the S3 control files")
+        }
+      }
+      if (scriptStayedGreen && libWentRed) {
+        console.log("  ✓ SPECIFICITY CONTROL S3 the scripts/ exclusion is scoped — identical defect GREEN in scripts/, RED in lib/")
+      } else {
+        console.log(
+          `  ✗ SPECIFICITY CONTROL S3 — scripts/ stayed green: ${scriptStayedGreen}, lib/ went red: ${libWentRed}`,
+        )
+        failures.push("scope control failed: the scripts/ exclusion is not scoped as described")
+      }
+    }
   }
 
   console.log("")

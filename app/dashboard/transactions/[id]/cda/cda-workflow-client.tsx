@@ -66,6 +66,9 @@ import {
   getCdaForTransactionAction,
 } from "@/app/actions/cda-portal"
 import { CdaTemplateFieldsCard } from "./cda-template-fields-card"
+// agents.id → users.id. transactions.agent_id is an agents FK;
+// notifications.user_id is a users FK. Resolve, never substitute.
+import { resolveAgentRecipient } from "@/lib/notifications/recipient-tenant"
 
 interface CDAWorkflowClientProps {
   transaction: {
@@ -717,17 +720,45 @@ export function CDAWorkflowClient({
                                   : d
                               )
                             )
-                            // Create agent notification
-                            await supabase.from("notifications").insert({
-                              user_id: transaction.agent_id,
-                              brokerage_id: transaction.brokerage_id,
-                              type: "commission_paid",
-                              title: "Your commission has been disbursed",
-                              body: `Your commission for ${transaction.property_address} has been marked as paid.`,
-                              entity_type: "transaction",
-                              entity_id: transaction.id,
-                              is_read: false,
-                            }).catch(() => {})
+                            // Create agent notification.
+                            //
+                            // `transactions.agent_id` is `REFERENCES agents(id)`
+                            // (measured on the live schema) and
+                            // `notifications.user_id` is `REFERENCES users(id)` —
+                            // DISJOINT spaces, so the id is RESOLVED across, never
+                            // reused. Before this, Postgres refused every one of
+                            // these rows 23503 and the `.catch(() => {})` never
+                            // fired, because supabase-js RESOLVES a refused query:
+                            // no agent has ever been told their commission was
+                            // disbursed. The tenant was already correct, which is
+                            // why the tenant census did not surface it — this
+                            // wave's C7 id-space assertion did.
+                            const paidRecipient = await resolveAgentRecipient(
+                              supabase,
+                              transaction.agent_id,
+                            )
+                            if (!paidRecipient.ok || !paidRecipient.userId) {
+                              console.error(
+                                "[cda-workflow] commission_paid notification NOT written:",
+                                paidRecipient.ok
+                                  ? `agents.id ${transaction.agent_id} has no user account`
+                                  : paidRecipient.reason,
+                              )
+                            } else {
+                              const { error: paidNotifyError } = await supabase.from("notifications").insert({
+                                user_id: paidRecipient.userId,
+                                brokerage_id: transaction.brokerage_id,
+                                type: "commission_paid",
+                                title: "Your commission has been disbursed",
+                                body: `Your commission for ${transaction.property_address} has been marked as paid.`,
+                                entity_type: "transaction",
+                                entity_id: transaction.id,
+                                is_read: false,
+                              })
+                              if (paidNotifyError) {
+                                console.error("[cda-workflow] commission_paid notification insert refused:", paidNotifyError.message)
+                              }
+                            }
                             router.refresh()
                           }
                           setMarkingPaid(false)

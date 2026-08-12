@@ -128,9 +128,18 @@ export async function persistMessageWithContext(
   } catch (error: any) {
     console.error('[v0] [COMMUNICATION SPINE] Unexpected error persisting message:', error)
     
-    // Log to automation_errors
+    // Log to automation_errors.
+    //
+    // TENANT — `context.brokerageId`, a required field of this function's own
+    // parameter, so the catch holds it without resolving anything inside the
+    // error handler. It was ALREADY in this call — nested inside `context_json`,
+    // where the three letters stamp nothing, because every reader filters
+    // `.eq("brokerage_id", …)` at depth 1 and `workflows.ts:531` uses that same
+    // predicate as an OWNERSHIP check. It stays in the payload for context and is
+    // now also the row's tenant.
     const supabase = createServiceClient()
-    await supabase.from('automation_errors').insert({
+    const { error: persistLogError } = await supabase.from('automation_errors').insert({
+      brokerage_id: context.brokerageId,
       workflow_name: 'communication_spine_persist_message',
       error_message: error.message,
       severity: 'high',
@@ -144,6 +153,11 @@ export async function persistMessageWithContext(
       }),
       created_at: new Date().toISOString(),
     })
+    if (persistLogError) {
+      // The original persistence failure is returned below; a failure to FILE it
+      // is reported beside it, never in place of it.
+      console.error('[COMMUNICATION SPINE] automation_errors insert refused:', persistLogError.message)
+    }
 
     return {
       success: false,

@@ -567,7 +567,26 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       const { distributePlatformLead } = await import('@/lib/platform/distribution-engine')
       const distResult = await distributePlatformLead({ leadId: newLead.id })
       if (!distResult.success && distResult.reason !== 'skip_non_platform_origin') {
-        await supabase.from('automation_errors').insert({
+        // WRITTEN DELIBERATELY UNTENANTED, and it is the same defended case as
+        // the platform-wide cron sweeps — not an oversight.
+        //
+        // This branch only runs for a PLATFORM-ORIGIN lead, which is created with
+        // `brokerage_id: null` on purpose (the parked-until-distributed rule two
+        // hundred lines above: "no tenant sees it"). What failed is Engine 1's
+        // zip rotation deciding WHICH subscriber should get it — a platform
+        // decision about a lead no brokerage owns yet.
+        //
+        // `effectiveBrokerageId` is in scope and is deliberately NOT used: it is
+        // the market-territory owner, and stamping it would surface a platform
+        // rotation failure inside one tenant's automations console, about a lead
+        // that tenant is explicitly not permitted to see. The row is instead left
+        // for the audience it belongs to — `lib/platform/ai-ops.ts:73` reads
+        // `automation_errors` cross-tenant with NO brokerage predicate and its row
+        // type carries `brokerageId: string | null`, and
+        // `resolveAutomationErrorAction` resolves by id alone, so it is both
+        // visible and resolvable there.
+        const { error: distributionLogError } = await supabase.from('automation_errors').insert({
+          brokerage_id: null,
           workflow_name: 'platform_lead_distribution',
           error_message: distResult.reason,
           context_json: JSON.stringify({ leadId: newLead.id, rawRecordId }),
@@ -575,6 +594,9 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
           status: 'open',
           created_at: new Date().toISOString(),
         })
+        if (distributionLogError) {
+          console.error('[pipeline-processor] automation_errors insert refused:', distributionLogError.message)
+        }
       }
     } catch (err: any) {
       console.error(`[v0] Distribution engine failed for ${newLead.id}:`, err)

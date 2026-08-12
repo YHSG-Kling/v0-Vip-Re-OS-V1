@@ -94,9 +94,21 @@ export async function GET(request: NextRequest) {
           .select("id, role, user_type").eq("brokerage_id", b.id).is("deleted_at", null).limit(25)
 
         // Dedupe against the notifications ledger: this quarter's invitations.
-        const { data: sent } = await svc.from("notifications")
+        //
+        // This read decides "have we already told them?", so it fails CLOSED.
+        // `error` is destructured because supabase-js RESOLVES a refused query:
+        // without it a refusal arrives as `data: null`, `invitedIds` is empty, and
+        // every principal is invited a second time. It is the same failure an
+        // UNSTAMPED invitation causes — `.eq("brokerage_id", b.id)` cannot match
+        // `NULL` — which is why the writers were stamped and this read was made
+        // able to say it was refused.
+        const { data: sent, error: sentError } = await svc.from("notifications")
           .select("user_id").eq("brokerage_id", b.id)
           .eq("type", QBR_INVITATION_TYPE).gte("created_at", sinceIso).limit(100)
+        if (sentError) {
+          errors.push(`${b.id}: QBR dedupe read refused (${sentError.message}) — skipped rather than risking duplicate invitations`)
+          continue
+        }
         const invitedIds = new Set(((sent ?? []) as Array<{ user_id: string | null }>).map((n) => n.user_id).filter(Boolean))
 
         const principals: string[] = []

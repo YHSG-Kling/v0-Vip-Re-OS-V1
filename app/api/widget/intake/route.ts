@@ -7,6 +7,9 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { NextRequest, NextResponse } from 'next/server'
 import { queueContactEnrichment } from '@/lib/enrichment/contact-enrichment-core'
+// The ONE way a notifications row gets its recipient and tenant — agents.id is
+// RESOLVED to users.id, never substituted into it.
+import { resolveAgentRecipient } from '@/lib/notifications/recipient-tenant'
 
 function normalizePhone(raw: string | undefined): string | null {
   if (!raw) return null
@@ -224,9 +227,31 @@ export async function POST(req: NextRequest) {
     })
 
     // ── 8. Notify assigned agent ─────────────────────────────────────────────
-    if (assignedAgentId) {
-      await supabase.from('notifications').insert({
-        user_id: assignedAgentId,
+    // `assignedAgentId` is an `agents.id` — that is what `contacts.agent_id`,
+    // `activities.agent_id` and `contact_consent_events.agent_id` all take, and
+    // the fallback branch above selects `agents.id` explicitly. But
+    // `notifications.user_id` is `REFERENCES users(id)`: DISJOINT spaces, so the
+    // id was RESOLVED across rather than reused, and the insert now destructures
+    // its error. Before this, every widget-intake notification was refused 23503
+    // and the refusal was discarded, so the assigned agent has never once been
+    // told a website lead came in.
+    //
+    // The tenant was already correct here (`brokerage_id` shorthand, at depth 1)
+    // and is left as the route resolved it: the recipient is an agent OF THIS
+    // BROKERAGE by construction — the fallback selects `.eq('brokerage_id',
+    // brokerage_id)` — so the recipient's `users.brokerage_id` IS `brokerage_id`
+    // and no second read is needed. That is the one resolver's stated no-op case,
+    // not a second resolver.
+    const widgetRecipient = await resolveAgentRecipient(supabase, assignedAgentId)
+    if (!widgetRecipient.ok) {
+      console.error(`[widget/intake] ${widgetRecipient.reason} — agent notification NOT written`)
+    } else if (assignedAgentId && !widgetRecipient.userId) {
+      console.error(
+        `[widget/intake] agent ${assignedAgentId} has no user account — agent notification NOT written rather than written with an agents.id in a users FK`,
+      )
+    } else if (widgetRecipient.userId) {
+      const { error: widgetNotifyError } = await supabase.from('notifications').insert({
+        user_id: widgetRecipient.userId,
         brokerage_id,
         type: 'new_widget_contact',
         title: isNewContact ? 'New contact from website widget' : 'Returning contact via widget',
@@ -236,9 +261,16 @@ export async function POST(req: NextRequest) {
         priority: 'medium', // CHECK vocabulary (pass 9): 'normal' was silently rejected
         channel: 'in_app',
       })
+      if (widgetNotifyError) {
+        console.error('[widget/intake] agent notification insert refused:', widgetNotifyError.message)
+      }
     }
 
     // ── 9. Emit lifecycle event ──────────────────────────────────────────────
+    // OBSERVED, NOT FIXED HERE: `actor_user_id` is also handed an `agents.id`.
+    // `lifecycle_events` is a different table with its own readers and belongs
+    // to a different census than this wave's two; it is named rather than
+    // silently changed.
     await supabase.from('lifecycle_events').insert({
       brokerage_id,
       event_type: isNewContact ? 'contact_created' : 'contact_updated',

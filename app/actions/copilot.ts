@@ -7,6 +7,9 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { incrementUsage } from "@/lib/usage"
 import { isValidUUID } from "@/lib/validations"
 import { authorizeForUser } from "@/lib/auth/authorize-for-user"
+// The ONE way a notifications row gets its tenant — the recipient's
+// users.brokerage_id, the exact value badge-counts compares against.
+import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenant"
 
 // =====================================================
 // EVENT HANDLERS — named "called by orchestrator", but NOT ACTUALLY DISPATCHED.
@@ -157,8 +160,25 @@ export async function handleMorningKickoff(payload: any) {
   // shape failed silently and "no kickoff ever delivered" — which stayed
   // invisible because the insert's error was discarded and success was returned
   // either way. A briefing nobody received must not report as sent.
+  //
+  // TENANT — the RECIPIENT's `users.brokerage_id`. `user_id` is a users.id (the
+  // agents.id needed for the tasks read above is fetched separately via
+  // agentIdForUser and never substituted here; the spaces are DISJOINT).
+  // Unstamped, this briefing is filtered out of badge-counts by
+  // `.eq("brokerage_id", …)`, so "no kickoff ever delivered" would have stayed
+  // true even after the shape was fixed — the row lands and the bell stays dark.
+  const kickoffTenant = await resolveRecipientBrokerageId(supabase, user_id)
+  if (!kickoffTenant.ok) {
+    return { success: false, error: `Kickoff not delivered: ${kickoffTenant.reason}` }
+  }
+  if (!kickoffTenant.brokerageId) {
+    // Written untenanted the row is invisible to the very bell this briefing
+    // exists to ring. Reporting the failure beats reporting a delivery.
+    return { success: false, error: "Kickoff not delivered: the recipient has no brokerage" }
+  }
   const { error: notifyError } = await supabase.from("notifications").insert({
     user_id: user_id,
+    brokerage_id: kickoffTenant.brokerageId,
     type: "morning_kickoff",
     title: "Good Morning! Here's Your Day",
     body: `You have ${todayTasks?.length || 0} tasks today. Let's make it productive!`,
@@ -747,12 +767,21 @@ async function sendPropertyMatches(contactId: string) {
   // Criteria live in property_preferences (NOT contacts) — read via the single normalized
   // reader. The old code selected preferred_* columns off contacts (non-existent) and
   // filtered listings by `price` (the column is list_price), so it matched nothing.
-  const { data: contact } = await supabase
+  // `error` is destructured because this row is the TENANT ANCHOR for the
+  // notification written at the end of this function: supabase-js RESOLVES a
+  // refused read, so `const { data }` alone reports a refusal as "Contact not
+  // found" and the two must not be the same answer when one of them decides
+  // whose brokerage a row belongs to.
+  const { data: contact, error: matchContactError } = await supabase
     .from("contacts")
     .select("id, agent_id, brokerage_id")
     .eq("id", contactId)
-    .single()
+    .maybeSingle()
 
+  if (matchContactError) {
+    console.error("[copilot] sendPropertyMatches: contacts lookup refused:", matchContactError.message)
+    return { success: false, error: "Contact not found" }
+  }
   if (!contact) {
     return { success: false, error: "Contact not found" }
   }
@@ -780,15 +809,35 @@ async function sendPropertyMatches(contactId: string) {
   
   const { data: matches } = await query.limit(10)
   
-  // Create property match notification
+  // Create property match notification.
+  //
+  // TENANT — this row is addressed to a CONTACT (`contact_id`), not a user, so
+  // the recipient resolver does not apply: the record it is filed against is the
+  // contact, whose `brokerage_id` was already read above for the listings query
+  // and is reused rather than re-resolved. That is the same one question — "whose
+  // brokerage is this row for?" — asked of the record that carries the answer.
+  //
+  // Unstamped it is invisible to every brokerage-scoped reader of this table
+  // while the escape (`brokerage_id IS NULL`) simultaneously admits it to every
+  // OTHER tenant's RLS — the exact inversion wave 22 measured.
   if (matches && matches.length > 0) {
-    await supabase.from("notifications").insert({
-      contact_id: contactId,
-      type: "property_matches",
-      title: `${matches.length} New Property Matches`,
-      body: `We found ${matches.length} properties matching your preferences.`,
-      entity_type: "property_match",
-    })
+    if (!contact.brokerage_id) {
+      console.error(
+        `[copilot] sendPropertyMatches: contact ${contactId} carries no brokerage_id — property-match notification NOT written rather than written untenanted`,
+      )
+    } else {
+      const { error: matchNotifyError } = await supabase.from("notifications").insert({
+        contact_id: contactId,
+        brokerage_id: contact.brokerage_id,
+        type: "property_matches",
+        title: `${matches.length} New Property Matches`,
+        body: `We found ${matches.length} properties matching your preferences.`,
+        entity_type: "property_match",
+      })
+      if (matchNotifyError) {
+        console.error("[copilot] property_matches notification insert refused:", matchNotifyError.message)
+      }
+    }
   }
   
   return { success: true, message: `Sent ${matches?.length || 0} property matches`, matchCount: matches?.length || 0 }

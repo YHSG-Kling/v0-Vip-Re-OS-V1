@@ -21,6 +21,18 @@ export async function promoteLeadToContactService(
 ): Promise<PromotionResult> {
   const supabase = createServiceClient()
 
+  // TENANT ANCHOR, HOISTED ABOVE THE TRY ON PURPOSE.
+  //
+  // The catch below files an automation_errors row, and `lead` is scoped INSIDE
+  // the try — so a tenant resolved there is not a tenant the catch can use. The
+  // alternative, looking the lead up again from inside the error handler, is the
+  // trap this wave was warned about: that lookup can itself be refused or throw,
+  // and losing the ORIGINAL error to a failure in the code that reports it is
+  // strictly worse than filing the error with less context. So the anchor is a
+  // plain variable, filled the moment the lead read succeeds and never touched
+  // again.
+  let promotionBrokerageId: string | null = null
+
   try {
     // Step 1: Fetch lead
     const { data: lead, error: leadError } = await supabase
@@ -32,6 +44,10 @@ export async function promoteLeadToContactService(
     if (leadError || !lead) {
       return { success: false, message: "Lead not found" }
     }
+
+    // The lead IS the record every row in this function is filed against, so its
+    // brokerage is the anchor for both automation_errors writes below.
+    promotionBrokerageId = (lead.brokerage_id as string | null) ?? null
 
     // Step 2: Idempotency check
     // tenant anchor (scope burn-down): the probe is pinned to the validated
@@ -84,14 +100,30 @@ export async function promoteLeadToContactService(
     // Step 6: Deactivate lead (preserve for audit)
     const deactivateResult = await deactivateLead(supabase, leadId)
     if (!deactivateResult.success) {
-      await supabase.from("automation_errors").insert({
-        workflow_name: "lead_promotion",
-        error_message: `Contact created but lead deactivation failed: ${deactivateResult.error}`,
-        severity: "high",
-        status: "open",
-        context_json: JSON.stringify({ leadId, contactId: contactResult.contactId, timestamp: new Date().toISOString() }),
-        created_at: new Date().toISOString(),
-      })
+      // TENANT — the lead's own brokerage, resolved once above. This is the
+      // worst-shaped failure this function has (a contact exists and the lead is
+      // still active, so the pair will be promoted again), and unstamped it is
+      // both invisible in the automations console and un-resolvable through it,
+      // because `workflows.ts:531` uses `.eq("brokerage_id", …)` as an ownership
+      // check and returns "Forbidden" on a miss.
+      if (!promotionBrokerageId) {
+        console.error(
+          `[promoteLeadToContactService] lead ${leadId} carries no brokerage_id — deactivation-failure row NOT written rather than written where the console can neither see nor resolve it`,
+        )
+      } else {
+        const { error: deactivateLogError } = await supabase.from("automation_errors").insert({
+          brokerage_id: promotionBrokerageId,
+          workflow_name: "lead_promotion",
+          error_message: `Contact created but lead deactivation failed: ${deactivateResult.error}`,
+          severity: "high",
+          status: "open",
+          context_json: JSON.stringify({ leadId, contactId: contactResult.contactId, timestamp: new Date().toISOString() }),
+          created_at: new Date().toISOString(),
+        })
+        if (deactivateLogError) {
+          console.error("[promoteLeadToContactService] automation_errors insert refused:", deactivateLogError.message)
+        }
+      }
     }
 
     // Step 7: Log audit trail
@@ -110,14 +142,28 @@ export async function promoteLeadToContactService(
     }
   } catch (error: any) {
     console.error("[promoteLeadToContactService] Error:", error)
-    await supabase.from("automation_errors").insert({
-      workflow_name: "lead_promotion",
-      error_message: error.message || "Unknown error during lead promotion",
-      severity: "critical",
-      status: "open",
-      context_json: JSON.stringify({ leadId, timestamp: new Date().toISOString() }),
-      created_at: new Date().toISOString(),
-    })
+    // TENANT — the hoisted anchor. It is null only when the failure happened
+    // BEFORE the lead was read, which is exactly the case where no tenant exists
+    // to attribute the failure to; the original error is already on the console
+    // above, so nothing is lost by not filing an unreadable row.
+    if (!promotionBrokerageId) {
+      console.error(
+        `[promoteLeadToContactService] no brokerage resolved for lead ${leadId} before the failure — automation_errors row NOT written rather than written where the console can neither see nor resolve it`,
+      )
+    } else {
+      const { error: promotionLogError } = await supabase.from("automation_errors").insert({
+        brokerage_id: promotionBrokerageId,
+        workflow_name: "lead_promotion",
+        error_message: error.message || "Unknown error during lead promotion",
+        severity: "critical",
+        status: "open",
+        context_json: JSON.stringify({ leadId, timestamp: new Date().toISOString() }),
+        created_at: new Date().toISOString(),
+      })
+      if (promotionLogError) {
+        console.error("[promoteLeadToContactService] automation_errors insert refused:", promotionLogError.message)
+      }
+    }
     return { success: false, message: "An error occurred during lead promotion" }
   }
 }

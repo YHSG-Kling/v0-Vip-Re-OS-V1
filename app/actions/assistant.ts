@@ -21,6 +21,10 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 // See lib/auth/authorize-for-user.ts for why it is a plain module (server-only would break
 // any plain-tsx guard that transitively imports it).
 import { authorizeForUser } from "@/lib/auth/authorize-for-user"
+// The ONE way a notifications row gets its tenant — the recipient's
+// users.brokerage_id, which is the exact value the badge-count reader compares
+// against. See lib/notifications/recipient-tenant.ts for why nothing else works.
+import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenant"
 
 export async function handleAssistantQuery(payload: any) {
   const { user_id, query, context } = payload
@@ -72,14 +76,38 @@ export async function handleTaskDelegated(payload: any) {
 
   // Real notifications shape (user_id/type/body/entity_*) — the phantom insert
   // failed silently, so delegated-task recipients were never notified.
-  await supabase.from("notifications").insert({
+  //
+  // TENANT — the RECIPIENT's `users.brokerage_id`, resolved once through the
+  // person this row is filed against. `to_user_id` is a users.id (it was already
+  // translated to `toAgentId` above for the tasks table, and the two spaces are
+  // DISJOINT — the agents.id is never reused here). Unstamped, the delegation
+  // notice is invisible to badge-counts, which ANDs
+  // `.eq("brokerage_id", <recipient's users.brokerage_id>)`: the row exists, the
+  // bell stays dark, and "the phantom insert failed silently" repeats with a
+  // real row instead of a rejected one.
+  const delegateTenant = await resolveRecipientBrokerageId(supabase, to_user_id)
+  if (!delegateTenant.ok) {
+    console.error(`[assistant] handleTaskDelegated: ${delegateTenant.reason} — delegation notification NOT written`)
+    return { success: true, warning: "Task reassigned, but the recipient could not be notified" }
+  }
+  if (!delegateTenant.brokerageId) {
+    console.error(
+      `[assistant] handleTaskDelegated: recipient ${to_user_id} has no brokerage — delegation notification NOT written rather than written where the bell cannot count it`,
+    )
+    return { success: true, warning: "Task reassigned, but the recipient could not be notified" }
+  }
+  const { error: delegateNotifyError } = await supabase.from("notifications").insert({
     user_id: to_user_id,
+    brokerage_id: delegateTenant.brokerageId,
     type: "task_delegated",
     title: "New Task Assigned",
     body: `You've been assigned: ${task_title}`,
     entity_type: "task",
     entity_id: task_id,
   })
+  if (delegateNotifyError) {
+    console.error("[assistant] task_delegated notification insert refused:", delegateNotifyError.message)
+  }
 
   return { success: true }
 }

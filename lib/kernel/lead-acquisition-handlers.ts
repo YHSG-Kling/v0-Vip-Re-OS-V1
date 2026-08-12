@@ -31,14 +31,44 @@ export async function assertValidTransition(
 ): Promise<void> {
   if (!(ALLOWED_TRANSITIONS[current] ?? []).includes(next)) {
     const supabase = createServiceClient()
-    await supabase.from('automation_errors').insert({
-      workflow_name: 'lifecycle_transition_guard',
-      error_message: `Illegal transition: ${current} → ${next} on lead ${leadId}`,
-      context_json: JSON.stringify({ leadId, current, next }),
-      brokerage_id: null,
-      severity: 'error',
-      status: 'open',
-    })
+    // TENANT — the LEAD this illegal transition was attempted on. This site was
+    // stamping `brokerage_id: null` EXPLICITLY, which is why no census of
+    // "unstamped writers" ever saw it: at depth 1 the key was present and the
+    // value was the problem. An illegal lifecycle transition is a single
+    // brokerage's lead going wrong, not a platform event, so it belongs in that
+    // brokerage's automations console — where `workflows.ts:531` reads
+    // `.eq("brokerage_id", …)` as an ownership check and refuses "Forbidden" on
+    // anything it cannot match.
+    //
+    // `error` is destructured, and the throw below happens either way: nothing
+    // about resolving the tenant is allowed to swallow the transition failure
+    // this function exists to raise.
+    const { data: guardLead, error: guardLeadError } = await supabase
+      .from('leads')
+      .select('brokerage_id')
+      .eq('id', leadId)
+      .maybeSingle()
+    if (guardLeadError) {
+      console.error('[lead-acquisition-handlers] transition guard: leads lookup refused:', guardLeadError.message)
+    }
+    const guardBrokerageId = ((guardLead as { brokerage_id: string | null } | null)?.brokerage_id as string | null) ?? null
+    if (!guardBrokerageId) {
+      console.error(
+        `[lead-acquisition-handlers] no brokerage resolves for lead ${leadId} — illegal-transition row NOT written rather than written where the console can neither see nor resolve it`,
+      )
+    } else {
+      const { error: guardLogError } = await supabase.from('automation_errors').insert({
+        workflow_name: 'lifecycle_transition_guard',
+        error_message: `Illegal transition: ${current} → ${next} on lead ${leadId}`,
+        context_json: JSON.stringify({ leadId, current, next }),
+        brokerage_id: guardBrokerageId,
+        severity: 'error',
+        status: 'open',
+      })
+      if (guardLogError) {
+        console.error('[lead-acquisition-handlers] automation_errors insert refused:', guardLogError.message)
+      }
+    }
     throw new Error(`Illegal lifecycle transition: ${current} → ${next}`)
   }
 }
