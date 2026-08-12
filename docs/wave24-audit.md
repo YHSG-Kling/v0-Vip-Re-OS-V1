@@ -167,3 +167,38 @@ So the remaining tail is **not** a single dispatchable wave. It is either:
 Option 2 is a real choice rather than a shortcut, but it is an **owner call**,
 because it trades a period of visible breakage for finding the stragglers. It
 should not be taken unilaterally.
+
+### My census instrument is not trustworthy for the tail — and the fix is known
+
+Trying to size the remaining already-broken set exposed that
+`scratchpad/already-broken.js` and `escape-writer-census.js` are **shell-grade
+tools that the guard's scanner has outgrown**. Two independent error classes,
+both already solved inside `scripts/ai-insight-tenant-guard.ts`:
+
+- **Reader-side window bleed.** A `.eq("brokerage_id", …)` within 500 characters
+  of a `.from()` was attributed to that query even when it belonged to the *next*
+  one. That is how `open_house_invitations` was reported as having a
+  brokerage-equality reader at `open-house-automation.ts:757` — the match
+  actually belonged to the `open_house_events` query below it. Cutting the window
+  at the next `.from(` dropped the count 42 → 40, and **confirmed my true-negative
+  call on that table stands**.
+- **Writer-side false positives.** `social_posts` still reports 3 unstamped
+  writers when the wave-24 agent proved **all 22 stamp** — because my census
+  cannot follow block-bodied row mappers or same-line stamps. The guard's scanner
+  was hardened for exactly these in waves 23–24; my census never was.
+
+So the honest position: **the "40 tables / 62 sites" figure is an upper bound
+with a known inflation mechanism, not a measurement.** Publishing it as the
+remaining work would repeat the mistake this whole sequence keeps catching —
+trusting a fast instrument over a careful one. It is recorded here as a bound
+precisely so nobody treats it as a total.
+
+**The right next step is not another patch to the shell tool.** The guard's
+scanner already resolves every shape that defeats the census — shorthand stamps,
+explicit `null`, single and double quotes, `.insert(rows)`, arrow and
+block-bodied `.map()` fan-outs, window cuts at the next `.from(`, and the
+last-open-assignment rule for `destructuresError`. Extending it to **enumerate**
+(report which sites lack a stamp) rather than only **assert** would produce a
+count that can be trusted, from the one instrument in this repo that has been
+adversarially tested. That is a small, well-scoped piece of work and it should
+precede any further stamping wave.
