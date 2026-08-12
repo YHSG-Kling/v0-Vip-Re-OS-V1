@@ -194,13 +194,37 @@ Four are touched by a browser client, and three of those resolve immediately:
 A browser client on an authenticated page carries the user's JWT and queries as
 `authenticated`, not `anon` — so the first three do not need the grant either.
 
-**So the ratio is 37 no, 1 yes**, and the one is the inquiry form that m394's
-qualifier was written to protect in the first place. That makes wave 22 a
-narrowing with a single named carve-out, the same shape as m394's
-`tool_usage_sessions` — not an open question. What it still needs before
-dispatch is the per-table confirmation that each of the 34 is genuinely
-service-client or session-client written, which is the step that turned up
-`ai-prediction-outcomes.ts:76` this wave when it was assumed rather than read.
+On the browser-client axis the ratio is **37 no, 1 yes**, and the one is the
+inquiry form m394's qualifier was written to protect.
+
+### …then I ran the step I had just said was still owed, and it moved the number
+
+**CORRECTION, mine, one paragraph after making the claim.** "37 no, 1 yes" was
+one step too confident. A browser client is not the only way to reach the
+database as `anon` — **a session server client on a logged-out route runs as
+`anon` too**, which is exactly why `tool_usage_sessions` is a carve-out in m394.
+So the browser-client census is necessary and not sufficient.
+
+Classifying all 34 by client type: every one is written from server code, none
+from a browser client. Eight are session-client-only, and of those, **two are
+genuine candidates that are not yet settled**:
+
+| table | call site | why it is open |
+|---|---|---|
+| `calculator_history` | `app/actions/calculators.ts:587 saveCalculatorResult` | Same file as `tool_usage_sessions`, session client, takes a bare `leadId`, performs no auth check of its own. It sits *above* the `// PUBLIC TOOLS (Zero Friction, No Email Required)` header rather than inside it — but that is a positional inference, not proof. Needs its callers read. |
+| `document_downloads` | `app/api/external-portal/documents/download/route.ts:88` | Session client on an **external-portal** route. If portal visitors (vendors, title) are token-authenticated rather than Supabase-authenticated, this runs as `anon` and genuinely needs the grant. Needs the portal's auth model read. |
+
+So the honest state is **32 settled, 2 open, 1 known carve-out** — and wave 22
+is still a narrowing with named carve-outs, but the count of them is not yet
+one. Resolving those two is the first thing that wave does, before it writes a
+line of SQL.
+
+This is the same failure mode the wave logged as its own rule, committed one
+turn earlier: *before shipping a fix that depends on a signal reaching a caller,
+census the callers.* I wrote the browser-client census, called the question
+closed, and the second axis was still unmeasured. It cost nothing here because
+nothing had been dispatched — which is the entire argument for auditing before
+writing.
 
 ## Recorded, NOT to be built — still owner rulings (task #156)
 
