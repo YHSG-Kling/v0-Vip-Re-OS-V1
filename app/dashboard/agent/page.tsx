@@ -284,17 +284,38 @@ export default function AgentDashboard() {
         setActionPlans([...(plans || []), ...autopilotPlans])
 
         // 5c. AI Insights feed — writers (app/actions/ai-predictions.ts) insert
-        // insight_title/insight_description and usually leave agent_id null, so
-        // include unattributed rows; RLS scopes reads to the caller's brokerage.
-        if (agentRow?.id) {
+        // insight_title/insight_description and almost always leave agent_id
+        // null, so unattributed rows are deliberately INCLUDED: an insight about
+        // a transaction or a market shift belongs to the desk, not to one agent.
+        //
+        // THE BROKERAGE PREDICATE IS THIS QUERY'S ONLY TENANT BOUNDARY, and it is
+        // stated here rather than assumed of RLS. The policy on ai_insights is
+        // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`,
+        // so the database admits every untenanted row from every tenant — the
+        // widening above would have widened ACROSS brokerages, not within one.
+        // agents.brokerage_id is NOT NULL and is already loaded above, so the
+        // filter is `.eq`, which also excludes brokerage_id IS NULL: the 64
+        // pre-rollout rows that nothing records a tenant for stay out of the
+        // feed rather than being shown to whoever loads the page first.
+        if (agentRow?.id && agentRow?.brokerage_id) {
           const { data: insightRows, error: insightsError } = await supabase
             .from("ai_insights")
             .select("id, insight_type, insight_title, insight_description, priority, estimated_impact, created_at")
+            .eq("brokerage_id", agentRow.brokerage_id)
             .or(`agent_id.eq.${agentRow.id},agent_id.is.null`)
             .order("created_at", { ascending: false })
             .limit(8)
 
-          if (!insightsError && insightRows) {
+          // supabase-js RESOLVES a refused read, so `insightsError` is the only
+          // thing that tells a refusal apart from an empty feed. This page has no
+          // error surface for its dashboard reads (every one of them uses this
+          // same `if (!error && data)` shape and the card simply hides when
+          // empty), so the shape is left alone and the refusal is logged the way
+          // this file logs its other failures — a silently empty feed is at least
+          // no longer silent in the console.
+          if (insightsError) {
+            console.error("[v0] AI insights feed read refused:", insightsError.message)
+          } else if (insightRows) {
             setAiInsights(insightRows)
           }
         }

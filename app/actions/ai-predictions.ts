@@ -752,6 +752,12 @@ export async function predictDealCloseProbability(transactionId: string) {
     throw new Error("Transaction not found")
   }
 
+  // TENANT ANCHOR — resolved ONCE, from the transaction this prediction is filed
+  // against (transaction → brokerage_id). Every ai_insights row written below is
+  // about THIS transaction, so it belongs to THAT tenant; nothing is substituted
+  // from another id space and nothing is re-resolved per risk factor.
+  const dealBrokerageId = (transaction.brokerage_id as string | null) ?? null
+
   const daysToClosing = transaction.closing_date
     ? Math.floor((new Date(transaction.closing_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
     : 0
@@ -867,17 +873,31 @@ Respond with JSON:
     if ((prediction as any).riskFactors?.some((r: any) => r.severity === "high")) {
       const criticalRisks = (prediction as any).riskFactors.filter((r: any) => r.severity === "high")
 
-      for (const risk of criticalRisks) {
-        await supabase.from("ai_insights").insert({
-          insight_type: "risk",
-          entity_type: "transaction",
-          entity_id: transactionId,
-          insight_title: `High Risk: ${risk.risk}`,
-          insight_description: risk.mitigation,
-          actionable_steps: [risk.mitigation],
-          priority: "critical",
-          estimated_impact: { probability: risk.probability },
-        })
+      if (!dealBrokerageId) {
+        // An untenanted ai_insights row is not a private row — the tenant policy
+        // reads `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`,
+        // so a NULL here publishes this deal's risks to every tenant. Writing
+        // nothing is the honest answer to "whose transaction is this?".
+        console.error(
+          `[ai-predictions] predictDealCloseProbability: transaction ${transactionId} carries no brokerage_id — ${criticalRisks.length} risk insight(s) NOT written rather than written untenanted`,
+        )
+      } else {
+        for (const risk of criticalRisks) {
+          const { error: riskInsightError } = await supabase.from("ai_insights").insert({
+            brokerage_id: dealBrokerageId,
+            insight_type: "risk",
+            entity_type: "transaction",
+            entity_id: transactionId,
+            insight_title: `High Risk: ${risk.risk}`,
+            insight_description: risk.mitigation,
+            actionable_steps: [risk.mitigation],
+            priority: "critical",
+            estimated_impact: { probability: risk.probability },
+          })
+          if (riskInsightError) {
+            console.error("[ai-predictions] ai_insights (deal risk) insert refused:", riskInsightError.message)
+          }
+        }
       }
     }
 
@@ -1054,21 +1074,77 @@ Provide ACTIONABLE coaching. Respond with JSON:
         .eq("id", data.leadId)
     }
 
+    // TENANT ANCHOR for everything this function writes. It checks no session
+    // (its `agentId` is a caller-supplied parameter, not an identity), so the
+    // tenant is resolved from the RECORD the writes are filed against.
+    // `data.leadId` may be a leads.id OR a contacts.id — DISJOINT spaces — so
+    // each table is asked in turn; neither id is ever substituted for the other.
+    // leads.brokerage_id is NOT NULL, contacts.brokerage_id is nullable.
+    //
+    // Resolved HERE, above both writers, rather than inside the insight branch:
+    // the compliance_flags write below needs the same anchor and fails the
+    // OPPOSITE way without it. compliance_flags does NOT carry the migration-029
+    // escape — its SELECT policy is `brokerage_id = (the caller's brokerage)`
+    // with no agent disjunct — so `brokerage_id = NULL` is NULL, never true, and
+    // an unstamped fair-housing flag is readable by nobody at all. An insight
+    // written untenanted leaks; a compliance flag written untenanted VANISHES.
+    let conversationBrokerageId: string | null = null
+    {
+      const { data: leadTenantRow, error: leadTenantError } = await supabase
+        .from("leads")
+        .select("brokerage_id")
+        .eq("id", data.leadId)
+        .maybeSingle()
+      if (leadTenantError) {
+        console.error("[ai-predictions] analyzeConversation: leads tenant lookup refused:", leadTenantError.message)
+      }
+      if (leadTenantRow?.brokerage_id) {
+        conversationBrokerageId = leadTenantRow.brokerage_id as string
+      } else {
+        const { data: contactTenantRow, error: contactTenantError } = await supabase
+          .from("contacts")
+          .select("brokerage_id")
+          .eq("id", data.leadId)
+          .maybeSingle()
+        if (contactTenantError) {
+          console.error(
+            "[ai-predictions] analyzeConversation: contacts tenant lookup refused:",
+            contactTenantError.message,
+          )
+        }
+        conversationBrokerageId = (contactTenantRow?.brokerage_id as string | null) ?? null
+      }
+
+    }
+
     // Create AI insight for immediate actions
     if (result.nextSteps?.immediate?.length > 0) {
-      await supabase.from("ai_insights").insert({
-        insight_type: "opportunity",
-        entity_type: "lead",
-        entity_id: data.leadId,
-        insight_title: "🚨 Take Action NOW",
-        insight_description: result.nextSteps.immediate.join("\n"),
-        actionable_steps: result.nextSteps.immediate,
-        priority: "critical",
-        estimated_impact: {
-          deal_probability_increase: "+15%",
-          if_not_acted_on: "Lead may go cold or choose another agent",
-        },
-      })
+      if (!conversationBrokerageId) {
+        // The tenant policy on ai_insights treats a NULL brokerage_id as
+        // "belongs to everyone". Rather than publish this conversation's next
+        // steps to every tenant, nothing is written and the reason is named.
+        console.error(
+          `[ai-predictions] analyzeConversation: no brokerage resolves for ${data.leadId} in leads or contacts — insight NOT written rather than written untenanted`,
+        )
+      } else {
+        const { error: convInsightError } = await supabase.from("ai_insights").insert({
+          brokerage_id: conversationBrokerageId,
+          insight_type: "opportunity",
+          entity_type: "lead",
+          entity_id: data.leadId,
+          insight_title: "🚨 Take Action NOW",
+          insight_description: result.nextSteps.immediate.join("\n"),
+          actionable_steps: result.nextSteps.immediate,
+          priority: "critical",
+          estimated_impact: {
+            deal_probability_increase: "+15%",
+            if_not_acted_on: "Lead may go cold or choose another agent",
+          },
+        })
+        if (convInsightError) {
+          console.error("[ai-predictions] ai_insights (conversation) insert refused:", convInsightError.message)
+        }
+      }
     }
 
     // Flag compliance issues if any
@@ -1077,14 +1153,31 @@ Provide ACTIONABLE coaching. Respond with JSON:
       // status CHECK is flagged|reviewed|resolved|overridden (no 'open'); no entity_type/
       // entity_id/description/flag_type columns. (contact_id omitted: data.leadId may be a
       // leads.id, and contact_id FKs contacts — avoid an FK violation.)
-      await supabase.from("compliance_flags").insert({
-        content_type: data.conversationType,
-        violation_type: "fair_housing_violation",
-        severity: "high",
-        flagged_content: `Compliance issues detected: ${result.complianceIssues.join(", ")} :: ${data.transcript}`,
-        status: "flagged",
-        detected_at: new Date().toISOString(),
-      })
+      // TENANT: the anchor resolved above. compliance_flags does NOT carry the
+      // migration-029 escape — `agent_read_own_compliance_flags` is
+      // `brokerage_id = (select brokerage_id from users where id = auth.uid())`
+      // with no agent disjunct — so an unstamped row is not leaked, it is LOST:
+      // `NULL = <uuid>` is NULL, never true, and no caller but service_role can
+      // ever read it. A fair-housing violation the system detected and then hid
+      // from its own compliance surface is the worse of the two failures.
+      if (!conversationBrokerageId) {
+        console.error(
+          `[ai-predictions] analyzeConversation: no brokerage resolves for ${data.leadId} — fair-housing flag NOT written rather than written where nobody can read it`,
+        )
+      } else {
+        const { error: complianceFlagError } = await supabase.from("compliance_flags").insert({
+          brokerage_id: conversationBrokerageId,
+          content_type: data.conversationType,
+          violation_type: "fair_housing_violation",
+          severity: "high",
+          flagged_content: `Compliance issues detected: ${result.complianceIssues.join(", ")} :: ${data.transcript}`,
+          status: "flagged",
+          detected_at: new Date().toISOString(),
+        })
+        if (complianceFlagError) {
+          console.error("[ai-predictions] compliance_flags insert refused:", complianceFlagError.message)
+        }
+      }
     }
 
     return {
@@ -1265,6 +1358,12 @@ export async function aiPropertyMatchGenius(contactId: string) {
   // built against a decision that has already been made.
   const { client: idxClient } = await idxForCallerBrokerage("aiPropertyMatchGenius")
 
+  // TENANT ANCHOR for the learned-preferences insight written at the end.
+  // Resolved from the CONTACT this insight is filed against — the row is about
+  // that contact, so it belongs to that contact's brokerage, not to whoever
+  // happened to run the search.
+  const matchBrokerageId = (contact.brokerage_id as string | null) ?? null
+
   // Get property family ratings from collaborative searches
   const { data: familyRatings } = await supabase
     .from("property_family_ratings")
@@ -1441,19 +1540,29 @@ Generate PERFECT search criteria based on learned behavior:
     const topMatches = scoredProperties.sort((a: any, b: any) => b.aiMatchScore - a.aiMatchScore).slice(0, 10)
 
     // Save the learned preferences for future use
-    await supabase.from("ai_insights").insert({
-      insight_type: "learned_preferences",
-      entity_type: "contact",
-      entity_id: contactId,
-      insight_title: "AI Property Match Preferences Learned",
-      insight_description: aiMatch.whyThisWillWork,
-      actionable_steps: [`Show properties matching learned criteria`, `Focus on: ${aiMatch.learnedPreferences?.hiddenMustHaves?.join(", ")}`],
-      priority: "medium",
-      estimated_impact: {
-        expectedMatchRate: aiMatch.expectedMatchRate,
-        confidenceScore: aiMatch.confidenceScore,
-      },
-    })
+    if (!matchBrokerageId) {
+      console.error(
+        `[ai-predictions] aiPropertyMatchGenius: contact ${contactId} carries no brokerage_id — learned-preferences insight NOT written rather than written untenanted`,
+      )
+    } else {
+      const { error: matchInsightError } = await supabase.from("ai_insights").insert({
+        brokerage_id: matchBrokerageId,
+        insight_type: "learned_preferences",
+        entity_type: "contact",
+        entity_id: contactId,
+        insight_title: "AI Property Match Preferences Learned",
+        insight_description: aiMatch.whyThisWillWork,
+        actionable_steps: [`Show properties matching learned criteria`, `Focus on: ${aiMatch.learnedPreferences?.hiddenMustHaves?.join(", ")}`],
+        priority: "medium",
+        estimated_impact: {
+          expectedMatchRate: aiMatch.expectedMatchRate,
+          confidenceScore: aiMatch.confidenceScore,
+        },
+      })
+      if (matchInsightError) {
+        console.error("[ai-predictions] ai_insights (learned preferences) insert refused:", matchInsightError.message)
+      }
+    }
 
     return {
       success: true,
@@ -1698,7 +1807,13 @@ export async function massGenerateCMAs(_ignoredAgentId?: string) {
   for (const gain of significantGains) {
     // The report this insight points at is filed on the CONTACT, so the insight
     // is too — type and id move together, never one without the other.
-    await supabase.from("ai_insights").insert({
+    //
+    // TENANT: `brokerageId`, resolved once at the top of this action
+    // (agent → profiles.brokerage_id, falling back to the session context) and
+    // already proven non-null there. These rows do not span tenants — every
+    // owner came from this agent's own book — so it is not re-resolved per row.
+    const { error: equityInsightError } = await supabase.from("ai_insights").insert({
+      brokerage_id: brokerageId,
       insight_type: "opportunity",
       entity_type: "contact",
       entity_id: gain.contactId,
@@ -1715,6 +1830,9 @@ export async function massGenerateCMAs(_ignoredAgentId?: string) {
         estimated_commission: gain.equityGain * commissionStructure.agentListingSideRate,
       },
     })
+    if (equityInsightError) {
+      console.error("[ai-predictions] ai_insights (equity growth) insert refused:", equityInsightError.message)
+    }
   }
 
   return {
@@ -1895,7 +2013,10 @@ export async function aiNegotiationAdvisor(data: {
 }) {
   const supabase = await createClient()
 
-  const { data: transaction } = await supabase
+  // The error is destructured because this row is now the TENANT ANCHOR for the
+  // insight written below, and supabase-js RESOLVES a refused read — a refusal
+  // and "no such transaction" arrive identically if only `data` is read.
+  const { data: transaction, error: negotiationTxnError } = await supabase
     .from("transactions")
     .select(
       `
@@ -1908,9 +2029,18 @@ export async function aiNegotiationAdvisor(data: {
     .eq("id", data.transactionId)
     .maybeSingle()
 
+  if (negotiationTxnError) {
+    throw new Error(
+      `aiNegotiationAdvisor: the transaction lookup was refused (${negotiationTxnError.message}). This is a refusal, not a missing transaction.`,
+    )
+  }
   if (!transaction) {
     throw new Error("Transaction not found")
   }
+
+  // TENANT ANCHOR — transaction → brokerage_id. The strategy is about this deal,
+  // so the insight belongs to the deal's tenant.
+  const negotiationBrokerageId = (transaction.brokerage_id as string | null) ?? null
 
   const prompt = `You are a master real estate negotiator AI. Provide winning negotiation strategy:
 
@@ -1956,19 +2086,29 @@ Provide strategic negotiation advice:
     }
 
     // Save negotiation strategy
-    await supabase.from("ai_insights").insert({
-      insight_type: "recommendation",
-      entity_type: "transaction",
-      entity_id: data.transactionId,
-      insight_title: `Negotiation Strategy: ${data.scenario}`,
-      insight_description: strategy.data.recommendedApproach,
-      actionable_steps: strategy.data.negotiationTactics?.map((t: any) => t.script) || [],
-      priority: "high",
-      estimated_impact: {
-        win_probability: strategy.data.winProbability,
-        potential_savings: (data.listPrice || 0) - (strategy.data.recommendedOffer?.amount || 0),
-      },
-    })
+    if (!negotiationBrokerageId) {
+      console.error(
+        `[ai-predictions] aiNegotiationAdvisor: transaction ${data.transactionId} carries no brokerage_id — negotiation insight NOT written rather than written untenanted`,
+      )
+    } else {
+      const { error: negotiationInsightError } = await supabase.from("ai_insights").insert({
+        brokerage_id: negotiationBrokerageId,
+        insight_type: "recommendation",
+        entity_type: "transaction",
+        entity_id: data.transactionId,
+        insight_title: `Negotiation Strategy: ${data.scenario}`,
+        insight_description: strategy.data.recommendedApproach,
+        actionable_steps: strategy.data.negotiationTactics?.map((t: any) => t.script) || [],
+        priority: "high",
+        estimated_impact: {
+          win_probability: strategy.data.winProbability,
+          potential_savings: (data.listPrice || 0) - (strategy.data.recommendedOffer?.amount || 0),
+        },
+      })
+      if (negotiationInsightError) {
+        console.error("[ai-predictions] ai_insights (negotiation) insert refused:", negotiationInsightError.message)
+      }
+    }
 
     return {
       success: true,
@@ -2085,9 +2225,14 @@ Predict for next 90 days:
       leads = leadRows
     }
 
-    if (prediction.data.prediction?.direction?.includes("buyer") && leads) {
+    if (prediction.data.prediction?.direction?.includes("buyer") && leads && shiftBrokerageId) {
       for (const lead of leads) {
-        await supabase.from("ai_insights").insert({
+        // TENANT: `shiftBrokerageId`, the single resolve made at the top of this
+        // action. The contacts above were selected with `.eq("brokerage_id",
+        // shiftBrokerageId)`, so these rows cannot span tenants and the anchor is
+        // not re-resolved per row.
+        const { error: shiftInsightError } = await supabase.from("ai_insights").insert({
+          brokerage_id: shiftBrokerageId,
           insight_type: "opportunity",
           entity_type: "lead",
           entity_id: lead.id,
@@ -2097,6 +2242,9 @@ Predict for next 90 days:
           priority: "high",
           estimated_impact: { timing_advantage: "Critical" },
         })
+        if (shiftInsightError) {
+          console.error("[ai-predictions] ai_insights (market shift) insert refused:", shiftInsightError.message)
+        }
       }
     }
 
@@ -2119,9 +2267,11 @@ export async function findMarketArbitrage(data: { city: string; state: string; a
   const { BatchDataClient } = await import("@/lib/batchdata-client")
 
   // `data.agentId` is a caller-supplied parameter and is NOT the tenant: it is
-  // only stamped onto the insight rows below. The IDX account is resolved from the
-  // session.
-  const { client: idxClient } = await idxForCallerBrokerage("findMarketArbitrage")
+  // only used to narrow the investor sweep below. The IDX account — and the
+  // TENANT ANCHOR for every ai_insights row this writes — is resolved from the
+  // SESSION, once, and idxForCallerBrokerage refuses rather than returning null.
+  const { client: idxClient, brokerageId: arbBrokerageId } =
+    await idxForCallerBrokerage("findMarketArbitrage")
   const batchData = new BatchDataClient()
 
   // Get all active listings the brokerage's IDX feed carries for this city.
@@ -2271,7 +2421,12 @@ condition or renovation need — nothing above reports it.
       // comparison had been made.
       const belowPct = typeof opp.belowMarketPercent === "number" ? opp.belowMarketPercent : null
       const belowAmt = typeof opp.belowMarket === "number" ? opp.belowMarket : null
-      await supabase.from("ai_insights").insert({
+      // TENANT: `arbBrokerageId`. This row has NO entity_id (the opportunity is
+      // an MLS string, not a uuid), so there is no record to resolve a tenant
+      // through — the anchor is the session brokerage whose own IDX feed these
+      // listings came out of, which is exactly whose opportunity this is.
+      const { error: arbInsightError } = await supabase.from("ai_insights").insert({
+        brokerage_id: arbBrokerageId,
         insight_type: "opportunity",
         entity_type: "property",
         insight_title:
@@ -2291,21 +2446,36 @@ condition or renovation need — nothing above reports it.
           opportunity: opp,
         },
       })
+      if (arbInsightError) {
+        console.error("[ai-predictions] ai_insights (arbitrage) insert refused:", arbInsightError.message)
+      }
     }
 
-    // Find and alert investor clients
-    const { data: investors } = await supabase
+    // Find and alert investor clients. TENANT-SCOPED, for the same reason
+    // predictMarketShift's contact sweep is: without it the escape in the
+    // contacts tenant policy can return another brokerage's untenanted contact,
+    // and the loop below would then stamp THIS tenant onto a row about THAT
+    // one's client. A wrong tenant is worse than no tenant.
+    const { data: investors, error: investorsError } = await supabase
       .from("contacts")
       .select("id, email, first_name, last_name")
+      .eq("brokerage_id", arbBrokerageId)
       .eq("agent_id", data.agentId)
       .eq("city", data.city)
       .contains("tags", ["investor"])
       .limit(50)
 
+    if (investorsError) {
+      console.error("[ai-predictions] findMarketArbitrage: investor sweep refused:", investorsError.message)
+    }
+
     // Create alerts for investor clients
     if (investors && investors.length > 0) {
       for (const investor of investors) {
-        await supabase.from("ai_insights").insert({
+        // Same single resolve as the property rows above; the sweep that produced
+        // `investors` is already pinned to it, so these rows cannot span tenants.
+        const { error: investorInsightError } = await supabase.from("ai_insights").insert({
+          brokerage_id: arbBrokerageId,
           insight_type: "opportunity",
           entity_type: "lead",
           entity_id: investor.id,
@@ -2328,6 +2498,9 @@ condition or renovation need — nothing above reports it.
             recent_sales_benchmark_available: soldBenchmark != null,
           },
         })
+        if (investorInsightError) {
+          console.error("[ai-predictions] ai_insights (investor alert) insert refused:", investorInsightError.message)
+        }
       }
     }
 
@@ -2378,6 +2551,12 @@ export async function detectClientChurn(leadId: string) {
   }
 
   if (!resolvedLead) throw new Error("Lead not found")
+
+  // TENANT ANCHOR — the row this analysis is about, whichever class it resolved
+  // to. Both `leads` and `contacts` carry their own brokerage_id (leads NOT NULL,
+  // contacts nullable) and `resolvedLead` was selected with `*`, so this is the
+  // record's own tenant, not a caller's.
+  const churnBrokerageId = (resolvedLead.brokerage_id as string | null) ?? null
 
   const daysInPipeline = Math.floor((Date.now() - new Date(resolvedLead.created_at).getTime()) / (1000 * 60 * 60 * 24))
   const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000
@@ -2437,18 +2616,28 @@ Detect churn risk and provide save strategy:
     const result = churnAnalysis.data
 
     if (result.churnRisk === "high") {
-      await supabase.from("ai_insights").insert({
-        insight_type: "risk",
-        entity_type: "lead",
-        entity_id: leadId,
-        insight_title: "CLIENT CHURN RISK - Act Now",
-        insight_description: `${resolvedLead?.first_name ?? "Client"} showing signs of disengagement. ${result.timeToChurn} to potential churn.`,
-        actionable_steps: result.saveStrategy?.immediate || [],
-        priority: "critical",
-        estimated_impact: {
-          save_probability: result.saveProbability,
-        },
-      })
+      if (!churnBrokerageId) {
+        console.error(
+          `[ai-predictions] detectClientChurn: record ${leadId} carries no brokerage_id — churn insight NOT written rather than written untenanted`,
+        )
+      } else {
+        const { error: churnInsightError } = await supabase.from("ai_insights").insert({
+          brokerage_id: churnBrokerageId,
+          insight_type: "risk",
+          entity_type: "lead",
+          entity_id: leadId,
+          insight_title: "CLIENT CHURN RISK - Act Now",
+          insight_description: `${resolvedLead?.first_name ?? "Client"} showing signs of disengagement. ${result.timeToChurn} to potential churn.`,
+          actionable_steps: result.saveStrategy?.immediate || [],
+          priority: "critical",
+          estimated_impact: {
+            save_probability: result.saveProbability,
+          },
+        })
+        if (churnInsightError) {
+          console.error("[ai-predictions] ai_insights (churn) insert refused:", churnInsightError.message)
+        }
+      }
     }
 
     return {
@@ -2629,7 +2818,10 @@ Optimize for:
 export async function findHiddenOpportunities(agentId: string) {
   const supabase = await createClient()
 
-  const { data: agent } = await supabase
+  // The error is destructured because this row is the TENANT ANCHOR for every
+  // insight below, and supabase-js RESOLVES a refused read — "refused" and "no
+  // such agent" are byte-identical if only `data` is read.
+  const { data: agent, error: hiddenOppAgentError } = await supabase
     .from("agents")
     .select(
       `
@@ -2641,9 +2833,19 @@ export async function findHiddenOpportunities(agentId: string) {
     .eq("id", agentId)
     .maybeSingle()
 
+  if (hiddenOppAgentError) {
+    throw new Error(
+      `findHiddenOpportunities: the agent lookup was refused (${hiddenOppAgentError.message}). This is a refusal, not a missing agent.`,
+    )
+  }
   if (!agent) {
     throw new Error("Agent not found")
   }
+
+  // agents.brokerage_id is NOT NULL — the agent whose book is being scanned IS
+  // the tenant these opportunities belong to. `agentId` is an agents.id and is
+  // never read as a users.id or a contacts.id.
+  const hiddenOppBrokerageId = (agent.brokerage_id as string | null) ?? null
 
   const serviceAreas = agent.service_areas || []
 
@@ -2684,20 +2886,30 @@ Find opportunities:
       throw new Error("No opportunities were returned")
     }
 
-    for (const opp of opportunities.data.opportunities?.slice(0, 20) || []) {
-      await supabase.from("ai_insights").insert({
-        insight_type: "opportunity",
-        entity_type: "lead",
-        entity_id: opp.leadId,
-        insight_title: opp.type.replace(/_/g, " ").toUpperCase(),
-        insight_description: opp.reason,
-        actionable_steps: [opp.recommendedAction],
-        priority: opp.urgency === "high" ? "critical" : "medium",
-        estimated_impact: {
-          estimated_deal_size: opp.estimatedDealSize,
-          confidence: opp.confidence,
-        },
-      })
+    if (!hiddenOppBrokerageId) {
+      console.error(
+        `[ai-predictions] findHiddenOpportunities: agent ${agentId} carries no brokerage_id — opportunity insights NOT written rather than written untenanted`,
+      )
+    } else {
+      for (const opp of opportunities.data.opportunities?.slice(0, 20) || []) {
+        const { error: hiddenOppInsightError } = await supabase.from("ai_insights").insert({
+          brokerage_id: hiddenOppBrokerageId,
+          insight_type: "opportunity",
+          entity_type: "lead",
+          entity_id: opp.leadId,
+          insight_title: opp.type.replace(/_/g, " ").toUpperCase(),
+          insight_description: opp.reason,
+          actionable_steps: [opp.recommendedAction],
+          priority: opp.urgency === "high" ? "critical" : "medium",
+          estimated_impact: {
+            estimated_deal_size: opp.estimatedDealSize,
+            confidence: opp.confidence,
+          },
+        })
+        if (hiddenOppInsightError) {
+          console.error("[ai-predictions] ai_insights (hidden opportunity) insert refused:", hiddenOppInsightError.message)
+        }
+      }
     }
 
     return {
@@ -2719,19 +2931,50 @@ Find opportunities:
 export async function mineSphereOfInfluence(agentId: string) {
   const supabase = await createClient()
 
+  // TENANT ANCHOR — resolved ONCE, from the agent whose sphere is being mined.
+  // `agentId` is an agents.id (it is what contacts.agent_id holds); it is never
+  // read as a users.id. agents.brokerage_id is NOT NULL. The error is
+  // destructured because a refused read arrives as data:null, identical to "no
+  // such agent", and stamping a guessed tenant is worse than writing nothing.
+  const { data: sphereAgent, error: sphereAgentError } = await supabase
+    .from("agents")
+    .select("brokerage_id")
+    .eq("id", agentId)
+    .maybeSingle()
+  if (sphereAgentError) {
+    throw new Error(
+      `mineSphereOfInfluence: the agent lookup was refused (${sphereAgentError.message}). This is a refusal, not a missing agent.`,
+    )
+  }
+  const sphereBrokerageId = (sphereAgent?.brokerage_id as string | null) ?? null
+  if (!sphereBrokerageId) {
+    // agents.brokerage_id is NOT NULL, so this is "no such agent" — there is no
+    // tenant to file the referral insights under and no book to mine.
+    throw new Error("mineSphereOfInfluence: no agent carries that id, so there is no sphere to mine")
+  }
+
   // Past clients / lifetime customers live on CONTACTS, not leads (a lead that closed
   // was converted at assignment; Sphere = lifetime customers per the business process).
   // The previous query hit leads with a phantom lead_status column — it errored, so the
   // sphere miner always saw 0 lifetime customers and produced empty referral analyses.
-  const { data: pastClients } = await supabase
+  //
+  // Tenant-scoped for the same reason predictMarketShift's contact sweep is: the
+  // contacts tenant policy admits untenanted rows from any brokerage, and a book
+  // that spans tenants cannot be stamped from one resolve.
+  const { data: pastClients, error: pastClientsError } = await supabase
     .from("contacts")
     .select(
       "id, first_name, last_name, email, phone, contact_type, status, " +
       "address, city, state, zip_code, home_value_estimate, equity_estimate, " +
       "life_events, last_contacted_at, created_at",
     )
+    .eq("brokerage_id", sphereBrokerageId)
     .eq("agent_id", agentId)
     .in("contact_type", ["past_client", "lifetime", "lifetime_customer", "client", "sphere"])
+
+  if (pastClientsError) {
+    console.error("[ai-predictions] mineSphereOfInfluence: past-client sweep refused:", pastClientsError.message)
+  }
 
   const prompt = `You are an AI sphere of influence miner. Find referral opportunities:
 
@@ -2778,7 +3021,11 @@ Output example:{
 
     for (const opp of sphereMining.data.referralOpportunities || []) {
       if ((opp.probability || 0) > 0.4) {
-        await supabase.from("ai_insights").insert({
+        // TENANT: `sphereBrokerageId`, the single resolve at the top of this
+        // action. The book that produced these opportunities is already pinned
+        // to it, so the rows cannot span tenants.
+        const { error: sphereInsightError } = await supabase.from("ai_insights").insert({
+          brokerage_id: sphereBrokerageId,
           insight_type: "opportunity",
           entity_type: "lead",
           entity_id: opp.source_client_id,
@@ -2791,6 +3038,9 @@ Output example:{
             probability: opp.probability,
           },
         })
+        if (sphereInsightError) {
+          console.error("[ai-predictions] ai_insights (sphere referral) insert refused:", sphereInsightError.message)
+        }
       }
     }
 

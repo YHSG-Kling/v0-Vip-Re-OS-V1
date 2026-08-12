@@ -307,3 +307,114 @@ the reader filters. Recorded here rather than silently dropped.
 - **New this wave:** a comment that asserts a gate is not evidence the gate
   exists. `ai-predictions.ts` and `dashboard/agent/page.tsx` disagreed with the
   database for as long as both have existed, and only the database was asked.
+
+## Outcome
+
+Both agents survived, and both reports were checked against the tree rather than
+taken on trust.
+
+### W20-1 / W20-3 — a narrowing, and the qualifier that saved the inquiry form
+
+m394 is `ALTER POLICY … TO authenticated` and nothing else — verified: every
+occurrence of `USING`, `WITH CHECK`, `DROP POLICY` and `CREATE POLICY` in the
+file is inside a comment. **1,025** escape policies across **320** tables, plus
+**15** of the 16 INSERT-true policies. Both `DO` blocks were executed inside
+`begin; … rollback;`, which is also the parse proof — plpgsql that is valid, not
+merely plausible. Escape-to-PUBLIC 1,025 → 0, INSERT-true-to-PUBLIC 74 → 59,
+m395 raised nothing; after rollback both counts restored, zero residue.
+
+**The agent improved on the brief and it mattered.** I handed it my enumerated
+list of 16. It re-derived the set as a construct — *an INSERT-true-to-PUBLIC
+policy on a table that also carries the escape* — and in doing so found that
+**`listing_inquiries_insert` is one of the 74**. That is the public inquiry form
+this very audit holds up as the pattern to point at. A flat construct over all
+74 would have narrowed it and broken the form; the qualifier excludes it, and
+the other 57 live public surfaces, automatically. The enumeration would have
+been right by luck; the qualifier is right by construction.
+
+**The `tool_usage_sessions` carve-out is a named constant in both files**, with
+the call site in the comment, and an assertion that the two files name the same
+set — so emptying one side fails rather than drifting.
+
+**Detection un-splices dynamic DDL.** Migration 030 installs **44 of the 320**
+via `EXECUTE format('CREATE POLICY %I … ' || 'USING (brokerage_id IS NULL …)')`,
+so the scanner glues adjacent string literals before splitting. A line scan sees
+none of those 44 — the highest-volume shape in this codebase was the one easiest
+to hide from. A third corpus, `supabase/rls-governance/` (16 files applied by
+hand through a psql `\i` script, no runner), was found by reading rather than
+assumed absent; 13 of them declare policies.
+
+**14 negative controls, each watched red, plus 2 specificity controls that must
+stay green** — a correctly-spelled `TO authenticated` escape and an explicit
+`TO anon` insert. A guard that flags everything proves nothing either.
+
+### W20-2 — the tenant is resolved through the record, and one sweep was itself unscoped
+
+All eleven sites stamp `brokerage_id` at depth 1 — verified by counting, not by
+reading the report. The reader `.eq`s on `agentRow.brokerage_id`, which is
+selected two hundred lines above and NOT NULL, so the block cannot silently stop
+rendering. The `agent_id.is.null` widening survives and now widens within a
+tenant.
+
+**The agent found something the brief did not ask for.** Two `contacts` sweeps
+feeding those insert loops were themselves unscoped — and the same escape in the
+*contacts* policy could hand a loop another brokerage's untenanted contact, at
+which point the loop would stamp **this** tenant onto a row about **that** one's
+client. A wrong tenant is worse than no tenant. Both sweeps are pinned now.
+
+Where a tenant cannot be resolved, **nothing is written** and the reason is
+named — because an untenanted `ai_insights` row is not a private row, it is a
+public one. The proof's controls are the ones that matter: `brokerage_id`
+demoted into `estimated_impact` goes **red** (the three letters are still in the
+call — a substring match cannot tell), and the brokerage term moved inside
+`.or()` goes **red**, which is the fix inverted while reading almost identically.
+
+### Found while verifying, and fixed here: a fair-housing flag nobody could read
+
+Sweeping the rest of `ai-predictions.ts` for the same defect turned up **five**
+more unstamped writers across four tables, not the three the agent flagged — my
+count, not theirs. They do **not** all fail the same way, which is why they were
+measured rather than assumed:
+
+| table | escape? | unstamped row is… |
+|---|---|---|
+| `ai_predictions` | yes | world-visible, exactly like `ai_insights` was |
+| `ai_autopilot_plans`, `conversation_intelligence` | no, but stamp `agent_id` | visible to the one owning agent, invisible to the broker and the rollup |
+| `compliance_flags` | no, and stamps **neither** | **readable by nobody** |
+
+`compliance_flags`'s SELECT policy is `brokerage_id = (the caller's brokerage)`
+with no agent disjunct and no escape, so `NULL = <uuid>` is NULL, never true. A
+`fair_housing_violation` the system detected was written to a row no human could
+ever read — and the write dropped its error too, so a refusal was silent as well.
+**An insight written untenanted leaks; a compliance flag written untenanted
+vanishes**, and the vanishing one is on a regulated surface.
+
+Fixed here rather than recorded, because the tenant was already resolved twenty
+lines above in the same function: the anchor is hoisted above both writers, the
+`nextSteps` guard is preserved around the insight write, and the flag now refuses
+rather than writing where nobody can read. The other four are recorded for their
+own wave — `ai_predictions` is the same exposure class and the other two are a
+visibility question that touches the broker rollup.
+
+### Carried, stated rather than swept in
+
+- **`resolveConnection`** (`lib/integrations/connection-manager.ts:91`) — **3
+  reads, all `const { data }`, zero destructure `error`.** Re-checked this wave
+  and it is sharper than wave 19 recorded: it is the legacy fallback reached from
+  `resolve-scoped.ts:204`, and it re-reads `platform_credentials` itself. So the
+  wave-19 fix is real but **bounded** — the discriminated cascade stops on
+  `unreadable`, but once every owner tier reports genuinely-absent and control
+  falls through, a refused read there still descends and hands back the
+  brokerage's credential to an agent whose own row was merely unreadable. The
+  clean fix is to make it **throw** on a refusal but not on an absence (the
+  caller above already maps a throw to `unreadable`), which needs its own caller
+  census first.
+- **`redactBudgetForActor`** (`budget-visibility.ts:51`) — confirmed unchanged:
+  takes `VendorBudgetEval`, returns a `BudgetView` with no degradation field, so
+  `degradedTier`/`degradedSpend` cannot reach any role-scoped budget view.
+- **`app/dashboard/agent/page.tsx:175`** — `const { data: agentRow }` drops its
+  error, as does every dashboard read on that page. Pre-existing and file-wide;
+  inventing an error contract for one read was explicitly out of scope.
+- **`findMarketArbitrage`'s investor insight files `entity_type: "lead"` with an
+  `entity_id` that came from `contacts`.** Pre-existing id-space mislabel,
+  correctly left alone by the agent rather than "fixed" into a different defect.
