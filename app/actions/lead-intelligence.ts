@@ -986,16 +986,18 @@ async function searchRealEstateSites(leadId: string, lead: any) {
 }
 
 /**
- * Pull this contact's IDX Broker browsing history from THE CONTACT'S OWN
- * BROKERAGE'S IDX account.
+ * Resolve THE CONTACT'S OWN BROKERAGE'S IDX Broker account, and report honestly
+ * that this contact's browsing history has nowhere to be recorded. See the body:
+ * the only interaction table in this schema is keyed to the other identity class,
+ * so the write was removed rather than repointed at a column that does not exist.
  *
- * It used to be `new IDXBrokerClient()` — no argument, so the platform's
- * IDXBROKER_API_KEY every time. That is worse here than on a search surface: the
- * rows written below claim to be what THIS lead did on THIS brokerage's IDX site,
- * and they were being read out of a feed belonging to whoever owns the platform
- * key. A brokerage that connected its own IDX Broker account — the only way this
- * lookup can find anything, since IDX leads live in the account that captured them
- * — got nothing back and no indication why.
+ * The client resolution below used to be `new IDXBrokerClient()` — no argument, so
+ * the platform's IDXBROKER_API_KEY every time. That was worse here than on a search
+ * surface: the rows this used to write claimed to be what THIS person did on THIS
+ * brokerage's IDX site, and they were being read out of a feed belonging to whoever
+ * owns the platform key. A brokerage that connected its own IDX Broker account —
+ * the only way this lookup can find anything, since IDX enquiries live in the
+ * account that captured them — got nothing back and no indication why.
  *
  * NO EXTRA READ IS NEEDED: the caller already holds the contact row (`select("*")`
  * on the contact being enriched), so `lead.brokerage_id` is the tenant, resolved
@@ -1010,14 +1012,12 @@ async function searchRealEstateSites(leadId: string, lead: any) {
  *
  * RETURNS ITS OUTCOME rather than swallowing it: the caller stamps an
  * "idx_broker" data source, and an unreachable tenant, an unconfigured cascade or
- * a refused write must not be recorded as a source that produced data.
+ * an absent storage lane must not be recorded as a source that produced data.
  */
 async function syncIDXBrokerActivity(
   leadId: string,
   lead: any,
 ): Promise<{ synced: boolean; reason?: string }> {
-  const supabase = createServiceClient()
-
   const ownerBrokerageId = (lead?.brokerage_id as string | null | undefined) ?? null
   if (!ownerBrokerageId) {
     // Refuse rather than fall through to the platform feed: with no owner there is
@@ -1032,44 +1032,33 @@ async function syncIDXBrokerActivity(
     return { synced: false, reason: "no_idx_credential" }
   }
 
-  try {
-    const activity = await idx.getLeadActivity(lead.email)
-
-    let written = 0
-    for (const interaction of activity) {
-      const interactionRow = {
-        lead_id: leadId,
-        mls_number: interaction.mlsID,
-        property_address: interaction.address,
-        property_details: {
-          price: interaction.listPrice,
-          beds: interaction.bedrooms,
-          baths: interaction.bathrooms,
-          sqft: interaction.sqft,
-          propertyType: interaction.propType,
-        },
-        interaction_type: interaction.type,
-        view_duration_seconds: interaction.timeSpent,
-        interaction_metadata: interaction.metadata,
-        occurred_at: interaction.timestamp,
-      }
-      // supabase-js RESOLVES a refused write, so an unbound error is a row that
-      // never landed reported as a row that did.
-      const { error: interactionError } = await supabase
-        .from("lead_idx_property_interactions")
-        .insert(interactionRow)
-      if (interactionError) {
-        console.error("[v0] IDX interaction insert refused:", interactionError.message)
-        return { synced: false, reason: "interaction_write_refused" }
-      }
-      written += 1
-    }
-
-    return { synced: true, reason: written > 0 ? undefined : "no_activity_for_this_contact" }
-  } catch (error) {
-    console.error("[v0] IDX sync error:", error)
-    return { synced: false, reason: "idx_request_failed" }
-  }
+  // ── THE WRITE IS GONE, AND NOTHING REPLACES IT. STATED PLAINLY. ────────────
+  //
+  // This function's caller PROVES, before it is ever reached, that `leadId` is a
+  // contacts.id: the enrichment entry point resolves the id against the contacts
+  // table and throws when it is absent, so nothing of the other class survives to
+  // get here. The row this used to write set `lead_id` to that value.
+  //
+  // `lead_id` on the destination table is `REFERENCES leads(id)`
+  // (scripts/320-*.sql:187), and the table has NO contacts-keyed column at all —
+  // scripts/schema-snapshot.ts lists `lead_id` and no `contact_id`. So EVERY row
+  // this writer produced put a contacts.id into the other class's foreign key,
+  // and there is no other column to move it to. There is no correct write here,
+  // only a wrong one, and recording nothing beats recording a row that violates a
+  // foreign key and misattributes one person's browsing to another record.
+  //
+  // THE FETCH IS NOT MADE EITHER. Calling the provider to discard the answer is
+  // the same defect this wave is removing elsewhere — spending before deciding.
+  // Resolving the credential above is a database read, not a vendor call, and it
+  // still tells the caller honestly whether this tenant has an IDX account.
+  //
+  // WHAT THIS COSTS, SAID OUT LOUD: IDX browsing history is not recorded for a
+  // contact anywhere in this system. `synced: false` means the caller does not
+  // stamp "idx_broker" as a consulted source, which is the truth — an absent lane
+  // must never read as "we looked and this person has done nothing". Giving
+  // contacts a browsing-history lane is a schema decision and belongs to the wave
+  // that owns this relationship, not to a guess made here.
+  return { synced: false, reason: "no_contacts_keyed_idx_interaction_lane" }
 }
 
 /**
@@ -1216,7 +1205,14 @@ async function updateIntelligenceProfile(leadId: string, dataSources: string[]) 
 
   const { data: propertySearches } = await supabase.from("lead_property_searches").select("*").eq("lead_id", leadId)
 
-  const { data: idxInteractions } = await supabase.from("lead_idx_property_interactions").select("*").eq("lead_id", leadId)
+  // IDX property interactions are NOT read here any more (wave 18). Property
+  // search is a CONTACTS capability by owner ruling; lead_idx_property_interactions,
+  // the only table that carried this signal, is keyed on the pre-conversion id
+  // (its `lead_id` is REFERENCES leads(id)) with no contacts column at all, and
+  // its writer was removed because it was filing a contacts id in that column.
+  // The lane cannot be fed, so reading it could only ever return an empty set —
+  // and folding that into a profile presents "no property interest" as an
+  // observation instead of an absence of instrumentation.
 
   const { data: engagementScores } = await supabase
     .from("lead_engagement_scores")
@@ -1253,18 +1249,6 @@ async function updateIntelligenceProfile(leadId: string, dataSources: string[]) 
     }
   })
 
-  idxInteractions?.forEach((interaction: any) => {
-    if (
-      interaction.property_details?.propertyType &&
-      !propertyTypes.includes(interaction.property_details.propertyType)
-    ) {
-      propertyTypes.push(interaction.property_details.propertyType)
-    }
-    if (interaction.property_details?.price) {
-      minPrice = Math.min(minPrice, interaction.property_details.price)
-      maxPrice = Math.max(maxPrice, interaction.property_details.price)
-    }
-  })
 
   const priceRange =
     minPrice !== Number.POSITIVE_INFINITY ? `$${minPrice.toLocaleString()} - $${maxPrice.toLocaleString()}` : null
@@ -1283,7 +1267,8 @@ async function updateIntelligenceProfile(leadId: string, dataSources: string[]) 
   const motivationScore = calculateMotivationScore({
     engagementScore: engagementScores?.overall_score || 0,
     sellerSignals: sellerSignals?.length || 0,
-    propertyViews: idxInteractions?.length || 0,
+    // propertyViews removed with its source — see the note above. A literal 0
+    // would be indistinguishable from a person who genuinely viewed nothing.
     searches: propertySearches?.length || 0,
   })
 
@@ -1310,16 +1295,30 @@ async function updateIntelligenceProfile(leadId: string, dataSources: string[]) 
   })
 }
 
+/**
+ * WAVE 18 — `propertyViews` is gone from this score, parameter and all.
+ *
+ * It was worth up to 20 of the 100 points and its only source was the IDX
+ * property-interaction table, which is keyed on the pre-conversion id, has no
+ * contacts column, and now has no writer (property search is a CONTACTS
+ * capability by owner ruling). Left in the signature it would have contributed a
+ * permanent zero — so every pre-conversion record would score up to 20 points
+ * lower than the scale implies, for a signal the product does not collect about
+ * them. A missing input silently depressing a score is worse than a smaller,
+ * honest scale: the number still LOOKS like it is out of 100.
+ *
+ * The remaining weights are deliberately NOT rescaled to refill the gap. Doing
+ * that would invent motivation the evidence never showed; the ceiling is simply
+ * lower now, and that is the truthful shape.
+ */
 function calculateMotivationScore(data: {
   engagementScore: number
   sellerSignals: number
-  propertyViews: number
   searches: number
 }): number {
   let score = 0
   score += data.engagementScore * 0.4
   score += Math.min(30, data.sellerSignals * 10)
-  score += Math.min(20, data.propertyViews * 2)
   score += Math.min(10, data.searches * 3)
   return Math.round(Math.min(100, score))
 }

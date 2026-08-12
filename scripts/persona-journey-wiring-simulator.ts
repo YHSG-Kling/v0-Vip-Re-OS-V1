@@ -785,9 +785,14 @@ import { predictLeadConversion } from "@/app/actions/ai-predictions"`,
     },
     breaks: {
       file: F.aiPredictions,
-      find: `      lead_id: data.leadId,
-      brokerage_id: routeBrokerageId,`,
-      replace: `      lead_id: data.leadId,`,
+      // WAVE 18 moved this row off the pre-conversion key: optimizeShowingRoute
+      // now proves its subject is contacts-class and files on `contact_id`, the
+      // column its reader matches first. The control follows the write — the
+      // PROPERTY under test is unchanged (strip the tenant anchor and the row
+      // becomes unreadable by everyone), only the line it is stripped from moved.
+      find: `      contact_id: data.contactId,
+      brokerage_id: routeBrokerageId, // without this the row is unreadable by everyone`,
+      replace: `      contact_id: data.contactId,`,
     },
   },
 ]

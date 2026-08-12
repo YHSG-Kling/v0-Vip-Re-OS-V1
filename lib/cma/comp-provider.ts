@@ -8,6 +8,32 @@
  *    needs at least 3 sold listings within 6 months but can use 1 year in case
  *    limited comps, 2 active and 1 pending."
  *
+ * ─── THE LATER RULING THAT NARROWS THE ONE ABOVE ────────────────────────────
+ * Owner, verbatim: "rentcast is platform owned and should not be used if the
+ * tenant adds their idx broker credentials."
+ *
+ * That is a CONNECTION rule. A tenant who has connected their own IDX Broker
+ * account does not have the platform's RentCast account spent on their behalf —
+ * not for the active side, and not for the SOLD side either, even though IDX
+ * cannot serve solds. ELIGIBILITY IS THEREFORE DECIDED BEFORE ANYTHING IS
+ * SPENT, at the top of sourceCompsForCma, through the one resolver in
+ * lib/property/rentcast-eligibility.ts.
+ *
+ * This module previously called RentCast FIRST and UNCONDITIONALLY and did not
+ * construct the IDX client until ninety lines later, so `idxConnected` was
+ * computed AFTER `costCents += RENTCAST_COMPS_COST_CENTS` had already been
+ * booked. A tenant with IDX connected paid for RentCast on every single CMA.
+ *
+ * CONSEQUENCE, ACCEPTED AND REPORTED RATHER THAN PAPERED OVER: the sold side is
+ * RentCast-only by construction (see AI_GAP_FILL_SLOTS — an AI web search is
+ * never admitted to the closed-sale set), so a tenant with their own IDX feed
+ * gets a CMA with NO closed comparables and therefore no value range. That is
+ * not a silent degrade: `meetsRequiredMix` is false, `rentcastEligibility`
+ * names `tenant_has_idx`, and `notes` carries a sentence saying in plain words
+ * that the required 3-sold minimum cannot be met and why. A CMA that cannot
+ * meet the owner's mix reports that it cannot; it does not quietly return a
+ * thinner set and let the reader assume the market was thin.
+ *
  * ─── PROVIDER RESOLUTION ────────────────────────────────────────────────────
  * SOLD side   → RentCast, always. RentCast is the platform-owned provider and
  *               it is the ONLY connected source that can serve closed/off-market
@@ -52,7 +78,11 @@
  */
 
 import "server-only"
-import { getRentcastComps, isRentcastConfigured, type RentcastComp } from "@/lib/property/rentcast"
+import { getRentcastComps, type RentcastComp } from "@/lib/property/rentcast"
+import {
+  resolveRentcastEligibility,
+  type RentcastEligibilityReason,
+} from "@/lib/property/rentcast-eligibility"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
 import { IDXBrokerClient, type NormalizedIdxListing } from "@/lib/idxbroker-client"
 import {
@@ -183,10 +213,40 @@ export interface CompProvenance {
   soldProvider: CompProviderId
   activeProvider: CompProviderId
   pendingProvider: CompProviderId
-  /** Whether an IDX Broker key resolved for this brokerage/agent at all. */
+  /** Whether an IDX Broker key resolved for this brokerage/agent at all —
+   *  INCLUDING the platform fallback key, because this field answers "could the
+   *  feed be queried?". For "did the TENANT connect their own?", read
+   *  `tenantOwnsIdx`, which is the fact the owner ruling turns on. */
   idxConnected: boolean
-  /** Whether a RentCast key resolved (tenant row, else platform env). */
+  /**
+   * Whether RentCast was ELIGIBLE and therefore actually QUERIED for this CMA.
+   *
+   * DELIBERATE CHANGE OF MEANING, recorded because a silent one would be worse:
+   * this used to mean "a RentCast key resolved" (and its doc still said "tenant
+   * row, else platform env", which wave 17 had already made impossible — there
+   * is no tenant row). Consumers — lib/kernel/appraiser-packet.ts is the one
+   * that renders it — use it to tell an appraiser whether RentCast "was
+   * configured and queried". Under the new ruling a key can resolve while the
+   * provider is deliberately not called, and reporting a query that never
+   * happened is the more dangerous falsehood: it reads as "RentCast had no
+   * comparables for this address". So this field now means QUERIED, the raw key
+   * fact moves to `rentcastPlatformKeyPresent`, and WHY it was not queried is on
+   * `rentcastEligibility`.
+   */
   rentcastConfigured: boolean
+  /** Did the ONE platform RentCast key resolve? Separate from the field above:
+   *  the key can be present while the provider is deliberately not used. */
+  rentcastPlatformKeyPresent: boolean
+  /** WHICH of the three eligibility questions decided it — `eligible`,
+   *  `tenant_has_idx`, `idx_check_unreadable`, `no_platform_key` or
+   *  `budget_exhausted`. Never collapse this to a boolean: "we deliberately did
+   *  not call" and "we could not reach the provider" are opposite facts about
+   *  the product. */
+  rentcastEligibility: RentcastEligibilityReason
+  /** Has this TENANT connected their own IDX Broker credentials (owner-scoped —
+   *  a platform-tier credential is the product's account, not theirs)? This is
+   *  the fact that suppresses RentCast. */
+  tenantOwnsIdx: boolean
   /** The sold window actually used: 6, 12, or null when no sold comp was found. */
   soldWindowMonths: number | null
   /** True only when the window had to be widened because 6 months fell short. */
@@ -240,12 +300,26 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
     .filter(Boolean)
     .join(", ")
 
-  // ── 1. RentCast — the platform default, and the only sold source ──────────
-  const rentcastConfigured = await isRentcastConfigured(req.brokerageId)
+  // ── 1. MAY RENTCAST RUN FOR THIS TENANT AT ALL? Asked BEFORE any spend ────
+  //
+  // This resolves first — before the pull, before `costCents` moves, and before
+  // the IDX client is built — because the alternative is the defect this
+  // restructure exists to remove: deciding whether we were allowed to spend
+  // AFTER we had already spent. One resolver answers all three questions and
+  // names which one said no.
+  const rentcastEligibility = await resolveRentcastEligibility({
+    brokerageId: req.brokerageId,
+    agentUserId: req.agentUserId ?? null,
+    teamId: req.teamId ?? null,
+  })
+  const tenantOwnsIdx = rentcastEligibility.idx.status === "connected"
+
   let rentcastRows: RentcastComp[] = []
-  if (rentcastConfigured) {
+  if (rentcastEligibility.eligible) {
     rentcastRows = await getRentcastComps({
       brokerageId: req.brokerageId,
+      agentUserId: req.agentUserId ?? null,
+      teamId: req.teamId ?? null,
       address: fullAddress,
       limit: RENTCAST_COMP_PULL_LIMIT,
     })
@@ -260,8 +334,17 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
       )
     }
   } else {
+    // The reason is stated in the report's own words, per reason, because "no
+    // closed comparables" means something completely different in each case and
+    // the reader is owed the difference.
     notes.push(
-      "RentCast is not configured for this brokerage (no tenant credential and no platform key), so no closed comparable sales could be sourced.",
+      rentcastEligibility.reason === "tenant_has_idx"
+        ? `No closed comparable sales were sourced from RentCast, and that was DELIBERATE, not a failure: this brokerage has connected its own IDX Broker credentials (at ${rentcastEligibility.idxOwnerType} level), and RentCast is the platform's provider for brokerages that have not. An IDX Broker feed cannot serve closed sales — it reaches the brokerage's own featured/active inventory — so the closed-sale side of this analysis has no provider at all. Pull the closed sales from the MLS directly.`
+        : rentcastEligibility.reason === "budget_exhausted"
+        ? "No closed comparable sales were sourced: this brokerage is over its monthly vendor budget, so the paid property-data tier is paused for the rest of the billing month. Nothing was substituted in its place."
+        : rentcastEligibility.reason === "idx_check_unreadable"
+        ? "No closed comparable sales were sourced: it could not be determined whether this brokerage has its own IDX Broker feed connected, and the platform's RentCast account is not spent on that uncertainty. This is a lookup failure, NOT a statement that no comparable sales exist — retry before drawing any conclusion from this report."
+        : "RentCast is not configured for this platform (no platform key), so no closed comparable sales could be sourced.",
     )
   }
 
@@ -532,6 +615,25 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
     activeComps.length >= REQUIRED_ACTIVE_COMPS &&
     pendingComps.length >= REQUIRED_PENDING_COMPS
 
+  // ── 6. THE MIX, STATED. A CMA that cannot meet the owner's minimum says so ─
+  //
+  // The owner's rule is 3 sold within 6 months (12 when 6 falls short), 2 active
+  // and 1 pending. Falling short is a legitimate outcome; falling short QUIETLY
+  // is not — a reader handed four comps and no warning concludes the market was
+  // thin. Every side that missed is named, with its count, in one sentence.
+  if (!meetsRequiredMix) {
+    const short: string[] = []
+    if (closedComps.length < REQUIRED_SOLD_COMPS) short.push(`${closedComps.length} of ${REQUIRED_SOLD_COMPS} sold`)
+    if (activeComps.length < REQUIRED_ACTIVE_COMPS) short.push(`${activeComps.length} of ${REQUIRED_ACTIVE_COMPS} active`)
+    if (pendingComps.length < REQUIRED_PENDING_COMPS) short.push(`${pendingComps.length} of ${REQUIRED_PENDING_COMPS} pending`)
+    notes.push(
+      `THIS COMPARABLE SET DOES NOT MEET THE REQUIRED MIX (${REQUIRED_SOLD_COMPS} sold within ${PRIMARY_SOLD_WINDOW_MONTHS} months — ${WIDENED_SOLD_WINDOW_MONTHS} where the shorter window falls short — plus ${REQUIRED_ACTIVE_COMPS} active and ${REQUIRED_PENDING_COMPS} pending). Short on: ${short.join(", ")}.` +
+        (closedComps.length < REQUIRED_SOLD_COMPS && !rentcastEligibility.eligible
+          ? ` The closed-sale shortfall is because no provider served that side at all: ${rentcastEligibility.detail}`
+          : ""),
+    )
+  }
+
   return {
     closedComps,
     activeComps,
@@ -541,7 +643,10 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
       activeProvider,
       pendingProvider,
       idxConnected,
-      rentcastConfigured,
+      rentcastConfigured: rentcastEligibility.eligible,
+      rentcastPlatformKeyPresent: rentcastEligibility.platformKeyPresent,
+      rentcastEligibility: rentcastEligibility.reason,
+      tenantOwnsIdx,
       soldWindowMonths,
       soldWindowWidened,
       soldCompCount: closedComps.length,

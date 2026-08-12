@@ -2,6 +2,15 @@
  * Rentcast API client — Tier-2 fallback for buyer property search when
  * the brokerage hasn't connected an IDX feed yet.
  *
+ * EVERY EXPORTED READER BELOW IS GATED. Owner ruling: "rentcast is platform
+ * owned and should not be used if the tenant adds their idx broker
+ * credentials." `gateRentcast` (below) asks the ONE eligibility resolver in
+ * ./rentcast-eligibility.ts — platform key present? tenant's own IDX Broker
+ * connected? vendor budget exhausted? — BEFORE any request is issued and before
+ * any caller accrues cost. The gate sits inside these exports rather than at
+ * their call sites so that every lane in the tree inherits it, including the
+ * ones no wave has touched.
+ *
  * Rentcast is a paid data license (~$49/mo, 250 calls). We do NOT persist
  * listing data — only `external_listing_id`, address, and last-seen price
  * are kept (24h TTL). All MLS-licensed display data is re-fetched at view time.
@@ -16,6 +25,11 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import {
+  resolveRentcastEligibility,
+  type RentcastEligibility,
+  type RentcastEligibilityContext,
+} from "./rentcast-eligibility"
 import {
   normalizeRentcastMarketStats,
   normalizeRentcastComps,
@@ -61,6 +75,20 @@ function meterCall(params: {
     metadata: { endpoint: params.endpoint, ...(params.metadata ?? {}) },
   }).catch(() => null)
 }
+
+/**
+ * Who a RentCast call is being made FOR — the tenant it is metered against, and
+ * the ownership tiers the IDX-connection gate is answered at.
+ *
+ * Every exported reader below takes these fields. `brokerageId` was always
+ * required (platform-GATED means no call without a tenant to bill it to);
+ * `agentUserId` (a USERS.id) and `teamId` are new, OPTIONAL, and exist so a
+ * caller that knows the acting agent can have the gate see an AGENT-tier IDX
+ * connection. A caller that passes only a brokerage id gets the gate answered at
+ * brokerage scope — see lib/property/rentcast-eligibility.ts for what that
+ * misses and why it is stated rather than guessed around.
+ */
+type RentcastCaller = RentcastEligibilityContext
 
 export interface RentcastSearchFilters {
   city?: string
@@ -150,27 +178,86 @@ async function getApiKey(brokerageId: string): Promise<string | null> {
  *
  * Every RentCast reader below returns an EMPTY result both when the vendor is
  * unconfigured and when the vendor simply has no coverage for the address — two
- * very different facts that a caller must be able to tell apart. The CMA comp
- * provider asks this so its "no comparables" outcome can say WHICH it was
- * instead of leaving a silent empty behind. Credential read only; no egress,
- * nothing to meter. The brokerage is carried for attribution, not selection —
- * the answer is the same platform key for every tenant.
+ * very different facts that a caller must be able to tell apart. Credential read
+ * only; no egress, nothing to meter. The brokerage is carried for attribution,
+ * not selection — the answer is the same platform key for every tenant.
+ *
+ * THIS IS THE PLATFORM-KEY QUESTION ONLY, and it is now one of three. A caller
+ * that needs to know whether RentCast will actually RUN for a tenant must ask
+ * `resolveRentcastEligibility` in ./rentcast-eligibility.ts, which also answers
+ * "has this tenant connected their own IDX Broker feed?" and "is the vendor
+ * budget exhausted?" and names WHICH one said no. lib/cma/comp-provider.ts asks
+ * that resolver, not this predicate, precisely so its "no comparables" outcome
+ * can distinguish a deliberate suppression from a dark vendor lane.
  */
 export async function isRentcastConfigured(brokerageId: string): Promise<boolean> {
   return !!(await getApiKey(brokerageId))
+}
+
+/**
+ * THE GATE, APPLIED INSIDE THE EXPORTS — so no caller can forget it.
+ *
+ * Owner ruling: "rentcast is platform owned and should not be used if the tenant
+ * adds their idx broker credentials." That is a rule about the TENANT, not about
+ * one feature, so it belongs on the vendor's own front door rather than
+ * replicated at each of the eleven call sites that reach one of these readers.
+ * Put another way: the ruling is enforced by construction here, and a new caller
+ * added next month inherits it without knowing it exists.
+ *
+ * This is safe to do INSIDE the exports because every reader below already has
+ * an honest empty return for "the vendor cannot serve this" — an explicit
+ * refusal object, a null, or an empty array — established when RentCast became
+ * platform-gated. A closed gate reuses that existing path, so NO caller's return
+ * contract changes shape: `searchRentcastSaleListings` still resolves
+ * `{ success: false, listings: [], error }`, `getRentcastAVM` still resolves
+ * all-null so lib/avm/provider-chain.ts falls through to the next provider,
+ * `getRentcastComps` still resolves `[]`, and the status/market readers still
+ * resolve null. What changes is only that the `error`/note now NAMES the reason,
+ * so "we deliberately did not call" is legible instead of looking like an
+ * outage.
+ *
+ * The eligibility resolver never throws, so the gate cannot turn a dark lane
+ * into a thrown request.
+ */
+async function gateRentcast(
+  caller: RentcastCaller,
+): Promise<{ apiKey: string | null; eligibility: RentcastEligibility }> {
+  const eligibility = await resolveRentcastEligibility(caller)
+  if (!eligibility.eligible) return { apiKey: null, eligibility }
+  return { apiKey: await getApiKey(caller.brokerageId), eligibility }
+}
+
+/**
+ * The `error` string a refusing search returns.
+ *
+ * THE PLATFORM-KEY FACT LEADS WHENEVER THE KEY IS THE OPERATOR'S BLOCKER,
+ * whichever question the gate happened to answer first. "RentCast is
+ * unconfigured" is the actionable, invariant fact for an operator and it has
+ * been this lane's refusal contract since RentCast became platform-gated;
+ * dropping it because a different check fired earlier would regress that
+ * contract to satisfy an ordering choice. The gate's own sentence is appended,
+ * never replaced, so the deliberate-suppression reason is not lost either.
+ */
+function refusalMessage(eligibility: RentcastEligibility): string {
+  if (eligibility.eligible) return "Rentcast not configured"
+  if (eligibility.platformKeyPresent || eligibility.reason === "no_platform_key") return eligibility.detail
+  return `Rentcast is not configured (the platform key is unset). ${eligibility.detail}`
 }
 
 // ---------------------------------------------------------------------------
 // Search for-sale listings
 // ---------------------------------------------------------------------------
 
-export async function searchRentcastSaleListings(params: {
-  brokerageId: string
-  filters: RentcastSearchFilters
-}): Promise<{ success: boolean; listings: RentcastListing[]; error?: string }> {
-  const apiKey = await getApiKey(params.brokerageId)
+export async function searchRentcastSaleListings(
+  params: RentcastCaller & { filters: RentcastSearchFilters },
+): Promise<{ success: boolean; listings: RentcastListing[]; error?: string }> {
+  const { apiKey, eligibility } = await gateRentcast(params)
   if (!apiKey) {
-    return { success: false, listings: [], error: "Rentcast not configured" }
+    return {
+      success: false,
+      listings: [],
+      error: refusalMessage(eligibility),
+    }
   }
 
   const qs = new URLSearchParams()
@@ -259,11 +346,10 @@ export async function searchRentcastSaleListings(params: {
  * unverifiable, because telling a buyer a sold house is available is the one
  * mistake this whole lane exists to prevent.
  */
-export async function getRentcastListingStatus(params: {
-  brokerageId: string
-  externalId: string
-}): Promise<string | null> {
-  const apiKey = await getApiKey(params.brokerageId)
+export async function getRentcastListingStatus(
+  params: RentcastCaller & { externalId: string },
+): Promise<string | null> {
+  const { apiKey } = await gateRentcast(params)
   if (!apiKey || !params.externalId) return null
   try {
     const res = await rentcastGet(apiKey, `/listings/sale/${encodeURIComponent(params.externalId)}`, new URLSearchParams())
@@ -291,13 +377,16 @@ export async function getRentcastListingStatus(params: {
 // Search rental listings (used by investor mode + lifetime customer portal)
 // ---------------------------------------------------------------------------
 
-export async function searchRentcastRentalListings(params: {
-  brokerageId: string
-  filters: RentcastSearchFilters
-}): Promise<{ success: boolean; listings: RentcastListing[]; error?: string }> {
-  const apiKey = await getApiKey(params.brokerageId)
+export async function searchRentcastRentalListings(
+  params: RentcastCaller & { filters: RentcastSearchFilters },
+): Promise<{ success: boolean; listings: RentcastListing[]; error?: string }> {
+  const { apiKey, eligibility } = await gateRentcast(params)
   if (!apiKey) {
-    return { success: false, listings: [], error: "Rentcast not configured" }
+    return {
+      success: false,
+      listings: [],
+      error: refusalMessage(eligibility),
+    }
   }
 
   const qs = new URLSearchParams()
@@ -352,11 +441,10 @@ export async function searchRentcastRentalListings(params: {
 // AVM endpoint (used for cross-checking Perplexity estimate)
 // ---------------------------------------------------------------------------
 
-export async function getRentcastAVM(params: {
-  brokerageId: string
-  address: string
-}): Promise<{ value: number | null; rangeLow: number | null; rangeHigh: number | null }> {
-  const apiKey = await getApiKey(params.brokerageId)
+export async function getRentcastAVM(
+  params: RentcastCaller & { address: string },
+): Promise<{ value: number | null; rangeLow: number | null; rangeHigh: number | null }> {
+  const { apiKey } = await gateRentcast(params)
   if (!apiKey) return { value: null, rangeLow: null, rangeHigh: null }
 
   try {
@@ -391,11 +479,10 @@ export async function getRentcastAVM(params: {
 const COST_PER_MARKET_LOOKUP = 0.20
 
 /** Fetch zip-level sale market statistics from RentCast. Never throws. */
-export async function getRentcastMarketStats(params: {
-  brokerageId: string
-  zipCode: string
-}): Promise<RentcastMarketStats | null> {
-  const apiKey = await getApiKey(params.brokerageId)
+export async function getRentcastMarketStats(
+  params: RentcastCaller & { zipCode: string },
+): Promise<RentcastMarketStats | null> {
+  const { apiKey } = await gateRentcast(params)
   if (!apiKey || !params.zipCode) return null
 
   try {
@@ -421,12 +508,10 @@ export async function getRentcastMarketStats(params: {
  * `comparables[]` array). This is the chosen comps source for CMA generation,
  * replacing the retired HouseCanary integration. Never throws.
  */
-export async function getRentcastComps(params: {
-  brokerageId: string
-  address: string
-  limit?: number
-}): Promise<RentcastComp[]> {
-  const apiKey = await getApiKey(params.brokerageId)
+export async function getRentcastComps(
+  params: RentcastCaller & { address: string; limit?: number },
+): Promise<RentcastComp[]> {
+  const { apiKey } = await gateRentcast(params)
   if (!apiKey || !params.address) return []
 
   try {

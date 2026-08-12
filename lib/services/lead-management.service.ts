@@ -115,7 +115,6 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
         .select(`
           *,
           lead_intelligence(*),
-          lead_idx_property_interactions(*),
           lead_motivated_seller_signals(*)
         `)
         .eq("id", params.id)
@@ -314,12 +313,14 @@ function calculateEngagementScore(record: any, table: string, behavior: Behavior
     score += Math.min(Math.round(behavior.engagement * 0.45), 45)
   } else {
     // For leads table - use external behavior signals
-    const interactions = record.lead_idx_property_interactions || []
+    // IDX property interactions are no longer a component of this score (wave 18).
+    // Property search is a CONTACTS capability by owner ruling; the table that
+    // carried this signal is keyed on the pre-conversion id, has no contacts
+    // column, and has no writer. Left in place it contributed a permanent ZERO
+    // out of a possible 30 — every pre-conversion record silently scored up to
+    // 30 points lower for a signal the product does not collect about them,
+    // which is worse than not scoring it at all.
     const sellerSignals = record.lead_motivated_seller_signals || []
-
-    // IDX property interactions
-    const views = interactions.filter((i: any) => i.interaction_type === "view").length
-    score += Math.min(views * 5, 30)
 
     // Motivated seller signals
     const strongSignals = sellerSignals.filter((s: any) => s.signal_strength > 0.7).length

@@ -33,7 +33,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Upload,
   Search,
-  Eye,
   Sparkles,
   UserPlus,
   X,
@@ -74,7 +73,10 @@ import {
   AlertDialogTitle,
 } from "@/app/components/ui/alert-dialog"
 import { getHotLeads } from "@/app/actions/ai-auto-response"
-import { getTopConversionCandidates, aiPropertyMatchGenius } from "@/app/actions/ai-predictions"
+// aiPropertyMatchGenius is deliberately NOT imported here: it resolves against
+// contacts and refuses everything else (owner ruling), and every row on this
+// screen is pre-conversion. See the note above the table.
+import { getTopConversionCandidates } from "@/app/actions/ai-predictions"
 import {
   getIntelligenceDashboardStats,
   getMotivatedSellers,
@@ -310,23 +312,23 @@ export default function LeadsPage() {
   const [batchReengagementLoading, setBatchReengagementLoading] = useState(false)
   const [batchReengagementResult, setBatchReengagementResult] = useState<any>(null)
 
-  // AI Property Match Genius per lead
-  const [matchGeniusLoading, setMatchGeniusLoading] = useState<string | null>(null)
-  const [matchGeniusResults, setMatchGeniusResults] = useState<Record<string, any>>({})
-
-  const handleMatchGenius = async (leadId: string) => {
-    setMatchGeniusLoading(leadId)
-    try {
-      const result = await aiPropertyMatchGenius(leadId) as any
-      if (result && !result.error) {
-        setMatchGeniusResults((prev) => ({ ...prev, [leadId]: result }))
-      }
-    } catch (err) {
-      console.error("[v0] aiPropertyMatchGenius failed:", err)
-    } finally {
-      setMatchGeniusLoading(null)
-    }
-  }
+  // AI PROPERTY MATCH GENIUS — WITHDRAWN FROM THIS SCREEN BY OWNER RULING.
+  //
+  // The action behind this button now resolves its subject against the contacts
+  // table and refuses anything else, because property search through IDX Broker is
+  // a contacts capability. Every row on this screen comes from the pre-conversion
+  // lane, so the button could only ever have produced a refusal — and a control
+  // that reliably errors is worse than one that is not there, because it teaches
+  // the agent to ignore failures.
+  //
+  // It is not deleted silently: the cell below says what happened and what to do
+  // instead. The capability itself is intact on the contact record
+  // (app/crm/contacts/[contactId] — the buyer overview calls the same action with a
+  // contacts.id), so the route out of here is Convert, which is the button next to
+  // this note.
+  //
+  // The result state and its inline panel went with it; there is no longer any way
+  // to populate them from this screen.
 
   const handleBatchReengagement = async () => {
     if (!agentId) return
@@ -1665,6 +1667,17 @@ export default function LeadsPage() {
 
         <Card>
           <CardContent className="p-0">
+            {/* Says why the AI Property Match control in each row is inert, rather
+                than leaving an agent to discover it by clicking. */}
+            <div className="flex items-start gap-2 border-b bg-muted/40 px-4 py-2.5">
+              <Brain className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                <span className="font-medium text-foreground">AI Property Match runs on contacts, not on this screen.</span>{" "}
+                Property search reads the brokerage&apos;s IDX Broker feed, which is a contact capability — convert a
+                record here and open it in the CRM to use it. The control in each row is disabled for that reason, not
+                because it is unavailable.
+              </p>
+            </div>
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
@@ -1820,21 +1833,17 @@ export default function LeadsPage() {
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-1">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              title="AI Property Match Genius"
-                              onClick={() => handleMatchGenius(lead.id)}
-                              disabled={matchGeniusLoading === lead.id}
-                            >
-                              {matchGeniusLoading === lead.id ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              ) : matchGeniusResults[lead.id] ? (
-                                <Brain className="h-4 w-4 text-indigo-500" />
-                              ) : (
-                                <Eye className="h-4 w-4" />
-                              )}
-                            </Button>
+                            {/* AI Property Match Genius USED to sit here. It is a
+                                CONTACT capability (owner ruling), so it is gone
+                                from this screen rather than left disabled.
+                                A disabled control with no handler is INERT, and
+                                this repo holds a zero-inert-controls invariant
+                                (scripts/wired-surface-simulator.ts): a control
+                                that cannot reach a capability teaches an agent to
+                                ignore controls. The withdrawal is not silent —
+                                the banner above this table says what moved and
+                                where to, once, instead of a dead icon on every
+                                row. */}
                             <Button
                               variant="ghost"
                               size="sm"
@@ -1894,47 +1903,6 @@ export default function LeadsPage() {
                           </div>
                         </TableCell>
                       </TableRow>
-                      {/* AI Property Match Genius inline result */}
-                      {matchGeniusResults[lead.id] && (
-                        <TableRow className="bg-indigo-50/60">
-                          <TableCell colSpan={7} className="py-3 px-4">
-                            <div className="flex items-start gap-3">
-                              <Brain className="h-4 w-4 text-indigo-500 mt-0.5 shrink-0" />
-                              <div className="space-y-1.5 flex-1 min-w-0">
-                                <p className="text-xs font-semibold text-indigo-900">
-                                  Property Match Genius
-                                </p>
-                                {matchGeniusResults[lead.id].matchSummary && (
-                                  <p className="text-xs text-indigo-800 leading-relaxed">
-                                    {matchGeniusResults[lead.id].matchSummary}
-                                  </p>
-                                )}
-                                {matchGeniusResults[lead.id].topMatches?.length > 0 && (
-                                  <div className="flex flex-wrap gap-2 mt-1">
-                                    {matchGeniusResults[lead.id].topMatches.slice(0, 4).map((m: any, i: number) => (
-                                      <span
-                                        key={i}
-                                        className="inline-flex items-center gap-1 text-xs bg-white border border-indigo-200 text-indigo-700 rounded-full px-2.5 py-0.5"
-                                      >
-                                        <Home className="h-3 w-3" />
-                                        {m.address ?? m.listing_id ?? `Match ${i + 1}`}
-                                        {m.matchScore != null && (
-                                          <span className="font-semibold ml-1">{m.matchScore}%</span>
-                                        )}
-                                      </span>
-                                    ))}
-                                  </div>
-                                )}
-                                {matchGeniusResults[lead.id].recommendedAction && (
-                                  <p className="text-xs text-indigo-700 font-medium">
-                                    Next: {matchGeniusResults[lead.id].recommendedAction}
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      )}
                       </Fragment>
                     ))
                   )}

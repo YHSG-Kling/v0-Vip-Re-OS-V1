@@ -6,16 +6,22 @@
  *      brokerage that sets one up searches THEIR board). Full MLS data.
  *   2. RentCast — the PLATFORM-GATED default (owner ruling): one platform
  *      account serving every tenant, metered per tenant and budget-gated. Not a
- *      per-tenant credential and never offered as one.
+ *      per-tenant credential and never offered as one. Used ONLY by tenants who
+ *      have not connected an IDX Broker account of their own.
  *   3. None — return empty; caller falls back to platform-internal listings only
+ *
+ * The tiers are EXCLUSIVE, not ordered-with-fallback. A connected IDX feed that
+ * returns nothing for a query returns nothing — it does not fall through to
+ * RentCast, because the owner ruling turns on the CONNECTION and not on what the
+ * connection returned.
  *
  * Output is normalized so callers don't need to know which source ran.
  */
 
-import { searchRentcastSaleListings, type RentcastSearchFilters, type RentcastListing } from "./rentcast"
+import { searchRentcastSaleListings, isRentcastConfigured, type RentcastSearchFilters, type RentcastListing } from "./rentcast"
 import { IDXBrokerClient, type NormalizedIdxListing } from "@/lib/idxbroker-client"
 import { resolveListingSource } from "./listing-source"
-import { resolveConnection } from "@/lib/integrations/connection-manager"
+import { resolveRentcastEligibility, type TenantIdxConnection } from "./rentcast-eligibility"
 
 export interface ExternalListing {
   externalId: string
@@ -62,16 +68,31 @@ export interface ExternalSearchResult {
 export async function searchExternalListings(
   input: ExternalSearchInput
 ): Promise<ExternalSearchResult> {
-  // IDX Broker may be stored under any of the credential tables / name aliases
-  // (idxbroker vs idx_broker) — the connection manager resolves all of them.
-  // It is the TENANT-SETTABLE listing provider (owner ruling): a brokerage that
-  // sets up their own IDX Broker account searches THEIR board.
-  const idxConn = await resolveConnection({
-    brokerageId: input.brokerageId,
-    provider: "idxbroker",
-  })
+  // ONE gate answers both halves of the routing question, so this file cannot
+  // hold a second opinion about either provider.
+  //
+  // IDX: it used to be resolved HERE, through the legacy connection-manager,
+  // while the client two lines down resolved it through the owner cascade
+  // (resolveScopedConnection). Two resolvers for one question is how a gate and
+  // the client it guards end up disagreeing about whether a tenant "has IDX" —
+  // so this now asks the eligibility resolver, which asks the SAME resolver
+  // IDXBrokerClient.forBrokerage asks, and counts only an OWNER-SCOPED
+  // credential (a platform-tier IDX row is the product's fallback account, not
+  // the tenant's).
+  //
+  // RentCast: platform key AND the owner ruling AND the vendor budget.
+  const rentcast = await resolveRentcastEligibility({ brokerageId: input.brokerageId })
+  const idx: TenantIdxConnection = rentcast.idx
 
-  const hasIdx = !!idxConn?.apiKey
+  // FAIL CLOSED. If we could not determine whether this tenant owns an IDX feed
+  // we may not spend the platform's RentCast budget on them, and we cannot claim
+  // their board either. Say so; the caller still serves platform-internal
+  // listings. "We could not tell" is never reported as "they have nothing".
+  if (idx.status === "unreadable") {
+    return { listings: [], source: "none", error: idx.detail }
+  }
+
+  const hasIdx = idx.status === "connected"
 
   // RentCast is PLATFORM-GATED (owner ruling): one platform account serving every
   // tenant, metered per tenant and budget-gated. There is no tenant RentCast key
@@ -91,7 +112,20 @@ export async function searchExternalListings(
   // ever become selectable sources they need their own resolution and their own
   // branch below; silently re-adding them to a discarded `.in(...)` list would
   // not have made them work.
-  const hasRentcast = !!process.env.RENTCAST_API_KEY
+  //
+  // The platform-key question stays asked HERE rather than being folded silently
+  // into the gate: this file is where platform-gating was correctly enforced, and
+  // the ruling NARROWS that gate rather than replacing it. Both halves are
+  // visible on one line — the platform must have a key, AND this tenant must be
+  // one RentCast is allowed to serve.
+  //
+  // It is asked through `isRentcastConfigured`, whose whole body is the platform
+  // key resolve (getApiKey — structurally pinned by test:provider-tenancy-model
+  // as the ONE key reader that selects nothing by tenant), rather than through a
+  // second literal `process.env` read in this file. One reader, one answer: a
+  // duplicated env read is how the two halves of a gate drift apart.
+  const hasRentcastPlatformKey = await isRentcastConfigured(input.brokerageId)
+  const hasRentcast = hasRentcastPlatformKey && rentcast.eligible
 
   // Tier 1: IDX Broker feed (the brokerage's own MLS-enabled active listings).
   let idxListings: NormalizedIdxListing[] = []
@@ -110,9 +144,10 @@ export async function searchExternalListings(
     })
   }
 
-  // RentCast is the platform default; IDX wins only when connected AND it
-  // actually returned results (account-scoped feeds can be empty for a query).
-  const chosen = resolveListingSource({ hasIdx, idxResultCount: idxListings.length, hasRentcast })
+  // CONNECTION decides, not the result count. A tenant with their own feed is
+  // served from their own feed even when it comes back empty for this query —
+  // that is an honest empty from their board, and it is what the owner ruled.
+  const chosen = resolveListingSource({ hasIdx, hasRentcast })
 
   if (chosen === "idx") {
     return { listings: idxListings.map(idxToExternal), source: "idx" }

@@ -159,3 +159,69 @@ rather than as an invented decision — which is the only reason it is in scope.
   RESOLVE, never `??`, and never pass one under a parameter named for another.
 - Assert CONSTRUCTS in proofs, never spellings; negative-control every assertion
   and CONFIRM the control applied before believing it.
+
+## Outcome
+
+**Both agents were killed by a container restart** — the third of this session —
+after their code landed but before either proof existed. Everything below was
+verified by hand and the unfinished half was finished directly.
+
+**W18-1 landed complete** (9 assertions, 18 controls watched go red). Beyond the
+four paths, it found and fixed things the audit had not named: the contacts
+fallback in `aiPropertyMatchGenius` **bound its row and never assigned it**, so
+execution carried on reading the row that had just failed to load — the fallback
+did not fall back; and the prompt printed `None specified` for a preference
+record that cannot exist, which reads as a client who stated no requirements.
+
+`predictWinningOffer`'s inert parameter was **removed rather than given a
+ceremonial lookup** — the prediction is about the property, and its one caller
+lost the argument with it. `optimizeShowingRoute` now files on `contact_id`, the
+column its reader matches first, because the id it holds is now *proven*
+contacts-class. `massGenerateCMAs` resolves each record's nullable promotion
+pointer and **skips, counting and reporting**, every unconverted owner —
+capability preserved for promoted records rather than withdrawn wholesale.
+
+**W18-2's gate I verified, its proof I wrote.** The gate is sound on the point
+that mattered most: a **platform-tier** IDX credential is explicitly *not* the
+tenant's, so the ruling cannot become a total silent outage. It also refuses a
+credential row with no `apiKey`, matching the client exactly.
+
+## Five failures the guard chain caught after the agents were gone
+
+Every one was a real consequence, not a flaky test:
+
+1. **An inert control.** W18-1 left the Match Genius button *disabled with a
+   tooltip*. Defensible intent — but a disabled button with no handler is INERT,
+   and this repo holds a **zero-inert-controls** invariant. Removed; the banner
+   above the table carries the explanation once instead of a dead icon per row.
+2. **`test:living-video`** asserted `getApiKey(params.brokerageId)` inside the
+   status reader. Wave 18 moved key resolution one level in, to `gateRentcast`.
+   Assertion **updated, not deleted** — the property it protects is intact and
+   now stronger.
+3. **`test:persona-journey-wiring`**'s control patched `lead_id: data.leadId`,
+   which no longer exists. The control followed the write to `contact_id`.
+4. **A writer-less read.** Removing the wrong-class write left
+   `lead_idx_property_interactions` with readers and no writer. I baselined it —
+   and `test:doc-kernel` **rejected that**, because the writer-less burn-down is
+   a deliberate **zero** ("the drift class that started this campaign is
+   EXTINCT"). It was right and I was wrong: I reverted the baseline and removed
+   the three dead readers instead. They were dead by construction — that table
+   is keyed on `leads(id)`, has no contacts column, and property search is no
+   longer a leads capability. Leaving them would have been worse than untidy:
+   a prediction factor that **can never fire**, a **30-point** score component
+   permanently zero, and `Property Views: 0` printed as a fact about a person.
+   `calculateMotivationScore` lost its 20-point `propertyViews` term entirely;
+   the remaining weights are deliberately **not** rescaled, because refilling the
+   gap would invent motivation the evidence never showed.
+5. **`test:lead-flow`** asserted *"IDX connected but empty → RentCast fallback"* —
+   the old rule verbatim. Updated to the ruling: connection decides, so an empty
+   IDX result is an honest empty **from the tenant's own board**.
+
+Three of these five were assertions encoding a rule the owner has now changed.
+That is the wave's own lesson: a proof that pins a *decision* rather than a
+*property* has to be re-argued every time the decision moves — and re-arguing it
+is the work, not a nuisance to route around.
+
+**Verification:** typecheck EXIT=0, zero errors. Guard chain **218/218**
+including `test:sweep` (457 simulators, 0 failed). Writer-less reads back to
+**0 of 668** tables.

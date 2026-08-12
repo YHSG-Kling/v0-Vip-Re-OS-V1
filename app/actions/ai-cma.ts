@@ -107,6 +107,38 @@ export async function generateAICMA(params: CMAParams) {
     return { success: false, error: "Unauthorized: agentId does not match authenticated user" }
   }
 
+  // ── CONTACTS ONLY, PROVEN HERE — OWNER RULING ──────────────────────────────
+  // The comps step below reaches RentCast, and property valuation is a contacts
+  // capability. This function used to check `contactId` only at step 6, AFTER the
+  // provider had been paid, and it never read the id back against anything — so a
+  // caller could hand it an id from any lane and the only thing that ever noticed
+  // was the NOT NULL on cma_reports.contact_id, at the very end.
+  //
+  // The caller is gated too, but a gate that exists only at the caller is one new
+  // caller away from being bypassed again. This is the gate that cannot be, and it
+  // runs BEFORE anything is spent.
+  if (!params.contactId || !isValidUUID(params.contactId)) {
+    return { success: false, error: "A contact is required to generate a CMA" }
+  }
+  const { data: cmaContact, error: cmaContactError } = await supabase
+    .from("contacts")
+    .select("id")
+    .eq("id", params.contactId)
+    .maybeSingle()
+  // supabase-js RESOLVES a refused query. An unread error here would turn a
+  // refusal into "no such contact", which is a different fact — and both must
+  // stop the run before a vendor call is made.
+  if (cmaContactError) {
+    return { success: false, error: `Contact lookup refused: ${cmaContactError.message}` }
+  }
+  if (!cmaContact) {
+    return {
+      success: false,
+      error: "No contact carries that id. A CMA is filed against a contact, and comps are not purchased for any other identity class.",
+    }
+  }
+  const cmaContactId = cmaContact.id as string
+
   try {
     // 1. Fetch comparable properties from database/MLS
     const comparables = await fetchComparableProperties(params, agentRow.brokerage_id)
@@ -125,14 +157,13 @@ export async function generateAICMA(params: CMAParams) {
 
     // 6. Save CMA report — only insert columns that exist in cma_reports schema.
     // contact_id is NOT NULL on cma_reports; a CMA must be tied to a contact.
-    if (!params.contactId) {
-      return { success: false, error: "A contact is required to generate a CMA" }
-    }
+    // The id written here is the one the contacts lookup above RETURNED, not the
+    // one the caller supplied, so the column can only ever hold a confirmed row.
     const { data: cmaReport, error } = await supabase
       .from("cma_reports")
       .insert({
         agent_id: params.agentId,
-        contact_id: params.contactId,
+        contact_id: cmaContactId,
         listing_id: params.listingId ?? null,
         // city/state have no columns on cma_reports — fold into property_address.
         property_address: [params.propertyAddress, params.propertyCity, params.propertyState].filter(Boolean).join(", "),

@@ -117,15 +117,39 @@ export async function getCurrentAvm(req: AvmRequest): Promise<AvmResult | null> 
   // DOWNGRADE LADDER: if the brokerage is over its monthly vendor budget, the paid
   // tier is skipped — the caller still gets the free Perplexity/OSINT AVM computed
   // above. The cap throttles cost, not capability.
+  //
+  // THE RENTCAST HALF NOW GOES THROUGH THE ONE ELIGIBILITY GATE. This file had
+  // BUDGET gating and no IDX gating: it consulted checkVendorBudget and never
+  // asked whether the tenant had connected their own IDX Broker feed, which the
+  // owner ruling makes decisive ("rentcast is platform owned and should not be
+  // used if the tenant adds their idx broker credentials"). It asks the resolver
+  // in lib/property/rentcast-eligibility.ts instead, so the AVM cascade, the CMA
+  // comp provider and the listing search cannot hold three different opinions.
+  //
+  // THE CASCADE'S FALL-THROUGH IS PRESERVED, deliberately and in two separate
+  // ways, because "RentCast is ineligible" must mean "try the next provider" and
+  // never "fail the AVM":
+  //   · RentCast ineligible skips ONLY the RentCast adapter. BatchData and
+  //     ZenRows/Zillow still run, and the free Perplexity/OSINT tiers above have
+  //     already run regardless.
+  //   · The BUDGET verdict still governs the WHOLE paid tier exactly as before —
+  //     over budget skips all three paid providers, not just RentCast. The gate
+  //     short-circuits (a tenant with their own IDX feed never reaches the budget
+  //     question), so when it stopped early the budget is asked directly rather
+  //     than inferred from a reason that was never evaluated.
   let paidAllowed = !!req.usePaidProviders
+  let rentcastEligible = false
   if (paidAllowed && req.brokerageId) {
-    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
-    const { resolveVendorAction } = await import("@/lib/vendor-governance/vendor-policy")
-    const budget = await checkVendorBudget({ brokerageId: req.brokerageId })
-    if (resolveVendorAction("rentcast", !budget.allowed) !== "allow") paidAllowed = false
+    const { resolveRentcastEligibility, rentcastBudgetBlocked } = await import("@/lib/property/rentcast-eligibility")
+    const eligibility = await resolveRentcastEligibility({ brokerageId: req.brokerageId })
+    rentcastEligible = eligibility.eligible
+    const overBudget = eligibility.budget.checked
+      ? eligibility.reason === "budget_exhausted"
+      : (await rentcastBudgetBlocked(req.brokerageId)).blocked
+    if (overBudget) paidAllowed = false
   }
   if (paidAllowed) {
-    if (!skip.has("rentcast") && req.brokerageId) {
+    if (!skip.has("rentcast") && req.brokerageId && rentcastEligible) {
       const rc = await tryRentcast(req)
       if (rc && rc.confidence >= 0.6) return rc
     }

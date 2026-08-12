@@ -108,7 +108,6 @@ export async function predictLeadConversion(leadId: string): Promise<LeadPredict
   let propertyOwnership: unknown[] = []
   let peopleData: unknown = null
   let motivatedSellerSignals: unknown[] = []
-  let propertyInteractions: unknown[] = []
   let chatSessions: unknown[] = []
 
   // Get base lead data - try leads table first, then contacts
@@ -208,15 +207,6 @@ export async function predictLeadConversion(leadId: string): Promise<LeadPredict
     motivatedSellerSignals = data || []
   } catch (e) { /* Table may not exist */ }
 
-  // Try to get property interactions
-  try {
-    const { data } = await supabase
-      .from("lead_idx_property_interactions")
-      .select("*")
-      .eq("lead_id", leadId)
-    propertyInteractions = data || []
-  } catch (e) { /* Table may not exist */ }
-
   // Calculate days since first contact
   const daysSinceFirstContact = (lead as any).created_at
     ? Math.floor((Date.now() - new Date((lead as any).created_at).getTime()) / (1000 * 60 * 60 * 24))
@@ -238,7 +228,7 @@ Lead Profile:
 
 Behavioral Signals:
 - Email Opens: ${emailOpens}
-- Property Views: ${(propertyInteractions as Record<string, unknown>[]).length}
+- Property Views: not collected for pre-conversion records (property search is a contact capability)
 - Engagement Score: ${(engagementScores as Record<string, unknown> | null)?.overall_score as number || 0}/100
 
 Intelligence:
@@ -315,7 +305,7 @@ Respond with JSON only:
       entity_id: leadId,
       prediction_value: prediction,
       confidence_score: (prediction as any).confidence,
-      prediction_factors: extractFactors(lead as any, leadIntelligence, engagementScores, propertyInteractions) as any,
+      prediction_factors: extractFactors(lead as any, leadIntelligence, engagementScores) as any,
       model_version: "v1.0",
     })
     if (predictionInsertError) {
@@ -360,11 +350,16 @@ Respond with JSON only:
   }
 }
 
+/**
+ * NOTE — the `interactions` parameter and its `active_property_viewing` factor
+ * were REMOVED (wave 18): pre-conversion records have no IDX property-interaction lane at all: property search is a contacts capability (owner ruling, wave 18), the only table that carried it is keyed on the pre-conversion id with no contacts column, and its writer was removed because it was filing a contacts id in that column. So this signal is not 'zero' — it is NOT COLLECTED, and printing a zero would read as a fact about the person.
+ * A factor that can never fire is not a conservative default, it is a silently
+ * missing input to a score somebody reads as complete.
+ */
 function extractFactors(
   lead: Record<string, unknown>,
   intelligence: unknown,
   engagement: unknown,
-  interactions: unknown[]
 ): Record<string, unknown>[] {
   const factors: Record<string, unknown>[] = []
   const engagementRecord = engagement as Record<string, unknown> | null
@@ -378,13 +373,6 @@ function extractFactors(
     })
   }
 
-  if ((interactions || []).length >= 5) {
-    factors.push({
-      factor: "active_property_viewing",
-      weight: 0.25,
-      value: interactions.length,
-    })
-  }
 
   if ((intelligenceRecord?.timeline as string) === "immediate") {
     factors.push({ factor: "urgent_timeline", weight: 0.15, value: 1 })
@@ -1223,46 +1211,59 @@ async function idxForCallerBrokerage(surface: string) {
 // AI PROPERTY MATCH GENIUS
 // ============================================
 
-export async function aiPropertyMatchGenius(leadId: string) {
+// CONTACTS ONLY — OWNER RULING. Property search through IDX Broker is a contacts
+// capability, so this entry point resolves against ONE identity class and refuses
+// everything else. It used to read the pre-conversion table FIRST, treat contacts
+// as a fallback, and place the IDX call OUTSIDE every branch, so an id of either
+// class reached the provider.
+//
+// THREE DEFECTS REMOVED TOGETHER, because they were holding each other up:
+//   · THE FALLBACK NEVER FELL BACK. It bound `contact`, null-checked it, and
+//     never assigned it — execution carried on reading `lead?.saved_properties`
+//     off the row that had just failed to load.
+//   · THE EMBED MIXED ID SPACES. saved_properties and client_detailed_personas
+//     are keyed on contacts; lead_idx_property_interactions is keyed on the
+//     pre-conversion class, and client_journey_preferences is not in the live
+//     schema at all (see scripts/schema-snapshot.ts — it has no entry). One
+//     PostgREST embed naming all four raises PGRST200, and that error was the
+//     only thing standing between an unpromoted id and a paid property feed.
+//     The embed now names only contacts-keyed tables that actually exist.
+//   · THE CLIENT WAS BUILT FIRST. Constructing the provider client before the
+//     lookup makes the decision to spend before the decision to proceed. It is
+//     now constructed after the identity is proven.
+export async function aiPropertyMatchGenius(contactId: string) {
   const supabase = await createClient()
-  const { client: idxClient } = await idxForCallerBrokerage("aiPropertyMatchGenius")
 
-  // Gather comprehensive lead data with all property interactions
-  const { data: lead, error: leadError } = await supabase
-    .from("leads")
+  // Gather the contact and its contacts-keyed property signal.
+  const { data: contact, error: contactError } = await supabase
+    .from("contacts")
     .select(
       `
       *,
       saved_properties(*),
-      lead_idx_property_interactions(*),
-      client_detailed_personas(*),
-      client_journey_preferences(*)
+      client_detailed_personas(*)
     `,
     )
-    .eq("id", leadId)
+    .eq("id", contactId)
     .maybeSingle()
 
-  if (leadError || !lead) {
-    // Try contacts table as fallback
-    const { data: contact } = await supabase
-      .from("contacts")
-      .select(
-        `
-        *,
-        saved_properties(*),
-        client_detailed_personas(*)
-      `,
-      )
-      .eq("id", leadId)
-      .maybeSingle()
-
-    if (!contact) {
-      // The lookup above reads CONTACTS. "Lead not found" sent the reader to a
-      // different table and a different business object — this OS keeps leads
-      // and contacts deliberately separate.
-      throw new Error("Contact not found")
-    }
+  // supabase-js RESOLVES a refused query, so the error has to be read. A refusal
+  // is not "no such contact" and must not be answered by searching a property
+  // feed for an identity nothing has confirmed.
+  if (contactError) {
+    throw new Error(
+      `aiPropertyMatchGenius: the contact lookup was refused (${contactError.message}). This is a refusal, not a missing record — no property search is run.`,
+    )
   }
+  if (!contact) {
+    throw new Error(
+      "aiPropertyMatchGenius: no contact carries that id. Property search runs for contacts only; an unconverted record has to be promoted first.",
+    )
+  }
+
+  // ONLY NOW. The identity is proven to be a contact, so the provider client is
+  // built against a decision that has already been made.
+  const { client: idxClient } = await idxForCallerBrokerage("aiPropertyMatchGenius")
 
   // Get property family ratings from collaborative searches
   const { data: familyRatings } = await supabase
@@ -1273,14 +1274,12 @@ export async function aiPropertyMatchGenius(leadId: string) {
       collaborative_searches!inner(contact_id)
     `,
     )
-    .eq("collaborative_searches.contact_id", leadId)
+    .eq("collaborative_searches.contact_id", contactId)
     .limit(20)
 
   // Build AI prompt to learn true preferences
-  const savedProps = lead?.saved_properties || []
-  const viewedProps = lead?.lead_idx_property_interactions || []
-  const preferences = lead?.client_journey_preferences?.[0] || {}
-  const persona = lead?.client_detailed_personas?.[0] || {}
+  const savedProps = contact.saved_properties || []
+  const persona = contact.client_detailed_personas?.[0] || {}
 
   const prompt = `You are an AI real estate matchmaker. Learn this buyer's TRUE preferences from their behavior:
 
@@ -1297,17 +1296,10 @@ ${savedProps
   )
   .join("\n")}
 
-PROPERTIES VIEWED BUT NOT SAVED (${viewedProps.length}):
-${viewedProps
-  .slice(0, 5)
-  .map(
-    (i: any) => `
-- ${i.property_address || "Unknown"}: $${i.property_details?.price?.toLocaleString() || "Unknown"}
-  Time Spent: ${i.time_spent_seconds || 0}s
-  Action: ${i.interaction_type || "viewed"}
-`,
-  )
-  .join("\n")}
+PROPERTIES VIEWED BUT NOT SAVED: NOT AVAILABLE. The only viewed-not-saved record
+in this system is keyed to the pre-conversion identity class, so a contact has no
+such record — not an empty one, none at all. Treat browsing behaviour as UNKNOWN
+and widen your confidence accordingly; do NOT read this as "they viewed nothing".
 
 FAMILY RATINGS (${familyRatings?.length || 0}):
 ${(familyRatings || [])
@@ -1321,11 +1313,11 @@ ${(familyRatings || [])
   )
   .join("\n")}
 
-STATED PREFERENCES:
-- Must-Haves: ${preferences.must_have_features?.join(", ") || "None specified"}
-- Deal Breakers: ${preferences.deal_breakers?.join(", ") || "None specified"}
-- Neighborhoods: ${preferences.preferred_neighborhoods?.join(", ") || "None specified"}
-- Price Range: $${preferences.min_price?.toLocaleString() || "?"} - $${preferences.max_price?.toLocaleString() || "?"}
+STATED PREFERENCES: NOT AVAILABLE. This deployment has no stated-preference
+record for a contact (the table the old prompt read is absent from the live
+schema), so there is nothing here to compare behaviour against. Say the
+stated-vs-actual comparison is unavailable rather than reporting "none specified",
+which reads as a client who stated no requirements.
 
 PERSONA: ${persona.primary_persona || "General buyer"}
 
@@ -1451,8 +1443,8 @@ Generate PERFECT search criteria based on learned behavior:
     // Save the learned preferences for future use
     await supabase.from("ai_insights").insert({
       insight_type: "learned_preferences",
-      entity_type: "lead",
-      entity_id: leadId,
+      entity_type: "contact",
+      entity_id: contactId,
       insight_title: "AI Property Match Preferences Learned",
       insight_description: aiMatch.whyThisWillWork,
       actionable_steps: [`Show properties matching learned criteria`, `Focus on: ${aiMatch.learnedPreferences?.hiddenMustHaves?.join(", ")}`],
@@ -1587,13 +1579,80 @@ export async function massGenerateCMAs(_ignoredAgentId?: string) {
     arr.push(row)
     ownershipByLead.set(row.lead_id, arr)
   }
-  // Only leads that actually own property (replaces the phantom .not(...) filter)
-  const leads = agentLeads.filter((l) => (ownershipByLead.get(l.id)?.length ?? 0) > 0)
+  // Only owners that actually own property (replaces the phantom .not(...) filter)
+  const owners = agentLeads.filter((l) => (ownershipByLead.get(l.id)?.length ?? 0) > 0)
+
+  // ── CONTACTS ONLY — OWNER RULING ───────────────────────────────────────────
+  // A CMA reaches RentCast, which is a contacts capability. This loop used to
+  // hand each row's OWN id to a parameter named `contactId`, so an id from the
+  // pre-conversion lane was spent against the comps provider and then written to
+  // cma_reports.contact_id — a NOT NULL column that ai-cma.ts says in its own
+  // comment must be tied to a contact.
+  //
+  // The capability is preserved for PROMOTED records rather than withdrawn: the
+  // pre-conversion row carries a real, nullable `contact_id` column
+  // (scripts/schema-snapshot.ts) naming the contact it was promoted into. That
+  // id — never the row's own — is what a CMA is filed against, and it is
+  // RESOLVED against the contacts table rather than trusted, because a stale or
+  // dangling promotion pointer is not a contact.
+  //
+  // A record with no promotion is SKIPPED and COUNTED. Pre-rollout every table is
+  // empty, so "produced nothing" is never health: the skip reasons are returned
+  // so an empty run can be told apart from a run with nothing to do.
+  const promotionTargets = [
+    ...new Set(
+      owners
+        .map((l) => l.contact_id)
+        .filter((v): v is string => typeof v === "string" && v.length > 0),
+    ),
+  ]
+
+  const confirmedContactIds = new Set<string>()
+  if (promotionTargets.length > 0) {
+    const { data: contactRows, error: contactsError } = await supabase
+      .from("contacts")
+      .select("id")
+      .in("id", promotionTargets)
+    // supabase-js RESOLVES a refusal. Reading a refused lookup as "none of them
+    // are contacts" would be harmless here, but reading it as "all of them are"
+    // would spend the comps provider on unproven ids — so it refuses outright.
+    if (contactsError) {
+      console.error("[v0] massGenerateCMAs: promotion-target lookup refused:", contactsError.message)
+      return {
+        totalCMAsGenerated: 0,
+        significantOpportunities: 0,
+        results: [],
+        skipped: [],
+        message: `Could not confirm which owners are contacts (${contactsError.message}). No CMAs were generated — this is a refusal, not an empty book.`,
+      }
+    }
+    for (const row of contactRows ?? []) confirmedContactIds.add(row.id as string)
+  }
 
   const cmaResults = []
+  const skipped: Array<{ ownerId: string; ownerName: string; reason: string }> = []
 
-  for (const lead of leads) {
+  for (const lead of owners) {
     const propertyOwnership = ownershipByLead.get(lead.id) || []
+    const ownerName = `${lead.first_name ?? ""} ${lead.last_name ?? ""}`.trim()
+
+    const promotedContactId = typeof lead.contact_id === "string" && lead.contact_id.length > 0 ? lead.contact_id : null
+    if (!promotedContactId) {
+      skipped.push({
+        ownerId: lead.id,
+        ownerName,
+        reason: "not promoted to a contact — property valuation runs for contacts only",
+      })
+      continue
+    }
+    if (!confirmedContactIds.has(promotedContactId)) {
+      skipped.push({
+        ownerId: lead.id,
+        ownerName,
+        reason: "promotion target does not resolve to a contact this caller can read",
+      })
+      continue
+    }
 
     for (const property of propertyOwnership) {
       try {
@@ -1602,7 +1661,7 @@ export async function massGenerateCMAs(_ignoredAgentId?: string) {
 
         const cma = await generateRealCMA({
           agentId,
-          contactId: lead.id,
+          contactId: promotedContactId,
           propertyAddress: property.property_address,
           propertyCity: lead.city || "",
           propertyState: lead.state || "TX",
@@ -1618,8 +1677,9 @@ export async function massGenerateCMAs(_ignoredAgentId?: string) {
         const equityGain = estimatedValue - (property.estimated_value || 0)
 
         cmaResults.push({
-          leadId: lead.id,
-          leadName: `${lead.first_name} ${lead.last_name}`,
+          ownerId: lead.id,
+          contactId: promotedContactId,
+          leadName: ownerName,
           propertyAddress: property.property_address,
           currentValue: property.estimated_value,
           newCMAValue: estimatedValue,
@@ -1636,10 +1696,12 @@ export async function massGenerateCMAs(_ignoredAgentId?: string) {
   const significantGains = cmaResults.filter((r) => r.equityGain > 50000)
 
   for (const gain of significantGains) {
+    // The report this insight points at is filed on the CONTACT, so the insight
+    // is too — type and id move together, never one without the other.
     await supabase.from("ai_insights").insert({
       insight_type: "opportunity",
-      entity_type: "lead",
-      entity_id: gain.leadId,
+      entity_type: "contact",
+      entity_id: gain.contactId,
       insight_title: "Significant Equity Growth Detected",
       insight_description: `${gain.leadName}'s home at ${gain.propertyAddress} has gained $${gain.equityGain.toLocaleString()} in equity. This could be a selling opportunity.`,
       actionable_steps: [
@@ -1659,7 +1721,12 @@ export async function massGenerateCMAs(_ignoredAgentId?: string) {
     totalCMAsGenerated: cmaResults.length,
     significantOpportunities: significantGains.length,
     results: cmaResults,
-    message: `Generated ${cmaResults.length} CMAs. Found ${significantGains.length} high-equity opportunities!`,
+    skipped,
+    message:
+      `Generated ${cmaResults.length} CMAs. Found ${significantGains.length} high-equity opportunities!` +
+      (skipped.length > 0
+        ? ` ${skipped.length} property owner${skipped.length === 1 ? "" : "s"} skipped: a valuation is filed against a contact, and ${skipped.length === 1 ? "that record has" : "those records have"} not been converted yet.`
+        : ""),
   }
 }
 
@@ -1667,10 +1734,28 @@ export async function massGenerateCMAs(_ignoredAgentId?: string) {
 // WINNING OFFER PREDICTION
 // ============================================
 
+// THE PERSON PARAMETER IS GONE, DELIBERATELY — OWNER RULING.
+//
+// This function used to take a `leadId`, and that identifier appeared EXACTLY
+// ONCE in the whole body: its own declaration. It was never read against any
+// table, never filtered anything, never reached the prompt and never reached the
+// row this writes (which keys on the PROPERTY: entity_type "property",
+// entity_id = the MLS id). It was inert.
+//
+// An inert identity parameter is worse than no parameter, because it reads like
+// authorization: every caller and every reviewer saw an id being handed to a
+// function that opens an IDX Broker feed and assumed something checked it.
+// Nothing did — an id of ANY class, from any lane, reached the provider.
+//
+// The honest resolution is removal rather than a ceremonial gate. The offer
+// prediction genuinely does not need a person: it works from the MLS id, the
+// list price and property_smart_insights, and produces a strategy for the
+// PROPERTY. The tenant whose IDX feed is read is resolved from the SESSION, not
+// from any identifier a caller supplies, so with the parameter gone there is no
+// identity of any class on this path at all.
 export async function predictWinningOffer(data: {
   propertyMlsId: string
   listPrice: number
-  leadId: string
 }) {
   const supabase = await createClient()
   const { client: idxClient } = await idxForCallerBrokerage("predictWinningOffer")
@@ -2397,13 +2482,36 @@ Detect churn risk and provide save strategy:
 //     write-only table wearing the costume of a working one.
 //   · the insert's error was never destructured, so a refusal returned
 //     `{ success: true }` with the route rendered on screen and nothing stored.
+//
+// CONTACTS ONLY — OWNER RULING (this wave). The route is built from an IDX Broker
+// feed, so the identity is resolved against contacts BEFORE the client exists,
+// and a non-contact is refused rather than served. The parameter is named for the
+// class it now holds; it previously carried an unchecked id straight into the
+// row's leads-class column.
 export async function optimizeShowingRoute(data: {
-  leadId: string
+  contactId: string
   propertyIds: string[]
   preferredDate: string
   startLocation: string
 }) {
   const supabase = await createClient()
+
+  // THE IDENTITY FIRST, THE PROVIDER SECOND.
+  const { data: routeContact, error: routeContactError } = await supabase
+    .from("contacts")
+    .select("id")
+    .eq("id", data.contactId)
+    .maybeSingle()
+  if (routeContactError) {
+    throw new Error(
+      `optimizeShowingRoute: the contact lookup was refused (${routeContactError.message}). A refusal is not a missing record — no showing route is built and no property feed is read.`,
+    )
+  }
+  if (!routeContact) {
+    throw new Error(
+      "optimizeShowingRoute: no contact carries that id. Showing routes are built for contacts only; an unconverted record has to be promoted first.",
+    )
+  }
 
   const { data: { user: routeCaller } } = await supabase.auth.getUser()
   if (!routeCaller) throw new Error("No signed-in caller")
@@ -2480,8 +2588,16 @@ Optimize for:
       throw new Error("Route optimization failed")
     }
 
+    // THE ROW IS CONTACTS-CLASS, SO IT IS FILED UNDER THE CONTACTS COLUMN.
+    // `lead_id` is a real column on this table, but it is the OTHER class's
+    // column, and the id here has just been PROVEN to be a contacts.id — writing
+    // it there would be the same id-class error in the opposite direction, and
+    // the reader (app/crm/contacts/[contactId]/page.tsx) resolves `lead_id` by
+    // joining the contact's pre-conversion records, so a contacts.id parked in it
+    // would never match anything. `contact_id` exists on this table
+    // (scripts/schema-snapshot.ts) and is exactly what that reader matches first.
     const { error: recError } = await supabase.from("smart_showing_recommendations").insert({
-      lead_id: data.leadId,
+      contact_id: data.contactId,
       brokerage_id: routeBrokerageId, // without this the row is unreadable by everyone
       recommended_properties: optimizedRoute.data.optimizedRoute?.properties ?? [],
       showing_route: optimizedRoute.data.optimizedRoute,

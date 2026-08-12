@@ -383,8 +383,17 @@ console.log("\n═══ 10. BUYER MATCH REEL — the second living kind ══�
   // assertion still reads the same call text: what changed is what the argument
   // MEANS, and this proof is what stops the lane resolving a key with no tenant
   // to charge it to.
-  ok("...resolving the PLATFORM key, with the tenant carried for attribution\n    (a lane can never resolve a key without a tenant to meter it against)",
-    rentcast.includes("getApiKey(params.brokerageId)"))
+  // WAVE 18 moved the key resolution one level in, and this assertion moved with
+  // it rather than being deleted. The lane no longer calls `getApiKey` directly:
+  // it calls `gateRentcast(params)`, which asks the ONE eligibility resolver
+  // (platform key + owner ruling + vendor budget) and returns the key only when
+  // the answer is yes. `params` still carries the tenant, so the property this
+  // assertion has always protected is intact and is now STRONGER — a lane cannot
+  // resolve a key without a tenant to meter it against, AND cannot resolve one
+  // for a tenant the owner has ruled RentCast out for. Pinning to the old call
+  // text would have made a tightening look like a regression.
+  ok("...resolving the PLATFORM key THROUGH THE GATE, with the tenant carried\n    (a lane can never resolve a key without a tenant to meter it against)",
+    rentcast.includes("gateRentcast(params)") && rentcast.includes("getApiKey(caller.brokerageId)"))
   ok("...and a 404 means off_market, not sold — we do not invent which terminal state",
     rentcast.includes('if (res.status === 404) return "off_market"'))
   ok("...and the call is metered like every other vendor call",
