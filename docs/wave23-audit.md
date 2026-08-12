@@ -97,3 +97,31 @@ anchor is whatever record the failing workflow was operating on.
   authorization check.
 - **New this wave:** a table's tenancy class is decided by its **readers**, not
   its name. Two "infrastructure" ledgers turned out to be broker-facing.
+
+## Verification of the deferred set — the heuristic's error rate, measured
+
+The W22-4 count (46 tables / 108 sites) came from a proximity heuristic: a
+`.eq("brokerage_id", …)` within 400 characters of a non-insert `.from("<table>")`.
+Three tables were confirmed by hand and became this wave's scope. Five more from
+the deferred set have now been checked:
+
+| table | brokerage-equality reader found by reading? |
+|---|---|
+| `sequence_step_executions` | **yes** — `lib/campaign-sequences/channel-order-runner.ts:23` |
+| `open_house_attendees` | **yes** — `app/actions/seller-open-house.ts:359, :390` |
+| `social_posts` | **yes** — `app/actions/social/generate-social-post.ts:301`, `social-publishing.ts:405` |
+| `smart_assistant_suggestions` | **no** — not on a second pass |
+| `open_house_invitations` | **no** — not on a second pass |
+
+**Three of five hold; two do not.** So the heuristic runs roughly 60–70% true on
+this sample, which is exactly why the 46/108 figure was published as *a signal to
+check* rather than a total, and why nothing was dispatched on it wholesale.
+
+The two that did not reproduce are not thereby cleared — a filter applied further
+from the `.from()`, or through a helper, would be missed by both passes. They are
+**unresolved**, not **fine**. Wave 24 reads them properly before deciding.
+
+The eight confirmed tenant-class tables so far: `notifications`,
+`automation_errors`, `cron_execution_logs`, `system_health_checks`,
+`sequence_step_executions`, `open_house_attendees`, `social_posts`, and (from
+waves 20–21) the `ai_insights` / `compliance_flags` / `ai_predictions` family.
