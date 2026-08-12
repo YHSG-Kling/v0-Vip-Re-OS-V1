@@ -89,9 +89,18 @@ const F = {
 
 /** The callers this wave did NOT touch. Every one of them still consumes the
  *  flattening wrapper, and none of them was migrated to the discriminated form —
- *  that is the point of keeping the wrapper. */
+ *  that is the point of keeping the wrapper.
+ *
+ *  ELEVEN, not twelve. `app/actions/accounting-sync.ts` was on this roster when
+ *  the proof was written, and it should never have been: it IMPORTED
+ *  `resolveScopedConnection` and never called it. A dead import is not a caller,
+ *  and counting one made this assertion protect a symbol nobody was using. The
+ *  import was removed and the roster corrected to the files that actually CALL
+ *  the wrapper — which is what "none was silently migrated" is about.
+ *
+ *  The proof caught its own roster being wrong, in CI, after a late edit that
+ *  the local chain run predated. That is the assertion working, not misfiring. */
 const UNTOUCHED_CALLERS = [
-  "app/actions/accounting-sync.ts",
   "app/actions/dispatch-showing.ts",
   "app/actions/seller-showings.ts",
   "app/actions/podcast-generation.ts",
