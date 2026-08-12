@@ -401,6 +401,15 @@ interface InsertSite {
   hasObjectArg: boolean
   /** True when the row object was reached through a `.map(… => ({…}))` fan-out. */
   viaRowMapper: boolean
+  /**
+   * Where this site's argument list opens, RECORDED ONLY — nothing above reads
+   * it. The enumerate mode at the foot of this file uses it to try a second,
+   * wider resolution on the sites this one could not resolve, WITHOUT re-walking
+   * `.from(` → window → `.insert(` and thereby forking the scan.
+   */
+  openParen: number
+  /** Where the resolved row object opens, RECORDED ONLY — enumerate mode again. */
+  rowOpen: number | null
 }
 
 /**
@@ -493,11 +502,20 @@ function insertSites(file: string, table: string): InsertSite[] {
     const line = src.slice(0, m.index).split("\n").length
     const resolved = resolveRowObject(src, openParen)
     if (resolved === null) {
-      sites.push({ file, line, keys: [], props: [], hasObjectArg: false, viaRowMapper: false })
+      sites.push({ file, line, keys: [], props: [], hasObjectArg: false, viaRowMapper: false, openParen, rowOpen: null })
       continue
     }
     const props = topLevelProps(src, resolved.open)
-    sites.push({ file, line, keys: props.map((p) => p.key), props, hasObjectArg: true, viaRowMapper: resolved.viaRowMapper })
+    sites.push({
+      file,
+      line,
+      keys: props.map((p) => p.key),
+      props,
+      hasObjectArg: true,
+      viaRowMapper: resolved.viaRowMapper,
+      openParen,
+      rowOpen: resolved.open,
+    })
   }
   return sites
 }
@@ -1690,8 +1708,409 @@ function controlled(label: string, c: Control, fn: () => boolean): void {
   }
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// ENUMERATE MODE — the same scanner, ASKED A QUESTION instead of asserting
+// ═════════════════════════════════════════════════════════════════════════════
+//
+//   tsx scripts/ai-insight-tenant-guard.ts --enumerate [--tables=a,b] [--tables-file=path]
+//
+// WHY THIS EXISTS. Four waves have stamped ~15 tables, and every attempt to size
+// what remains used an ad-hoc census in scratchpad/ that is measurably weaker
+// than the scanner above. Three recorded errors, all of them the SAME two
+// classes this file already solved by controls going red:
+//
+//   · ~93 unstamped `notifications` sites reported when the truth was 15 — the
+//     census could not read a shorthand stamp (`brokerage_id,`) or `.insert(rows)`.
+//   · `social_posts` reported as 3 unstamped when ALL 22 stamp — the census
+//     could not follow `.map(x => { … return {…} })`.
+//   · a `.eq("brokerage_id", …)` attributed to the wrong query, because a
+//     500-character window bled past the end of one statement into the next
+//     `.from(` — `open_house_invitations` reported as having a brokerage-equality
+//     reader when its reads are event-scoped.
+//
+// So this mode adds NO new scanning of its own on the write side: it calls
+// `insertSites` — balanced-delimiter scan, depth-1 keys, shorthand properties,
+// explicit `null`, both quote styles, arrow and block-bodied row mappers, window
+// cut at the next `.from(` — and reports what it finds.
+//
+// TWO THINGS IT IS NOT.
+//
+//   1. It is NOT an assertion. It exits 0 unconditionally and runs before every
+//      check below, so it can never be mistaken for a passing guard run and can
+//      never be wired into the chain as a proof. An enumerator has no pass/fail
+//      to own. `npm run test:ai-insight-tenant` does not pass this flag, so the
+//      default path is untouched.
+//   2. It does NOT relax anything. Every assertion above is reached by exactly
+//      the same code as before; the traversal added here is additive.
+//
+// The reader half answers the question that decides whether a table's unstamped
+// rows are a LIVE BUG rather than merely untidy: does any surface read this
+// table with an EQUALITY predicate on `brokerage_id`? `NULL = <uuid>` is NULL,
+// so such a reader cannot see its own untenanted rows. That is the wave 22–24
+// thesis, and it is the only signal that separates "already broken" from "not
+// yet tenant-scoped".
+
+const ENUMERATE = process.argv.includes("--enumerate")
+
+/**
+ * The end of the chain window that a `.from(` at `after` owns — THE SAME
+ * DISCIPLINE `insertSites` USES, and for the same reason: 4000 characters, cut
+ * at the next `.from(`.
+ *
+ * Written as its own helper for the READER scan rather than refactored INTO
+ * `insertSites`, deliberately. The asserting path is left byte-for-byte as it
+ * was; a shared-helper refactor would be a change to the code every assertion
+ * runs through, to make enumeration tidier. That trade is the wrong way round.
+ */
+function chainWindow(src: string, after: number): string {
+  let window = src.slice(after, after + 4000)
+  const nextFrom = window.search(/\.\s*from\s*\(/)
+  if (nextFrom !== -1) window = window.slice(0, nextFrom)
+  return window
+}
+
+/**
+ * `.eq` / `.in` / `.filter` — the links that AND an EQUALITY-shaped predicate
+ * and therefore drop a NULL row.
+ *
+ * `is` and `neq` are in `CONJUNCTIVE` above (they do AND), but they are NOT
+ * equality: `.is("brokerage_id", null)` selects exactly the untenanted rows,
+ * which is the opposite of the signal being counted here. Counting it would
+ * report a table as "already broken" on the strength of a reader that can see
+ * the rows perfectly well.
+ */
+const BROKERAGE_EQUALITY = /\.\s*(?:eq|in|filter)\s*\(\s*["']brokerage_id["']/
+
+/**
+ * A `.from(` window that MUTATES rather than reads.
+ *
+ * `update` and `delete` are here with `insert`/`upsert` on purpose, and it
+ * changes an answer: `app/actions/seller-open-house.ts:259` updates
+ * `open_house_invitations` with `.eq("brokerage_id", auth.brokerageId)`, and
+ * counting that as a reader reports `open_house_invitations` as having a
+ * brokerage-equality reader — the exact call wave 24 established as a TRUE
+ * NEGATIVE by reading it (its reads are `.eq("event_id", …)`). A tenant-scoped
+ * UPDATE says something real — it cannot touch an untenanted row either — but it
+ * is not the signal being counted, which is whether a SURFACE can SEE the rows.
+ * Reported separately below rather than folded in.
+ */
+const WINDOW_MUTATES = /\.\s*(?:insert|upsert|update|delete)\s*\(/
+
+interface ReaderSite {
+  file: string
+  line: number
+  /** The first chain method after `.from(` — select / update / delete / … */
+  op: string
+}
+
+/**
+ * Every `.from("<table>")` in `file` that ANDs a brokerage-equality predicate
+ * within the window that `.from(` owns, split into READS and MUTATIONS.
+ */
+function brokerageEqualitySites(file: string, table: string): { readers: ReaderSite[]; mutations: ReaderSite[] } {
+  const src = blankComments(raw(file))
+  const readers: ReaderSite[] = []
+  const mutations: ReaderSite[] = []
+  const from = new RegExp(`\\.from\\(\\s*["']${table}["']\\s*\\)`, "g")
+  let m: RegExpExecArray | null
+  while ((m = from.exec(src)) !== null) {
+    const after = m.index + m[0].length
+    const window = chainWindow(src, after)
+    if (!BROKERAGE_EQUALITY.test(window)) continue
+    const op = /^\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/.exec(window)?.[1] ?? "?"
+    const site = { file, line: src.slice(0, m.index).split("\n").length, op }
+    ;(WINDOW_MUTATES.test(window) ? mutations : readers).push(site)
+  }
+  return { readers, mutations }
+}
+
+/**
+ * The end of the FIRST argument of the list opening at `openParen` — the first
+ * top-level comma, or the closing paren. String-aware, depth-tracked.
+ */
+function firstArgEnd(src: string, openParen: number): number {
+  const close = skipBalanced(src, openParen)
+  let i = openParen + 1
+  let depth = 0
+  while (i < close - 1) {
+    const c = src[i]
+    if (c === '"' || c === "'" || c === "`") { i = skipString(src, i); continue }
+    if (c === "(" || c === "{" || c === "[") { depth++; i++; continue }
+    if (c === ")" || c === "}" || c === "]") { depth--; i++; continue }
+    if (depth === 0 && c === ",") return i
+    i++
+  }
+  return close - 1
+}
+
+/**
+ * A SECOND CHANCE at the row object, for enumeration only.
+ *
+ * `resolveRowObject` above is deliberately left exactly as the assertions run
+ * it. It resolves the direct object, the inline `=> ({…})` mapper and a bare
+ * identifier bound to a mapper — and calls everything else unresolvable, which
+ * for an ASSERTION is the right stance: a stamp that cannot be seen is not a
+ * stamp that can be trusted, so an unresolvable site is an offender and somebody
+ * has to look at it.
+ *
+ * For a CENSUS that stance inflates the number, and inflating it is the exact
+ * failure this mode exists to end. Two shapes were counted as unstamped in the
+ * first full run and are, on reading, correctly stamped:
+ *
+ *   · `.upsert(rows, { onConflict: … })` — a SECOND ARGUMENT. `resolveRowObject`
+ *     requires the WHOLE argument text to be one identifier, so every
+ *     conflict-target upsert in the tree resolved to nothing.
+ *     `app/actions/open-house.ts:482` and `app/actions/seller-open-house.ts:217`
+ *     are this: both map `brokerage_id` into every row, both were reported
+ *     unstamped, and `open_house_invitations` is a table wave 24 specifically
+ *     ruled on.
+ *   · `const row = { … }` / `const insertData = { … }` then `.insert(row)` — an
+ *     identifier bound to a PLAIN OBJECT, not to a `.map()`. `app/actions/
+ *     voice-tenancy.ts:95` stamps `brokerage_id: auth.brokerageId` in exactly
+ *     this shape.
+ *
+ * What it still refuses to guess: `insert(milestoneJourneyFor(t))`,
+ * `insert(plan.raw as never)`, and an identifier bound to an accumulator or a
+ * call. Those stay UNRESOLVED and are counted and reported as their own class —
+ * not folded into the unstamped total, and not waved through either.
+ *
+ * An EMPTY object literal counts as unresolved on purpose: `let row: any = {}`
+ * followed by property assignment would otherwise turn a provable-nothing into a
+ * confident "unstamped".
+ */
+function resolveRowObjectDeep(src: string, openParen: number): { open: number; how: string } | null {
+  const lo = openParen + 1
+  const hi = firstArgEnd(src, openParen)
+
+  // 1 — the direct object, optionally inside an array literal.
+  let i = lo
+  while (i < hi && /[\s[]/.test(src[i])) i++
+  if (src[i] === "{") return { open: i, how: "literal" }
+
+  // 2 — an inline `… => ({ … })` or `… => { … return {…} }` row mapper.
+  const inline = findArrowObject(src, lo, hi)
+  if (inline !== null) return { open: inline, how: "inline row mapper" }
+
+  // 3 — an identifier bound earlier, to a mapper OR to a plain object literal.
+  const ident = /^\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*$/.exec(src.slice(lo, hi))
+  if (!ident) return null
+  const decl = new RegExp(`(?:const|let|var)\\s+${ident[1]}\\s*(?::[^=]*)?=`, "g")
+  let d: RegExpExecArray | null
+  let best: { open: number; how: string } | null = null
+  while ((d = decl.exec(src)) !== null) {
+    if (d.index >= openParen) break
+    const bodyStart = d.index + d[0].length
+    const bodyEnd = initializerEnd(src, bodyStart)
+    const arrow = findArrowObject(src, bodyStart, bodyEnd)
+    if (arrow !== null) { best = { open: arrow, how: "named row mapper" }; continue }
+    let j = bodyStart
+    while (j < bodyEnd && /[\s[]/.test(src[j])) j++
+    if (src[j] === "{" && topLevelProps(src, j).length > 0) best = { open: j, how: "named object" }
+  }
+  return best
+}
+
+/**
+ * Does the object literal opening at `open` carry a SPREAD at depth 1?
+ *
+ * `topLevelProps` cannot see one — a spread has no key — so a row spelled
+ * `{ owner_type: …, ...fields }` reports as unstamped when `fields` may well
+ * carry the tenant at runtime. `lib/platform/platform-social.ts:250` is exactly
+ * this. W22-3 counted these separately ("carrying a spread that may stamp") and
+ * so does this: still listed as unstamped, because nothing here PROVES a stamp,
+ * but flagged so the reader knows which ones a source scan cannot settle.
+ */
+function hasTopLevelSpread(src: string, open: number): boolean {
+  let depth = 0
+  let i = open
+  while (i < src.length) {
+    const c = src[i]
+    if (c === '"' || c === "'" || c === "`") { i = skipString(src, i); continue }
+    if (c === "{" || c === "(" || c === "[") {
+      depth++
+      if (depth > 1) { i = skipBalanced(src, i); depth--; continue }
+      i++
+      continue
+    }
+    if (c === "}" || c === ")" || c === "]") {
+      depth--
+      if (depth === 0) return false
+      i++
+      continue
+    }
+    if (depth === 1 && c === "." && src.slice(i, i + 3) === "...") return true
+    i++
+  }
+  return false
+}
+
+interface TableCensus {
+  table: string
+  files: number
+  sites: number
+  /** Unstamped sites whose row carries a top-level spread — see hasTopLevelSpread. */
+  spreads: number
+  unstamped: Array<{ ref: string; why: string }>
+  /** Sites neither scan could resolve. NOT counted as unstamped — see below. */
+  unresolved: string[]
+  readers: ReaderSite[]
+  mutations: ReaderSite[]
+}
+
+function censusTable(table: string): TableCensus {
+  const files = filesTouchingProd(table).filter((f) => existsSync(resolve(ROOT, f)))
+  const unstamped: Array<{ ref: string; why: string }> = []
+  const unresolved: string[] = []
+  const readers: ReaderSite[] = []
+  const mutations: ReaderSite[] = []
+  let sites = 0
+  let spreads = 0
+  for (const f of files) {
+    const src = blankComments(raw(f))
+    for (const s of insertSites(f, table)) {
+      sites++
+      let keys = s.keys
+      let rowOpen = s.rowOpen
+      let how = ""
+      if (!s.hasObjectArg) {
+        // Second chance — `.upsert(rows, opts)` and `const row = {…}`.
+        const deep = resolveRowObjectDeep(src, s.openParen)
+        if (deep === null) {
+          unresolved.push(`${f}:${s.line}`)
+          continue
+        }
+        keys = topLevelProps(src, deep.open).map((p) => p.key)
+        rowOpen = deep.open
+        how = ` via ${deep.how}`
+      }
+      if (!keys.includes("brokerage_id")) {
+        const spread = rowOpen !== null && hasTopLevelSpread(src, rowOpen)
+        unstamped.push({
+          ref: `${f}:${s.line}`,
+          why: `no brokerage_id at depth 1${how}${spread ? " — BUT carries a top-level spread that may stamp it at runtime" : ""}`,
+        })
+        if (spread) spreads++
+      }
+    }
+    const eq = brokerageEqualitySites(f, table)
+    readers.push(...eq.readers)
+    mutations.push(...eq.mutations)
+  }
+  return { table, files: files.length, sites, spreads, unstamped, unresolved, readers, mutations }
+}
+
+/** `--tables=a,b,c` and/or `--tables-file=<path>` (one table per line, `#` comments). */
+function enumerationTables(): string[] {
+  const wanted: string[] = []
+  for (const a of process.argv) {
+    if (a.startsWith("--tables=")) wanted.push(...a.slice("--tables=".length).split(","))
+    if (a.startsWith("--tables-file=")) {
+      const p = a.slice("--tables-file=".length)
+      wanted.push(...readFileSync(resolve(ROOT, p), "utf8").split("\n").map((l) => l.replace(/#.*$/, "")))
+    }
+  }
+  const cleaned = wanted.map((t) => t.trim()).filter((t) => /^[A-Za-z0-9_]+$/.test(t))
+  if (cleaned.length > 0) return [...new Set(cleaned)]
+  // No set supplied — the tables this guard already stands over.
+  return [...new Set([...TENANT_TABLES, ...W23_TABLES, ...W24_TABLES])]
+}
+
+function runEnumeration(): void {
+  const tables = enumerationTables()
+  console.log(`TENANT-STAMP ENUMERATOR — ${tables.length} table(s), app/ + lib/ only\n`)
+  console.log("NOT AN ASSERTION. This reports; it does not pass or fail. Exit code is 0 either way.\n")
+
+  const censuses = tables.map(censusTable)
+  const withUnstamped = censuses.filter((c) => c.unstamped.length > 0)
+  const alreadyBroken = withUnstamped.filter((c) => c.readers.length > 0)
+
+  console.log("UNSTAMPED INSERT/UPSERT SITES — no brokerage_id at depth 1")
+  if (withUnstamped.length === 0) console.log("  (none)")
+  for (const c of [...withUnstamped].sort((a, b) => b.unstamped.length - a.unstamped.length || a.table.localeCompare(b.table))) {
+    const reader =
+      c.readers.length > 0
+        ? `READER FILTERS brokerage_id — these rows are invisible to their own surface (${c.readers
+            .map((r) => `${r.file}:${r.line} .${r.op}`)
+            .join(", ")})`
+        : "no brokerage-equality reader found — class NOT established by this scan; read it"
+    console.log(`\n  ${c.table}  ${c.unstamped.length}/${c.sites} unstamped across ${c.files} file(s)`)
+    console.log(`    ${reader}`)
+    if (c.readers.length === 0 && c.mutations.length > 0) {
+      console.log(
+        `    (a brokerage-scoped UPDATE/DELETE does exist — ${c.mutations
+          .map((r) => `${r.file}:${r.line} .${r.op}`)
+          .join(", ")} — which cannot touch an untenanted row either, but is not a reader)`,
+      )
+    }
+    for (const u of c.unstamped) console.log(`      ${u.ref}  (${u.why})`)
+    if (c.unresolved.length > 0) console.log(`      + ${c.unresolved.length} UNRESOLVED site(s) on this table, listed below`)
+  }
+
+  const withUnresolved = censuses.filter((c) => c.unresolved.length > 0)
+  console.log("\n\nUNRESOLVED SITES — neither scan can see the row object; these are UNKNOWN, not unstamped")
+  if (withUnresolved.length === 0) console.log("  (none)")
+  for (const c of withUnresolved.sort((a, b) => b.unresolved.length - a.unresolved.length || a.table.localeCompare(b.table))) {
+    console.log(`\n  ${c.table}  (${c.unresolved.length})`)
+    for (const u of c.unresolved) console.log(`      ${u}`)
+  }
+  console.log(
+    "\n  These are `.insert(someCall(x))`, `.insert(obj.field as never)` and identifiers bound to an\n" +
+      "  accumulator or a call. They must be READ. They are excluded from the unstamped total on purpose:\n" +
+      "  counting an unknown as a defect is how the previous census produced numbers that did not survive\n" +
+      "  contact with the files.",
+  )
+
+  const clean = censuses.filter((c) => c.unstamped.length > 0 === false && c.sites > 0)
+  const noWriters = censuses.filter((c) => c.sites === 0)
+
+  // The roster. A table with ZERO unstamped sites is a RESULT, not an absence —
+  // `social_posts` (22 sites, all stamped) and `notifications` (15 fixed in wave
+  // 23) are the two the shell census got wrong, and they are invisible in the
+  // detail section above precisely because they are clean.
+  console.log("\n\nROSTER — every scanned table with a writer in app/ or lib/")
+  console.log("  unstamped/sites  unresolved  eq-reader  table")
+  for (const c of censuses.filter((c) => c.sites > 0).sort((a, b) => a.table.localeCompare(b.table))) {
+    const flag = c.readers.length > 0 ? `yes(${c.readers.length})` : "no"
+    console.log(
+      `  ${String(c.unstamped.length).padStart(6)}/${String(c.sites).padEnd(4)}  ${String(c.unresolved.length).padStart(10)}  ${flag.padEnd(9)}  ${c.table}`,
+    )
+  }
+  if (noWriters.length > 0) {
+    console.log(`\n  ${noWriters.length} scanned table(s) have no .insert()/.upsert() in app/ or lib/ at all.`)
+  }
+  const sites = withUnstamped.reduce((n, c) => n + c.unstamped.length, 0)
+  const brokenSites = alreadyBroken.reduce((n, c) => n + c.unstamped.length, 0)
+  const unresolvedSites = censuses.reduce((n, c) => n + c.unresolved.length, 0)
+  const spreadSites = censuses.reduce((n, c) => n + c.spreads, 0)
+  const allSites = censuses.reduce((n, c) => n + c.sites, 0)
+
+  console.log("\n\nSUMMARY")
+  console.log(`  tables scanned                                  ${censuses.length}`)
+  console.log(`  …with no .insert()/.upsert() in app/ or lib/     ${noWriters.length}`)
+  console.log(`  …fully stamped                                  ${clean.length}`)
+  console.log(`  …with at least one unstamped site               ${withUnstamped.length}`)
+  console.log(`  insert/upsert sites seen                        ${allSites}`)
+  console.log(`  unstamped sites                                 ${sites}`)
+  console.log(`  …of those, carrying a spread that MAY stamp     ${spreadSites}`)
+  console.log(`  UNRESOLVED sites (unknown, must be read)        ${unresolvedSites} across ${withUnresolved.length} table(s)`)
+  console.log(`  tables ALREADY BROKEN (unstamped + eq reader)   ${alreadyBroken.length}`)
+  console.log(`  unstamped sites on those tables                 ${brokenSites}`)
+  console.log(
+    "\n  'Already broken' means a reader ANDs an EQUALITY predicate on brokerage_id, so NULL = <uuid> is NULL\n" +
+      "  and the row is filtered out of the surface that owns it — a live bug, not a latent one.\n" +
+      "  The remainder is NOT thereby safe: it means this scan found no such reader, which is a\n" +
+      "  reason to READ the table, not a verdict on its class.",
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 function main(): void {
+  // Report-only, before anything asserts, and exits 0 unconditionally.
+  if (ENUMERATE) {
+    runEnumeration()
+    process.exit(0)
+  }
+
   console.log(
     "TENANT-STAMP GUARD — ai_insights · ai_predictions · ai_autopilot_plans · conversation_intelligence · notifications · " +
       "automation_errors · smart_assistant_suggestions · sequence_step_executions · open_house_attendees · cron_execution_logs · " +

@@ -202,3 +202,74 @@ last-open-assignment rule for `destructuresError`. Extending it to **enumerate**
 count that can be trusted, from the one instrument in this repo that has been
 adversarially tested. That is a small, well-scoped piece of work and it should
 precede any further stamping wave.
+
+## The enumerator, and the number I had wrong in both directions
+
+The guard's scanner now has an `--enumerate` mode. Default behaviour is
+**provably unchanged**: run against `git show HEAD:` of the same file, output is
+byte-identical (`sha256 d3702040…`), exit 0 both, with and without
+`--no-negative`. The diff touches three pre-existing lines to record two fields
+nothing above the enumerate section reads. It exits 0 unconditionally and has no
+pass/fail, so it cannot be mistaken for a guard run — and it gets **no `test:*`
+entry**, because a proof must have an owner and a reporter cannot be one.
+`orphan-export-guard --list` is the precedent.
+
+### The ground truth caught two enumerator bugs
+
+Both fixed rather than rationalised, which is what the ground truth was for:
+
+1. **`.update()` was counted as a reader.** `seller-open-house.ts:259` updates
+   `open_house_invitations` with `.eq("brokerage_id", …)` — real, but a
+   *mutation*, not a surface that can see rows. Counting it **flipped wave 24's
+   true-negative ruling on that table.** Mutations are now excluded and printed
+   separately. Mutation-scoped and read-scoped brokerage equality are different
+   signals, and conflating them silently reverses a table's class.
+2. **`.upsert(rows, { onConflict })` resolved to nothing**, because the resolver
+   required the whole argument to be one identifier. Every conflict-target upsert
+   in the tree was invisible.
+
+Those are the **fourth and fifth** false-positive families, after shorthand
+stamps, `.insert(rows)` and block-bodied mappers. Fixing them converted **69
+unresolvable → 45 resolved (42 stamped, 3 genuinely unstamped) + 24 still
+unknown**, verified by reading in both directions.
+
+### The real number
+
+323 escape tables, regenerated live. 1,240 insert/upsert sites seen.
+
+| | |
+|---|---|
+| unstamped sites | **109 across 55 tables** |
+| …of which carry a spread that may stamp | 10 |
+| **UNRESOLVED — unknowable from source** | **24 across 18 tables** |
+| already broken (unstamped **+** equality reader) | **25 tables / 75 sites** |
+| netting out the 6 trigger-covered tables | 61 hard sites / 49 tables |
+
+**Against my "40 tables / 62 sites":** tables **15 too high** — a 60%
+overstatement. Sites **13 too LOW**. **It was not an upper bound.** I published
+it as one, and it was wrong in both directions — reassuring in the direction
+that mattered.
+
+**The under-count is one table.** `activities`: **42 unstamped sites of 193,
+with 28 brokerage-equality readers.** It is now the heaviest remaining table by a
+factor of ten, and it was **absent from every previous heaviest-first list** —
+because it is trigger-covered, so every earlier census bucketed it as netted and
+stopped looking. It is the wave-21 "net with holes" class (`BEFORE INSERT`,
+`SECURITY INVOKER`), not the silent-invisible class. But it means the wave-24
+close — "a genuine long tail of singletons" — **was wrong.** After `activities`
+the tail is real: `ai_message_drafts` 4, `open_house_rsvp_tracking` 3, then 2s
+and 1s.
+
+### 24 sites are genuinely unknowable, and are not counted as defects
+
+`insert(buildComplianceEvent(d))`, `insert(plan.raw as never)`, accumulator
+arrays. They are printed as their own section rather than folded into the total.
+Counting an unknown as a defect is the habit this mode exists to end — and it is
+the habit that produced every wrong number in this sequence.
+
+### One thing the enumerator cannot do
+
+It knows nothing about triggers; the netting above came from the live database
+per table. Whether trigger coverage belongs *in* the number or beside it is a
+decision — a source guard that reaches into the database is a different kind of
+tool, and that is worth deciding deliberately rather than by drift.
