@@ -1,0 +1,146 @@
+# Wave 22 — the external-portal routes ask "does this partner have access", never "is the caller this partner"
+
+Found while closing the last two open questions in W21-5. One of them settled in
+a sentence; the other one opened this.
+
+## W22-1 — `partnerId` arrives in the query string and is never checked against a session
+
+`app/api/external-portal/documents/download/route.ts`:
+
+```ts
+const { searchParams } = new URL(request.url)
+const docId       = searchParams.get("docId")
+const partnerId   = searchParams.get("partnerId")     // ← caller-supplied
+const partnerType = searchParams.get("partnerType")
+…
+const supabase = await createClient()                  // session client
+```
+
+The route then does a genuine-looking access check — for `title` it reads
+`title_company_users` where `user_id = partnerId AND transaction_id =
+document.transaction_id`; for `lender` it resolves the lender vendor and checks
+`vendor_assignments`. If that comes back empty it 404s.
+
+**That check validates that the partner named in the URL has access. It never
+validates that the caller IS that partner.** Measured: the file contains **zero**
+calls to `auth.getUser()` or `getSession()` — and so does its sibling,
+`app/api/external-portal/actions/complete/route.ts`, which takes `partnerId`
+from input across five sites and *performs an action* rather than a read.
+
+| route | session checks | `partnerId` from caller input |
+|---|---|---|
+| `external-portal/documents/download` | **0** | 7 |
+| `external-portal/actions/complete` | **0** | 5 |
+
+Those are the only two routes under `app/api/external-portal/`.
+
+### What RLS does and does not cover
+
+The route runs on the **session** client, so RLS is the only backstop, and it is
+a partial one. Live policies:
+
+| table | policy | shape |
+|---|---|---|
+| `documents` | `documents_tenant_select` | `(brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id())` |
+| `title_company_users` | `…_self_or_brokerage_select` | `(user_id = auth.uid()) OR (brokerage_id = current_user_brokerage_id())` |
+| `vendor_assignments` | `…_tenant_select` | `(brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id())` |
+| `document_downloads` | `dd_insert` | **`true`, to PUBLIC** |
+
+So, precisely:
+
+- **Anonymous callers get nothing useful today** — and only because of m394.
+  Before wave 20 these policies were granted to `PUBLIC`, so an unauthenticated
+  request to this URL would have run the whole check as `anon`. It now runs as a
+  role that RLS filters to empty, and the route 404s.
+- **Any authenticated user is a different story.** The membership read is
+  admitted by `brokerage_id = current_user_brokerage_id()`, so an ordinary agent
+  can name *their own brokerage's* title user and pull any document on that
+  transaction — the route never asks whether they are that person, and their own
+  role is never consulted.
+- **Across brokerages, the escape is the hole**: `documents_tenant_select`
+  carries `brokerage_id IS NULL`, so **any untenanted document is readable by
+  every authenticated tenant** through this route. That is task #156's
+  cross-tenant half, reached through a surface that hands back `storage_url`.
+- **The audit trail is forgeable and probably unreadable.** `dd_insert` is
+  `WITH CHECK (true)` to PUBLIC, and `dd_select` gates on `user_id = auth.uid()`
+  while the route writes `partner_id` — so the row recording the download may be
+  invisible to everyone.
+
+### The shape of the fix — and what needs deciding first
+
+The mechanical part is clear: **derive the partner identity from the session,
+never from the request.** Call `getUser()`, resolve the caller's partner record,
+and use *that* id in the membership check — reducing `partnerId` to at most a
+cross-check that must agree, or removing it entirely.
+
+What is **not** mine to decide is how external partners authenticate. `/portal`
+proper is Supabase-authenticated (`app/portal/[contactId]/layout.tsx:58` calls
+`getUser()`, `:156` redirects to `/portal/login`), and `title_company_users` keys
+on `user_id`, which strongly suggests partners are real auth users. If that is
+true this is a straightforward repair. If external partners are instead meant to
+arrive by signed link with no Supabase session, the fix is a token, not a
+`getUser()` — a different build. **Owner call.**
+
+Until it is answered, do not "fix" this by adding a `getUser()` that locks out a
+partner cohort that was never meant to have accounts.
+
+## W22-2 — W21-5 is now fully scoped: 37 narrow, 1 carve-out
+
+Both questions wave 21 left open are answered, and both by reading rather than
+inferring:
+
+- **`calculator_history` — settled, no anonymous writer.** Its callers are
+  `app/portal/[contactId]/resources/page.tsx` and `portal-financial-tools.tsx`,
+  and `/portal` requires a Supabase session. `saveCalculatorResult` runs as
+  `authenticated`. My earlier suspicion — that it sat in the public-tools lane
+  alongside `tool_usage_sessions` — was a positional guess and it was wrong.
+- **`document_downloads` — settled for this question.** The route's caller is
+  meant to be an authenticated partner, and an anonymous caller cannot reach the
+  insert anyway (the membership read returns empty first, so it 404s). The
+  `WITH CHECK (true)` grant serves nobody and is W22-1's problem, not a
+  legitimate anonymous writer.
+
+So the count is **38 tables: 37 to narrow, 1 named carve-out
+(`listing_inquiries`)** — the same shape as m394's `tool_usage_sessions`, and
+now dispatchable.
+
+## Recorded, NOT to be built — still owner rulings
+
+- **#156 — the `brokerage_id IS NULL` escape's cross-tenant half.** W22-1 gives
+  it a concrete consequence to weigh: an untenanted document is readable by every
+  authenticated tenant through a route that returns `storage_url`. Still three
+  correct resolutions depending on the table.
+- **`offer_strategy_templates`** — `FOR SELECT USING (is_active = true)` to
+  PUBLIC. Zero rows; the first active template publishes a negotiation playbook.
+- **How external partners authenticate** — W22-1 above.
+- **Leads / raw-leads**, owner-sequenced.
+- **`transcribeAudio`'s unvalidated `audioUrl`** (`ai-voice-transcription.ts:359`).
+- **`calculateHomeValue` / `submitHomeValueRequest` rate limiting**
+  (`calculators.ts:659`).
+
+## Carried from wave 21
+
+- **`connector-health/route.ts`** — a refused credential read produces a skipped
+  probe with no signal, on the surface whose job is reporting broken connectors.
+  Consuming the discriminated form changes what lands in `connector_health_log`.
+- **`ai_predictions.entity_id` is `uuid NOT NULL` and `predictWinningOffer`
+  writes an MLS string** — that write has never landed. The refusal is surfaced
+  now; choosing a uuid identity for an MLS listing is a schema decision.
+- **`ai_autopilot_plans.agent_id` / `conversation_intelligence.agent_id` FK
+  `agents(id)` while both writers pass a `users.id`** — FK violations, consistent
+  with both tables holding zero rows.
+
+## Rules (unchanged)
+
+- DUPLICATE → read BOTH, MERGE onto the survivor, THEN delete naming it
+  `file.ts:functionName`. NOT a duplicate → wire it or finish it. **"No caller"
+  is never a deletion reason.**
+- supabase-js RESOLVES a refused query — destructure `error`. Gates fail CLOSED.
+- `agents.id` / `users.id` / `contacts.id` / `leads.id` are DISJOINT. RESOLVE.
+- Assert CONSTRUCTS in proofs; negative-control every assertion and confirm the
+  control applied before believing green.
+- A comment that asserts a gate is not evidence the gate exists.
+- Census the callers before trusting that a signal reaches them.
+- **New this wave:** an authorization check that reads its subject from the
+  request is not an authorization check. `partnerId` looked like a parameter and
+  was actually the answer to the question being asked.
