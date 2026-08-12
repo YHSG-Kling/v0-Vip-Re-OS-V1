@@ -16,7 +16,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveConnection, type ResolvedConnection } from "@/lib/integrations/connection-manager"
+import { resolveConnectionResult, type ResolvedConnection } from "@/lib/integrations/connection-manager"
 
 export const VIBE_PROVIDER = "vibe"
 export const VIBE_HOME_URL = "https://vibe.co"
@@ -28,10 +28,33 @@ const VIBE_REVISION = "2026-06"
  * Is a Vibe credential connected for this brokerage?
  * The unified resolver reads integration_credentials/platform_credentials/
  * agent_api_credentials under the canonical provider name 'vibe'.
+ *
+ * ─── WHY THIS ONE STAYS A BOOLEAN, AND THE DISPATCHER BELOW DOES NOT ─────────
+ * It used to be `resolveConnection(…).catch(() => null)`, a null that meant both
+ * "no connection" and "we could not tell" — the collapse wave 19 spent its whole
+ * budget removing one layer up. The `.catch` is gone (the resolver reports its
+ * failures as VALUES now and cannot throw), and the two outcomes are separated
+ * at the resolver. What this function then does with them is a deliberate
+ * PROJECTION, not a leftover collapse:
+ *
+ * The sole consumer is `app/dashboard/campaigns/ads/page.tsx:196`, which threads
+ * the answer through `AdsDashboardClient` into `CtvLane` as `vibeConnected` —
+ * eight render sites that all ask ONE question: "may we offer the in-app Launch
+ * button, or the external vibe.co + Mark-as-launched fallback?" For that
+ * question `not_connected` and `unreadable` have the SAME correct answer, and it
+ * is the fail-closed one: do not promise a launch we cannot prove we can make.
+ * The fallback path the badge falls back to is the honest one either way.
+ *
+ * Widening the return type here would push a three-state value through two
+ * client component prop chains and eight branches to produce a third badge
+ * nobody asked for, and would say nothing the user can act on differently. The
+ * distinction earns its keep where an ACTION is taken and a claim is made about
+ * why it was not — which is `dispatchCtvCampaign`, and that is exactly where it
+ * is carried.
  */
 export async function isVibeConfigured(brokerageId: string): Promise<boolean> {
-  const conn = await resolveConnection({ brokerageId, provider: VIBE_PROVIDER }).catch(() => null)
-  return !!conn && !!conn.apiKey && !!conn.apiSecret
+  const resolved = await resolveConnectionResult({ brokerageId, provider: VIBE_PROVIDER })
+  return resolved.status === "connected" && !!resolved.connection.apiKey && !!resolved.connection.apiSecret
 }
 
 export interface CtvDispatchResult {
@@ -171,7 +194,22 @@ export async function dispatchCtvCampaign(campaignId: string): Promise<CtvDispat
     return { dispatched: false, reason: `campaign platform is '${campaign.platform}', not 'vibe_ctv'` }
   }
 
-  const conn = await resolveConnection({ brokerageId: campaign.brokerage_id as string, provider: VIBE_PROVIDER }).catch(() => null)
+  // THE REFUSAL IS NOT AN ABSENCE, AND HERE THE DIFFERENCE IS A CLAIM WE MAKE TO
+  // THE USER. This used to be `.catch(() => null)` → "vibe_not_connected —
+  // campaign staged as launch package", which told an operator their brokerage
+  // has no Vibe account when what actually happened is that we could not read the
+  // credential store. They then go and connect an account they already have, or
+  // hand-launch on vibe.co, on the strength of a fact nobody established.
+  // `dispatched` stays false on both paths — that is the fail-closed answer and
+  // it does not change — but the REASON is now the true one.
+  const resolved = await resolveConnectionResult({ brokerageId: campaign.brokerage_id as string, provider: VIBE_PROVIDER })
+  if (resolved.status === "unreadable") {
+    return {
+      dispatched: false,
+      reason: `vibe_connection_unreadable — the Vibe credential could not be READ (${resolved.detail}); this is not "not connected", and the campaign was left staged`,
+    }
+  }
+  const conn = resolved.status === "connected" ? resolved.connection : null
   if (!conn || !conn.apiKey || !conn.apiSecret) {
     return { dispatched: false, reason: "vibe_not_connected — campaign staged as launch package" }
   }

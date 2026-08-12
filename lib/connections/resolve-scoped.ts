@@ -30,10 +30,21 @@
 // Migration-safe: the owner_type/owner_id read is still allowed to fall through when
 // those columns don't exist yet, but ONLY on the Postgres/PostgREST codes that mean
 // exactly "this column or table is not there" — never on an unclassified failure.
+//
+// The LEGACY half is now honest too (wave 21): `resolveConnectionResult` in
+// connection-manager.ts applies this same three-state contract across its own
+// four reads, so a refused legacy read arrives here as `unreadable` on the
+// resolved path rather than as an honest-looking null.
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { canonicalProvider, aliasesFor, resolveConnection, type ResolvedConnection } from "@/lib/integrations/connection-manager"
+import {
+  canonicalProvider,
+  aliasesFor,
+  resolveConnectionResult,
+  type ResolvedConnection,
+  type ConnectionResolutionResult,
+} from "@/lib/integrations/connection-manager"
 import { scopeCascade, type ScopeContext, type ConnectionScope } from "./scope"
 
 export interface ScopedConnection extends ResolvedConnection {
@@ -199,21 +210,19 @@ export async function resolveScopedConnectionResult(
   // 2. Legacy fallback — connection-manager (agent + brokerage credential stores). This
   //    keeps every existing connection working until m102 backfill + writes are in place.
   if (ctx.brokerageId) {
-    let legacy: ResolvedConnection | null
+    let legacy: ConnectionResolutionResult
     try {
-      legacy = await resolveConnection({
+      legacy = await resolveConnectionResult({
         brokerageId: ctx.brokerageId,
         provider,
         agentUserId: ctx.agentUserId ?? undefined,
         agentId: ctx.agentId ?? undefined,
       })
     } catch (err) {
-      // Used to be `.catch(() => null)`, which turned a dead legacy store into
-      // "this tenant has no connection". LIMITATION, stated rather than papered
-      // over: `resolveConnection` itself destructures only `data`, so a REFUSED
-      // legacy read still reaches us as an honest-looking null and cannot be
-      // distinguished here. Fixing that means changing connection-manager.ts,
-      // which is outside this module. A throw is the part this file CAN report.
+      // Defence in depth. `resolveConnectionResult` reports its own failures as
+      // `unreadable` rather than throwing, so this should be unreachable — but a
+      // resolver that "cannot throw" is a claim, and the fail-closed answer for a
+      // claim that turns out to be wrong is still `unreadable`, never null.
       return {
         status: "unreadable",
         ownerType: null,
@@ -221,10 +230,29 @@ export async function resolveScopedConnectionResult(
         detail: `legacy credential resolution threw for ${provider} — ${(err as Error)?.message ?? "unknown error"}`,
       }
     }
-    if (legacy) {
-      const ownerType: ConnectionScope = legacy.scope === "agent" ? "agent" : "brokerage"
+    // THE LIMITATION THIS COMMENT USED TO RECORD IS CLOSED (wave 21). It read:
+    // "`resolveConnection` itself destructures only `data`, so a REFUSED legacy
+    // read still reaches us as an honest-looking null and cannot be distinguished
+    // here… a throw is the part this file CAN report." All four of that
+    // function's reads now destructure `error`, its precedence walk stops on a
+    // refusal instead of descending, and it reports the state as a VALUE. So a
+    // refused legacy read is reported as `unreadable` on the RESOLVED path —
+    // which is the ordinary way a supabase read fails, and the only way it ever
+    // failed. `unreadable` that only fires from a `catch` is the dead-branch
+    // defect this codebase already paid for once.
+    if (legacy.status === "unreadable") {
+      return {
+        status: "unreadable",
+        ownerType: null,
+        ownerId: null,
+        detail: `legacy credential store unreadable for ${provider} — ${legacy.detail}`,
+      }
+    }
+    if (legacy.status === "connected") {
+      const conn = legacy.connection
+      const ownerType: ConnectionScope = conn.scope === "agent" ? "agent" : "brokerage"
       const ownerId = ownerType === "agent" ? (ctx.agentUserId ?? "") : ctx.brokerageId
-      return { status: "connected", connection: { ...legacy, ownerType, ownerId } }
+      return { status: "connected", connection: { ...conn, ownerType, ownerId } }
     }
   }
 

@@ -91,8 +91,21 @@ The caller census, which is the part that changes the plan:
 | `lib/agentic-os/resolve-app-capability.ts:191` | no catch | **newly throws** into capability resolution |
 | `lib/agentic-os/resolve-connected-capability.ts:44` | no catch | **newly throws** into capability resolution |
 
-Shipping the throw alone would fix one caller, be silently undone at two, and
-turn three into uncaught exceptions. `resolve-scoped.ts:213` already says this
+**CORRECTION (mine, caught by the agent against the tree).** The right-hand
+column above is wrong for the bottom three rows: **all three of those callers
+already sit inside a `try/catch` of their own** — `connector-health/route.ts:60`,
+`resolve-app-capability.ts:190`, `resolve-connected-capability.ts:43`. So a
+throw would have been **silently swallowed at five of the six call sites**, not
+two, and would have turned none of them into an uncaught exception. The recorded
+fix was even weaker than the audit said. The conclusion is unchanged and the
+reasoning for it is stronger.
+
+Also miscounted: `resolveConnection` performs **four runtime reads across three
+source sites**, not three. `integration_credentials` was `{ data }`-only as well
+and was missing from my census entirely; `platform_credentials` is one source
+site the scope loop executes twice.
+
+Shipping the throw alone would fix one caller and be silently undone at five. `resolve-scoped.ts:213` already says this
 out loud in a comment — *"`resolveConnection` itself destructures only `data`, so
 a REFUSED legacy read still reaches us as an honest-looking null"* — and the two
 `.catch(() => null)` sites in `vibe.ts` are exactly the collapse wave 19 spent
@@ -263,3 +276,124 @@ writing.
   because the earlier note described the defect without checking who consumes it
   — and W21-3's recorded fix would have been undone at two call sites by a
   `.catch(() => null)` nobody had looked at.
+
+## Outcome
+
+Both agents survived. Both reports were checked against the tree, and **both
+corrected this audit** — which is the part worth keeping.
+
+### W21-1 / W21-2 — a database-side net nobody had looked at, and a hole shaped like the bug
+
+Five inserts stamped, resolved through the record each row is filed against,
+once per action. Verified by counting the tree, not by reading the report.
+
+**The agent found a `BEFORE INSERT` trigger on all three tables** —
+`<table>_set_brokerage` — that back-fills `brokerage_id` from the anchor record.
+Neither the audit nor I knew it existed. Confirmed live, and it is a real net
+with two real holes: every one is **SECURITY INVOKER**, so the lookup runs under
+the *inserting* caller's RLS and silently yields NULL when that caller cannot
+read the anchor; and `ai_predictions_set_brokerage` branches on
+lead/contact/transaction/agent and has **no `property` branch** — precisely the
+row `predictWinningOffer` writes. All three fire only `IF NEW.brokerage_id IS
+NULL`, so an explicit stamp always wins and the change is strictly compatible.
+
+**One site was in scope that neither of us had listed.**
+`lib/analytics/ai-prediction-outcomes.ts:76` runs on the **session** client — its
+sole caller passes `await createClient()`, unlike the other two functions in the
+module, which only ever get a service client. That read decides whether a claim
+is "unchanged", so a foreign untenanted snapshot could suppress this tenant's
+frozen snapshot and cost the accuracy rail an observation. Tenant-scoped now.
+
+Also established rather than assumed: `ai_predictions_insert` is
+`WITH CHECK (true)`, so unlike `ai_insights` the policy does **not** hold the
+stamp honest — omitting it is still the defect, the column simply is not
+integrity-protected.
+
+**Guard extended, not duplicated** — "no writer in this file files a row without
+its tenant" is one invariant, and one scanner cannot drift from itself. **13
+assertions, 22 controls (20 red, 2 specificity green).** It caught one of the
+agent's own control-targeting errors mid-build, and its `functionBody()` had to
+learn to skip `<…>` in a return type — `Promise<{ captured: boolean }>` was
+returning the *type object* as the body. That is the brace trap, again.
+
+### W21-3 — the recorded fix was weaker than the audit said
+
+**Four runtime reads across three source sites**, not three:
+`integration_credentials` was `{ data }`-only too and was missing from my census
+entirely. And **all three callers I listed as "no catch" already sit inside
+`try/catch`** — so "make it throw" would have been swallowed at **five of six**
+call sites and fixed exactly one.
+
+The shape shipped is the discriminated sibling, with the descent **stopping at
+the first store whose error is outside the closed set**, and that set asserted
+**identical** to `resolve-scoped.ts`'s so the two layers cannot drift.
+`resolveConnection` is a one-line projection, so all six callers keep their
+contract. Three projection callers left unchanged, deliberately.
+
+**Reachability proven live, not asserted structurally** — the lesson wave 19
+paid for. Each of the four reads, run as a role without SELECT, **resolves**
+with `42501`; the identical query as a privileged role resolves with zero rows.
+`data: null` on both — the exact pair the old code answered with one value.
+
+`isVibeConfigured` **stays `boolean`**, and the defence is in the source: its one
+consumer threads it through two prop chains into eight render sites that all ask
+"may we offer the Launch button?", where `not_connected` and `unreadable` share
+the same fail-closed answer. The distinction is carried where a **claim** is
+made instead — `dispatchCtvCampaign` now returns `vibe_connection_unreadable`
+rather than telling an operator their brokerage has no Vibe account when the
+store merely could not be read.
+
+### W21-4 — the flags reach the surface, and the privacy contract is proven by execution
+
+Both views carry `confidence` (`measured` / `assumed_ceiling` / `unmeasured`);
+platform staff additionally get which half degraded. **The three production call
+sites needed no change** — `VendorBudgetResult` satisfies the widened parameter
+structurally, which was the whole defect.
+
+`showConfidenceNote` is separate from `showWarning` for a reason worth keeping:
+`showWarning` is `toggle && level !== "ok"`, and an unmeasured verdict is
+fail-open so its level **is** `"ok"` — deriving the note from `confidence` alone
+would have pushed a budget surface at brokerages whose superadmin had switched
+it off.
+
+**The privacy contract is asserted by running the real redaction**, not by
+reading it: over all three verdict shapes × both toggle states, the brokerage
+view must contain **no digit at all**. Every field is a discriminant string or a
+boolean, so a leaked amount, ceiling, percentage or count cannot satisfy it.
+
+Both surfaces render it — including the brokerage banner, which previously
+rendered **silence** for a degraded verdict. `budgetLevel` is deliberately
+unchanged: an unmeasured verdict does not fabricate an "approaching limit"
+warning, because the alarming direction is a fabrication too.
+
+**Two proofs extended rather than a fourth added** —
+`credential-cascade-refusal-simulator.ts` (14 assertions, 25 controls) and
+`vendor-budget-tier-honesty-simulator.ts` (11 assertions, 23 controls). The
+agent had to fix two defects in its own proof: a prose check that matched the
+*new* comment because it quotes the old limitation while declaring it closed,
+and executed budget assertions grading a module captured by a top-level
+`import` — a snapshot taken before any control patched the file, which would
+have stayed green over the defect.
+
+### Registry
+
+Two `MAINTENANCE_DOMAINS` entries asserted limitations that this wave closed —
+`credential_cascade_refusal` and `vendor_budget_tier_honesty`. Both rewritten to
+state the closure and how it was proven. **A registry entry that still describes
+a gap after the gap is shut is the same defect this wave keeps finding**: a
+comment asserting a state nobody re-checked.
+
+### Carried
+
+- **`connector-health/route.ts`** is the surface whose job is reporting broken
+  connectors, and a refused credential read there still produces a skipped probe
+  with no signal. Consuming the discriminated form would change what lands in
+  `connector_health_log` and could inflate the attention feed — a behaviour
+  change that deserves its own decision, not a silent one.
+- **`ai_predictions.entity_id` is `uuid NOT NULL` and `predictWinningOffer`
+  writes an MLS number string**, so that write has never landed; the refusal was
+  dropped because the call destructured nothing. The error is surfaced now.
+  Choosing a uuid identity for an MLS listing is a schema decision.
+- **`ai_autopilot_plans.agent_id` and `conversation_intelligence.agent_id` FK
+  `agents(id)` while both writers pass a `users.id`** — FK violations, consistent
+  with both tables holding zero rows. Refusals surfaced, id-space fix recorded.

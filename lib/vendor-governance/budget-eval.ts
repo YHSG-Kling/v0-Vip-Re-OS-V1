@@ -24,6 +24,49 @@ export interface VendorBudgetEval {
 }
 
 /**
+ * HOW WELL THE VERDICT IS KNOWN — the honesty half of a budget answer, separate
+ * from the answer itself.
+ *
+ * Declared HERE, in the pure module, rather than on `VendorBudgetResult` in
+ * budget-gate.ts where it was born (wave 19). Not a relocation for tidiness:
+ * `redactBudgetForActor` is pure and I/O-free by contract and cannot import a
+ * `server-only` module even for a type, so the alternative was a second
+ * hand-copied declaration of the same three fields — two definitions that agree
+ * today and drift the first time a fourth flag is added. `VendorBudgetResult`
+ * extends this, so there is exactly one definition and the views cannot fall
+ * behind the gate.
+ *
+ * Every field is OPTIONAL and absent means "not degraded", so a pure
+ * `evaluateVendorBudget` result satisfies this structurally with no change.
+ */
+export interface VendorBudgetDegradation {
+  /**
+   * True when the budget could NOT actually be read (ledger/table read failure) and
+   * `allowed: true` is a FAIL-OPEN verdict, not a real one. Callers that pre-flight
+   * sends may ledger the breakage (recordSelfHeal) but MUST still proceed — a broken
+   * budget system never silences a consented client communication.
+   */
+  degraded?: boolean
+  /**
+   * True when `budget` / `planTier` were ASSUMED rather than read from the
+   * tenant's own record — either the tier read was REFUSED, or the record is
+   * absent. The ceiling in this result is therefore a platform default, not
+   * this tenant's ceiling. A caller that renders or explains a budget verdict
+   * ("you are approaching / over your limit") MUST NOT state the ceiling as
+   * fact while this is set; it is the difference between a measured claim and
+   * an assumed one, and only the tier half of the result can say so.
+   */
+  degradedTier?: boolean
+  /**
+   * True when `spent` / `percent` are NOT a measured figure — the month-to-date
+   * ledger read was refused (or was never reached because the tier read failed
+   * first). Distinct from `degradedTier`: an unknown spend and an unknown
+   * ceiling degrade different halves of the same verdict and can occur alone.
+   */
+  degradedSpend?: boolean
+}
+
+/**
  * Pure: decide allow/warn/block given current month-to-date spend, the ceiling,
  * and the cost this call would add. Blocks only when the projected total crosses
  * the ceiling; soft-warns from 80%.

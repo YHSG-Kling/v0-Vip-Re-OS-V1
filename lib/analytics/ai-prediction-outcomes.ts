@@ -72,15 +72,35 @@ export async function captureWinProbabilitySnapshot(
   const p = normalizeProbability(input.winProbability)
   if (p == null) return { captured: false, reason: "no usable probability value — nothing frozen" }
 
-  const { data: latest } = await svc
+  // TENANT-SCOPED, and NOT because RLS handles it. The other two functions in
+  // this module are only ever reached from lib/transactions/stage-progression,
+  // which builds a SERVICE client (BYPASSRLS). This one is not: its sole caller
+  // is app/actions/ai-transaction-coordinator.ts, which passes the SESSION server
+  // client — so this read runs under `ai_predictions_select`, which is the
+  // migration-029 escape (`… OR (brokerage_id IS NULL) OR has_brokerage_access(…)`)
+  // and therefore admits any untenanted row from any brokerage.
+  //
+  // That matters here beyond visibility: this read decides whether the claim is
+  // "unchanged", so a foreign untenanted snapshot carrying the same probability
+  // would SUPPRESS this tenant's frozen snapshot and silently cost the accuracy
+  // rail an observation. `input.brokerageId` is already required and is what the
+  // insert below stamps — the dedupe now asks about the same rows it writes.
+  //
+  // The error is destructured because supabase-js RESOLVES a refusal, and a
+  // refused dedupe read must not be mistaken for "no prior snapshot".
+  const { data: latest, error: latestError } = await svc
     .from("ai_predictions")
     .select("prediction_value")
+    .eq("brokerage_id", input.brokerageId)
     .eq("prediction_type", WIN_PROBABILITY_PREDICTION_TYPE)
     .eq("entity_type", "transaction")
     .eq("entity_id", input.transactionId)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()
+  if (latestError) {
+    return { captured: false, reason: `prior-snapshot lookup refused: ${latestError.message}` }
+  }
   const last = (latest?.prediction_value as Record<string, unknown> | null)?.win_probability
   if (typeof last === "number" && Math.abs(last - p) < 1e-9) {
     return { captured: false, reason: "unchanged claim — latest frozen snapshot already carries this probability" }

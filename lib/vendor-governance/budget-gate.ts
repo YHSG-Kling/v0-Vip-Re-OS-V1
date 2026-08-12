@@ -42,36 +42,21 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { evaluateVendorBudget, vendorBudgetForTier, MONTHLY_VENDOR_BUDGET_USD, DEFAULT_VENDOR_BUDGET, type VendorBudgetEval } from "./budget-eval"
+import { evaluateVendorBudget, vendorBudgetForTier, MONTHLY_VENDOR_BUDGET_USD, DEFAULT_VENDOR_BUDGET, type VendorBudgetEval, type VendorBudgetDegradation } from "./budget-eval"
 
 export { evaluateVendorBudget, vendorBudgetForTier, MONTHLY_VENDOR_BUDGET_USD }
 
-export interface VendorBudgetResult extends VendorBudgetEval {
+/**
+ * The three degradation flags live on `VendorBudgetDegradation` in the PURE
+ * module (budget-eval.ts), documented field by field there. They were declared
+ * here in wave 19 and moved in wave 21 for one reason: `redactBudgetForActor` —
+ * the only surface that renders these verdicts to a human — is pure and I/O-free
+ * by contract and cannot import a `server-only` module, so it would have needed
+ * a second hand-copied declaration of the same three fields. One definition,
+ * extended here, is how the views cannot fall behind the gate.
+ */
+export interface VendorBudgetResult extends VendorBudgetEval, VendorBudgetDegradation {
   planTier: string
-  /**
-   * True when the budget could NOT actually be read (ledger/table read failure) and
-   * `allowed: true` is a FAIL-OPEN verdict, not a real one. Callers that pre-flight
-   * sends may ledger the breakage (recordSelfHeal) but MUST still proceed — a broken
-   * budget system never silences a consented client communication.
-   */
-  degraded?: boolean
-  /**
-   * True when `budget` / `planTier` were ASSUMED rather than read from the
-   * tenant's own record — either the tier read was REFUSED, or the record is
-   * absent. The ceiling in this result is therefore a platform default, not
-   * this tenant's ceiling. A caller that renders or explains a budget verdict
-   * ("you are approaching / over your limit") MUST NOT state the ceiling as
-   * fact while this is set; it is the difference between a measured claim and
-   * an assumed one, and only the tier half of the result can say so.
-   */
-  degradedTier?: boolean
-  /**
-   * True when `spent` / `percent` are NOT a measured figure — the month-to-date
-   * ledger read was refused (or was never reached because the tier read failed
-   * first). Distinct from `degradedTier`: an unknown spend and an unknown
-   * ceiling degrade different halves of the same verdict and can occur alone.
-   */
-  degradedSpend?: boolean
 }
 
 /**

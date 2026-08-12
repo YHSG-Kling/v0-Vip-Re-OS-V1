@@ -74,12 +74,21 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { createHash } from "node:crypto"
-import { MONTHLY_VENDOR_BUDGET_USD, vendorBudgetForTier } from "../lib/vendor-governance/budget-eval"
+import { createRequire } from "node:module"
+import { MONTHLY_VENDOR_BUDGET_USD, vendorBudgetForTier, DEFAULT_VENDOR_BUDGET } from "../lib/vendor-governance/budget-eval"
+import type * as Visibility from "../lib/vendor-governance/budget-visibility"
 
 const ROOT = process.cwd()
 const RUN_NEGATIVE = !process.argv.includes("--no-negative")
 
-const F = { gate: "lib/vendor-governance/budget-gate.ts" }
+const F = {
+  gate: "lib/vendor-governance/budget-gate.ts",
+  // WAVE 21 — the surface these flags were built for and never reached.
+  visibility: "lib/vendor-governance/budget-visibility.ts",
+  evalPure: "lib/vendor-governance/budget-eval.ts",
+  supportRow: "app/dashboard/support/vendor-breakdown-row.tsx",
+  brokerBanner: "app/components/shell/budget-warning-banner.tsx",
+}
 const FN = "checkVendorBudget"
 
 /** The spelling of the defect. Present in PROSE, and nowhere else. */
@@ -329,6 +338,232 @@ function assertAssumedTierIsMostRestrictive(): boolean {
   )
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// WAVE 21 — THE FLAGS REACH THE SURFACE THAT WAS BUILT TO SHOW THEM
+//
+// Wave 19 created `degradedTier` / `degradedSpend` with an explicit purpose: "a
+// surface that has to tell a brokerage 'you are over budget' can say whether the
+// limit was read or assumed". The only such surface — `redactBudgetForActor` —
+// took `VendorBudgetEval`, the narrower SUPERTYPE. `VendorBudgetResult extends
+// VendorBudgetEval`, and both production callers hand one straight in, so the
+// flags were AT the call site and discarded by the signature. Nothing needed
+// plumbing; the parameter type was the whole defect.
+//
+// Two consequences, sharpest first:
+//   1. PlatformBudgetView rendered `spent` / `budget` / `percent` as measured
+//      fact. Under `degradedTier` the ceiling is the assumed solo_agent default
+//      and the percentage is computed against it — platform staff saw numbers
+//      that were never read, formatted identically to ones that were.
+//   2. A degraded verdict is fail-OPEN, so `allowed: true`, so `budgetLevel`
+//      returns "ok". A brokerage was shown a clean bill of health for a verdict
+//      that measured nothing. That is the reassuring direction, and the harder
+//      one to notice.
+//
+// THE PRIVACY CONTRACT IS NOT TOUCHED AND IS ASSERTED HARDER THAN BEFORE. A
+// degradation flag is not a dollar amount, a ceiling, a percentage or a vendor
+// name — it says HOW WELL the answer is known, not WHAT it is. E8 EXECUTES the
+// redaction on a fully degraded verdict and requires the brokerage view to
+// contain no digit at all, so any "explain the degradation by showing the
+// numbers" edit fails here rather than in production.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Load `budget-visibility.ts` FRESH from disk on every call.
+ *
+ * Load-bearing, and the reason is the same one that makes a negative control
+ * worth anything: E7–E9 EXECUTE the real redaction, and a module captured by a
+ * top-level `import` is a snapshot taken before any control patched the file.
+ * The control would apply, the source would carry the defect, and the executed
+ * check would keep grading the pristine copy in memory — green, and proving
+ * nothing. Busting the require cache is what makes "the check went red" mean
+ * "the defect was actually executed".
+ */
+const nodeRequire = createRequire(import.meta.url)
+function visibility(): typeof Visibility {
+  const p = nodeRequire.resolve(resolve(ROOT, F.visibility))
+  delete nodeRequire.cache[p]
+  return nodeRequire(p) as typeof Visibility
+}
+
+/** A fully degraded verdict, exactly as `checkVendorBudget`'s tier-refusal branch returns one. */
+const DEGRADED_VERDICT = {
+  allowed: true, spent: 0, budget: DEFAULT_VENDOR_BUDGET, percent: 0, softWarning: false,
+  degraded: true, degradedTier: true, degradedSpend: true,
+}
+/** Measured spend, ASSUMED ceiling — the absent-record case wave 19 proved one boolean cannot describe. */
+const ASSUMED_CEILING_VERDICT = {
+  allowed: true, spent: 45, budget: DEFAULT_VENDOR_BUDGET, percent: 90, softWarning: true,
+  degradedTier: true,
+}
+/** Both halves read. */
+const MEASURED_VERDICT = {
+  allowed: true, spent: 45, budget: DEFAULT_VENDOR_BUDGET, percent: 90, softWarning: true,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E6 — the redaction can SEE the degradation, and there is only ONE declaration
+// ─────────────────────────────────────────────────────────────────────────────
+function assertRedactionSeesDegradation(): boolean {
+  const vis = code(F.visibility)
+  // The signature is the defect, so the signature is the assertion. Sliced by
+  // paren-walking, because the parameter list contains an inline object type.
+  const sig = /export\s+function\s+redactBudgetForActor\s*\(([\s\S]*?)\n\)\s*:\s*BudgetView/.exec(vis)
+  const paramSeesDegradation = sig !== null && /VendorBudgetDegradation/.test(sig[1])
+
+  // ONE declaration in the tree. The alternative to moving these fields into the
+  // pure module was a second hand-copied set on the view side — two definitions
+  // that agree today and drift the first time a fourth flag is added.
+  const declaringFiles = ["lib/vendor-governance/budget-eval.ts", "lib/vendor-governance/budget-gate.ts", "lib/vendor-governance/budget-visibility.ts"]
+    .filter((p) => /\bdegradedSpend\?\s*:/.test(code(p)))
+  const singleDeclaration = declaringFiles.length === 1
+
+  // …and the gate's result still extends it, which is what makes the production
+  // call sites compile unchanged with the flags flowing.
+  const resultExtends = /interface\s+VendorBudgetResult\s+extends\s+[^{]*VendorBudgetDegradation/.test(code(F.gate))
+
+  return check(
+    "E6  redactBudgetForActor's parameter type carries the degradation, declared EXACTLY ONCE, and VendorBudgetResult extends it",
+    paramSeesDegradation && singleDeclaration && resultExtends,
+    `paramSeesDegradation=${paramSeesDegradation} declaredIn=[${declaringFiles.join(", ")}] resultExtends=${resultExtends}`,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E7 — BOTH view shapes carry it (executed, not read off the interface)
+// ─────────────────────────────────────────────────────────────────────────────
+function assertBothViewsCarryConfidence(): boolean {
+  const { redactBudgetForActor } = visibility()
+  const staff = redactBudgetForActor(DEGRADED_VERDICT, { isPlatformStaff: true, showBrokerageWarning: true, vendors: [{ vendor: "did", spent: 30 }] })
+  const brok = redactBudgetForActor(DEGRADED_VERDICT, { isPlatformStaff: false, showBrokerageWarning: true })
+  const bothCarry = "confidence" in staff && "confidence" in brok
+  // The verdict that measured nothing must NOT read as a measured one on either side.
+  const staffHonest = (staff as any).confidence === "unmeasured"
+  const brokHonest = (brok as any).confidence === "unmeasured"
+  // …and the fail-open "ok" is still there underneath, unchanged — this wave did
+  // not invert the gate, it annotated it.
+  const stillFailOpen = staff.level === "ok" && brok.level === "ok"
+  // The third case: spend measured, ceiling assumed. One flag could not say this.
+  const assumed = redactBudgetForActor(ASSUMED_CEILING_VERDICT, { isPlatformStaff: false, showBrokerageWarning: true })
+  const measured = redactBudgetForActor(MEASURED_VERDICT, { isPlatformStaff: false, showBrokerageWarning: true })
+  const threeStates =
+    (assumed as any).confidence === "assumed_ceiling" &&
+    (measured as any).confidence === "measured" &&
+    (brok as any).confidence === "unmeasured"
+  return check(
+    "E7  BOTH view shapes carry `confidence`, a degraded verdict does not read as measured, and all THREE states are distinguishable",
+    bothCarry && staffHonest && brokHonest && stillFailOpen && threeStates,
+    `bothCarry=${bothCarry} staff=${(staff as any).confidence} brokerage=${(brok as any).confidence} assumed=${(assumed as any).confidence} measured=${(measured as any).confidence} levelsStillOk=${stillFailOpen}`,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E8 — THE PRIVACY CONTRACT, EXECUTED: not one digit crosses to a brokerage
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * The failure mode this wave is most likely to cause is not the one it fixes:
+ * it is a well-meant "explain the degradation" edit that starts surfacing the
+ * ceiling or the spend to a brokerage in order to justify the flag. So the
+ * contract is asserted by EXECUTION over the real function, on the degraded
+ * verdict specifically — the exact input such an edit would be written for.
+ *
+ * The invariant is total and deliberately brittle in the safe direction: the
+ * brokerage view's every value is a discriminant string or a boolean, so its
+ * serialization contains NO DIGIT AT ALL. A leaked amount, ceiling, percentage
+ * or count cannot satisfy that.
+ */
+function assertPrivacyContractIntact(): boolean {
+  const { redactBudgetForActor } = visibility()
+  const inputs = [DEGRADED_VERDICT, ASSUMED_CEILING_VERDICT, MEASURED_VERDICT]
+  const offenders: string[] = []
+  for (const [i, v] of inputs.entries()) {
+    for (const toggle of [true, false]) {
+      const brok = redactBudgetForActor(v, {
+        isPlatformStaff: false,
+        showBrokerageWarning: toggle,
+        vendors: [{ vendor: "did", spent: 30 }, { vendor: "vapi", spent: 15 }],
+      })
+      const json = JSON.stringify(brok)
+      const forbiddenKeys = ["spent", "budget", "percent", "vendors", "planTier", "allowed"].filter((k) => k in brok)
+      if (forbiddenKeys.length) offenders.push(`input${i}/toggle=${toggle}: keys ${forbiddenKeys.join(",")}`)
+      if (/\d/.test(json)) offenders.push(`input${i}/toggle=${toggle}: a DIGIT crossed the line — ${json}`)
+      if (/did|vapi/.test(json)) offenders.push(`input${i}/toggle=${toggle}: a VENDOR NAME crossed the line`)
+    }
+  }
+  // …and the platform side did NOT get over-redacted in the process: staff still
+  // see the numbers, which is the other half of the same contract.
+  const staff = redactBudgetForActor(ASSUMED_CEILING_VERDICT, { isPlatformStaff: true, showBrokerageWarning: false, vendors: [{ vendor: "did", spent: 30 }] })
+  const staffStillSees = (staff as any).spent === 45 && (staff as any).budget === DEFAULT_VENDOR_BUDGET && (staff as any).vendors?.[0]?.vendor === "did"
+  if (!staffStillSees) offenders.push("platform staff lost the detail they are entitled to")
+
+  return check(
+    "E8  EXECUTED privacy contract: a brokerage view of a DEGRADED verdict contains no amount, no ceiling, no percentage, no vendor name — not one digit — and platform staff still see all of it",
+    offenders.length === 0,
+    `offenders=[${offenders.join(" | ")}]`,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E9 — the flags the GATE sets are the flags the view READS
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Producibility, not presence. `confidence` is only honest if every flag the
+ * gate can actually set is one `budgetConfidence` inspects — a flag the gate
+ * raises and the derivation ignores is a degradation that renders as "measured",
+ * which is the defect this wave exists to remove, one layer further along.
+ */
+function assertGateFlagsAreAllConsumed(): boolean {
+  const { redactBudgetForActor } = visibility()
+  const gateSrc = code(F.gate)
+  const raised = new Set([...gateSrc.matchAll(/\b(degraded|degradedTier|degradedSpend)\s*:\s*(?:true|\w+)/g)].map((m) => m[1]))
+  const confBody = bodyOf(code(F.visibility), "budgetConfidence") ?? ""
+  const ignored = [...raised].filter((f) => !new RegExp(`\\b${f}\\b`).test(confBody))
+  // EXECUTED through the real production entry point, not the private
+  // derivation: `budgetConfidence` is intentionally unexported, and what matters
+  // is that the flag survives the call every caller actually makes.
+  const conf = (d: Record<string, boolean>) =>
+    (redactBudgetForActor(
+      { allowed: true, spent: 0, budget: DEFAULT_VENDOR_BUDGET, percent: 0, softWarning: false, ...d },
+      { isPlatformStaff: true, showBrokerageWarning: true },
+    ) as { confidence: string }).confidence
+  const alone = {
+    degraded: conf({ degraded: true }),
+    degradedTier: conf({ degradedTier: true }),
+    degradedSpend: conf({ degradedSpend: true }),
+  }
+  const eachMoves = Object.values(alone).every((c) => c !== "measured")
+  const noneIsMeasuredByDefault = conf({}) === "measured"
+  return check(
+    `E9  every degradation flag the gate can raise (${[...raised].join(", ")}) is inspected by budgetConfidence, and each one ALONE moves the answer off "measured"`,
+    raised.size >= 3 && ignored.length === 0 && eachMoves && noneIsMeasuredByDefault,
+    `raised=[${[...raised].join(",")}] ignoredByDerivation=[${ignored.join(",")}] alone=${JSON.stringify(alone)} emptyIsMeasured=${noneIsMeasuredByDefault}`,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E10 — a SURFACE renders it (a flag no surface shows is the same defect)
+// ─────────────────────────────────────────────────────────────────────────────
+function assertSurfacesRenderTheDistinction(): boolean {
+  // Support console: the drill-down that shows staff the ceiling and percentage.
+  const row = code(F.supportRow)
+  const staffReads = /view\.confidence/.test(row)
+  const staffRenders = /confidence\s*!==\s*"measured"/.test(row)
+
+  // Brokerage banner: the surface that rendered NOTHING for a verdict that
+  // measured nothing, because the fail-open level is "ok".
+  const banner = code(F.brokerBanner)
+  const brokReads = /showConfidenceNote/.test(banner)
+  // It must not gate on `showWarning` ALONE any more — that is the silence.
+  const brokNoLongerGatedOnWarningAlone = /!view\.showWarning\s*&&\s*!view\.showConfidenceNote/.test(banner)
+  // …and it still respects the superadmin toggle: `showConfidenceNote` carries it.
+  const noteCarriesToggle = /showConfidenceNote:\s*opts\.showBrokerageWarning\s*&&/.test(code(F.visibility))
+
+  return check(
+    "E10 both surfaces render the distinction — the support drill-down flags an assumed/unmeasured verdict, and the brokerage banner no longer renders silence for one (still behind the superadmin toggle)",
+    staffReads && staffRenders && brokReads && brokNoLongerGatedOnWarningAlone && noteCarriesToggle,
+    `supportReads=${staffReads} supportRenders=${staffRenders} bannerReads=${brokReads} bannerNotWarningOnly=${brokNoLongerGatedOnWarningAlone} noteCarriesToggle=${noteCarriesToggle}`,
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // NEGATIVE CONTROLS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -383,6 +618,13 @@ function main(): void {
   assertStillFailsOpen()
   assertMeasuredVerdictNamesAssumedCeiling()
   assertAssumedTierIsMostRestrictive()
+
+  console.log("\nASSERTIONS — WAVE 21, THE FLAGS REACH THE SURFACE")
+  assertRedactionSeesDegradation()
+  assertBothViewsCarryConfidence()
+  assertPrivacyContractIntact()
+  assertGateFlagsAreAllConsumed()
+  assertSurfacesRenderTheDistinction()
 
   if (RUN_NEGATIVE) {
     console.log("\nNEGATIVE CONTROLS")
@@ -497,6 +739,152 @@ function main(): void {
         replace: `const ASSUMED_TIER_ON_UNREADABLE = "multi_location"`,
       },
       assertAssumedTierIsMostRestrictive,
+    )
+
+    console.log("\nNEGATIVE CONTROLS — WAVE 21")
+
+    // 12. THE DEFECT ITSELF, restored: the signature narrows back to the
+    //     supertype and the flags are discarded at the boundary again.
+    controlled(
+      "redactBudgetForActor narrowed back to VendorBudgetEval (the flags discarded by the signature) (E6)",
+      {
+        file: F.visibility,
+        find: `  e: VendorBudgetEval & VendorBudgetDegradation,`,
+        replace: `  e: VendorBudgetEval,`,
+      },
+      assertRedactionSeesDegradation,
+    )
+
+    // 13. The flags hand-copied into a second declaration — two definitions that
+    //     agree today and drift on the next one added.
+    controlled(
+      "the degradation flags declared a SECOND time on the view side (drift by construction) (E6)",
+      {
+        file: F.visibility,
+        find: `export type BudgetConfidence =`,
+        replace:
+          `interface LocalDegradation { degraded?: boolean; degradedTier?: boolean; degradedSpend?: boolean }\n` +
+          `void 0 as unknown as LocalDegradation\n` +
+          `export type BudgetConfidence =`,
+      },
+      assertRedactionSeesDegradation,
+    )
+
+    // 14. THE CONSEQUENCE THE AUDIT NAMED SECOND AND MEANT FIRST: a verdict that
+    //     measured nothing rendering as an ordinary one.
+    controlled(
+      "a degraded verdict rendering as `measured` on both views (E7)",
+      {
+        file: F.visibility,
+        find: `  if (d.degradedSpend || d.degraded) return "unmeasured"`,
+        replace: `  if (false) return "unmeasured"`,
+      },
+      assertBothViewsCarryConfidence,
+    )
+
+    // 15. The third state collapsed away — an ASSUMED ceiling reported as a read
+    //     one, which is the case wave 19 proved one boolean cannot carry.
+    controlled(
+      "the assumed-ceiling state collapsed into `measured` (E7)",
+      {
+        file: F.visibility,
+        find: `  if (d.degradedTier) return "assumed_ceiling"`,
+        replace: `  if (d.degradedTier) return "measured"`,
+      },
+      assertBothViewsCarryConfidence,
+    )
+
+    // 16. The brokerage view stops carrying it at all — back to a bare level.
+    controlled(
+      "the brokerage view dropping `confidence` (a clean bill of health for an unmeasured verdict) (E7)",
+      {
+        file: F.visibility,
+        find: `    showWarning: opts.showBrokerageWarning && level !== "ok",\n    confidence,`,
+        replace: `    showWarning: opts.showBrokerageWarning && level !== "ok",\n    confidence: "measured" as BudgetConfidence,`,
+      },
+      assertBothViewsCarryConfidence,
+    )
+
+    // 17-18. THE PRIVACY CONTRACT — the failure this wave is most likely to
+    //        cause, not the one it fixes. A well-meant "explain the degradation"
+    //        edit that shows a brokerage the numbers behind it.
+    controlled(
+      "a brokerage shown the SPEND to 'explain' the degradation (E8)",
+      {
+        file: F.visibility,
+        find: `    scope: "brokerage",\n    level,`,
+        replace: `    scope: "brokerage",\n    level,\n    spent: e.spent,`,
+      },
+      assertPrivacyContractIntact,
+    )
+    controlled(
+      "a brokerage shown the assumed CEILING to 'explain' the degradation (E8)",
+      {
+        file: F.visibility,
+        find: `    confidence,\n    showConfidenceNote:`,
+        replace: `    confidence,\n    budget: e.budget,\n    showConfidenceNote:`,
+      },
+      assertPrivacyContractIntact,
+    )
+
+    // 19. …and the opposite failure: over-redacting platform staff in the name
+    //     of privacy, which is not what the contract says.
+    controlled(
+      "platform staff over-redacted — the other half of the same contract (E8)",
+      {
+        file: F.visibility,
+        find: `      spent: e.spent,\n      budget: e.budget,`,
+        replace: `      spent: 0,\n      budget: 0,`,
+      },
+      assertPrivacyContractIntact,
+    )
+
+    // 20. A flag the gate raises that the derivation ignores — a degradation
+    //     that renders as "measured", the defect one layer further along.
+    controlled(
+      "a gate flag ignored by the confidence derivation (E9)",
+      {
+        file: F.visibility,
+        find: `  if (d.degradedSpend || d.degraded) return "unmeasured"\n  if (d.degradedTier) return "assumed_ceiling"`,
+        replace: `  if (d.degradedSpend) return "unmeasured"`,
+      },
+      assertGateFlagsAreAllConsumed,
+    )
+
+    // 21. THE SURFACE GOES DARK — a flag no surface shows is the same defect one
+    //     layer out, which is exactly how this one survived wave 19.
+    controlled(
+      "the support console no longer rendering an assumed/unmeasured verdict (E10)",
+      {
+        file: F.supportRow,
+        find: `                {confidence !== "measured" && (`,
+        replace: `                {false && (`,
+      },
+      assertSurfacesRenderTheDistinction,
+    )
+
+    // 22. The brokerage banner back to silence — rendering nothing for a verdict
+    //     that measured nothing, because the fail-open level is "ok".
+    controlled(
+      "the brokerage banner gated on `showWarning` alone again (silence for an unmeasured verdict) (E10)",
+      {
+        file: F.brokerBanner,
+        find: `        if (!view.showWarning && !view.showConfidenceNote) return`,
+        replace: `        if (!view.showWarning) return`,
+      },
+      assertSurfacesRenderTheDistinction,
+    )
+
+    // 23. The confidence note escaping the superadmin's visibility toggle — a
+    //     budget surface pushed at tenants whose superadmin switched it off.
+    controlled(
+      "the confidence note bypassing the superadmin visibility toggle (E10)",
+      {
+        file: F.visibility,
+        find: `    showConfidenceNote: opts.showBrokerageWarning && confidence !== "measured",`,
+        replace: `    showConfidenceNote: confidence !== "measured",`,
+      },
+      assertSurfacesRenderTheDistinction,
     )
   }
 

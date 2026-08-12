@@ -85,7 +85,28 @@ const RUN_NEGATIVE = !process.argv.includes("--no-negative")
 const F = {
   resolver: "lib/connections/resolve-scoped.ts",
   gate: "lib/property/rentcast-eligibility.ts",
+  // WAVE 21 — the layer underneath. `resolve-scoped.ts`'s legacy fallback calls
+  // into this module, and until this wave that call was the one place the
+  // cascade could still read a refusal as an absence.
+  manager: "lib/integrations/connection-manager.ts",
+  vibe: "lib/providers/vibe.ts",
 }
+
+/**
+ * The `resolveConnection` callers this wave deliberately did NOT repoint.
+ *
+ * All three sit behind a `try/catch` and read a null as "not connected", which
+ * is the projection's contract and stays correct: a cron route that writes a
+ * health row, and two capability resolvers whose own docstrings promise they
+ * never throw. They are listed so a later edit cannot migrate one to the
+ * discriminated form without this proof noticing — the same roster discipline
+ * wave 19 applied to the eleven wrapper callers one layer up.
+ */
+const PROJECTION_CALLERS = [
+  "app/api/cron/connector-health/route.ts",
+  "lib/agentic-os/resolve-app-capability.ts",
+  "lib/agentic-os/resolve-connected-capability.ts",
+]
 
 /** The callers this wave did NOT touch. Every one of them still consumes the
  *  flattening wrapper, and none of them was migrated to the discriminated form —
@@ -428,6 +449,296 @@ function assertUntouchedCallersStillOnTheWrapper(): boolean {
   )
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// WAVE 21 — THE SAME DEFECT ONE LAYER DOWN, IN connection-manager.ts
+//
+// `resolve-scoped.ts` fixed the owner cascade and recorded, in a comment at its
+// legacy fallback, the half it could not reach: `resolveConnection` destructured
+// only `data`, across FOUR runtime reads (agent_api_credentials; then
+// platform_credentials at agent scope AND at brokerage scope — one source site
+// executed twice by the loop; then integration_credentials), so a REFUSED legacy
+// read still arrived as an honest-looking null and the precedence walk DESCENDED
+// past it to the next store. A refused agent_api_credentials read did not stop
+// the walk — it returned the brokerage's platform_credentials row.
+//
+// LIVE, against the real database this wave (project hrvaqgvukzxfskkcrwbt):
+// every one of those reads, run verbatim as a role without SELECT on the table,
+// RESOLVES with SQLSTATE 42501 — and the identical query run as a privileged
+// role resolves cleanly with zero rows. `data: null` in both cases. That is the
+// pair the old code answered with one value, and 42501 is not in the closed
+// schema-absent set (42703 / 42P01 were reproduced live too, and are genuinely
+// different failures), so it classifies as `unreadable`.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** Every `.from("table")` read site in a function body, in source order. */
+function readSites(body: string): Array<{ table: string; at: number }> {
+  return [...body.matchAll(/\.from\(\s*"([a-z_]+)"/g)].map((m) => ({ table: m[1], at: m.index ?? 0 }))
+}
+
+/** Every `const { … } = await …` destructuring pattern in a body, in order. */
+function awaitedDestructures(body: string): string[] {
+  return [...body.matchAll(/const\s*\{([^}]*)\}\s*=\s*await\b/g)].map((m) => m[1])
+}
+
+function managerBody(fn: string): string | null {
+  const region = regionOf(code(F.manager), fn)
+  return region === null ? null : bodyAfterParams(region)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C5 — every read in the legacy resolver destructures `error`
+// ─────────────────────────────────────────────────────────────────────────────
+function assertManagerReadsDestructureError(): boolean {
+  const body = managerBody("resolveConnectionResult")
+  if (body === null) {
+    return check("C5  every credential-store read destructures `error`", false, "resolveConnectionResult unreadable")
+  }
+  const reads = readSites(body)
+  const patterns = awaitedDestructures(body)
+  // ENUMERATED, not counted: a count is dodged by the next read somebody adds,
+  // which is exactly how these four drifted from the resolver above them.
+  const dataOnly = patterns.filter((p) => /\bdata\b/.test(p) && !/\berror\b/.test(p))
+  const errorBlind = patterns.filter((p) => !/\berror\b/.test(p))
+  return check(
+    `C5  every awaited read inside resolveConnectionResult destructures \`error\` (${reads.length} store(s): ${reads.map((r) => r.table).join(", ")})`,
+    reads.length >= 3 && patterns.length >= reads.length && errorBlind.length === 0 && dataOnly.length === 0,
+    `reads=${reads.length} destructures=${patterns.length} dataOnly=${dataOnly.length} errorBlind=${errorBlind.length}`,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C6 — the precedence walk STOPS on a refused store, at EVERY store
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Asserted per read site and as CONTROL FLOW, not as "the word unreadable
+ * appears somewhere". For each store, the block guarded by the unreadable
+ * classification must RETURN an unreadable result and must not `continue` —
+ * `continue` in the platform_credentials loop is the defect stated exactly, and
+ * an emptied block is the same defect in the two non-loop reads.
+ */
+function assertManagerStopsOnRefusalAtEveryStore(): boolean {
+  const body = managerBody("resolveConnectionResult")
+  if (body === null) {
+    return check("C6  the precedence walk STOPS on a refused store", false, "resolveConnectionResult unreadable")
+  }
+  const reads = readSites(body)
+  const bad: string[] = []
+  for (let i = 0; i < reads.length; i++) {
+    const slice = body.slice(reads[i].at, i + 1 < reads.length ? reads[i + 1].at : body.length)
+    const testAt = slice.search(/status\s*===\s*"unreadable"/)
+    if (testAt === -1) { bad.push(`${reads[i].table}:no-unreadable-test`); continue }
+    const keyword = firstControlKeyword(slice, testAt)
+    const guarded = braceBlockFrom(slice, testAt)
+    const returnsUnreadable = /return\s*\{\s*status:\s*"unreadable"/.test(guarded)
+    const descends = /\bcontinue\b/.test(guarded)
+    if (keyword !== "return" || !returnsUnreadable || descends) {
+      bad.push(`${reads[i].table}:keyword=${keyword},returns=${returnsUnreadable},continue=${descends}`)
+    }
+  }
+  return check(
+    `C6  EVERY credential store stops the walk on a refusal instead of descending (${reads.length} store(s))`,
+    reads.length >= 3 && bad.length === 0,
+    `offending=[${bad.join(" | ")}]`,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C7 — the unknown error fails closed HERE too, on the same closed set
+// ─────────────────────────────────────────────────────────────────────────────
+function assertManagerUnknownErrorFailsClosed(): boolean {
+  const body = managerBody("classifyStoreError")
+  if (body === null) {
+    return check("C7  an UNCLASSIFIED store error is unreadable, not 'pre-migration'", false, "classifyStoreError unreadable")
+  }
+  const schemaGuarded = /if\s*\([\s\S]*?\)\s*return\s*\{\s*status:\s*"schema_absent"/.test(body)
+  const lastSchema = body.lastIndexOf('"schema_absent"')
+  const lastUnreadable = body.lastIndexOf('"unreadable"')
+  const fallthroughIsUnreadable = lastUnreadable !== -1 && lastUnreadable > lastSchema
+  const closedSet = /const\s+SCHEMA_ABSENT_CODES\s*=\s*new\s+Set\s*\(/.test(code(F.manager))
+  // The SAME closed set as the resolver above it — two different opinions about
+  // which codes mean "not migrated yet" is how one of them ends up wrong.
+  const src = code(F.manager)
+  const scopedSrc = code(F.resolver)
+  const codesOf = (s: string) => (/SCHEMA_ABSENT_CODES\s*=\s*new\s+Set\s*\(\s*\[([^\]]*)\]/.exec(s)?.[1] ?? "")
+    .split(",").map((x) => x.trim().replace(/["']/g, "")).filter(Boolean).sort().join("|")
+  const sameSet = codesOf(src) !== "" && codesOf(src) === codesOf(scopedSrc)
+  return check(
+    "C7  an UNCLASSIFIED store error is UNREADABLE, and the schema fall-through is the SAME closed set the owner cascade uses",
+    schemaGuarded && fallthroughIsUnreadable && closedSet && sameSet,
+    `schemaGuarded=${schemaGuarded} fallthroughUnreadable=${fallthroughIsUnreadable} closedSet=${closedSet} sameSet=${sameSet} (${codesOf(src)})`,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C8 — `resolveConnection` is a PROJECTION: same shape, still cannot throw
+// ─────────────────────────────────────────────────────────────────────────────
+function assertManagerProjectionShapeUnchanged(): boolean {
+  const src = code(F.manager)
+  const sig = /export\s+async\s+function\s+resolveConnection\s*\(([\s\S]*?)\)\s*:\s*Promise<([^>]*)>/.exec(src)
+  const returnsNullable = sig !== null && /ResolvedConnection\s*\|\s*null/.test(sig[2])
+  const takesSameArgs = sig !== null && /ResolveConnectionInput/.test(sig[1])
+  const body = managerBody("resolveConnection") ?? ""
+  // Six call sites, none of which was written for an exception: making this
+  // throw would push one into a cron route and two capability resolvers whose
+  // docstrings promise they never throw.
+  const cannotThrow = body !== "" && !/\bthrow\b/.test(body)
+  const noDiscriminantLeak = body !== "" && !/return\s*\{\s*status:/.test(body)
+  const nullPath = /\bnull\b/.test(body)
+  const delegates = /resolveConnectionResult\s*\(/.test(body)
+  return check(
+    "C8  `resolveConnection` still returns `ResolvedConnection | null`, still cannot throw, delegates to the discriminated form and maps unreadable to null",
+    returnsNullable && takesSameArgs && cannotThrow && noDiscriminantLeak && nullPath && delegates,
+    `nullableReturn=${returnsNullable} sameArgs=${takesSameArgs} cannotThrow=${cannotThrow} noLeak=${noDiscriminantLeak} nullPath=${nullPath} delegates=${delegates}`,
+  )
+}
+
+function assertProjectionCallersUnmigrated(): boolean {
+  const migrated: string[] = []
+  const missing: string[] = []
+  for (const p of PROJECTION_CALLERS) {
+    let src: string
+    try { src = code(p) } catch { missing.push(p); continue }
+    if (!/\bresolveConnection\b/.test(src)) missing.push(p)
+    if (/resolveConnectionResult/.test(src)) migrated.push(p)
+  }
+  return check(
+    `C8b all ${PROJECTION_CALLERS.length} deliberately-unchanged callers still consume the PROJECTION and none was silently migrated`,
+    migrated.length === 0 && missing.length === 0,
+    `migrated=[${migrated}] missingOrRenamed=[${missing}]`,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C9 — vibe.ts gives an HONEST refusal instead of a null that meant two things
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Both Vibe sites were `resolveConnection(…).catch(() => null)` — a null that
+ * meant BOTH "no connection" and "we could not tell". The dispatcher then told
+ * an operator `vibe_not_connected — campaign staged as launch package`, a claim
+ * about their account that nobody had established.
+ *
+ * `isVibeConfigured` keeps its `boolean`, on purpose and defended in the source:
+ * its one consumer threads it through two client component prop chains to decide
+ * whether to OFFER a launch button, and for that question "not connected" and
+ * "could not tell" have the same fail-closed answer. The dispatcher is where a
+ * CLAIM is made, so that is where the distinction is carried.
+ */
+function assertVibeRefusalIsHonest(): boolean {
+  const src = code(F.vibe)
+  // The collapse itself, gone from the whole module.
+  const noCollapsingCatch = !/\.catch\s*\(\s*\(\s*\)\s*=>\s*null\s*\)/.test(src)
+
+  // isVibeConfigured: still a boolean, and now derived from the discriminated form.
+  const sig = /export\s+async\s+function\s+isVibeConfigured\s*\(([^)]*)\)\s*:\s*Promise<([^>]*)>/.exec(src)
+  const stillBoolean = sig !== null && /^\s*boolean\s*$/.test(sig[2])
+  const cfgBody = (() => { const r = regionOf(src, "isVibeConfigured"); return r === null ? "" : bodyAfterParams(r) })()
+  const cfgUsesResult = /resolveConnectionResult\s*\(/.test(cfgBody) && /status\s*===\s*"connected"/.test(cfgBody)
+
+  // The dispatcher: consumes `unreadable` OUTSIDE any catch — a distinction that
+  // only exists inside `catch` is the dead-branch defect verbatim, since
+  // supabase-js RESOLVES a refused query.
+  const dispRegion = regionOf(src, "dispatchCtvCampaign")
+  const dispBody = dispRegion === null ? "" : bodyAfterParams(dispRegion)
+  const outside = withoutCatchBlocks(dispBody)
+  const testAt = outside.search(/status\s*===\s*"unreadable"/)
+  const consumesOutsideCatch = testAt !== -1
+  // …and the two outcomes produce DIFFERENT reasons. Same reason for both is the
+  // collapse surviving the refactor.
+  const guarded = testAt === -1 ? "" : braceBlockFrom(outside, testAt)
+  const unreadableReason = /reason:\s*[`"'][^`"']*unreadable/i.test(guarded)
+  const stillHasNotConnected = /vibe_not_connected/.test(outside)
+  const reasonsDiffer = unreadableReason && stillHasNotConnected && !/vibe_not_connected/.test(guarded)
+  // Fail-closed on BOTH paths: an unreadable credential never dispatches.
+  const neverDispatches = guarded !== "" && !/dispatched:\s*true/.test(guarded)
+
+  return check(
+    "C9  vibe.ts separates 'not connected' from 'could not read it' — no collapsing catch, consumed on the RESOLVED path, distinct reasons, still fail-closed",
+    noCollapsingCatch && stillBoolean && cfgUsesResult && consumesOutsideCatch && reasonsDiffer && neverDispatches,
+    `noCollapsingCatch=${noCollapsingCatch} isVibeConfiguredBoolean=${stillBoolean} cfgUsesResult=${cfgUsesResult} outsideCatch=${consumesOutsideCatch} reasonsDiffer=${reasonsDiffer} neverDispatches=${neverDispatches}`,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C10 — the LEGACY half of the owner cascade can finally report a refusal
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * The comment at resolve-scoped.ts's legacy fallback used to say the refusal
+ * "cannot be distinguished here… a throw is the part this file CAN report".
+ * That limitation is what this wave closed, so it is asserted as a CHAIN — the
+ * same discipline C3 uses, and for the same reason: "the branch exists" was true
+ * the whole time the wave-18 branch was dead.
+ *
+ *   M1 the legacy fallback calls the DISCRIMINATED resolver, not the projection
+ *      that flattens every failure to null
+ *   M2 it consumes the unreadable state from OUTSIDE its catch — on the resolved
+ *      path, which is the only way a supabase read has ever failed
+ *   M3 the state is PRODUCIBLE deep inside connection-manager from a resolved
+ *      (non-thrown) error: a store read classifies `error`, and the classifier's
+ *      fall-through is unreadable
+ *   M4 it lands on the cascade's own `unreadable` verdict — the value the
+ *      RentCast gate then consumes (C3's L4)
+ */
+function assertLegacyRefusalIsReportable(): boolean {
+  const scoped = code(F.resolver)
+  const region = regionOf(scoped, "resolveScopedConnectionResult")
+  const body = region === null ? "" : bodyAfterParams(region)
+  const outside = withoutCatchBlocks(body)
+
+  // M1 — the discriminated call, by construct.
+  const m1 = /resolveConnectionResult\s*\(/.test(outside)
+
+  // M2 — consumed on the RESOLVED path.
+  const legacyTestAt = outside.search(/legacy\.status\s*===\s*"unreadable"/)
+  const m2 = legacyTestAt !== -1
+
+  // M4 — and what it returns is the cascade's unreadable verdict.
+  const guarded = legacyTestAt === -1 ? "" : braceBlockFrom(outside, legacyTestAt)
+  const m4 = /status:\s*"unreadable"/.test(guarded)
+
+  // M3 — PRODUCIBILITY, deep inside the module underneath. Not "the branch
+  // exists": the store reads must classify a resolved `error`, and the
+  // classifier must be able to answer `unreadable` at all.
+  const mgrBody = managerBody("resolveConnectionResult") ?? ""
+  const classifierBody = managerBody("classifyStoreError") ?? ""
+  const storeReadsClassify = /if\s*\(\s*error\s*\)\s*\{[\s\S]{0,200}?classifyStoreError\s*\(/.test(mgrBody)
+  const classifierProduces = /return\s*\{\s*status:\s*"unreadable"/.test(classifierBody)
+  const surfacedAsResult = /return\s*\{\s*status:\s*"unreadable"/.test(mgrBody)
+  const m3 = storeReadsClassify && classifierProduces && surfacedAsResult
+
+  return check(
+    "C10 a REFUSED LEGACY read is reportable as `unreadable` — producible inside connection-manager, surfaced as a result, consumed on the resolved path, landed on the verdict",
+    m1 && m2 && m3 && m4,
+    `M1_discriminated=${m1} M2_consumedOutsideCatch=${m2} M3_producible=${m3}(storeReads=${storeReadsClassify} classifier=${classifierProduces} surfaced=${surfacedAsResult}) M4_verdict=${m4}`,
+  )
+}
+
+/**
+ * A BACKSTOP, and openly a prose check — which is why it is not the proof.
+ * Wave 20's rule ("a comment that asserts a gate is not evidence the gate
+ * exists") cuts both ways: a comment still describing a gap that has been closed
+ * misleads the next reader just as badly. C10 proves the closure structurally;
+ * this only catches the case where the CODE is reverted along with its comment,
+ * or the comment is left behind stating the limitation as live.
+ *
+ * The distinction it has to make: the current comment QUOTES the old limitation
+ * in order to record what changed, which is documentation, not a stale claim. So
+ * "stale" means the limitation text is present WITHOUT a closure marker near it
+ * — not merely present.
+ */
+function assertClosedLimitationIsNotStillAdvertised(): boolean {
+  const prose = raw(F.resolver).replace(/\n\s*\/\/\s*/g, " ")
+  const at = prose.search(/`resolveConnection` itself destructures only `data`/)
+  const quoted = at !== -1
+  const window = quoted ? prose.slice(Math.max(0, at - 800), at + 800) : ""
+  const declaredClosed = /IS CLOSED|is closed|wave 21/i.test(window)
+  const stale = quoted && !declaredClosed
+  return check(
+    "C10b the limitation resolve-scoped.ts used to record is not left stated as OPEN (prose backstop to C10)",
+    !stale,
+    `limitationQuoted=${quoted} declaredClosedNearby=${declaredClosed} stale=${stale}`,
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // NEGATIVE CONTROLS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -473,6 +784,16 @@ function main(): void {
   assertUnreadableIsReachable()
   assertLegacyWrapperShapeUnchanged()
   assertUntouchedCallersStillOnTheWrapper()
+
+  console.log("\nASSERTIONS — WAVE 21, THE LEGACY RESOLVER UNDERNEATH")
+  assertManagerReadsDestructureError()
+  assertManagerStopsOnRefusalAtEveryStore()
+  assertManagerUnknownErrorFailsClosed()
+  assertManagerProjectionShapeUnchanged()
+  assertProjectionCallersUnmigrated()
+  assertVibeRefusalIsHonest()
+  assertLegacyRefusalIsReportable()
+  assertClosedLimitationIsNotStillAdvertised()
 
   if (RUN_NEGATIVE) {
     console.log("\nNEGATIVE CONTROLS")
@@ -616,6 +937,188 @@ function main(): void {
         replace: `import { resolveScopedConnectionResult } from "@/lib/connections/resolve-scoped"`,
       },
       assertUntouchedCallersStillOnTheWrapper,
+    )
+
+    console.log("\nNEGATIVE CONTROLS — WAVE 21")
+
+    // 12. THE ORIGINAL SPELLING, restored at the first store: `const { data }`.
+    //     A refused agent_api_credentials read becomes an absence again.
+    controlled(
+      "the agent_api_credentials read dropping its `error` again (`const { data }`)",
+      {
+        file: F.manager,
+        find: `      const { data, error } = await svc\n        .from("agent_api_credentials")`,
+        replace: `      const { data } = await svc\n        .from("agent_api_credentials")`,
+      },
+      assertManagerReadsDestructureError,
+    )
+
+    // 13. THE HEADLINE DEFECT of this layer: the walk DESCENDS past a refused
+    //     platform_credentials tier, so an agent gets the brokerage's row.
+    controlled(
+      "the precedence walk DESCENDING past a refused platform_credentials tier",
+      {
+        file: F.manager,
+        find: `          return { status: "unreadable", store: "platform_credentials", scope, detail: c.detail }`,
+        replace: `          continue`,
+      },
+      assertManagerStopsOnRefusalAtEveryStore,
+    )
+
+    // 14. …and the same descent at a NON-loop store, where it reads as an empty
+    //     branch rather than a `continue`. Per-store enumeration is what catches
+    //     this one; a single whole-function check would stay green.
+    controlled(
+      "the first store's refusal branch emptied (fall through to the next store)",
+      {
+        file: F.manager,
+        find: `          return { status: "unreadable", store: "agent_api_credentials", scope: "agent", detail: c.detail }`,
+        replace: `          void c`,
+      },
+      assertManagerStopsOnRefusalAtEveryStore,
+    )
+
+    // 15. An unclassified error waved through as "pre-migration" — fail-OPEN on
+    //     the unknown, which is how 42501 gets to look like a missing column.
+    controlled(
+      "an unclassified store error treated as pre-migration (fail-open on the unknown)",
+      {
+        file: F.manager,
+        find:
+          `  if (code && SCHEMA_ABSENT_CODES.has(code)) return { status: "schema_absent", detail }\n` +
+          `  return { status: "unreadable", detail }`,
+        replace:
+          `  if (code === "42501") return { status: "unreadable", detail }\n` +
+          `  return { status: "schema_absent", detail }`,
+      },
+      assertManagerUnknownErrorFailsClosed,
+    )
+
+    // 16. The two layers disagreeing about which codes mean "not migrated yet".
+    controlled(
+      "the two layers' schema-absent sets drifting apart",
+      {
+        file: F.manager,
+        find: `const SCHEMA_ABSENT_CODES = new Set(["42703", "42P01", "PGRST204", "PGRST205"])`,
+        replace: `const SCHEMA_ABSENT_CODES = new Set(["42703", "42P01", "PGRST204", "PGRST205", "42501"])`,
+      },
+      assertManagerUnknownErrorFailsClosed,
+    )
+
+    // 17. The projection learning to throw — an uncaught exception inside a cron
+    //     route and two resolvers that promise they never throw.
+    controlled(
+      "the `resolveConnection` projection learning to THROW on unreadable",
+      {
+        file: F.manager,
+        find: `  const result = await resolveConnectionResult(input)\n  return result.status === "connected" ? result.connection : null`,
+        replace:
+          `  const result = await resolveConnectionResult(input)\n` +
+          `  if (result.status === "unreadable") throw new Error(result.detail)\n` +
+          `  return result.status === "connected" ? result.connection : null`,
+      },
+      assertManagerProjectionShapeUnchanged,
+    )
+
+    // 18. The projection leaking the discriminated shape to callers typed for
+    //     `ResolvedConnection | null`.
+    controlled(
+      "the projection leaking the discriminated result to its six call sites",
+      {
+        file: F.manager,
+        find: `): Promise<ResolvedConnection | null> {\n  const result = await resolveConnectionResult(input)`,
+        replace: `): Promise<ConnectionResolutionResult> {\n  const result = await resolveConnectionResult(input)`,
+      },
+      assertManagerProjectionShapeUnchanged,
+    )
+
+    // 19. A deliberately-unchanged caller silently migrated — the boundary this
+    //     wave drew, enforced rather than remembered.
+    controlled(
+      "a deliberately-unchanged caller silently migrated onto the discriminated resolver",
+      {
+        file: "lib/agentic-os/resolve-connected-capability.ts",
+        find: `import { resolveConnection } from "@/lib/integrations/connection-manager"`,
+        replace: `import { resolveConnectionResult } from "@/lib/integrations/connection-manager"`,
+      },
+      assertProjectionCallersUnmigrated,
+    )
+
+    // 20. The Vibe dispatcher's honest refusal removed — a read failure told to
+    //     the operator as "your brokerage is not connected".
+    controlled(
+      "the Vibe dispatcher reporting an unreadable credential as `vibe_not_connected`",
+      {
+        file: F.vibe,
+        find: `  if (resolved.status === "unreadable") {`,
+        replace: `  if (false) {`,
+      },
+      assertVibeRefusalIsHonest,
+    )
+
+    // 21. The collapsing catch restored at the posture read — the exact line
+    //     wave 19 spent its budget removing one layer up.
+    controlled(
+      "`.catch(() => null)` restored in vibe.ts (a null meaning two different facts)",
+      {
+        file: F.vibe,
+        find: `  const resolved = await resolveConnectionResult({ brokerageId, provider: VIBE_PROVIDER })\n  return resolved.status === "connected"`,
+        replace:
+          `  const resolved = await resolveConnectionResult({ brokerageId, provider: VIBE_PROVIDER }).catch(() => null)\n` +
+          `  return resolved?.status === "connected"`,
+      },
+      assertVibeRefusalIsHonest,
+    )
+
+    // 22. THE PRODUCIBILITY CONTROL, deep inside the resolver — not the branch's
+    //     presence but its reachability. If the classifier can never answer
+    //     `unreadable`, no store read can produce the state, the legacy fallback
+    //     can never observe it, and the branch is dead exactly the way wave 18's
+    //     was. This is the failure mode nobody tested last wave.
+    controlled(
+      "the classifier made unable to answer `unreadable` — the state becomes unproducible and the legacy branch dies",
+      {
+        file: F.manager,
+        find: `  return { status: "unreadable", detail }`,
+        replace: `  return { status: "schema_absent", detail }`,
+      },
+      assertLegacyRefusalIsReportable,
+    )
+
+    // 23. The legacy fallback repointed back onto the flattening projection —
+    //     every failure arrives as null again and the limitation reopens.
+    controlled(
+      "the legacy fallback repointed onto the flattening projection",
+      {
+        file: F.resolver,
+        find: `      legacy = await resolveConnectionResult({`,
+        replace: `      legacy = await resolveConnection({`,
+      },
+      assertLegacyRefusalIsReportable,
+    )
+
+    // 24. The legacy fallback observing unreadability only from a THROW — the
+    //     wave-18 limitation reinstated word for word.
+    controlled(
+      "the legacy fallback observing unreadability only from a THROW, never from a resolved refusal",
+      {
+        file: F.resolver,
+        find: `    if (legacy.status === "unreadable") {`,
+        replace: `    if (false) {`,
+      },
+      assertLegacyRefusalIsReportable,
+    )
+
+    // 25. The comment left describing the gap as still open — the wave-20 rule
+    //     in its mirror image.
+    controlled(
+      "the closed limitation left stated as OPEN in resolve-scoped.ts",
+      {
+        file: F.resolver,
+        find: `    // THE LIMITATION THIS COMMENT USED TO RECORD IS CLOSED (wave 21). It read:`,
+        replace: `    // A NOTE ON THE LEGACY PATH. It read:`,
+      },
+      assertClosedLimitationIsNotStillAdvertised,
     )
   }
 

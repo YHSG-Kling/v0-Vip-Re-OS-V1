@@ -418,13 +418,46 @@ function calculateOptimalContactTime(behavioralData: unknown[]): string {
 export async function getLeadPredictions(leadId: string) {
   const supabase = await createClient()
 
+  // TENANT — resolved the way THIS FILE's writer of these very rows resolves it
+  // (predictLeadConversion above: session user → users.brokerage_id). No new
+  // resolver is invented and no id space is crossed: `predictionReader.id` is a
+  // users.id and is read only against `users`.
+  //
+  // Why a predicate is needed at all, when RLS is on: `ai_predictions_select` is
+  //   is_platform_admin() OR (brokerage_id IS NULL) OR has_brokerage_access(brokerage_id)
+  // — the migration-029 escape. An untenanted prediction therefore matches for
+  // EVERY caller of every brokerage, so this read had no tenant boundary at all;
+  // the only thing between one tenant's deal-close call and another's was a uuid.
+  const {
+    data: { user: predictionReader },
+  } = await supabase.auth.getUser()
+  if (!predictionReader) return []
+  const { data: readerRow, error: readerError } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", predictionReader.id)
+    .maybeSingle()
+  // supabase-js RESOLVES a refused read, so the error is destructured: a refusal
+  // and "no such user" arrive identically, and widening on either is the defect.
+  if (readerError) {
+    console.error("[ai-predictions] getLeadPredictions: caller lookup refused:", readerError.message)
+    return []
+  }
+  const readerBrokerageId = (readerRow?.brokerage_id as string | null) ?? null
+  if (!readerBrokerageId) return []
+
   const { data, error } = await supabase
     .from("ai_predictions")
     .select("*")
+    // ANDed, deliberately its own link: a brokerage term inside a PostgREST
+    // `.or()` would WIDEN, which is this fix inverted. `.eq` also excludes NULL,
+    // so the escape's untenanted rows are out.
+    .eq("brokerage_id", readerBrokerageId)
     .eq("entity_id", leadId)
     // predictLeadConversion accepts a leads.id OR a contacts.id and stamps
     // entity_type accordingly, so filtering on "lead" alone would hide half of
     // what it writes. entity_id is a uuid — no cross-class collision to worry about.
+    // The widening stands; it now widens WITHIN a tenant.
     .in("entity_type", ["lead", "contact"])
     .order("created_at", { ascending: false })
     .limit(10)
@@ -547,15 +580,59 @@ export async function enableAIPilot(data: {
     return { success: false, error: "Unauthorized" }
   }
 
-  // Gather comprehensive lead data
-  const { data: lead } = await supabase.from("leads").select("*").eq("id", data.leadId).maybeSingle()
+  // Gather comprehensive lead data. The error is destructured because this row is
+  // now the TENANT ANCHOR for the plan written below, and supabase-js RESOLVES a
+  // refused read — a refusal and "no such lead" arrive identically if only `data`
+  // is read, and descending to `contacts` on a refusal asks a second table a
+  // question the first one was not allowed to answer.
+  const { data: lead, error: leadLookupError } = await supabase
+    .from("leads")
+    .select("*")
+    .eq("id", data.leadId)
+    .maybeSingle()
+  if (leadLookupError) {
+    console.error("[ai-predictions] enableAIPilot: leads lookup refused:", leadLookupError.message)
+  }
 
-  if (!lead) {
+  // TENANT ANCHOR — resolved ONCE, from the RECORD this plan is filed against.
+  // `data.leadId` may be a leads.id OR a contacts.id — DISJOINT spaces — so each
+  // table is asked IN TURN; neither id is ever substituted for the other and
+  // `data.agentId` (a users.id, checked against the session above) is never read
+  // as a tenant. leads.brokerage_id is NOT NULL, contacts.brokerage_id nullable.
+  //
+  // ai_autopilot_plans does NOT carry the migration-029 escape. Its SELECT policy
+  // is `is_platform_admin() OR has_brokerage_access(brokerage_id) OR (is_agent_role()
+  // AND agent_id = current_user_agent_id())`, and has_brokerage_access guards
+  // `target_brokerage_id IS NOT NULL` — so on an untenanted row the BROKERAGE LANE
+  // IS DEAD and the plan is visible only to the one writing agent. This row does
+  // not leak; unstamped it VANISHES from the broker's surface. (Platform admin
+  // still sees it — `is_platform_admin()` is the first disjunct and never reads
+  // brokerage_id. Measured live, in a rolled-back transaction: broker of the
+  // OWNING brokerage 0, platform admin 1, stamped row 1.)
+  //
+  // A BEFORE INSERT trigger, `ai_autopilot_plans_set_brokerage`, back-fills the
+  // tenant from lead_id → contact_id → agent_id when brokerage_id is NULL. It
+  // fires only IF NEW.brokerage_id IS NULL, so this stamp always wins, and it is
+  // SECURITY INVOKER, so it yields NULL rather than refusing whenever the caller
+  // cannot read the anchor row. Resolving in the application is what makes the
+  // tenant a decision this code made rather than one it happened to inherit.
+  let autopilotBrokerageId: string | null = null
+  if (lead) {
+    autopilotBrokerageId = (lead.brokerage_id as string | null) ?? null
+  } else {
     // Fallback to contacts table
-    const { data: contact } = await supabase.from("contacts").select("*").eq("id", data.leadId).maybeSingle()
+    const { data: contact, error: contactLookupError } = await supabase
+      .from("contacts")
+      .select("*")
+      .eq("id", data.leadId)
+      .maybeSingle()
+    if (contactLookupError) {
+      console.error("[ai-predictions] enableAIPilot: contacts lookup refused:", contactLookupError.message)
+    }
     if (!contact) {
       return { success: false, error: "Lead not found" }
     }
+    autopilotBrokerageId = (contact.brokerage_id as string | null) ?? null
   }
 
   // Get additional intelligence data
@@ -652,10 +729,22 @@ Respond with JSON matching this structure:
       nextActionDate.setDate(nextActionDate.getDate() + firstTouchpoint.day)
     }
 
-    // Save auto-pilot plan to database
+    // Save auto-pilot plan to database.
+    if (!autopilotBrokerageId) {
+      // No tenant resolves, so the brokerage lane of the policy cannot be
+      // revived for this row and the plan would be readable by the writing agent
+      // alone. Writing nothing and naming the reason is the honest answer to
+      // "whose lead is this?" — the same call wave 20 made for ai_insights.
+      console.error(
+        `[ai-predictions] enableAIPilot: no brokerage resolves for ${data.leadId} in leads or contacts — autopilot plan NOT written rather than written invisible to the broker`,
+      )
+      return { success: false, error: "Failed to save nurture plan" }
+    }
+
     const { data: savedPlan, error: saveError } = await supabase
       .from("ai_autopilot_plans")
       .insert({
+        brokerage_id: autopilotBrokerageId,
         lead_id: data.leadId,
         agent_id: data.agentId,
         autopilot_level: data.autopilotLevel,
@@ -851,22 +940,48 @@ Respond with JSON:
       throw new Error("Failed to generate prediction")
     }
 
-    // Save prediction to database
-    const { data: savedPrediction, error: saveError } = await supabase
-      .from("ai_predictions")
-      .insert({
-        prediction_type: "deal_close_probability",
-        entity_type: "transaction",
-        entity_id: transactionId,
-        prediction_value: prediction,
-        confidence_score: (prediction as any).confidence || 0.5,
-        model_version: "v1.0",
-      })
-      .select()
-      .maybeSingle()
+    // Save prediction to database. TENANT: `dealBrokerageId`, the same anchor
+    // resolved once above from the transaction this prediction is filed against
+    // (transaction → brokerage_id) — not re-resolved, and never substituted from
+    // another id space.
+    //
+    // ai_predictions DOES carry the migration-029 escape:
+    //   ai_predictions_select = is_platform_admin()
+    //                           OR (brokerage_id IS NULL)
+    //                           OR has_brokerage_access(brokerage_id)
+    // so an untenanted row is not a private row — it is readable by EVERY tenant.
+    // This is the ai_insights exposure class exactly, on a row that carries a
+    // named deal's close probability and its risk factors.
+    //
+    // The `ai_predictions_set_brokerage` BEFORE INSERT trigger WOULD resolve this
+    // one (it has a `transaction` branch) — but only if the inserting caller can
+    // read the transaction, because it is SECURITY INVOKER. See the longer note
+    // at predictWinningOffer's write. The stamp does not rely on it: the trigger
+    // fires only `IF NEW.brokerage_id IS NULL`, so an explicit tenant always wins.
+    let savedPredictionId: string | null = null
+    if (!dealBrokerageId) {
+      console.error(
+        `[ai-predictions] predictDealCloseProbability: transaction ${transactionId} carries no brokerage_id — close-probability prediction NOT written rather than written untenanted`,
+      )
+    } else {
+      const { data: savedPrediction, error: saveError } = await supabase
+        .from("ai_predictions")
+        .insert({
+          brokerage_id: dealBrokerageId,
+          prediction_type: "deal_close_probability",
+          entity_type: "transaction",
+          entity_id: transactionId,
+          prediction_value: prediction,
+          confidence_score: (prediction as any).confidence || 0.5,
+          model_version: "v1.0",
+        })
+        .select()
+        .maybeSingle()
 
-    if (saveError) {
-      console.error("[v0] Error saving prediction:", saveError)
+      if (saveError) {
+        console.error("[ai-predictions] ai_predictions (deal close probability) insert refused:", saveError.message)
+      }
+      savedPredictionId = (savedPrediction?.id as string | null) ?? null
     }
 
     // Create AI insights for critical risks
@@ -904,7 +1019,7 @@ Respond with JSON:
     return {
       success: true,
       prediction,
-      predictionId: savedPrediction?.id,
+      predictionId: savedPredictionId,
     }
   } catch (error) {
     console.error("[v0] Error in predictDealCloseProbability:", error)
@@ -1019,61 +1134,6 @@ Provide ACTIONABLE coaching. Respond with JSON:
 
     const result = analysis.data
 
-    // Save conversation intelligence to database
-    const { data: intelligence, error: saveError } = await supabase
-      .from("conversation_intelligence")
-      .insert({
-        lead_id: data.leadId,
-        agent_id: data.agentId,
-        conversation_type: data.conversationType,
-        conversation_id: data.conversationId,
-        transcript: data.transcript,
-        summary: result.summary,
-        key_points: [
-          ...(result.buyingSignals?.map((s: any) => s.signal) || []),
-          ...(result.objections?.map((o: any) => o.objection) || []),
-        ],
-        sentiment_score: result.sentiment?.confidence || 0.5,
-        intent_detected: [result.intent?.primary, ...(result.intent?.secondary || [])],
-        objections_raised: result.objections?.map((o: any) => o.objection) || [],
-        buying_signals: result.buyingSignals?.map((s: any) => s.signal) || [],
-        pain_points: result.painPoints || [],
-        them_first_score: result.themFirstScore || 50,
-        coaching_suggestions: result.themFirstAnalysis?.improve || [],
-        missed_opportunities: [],
-        ai_recommended_followup: result.recommendedFollowup?.themFirstApproach || "",
-        optimal_followup_time: result.recommendedFollowup?.when || "Within 24 hours",
-        analyzed_at: new Date().toISOString(),
-      })
-      .select()
-      .maybeSingle()
-
-    if (saveError) {
-      console.error("[v0] Error saving conversation intelligence:", saveError)
-    }
-
-    // Update lead temperature based on deal probability
-    const leadTemperature =
-      result.dealProbability >= 70 ? "hot" : result.dealProbability >= 40 ? "warm" : "cold"
-
-    try {
-      await supabase
-        .from("leads")
-        .update({
-          lead_temperature: leadTemperature,
-          last_contacted_at: new Date().toISOString(),
-        })
-        .eq("id", data.leadId)
-    } catch (e) {
-      // Try contacts table if leads doesn't exist
-      await supabase
-        .from("contacts")
-        .update({
-          last_contacted_at: new Date().toISOString(),
-        })
-        .eq("id", data.leadId)
-    }
-
     // TENANT ANCHOR for everything this function writes. It checks no session
     // (its `agentId` is a caller-supplied parameter, not an identity), so the
     // tenant is resolved from the RECORD the writes are filed against.
@@ -1081,13 +1141,27 @@ Provide ACTIONABLE coaching. Respond with JSON:
     // each table is asked in turn; neither id is ever substituted for the other.
     // leads.brokerage_id is NOT NULL, contacts.brokerage_id is nullable.
     //
-    // Resolved HERE, above both writers, rather than inside the insight branch:
-    // the compliance_flags write below needs the same anchor and fails the
-    // OPPOSITE way without it. compliance_flags does NOT carry the migration-029
-    // escape — its SELECT policy is `brokerage_id = (the caller's brokerage)`
-    // with no agent disjunct — so `brokerage_id = NULL` is NULL, never true, and
-    // an unstamped fair-housing flag is readable by nobody at all. An insight
-    // written untenanted leaks; a compliance flag written untenanted VANISHES.
+    // Resolved HERE, above ALL THREE writers, because they fail in three
+    // different directions without it:
+    //   · conversation_intelligence does NOT carry the migration-029 escape but
+    //     DOES stamp agent_id. Its SELECT policy is `is_platform_admin() OR
+    //     has_brokerage_access(brokerage_id) OR (is_agent_role() AND agent_id =
+    //     current_user_agent_id())`, and has_brokerage_access guards
+    //     `target_brokerage_id IS NOT NULL` — so on an untenanted row the
+    //     BROKERAGE LANE IS DEAD. The transcript, the coaching score and the
+    //     them-first analysis are visible to the writing agent alone and to
+    //     nobody the coaching surface exists for. It does not leak; it HIDES.
+    //     (`conversation_intelligence_set_brokerage`, a BEFORE INSERT trigger,
+    //     back-fills from lead_id → agent_id when brokerage_id is NULL. It fires
+    //     only IF NEW.brokerage_id IS NULL — the stamp wins — and it is SECURITY
+    //     INVOKER, so it silently yields NULL when the caller cannot read the
+    //     anchor. Backstop, not boundary.)
+    //   · ai_insights DOES carry the escape, so an untenanted row is the
+    //     opposite failure — readable by every tenant.
+    //   · compliance_flags carries neither the escape nor an agent disjunct —
+    //     `NULL = <uuid>` is NULL, never true — so an unstamped fair-housing
+    //     flag is readable by NOBODY. An insight written untenanted leaks; a
+    //     compliance flag written untenanted VANISHES.
     let conversationBrokerageId: string | null = null
     {
       const { data: leadTenantRow, error: leadTenantError } = await supabase
@@ -1114,7 +1188,73 @@ Provide ACTIONABLE coaching. Respond with JSON:
         }
         conversationBrokerageId = (contactTenantRow?.brokerage_id as string | null) ?? null
       }
+    }
 
+    // Save conversation intelligence to database. TENANT: the anchor above; with
+    // no tenant the row is invisible to the broker and to platform admin, so
+    // nothing is written and the reason is named rather than filing a coaching
+    // record where the coaching surface cannot reach it.
+    let intelligence: { id?: string } | null = null
+    if (!conversationBrokerageId) {
+      console.error(
+        `[ai-predictions] analyzeConversation: no brokerage resolves for ${data.leadId} in leads or contacts — conversation intelligence NOT written rather than written invisible to the broker`,
+      )
+    } else {
+      const { data: intelligenceRow, error: saveError } = await supabase
+        .from("conversation_intelligence")
+        .insert({
+          brokerage_id: conversationBrokerageId,
+          lead_id: data.leadId,
+          agent_id: data.agentId,
+          conversation_type: data.conversationType,
+          conversation_id: data.conversationId,
+          transcript: data.transcript,
+          summary: result.summary,
+          key_points: [
+            ...(result.buyingSignals?.map((s: any) => s.signal) || []),
+            ...(result.objections?.map((o: any) => o.objection) || []),
+          ],
+          sentiment_score: result.sentiment?.confidence || 0.5,
+          intent_detected: [result.intent?.primary, ...(result.intent?.secondary || [])],
+          objections_raised: result.objections?.map((o: any) => o.objection) || [],
+          buying_signals: result.buyingSignals?.map((s: any) => s.signal) || [],
+          pain_points: result.painPoints || [],
+          them_first_score: result.themFirstScore || 50,
+          coaching_suggestions: result.themFirstAnalysis?.improve || [],
+          missed_opportunities: [],
+          ai_recommended_followup: result.recommendedFollowup?.themFirstApproach || "",
+          optimal_followup_time: result.recommendedFollowup?.when || "Within 24 hours",
+          analyzed_at: new Date().toISOString(),
+        })
+        .select()
+        .maybeSingle()
+
+      if (saveError) {
+        console.error("[ai-predictions] conversation_intelligence insert refused:", saveError.message)
+      }
+      intelligence = (intelligenceRow as { id?: string } | null) ?? null
+    }
+
+    // Update lead temperature based on deal probability
+    const leadTemperature =
+      result.dealProbability >= 70 ? "hot" : result.dealProbability >= 40 ? "warm" : "cold"
+
+    try {
+      await supabase
+        .from("leads")
+        .update({
+          lead_temperature: leadTemperature,
+          last_contacted_at: new Date().toISOString(),
+        })
+        .eq("id", data.leadId)
+    } catch (e) {
+      // Try contacts table if leads doesn't exist
+      await supabase
+        .from("contacts")
+        .update({
+          last_contacted_at: new Date().toISOString(),
+        })
+        .eq("id", data.leadId)
     }
 
     // Create AI insight for immediate actions
@@ -1876,7 +2016,15 @@ export async function predictWinningOffer(data: {
   listPrice: number
 }) {
   const supabase = await createClient()
-  const { client: idxClient } = await idxForCallerBrokerage("predictWinningOffer")
+  // TENANT ANCHOR for the ai_predictions row written below. This row keys on the
+  // PROPERTY (entity_type "property", entity_id the MLS id), so there is no
+  // person-record to resolve a tenant through — the anchor is the SESSION
+  // brokerage whose own IDX feed the listing came out of, which is exactly whose
+  // offer strategy this is. idxForCallerBrokerage REFUSES rather than returning
+  // null, so `offerBrokerageId` is non-null by construction; it is the same
+  // single resolve the feed read above already depends on, not a second one.
+  const { client: idxClient, brokerageId: offerBrokerageId } =
+    await idxForCallerBrokerage("predictWinningOffer")
 
   // Get property intelligence. This used to call getProperties({ ids: [mlsId] }) —
   // the `ids` filter was ignored, so it received EVERY featured listing and took
@@ -1980,8 +2128,38 @@ Predict the winning offer strategy:
       throw new Error("Offer analysis failed")
     }
 
-    // Save prediction
-    await supabase.from("ai_predictions").insert({
+    // Save prediction. TENANT: `offerBrokerageId`, the session brokerage resolved
+    // once above. ai_predictions carries the migration-029 escape
+    // (`… OR (brokerage_id IS NULL) OR has_brokerage_access(brokerage_id)`), so an
+    // untenanted row publishes this brokerage's negotiation band — the price it
+    // will pay and the price it thinks wins — to every tenant on the platform.
+    //
+    // THE DATABASE HAS A PARTIAL SAFETY NET, AND THIS ROW FALLS THROUGH IT.
+    // Measured live, not inferred: `ai_predictions` carries a BEFORE INSERT
+    // trigger, `ai_predictions_set_brokerage`, which back-fills brokerage_id when
+    // it is NULL by resolving `entity_id` against leads / contacts / transactions
+    // / agents — the same record-driven resolution used above. It is a net, not a
+    // guarantee, and it fails in two ways that matter here:
+    //   1. IT HAS NO `property` BRANCH. This row's entity_type IS "property", so
+    //      the trigger resolves nothing and the row lands untenanted — proven in
+    //      a rolled-back transaction, brokerage_id NULL, readable by every tenant.
+    //   2. IT IS SECURITY INVOKER. Its lookups run under the INSERTING caller's
+    //      RLS, so whenever that caller cannot read the anchor record it silently
+    //      yields NULL rather than refusing — also proven live.
+    // The trigger only fires `IF NEW.brokerage_id IS NULL`, so an explicit stamp
+    // always wins and the two never fight. The stamp is the authority; the
+    // trigger is the backstop for writers that predate it.
+    //
+    // MEASURED AND RECORDED, NOT FIXED HERE: `ai_predictions.entity_id` is
+    // `uuid NOT NULL` and `data.propertyMlsId` is an MLS number string (its one
+    // caller reads it out of property_alert_results). So this write has never
+    // landed — Postgres refuses it 22P02 — and the refusal was dropped on the
+    // floor because the call destructured nothing. The error is destructured now
+    // so the failure is visible instead of silent. Choosing a uuid identity for an
+    // MLS listing is a schema decision, not a tenant fix, so it is named rather
+    // than invented.
+    const { error: offerPredictionError } = await supabase.from("ai_predictions").insert({
+      brokerage_id: offerBrokerageId,
       prediction_type: "winning_offer",
       entity_type: "property",
       entity_id: data.propertyMlsId,
@@ -1989,6 +2167,9 @@ Predict the winning offer strategy:
       confidence_score: offerStrategy.data.winningOfferStrategy?.confidence || 0.5,
       model_version: "v1.0",
     })
+    if (offerPredictionError) {
+      console.error("[ai-predictions] ai_predictions (winning offer) insert refused:", offerPredictionError.message)
+    }
 
     return {
       success: true,

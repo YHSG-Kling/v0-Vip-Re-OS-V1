@@ -63,6 +63,21 @@ export function VendorBreakdownRow({
   // would mean the action redacted, and there is nothing to show.
   const vendors = view && view.scope === "platform" ? (view.vendors ?? []) : []
 
+  // HOW WELL THE NUMBERS ARE KNOWN. The budget gate FAILS OPEN by design: when
+  // the plan-tier read or the month-to-date ledger read is refused it returns a
+  // verdict anyway, with `budget` set to the platform's solo_agent default and
+  // `percent` computed against it. Rendered plain, that is indistinguishable
+  // from a figure somebody actually read — a support agent triaging "98% of
+  // ceiling" would be triaging arithmetic on an assumption. A flag no surface
+  // shows is the same defect one layer out, so this is the surface.
+  const confidence = view && view.scope === "platform" ? view.confidence : "measured"
+  const CONFIDENCE_NOTE: Record<string, string> = {
+    assumed_ceiling:
+      "Ceiling ASSUMED, not read — this brokerage's plan tier could not be read, so the limit above is the platform default and the percentage is computed against it.",
+    unmeasured:
+      "NOT MEASURED — the month-to-date spend ledger could not be read. The gate failed open, so this verdict allowed the spend without measuring it; the figures above are not a measurement.",
+  }
+
   return (
     <>
       <tr className="border-b last:border-0">
@@ -93,19 +108,28 @@ export function VendorBreakdownRow({
               <p className="text-xs text-muted-foreground">Loading vendor breakdown…</p>
             ) : error ? (
               <p className="text-xs text-red-600">Breakdown unavailable: {error}</p>
-            ) : vendors.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                No per-vendor spend recorded for this brokerage this month.
-              </p>
             ) : (
-              <ul className="text-xs space-y-1">
-                {vendors.map((v) => (
-                  <li key={v.vendor} className="flex justify-between max-w-sm">
-                    <span>{v.vendor}</span>
-                    <span className="tabular-nums">${v.spent.toFixed(2)}</span>
-                  </li>
-                ))}
-              </ul>
+              <>
+                {confidence !== "measured" && (
+                  <p className="mb-2 text-xs font-medium text-amber-700">
+                    {CONFIDENCE_NOTE[confidence]}
+                  </p>
+                )}
+                {vendors.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    No per-vendor spend recorded for this brokerage this month.
+                  </p>
+                ) : (
+                  <ul className="text-xs space-y-1">
+                    {vendors.map((v) => (
+                      <li key={v.vendor} className="flex justify-between max-w-sm">
+                        <span>{v.vendor}</span>
+                        <span className="tabular-nums">${v.spent.toFixed(2)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
             )}
           </td>
         </tr>
