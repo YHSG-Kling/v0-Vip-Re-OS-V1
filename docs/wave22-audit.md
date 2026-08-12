@@ -57,10 +57,15 @@ So, precisely:
   can name *their own brokerage's* title user and pull any document on that
   transaction — the route never asks whether they are that person, and their own
   role is never consulted.
-- **Across brokerages, the escape is the hole**: `documents_tenant_select`
-  carries `brokerage_id IS NULL`, so **any untenanted document is readable by
-  every authenticated tenant** through this route. That is task #156's
-  cross-tenant half, reached through a surface that hands back `storage_url`.
+- ~~**Across brokerages, the escape is the hole**: `documents_tenant_select`
+  carries `brokerage_id IS NULL`, so any untenanted document is readable by
+  every authenticated tenant through this route.~~
+  **CORRECTION (mine, caught by the agent by measuring).** The policy does carry
+  the escape, but **`documents.brokerage_id` is `NOT NULL`** live — so no
+  untenanted document can exist and that half of the predicate is **unreachable
+  for this table**. The cross-tenant path I described is not live through this
+  route. The escape is still task #156's problem on the other 322 tables; it was
+  not this one's.
 - **The audit trail is forgeable and probably unreadable.** `dd_insert` is
   `WITH CHECK (true)` to PUBLIC, and `dd_select` gates on `user_id = auth.uid()`
   while the route writes `partner_id` — so the row recording the download may be
@@ -335,3 +340,111 @@ because every tenant-scoped reader uses equality. So:
   (64/64 untenanted), `compliance_flags` (invisible fair-housing flags),
   `ai_autopilot_plans`, `conversation_intelligence` — none of those were isolated.
   They were the first six of a hundred and eight.
+
+## Outcome
+
+Both agents survived. Both were checked against the tree, and **both corrected
+this audit** — once by structure, once by measurement.
+
+### W22-2 / m396+m397 — the carve-out set had to be TWO, not one
+
+Verified: m396 is `ALTER POLICY … TO authenticated` and nothing else (every
+`USING` / `WITH CHECK` / `DROP` / `CREATE` in the file sits inside a comment),
+its predicate matches exactly **37**, and m397 is split for the m392/m393 reason.
+
+**The catch the brief did not anticipate.** I named one carve-out,
+`listing_inquiries`. `tool_usage_sessions` carries **both** a `brokerage_id`
+column **and** the escape — confirmed live — so it satisfies m396's *wider*
+qualifier as well. Named only in m394, m396 would have narrowed the one policy
+m394 deliberately kept: **an earlier ruling silently reversed, with both
+migrations green.** Both are now named constants with their call sites in
+comments, and **A16 asserts m396's keep set is a superset of m394's**, so a later
+edit cannot drop it. One control isolates that property alone — m394 gains a
+carve-out m396 doesn't carry forward, and A16 goes red while both files remain
+internally consistent.
+
+**The live verification is the right shape too.** The database is at m391, so
+m392–m395 exist as files but are not applied. The agent applied m394's block
+first, inside the same rolled-back transaction, to reproduce the state m396
+actually runs against — rather than testing against a schema that does not
+exist. m397 **raised before, naming exactly the 37, and passed after**: a
+database-level negative control rather than a claim. Rollback restored
+74 / 53 / 1025 exactly, re-verified twice, including after the raising control
+aborted its own transaction.
+
+**21 negative controls red, 4 specificity controls green.** Five tables were
+spot-checked; `property_search_log` is the one worth keeping — a session client
+on a genuinely public route, the `tool_usage_sessions` shape, safe for a
+*different* reason (its `contacts` read is refused for `anon` before the insert
+is reached), and that reason is in m396's header rather than left implicit.
+
+### W22-1 — the subject comes from the session, and the second route was dead
+
+Verified: **neither route reads an identity from the request** — `partnerId` and
+`partnerType` are gone, not demoted to cross-checks. Both resolve through
+`resolveExternalPartnerIdentity` in `lib/kernel/portal-auth.ts`, the house's
+existing gate module, which calls `getUser()`. The refusal split is real:
+**401** no session · **404** authenticated but not attached (deliberately
+indistinguishable from "no such document", so the route is not an existence
+oracle) · **503** a read was refused · **403** authenticated but not an external
+partner.
+
+**Both parameters removed rather than kept, and the reason is better than
+tidiness:** the UI sends a `vendors.id` (`app/vendor/dashboard/page.tsx:35`,
+`app/title/dashboard/page.tsx:46`) while the checks compared it to
+`title_company_users.user_id` and `user_role_assignments.user_id` — **different
+id spaces**. A cross-check would have refused every legitimate title caller
+while adding nothing over the session subject. `partnerType` mattered more: it
+**chose the branch**, so a vendor could take the `title` lane by asking.
+
+**The second route was never working at all.** `actions/complete` gated on
+`referral_partners` — the brokerage referral CRM — read by the caller-supplied
+id and type. Its `partner_type` CHECK does not admit `"vendor"`, which is what
+its only caller sends; the id sent is a `vendors.id` compared against
+`referral_partners.id`; and the table holds **0 rows**. That gate could never
+admit a real portal caller, so the route 403'd every time. It now gates on the
+session identity. What it actually mutates is **one `audit_log` row** — the
+agent did not invent the missing mutation, it made the record honest.
+
+**Two audit-row defects of the same class**, both found by reading the policy
+rather than the column list: `document_downloads` now stamps `user_id` and the
+**document's** `brokerage_id` (so the brokerage whose document left the building
+can see it) because `dd_select` reads those and not `partner_id`; and
+`audit_log` was being written with `user_id: null` under a comment claiming "not
+user-initiated" — false under the ruling, and `al_select` gates on
+`user_id = auth.uid()`, so the only record of the action was invisible to the
+partner who performed it. **No policy was changed; the writers were.**
+
+**Live proof, in rolled-back transactions with real roles and JWT claims:** an
+ordinary agent naming partner B's title row returns **1** under the old subject
+and **0** under the new one, while partner B himself still returns **1** — the
+bypass is closed without locking out the legitimate caller. The lender lane
+needed one role higher: a same-brokerage **admin**, not an ordinary agent.
+Cleanup proven, all probe counts 0.
+
+**9 assertions, 11 negative controls all red, 2 specificity controls green.**
+G1 is a taint scan seeded on `request` and propagated through
+`new URL(request.url)`, `await request.json()` and destructuring, over **every**
+route under `app/api/external-portal/` discovered by walking the directory
+rather than a hard-coded list — so a third route cannot arrive with the same
+defect. Resource ids (`docId`, `transactionId`) are deliberately not treated as
+identities. One specificity control keeps the defect green when it appears only
+in a comment.
+
+### My corrections
+
+- **`documents.brokerage_id` is `NOT NULL`.** The cross-tenant document path I
+  described in W22-1 is not live — corrected in place above rather than left
+  standing. The escape remains #156's problem on the other 322 tables.
+- **The lender-lane bypass needed an admin**, not any authenticated agent.
+
+### Carried, stated rather than swept in
+
+- **`dd_insert` is still `WITH CHECK (true)` to PUBLIC.** It belongs to the
+  m396 wave's subject, not the route's; the writer was fixed, the policy was not.
+- **A plain (non-lender) vendor still has no document lane.** True before this
+  change. Widening it is a product decision, not a repair.
+- **`lib/kernel/lender-linkage.ts:22-24`** still describes `vendors.category` as
+  the pre-m304 Title-Case six; live it is the 38-value lowercase taxonomy that
+  `lib/kernel/vendor-categories.ts` already carries. A stale comment, left for
+  the same reason it is reported.

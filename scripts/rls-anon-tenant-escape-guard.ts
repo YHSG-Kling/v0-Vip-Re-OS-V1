@@ -38,11 +38,37 @@
  * asserts it (separate file: a `raise` rolls back its own transaction, so
  * asserting inside m394 would undo the narrowings it just made).
  *
+ * ── AND THEN m396/m397, WHERE THE QUALIFIER MOVED OFF THE PROXY ──────────────
+ *
+ * m394's INSERT half fired only where the table ALSO carried the escape. That
+ * qualifier was correct — it is what kept m394 away from `listing_inquiries`,
+ * the real public inquiry form — but the escape is a PROXY for "tenant table",
+ * carried by whichever tables 029/030 happened to reach, and it is lossy. Of
+ * the 58 INSERT-true-to-PUBLIC policies m394 left standing, **38 sit on tables
+ * that carry a `brokerage_id` COLUMN**, which is what this schema actually means
+ * by a tenant table. `agent_monthly_earnings`, `agent_points_log`,
+ * `communications`, `automation_logs`, `push_notification_queue`,
+ * `transaction_pending_actions`: an anonymous caller could insert into an
+ * earnings ledger. See docs/wave21-audit.md § W21-5 and docs/wave22-audit.md
+ * § W22-2 for the two-axis census (browser client, AND session client on a
+ * logged-out route — the second is why `tool_usage_sessions` is a carve-out).
+ *
+ * m396 narrows 37 of the 38 on the column qualifier; m397 asserts it. TWO named
+ * carve-outs, and the second one matters structurally: `listing_inquiries`
+ * (genuine logged-out browser writer) AND `tool_usage_sessions` (m394's
+ * carve-out, whose table satisfies the wider qualifier too — unnamed in m396 it
+ * would be narrowed, silently reversing m394). m396's keep set must therefore
+ * stay a SUPERSET of m394's, and A16 below is what holds that.
+ *
+ * Applied state after m394 + m396: of the 74, 52 are narrowed (15 + 37) and 22
+ * remain granted to PUBLIC — 20 on tables with NO `brokerage_id` column (not
+ * tenant tables; a separate question) plus the 2 named carve-outs.
+ *
  * ── WHAT THIS GUARD STANDS OVER: THE SOURCE SIDE ─────────────────────────────
  *
- * m394/m395 fix and hold the DATABASE. They cannot stop a 321st arriving in the
- * next migration by somebody copying the neighbour above it — which is exactly
- * how the 320 got there. This guard holds the SOURCE.
+ * m394/m395 and m396/m397 fix and hold the DATABASE. They cannot stop a 321st
+ * arriving in the next migration by somebody copying the neighbour above it —
+ * which is exactly how the 320 got there. This guard holds the SOURCE.
  *
  * THREE CORPORA, established by reading rather than assumed:
  *
@@ -72,9 +98,12 @@
  * write surface is a real thing this product has (`listing_inquiries`, the public
  * inquiry form, is exactly this shape and is correct) and the defect in all 74 is
  * that nobody said who they meant. That is also why this rule is BROADER than
- * what m394 actually changes: m394 narrows only the 16 on tenant tables, because
- * touching the other 58 is an unreviewed behaviour change on live public
- * surfaces; the guard only demands that a new one name its roles, which is free.
+ * what the migrations actually change, and it STAYS broader after m396: the
+ * migrations narrow 52 of the 74 — the ones on tenant tables, where the census
+ * cleared them — and leave 22 alone, because narrowing an uncensused public
+ * surface is a behaviour change and demanding that a NEW policy name its roles
+ * is free. The asymmetry is deliberate and it shrank on purpose; it did not go
+ * away. It never should: naming the roles is the cheap half.
  *
  * ── HOW THIS PROOF IS BUILT ──────────────────────────────────────────────────
  *   · Detection is STATEMENT-LEVEL, not line-level. SQL wraps freely and a
@@ -88,14 +117,21 @@
  *     concatenated string literals. Adjacent literals are glued before scanning,
  *     so the highest-volume shape in this codebase is the one that is hardest to
  *     hide from.
- *   · The migrations must keep keying on the CONSTRUCT. If m394 or m395 is ever
- *     rewritten to match a policy NAME, it would find whatever happens to be
- *     spelled `%_tenant` and miss every differently-named one — the original
- *     mistake (believing a policy's name over its text) in a new coat.
- *   · m394 must stay a NARROWING. Removing the `brokerage_id IS NULL` branch is
- *     the cross-tenant half, it is recorded in the audit as needing an owner
- *     ruling with three different correct resolutions, and it is asserted here so
- *     it cannot arrive as a quiet edit to a file that already exists.
+ *   · The migrations must keep keying on the CONSTRUCT. If m394, m395, m396 or
+ *     m397 is ever rewritten to match a policy NAME, it would find whatever
+ *     happens to be spelled `%_tenant` / `%_insert` and miss every
+ *     differently-named one — the original mistake (believing a policy's name
+ *     over its text) in a new coat.
+ *   · m394 and m396 must stay NARROWINGS. Removing the `brokerage_id IS NULL`
+ *     branch is the cross-tenant half, it is recorded in the audit as needing an
+ *     owner ruling with three different correct resolutions (task #156), and it
+ *     is asserted here so it cannot arrive as a quiet edit to a file that
+ *     already exists.
+ *   · m396's carve-out set must stay a SUPERSET of m394's. m396 widens the
+ *     qualifier from "table carries the escape" to "table carries a
+ *     `brokerage_id` column", which swallows m394's own carve-out; if
+ *     `tool_usage_sessions` ever falls out of m396's keep array, a migration
+ *     written to close one hole silently reverses an earlier ruling on another.
  *   · Every assertion carries a NEGATIVE CONTROL: the defect is written into a
  *     real file, THE PATCH IS VERIFIED TO HAVE APPLIED (a find-string that
  *     silently no longer matches is theatre, not a control), the check is
@@ -117,6 +153,9 @@ const HANDRUN_DIR = "supabase/rls-governance"
 
 const M394 = "supabase/migrations/m394-narrow-tenant-escape-policies-to-authenticated.sql"
 const M395 = "supabase/migrations/m395-assert-no-tenant-escape-granted-to-public.sql"
+const M396 =
+  "supabase/migrations/m396-narrow-anonymous-insert-on-tenant-tables-to-authenticated.sql"
+const M397 = "supabase/migrations/m397-assert-no-anonymous-insert-on-tenant-tables.sql"
 
 /**
  * FROZEN. These are the applied migrations that already carry the construct, as
@@ -165,8 +204,28 @@ const LEGACY_INSERT_BASELINE = 17
 const HANDRUN_ESCAPE_BASELINE = 0
 const HANDRUN_INSERT_BASELINE = 11
 
-/** The one policy m394 deliberately leaves reachable by `anon`, and why. */
+/**
+ * The one policy m394 deliberately leaves reachable by `anon`:
+ * `app/actions/calculators.ts:607 trackToolUsage`, a session client on a
+ * logged-out route, so it really does run as `anon`.
+ */
 const NAMED_ANON_INSERT_CARVE_OUT = "tool_usage_sessions.tool_usage_sessions_insert"
+
+/**
+ * The policies m396 deliberately leaves reachable by `anon`. TWO, and the second
+ * is not optional: m396's qualifier ("table carries a `brokerage_id` column") is
+ * WIDER than m394's ("table carries the escape") and `tool_usage_sessions`
+ * satisfies both, so m396 must re-name m394's carve-out or it narrows it.
+ *
+ *   listing_inquiries   — the public inquiry form.
+ *                         app/listings/[listingId]/public-info-form.tsx, a
+ *                         browser client on a logged-out listing page.
+ *   tool_usage_sessions — carried forward from m394. Same call site as above.
+ */
+const M396_ANON_INSERT_CARVE_OUTS = [
+  "listing_inquiries.listing_inquiries_insert",
+  NAMED_ANON_INSERT_CARVE_OUT,
+]
 
 const failures: string[] = []
 function check(label: string, ok: boolean, detail = ""): boolean {
@@ -350,26 +409,34 @@ function assertKeysOnConstruct(path: string, label: string): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// A11 — m394 is a NARROWING, not a rewrite
+// A11 / A15 — the narrowing migrations are NARROWINGS, not rewrites
 // ─────────────────────────────────────────────────────────────────────────────
-function assertM394IsNarrowingOnly(): boolean {
-  const body = stripSqlComments(raw(M394)).replace(/\s+/g, " ")
+function assertNarrowingOnly(path: string, label: string): boolean {
+  if (!existsSync(resolve(ROOT, path))) return check(label, false, `${path} is missing`)
+  const body = stripSqlComments(raw(path)).replace(/\s+/g, " ")
   const altersToAuthenticated = /alter policy %I on public\.%I to authenticated/i.test(body)
   // Removing the `brokerage_id IS NULL` branch is the CROSS-TENANT half. The
-  // audit records it as needing an owner ruling — three different correct
-  // resolutions depending on the table — so it must not arrive here as an edit.
+  // audit records it as needing an owner ruling (task #156) — three different
+  // correct resolutions depending on the table — so it must not arrive here as
+  // an edit to a file that already exists.
   const rewritesExpression = /alter policy[^;]*\b(using|with check)\b/i.test(body)
   const drops = /\bdrop\s+policy\b/i.test(body)
   const creates = /\bcreate\s+policy\b/i.test(body)
   const ok = altersToAuthenticated && !rewritesExpression && !drops && !creates
   return check(
-    "A11 m394 only ALTERs … TO authenticated (no DROP, no CREATE, no expression rewrite)",
+    label,
     ok,
     ok
       ? ""
       : `altersToAuthenticated=${altersToAuthenticated} rewritesExpression=${rewritesExpression} drops=${drops} creates=${creates}`,
   )
 }
+
+const assertM394IsNarrowingOnly = () =>
+  assertNarrowingOnly(
+    M394,
+    "A11 m394 only ALTERs … TO authenticated (no DROP, no CREATE, no expression rewrite)",
+  )
 
 // ─────────────────────────────────────────────────────────────────────────────
 // A12 — the one anon-INSERT carve-out is NAMED, and m394 and m395 agree on it
@@ -393,6 +460,75 @@ function assertCarveOutNamedAndAgreed(): boolean {
     "A12 the anon-INSERT carve-out is NAMED in m394 and m395 names the same set",
     ok,
     ok ? "" : `m394=[${inM394.join(", ")}] m395=[${inM395.join(", ")}]`,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A13 / A14 — m396 and m397 key on the CONSTRUCT, and on the RIGHT construct
+//
+// Their qualifier is NOT m394's. It is: a PERMISSIVE `FOR INSERT WITH CHECK
+// (true)` policy granted to PUBLIC, on a table carrying a live `brokerage_id`
+// COLUMN. Two ways to get this wrong, and both are checked:
+//   · selecting by policy NAME (`%_insert`), which is the original mistake —
+//     believing a policy's name over its text — in a new coat; and
+//   · dropping the tenant-column qualifier, which turns a reviewed 37-policy
+//     narrowing into a blanket narrowing of all 74 and takes the uncensused
+//     public surfaces with it.
+// ─────────────────────────────────────────────────────────────────────────────
+function assertKeysOnTenantColumnConstruct(path: string, label: string): boolean {
+  if (!existsSync(resolve(ROOT, path))) return check(label, false, `${path} is missing`)
+  const body = stripSqlComments(raw(path)).replace(/\s+/g, " ")
+
+  const toPublic = /0\s*=\s*any\s*\(\s*p\.polroles\s*\)/.test(body)
+  const insertHalf =
+    /p\.polcmd\s*=\s*'a'/.test(body) &&
+    /p\.polpermissive/.test(body) &&
+    /pg_get_expr\s*\(\s*p\.polwithcheck[\s\S]{0,120}?=\s*'true'/.test(body)
+  // The qualifier that makes it a TENANT table: the column, read off the
+  // catalogue, excluding dropped attributes (a dropped column still occupies a
+  // pg_attribute row, and `attisdropped` is the difference between "has a
+  // brokerage_id" and "used to").
+  const tenantColumn =
+    /pg_attribute/.test(body) &&
+    /a\.attname\s*=\s*'brokerage_id'/.test(body) &&
+    /a\.attisdropped/.test(body)
+
+  const keysOnName = /\bp\.polname\s+(?:i?like|=|~)/i.test(body)
+
+  const ok = toPublic && insertHalf && tenantColumn && !keysOnName
+  return check(
+    label,
+    ok,
+    ok
+      ? ""
+      : `toPublic=${toPublic} insertHalf=${insertHalf} tenantColumn=${tenantColumn} keysOnName=${keysOnName}`,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A16 — m396's carve-outs are NAMED, m397 agrees, and the set is a SUPERSET of
+//       m394's. The superset half is the load-bearing one: m396 widens the
+//       qualifier onto a table m394 deliberately spared, so a keep array that
+//       forgets `tool_usage_sessions` reverses an earlier ruling by accident —
+//       silently, with a green migration.
+// ─────────────────────────────────────────────────────────────────────────────
+function assertM396CarveOutsNamedAgreedAndSuperset(): boolean {
+  const inM394 = carveOutSet(M394)
+  const inM396 = carveOutSet(M396)
+  const inM397 = carveOutSet(M397)
+
+  const named = M396_ANON_INSERT_CARVE_OUTS.every((x) => inM396.includes(x))
+  const agreed = inM396.length === inM397.length && inM396.every((x) => inM397.includes(x))
+  const supersetOfM394 = inM394.every((x) => inM396.includes(x))
+
+  const ok = named && agreed && supersetOfM394
+  return check(
+    "A16 m396's anon-INSERT carve-outs are NAMED, m397 names the same set, and it is a SUPERSET of m394's",
+    ok,
+    ok
+      ? ""
+      : `named=${named} agreed=${agreed} supersetOfM394=${supersetOfM394} ` +
+          `m394=[${inM394.join(", ")}] m396=[${inM396.join(", ")}] m397=[${inM397.join(", ")}]`,
   )
 }
 
@@ -534,6 +670,21 @@ const A8 = () =>
   )
 const A9 = () => assertKeysOnConstruct(M394, "A9  m394 selects on the CONSTRUCT, not on polname")
 const A10 = () => assertKeysOnConstruct(M395, "A10 m395 selects on the CONSTRUCT, not on polname")
+const A13 = () =>
+  assertKeysOnTenantColumnConstruct(
+    M396,
+    "A13 m396 selects on the CONSTRUCT (INSERT-true-to-PUBLIC on a `brokerage_id` table), not on polname",
+  )
+const A14 = () =>
+  assertKeysOnTenantColumnConstruct(
+    M397,
+    "A14 m397 selects on the CONSTRUCT (INSERT-true-to-PUBLIC on a `brokerage_id` table), not on polname",
+  )
+const A15 = () =>
+  assertNarrowingOnly(
+    M396,
+    "A15 m396 only ALTERs … TO authenticated (no DROP, no CREATE, no expression rewrite)",
+  )
 
 // The probe statements the negative controls splice in.
 const ESCAPE_PROBE =
@@ -564,6 +715,10 @@ function main(): void {
   A10()
   assertM394IsNarrowingOnly()
   assertCarveOutNamedAndAgreed()
+  A13()
+  A14()
+  A15()
+  assertM396CarveOutsNamedAgreedAndSuperset()
 
   console.log(
     `\n  escape      applied ${tally(APPLIED_DIR, isAnonReachableEscape).total}` +
@@ -723,6 +878,101 @@ function main(): void {
       assertCarveOutNamedAndAgreed,
     )
 
+    // A13 / A14 — m396 and m397 rewritten to select on the policy NAME. Same
+    // mistake as A9/A10 in a different spelling: they would find whatever is
+    // called `%_insert` and miss every differently-named one.
+    negative(
+      "m396 rewritten to select on polname instead of the construct",
+      {
+        file: M396,
+        find: "n.nspname = 'public'",
+        replace: "p.polname like '%_insert' and n.nspname = 'public'",
+      },
+      A13,
+    )
+    negative(
+      "m397 rewritten to select on polname instead of the construct",
+      {
+        file: M397,
+        find: "n.nspname = 'public'",
+        replace: "p.polname like '%_insert' and n.nspname = 'public'",
+      },
+      A14,
+    )
+
+    // A13 — the TENANT-COLUMN qualifier dropped. Without it m396 stops being a
+    // reviewed 37-policy narrowing and becomes a blanket narrowing of all 74,
+    // taking the 20 uncensused public surfaces with it.
+    negative(
+      "m396's `brokerage_id` column qualifier removed (blanket narrowing of all 74)",
+      {
+        file: M396,
+        find: "and  a.attname  = 'brokerage_id'",
+        replace: "and  a.attname  = a.attname",
+      },
+      A13,
+    )
+
+    // A15 — m396 turned from a narrowing into a drop. Dropping these policies
+    // would deny every authenticated tenant writer on 37 tables, which is the
+    // opposite failure and just as real.
+    negative(
+      "m396's ALTER … TO authenticated turned into a DROP POLICY",
+      {
+        file: M396,
+        find: "alter policy %I on public.%I to authenticated",
+        replace: "drop policy %I on public.%I",
+      },
+      A15,
+    )
+
+    // A16 — m396's carve-outs emptied while m397 still exempts them. A migration
+    // that reopens `anon` on the inquiry form every time it runs, and an
+    // assertion that demands it be closed.
+    negative(
+      "m396's named carve-outs emptied while m397 still exempts them",
+      {
+        file: M396,
+        find:
+          `array[\n    'listing_inquiries.listing_inquiries_insert',\n` +
+          `    'tool_usage_sessions.tool_usage_sessions_insert'\n  ]`,
+        replace: "'{}'",
+      },
+      assertM396CarveOutsNamedAgreedAndSuperset,
+    )
+
+    // A16 — THE ONE THIS ASSERTION EXISTS FOR. `tool_usage_sessions` dropped
+    // from m396's keep array: m396's qualifier is wider than m394's and covers
+    // that table, so m396 would narrow the one policy m394 deliberately kept and
+    // reverse an earlier ruling silently, with both migrations green.
+    negative(
+      "m394's carve-out dropped from m396's keep array (m394's ruling reversed)",
+      {
+        file: M396,
+        find:
+          `'listing_inquiries.listing_inquiries_insert',\n` +
+          `    'tool_usage_sessions.tool_usage_sessions_insert'`,
+        replace: "'listing_inquiries.listing_inquiries_insert'",
+      },
+      assertM396CarveOutsNamedAgreedAndSuperset,
+    )
+
+    // A16 — and the superset property ON ITS OWN, isolated from `agreed`: m394
+    // grows a carve-out that m396 does not carry forward. m396 and m397 still
+    // agree with each other and still name the inquiry form, so only the
+    // superset half can be what goes red.
+    negative(
+      "m394 gains a carve-out m396 does not carry forward (superset property alone)",
+      {
+        file: M394,
+        find: "array['tool_usage_sessions.tool_usage_sessions_insert']",
+        replace:
+          "array['tool_usage_sessions.tool_usage_sessions_insert', " +
+          "'saved_calculations.saved_calculations_insert']",
+      },
+      assertM396CarveOutsNamedAgreedAndSuperset,
+    )
+
     // ── SPECIFICITY: the guard must not flag a correctly-spelled policy ──────
     specificity(
       "an escape policy that DOES say TO authenticated is not flagged",
@@ -746,6 +996,32 @@ function main(): void {
           `  with check (true);\ndo $$`,
       },
       A3,
+    )
+    // A13 keys on the CONSTRUCT, not on one exact spelling of it. Reformatting
+    // the predicate must not be enough to trip a guard, or the guard is a
+    // whitespace test wearing a security label.
+    specificity(
+      "m396's construct predicate reformatted (whitespace) is still recognised",
+      {
+        file: M396,
+        find: "0 = any(p.polroles)",
+        replace: "0  =  any( p.polroles )",
+      },
+      A13,
+    )
+    // A16 keys on the carve-out SET, not on how the array is laid out.
+    specificity(
+      "m396's carve-out array collapsed onto one line is still the same set",
+      {
+        file: M396,
+        find:
+          `array[\n    'listing_inquiries.listing_inquiries_insert',\n` +
+          `    'tool_usage_sessions.tool_usage_sessions_insert'\n  ]`,
+        replace:
+          `array['listing_inquiries.listing_inquiries_insert', ` +
+          `'tool_usage_sessions.tool_usage_sessions_insert']`,
+      },
+      assertM396CarveOutsNamedAgreedAndSuperset,
     )
 
     console.log(
