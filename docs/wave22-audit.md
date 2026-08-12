@@ -247,3 +247,33 @@ readable by every tenant under the escape that is about to be removed.
 **Sequence:** triage → fix the tenant-class writers → *then* the migration. Not
 the other way round. Removing the escape first would turn 146 silent
 mis-tenanted writes into 146 loud failures, which is better but not good.
+
+### Refinement: the 146 are TWO different failures, and which one depends on the client
+
+Checking the writers before planning the fix turned up something that changes the
+shape of the work. **A service-client write bypasses RLS entirely** — including
+`WITH CHECK`. So removing the escape does **not** make those writes fail. The row
+lands exactly as before, untenanted, and simply becomes **invisible to everyone**
+— which is precisely what `compliance_flags` was doing before wave 21 fixed it,
+and the harder of the two failures to notice.
+
+| client | what removing the escape does |
+|---|---|
+| **service** (`createServiceClient`, BYPASSRLS) | write succeeds, row is **orphaned and unreadable**. Silent. |
+| **session** (`createClient` from server, under RLS) | write **fails loudly**. Visible immediately. |
+
+A rough pass over the sites the census printed classified **25 service / 19
+session / 77 unresolved**. **That split is indicative, not authoritative, and the
+unresolved 77 is the real result** — the receiver is frequently assigned in
+another scope, passed in as a parameter, or threaded through a helper, so a
+grep-shaped classifier cannot answer it. Establishing the client per site
+requires reading, which is the same discipline that turned up
+`ai-prediction-outcomes.ts:76` in wave 21 after it had been *assumed* to be a
+service-client module like its two neighbours.
+
+**What this changes about the plan:** "146 writers would start failing" was too
+simple, and in the reassuring direction, which is the wrong way to be wrong.
+Roughly a sixth would fail loudly and get fixed within the hour; the rest would
+quietly start producing rows nobody can read. The triage therefore has to
+classify **by client and by tenancy class**, per site, before the migration —
+not just count the sites.
