@@ -214,8 +214,33 @@ has a target.
     somebody happened to format across three lines. Five negative controls, each
     watched go red.
 
-  **Still open, and deliberately left open:** whether any of the 173 is live.
-  The migrations make the answer safe either way; they do not make it known.
+  **ANSWERED — wave 20, against the live database.** The connectivity outage
+  described below lasted the whole of waves 16–19; the owner reported the server
+  healthy and the query below was run verbatim.
+
+  **ZERO rows** under the exact m392/m393 predicate (permissive + `polcmd = '*'`
+  + qual `'true'` + granted to PUBLIC / `anon` / `authenticated`). A broader run
+  without the role filter returned 19 rows, and `to_public` was **false on every
+  one** — all granted explicitly to `service_role`, which holds `BYPASSRLS`
+  anyway, so they are inert by two independent mechanisms.
+
+  Positive confirmation on the nine `scripts/330` tables: **no "Service role full
+  access" policy exists on any of them.** Each carries per-command tenant-scoped
+  policies instead — `client_portal_activity_select` resolves to
+  `is_platform_admin() OR (is_lead_visible_role() AND has_brokerage_access(…))`,
+  so **wave 15's analysis of that policy stands; it is not decorative.**
+
+  ⇒ The legacy `scripts/*.sql` RLS block never ran against this database. m392
+  dropped nothing, m393 passes silently, and `test:rls-public-grant` is pure
+  regression insurance — which is the outcome the migration header predicted and
+  the one nobody would otherwise have checked.
+
+  **This closes the question, and opened a bigger one.** The same queries
+  surfaced a NULL tenant escape on 320 tables that *is* live and *is* reachable
+  by `anon`. See `docs/wave20-audit.md`.
+
+  The original framing is kept below because the query and its two readings are
+  what made the answer checkable.
 
   **Retried an hour later, and the retry narrowed the cause rather than
   answering the question.** `get_project` returns `ACTIVE_HEALTHY` — so this is
