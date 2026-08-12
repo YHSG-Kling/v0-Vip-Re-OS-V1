@@ -136,6 +136,83 @@ caller" is not a deletion reason.)*
 - `package.json` guard entry **and** a `MAINTENANCE_DOMAINS` entry in
   `lib/kernel/manager-registry.ts` — a proof needs both.
 
+## W20-3 — sixteen `FOR INSERT WITH CHECK (true)` policies granted to `PUBLIC`, and narrowing the escape does not touch them
+
+Found while checking the 53 tables that keep a second public policy — the check
+that was meant to prove W20-1 was safe, which instead turned up an independent
+hole. Narrowing the escape closes nothing here, so it has to ride in the same
+migration or it gets missed.
+
+| table | policy | | table | policy |
+|---|---|---|---|---|
+| `ai_predictions` | `ai_predictions_insert` | | `orchestrator_tasks` | `ot_insert` |
+| `ai_suggestions` | `ai_suggestions_insert` | | `presentation_sections` | `presentation_sections_tenant_insert` |
+| `ai_usage_log` | `ai_usage_log_insert` | | `prospect_context` | `prospect_context_insert` |
+| `chat_sessions` | `widget_insert_chat_sessions` | | `prospects` | `prospects_insert` |
+| `conversation_insights` | `System can insert insights` | | `saved_calculations` | `saved_calculations_insert` |
+| `document_folders` | `df_insert` | | `tool_usage_sessions` | `tool_usage_sessions_insert` |
+| `email_tracking` | `email_tracking_insert` | | `vendor_communications` | `vc_insert` |
+| `generated_content` | `generated_content_insert` | | `vendor_usage_tracking` | `Service role can insert vendor usage` |
+
+Two of the policy **names declare the intent they fail to implement** — "System
+can insert", "Service role can insert". `service_role` holds `BYPASSRLS`, so
+neither policy was ever needed for its stated purpose. What each one actually
+does is grant `anon` an unconditional insert.
+
+It is not uniformly cosmetic. `ai_usage_log` and `vendor_usage_tracking` are the
+metering ledgers the vendor budget gate reads — forged rows there poison spend
+accounting on the platform's own bill. `orchestrator_tasks` is a work queue.
+`generated_content` is a content-injection surface.
+
+**Fifteen of the sixteen have no anonymous writer at all.** Measured, not
+assumed: zero browser-client files touch any of them. `chat_sessions` — whose
+policy is named for a widget — is written by `lib/education/agent-guide.ts:106`
+and `client-tutor.ts:139`, both through the **service client**, which bypasses
+RLS entirely. `email_tracking` is written by the SendGrid webhook, same. And
+`saved_calculations`, `prospects` and `prospect_context` have **no insert call
+site anywhere in the codebase**.
+
+**One is genuine and must survive.** `tool_usage_sessions`:
+`app/actions/calculators.ts:607 trackToolUsage`, under a header reading
+`// PUBLIC TOOLS (Zero Friction, No Email Required)`, uses the session server
+client — so for a logged-out visitor it runs as `anon` and needs this policy.
+That one is a deliberate carve-out, named in the migration rather than silently
+excluded.
+
+*(Noted in passing, not fixed here: `trackToolUsage` wraps its insert in
+`try/catch` with `// Silently fail`. A bare `try/catch` around a supabase call
+catches nothing — the write is fire-and-forget telemetry and the swallow is
+intentional, but the mechanism it uses is not the one it thinks it is.)*
+
+### Completeness check — do W20-1 and W20-3 together actually close the door?
+
+Asked explicitly rather than assumed, because "we narrowed the obvious one" is
+how a hole survives a fix. Every remaining policy granted to `PUBLIC` on those
+320 tables, excluding the escape and excluding anything whose predicate calls
+`auth.uid()` / `current_user_brokerage_id()` / `has_brokerage_access()` /
+`is_platform_admin()` / `is_brokerage_admin()` / `current_user_agent_id()` /
+`is_lead_visible_role()` — i.e. everything an anonymous caller could still
+satisfy — comes to **three**:
+
+| table | policy | predicate | anon? |
+|---|---|---|---|
+| `isa_outreach_log` | `service_role_bypass_isa_outreach_log` | `auth.role() = 'service_role'` | no |
+| `seller_stage_coaching` | `seller_stage_coaching_service_write` | `false` | no |
+| `offer_strategy_templates` | `Read active templates` | `is_active = true` | **yes** |
+
+So the two changes do close it, with exactly one residual — recorded below
+rather than swept into a migration it does not belong in.
+
+**`offer_strategy_templates`: `FOR SELECT USING (is_active = true)` to `PUBLIC`.**
+Confirmed as `anon`: readable, **0 rows today** because the table is empty
+pre-rollout. This is not the escape and not an accident of 029/030 — it is a
+deliberately written policy with a deliberate name. But an offer strategy
+template is a brokerage's negotiation playbook, and the moment anybody marks one
+active it is readable by the public internet. Latent, not live. **Needs an owner
+ruling**, because "active" may well have been meant as *published to this
+tenant's agents* rather than *published to everyone*, and only the owner can say
+which.
+
 ## W20-2 — `ai_insights`: eleven writers omit the tenant, and the reader's comment says otherwise
 
 `app/dashboard/agent/page.tsx:287`:
