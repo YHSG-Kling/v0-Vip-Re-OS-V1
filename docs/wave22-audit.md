@@ -186,3 +186,64 @@ not after.
 
 Sequencing note: this work writes migrations, and so does the W21-5 narrowing
 (m396/m397) already in flight. It waits until that lands rather than racing it.
+
+## W22-3 — the #156 blocker, ENUMERATED: 146 writers would start failing
+
+Ruling 2 says the escape is removed everywhere except the catalogues and
+`api_response_logs`. Its stated precondition was *"the remaining writers must be
+found first"*. Found:
+
+| | |
+|---|---|
+| tables carrying the escape **and** a `brokerage_id` column | **323** |
+| of those, protected by a `*_set_brokerage` back-fill trigger | **14** (62 such triggers exist, but only 14 land on escape tables) |
+| unstamped `.insert()` / `.upsert()` sites into escape tables | **211**, across **87** tables |
+| …covered by a back-fill trigger | 55 |
+| …carrying a spread that *may* stamp (needs reading) | 10 |
+| **…HARD — no trigger, no spread, would fail immediately** | **146**, across **77** tables |
+
+Scanned string-aware with balanced-delimiter matching and `brokerage_id`
+required at **depth 1**, because the same three letters nested inside a jsonb
+payload stamp nothing — the same trap wave 20's guard was built around.
+
+Heaviest first:
+
+| table | hard sites | |
+|---|---|---|
+| `automation_errors` | **17** | |
+| `notifications` | **16** | |
+| `sequence_step_executions`, `open_house_attendees`, `cron_execution_logs` | 4 each | |
+| `social_posts`, `smart_assistant_suggestions`, `open_house_rsvp_tracking`, `open_house_invitations`, `listing_page_analytics` | 3 each | |
+| 20 more tables | 2 each | |
+| the remaining ~47 tables | 1 each | |
+
+### The triage this needs before anyone writes SQL
+
+The 146 are **not** all defects. `api_response_logs` proved that a table can
+write `brokerage_id: null` deliberately and correctly — it is platform telemetry,
+and the ruling exempts it with a platform-admin policy rather than a stamp. At
+least two of the heaviest tables here look like the same class:
+**`automation_errors`** (17) and **`cron_execution_logs`** (4) are infrastructure
+ledgers, and `health_metrics` / `system_health_checks` appear in the long tail.
+
+So the work splits three ways, and guessing which bucket a table is in is
+exactly how a correct migration breaks a working lane:
+
+1. **Platform-class** — exempt, and given a platform-admin policy like
+   `api_response_logs`. Identify by reading the writer, not by the name.
+2. **Tenant-class** — stamp the tenant, resolved through the record, the way
+   waves 20 and 21 did for `ai_insights`, `compliance_flags`, `ai_predictions`,
+   `ai_autopilot_plans` and `conversation_intelligence`.
+3. **Trigger-covered (55)** — verify the trigger actually covers the shape being
+   written. Wave 21 found `ai_predictions_set_brokerage` had **no `property`
+   branch**, and that every one of these triggers is **SECURITY INVOKER**, so it
+   yields NULL whenever the inserting caller cannot read the anchor. A trigger is
+   a net with holes in it, not a guarantee.
+
+`notifications` (16) is the one to look at first among the tenant-class
+candidates: it is high-volume, user-facing, and an untenanted notification is
+readable by every tenant under the escape that is about to be removed.
+
+**Sequence:** triage → fix the tenant-class writers → *then* the migration. Not
+the other way round. Removing the escape first would turn 146 silent
+mis-tenanted writes into 146 loud failures, which is better but not good.
