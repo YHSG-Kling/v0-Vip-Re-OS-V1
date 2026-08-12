@@ -1156,14 +1156,76 @@ export async function getAgentCoachingInsights(agentId: string, limit = 10) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// THE CALLER'S OWN IDX BROKER ACCOUNT — RESOLVED, NEVER ASSUMED
+//
+// Six functions in this file used to open their property lane with
+// `new IDXBrokerClient()`. That took no argument, so the client fell straight
+// through to the platform's IDXBROKER_API_KEY and every brokerage — including one
+// that had connected its own IDX Broker account precisely to get its own board's
+// listings — was served the platform's feed instead. IDX Broker is
+// TENANT-SETTABLE (lib/connections/scope.ts lists `idxbroker` under the
+// per-tier-connectable `listing` domain); `IDXBrokerClient.forBrokerage` already
+// walked agent → team → brokerage → platform correctly and simply had no callers
+// here.
+//
+// This resolves the owner from the SESSION. It is not a parameter and it is not
+// derivable from anything the caller passes: every one of these six functions is
+// reached from an authenticated dashboard surface, and the feed they should read
+// is the feed belonging to the signed-in tenant. getAgentContext is used rather
+// than a raw users read because it is the impersonation-aware resolver — when
+// platform staff are acting AS a tenant it returns THAT tenant, so an "act as"
+// session sees the tenant's own IDX account rather than the platform's.
+//
+// ID CLASSES. `agentUserId` is a USERS.id — the class scopeCascade files an
+// "agent"-scope credential under. `agents.id` (what contacts.agent_id holds) and
+// `contacts.id` are DISJOINT spaces; neither is ever substituted for it here.
+//
+// FAILS CLOSED. With no session brokerage there is no answer to "whose feed is
+// this?", and quietly answering "the platform's" is the exact defect being
+// removed — so it refuses. A refusal must never be mistaken for "this brokerage's
+// IDX feed has no listings", which is what every one of these prompts would
+// otherwise have been told.
+// ─────────────────────────────────────────────────────────────────────────────
+async function idxForCallerBrokerage(surface: string) {
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
+
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    throw new Error(
+      `${surface}: no signed-in brokerage, so there is no IDX Broker account to read from. This is a refusal, not an empty feed.`,
+    )
+  }
+
+  // The team tier of the cascade. getAgentContext does not carry it, and skipping
+  // it would quietly ignore a TEAM that connected its own IDX account — a smaller
+  // copy of the defect above. A refused read leaves the team tier out (the agent
+  // and brokerage tiers still resolve) and says so; it never widens anything.
+  const supabaseForTeam = await createClient()
+  const { data: teamRow, error: teamError } = await supabaseForTeam
+    .from("users")
+    .select("team_id")
+    .eq("id", ctx.userId)
+    .maybeSingle()
+  if (teamError) {
+    console.error(`[v0] ${surface}: team lookup refused, IDX team tier skipped:`, teamError.message)
+  }
+
+  const client = await IDXBrokerClient.forBrokerage(ctx.brokerageId, {
+    agentUserId: ctx.userId || null,
+    teamId: (teamRow?.team_id as string | null | undefined) ?? null,
+  })
+  return { client, brokerageId: ctx.brokerageId, agentUserId: ctx.userId }
+}
+
 // ============================================
 // AI PROPERTY MATCH GENIUS
 // ============================================
 
 export async function aiPropertyMatchGenius(leadId: string) {
   const supabase = await createClient()
-  const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
-  const idxClient = new IDXBrokerClient()
+  const { client: idxClient } = await idxForCallerBrokerage("aiPropertyMatchGenius")
 
   // Gather comprehensive lead data with all property interactions
   const { data: lead, error: leadError } = await supabase
@@ -1611,8 +1673,7 @@ export async function predictWinningOffer(data: {
   leadId: string
 }) {
   const supabase = await createClient()
-  const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
-  const idxClient = new IDXBrokerClient()
+  const { client: idxClient } = await idxForCallerBrokerage("predictWinningOffer")
 
   // Get property intelligence. This used to call getProperties({ ids: [mlsId] }) —
   // the `ids` filter was ignored, so it received EVERY featured listing and took
@@ -1840,8 +1901,12 @@ Provide strategic negotiation advice:
 
 export async function predictMarketShift(data: { city: string; state: string }) {
   const supabase = await createClient()
-  const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
-  const idxClient = new IDXBrokerClient()
+  // ONE tenant resolve for the whole function: the same brokerage whose IDX feed is
+  // read below is the brokerage the alert row and the affected-contact sweep are
+  // filed under. This used to resolve the session a second time, further down, and
+  // two independent resolves of the same thing are two things that can disagree.
+  const { client: idxClient, brokerageId: shiftBrokerageId } =
+    await idxForCallerBrokerage("predictMarketShift")
 
   // Get current inventory. This is the BROKERAGE'S OWN IDX-enabled active listings
   // in the city, not the whole market's inventory — the prompt below says so.
@@ -1910,12 +1975,10 @@ Predict for next 90 days:
 
     // Save prediction. pass 14: predictive_market_alerts was a PHANTOM table —
     // consolidated onto the real trend_alerts ledger (brokerage-scoped).
-    const { getAgentContext } = await import("@/lib/identity/get-agent-context")
-    const shiftCtx = await getAgentContext()
-    if (shiftCtx.brokerageId) {
+    if (shiftBrokerageId) {
       const conf = prediction.data.prediction?.confidence || 0.5
       await supabase.from("trend_alerts").insert({
-        brokerage_id: shiftCtx.brokerageId,
+        brokerage_id: shiftBrokerageId,
         alert_type: "market_shift_prediction",
         alert_message: `${data.city}, ${data.state}: ${prediction.data.prediction?.direction ?? "shift"} predicted (${prediction.data.prediction?.timeframe ?? "near term"}, confidence ${(conf * 100).toFixed(0)}%)`,
         severity: conf >= 0.7 ? "high" : "medium",
@@ -1927,11 +1990,11 @@ Predict for next 90 days:
     // Create insights for affected leads — tenant anchor (scope burn-down):
     // only the caller's own brokerage's contacts get insights.
     let leads: { id: string }[] | null = null
-    if (shiftCtx.brokerageId) {
+    if (shiftBrokerageId) {
       const { data: leadRows } = await supabase
         .from("contacts")
         .select("id")
-        .eq("brokerage_id", shiftCtx.brokerageId)
+        .eq("brokerage_id", shiftBrokerageId)
         .eq("city", data.city)
         .limit(50)
       leads = leadRows
@@ -1968,10 +2031,12 @@ Predict for next 90 days:
 
 export async function findMarketArbitrage(data: { city: string; state: string; agentId: string }) {
   const supabase = await createClient()
-  const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
   const { BatchDataClient } = await import("@/lib/batchdata-client")
 
-  const idxClient = new IDXBrokerClient()
+  // `data.agentId` is a caller-supplied parameter and is NOT the tenant: it is
+  // only stamped onto the insight rows below. The IDX account is resolved from the
+  // session.
+  const { client: idxClient } = await idxForCallerBrokerage("findMarketArbitrage")
   const batchData = new BatchDataClient()
 
   // Get all active listings the brokerage's IDX feed carries for this city.
@@ -2344,14 +2409,21 @@ export async function optimizeShowingRoute(data: {
   if (!routeCaller) throw new Error("No signed-in caller")
   const { data: routeCallerRow, error: routeCallerError } = await supabase
     .from("users")
-    .select("brokerage_id")
+    .select("brokerage_id, team_id")
     .eq("id", routeCaller.id)
     .maybeSingle()
   if (routeCallerError) throw new Error(`Caller lookup failed: ${routeCallerError.message}`)
   const routeBrokerageId = routeCallerRow?.brokerage_id as string | undefined
   if (!routeBrokerageId) throw new Error("No brokerage on this account")
+  // This function had ALREADY resolved its tenant for the row it writes; the IDX
+  // client now uses THAT resolve rather than deriving the owner a second, different
+  // way. `routeCaller.id` is a users.id, which is what the agent tier of the
+  // ownership cascade is keyed on.
   const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
-  const idxClient = new IDXBrokerClient()
+  const idxClient = await IDXBrokerClient.forBrokerage(routeBrokerageId, {
+    agentUserId: routeCaller.id,
+    teamId: (routeCallerRow?.team_id as string | null | undefined) ?? null,
+  })
 
   const properties = (await Promise.all(data.propertyIds.map((id) => idxClient.searchProperties(id)))).flat()
 
@@ -2624,8 +2696,10 @@ Output example:{
 
 export async function competitiveIntelligence(data: { agentId: string; marketArea: string }) {
   const supabase = await createClient()
-  const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
-  const idxClient = new IDXBrokerClient()
+  // `data.agentId` is caller-supplied and is not used to pick a credential — the
+  // listings below are "this brokerage's own IDX-enabled active listings", and the
+  // prompt says so, so the brokerage has to be the SESSION'S, not a parameter's.
+  const { client: idxClient } = await idxForCallerBrokerage("competitiveIntelligence")
 
   const listings = await idxClient.searchActiveListings({ city: data.marketArea })
 

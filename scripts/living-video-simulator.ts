@@ -374,7 +374,16 @@ console.log("\n═══ 10. BUYER MATCH REEL — the second living kind ══�
   const rentcast = code("lib/property/rentcast.ts")
   ok("the vendor lookup exists and is per-listing",
     rentcast.includes("export async function getRentcastListingStatus"))
-  ok("...resolving through the tenant key, else the PLATFORM key (an agent with\n    no vendor account of their own is still covered)",
+  // RentCast is PLATFORM-GATED (owner ruling, wave 17): one platform account
+  // serving every tenant, metered per tenant. There is no tenant RentCast key,
+  // so an agent with no vendor account of their own is covered BY CONSTRUCTION
+  // rather than by a fallback. `brokerageId` is still passed — not to select a
+  // credential, but as the tenant ATTRIBUTION the metering bills against, which
+  // is what makes it "gated" and not merely "platform-owned". That is why this
+  // assertion still reads the same call text: what changed is what the argument
+  // MEANS, and this proof is what stops the lane resolving a key with no tenant
+  // to charge it to.
+  ok("...resolving the PLATFORM key, with the tenant carried for attribution\n    (a lane can never resolve a key without a tenant to meter it against)",
     rentcast.includes("getApiKey(params.brokerageId)"))
   ok("...and a 404 means off_market, not sold — we do not invent which terminal state",
     rentcast.includes('if (res.status === 404) return "off_market"'))

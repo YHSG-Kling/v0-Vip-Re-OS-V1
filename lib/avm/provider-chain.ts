@@ -8,7 +8,8 @@
  * if everything else fails.
  *
  * Configured providers (super-admin tier):
- *   - RentCast (per-brokerage key or RENTCAST_API_KEY) — chosen AVM provider
+ *   - RentCast (RENTCAST_API_KEY — the ONE platform key; RentCast is platform-
+ *     gated, there is no per-tenant key) — chosen AVM provider
  *   - BatchData (BATCHDATA_API_KEY) — strong property records + value
  *   - ZenRows + Zillow (ZENROWS_API_KEY) — Zillow Zestimate scrape
  *   - Perplexity Sonar (via lib/ai/models.ts) — live AVM context
@@ -44,7 +45,15 @@ interface AvmRequest {
   zipCode?: string | null
   city?: string | null
   state?: string | null
-  /** Brokerage whose RentCast credential (or platform key) is used for the AVM pull. */
+  /**
+   * The tenant this AVM pull is ATTRIBUTED to — not a credential selector.
+   * RentCast is platform-gated (one platform key, no per-tenant key), so this
+   * decides nothing about WHICH credential is used. It is what makes the paid
+   * tier governable: `checkVendorBudget({ brokerageId })` below can only run
+   * with a tenant in hand, and lib/property/rentcast.ts meters every call
+   * against it. Absent brokerageId → the RentCast adapter is skipped entirely,
+   * because an unattributable paid call is spend nobody can see.
+   */
   brokerageId?: string | null
   /** Cached AVM if we've fetched recently — used by the cache-hit short circuit */
   cachedValue?: number | null

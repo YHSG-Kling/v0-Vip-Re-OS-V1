@@ -2,14 +2,16 @@
  * External listings search router.
  *
  * Tier order:
- *   1. IDX feed (provider_name='idx_broker' or 'spark_api') — full MLS data
- *   2. Rentcast (provider_name='rentcast') — paid data license, no IDX needed
+ *   1. IDX feed — the TENANT'S OWN IDX Broker connection (owner ruling: a
+ *      brokerage that sets one up searches THEIR board). Full MLS data.
+ *   2. RentCast — the PLATFORM-GATED default (owner ruling): one platform
+ *      account serving every tenant, metered per tenant and budget-gated. Not a
+ *      per-tenant credential and never offered as one.
  *   3. None — return empty; caller falls back to platform-internal listings only
  *
  * Output is normalized so callers don't need to know which source ran.
  */
 
-import { createServiceClient } from "@/lib/supabase/service"
 import { searchRentcastSaleListings, type RentcastSearchFilters, type RentcastListing } from "./rentcast"
 import { IDXBrokerClient, type NormalizedIdxListing } from "@/lib/idxbroker-client"
 import { resolveListingSource } from "./listing-source"
@@ -60,23 +62,36 @@ export interface ExternalSearchResult {
 export async function searchExternalListings(
   input: ExternalSearchInput
 ): Promise<ExternalSearchResult> {
-  const svc = createServiceClient()
-
   // IDX Broker may be stored under any of the credential tables / name aliases
   // (idxbroker vs idx_broker) — the connection manager resolves all of them.
-  // Rentcast is tracked in integration_credentials.
-  const [idxConn, { data: creds }] = await Promise.all([
-    resolveConnection({ brokerageId: input.brokerageId, provider: "idxbroker" }),
-    svc
-      .from("integration_credentials")
-      .select("provider_name, is_active")
-      .eq("brokerage_id", input.brokerageId)
-      .in("provider_name", ["spark", "rets", "bridge", "rentcast"])
-      .eq("is_active", true),
-  ])
+  // It is the TENANT-SETTABLE listing provider (owner ruling): a brokerage that
+  // sets up their own IDX Broker account searches THEIR board.
+  const idxConn = await resolveConnection({
+    brokerageId: input.brokerageId,
+    provider: "idxbroker",
+  })
 
   const hasIdx = !!idxConn?.apiKey
-  const hasRentcast = creds?.some((c) => c.provider_name === "rentcast") || !!process.env.RENTCAST_API_KEY
+
+  // RentCast is PLATFORM-GATED (owner ruling): one platform account serving every
+  // tenant, metered per tenant and budget-gated. There is no tenant RentCast key
+  // to look for, so availability is the platform key and nothing else.
+  //
+  // This used to read a per-brokerage `integration_credentials` row and OR it
+  // with the platform key. Two things were wrong with that beyond the tenancy
+  // model. The row could make this lane report AVAILABLE on a credential the
+  // platform cannot meter or cap — and the read dropped its `error`, so a
+  // refused lookup reported "no tenant credential" rather than "we could not
+  // tell", which is the failure this codebase keeps paying for.
+  //
+  // The read was also querying `spark`, `rets` and `bridge` alongside rentcast
+  // and then never inspecting any of them — `creds` was consulted for exactly
+  // one thing, the rentcast row. With that gone the whole query is dead, so it
+  // is removed rather than left as an unread round trip. If those three feeds
+  // ever become selectable sources they need their own resolution and their own
+  // branch below; silently re-adding them to a discarded `.in(...)` list would
+  // not have made them work.
+  const hasRentcast = !!process.env.RENTCAST_API_KEY
 
   // Tier 1: IDX Broker feed (the brokerage's own MLS-enabled active listings).
   let idxListings: NormalizedIdxListing[] = []

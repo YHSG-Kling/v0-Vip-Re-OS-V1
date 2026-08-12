@@ -754,9 +754,13 @@ export async function enrichLeadData(leadId: string) {
     await searchOnlineActivity(leadId, lead)
     dataSources.push("osint")
 
-    // 4. Get IDX Broker interactions
-    await syncIDXBrokerActivity(leadId, lead)
-    dataSources.push("idx_broker")
+    // 4. Get IDX Broker interactions. The source is recorded only when the sync
+    //    actually ran against a resolved tenant's IDX account — an unreachable
+    //    credential must not be filed as a consulted source, which is how an
+    //    outage becomes "we looked and this lead has done nothing".
+    const idxSync = await syncIDXBrokerActivity(leadId, lead)
+    if (idxSync.synced) dataSources.push("idx_broker")
+    else console.error("[v0] enrichLeadData: IDX Broker source not recorded:", idxSync.reason)
 
     // 5. Calculate engagement scores using consolidated service
     // Determine which table this lead is in
@@ -981,15 +985,59 @@ async function searchRealEstateSites(leadId: string, lead: any) {
   }
 }
 
-async function syncIDXBrokerActivity(leadId: string, lead: any) {
+/**
+ * Pull this contact's IDX Broker browsing history from THE CONTACT'S OWN
+ * BROKERAGE'S IDX account.
+ *
+ * It used to be `new IDXBrokerClient()` — no argument, so the platform's
+ * IDXBROKER_API_KEY every time. That is worse here than on a search surface: the
+ * rows written below claim to be what THIS lead did on THIS brokerage's IDX site,
+ * and they were being read out of a feed belonging to whoever owns the platform
+ * key. A brokerage that connected its own IDX Broker account — the only way this
+ * lookup can find anything, since IDX leads live in the account that captured them
+ * — got nothing back and no indication why.
+ *
+ * NO EXTRA READ IS NEEDED: the caller already holds the contact row (`select("*")`
+ * on the contact being enriched), so `lead.brokerage_id` is the tenant, resolved
+ * from a record rather than accepted from a parameter.
+ *
+ * NO AGENT TIER, DELIBERATELY. The obvious candidate — `lead.agent_id` — is an
+ * `agents.id`; `forBrokerage`'s `actor.agentUserId` is a `users.id`. They are
+ * DISJOINT id spaces, and handing one to the other would file the credential
+ * lookup under a scope no row can ever match, which resolves to null and falls
+ * onward exactly like "no connection" — a lie that reads as a fact. Brokerage
+ * tier is the honest tier for a record-driven enrichment.
+ *
+ * RETURNS ITS OUTCOME rather than swallowing it: the caller stamps an
+ * "idx_broker" data source, and an unreachable tenant, an unconfigured cascade or
+ * a refused write must not be recorded as a source that produced data.
+ */
+async function syncIDXBrokerActivity(
+  leadId: string,
+  lead: any,
+): Promise<{ synced: boolean; reason?: string }> {
   const supabase = createServiceClient()
-  const idx = new IDXBrokerClient()
+
+  const ownerBrokerageId = (lead?.brokerage_id as string | null | undefined) ?? null
+  if (!ownerBrokerageId) {
+    // Refuse rather than fall through to the platform feed: with no owner there is
+    // no account whose browsing history this could honestly be.
+    console.error("[v0] IDX sync skipped: the contact carries no brokerage, so no IDX account can be resolved")
+    return { synced: false, reason: "no_brokerage_on_contact" }
+  }
+
+  const idx = await IDXBrokerClient.forBrokerage(ownerBrokerageId)
+  if (!idx.isConfigured()) {
+    console.error("[v0] IDX sync skipped: no IDX Broker credential at any tier for this brokerage")
+    return { synced: false, reason: "no_idx_credential" }
+  }
 
   try {
     const activity = await idx.getLeadActivity(lead.email)
 
+    let written = 0
     for (const interaction of activity) {
-      await supabase.from("lead_idx_property_interactions").insert({
+      const interactionRow = {
         lead_id: leadId,
         mls_number: interaction.mlsID,
         property_address: interaction.address,
@@ -1004,10 +1052,23 @@ async function syncIDXBrokerActivity(leadId: string, lead: any) {
         view_duration_seconds: interaction.timeSpent,
         interaction_metadata: interaction.metadata,
         occurred_at: interaction.timestamp,
-      })
+      }
+      // supabase-js RESOLVES a refused write, so an unbound error is a row that
+      // never landed reported as a row that did.
+      const { error: interactionError } = await supabase
+        .from("lead_idx_property_interactions")
+        .insert(interactionRow)
+      if (interactionError) {
+        console.error("[v0] IDX interaction insert refused:", interactionError.message)
+        return { synced: false, reason: "interaction_write_refused" }
+      }
+      written += 1
     }
+
+    return { synced: true, reason: written > 0 ? undefined : "no_activity_for_this_contact" }
   } catch (error) {
     console.error("[v0] IDX sync error:", error)
+    return { synced: false, reason: "idx_request_failed" }
   }
 }
 

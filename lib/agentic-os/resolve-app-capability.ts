@@ -20,7 +20,7 @@
 //
 //   dispatchDirectMail   if (!process.env.LOB_API_KEY) return unconfigured
 //   messagingSendEmail   if (!process.env.SENDGRID_API_KEY) return unconfigured
-//   getRentcastComps     tenant integration_credentials row, else RENTCAST_API_KEY
+//   getRentcastComps     RENTCAST_API_KEY (platform-gated; no tenant key exists)
 //
 // — so a platform with LOB_API_KEY set and direct mail sending happily read
 // DARK, and the readiness board and the manifest disagreed about the same

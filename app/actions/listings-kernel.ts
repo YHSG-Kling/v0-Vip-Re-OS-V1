@@ -55,7 +55,7 @@ async function resolveCallerContext() {
   const [userRow, agentRow] = await Promise.all([
     supabase
       .from("users")
-      .select("brokerage_id, user_type")
+      .select("brokerage_id, user_type, team_id")
       .eq("id", user.id)
       .maybeSingle(),
     supabase
@@ -84,6 +84,17 @@ async function resolveCallerContext() {
     userId:      user.id,
     agentId:     agentRow.data?.id ?? null,   // agents.id (NOT users.id); null for broker/admin without an agent profile
     brokerageId,
+    /**
+     * teams.id — the TEAM rung of the connection ownership cascade
+     * (agent → team → brokerage → platform) that
+     * `IDXBrokerClient.forBrokerage` walks. Selected here rather than in a
+     * second read because this resolver was already reading `users`; without it
+     * the IDX feed below skipped the rung entirely and a team that connected
+     * its own IDX Broker account lost to the brokerage's (wave 17).
+     *
+     * A third id space — not agents.id, not users.id. Never substituted.
+     */
+    teamId:      (userRow.data?.team_id ?? null) as string | null,
     userType:    userRow.data?.user_type ?? "agent",
   }
 }
@@ -414,7 +425,12 @@ export async function verifyMlsSyndicationAction(listingId: string): Promise<{
   // ── Feed 2: the brokerage's own IDX connection, when they have one.
   try {
     const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
-    const idx = await IDXBrokerClient.forBrokerage(ctx.brokerageId, { agentUserId: ctx.userId })
+    const idx = await IDXBrokerClient.forBrokerage(ctx.brokerageId, {
+      agentUserId: ctx.userId,
+      // The team rung — previously skipped, so a team's own IDX connection lost
+      // to the brokerage's.
+      teamId: ctx.teamId,
+    })
     if (idx.isConfigured()) {
       consulted.push("idx")
       const rows = await idx.searchActiveListings({

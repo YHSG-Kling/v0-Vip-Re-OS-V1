@@ -12,8 +12,9 @@
 //   user_oauth          — the USER's own connected account (their Gmail sends
 //                         their email); the platform never proxies their identity.
 //   tenant_optional_key — platform fallback works; a tenant MAY add their own
-//                         key when the license/limits make it theirs (stock
-//                         photos: per-user license; Tavily: search quota).
+//                         key when the account/license makes the data or the
+//                         usage theirs, and theirs then WINS (IDX Broker: their
+//                         own MLS board's feed; stock photos: per-user license).
 //   byo_top_tier        — bring-your-own credentials, multi_location tier only
 //                         (enterprises with existing vendor contracts).
 //
@@ -83,9 +84,15 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
   },
   {
     provider: "rentcast",
-    models: ["platform_metered", "tenant_optional_key"],
-    why: "The DEFAULT for-sale property feed + AVM/valuation chain — the platform key serves every tenant UNTIL they connect their own IDX feed (IDX Broker connect flow exists; the tenant's board data then takes precedence). VERIFIED LIVE: the AVM cascade (Perplexity free tier → OSINT → paid RentCast/BatchData/ZenRows-Zillow behind usePaidProviders + the vendor budget gate) runs on real connector-gateway calls with per-call metering — an earlier stale header claimed stubs; corrected after verification.",
+    models: ["platform_metered"],
+    why: "PLATFORM-GATED (owner ruling): ONE platform RentCast account serves every tenant, per-tenant metered + budget-gated. A tenant does NOT bring their own RentCast key and is never offered the option — lib/connections/scope.ts is the arbiter and deliberately keeps RentCast out of the user-connectable providers. That gate IS the spend governance: a key resolved per tenant would be spend the platform cannot see, meter, or cap on a provider the product owns, so lib/property/rentcast.ts getApiKey reads the platform env key ONLY and carries brokerageId purely for metering/attribution. This is the DEFAULT for-sale property feed + AVM/valuation chain; a tenant's own IDX Broker feed (its own row below) changes which SOURCE answers a listing search, never whose RentCast credential pays for the AVM. VERIFIED LIVE: the AVM cascade (Perplexity free tier → OSINT → paid RentCast/BatchData/ZenRows-Zillow behind usePaidProviders + the vendor budget gate) runs on real connector-gateway calls with per-call metering — an earlier stale header claimed stubs; corrected after verification.",
     envVars: ["RENTCAST_API_KEY"],
+  },
+  {
+    provider: "idxbroker",
+    models: ["tenant_optional_key"],
+    why: "TENANT-SETTABLE (owner ruling), and the exact MIRROR of RentCast above — stated as a pair so the two can never drift into each other again. A tenant who sets up their own IDX Broker account uses THEIRS: their MLS board's data is the whole point of connecting it. lib/idxbroker-client.ts forBrokerage resolves the full ownership cascade via resolveScopedConnection (agent → team → brokerage → platform) and only then falls back to the platform IDXBROKER_API_KEY, so the most specific connected account WINS and the platform key is the floor, never the ceiling. Offered per-tier as the only selectable `listing` provider in lib/connections/scope.ts. Deliberately NOT platform_metered: IDX Broker is a USER_CONNECTED_VENDOR (lib/agentic-os/vendor-ownership.ts) — the tenant pays their own IDX/MLS bill, so the gate is whether the account is CONNECTED, not the platform vendor budget, and no per-call cost is metered against the platform.",
+    envVars: ["IDXBROKER_API_KEY"],
   },
   {
     provider: "exa",

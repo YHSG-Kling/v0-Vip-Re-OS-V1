@@ -13,6 +13,22 @@ export interface AgentContext {
    */
   agentId: string | null
   brokerageId: string | null
+  /**
+   * `users.team_id` — the TEAM tier of the connection ownership cascade
+   * (agent → team → brokerage → platform), used by every scoped-credential
+   * resolver: `lib/connections/resolve-scoped.ts:resolveScopedConnection` and
+   * therefore `IDXBrokerClient.forBrokerage(brokerageId, { agentUserId, teamId })`.
+   *
+   * This row was ALREADY selected here and thrown away, so every caller that
+   * needed the team tier either re-read `users` itself or silently skipped that
+   * rung — which meant a team that connected its own IDX Broker account was
+   * stepped over and the brokerage (or platform) feed answered instead. Exposing
+   * it once is why three call sites could stop guessing (wave 17).
+   *
+   * NOT the same class as `agentId` (agents.id) or `userId` (users.id) — it is
+   * teams.id, a third id space. Never substitute one for another.
+   */
+  teamId: string | null
   /** Source priority: users.user_type > user_role_assignments.role > auth metadata > 'agent' */
   userType: string
   /** Alias for userType — backward compat for all callers that reference .role */
@@ -31,6 +47,7 @@ const UNAUTHENTICATED_CONTEXT: AgentContext = {
   userId: "",
   agentId: null,
   brokerageId: null,
+  teamId: null,
   userType: "agent",
   role: "agent",
   isAuthenticated: false,
@@ -109,6 +126,10 @@ export async function getAgentContext(): Promise<AgentContext> {
           userId: imp.userId,
           agentId: imp.agentId,
           brokerageId: imp.brokerageId,
+          // The impersonation grant carries no team, and the STAFF actor's team
+          // is not the impersonated tenant's — borrowing it would resolve a
+          // credential from the wrong org. Null until the grant carries one.
+          teamId: null,
           userType: imp.userType,
           role: imp.userType,
           isAuthenticated: true,
@@ -123,6 +144,7 @@ export async function getAgentContext(): Promise<AgentContext> {
       userId: user.id,
       agentId,
       brokerageId,
+      teamId: (userData?.team_id ?? null) as string | null,
       userType,
       role: userType, // alias — same value, different key name
       isAuthenticated: true,

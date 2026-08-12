@@ -22,8 +22,9 @@
 //
 // HONESTY RULES (non-negotiable):
 //   · The current value comes from a REAL valuation source (RentCast AVM by default,
-//     key resolved from integration_credentials or RENTCAST_API_KEY env — never
-//     written to files or logged). No valuation available → the contact is SKIPPED
+//     on the ONE platform RENTCAST_API_KEY — RentCast is platform-gated, so there is
+//     no per-tenant key to resolve; the brokerage only attributes/meters the call —
+//     never written to files or logged). No valuation available → the contact is SKIPPED
 //     and counted as skippedNoValuation. NEVER a fabricated value.
 //   · Equity math is honest about loan data: when the original loan amount is on
 //     file (transaction_lenders.loan_amount), equity = est. value − est. remaining
@@ -295,8 +296,9 @@ export function composeEquityDecision(line: EquityLine, yearsHeld: number): Equi
 // ─── Injectable seams ───────────────────────────────────────────────────────────
 
 /** REAL valuation seam. Default is RentCast-backed (lib/property/rentcast
- *  getRentcastAVM — key from integration_credentials or RENTCAST_API_KEY env,
- *  never logged/persisted by this play). Returns null when no real estimate is
+ *  getRentcastAVM — the ONE platform RENTCAST_API_KEY, since RentCast is
+ *  platform-gated and has no per-tenant key; the brokerage is carried for
+ *  metering/attribution only, never logged/persisted by this play). Returns null when no real estimate is
  *  available; the runner then SKIPS the contact (skippedNoValuation) — it NEVER
  *  invents a value. The simulator injects fixed numbers (no vendor spend). */
 export type ValuationFetcher = (args: { brokerageId: string; address: string }) => Promise<{
@@ -385,8 +387,9 @@ export async function runAnniversaryEquity(
     skippedNoPurchasePrice: 0, skippedWithdrawn: 0, skippedDuplicate: 0,
   }
 
-  // REAL RentCast-backed default — key resolved inside getRentcastAVM from
-  // integration_credentials or RENTCAST_API_KEY env (never logged/persisted here).
+  // REAL RentCast-backed default — getRentcastAVM resolves the ONE platform
+  // RENTCAST_API_KEY (platform-gated: no per-tenant key exists to prefer; the
+  // brokerage below only attributes + meters the call, never logged/persisted here).
   // No key or no result → null → honest skip. The simulator injects fixed numbers.
   const fetchValuation: ValuationFetcher = opts.valuationFetcher ?? (async ({ brokerageId: bid, address }) => {
     const { getRentcastAVM } = await import("@/lib/property/rentcast")

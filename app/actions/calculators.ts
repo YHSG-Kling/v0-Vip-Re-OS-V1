@@ -240,8 +240,37 @@ Respond with JSON:
 export async function compareNeighborhoods(neighborhoods: string[], city: string, state: string) {
   const supabase = await createClient()
   const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
-  const idxClient = new IDXBrokerClient()
-  const idxConfigured = idxClient.isConfigured()
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+
+  // WHOSE feed is the active-listing count? It used to be `new IDXBrokerClient()`,
+  // i.e. always the platform's IDXBROKER_API_KEY — so a brokerage that had
+  // connected its own IDX Broker account was still counting somebody else's
+  // listings and the row said `active_listings_source: "brokerage_idx_feed"` about
+  // it. IDX Broker is tenant-settable (lib/connections/scope.ts, `listing`), so the
+  // owner is RESOLVED from the session and forBrokerage walks
+  // agent → team → brokerage → platform.
+  //
+  // With no session there is no tenant, and the answer is NOT "use the platform's
+  // key": it is that this figure has no owner and therefore no source. The client
+  // is null, `listings` stays null, and "active_listings" joins that entry's
+  // `unavailable` list — the same treatment every other unsourced field on this row
+  // already gets, which the prompt below is explicitly instructed not to paper over.
+  // That is deliberately different from a resolved tenant whose cascade ends at a
+  // configured platform key: that one is a real, documented final tier and does
+  // produce a count.
+  const idxSession = await getAgentContext()
+  const idxClient =
+    idxSession.isAuthenticated && idxSession.brokerageId
+      ? await IDXBrokerClient.forBrokerage(idxSession.brokerageId, {
+          agentUserId: idxSession.userId || null,
+          // The TEAM rung of the cascade. getAgentContext already read
+          // users.team_id and used to discard it, so this rung was silently
+          // skipped and a team with its own IDX connection was stepped over in
+          // favour of the brokerage (or platform) feed.
+          teamId: idxSession.teamId,
+        })
+      : null
+  const idxConfigured = !!idxClient && idxClient.isConfigured()
 
   // A neighborhood entered as a 5-digit ZIP can be matched exactly; a NAMED
   // neighborhood cannot — neither market_data nor the IDX feed carries a
@@ -267,11 +296,12 @@ export async function compareNeighborhoods(neighborhoods: string[], city: string
       }
       const market = marketError ? null : marketRow
 
-      // Real active-listing count. This is the brokerage's IDX-enabled active
-      // listings, not total market inventory — `active_listings_source` says so.
-      // With no IDX key the search returns [], which would read as a measured
-      // zero, so an unconfigured client yields null instead.
-      const listings = idxConfigured
+      // Real active-listing count, from the RESOLVED tenant's own IDX feed — the
+      // signed-in brokerage's IDX-enabled active listings, not total market
+      // inventory; `active_listings_source` says so. With no resolved tenant, or a
+      // tenant whose cascade reaches no key at all, the search would return [],
+      // which reads as a measured zero — so both cases yield null instead.
+      const listings = idxClient && idxConfigured
         ? await idxClient.searchActiveListings(zip ? { zipCode: zip, state } : { city, state })
         : null
 
@@ -687,7 +717,6 @@ export async function calculateHomeValue(
   const { BatchDataClient } = await import("@/lib/batchdata-client")
   const { runAiCma } = await import("@/lib/cma/ai-cma-orchestrator")
 
-  const idxClient = new IDXBrokerClient()
   const batchData = new BatchDataClient()
 
   const vid = opts.visitorId || generateVisitorId()
@@ -714,6 +743,27 @@ export async function calculateHomeValue(
       visitorId: vid,
     }
   }
+
+  // The IDX client is built from the brokerage RESOLVED just above — the same one
+  // runAiCma's paid comp sourcing is billed to — and not a second time from
+  // something else. It used to be `new IDXBrokerClient()`, so the agent whose
+  // public page this calculator is embedded on had their own connected IDX Broker
+  // account ignored in favour of the platform's, on a surface that is explicitly
+  // presented as theirs. Constructed only AFTER the refusal above, so an
+  // unresolvable brokerage never reaches a credential at all.
+  //
+  // The agent tier is passed only for a signed-in caller: `agentUserId` is a
+  // USERS.id, and the public path resolved a brokerage from `agents.public_slug` —
+  // an AGENTS-class row. Those are disjoint spaces, so nothing from the slug lookup
+  // is substituted here; the public visitor simply resolves at brokerage tier.
+  const idxClient = await IDXBrokerClient.forBrokerage(brokerageId, {
+    agentUserId: session.isAuthenticated && session.userId ? session.userId : null,
+    // Team tier, on the same rule as the agent tier above: only a signed-in
+    // caller has one. The public slug path resolves an AGENTS-class row and
+    // carries no team, so it resolves at brokerage tier rather than borrowing
+    // a team it cannot prove.
+    teamId: session.isAuthenticated ? session.teamId : null,
+  })
 
   try {
     const [property, propertyData, cma] = await Promise.all([

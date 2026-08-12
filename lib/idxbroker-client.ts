@@ -50,18 +50,51 @@ export class IDXBrokerClient {
   private apiKey: string
   private baseUrl = "https://api.idxbroker.com"
 
-  constructor(apiKey?: string) {
-    this.apiKey = apiKey ?? process.env.IDXBROKER_API_KEY ?? ""
+  /**
+   * The key is REQUIRED, and there is deliberately no `process.env` fallback here.
+   *
+   * It used to read `apiKey ?? process.env.IDXBROKER_API_KEY ?? ""`, which made
+   * `new IDXBrokerClient()` a silently-working call: nine call sites across
+   * app/actions/{ai-predictions,calculators,lead-intelligence}.ts constructed the
+   * client with no argument and therefore ran every brokerage's property search on
+   * the PLATFORM'S feed — including brokerages that had connected their own IDX
+   * Broker account specifically to get their own board's data. The capability
+   * (`forBrokerage`, below) was built, correct, and unreached, and nothing failed,
+   * because the env fallback made the omission invisible.
+   *
+   * With the parameter required, that omission is a COMPILE error rather than a
+   * quiet cross-tenant read. `forBrokerage` remains the only place the platform
+   * env key is consulted, and it is consulted last — after the owner cascade — so
+   * "the platform's key" is a documented final tier instead of a default.
+   *
+   * An empty string is still accepted and still means "not configured"
+   * (`isConfigured()` is false, the search methods return empty and the surfaces
+   * report the data as unavailable) — that is the honest end state when neither
+   * the tenant nor the platform has a key, and it is NOT the same thing as a
+   * missing argument.
+   */
+  constructor(apiKey: string) {
+    this.apiKey = apiKey
     if (!this.apiKey) {
       console.warn("[IDXBroker] API key not configured")
     }
   }
 
   /**
-   * Multi-tenant factory: resolves the IDX Broker connection through the unified ownership
-   * cascade (agent → team → brokerage → platform, legacy fallback), then the IDXBROKER_API_KEY
-   * env as the platform default. Pass actor context to honor a per-agent/team IDX connection;
-   * brokerage-only callers keep their existing behavior.
+   * Multi-tenant factory — THE only supported way to obtain a client, and the only
+   * reader of IDXBROKER_API_KEY.
+   *
+   * Resolves the IDX Broker connection through the unified ownership cascade
+   * (agent → team → brokerage → platform, legacy fallback) FIRST, and only then
+   * falls back to the platform env key. That order is the owner ruling: IDX Broker
+   * is tenant-settable (lib/connections/scope.ts lists `idxbroker` under the
+   * per-tier-connectable `listing` domain), so a tenant that connected its own
+   * account must be served from its own account. Reversing these two lines
+   * silently restores the platform-feed bug.
+   *
+   * `actor.agentUserId` is a USERS.id — the id class scopeCascade files an
+   * "agent"-scope credential under. `agents.id` and `contacts.id` are DISJOINT
+   * spaces and are never interchangeable with it.
    */
   static async forBrokerage(
     brokerageId: string,

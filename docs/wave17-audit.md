@@ -119,6 +119,105 @@ this is not this session's connectivity. The question, the exact query, and what
 each outcome means are already written into `docs/wave16-audit.md`; nothing is
 re-litigated here. m392/m393 remain safe either way.
 
+## Outcome
+
+Both slices landed. Both agents survived this time (the previous two waves lost
+theirs to container restarts), and both reports were checked against the tree
+rather than taken on trust.
+
+**W17-1 — nothing was owed as a merge, and that is a finding.** The tenant branch
+produced *a bare API-key string and nothing else*: the header is fixed in
+`rentcastGet`, the base URL is a module constant, metering is `meterCall({ brokerageId })`
+at each call site and was already per-tenant and already independent of which key
+resolved, and there is no rate limit anywhere on the path. No different header,
+no different base URL, no per-tenant metering, no quota — a pure branch removal.
+Stating that explicitly is the point; "nothing to port" verified is not the same
+as "nothing to port" assumed.
+
+The `null`-not-throw contract survives, so the AVM cascade still falls through to
+BatchData. The destructured `credError` disappeared *with its query* — there is
+no supabase call left in the resolver, so there is no error left to drop.
+
+`getApiKey(brokerageId)` **kept its parameter deliberately.** It is no longer a
+credential selector; it is the tenant attribution every call is metered against,
+which is what makes RentCast platform-**gated** rather than merely
+platform-owned. A missing platform key now names the darkened lane once per
+tenant instead of returning null in silence.
+
+**W17-2 — nine sites repointed, and the constructor's env fallback removed.**
+That fallback is what made all nine defects silent; the key parameter is now
+required, so the omission is a **compile error** rather than a quiet cross-tenant
+read, and `IDXBROKER_API_KEY` is named exactly once in the module — inside
+`forBrokerage`, after the owner cascade. Every site fails CLOSED: an unresolvable
+tenant refuses rather than falling through to the platform key,
+`compareNeighborhoods` reports `active_listings` as *unavailable* rather than a
+measured zero, and `enrichLeadData` records `idx_broker` as a consulted source
+only when the sync actually ran.
+
+Id classes held throughout: `forBrokerage`'s `actor.agentUserId` is a **users.id**,
+so `contacts.agent_id` (an **agents.id**) was never substituted for it — the
+record-driven path resolves at brokerage tier instead of crossing id spaces.
+
+## Found while verifying, and fixed here rather than reported
+
+- **`lib/property/external-listings-search.ts` was live logic, not a comment.**
+  It read a per-brokerage `integration_credentials` row and OR'd it with the
+  platform key, so this lane could report RentCast AVAILABLE on a credential the
+  platform cannot meter or cap — and the read dropped its `error`, so a refusal
+  read as "no tenant credential" rather than "we could not tell". The query also
+  listed `spark`, `rets` and `bridge` and then never inspected any of them:
+  `creds` was consulted for exactly one thing, the rentcast row. With that gone
+  the whole read was dead and is removed rather than left as an unread round trip.
+- `lib/agentic-os/resolve-app-capability.ts` and `app-capability-registry.ts`
+  described the old resolution in prose. The `requires: { platform: ["rentcast"] }`
+  declaration was already right; only the comments were false.
+- `scripts/living-video-simulator.ts:378`'s label read "resolving through the
+  tenant key, else the PLATFORM key". The assertion still passes and still
+  should — what changed is what `brokerageId` MEANS. Relabelled rather than
+  deleted: it is now the proof that a RentCast lane cannot resolve a key with no
+  tenant to meter it against.
+- `manager-registry.ts`'s wave-16 entry said `analyzeAddressForBuyer` "spends the
+  contact's brokerage's RentCast budget". Under the ruling it spends PLATFORM
+  quota metered against that brokerage — an ungated caller does not spend the
+  tenant's money, it spends the platform's and bills the wrong tenant, which is
+  the same defect wearing a different hat.
+
+## The team rung, closed across the tree
+
+W17-2 reported that `getAgentContext` **selected `users.team_id` and discarded
+it**, so every caller needing the TEAM rung of the cascade either re-read `users`
+or skipped the rung — meaning a team that connected its own IDX Broker account
+lost to the brokerage's feed. It fixed that inside its own scope with a targeted
+read and handed the general case over.
+
+`AgentContext` now exposes `teamId` once, and the three sites that were skipping
+it pass it: `calculators.ts` ×2 and `listings-kernel.ts` (whose own local
+`resolveCallerContext` was already reading `users` and now selects `team_id`
+there rather than adding a second read). `comp-provider.ts` already passed it.
+Impersonated contexts get `null` deliberately — the grant carries no team, and
+the *staff actor's* team is not the impersonated tenant's; borrowing it would
+resolve a credential from the wrong org.
+
+## Verification
+
+Typecheck EXIT=0, zero errors. Guard chain **216/216**, including `test:sweep`.
+Two new proofs, both with every negative control watched go red:
+`test:provider-tenancy-model` (13 controls) and `test:idx-tenant-credential`
+(16 controls). Both watch `lib/connections/scope.ts` as the ARBITER, so if that
+decision is ever edited the proofs fail loudly instead of quietly re-deriving a
+new answer.
+
+## Carried, not silently dropped
+
+- **RentCast has no budget gate on three of its four lanes.** Only
+  `provider-chain.ts` consults `checkVendorBudget`; `searchRentcastSaleListings`,
+  `getRentcastMarketStats` and `getRentcastComps` do not. "Platform-gated" implies
+  metered *and* capped, and today it is metered everywhere but capped in one
+  place. Changing that alters runtime behaviour at six call sites and is a
+  decision, not a cleanup.
+- `calculateHomeValue` still has no rate limit (pre-existing, unrelated to
+  credential ownership, already flagged in that file as awaiting an owner call).
+
 ## Rules (unchanged)
 
 - DUPLICATE → read BOTH, MERGE onto the survivor, THEN delete naming it

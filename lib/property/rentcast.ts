@@ -108,37 +108,53 @@ export interface RentcastListing {
 }
 
 // ---------------------------------------------------------------------------
-// Resolve API key for a given brokerage
+// Resolve the ONE platform RentCast key
 // ---------------------------------------------------------------------------
 
+/** Tenants already told their RentCast lane is dark — one line per tenant per
+ *  instance, so a missing platform key is reported without flooding the log on
+ *  every call. */
+const darkLaneReported = new Set<string>()
+
+/**
+ * RentCast is a PLATFORM-GATED credential (owner ruling): ONE platform account
+ * serving every tenant, governed by per-tenant metering (meterCall above →
+ * logVendorUsage) plus the vendor budget gate. A tenant does NOT bring their own
+ * RentCast key and is never offered the option — lib/connections/scope.ts is the
+ * arbiter and deliberately keeps RentCast out of the user-connectable providers,
+ * offering idxbroker as the only tenant-settable listing provider. There is
+ * therefore NO per-tenant credential branch here: a tenant-resolved key would be
+ * spend the platform cannot see, meter, or cap on a provider the product owns.
+ *
+ * `brokerageId` is NOT a credential selector. It is the tenant ATTRIBUTION every
+ * caller already holds and hands to meterCall — kept on this signature so no
+ * RentCast lane can resolve a key without a tenant to bill the call against,
+ * which is exactly what "platform GATED" (rather than merely platform-owned)
+ * means. It is used here to name whose lane went dark.
+ *
+ * Returns null — never throws — when the platform key is unset, so the AVM
+ * cascade in lib/avm/provider-chain.ts falls through to the next provider and
+ * every reader below can return its honest empty result.
+ */
 async function getApiKey(brokerageId: string): Promise<string | null> {
-  // Brokerage-level credential takes precedence
-  const svc = createServiceClient()
-  const { data: cred, error: credError } = await svc
-    .from("integration_credentials")
-    .select("api_key, is_active")
-    .eq("brokerage_id", brokerageId)
-    .eq("provider_name", "rentcast")
-    .maybeSingle()
-
-  // A refused read is NOT "the tenant has no key" — say so rather than silently
-  // dropping a paying tenant onto the platform key.
-  if (credError) console.error("[rentcast] integration_credentials read refused:", credError.message)
-  if (cred?.is_active && cred.api_key) return cred.api_key
-
-  // Platform-level fallback (single shared key across all brokerages)
-  return process.env.RENTCAST_API_KEY ?? null
+  const key = process.env.RENTCAST_API_KEY ?? null
+  if (!key && !darkLaneReported.has(brokerageId)) {
+    darkLaneReported.add(brokerageId)
+    console.warn(`[rentcast] platform key not configured — RentCast lane is dark for brokerage ${brokerageId}`)
+  }
+  return key
 }
 
 /**
- * Does a RentCast key resolve for this brokerage (tenant row, else platform env)?
+ * Does the platform RentCast key resolve for this tenant's lane?
  *
  * Every RentCast reader below returns an EMPTY result both when the vendor is
  * unconfigured and when the vendor simply has no coverage for the address — two
  * very different facts that a caller must be able to tell apart. The CMA comp
  * provider asks this so its "no comparables" outcome can say WHICH it was
  * instead of leaving a silent empty behind. Credential read only; no egress,
- * nothing to meter.
+ * nothing to meter. The brokerage is carried for attribution, not selection —
+ * the answer is the same platform key for every tenant.
  */
 export async function isRentcastConfigured(brokerageId: string): Promise<boolean> {
   return !!(await getApiKey(brokerageId))
@@ -234,9 +250,9 @@ export async function searchRentcastSaleListings(params: {
  * Look up ONE external listing's current status.
  *
  * Exists so a video that showed a buyer a third-party home can be checked
- * rather than assumed. Resolves through the tenant's own RentCast key when they
- * have one and the PLATFORM key otherwise (getApiKey already cascades), which
- * is why an agent with no vendor account of their own is still covered.
+ * rather than assumed. Resolves the PLATFORM key (getApiKey — RentCast is
+ * platform-gated, there is no tenant key to prefer), which is why an agent with
+ * no vendor account of their own is covered by construction.
  *
  * Returns a status on OUR vocabulary, or null when we could not find out.
  * Null is never upgraded to "active" by any caller — an unverifiable home stays

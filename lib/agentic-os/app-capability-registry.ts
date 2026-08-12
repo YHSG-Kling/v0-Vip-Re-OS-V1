@@ -115,13 +115,14 @@ export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = 
   contact_get:          { capability: "contact_get",          verb: "GET",     scope: "contact:read",      domain: "crm",             mutates: false, purpose: "Fetch a single contact record (CRM) with its lead lineage.", inputs: ["contactId"] },
   // GROUNDED: BOTH CMA paths gate on the same RentCast credential —
   // app/actions/ai-cma.ts fetchComparableProperties() and lib/cma/comp-provider.ts
-  // (the sourcing behind runAiCma) call getRentcastComps, which resolves a tenant
-  // integration_credentials row for rentcast, else the platform RENTCAST_API_KEY.
-  // With neither it returns [] and the CMA renders with zero comparables, which is
-  // not a CMA. A connected IDX Broker feed does NOT satisfy this: IDX can serve the
-  // ACTIVE side of the comp mix but cannot serve SOLD comparables at all, and a CMA
-  // with no closed sales has no value range. Declared platform-scope: the readiness
-  // resolver already lets a tenant's own key satisfy a platform lane.
+  // (the sourcing behind runAiCma) call getRentcastComps, which resolves the
+  // PLATFORM RentCast key. RentCast is platform-gated (owner ruling) — there is no
+  // tenant RentCast credential to prefer, so the platform key is the whole gate.
+  // Without it getRentcastComps returns [] and the CMA renders with zero
+  // comparables, which is not a CMA. A connected IDX Broker feed does NOT satisfy
+  // this: IDX can serve the ACTIVE side of the comp mix but cannot serve SOLD
+  // comparables at all, and a CMA with no closed sales has no value range — which
+  // is why this stays platform-scope even though IDX is the tenant-settable one.
   cma_generate:         { capability: "cma_generate",         verb: "ANALYZE", scope: "cma:write",         domain: "valuation",       mutates: true,  purpose: "Generate a comparative market analysis report for a property.", inputs: ["agentId", "propertyAddress", "propertyCity", "propertyState", "propertyZip"], requires: { platform: ["rentcast"] } },
   appointment_schedule: { capability: "appointment_schedule", verb: "BOOK",    scope: "calendar:write",    domain: "scheduling",      mutates: true,  purpose: "Book an appointment on an agent's calendar with a contact.", inputs: ["agentId", "contactId", "startsAt", "durationMin?"] },
   transaction_advance:  { capability: "transaction_advance",  verb: "ADVANCE", scope: "transaction:write", domain: "transactions",    mutates: true,  purpose: "Advance a transaction to its next valid lifecycle stage.", inputs: ["transactionId", "toStatus"] },
