@@ -1656,6 +1656,517 @@ function assertBlockBodiedRowMapperResolves(): boolean {
   )
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// WAVE 25 — `activities`: the net, and the two holes in it
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// `activities` is the heaviest remaining table by a factor of ten — 42 unstamped
+// sites of 193, with 28 brokerage-equality readers — and it was ABSENT from every
+// earlier heaviest-first list, because it is trigger-covered and each census
+// bucketed it as netted and stopped looking. So the question here was never "is it
+// unstamped". It was WHICH SHAPES THE NET MISSES.
+//
+// ── THE NET ─────────────────────────────────────────────────────────────────
+//
+//   activities_set_brokerage()  -- BEFORE INSERT, SECURITY INVOKER (prosecdef = false)
+//   IF NEW.brokerage_id IS NULL THEN
+//     contact_id → contacts | entity_type='contact' → contacts
+//     listing_id → listings | entity_type='listing' → listings
+//     transaction_id → transactions | entity_type='transaction' → transactions
+//     agent_id → agents | agent_user_id → users
+//   END IF
+//
+// ── THE CORRECTION THAT REFRAMES THE WHOLE TABLE ────────────────────────────
+//
+// `activities.brokerage_id` is **NOT NULL**, with no default. Verified live, and
+// there are zero NULL rows in the table because there cannot be one.
+//
+// So this is NOT the wave-21/22/23 class. There is no untenanted row for a
+// reader's `NULL = <uuid>` to hide, because the row never lands: where the trigger
+// resolves nothing the insert is REFUSED, **SQLSTATE 23502**. The failure mode is
+// a silently-refused WRITE, not a silently-invisible ROW — and supabase-js
+// RESOLVES a refused query, so a writer that does not destructure `error` (or one
+// wrapped in a `try/catch`, which catches nothing) reports success over a row that
+// was never written. Every fix in this wave therefore stamps AND reads its result.
+//
+// ── HOLE 1: BRANCH GAP ──────────────────────────────────────────────────────
+//
+// The row sets none of the eight anchors. Found and fixed:
+//
+//   · `lib/lead-governance/sla-monitor.ts:logEscalation`  — NO ANCHOR AT ALL.
+//     Every lead SLA-breach escalation ever raised was refused 23502. The row did
+//     not even reference the lead; `leadId` appeared only in its log lines.
+//   · `lib/lead-readiness/readiness-logger.ts`            — `entity_type: "lead"`,
+//     and there is no `lead` branch. The tenant was ALREADY being resolved four
+//     lines above for the automation_errors fallback and simply never reached the
+//     row it was about.
+//   · `lib/brand-template-registry/registry-logger.ts` ×3 — `entity_type:
+//     "content"`, whose only other possible anchor was `agent_user_id: userId`, an
+//     OPTIONAL parameter the single live caller (`app/dashboard/admin/brand/
+//     brand-client.tsx:302,310,363`) does not pass. The brand compliance history
+//     panel at `app/dashboard/admin/brand/page.tsx:47` has been rendering an empty
+//     list because no row was ever written, not because nothing was validated.
+//   · `app/actions/documents.ts:askDocumentQuestion`      — `entity_type:
+//     "document"`, no branch, and `.then(() => {}, () => {})` swallowing both the
+//     refusal and its error.
+//   · `app/api/cron/referral-asks/route.ts`               — a CONDITIONAL gap: the
+//     trigger's `contact_id`/`agent_id` branches do resolve on this cron's service
+//     client, but BOTH columns are nullable on `transactions`, so a closed deal
+//     carrying neither is refused. Stamped from the transaction's own brokerage,
+//     the one anchor that cannot go missing.
+//
+// ── HOLE 2: SECURITY INVOKER ────────────────────────────────────────────────
+//
+// The anchor IS set, but the lookup runs under the INSERTING CALLER'S RLS. A
+// service client bypasses RLS and the trigger works; a session client that cannot
+// read the anchor row gets nothing. `contacts` is where this bites: a
+// `user_type = 'agent'` caller has `agent_read_own_contacts` and NOTHING WIDER —
+// only the contacts assigned to their own `agents.id`.
+//
+// AND THE CHAIN IS ELSIF, which is what makes it sharp. A branch that MATCHES but
+// RESOLVES TO NOTHING stops the chain; it does not fall through to a later anchor
+// the caller COULD have read. Proven live: a row carrying BOTH `contact_id` (not
+// readable by the caller) and `listing_id` (readable — `listings` RLS is
+// brokerage-wide) is refused 23502, while the identical row with an explicit stamp
+// lands and RLS admits it.
+//
+//   · `app/actions/cma-presentation/net-sheet-calculator.ts` ×2 — session client,
+//     `contact_id` set, and the action never reads `contacts` at all so nothing
+//     establishes the caller can see the seller it is writing about.
+//   · `app/actions/ai-voice-transcription.ts`               — session client, and
+//     the contact read that WOULD have established it did not destructure `error`,
+//     so a refusal read as "no details" and the action continued.
+//
+// ── AND THE THIRD ANSWER: THE SITE IS FINE ──────────────────────────────────
+//
+// 32 of the 42 are ALREADY COVERED and are deliberately left alone. Stamping a
+// covered site is churn. They divide cleanly, and E2/E5 pin the division so a new
+// writer cannot join either group quietly:
+//
+//   · 22 sites in 10 files use a SERVICE client with a `contacts`/`listings`
+//     anchor — RLS is bypassed, the trigger resolves, there is nothing to do.
+//   · 10 sites in 7 files use a SESSION client but their anchor is PROVEN
+//     READABLE on every path that reaches the insert: an early-return guard on the
+//     same row (`presentation-assembler`, `voice-call-bridge`, `credit-copilot`),
+//     or an anchor that is the CALLER THEMSELVES (`require-admin-maintenance-
+//     access` and `rbac` stamp `agent_user_id = user.id`; `approval-logger` stamps
+//     the caller's own `agents.id`), or an already-present conditional spread that
+//     every caller fills (`generation-logger`).
+//
+// `app/actions/seller-listing/execution-engine.ts:70` is the table's one
+// UNRESOLVED site. Read rather than guessed: it is a `logLifecycleActivity(supabase,
+// row)` helper, and all 18 of its callers pass `brokerage_id: brokerageId`. E6
+// asserts that, because the helper is the only thing standing between those 18
+// rows and this table.
+//
+//   E1  THE TEN REPAIRED SITES STILL STAMP. Not a whole-table zero baseline —
+//       that would be WRONG here and would push 32 covered writers into pointless
+//       churn. Per-file floors, like D2, on the sites this wave actually fixed.
+//   E2  THE TRIGGER-COVERED SET IS EXACTLY THE 32 NAMED SITES. D4's allow-list
+//       shape, and for D4's reason: "the trigger handles it" depends on the anchor
+//       AND the client, neither of which the scanner can see, so the judgement is
+//       pinned per site and a NEW unstamped `activities` writer fails until
+//       someone makes the same judgement out loud.
+//   E3  EVERY ALLOW-LISTED SITE ACTUALLY CARRIES AN ANCHOR THE TRIGGER CAN MATCH.
+//       This is the structural form of HOLE 1 and the assertion that would have
+//       caught `sla-monitor` on the day it was written: a row on the covered list
+//       whose object declares none of the eight anchors is a branch gap, whatever
+//       anyone believed when they added it.
+//   E4  THE READERS STILL NARROW, AND READ THEIR ERROR. A stamped row is worth
+//       exactly what the surfaces reading it compare.
+//   E5  THE SERVICE-CLIENT HALF OF E2 REALLY USES A SERVICE CLIENT. `contacts`
+//       RLS is why those 22 sites are safe and the two net-sheet sites were not;
+//       the day one of those files switches to `createClient` the coverage claim
+//       is void.
+//   E6  THE UNRESOLVED HELPER'S CALLERS ALL STAMP. What the scanner cannot see,
+//       assert about the callers it can.
+//   E7  ONE LEAD RESOLVER, NOT MANY. `readiness-logger` carried a private copy
+//       that `sla-monitor` was about to become the second of.
+
+/**
+ * THE ONLY `activities` INSERT SITES ALLOWED TO CARRY NO `brokerage_id`.
+ *
+ * Every entry is a site where `activities_set_brokerage` DOES resolve, verified by
+ * reading the anchor and the client. `file → number of covered sites`, so a NEW
+ * writer in an already-listed file fails too.
+ *
+ * `service` means the file builds its client with `createServiceClient` — RLS is
+ * bypassed and the trigger's anchor lookup cannot be refused (E5 asserts it).
+ * `session` means the anchor is proven readable another way; the reason is
+ * recorded per entry because nothing in the source states it.
+ */
+const W25_TRIGGER_COVERED: ReadonlyArray<{ file: string; sites: number; client: "service" | "session"; why: string }> = [
+  // ── SERVICE CLIENT: RLS bypassed, so every anchor lookup resolves. ──────────
+  { file: "lib/buyer-execution/governance-guards.ts", sites: 2, client: "service", why: "entity_type 'contact' + entity_id" },
+  { file: "lib/buyer-execution/rollback-handler.ts", sites: 1, client: "service", why: "entity_type 'contact' + entity_id" },
+  { file: "lib/buyer-lifecycle/extensions/contact-lifecycle-sync.ts", sites: 4, client: "service", why: "entity_type 'contact' + entity_id" },
+  { file: "lib/buyer-lifecycle/extensions/expiration-handler.ts", sites: 3, client: "service", why: "entity_type 'contact' + entity_id" },
+  { file: "lib/buyer-lifecycle/extensions/multi-offer-guards.ts", sites: 2, client: "service", why: "entity_type 'contact' + entity_id" },
+  { file: "lib/buyer-lifecycle/extensions/recovery-paths.ts", sites: 2, client: "service", why: "entity_type 'contact' + entity_id" },
+  { file: "lib/buyer-lifecycle/extensions/sla-metadata.ts", sites: 3, client: "service", why: "entity_type 'contact' + entity_id" },
+  { file: "lib/buyer-lifecycle/financial-verification.ts", sites: 1, client: "service", why: "entity_type 'contact' + entity_id" },
+  { file: "lib/buyer-search/search-logger.ts", sites: 2, client: "service", why: "entity_type 'contact' + entity_id" },
+  { file: "lib/property-matching/match-logger.ts", sites: 2, client: "service", why: "entity_type 'listing' + entity_id" },
+  // ── SESSION CLIENT: the anchor is readable by THIS caller, established here. ─
+  {
+    file: "app/actions/cma-presentation/presentation-assembler.ts",
+    sites: 3,
+    client: "session",
+    why: "both `listing` and `contact` are read with .single() and the action RETURNS EARLY on either being absent, so reaching the insert proves this caller can read the anchor the trigger will read",
+  },
+  {
+    file: "app/actions/credit-copilot.ts",
+    sites: 1,
+    client: "session",
+    why: "the contact arrives JOINED onto the account row (`.select(\"*, contact:contacts(*)\")`) under this same session, and is dereferenced before the insert — so it was readable",
+  },
+  {
+    file: "app/actions/voice-call-bridge.ts",
+    sites: 1,
+    client: "session",
+    why: "`contact` is read and guarded (`if (!contact || !agent) return`) before the insert",
+  },
+  {
+    file: "lib/auth/require-admin-maintenance-access.ts",
+    sites: 1,
+    client: "session",
+    why: "the anchor is the CALLER: `agent_user_id: user.id`, and `users` RLS admits `id = auth.uid()` unconditionally",
+  },
+  {
+    file: "lib/approval-workflow/approval-logger.ts",
+    sites: 1,
+    client: "session",
+    why: "the anchor is the caller's OWN `agents.id` (`getSessionAgentId` refuses without one), and `agents_read_own` admits `user_id = auth.uid()`",
+  },
+  {
+    file: "lib/content-generation/generation-logger.ts",
+    sites: 2,
+    client: "session",
+    why: "carries `...(params.brokerage_id ? { brokerage_id } : {})` and every caller in content-generation-engine.ts passes `brokerage_id: auth.brokerageId`; the agent_id/agent_user_id anchors are the caller's own besides",
+  },
+  {
+    file: "lib/security/rbac.ts",
+    sites: 1,
+    client: "session",
+    why: "the anchor is the CALLER (`agent_user_id: userId`, always the session user). SEPARATELY: this call is never awaited and never `.then()`ed, and a PostgrestBuilder only issues its request from `then()` — so it has never written a row at all. That is a live defect, reported rather than switched on here, because making five audit writes per permission check start firing is a product decision, not a tenant one",
+  },
+]
+
+/** E1's floors — the sites this wave repaired, per file. */
+const W25_REPAIRED: ReadonlyArray<{ file: string; floor: number }> = [
+  { file: "lib/lead-governance/sla-monitor.ts", floor: 1 },
+  { file: "lib/lead-readiness/readiness-logger.ts", floor: 1 },
+  { file: "lib/brand-template-registry/registry-logger.ts", floor: 3 },
+  { file: "app/actions/documents.ts", floor: 1 },
+  { file: "app/api/cron/referral-asks/route.ts", floor: 1 },
+  { file: "app/actions/cma-presentation/net-sheet-calculator.ts", floor: 2 },
+  { file: "app/actions/ai-voice-transcription.ts", floor: 1 },
+]
+
+/**
+ * The eight anchors `activities_set_brokerage` can actually match, as they appear
+ * in a row object. `entity_type` counts only when its literal value is one of the
+ * three the trigger tests — `entity_type: "lead"` is the branch gap, not an anchor.
+ */
+const W25_ANCHOR_KEYS = ["contact_id", "listing_id", "transaction_id", "agent_id", "agent_user_id"] as const
+const W25_ANCHOR_ENTITY_TYPES = ["contact", "listing", "transaction"]
+
+/** A sample of the 28 brokerage-equality readers — the surfaces a stamped row reaches. */
+const W25_READERS: TenantReaderCase[] = [
+  {
+    label: "the contact activity timeline",
+    file: "lib/kernel/crm.ts",
+    table: "activities",
+    fn: "loadContactWorkspace",
+    // Destructured inside a `Promise.all([...])` array whose bindings the
+    // walk-back to the owning assignment cannot attribute — asserting it here
+    // would report a NEIGHBOURING read's bindings, which is the false GREEN wave
+    // 24 caught. The predicate is still asserted.
+    assertError: false,
+  },
+  { label: "the compliance flag dashboard", file: "app/actions/compliance/dashboard.ts", table: "activities", fn: "getComplianceDashboard", assertError: true },
+  { label: "the transaction-parties idempotency gate", file: "lib/notifications/notify-helpers.ts", table: "activities", fn: "notifyTransactionParties", assertError: true },
+  { label: "the buyer-match signal history", file: "app/actions/property-buyer-matching.ts", table: "activities", fn: "getListingMatchHistory", assertError: true },
+]
+
+/**
+ * The `activities` insert sites the ASSERTION-SIDE scanner cannot resolve —
+ * `.insert(identifier)` where the row is a `const` bound above. The enumerate
+ * mode at the foot of this file DOES resolve them (that is why it reports 42, not
+ * 45); `insertSites()` does not, and inventing a second resolution here is how
+ * five false-positive families were born in this sequence.
+ *
+ * So they are pinned instead, each READ BY HAND, and E2b fails on a fifth:
+ *
+ *   · `app/actions/offers/present-to-seller.ts`              `const notification = { brokerage_id: listing.brokerage_id, … }` — stamped
+ *   · `app/actions/voice-assistant/core/emit-audit-event.ts` `const activity: any = { brokerage_id, … }`                      — stamped
+ *   · `app/components/action-framework/task-note-creator.tsx` `const activityData = { brokerage_id: agent.brokerage_id, … }`  — stamped
+ *   · `app/actions/seller-listing/execution-engine.ts`        the logLifecycleActivity helper                                 — E6 owns it
+ */
+const W25_SCANNER_UNRESOLVABLE: ReadonlyArray<{ file: string; sites: number }> = [
+  { file: "app/actions/offers/present-to-seller.ts", sites: 1 },
+  { file: "app/actions/voice-assistant/core/emit-audit-event.ts", sites: 1 },
+  { file: "app/components/action-framework/task-note-creator.tsx", sites: 1 },
+  { file: "app/actions/seller-listing/execution-engine.ts", sites: 1 },
+]
+
+const W25_UNRESOLVED_HELPER = "app/actions/seller-listing/execution-engine.ts"
+const W25_TENANT_RESOLVER = "lib/activities/activity-tenant.ts"
+
+/** Every `activities` insert site in app/ or lib/, with its file. */
+function activitiesSites(): Array<{ file: string; site: InsertSite }> {
+  const out: Array<{ file: string; site: InsertSite }> = []
+  for (const f of filesTouchingProd("activities")) {
+    if (!existsSync(resolve(ROOT, f))) continue
+    for (const s of insertSites(f, "activities")) out.push({ file: f, site: s })
+  }
+  return out
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E1 — the ten repaired sites still stamp
+// ─────────────────────────────────────────────────────────────────────────────
+function assertWaveTwentyFiveRepairsStampTenant(): boolean {
+  const all = activitiesSites()
+  const offenders: string[] = []
+  let stamped = 0
+  for (const { file, floor } of W25_REPAIRED) {
+    const mine = all.filter((a) => a.file === file && a.site.hasObjectArg)
+    const bare = mine.filter((a) => !a.site.keys.includes("brokerage_id"))
+    stamped += mine.length - bare.length
+    // BOTH halves matter. The floor alone is satisfied by a file that keeps one
+    // stamped writer and loses the repaired one; the zero-bare check alone is
+    // satisfied by a file whose writers were deleted rather than fixed. This is
+    // D2's lesson applied per file.
+    if (mine.length < floor) {
+      offenders.push(`${file}: ${mine.length} resolvable site(s) < ${floor} — the repaired writer is GONE, not fixed`)
+    }
+    if (bare.length > 0) {
+      offenders.push(`${file}: ${bare.length} site(s) unstamped again (${bare.map((b) => b.site.line).join(", ")})`)
+    }
+  }
+  return check(
+    `E1  all ${stamped} activities insert site(s) across the ${W25_REPAIRED.length} repaired file(s) declare brokerage_id at the TOP LEVEL of the row, and none has gone bare`,
+    offenders.length === 0,
+    offenders.length === 0
+      ? ""
+      : `a wave-25 repair regressed — these rows go back to relying on a trigger branch that does not exist for them, and activities.brokerage_id is NOT NULL so they are REFUSED 23502, not written untenanted: ${offenders.join("; ")}`,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E2 — the trigger-covered set is EXACTLY the named sites
+// ─────────────────────────────────────────────────────────────────────────────
+function assertTriggerCoveredSetIsExact(): boolean {
+  const expected = new Map(W25_TRIGGER_COVERED.map((c) => [c.file, c.sites]))
+  const actual = new Map<string, number>()
+  for (const { file, site } of activitiesSites()) {
+    // Sites this scanner cannot resolve are NOT counted as unstamped here —
+    // that is the false-red family this sequence has been bitten by five times.
+    // E2b pins them by name instead, and E6 reads the helper's callers.
+    if (!site.hasObjectArg) continue
+    if (site.keys.includes("brokerage_id")) continue
+    actual.set(file, (actual.get(file) ?? 0) + 1)
+  }
+
+  const strays: string[] = []
+  const drifted: string[] = []
+  for (const [file, n] of actual) {
+    if (!expected.has(file)) strays.push(`${file} (${n} site(s))`)
+    else if (expected.get(file) !== n) drifted.push(`${file}: ${n} unstamped, allow-list says ${expected.get(file)}`)
+  }
+  const gone = [...expected.keys()].filter((f) => !actual.has(f))
+
+  const ok = strays.length === 0 && drifted.length === 0 && gone.length === 0
+  const total = [...expected.values()].reduce((a, b) => a + b, 0)
+  return check(
+    `E2  exactly the ${total} allow-listed activities site(s) across ${expected.size} file(s) rely on the trigger instead of stamping`,
+    ok,
+    ok
+      ? ""
+      : [
+          strays.length
+            ? `NEW unstamped activities writer not on the covered list: ${strays.join(", ")} — decide out loud whether its anchor and its client actually make the trigger resolve, because if they do not the insert is REFUSED 23502 and nothing will say so`
+            : "",
+          drifted.length ? `covered-site count changed: ${drifted.join("; ")}` : "",
+          gone.length ? `allow-listed file no longer has an unstamped site (update the list deliberately): ${gone.join(", ")}` : "",
+        ].filter(Boolean).join(" · "),
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E2b — the sites this scanner cannot resolve are exactly the four read by hand
+// ─────────────────────────────────────────────────────────────────────────────
+function assertUnresolvableActivitiesSitesArePinned(): boolean {
+  const expected = new Map(W25_SCANNER_UNRESOLVABLE.map((c) => [c.file, c.sites]))
+  const actual = new Map<string, number>()
+  for (const { file, site } of activitiesSites()) {
+    if (site.hasObjectArg) continue
+    actual.set(file, (actual.get(file) ?? 0) + 1)
+  }
+  const strays: string[] = []
+  const drifted: string[] = []
+  for (const [file, n] of actual) {
+    if (!expected.has(file)) strays.push(`${file} (${n} site(s))`)
+    else if (expected.get(file) !== n) drifted.push(`${file}: ${n}, pinned at ${expected.get(file)}`)
+  }
+  const gone = [...expected.keys()].filter((f) => !actual.has(f))
+  const ok = strays.length === 0 && drifted.length === 0 && gone.length === 0
+  const total = [...expected.values()].reduce((a, b) => a + b, 0)
+  return check(
+    `E2b exactly the ${total} pinned activities site(s) resolve to no object literal for this scanner (each one read by hand)`,
+    ok,
+    ok
+      ? ""
+      : [
+          strays.length
+            ? `a NEW \`.insert(<identifier>)\` on activities the assertion scanner cannot see through: ${strays.join(", ")} — READ IT, do not assume either way. E2's zero-unstamped claim covers only the sites it can resolve, so an unpinned one is an unmeasured one`
+            : "",
+          drifted.length ? `pinned count changed: ${drifted.join("; ")}` : "",
+          gone.length ? `pinned site became resolvable (drop it from the list deliberately): ${gone.join(", ")}` : "",
+        ].filter(Boolean).join(" · "),
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E3 — every allow-listed site carries an anchor the trigger can match
+// ─────────────────────────────────────────────────────────────────────────────
+function assertTriggerCoveredSitesCarryAnAnchor(): boolean {
+  const covered = new Set(W25_TRIGGER_COVERED.map((c) => c.file))
+  const gaps: string[] = []
+  let checked = 0
+  for (const { file, site } of activitiesSites()) {
+    if (!covered.has(file)) continue
+    if (!site.hasObjectArg) continue
+    if (site.keys.includes("brokerage_id")) continue
+    checked++
+
+    const hasColumnAnchor = W25_ANCHOR_KEYS.some((k) => {
+      const p = site.props.find((q) => q.key === k)
+      // `agent_id: null` is not an anchor. An explicit null is a declared absence.
+      return p !== undefined && !/^null$/.test(p.value.trim())
+    })
+    const et = site.props.find((p) => p.key === "entity_type")
+    const etLiteral = et ? /^["'](.+)["']$/.exec(et.value.trim())?.[1] : undefined
+    const hasEntityAnchor = etLiteral !== undefined && W25_ANCHOR_ENTITY_TYPES.includes(etLiteral)
+    // A top-level spread can carry an anchor the scan cannot see; not a gap.
+    const hasSpread = site.props.some((p) => p.key === "...")
+
+    if (!hasColumnAnchor && !hasEntityAnchor && !hasSpread) {
+      gaps.push(`${file}:${site.line}${etLiteral ? ` (entity_type "${etLiteral}" matches no branch)` : " (no anchor key at all)"}`)
+    }
+  }
+  return check(
+    `E3  all ${checked} trigger-covered activities row(s) declare an anchor activities_set_brokerage can actually match`,
+    gaps.length === 0,
+    gaps.length === 0
+      ? ""
+      : `BRANCH GAP — this row is on the trigger-covered list but sets none of contact_id/listing_id/transaction_id/agent_id/agent_user_id and no entity_type the trigger tests, so the trigger matches nothing, brokerage_id stays NULL, and the NOT NULL column REFUSES the insert 23502 while supabase-js resolves it as success: ${gaps.join(", ")}`,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E4 — the readers still narrow, and read their error
+// ─────────────────────────────────────────────────────────────────────────────
+function assertWaveTwentyFiveReadersNarrow(): boolean {
+  let all = true
+  for (const r of W25_READERS) {
+    const chain = tableChain(r.file, r.table, r.fn)
+    if (!chain) {
+      all = check(`E4  ${r.label} read found`, false, `no ${r.table} read found in ${r.fn} (${r.file})`) && all
+      continue
+    }
+    const v = brokeragePredicateVerdict(chain)
+    all = check(`E4  ${r.label} ANDs a brokerage predicate on activities (${r.fn})`, v.narrowed, v.detail) && all
+    if (!r.assertError) continue
+    const e = destructuresError(chain.src, chain.fromIndex)
+    all = check(
+      `E4  ${r.label} destructures \`error\` (supabase-js RESOLVES a refusal — it must not read as "nothing there")`,
+      e.ok,
+      e.ok ? "" : `bindings were: {${e.bindings.trim()}}`,
+    ) && all
+  }
+  return all
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E5 — the service-client half of E2 really uses a service client
+// ─────────────────────────────────────────────────────────────────────────────
+function assertCoveredServiceWritersStayService(): boolean {
+  const want = W25_TRIGGER_COVERED.filter((c) => c.client === "service")
+  const offenders: string[] = []
+  for (const c of want) {
+    if (!existsSync(resolve(ROOT, c.file))) {
+      offenders.push(`${c.file} (gone)`)
+      continue
+    }
+    // The IMPORT SOURCE, not the identifier. A control that aliased
+    // `createClient as createServiceClient` from `@/lib/supabase/server` left the
+    // name intact and this assertion STAYED GREEN over exactly the substitution
+    // it exists to catch — a session client wearing the service client's name.
+    // `@/lib/supabase/service` is the only module that hands out the service-role
+    // key, so that is what gets asserted.
+    if (!/from\s+["']@\/lib\/supabase\/service["']/.test(raw(c.file))) {
+      offenders.push(`${c.file} (no import from @/lib/supabase/service)`)
+      continue
+    }
+    if (!/\bcreateServiceClient\s*\(/.test(raw(c.file))) offenders.push(`${c.file} (never calls createServiceClient)`)
+  }
+  return check(
+    `E5  all ${want.length} service-client covered file(s) still build a SERVICE client`,
+    offenders.length === 0,
+    offenders.length === 0
+      ? ""
+      : `these files are on the trigger-covered list BECAUSE the service role bypasses RLS — activities_set_brokerage is SECURITY INVOKER, and under a session client its \`contacts\` lookup is limited to agent_read_own_contacts, so the anchor a colleague owns resolves to nothing and the insert is REFUSED 23502: ${offenders.join(", ")}`,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E6 — the unresolved helper's callers all stamp
+// ─────────────────────────────────────────────────────────────────────────────
+function assertLifecycleHelperCallersStamp(): boolean {
+  if (!existsSync(resolve(ROOT, W25_UNRESOLVED_HELPER))) {
+    return check(`E6  ${W25_UNRESOLVED_HELPER} exists`, false, "the one UNRESOLVED activities site is gone; re-read before trusting E2")
+  }
+  const src = raw(W25_UNRESOLVED_HELPER)
+  // `^[ \t]*await` deliberately: the file's own header PROSE quotes this call
+  // shape (`await logLifecycleActivity(supabase, {…})`) to explain the defect it
+  // documents, and a bare match counted that sentence as a nineteenth caller with
+  // no stamp — a comment answering for code, which is the false-red family this
+  // guard keeps catching.
+  const calls = [...src.matchAll(/^[ \t]*await\s+logLifecycleActivity\(\s*supabase\s*,\s*\{/gm)]
+  const unstamped = calls.filter((m) => {
+    const open = m.index! + m[0].length - 1
+    return !topLevelKeys(src, open).includes("brokerage_id")
+  })
+  return check(
+    `E6  all ${calls.length} logLifecycleActivity(…) caller(s) stamp brokerage_id (the table's one UNRESOLVED site, read rather than guessed)`,
+    calls.length >= 18 && unstamped.length === 0,
+    calls.length < 18
+      ? `only ${calls.length} callers found; this helper carried 18 and E2 excuses its site on that basis`
+      : `${unstamped.length} caller(s) stopped stamping — the helper passes the row straight through, so these become branch gaps the scanner cannot see and the seller listing lifecycle stops being recorded`,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E7 — one lead resolver, not many
+// ─────────────────────────────────────────────────────────────────────────────
+function assertOneLeadTenantResolver(): boolean {
+  if (!existsSync(resolve(ROOT, W25_TENANT_RESOLVER))) {
+    return check(`E7  ${W25_TENANT_RESOLVER} exists`, false, "the shared activities tenant resolver is gone")
+  }
+  const definers = ["lib/lead-readiness/readiness-logger.ts", "lib/lead-governance/sla-monitor.ts", W25_TENANT_RESOLVER]
+    .filter((f) => existsSync(resolve(ROOT, f)))
+    .filter((f) => /(?:function|const)\s+resolveLeadBrokerageId\b/.test(raw(f)))
+  return check(
+    `E7  \`resolveLeadBrokerageId\` is defined in exactly one place (${W25_TENANT_RESOLVER})`,
+    definers.length === 1 && definers[0] === W25_TENANT_RESOLVER,
+    definers.length === 1 && definers[0] === W25_TENANT_RESOLVER
+      ? ""
+      : `defined in: ${definers.join(", ")} — two resolvers is how two callers come to stamp two different values for one lead, and a row stamped with the wrong brokerage is exactly as invisible to its reader as an unstamped one`,
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // NEGATIVE CONTROLS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2143,6 +2654,14 @@ function main(): void {
   assertPlatformCronReadersStayCrossTenant()
   assertCronContextCarriesItsInputTenant()
   assertBlockBodiedRowMapperResolves()
+  assertWaveTwentyFiveRepairsStampTenant()
+  assertTriggerCoveredSetIsExact()
+  assertUnresolvableActivitiesSitesArePinned()
+  assertTriggerCoveredSitesCarryAnAnchor()
+  assertWaveTwentyFiveReadersNarrow()
+  assertCoveredServiceWritersStayService()
+  assertLifecycleHelperCallersStamp()
+  assertOneLeadTenantResolver()
 
   for (const table of TENANT_TABLES) {
     const files = filesTouching(table)
@@ -2945,6 +3464,165 @@ function main(): void {
         replace: '      .eq("brokerage_id", auth.brokerageId)\n      .gte("started_at", sevenDaysAgo)',
       },
       assertPlatformCronReadersStayCrossTenant,
+    )
+
+    // ── WAVE 25 · `activities` ────────────────────────────────────────────────
+
+    // 49. E1: the SECURITY INVOKER repair regresses. The net-sheet start event
+    //     goes back to trusting the trigger — whose first matching branch is
+    //     `contact_id → contacts`, read under the SESSION caller's RLS, where an
+    //     agent sees only their own contacts. Refused 23502, silently.
+    controlled(
+      "the net-sheet start event drops its stamp and trusts the SECURITY INVOKER trigger again",
+      {
+        file: "app/actions/cma-presentation/net-sheet-calculator.ts",
+        find: '      brokerage_id: brokerageId,\n      activity_type: "seller.net_sheet.started",',
+        replace: '      activity_type: "seller.net_sheet.started",',
+      },
+      assertWaveTwentyFiveRepairsStampTenant,
+    )
+
+    // 50. E1 again, on the BRANCH GAP class and in a different file — a control
+    //     that only ever exercises one shape proves one shape. `entity_type:
+    //     "lead"` matches nothing in the chain, so this row cannot be saved by any
+    //     branch however the caller is authenticated.
+    controlled(
+      "the lead readiness transition drops its stamp (entity_type 'lead' matches no trigger branch)",
+      {
+        file: "lib/lead-readiness/readiness-logger.ts",
+        find: "    brokerage_id: tenant.brokerageId,\n    // activities.contact_id FKs contacts(id)",
+        replace: "    // activities.contact_id FKs contacts(id)",
+      },
+      assertWaveTwentyFiveRepairsStampTenant,
+    )
+
+    // 51. E2: a NEW unstamped `activities` writer appears in a file that is not on
+    //     the trigger-covered allow-list. This is the whole point of the list —
+    //     "the trigger handles it" depends on the anchor AND the client, and
+    //     neither is visible to a scanner, so it must be a decision somebody
+    //     records rather than a default nobody notices.
+    controlled(
+      "a new unstamped activities writer appears outside the trigger-covered allow-list",
+      {
+        file: "lib/lead-governance/sla-monitor.ts",
+        find: "  const { error } = await supabase.from('activities').insert({\n    // TENANT: the lead's own brokerage — `leads.brokerage_id` is NOT NULL.\n    brokerage_id: tenant.brokerageId,",
+        replace:
+          "  await supabase.from('activities').insert({ entity_type: 'lead', activity_type: 'stray' })\n" +
+          "  const { error } = await supabase.from('activities').insert({\n    brokerage_id: tenant.brokerageId,",
+      },
+      assertTriggerCoveredSetIsExact,
+    )
+
+    // 52. E2b: a new `.insert(<identifier>)` the assertion scanner cannot resolve.
+    //     It must be READ, not assumed — in either direction. Three of the four
+    //     pinned ones turned out to be correctly stamped, and counting them as
+    //     defects is precisely the habit that produced every wrong number in this
+    //     sequence; excusing them silently is the opposite error.
+    controlled(
+      "a new unresolvable .insert(<identifier>) on activities appears unpinned",
+      {
+        file: "lib/property-matching/match-logger.ts",
+        find: "  const { error, count } = await supabase.from('activities').insert(records)",
+        replace:
+          "  const strayRow = { entity_type: 'listing', entity_id: listingId }\n" +
+          "  await supabase.from('activities').insert(strayRow)\n" +
+          "  const { error, count } = await supabase.from('activities').insert(records)",
+      },
+      assertUnresolvableActivitiesSitesArePinned,
+    )
+
+    // 53. E3: a trigger-covered row loses the anchor that made it covered. This is
+    //     `sla-monitor`'s defect reproduced on a file the allow-list vouches for —
+    //     the row stays on the covered list, the trigger now matches nothing, and
+    //     every SLA breach signal is refused 23502 while the caller reads
+    //     `{ success: true }`.
+    //
+    //     THE TARGET WAS CHOSEN BY A CONTROL FAILING FIRST. The obvious pick,
+    //     `contact-lifecycle-sync`, STAYED GREEN — and correctly so: those rows
+    //     also carry `agent_user_id`, which is the trigger's eighth branch, so
+    //     flipping `entity_type` leaves them genuinely covered and E3 was right to
+    //     say so. `emitSLABreachSignal` is the row whose `entity_type` is its ONLY
+    //     anchor, which is what makes it the real negative control.
+    controlled(
+      "a trigger-covered row loses its ONLY anchor (the sla-monitor defect, on a vouched-for file)",
+      {
+        file: "lib/buyer-lifecycle/extensions/sla-metadata.ts",
+        find: '    activity_type: "buyer.lifecycle.sla_breach",\n    entity_type: "contact",',
+        replace: '    activity_type: "buyer.lifecycle.sla_breach",\n    entity_type: "lead",',
+      },
+      assertTriggerCoveredSitesCarryAnAnchor,
+    )
+
+    // 54. E4: the compliance dashboard stops narrowing. 28 readers AND an equality
+    //     predicate on this table; a stamped row is worth exactly what they
+    //     compare, and a reader that drops the predicate is a cross-tenant leak
+    //     rather than a missing row.
+    controlled(
+      "the compliance flag dashboard stops narrowing activities by brokerage",
+      {
+        file: "app/actions/compliance/dashboard.ts",
+        find: '    .eq("brokerage_id", brokerageId)\n    .eq("activity_type", OFFER_COMPLIANCE_FLAG_EVENT)',
+        replace: '    .eq("activity_type", OFFER_COMPLIANCE_FLAG_EVENT)',
+      },
+      assertWaveTwentyFiveReadersNarrow,
+    )
+
+    // 55. E4: …and the same reader stops reading its `error`, so a refused read
+    //     renders as "no compliance items right now".
+    controlled(
+      "the compliance flag dashboard stops destructuring its error",
+      {
+        file: "app/actions/compliance/dashboard.ts",
+        find: "  const { data: flags, error: flagsError } = await supabase",
+        replace: "  const { data: flags } = await supabase",
+      },
+      assertWaveTwentyFiveReadersNarrow,
+    )
+
+    // 56. E5: a service-client covered writer switches to a session client. The 22
+    //     sites in that half of the allow-list are covered BECAUSE the service role
+    //     bypasses RLS; under a session client the same `entity_type: 'contact'`
+    //     anchor is limited to `agent_read_own_contacts` and the coverage claim is
+    //     void without a single line of the insert changing.
+    controlled(
+      "a service-client covered writer switches to a session client (coverage claim voided invisibly)",
+      {
+        file: "lib/buyer-search/search-logger.ts",
+        find: "import { createServiceClient } from '@/lib/supabase/service'",
+        replace: "import { createClient as createServiceClient } from '@/lib/supabase/server'",
+      },
+      assertCoveredServiceWritersStayService,
+    )
+
+    // 57. E6: one of the 18 callers of the UNRESOLVED helper stops stamping. The
+    //     helper passes its row straight through, so the scanner sees nothing at
+    //     all — the callers are the only place this can be asserted.
+    controlled(
+      "a logLifecycleActivity caller stops stamping (invisible to the scanner: the helper passes the row through)",
+      {
+        file: "app/actions/seller-listing/execution-engine.ts",
+        find: '    brokerage_id:  brokerageId,\n    agent_id:      await resolveAgentId(supabase as any, userId),\n    listing_id:    listingId,\n    activity_type: "seller.appointment.scheduled",',
+        replace: '    agent_id:      await resolveAgentId(supabase as any, userId),\n    listing_id:    listingId,\n    activity_type: "seller.appointment.scheduled",',
+      },
+      assertLifecycleHelperCallersStamp,
+    )
+
+    // 58. E7: a second `resolveLeadBrokerageId` appears. Two resolvers is how two
+    //     callers come to stamp two different values for one lead — and a row
+    //     stamped with the WRONG brokerage is exactly as invisible to its reader
+    //     as an unstamped one. Wave 23's badge-count lesson.
+    controlled(
+      "a second resolveLeadBrokerageId is defined alongside the shared one",
+      {
+        file: "lib/lead-governance/sla-monitor.ts",
+        find: 'import { resolveLeadBrokerageId } from "@/lib/activities/activity-tenant"',
+        replace:
+          'async function resolveLeadBrokerageId(c: any, id: string) {\n' +
+          '  const { data } = await c.from("leads").select("brokerage_id").eq("id", id).maybeSingle()\n' +
+          '  return { ok: true as const, brokerageId: data?.brokerage_id ?? null }\n' +
+          '}',
+      },
+      assertOneLeadTenantResolver,
     )
 
     // ── SPECIFICITY CONTROLS (these must stay GREEN) ─────────────────────────

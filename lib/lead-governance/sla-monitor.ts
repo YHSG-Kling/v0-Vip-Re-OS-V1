@@ -11,6 +11,8 @@
  * This system MONITORS and LOGS, it does NOT block automation.
  */
 
+import { resolveLeadBrokerageId } from "@/lib/activities/activity-tenant"
+
 export interface SLAStatus {
   isBreached: boolean
   daysInState: number
@@ -81,11 +83,36 @@ export async function logEscalation(
   slaStatus: SLAStatus,
   supabase: any
 ): Promise<void> {
+  // THE ROW HAD NO ANCHOR OF ANY KIND, so `activities_set_brokerage` — the
+  // BEFORE INSERT trigger that made every census bucket this table as "netted" —
+  // matched none of its eight branches and left `brokerage_id` NULL. That column
+  // is NOT NULL, so this was never a hidden row: every SLA breach escalation was
+  // **refused, 23502**, and the log line below was the only trace.
+  //
+  // Note what the row also did not carry: the LEAD. `leadId` appeared in this
+  // function's log lines and nowhere in its record. `entity_type`/`entity_id` now
+  // file it against the lead — the same anchor `app/actions/lead-governance/
+  // govern-lead.ts:231` already uses for its own routing rows — which is both the
+  // tenant path and the reason the row is findable at all.
+  const tenant = await resolveLeadBrokerageId(supabase, leadId)
+  if (!tenant.ok || !tenant.brokerageId) {
+    console.error(
+      `[SLAMonitor] Escalation NOT logged for lead ${leadId}: ${
+        tenant.ok ? 'lead carries no brokerage_id' : tenant.reason
+      } — refusing to attempt an insert that cannot satisfy activities.brokerage_id NOT NULL`,
+    )
+    return
+  }
+
   // An SLA BREACH escalation that vanishes is the one record you cannot afford
   // to lose — it is the evidence that the miss was noticed at all. Read the
   // result and say so loudly; this function returns void, so a log line is the
   // only channel it has.
   const { error } = await supabase.from('activities').insert({
+    // TENANT: the lead's own brokerage — `leads.brokerage_id` is NOT NULL.
+    brokerage_id: tenant.brokerageId,
+    entity_type: 'lead',
+    entity_id: leadId,
     activity_type: 'sla_escalation',
     title: 'Lead SLA Breach - Escalation Required',
     description: slaStatus.escalationReason,

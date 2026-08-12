@@ -41,7 +41,10 @@ export async function GET(req: NextRequest) {
 
     const { data: transactions, error } = await supabase
       .from("transactions")
-      .select("id, agent_id, contact_id, property_address, close_date")
+      // `brokerage_id` added to the projection for the stamp below — the
+      // transaction is the record each ask is filed against, and it is the only
+      // anchor on this row that cannot be null-by-data.
+      .select("id, agent_id, contact_id, property_address, close_date, brokerage_id")
       .eq("status", "closed")
       .gte("close_date", thirtyDaysAgo.split("T")[0])
       .lte("close_date", fourteenDaysAgo.split("T")[0])
@@ -51,21 +54,42 @@ export async function GET(req: NextRequest) {
       errors.push(`Transactions query failed: ${error.message}`)
     } else {
       for (const tx of transactions ?? []) {
-        try {
-          await supabase.from("activities").insert({
-            agent_id: tx.agent_id,
-            contact_id: tx.contact_id,
-            activity_type: "referral_ask_due",
-            title: `Request a referral from your recent closing`,
-            description: `${tx.property_address} closed recently. Great time to ask for referrals.`,
-            status: "pending",
-            priority: "medium",
-            metadata: { transaction_id: tx.id },
-          })
-          processed++
-        } catch (err: any) {
+        // TENANT: the closed transaction this ask is filed against.
+        //
+        // `activities` is trigger-covered (`activities_set_brokerage`, BEFORE
+        // INSERT), and on the service client this cron uses the trigger DOES
+        // resolve — but only through `contact_id` or `agent_id`, and BOTH are
+        // nullable on `transactions`. A closed deal carrying neither leaves the
+        // trigger with nothing to match, and `activities.brokerage_id` is NOT
+        // NULL, so that ask is **refused, 23502** rather than written untenanted.
+        // The transaction's own brokerage is the anchor that cannot go missing,
+        // and an explicit stamp wins over the trigger (it only fires `IF
+        // NEW.brokerage_id IS NULL`), so this is strictly compatible with the
+        // rows the trigger was already handling.
+        if (!tx.brokerage_id) {
           skipped++
-          errors.push(`Tx ${tx.id}: ${err.message}`)
+          errors.push(`Tx ${tx.id}: transaction carries no brokerage_id — referral ask not written (activities.brokerage_id is NOT NULL)`)
+          continue
+        }
+        // NOT try/catch: supabase-js RESOLVES a refused insert rather than
+        // throwing, so the `catch` this replaced could never fire and every
+        // refusal was counted as `processed++`.
+        const { error: askError } = await supabase.from("activities").insert({
+          brokerage_id: tx.brokerage_id,
+          agent_id: tx.agent_id,
+          contact_id: tx.contact_id,
+          activity_type: "referral_ask_due",
+          title: `Request a referral from your recent closing`,
+          description: `${tx.property_address} closed recently. Great time to ask for referrals.`,
+          status: "pending",
+          priority: "medium",
+          metadata: { transaction_id: tx.id },
+        })
+        if (askError) {
+          skipped++
+          errors.push(`Tx ${tx.id}: ${askError.message}`)
+        } else {
+          processed++
         }
       }
     }

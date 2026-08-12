@@ -151,8 +151,35 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
     const nsTransactionFee = Number(nsAgreement?.seller_transaction_fee ?? 0) || 0
     const nsListingState = (nsListing?.state as string | null) ?? null
 
-    // Emit start event
-    await supabase.from("activities").insert({
+    // Emit start event.
+    //
+    // TENANT — AND WHY THE TRIGGER COULD NOT SUPPLY IT HERE.
+    //
+    // `activities` carries `activities_set_brokerage` (BEFORE INSERT), so this
+    // table reads as netted. But the trigger is **SECURITY INVOKER**
+    // (`prosecdef = false`): each of its lookups runs under the RLS of whoever is
+    // inserting, and `supabase` here is the SESSION client. Its first matching
+    // branch is `contact_id → contacts`, and `contacts` RLS gives a
+    // `user_type = 'agent'` caller `agent_read_own_contacts` ONLY — the contacts
+    // assigned to their own `agents.id`. This action never reads `contacts` at
+    // all, so nothing establishes that the caller can see the seller it is
+    // writing about.
+    //
+    // The chain is ELSIF, which is what makes it sharp: `contact_id IS NOT NULL`
+    // MATCHES, the SELECT returns no row, and the chain STOPS — it never falls
+    // through to `agent_user_id`, which this row also carries and which the same
+    // caller *could* have read (`users_same_brokerage_select`). Proven live: a
+    // row carrying both anchors, inserted by a caller who cannot read the
+    // contact, is refused 23502 while the identical row with an explicit stamp
+    // lands.
+    //
+    // And `activities.brokerage_id` is NOT NULL, so this was never a hidden row —
+    // the net sheet's start/completion events were REFUSED, silently, for every
+    // agent working a colleague's seller. `brokerageId` is already resolved 40
+    // lines above from the acting agent's `users.brokerage_id`, which is the
+    // exact expression the readers of this table compare.
+    const { error: nsStartError } = await supabase.from("activities").insert({
+      brokerage_id: brokerageId,
       activity_type: "seller.net_sheet.started",
       listing_id: input.listingId,
       contact_id: input.contactId,
@@ -162,6 +189,11 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
         alternate_price: input.alternatePrice
       }
     })
+    // Destructured: supabase-js RESOLVES a refused insert, so the bare `await`
+    // this replaced reported success over a row that was never written.
+    if (nsStartError) {
+      console.error("[net-sheet] seller.net_sheet.started NOT recorded:", nsStartError.message)
+    }
 
     // Calculate scenarios
     const scenarios: NetSheetScenario[] = []
@@ -187,8 +219,9 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
 
     const netSheetId = crypto.randomUUID()
 
-    // Emit completion event
-    await supabase.from("activities").insert({
+    // Emit completion event. Same tenant, same reason — see the start event above.
+    const { error: nsDoneError } = await supabase.from("activities").insert({
+      brokerage_id: brokerageId,
       activity_type: "seller.net_sheet.completed",
       listing_id: input.listingId,
       contact_id: input.contactId,
@@ -201,6 +234,9 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
         validity_days: NET_SHEET_VALIDITY_DAYS
       }
     })
+    if (nsDoneError) {
+      console.error("[net-sheet] seller.net_sheet.completed NOT recorded:", nsDoneError.message)
+    }
 
     // GOVERNANCE VOCABULARY. The row above says `seller.net_sheet.completed`, but
     // the net-sheet validator that gates the seller's decision reads

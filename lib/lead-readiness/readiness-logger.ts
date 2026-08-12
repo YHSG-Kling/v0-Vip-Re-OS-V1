@@ -1,35 +1,21 @@
 "use server"
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveLeadBrokerageId } from "@/lib/activities/activity-tenant"
 import type { ReadinessEvaluation } from "./readiness-evaluator"
 
 /**
  * The tenant a readiness row belongs to: the LEAD it is filed against.
  *
- * Resolved through the record, once per call, and — critically — BEFORE anything
- * that can fail. The automation_errors write in `logReadinessTransition` sits
- * inside an error handler, and a tenant lookup performed *there* is the trap this
- * wave was warned about: if it is refused or throws, the original failure is lost
- * to the code that was supposed to report it. Resolving up front makes that
- * impossible rather than merely unlikely.
- *
- * `error` is destructured because supabase-js RESOLVES a refused read, so
- * `{ data }` alone cannot tell "this lead has no brokerage" from "you may not
- * look" — and one of those is a fact about the row while the other is a fact
- * about the caller.
+ * `resolveLeadBrokerageId` now lives in `lib/activities/activity-tenant.ts` so
+ * there is ONE lead resolver rather than one per module — this file's private
+ * copy was the first of what would have been three. The properties it was written
+ * for are unchanged and documented there: resolved through the record, resolved
+ * BEFORE anything that can fail (the automation_errors write below sits inside an
+ * error handler, and a tenant lookup performed *there* could lose the original
+ * failure to the code meant to report it), and `error` destructured because
+ * supabase-js RESOLVES a refused read.
  */
-async function resolveLeadBrokerageId(
-  supabase: { from: (table: string) => any },
-  leadId: string,
-): Promise<{ ok: true; brokerageId: string | null } | { ok: false; reason: string }> {
-  const { data, error } = await supabase
-    .from("leads")
-    .select("brokerage_id")
-    .eq("id", leadId)
-    .maybeSingle()
-  if (error) return { ok: false, reason: `leads lookup refused: ${error.message}` }
-  return { ok: true, brokerageId: ((data as { brokerage_id: string | null } | null)?.brokerage_id as string | null) ?? null }
-}
 
 /**
  * Logs a readiness evaluation to the activities table for audit trail.
@@ -48,7 +34,30 @@ export async function logReadinessTransition(
   // has to ask a question that could fail in its turn.
   const tenant = await resolveLeadBrokerageId(supabase, leadId)
 
+  // THE STAMP, AND WHY THE TRIGGER NEVER SUPPLIED IT.
+  //
+  // `activities` carries `activities_set_brokerage` (BEFORE INSERT), which is why
+  // every earlier census treated this table as netted. The net has no `lead`
+  // branch: `contact_id` is null by design two lines below, and `entity_type =
+  // 'lead'` matches nothing in the chain. So `NEW.brokerage_id` stayed NULL — and
+  // `activities.brokerage_id` is NOT NULL, so this insert was not a hidden row.
+  // It was **refused, 23502**, on every readiness transition ever evaluated.
+  //
+  // The tenant was already being resolved four lines up for the automation_errors
+  // fallback; it simply never reached the row it was about.
+  if (!tenant.ok || !tenant.brokerageId) {
+    console.error(
+      `[ReadinessLogger] readiness transition for lead ${leadId} NOT recorded: ${
+        tenant.ok ? `lead carries no brokerage_id` : tenant.reason
+      } — refusing to attempt an insert that cannot satisfy activities.brokerage_id NOT NULL`,
+    )
+    return
+  }
+
   const { error } = await supabase.from("activities").insert({
+    // TENANT: the lead's own brokerage. `leads.brokerage_id` is NOT NULL, and it
+    // is the value every `activities` reader compares (see activity-tenant.ts).
+    brokerage_id: tenant.brokerageId,
     // activities.contact_id FKs contacts(id) — leadId is a LEAD id, so every
     // readiness transition was FK-rejected and never logged. entity_type/entity_id
     // carry the lead; contact_id stays honestly null.
@@ -76,12 +85,12 @@ export async function logReadinessTransition(
     // automations console — `app/actions/workflows.ts:531` reads the same
     // predicate as an OWNERSHIP CHECK and returns "Forbidden" on a miss, so the
     // failure could never be acknowledged either.
-    if (!tenant.ok || !tenant.brokerageId) {
-      console.error(
-        `[ReadinessLogger] ${tenant.ok ? `lead ${leadId} carries no brokerage_id` : tenant.reason} — automation_errors row NOT written rather than written where the console can neither see nor resolve it`,
-      )
-      return
-    }
+    // No tenant re-check here: the guard above returned unless `tenant.ok` and
+    // `tenant.brokerageId` both hold, so a second check is unreachable — TypeScript
+    // narrows `tenant` to `never` inside it. The automations console reads
+    // `.eq("brokerage_id", …)` as an OWNERSHIP CHECK (`workflows.ts:531`, returning
+    // "Forbidden" on a miss), so this row must carry the tenant; it does, by
+    // construction, because we cannot reach this line without one.
     const { error: readinessLogError } = await supabase.from("automation_errors").insert({
       brokerage_id: tenant.brokerageId,
       workflow_name: "lead_readiness_evaluation",

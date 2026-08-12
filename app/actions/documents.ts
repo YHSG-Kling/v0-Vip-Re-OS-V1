@@ -1103,13 +1103,42 @@ Client question: ${question}
 Provide a clear, helpful answer in plain English. If you're not sure about something specific to their document, say so and suggest they ask their agent.`,
   })
 
-  // Log activity (fire-and-forget)
-  supabase.from("activities").insert({
-    activity_type: "document_action",
-    entity_type: "document",
-    entity_id: documentId,
-    metadata: { action: "question_asked", performed_by_type: "client", notes: `Asked question: ${question.substring(0, 100)}` },
-  }).then(() => {}, () => {})
+  // Log activity.
+  //
+  // `activities` is covered by `activities_set_brokerage` (BEFORE INSERT), which
+  // is why every census treated this table as netted — but the net has no
+  // `document` branch. `entity_type: "document"` matched nothing, and this row
+  // carries no contact/listing/transaction/agent anchor either, so
+  // `brokerage_id` stayed NULL. It is NOT NULL in the schema, so this was never a
+  // hidden row: the insert was **refused, 23502**, on every client question ever
+  // asked — and the `.then(() => {}, () => {})` above swallowed both the refusal
+  // AND its error, so the action returned an answer either way.
+  //
+  // TENANT: the document's own brokerage. `getDocumentWithAnalysis` already
+  // `select("*")`s the row from `client_documents` or `transaction_documents`, so
+  // this is the record the activity is filed against and it costs no extra read.
+  // `brokerage_id` is NULLABLE on both tables, so an untenanted document is a
+  // real outcome — say so and write nothing rather than guess the asker's
+  // brokerage onto someone else's document.
+  const documentBrokerageId = (document as { brokerage_id?: string | null }).brokerage_id ?? null
+  if (!documentBrokerageId) {
+    console.error(
+      `[documents] document_action NOT logged for document ${documentId}: the document carries no brokerage_id, and activities.brokerage_id is NOT NULL`,
+    )
+  } else {
+    const { error: activityError } = await supabase.from("activities").insert({
+      brokerage_id: documentBrokerageId,
+      activity_type: "document_action",
+      entity_type: "document",
+      entity_id: documentId,
+      metadata: { action: "question_asked", performed_by_type: "client", notes: `Asked question: ${question.substring(0, 100)}` },
+    })
+    // Destructured: supabase-js RESOLVES a refused insert, and the previous
+    // fire-and-forget handler discarded the rejection as well as the resolution.
+    if (activityError) {
+      console.error(`[documents] document_action NOT logged for document ${documentId}:`, activityError.message)
+    }
+  }
 
   return { answer: result.text }
 }

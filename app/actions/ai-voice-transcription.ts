@@ -76,12 +76,40 @@ export async function analyzeCallTranscript(params: {
   const supabase = await createClient()
 
   try {
-    // Get contact context
-    const { data: contact } = await supabase
+    // Get contact context.
+    //
+    // `error` is destructured and the read FAILS CLOSED. supabase-js RESOLVES a
+    // refused query, so `const { data: contact }` alone read "you may not look at
+    // this contact" as "this contact has no details" — and the action carried on,
+    // prompting the model with `undefined undefined` for the client's name and
+    // then writing `brokerage_id: contact?.brokerage_id` (undefined) onto
+    // `call_analyses`.
+    //
+    // It matters for the tenant too. This contact row IS the anchor
+    // `activities_set_brokerage` reads for the activity written below: the
+    // trigger is SECURITY INVOKER, `supabase` is the SESSION client, and its
+    // `contact_id → contacts` lookup runs under exactly the RLS this read runs
+    // under. So a refusal here is precisely the case where the trigger comes back
+    // empty — and because `activities.brokerage_id` is NOT NULL, that activity
+    // was refused 23502, not written untenanted.
+    //
+    // BEHAVIOUR CHANGE, flagged rather than slipped in: this action previously
+    // returned an AI analysis built on a contact it could not read. It now
+    // refuses.
+    const { data: contact, error: contactError } = await supabase
       .from("contacts")
       .select("*, transactions(*)")
       .eq("id", params.contactId)
       .single()
+
+    if (contactError || !contact) {
+      return {
+        success: false,
+        error: contactError
+          ? `Could not read contact ${params.contactId}: ${contactError.message}`
+          : `Contact ${params.contactId} not found`,
+      }
+    }
 
     const { object: analysis } = await generateObject({
       model: "openai/gpt-4o",
@@ -193,7 +221,14 @@ Extract:
       })
     }
 
-    await supabase.from("activities").insert({
+    // TENANT: the contact this call is filed against — the same record the
+    // SECURITY INVOKER trigger would have read, now read once, above, by this
+    // action itself and proven readable before we get here. Resolved once per
+    // action, not once per row. An explicit stamp wins over the trigger (it only
+    // fires `IF NEW.brokerage_id IS NULL`), so this is strictly compatible with
+    // the rows the trigger was already resolving.
+    const { error: callActivityError } = await supabase.from("activities").insert({
+      brokerage_id:  contact.brokerage_id,
       contact_id:    params.contactId,
       agent_id:      params.agentId,
       activity_type: "call",
@@ -202,6 +237,14 @@ Extract:
       outcome:       "completed",
       status:        "completed",
     })
+    // Destructured: a refused insert RESOLVES, so the bare `await` this replaced
+    // reported a completed call on the contact timeline that was never recorded.
+    if (callActivityError) {
+      console.error(
+        `[voice-transcription] "call" activity NOT recorded for contact ${params.contactId}:`,
+        callActivityError.message,
+      )
+    }
 
     revalidatePath(`/crm/contacts/${params.contactId}`)
 
