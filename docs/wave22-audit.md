@@ -144,3 +144,45 @@ now dispatchable.
 - **New this wave:** an authorization check that reads its subject from the
   request is not an authorization check. `partnerId` looked like a parameter and
   was actually the answer to the question being asked.
+
+## OWNER RULINGS (given during wave 22)
+
+Both were raised with the measurements above rather than guessed at, and both
+came back decided.
+
+### 1. External partners are REAL SUPABASE AUTH USERS
+
+So W22-1 is a **session-identity repair**, not a token scheme. The partner
+identity comes from `getUser()`; `partnerId` in the request stops being the
+authorization subject. The alternative the audit recorded — signed links with no
+session, where adding `getUser()` would have locked out an entire partner cohort
+— is **not** what this product does, and is now closed as a possibility rather
+than left hanging.
+
+This also fixes the shape of the refusal: no session is a **401**, and it must
+stay distinguishable from "this partner has no access to that document", which
+is a **404**. Collapsing them is how an outage reads as a permission decision.
+
+### 2. Task #156 — the NULL escape resolves PER TABLE
+
+The ruling is the third option, and it is the one that is correct everywhere
+rather than simplest:
+
+| class | resolution |
+|---|---|
+| genuine platform catalogues — `onboarding_steps`, `training_videos`, `help_topics_kb`, `content_topic_sources`, `service_status`, `buyer_stage_coaching`, `thank_you_note_templates` | a **read-only** global grant. NULL keeps meaning "every tenant reads this" — it stops meaning "every tenant may update and delete this". |
+| `api_response_logs` | a **platform-admin** policy. It writes `brokerage_id: null` deliberately (`connector-gateway.ts:132` — "gateway calls are provider-scoped; tenant attribution lives in vendor_usage metering"), so it is platform telemetry that was never tenant data and should not sit behind a tenant policy at all. |
+| everything else (the large majority of the 320) | the escape is **removed**. |
+
+**The consequence to plan for, stated up front:** removing the escape means every
+writer that omits `brokerage_id` starts failing its insert. That is arguably the
+correct behaviour — this session has fixed a dozen such writers precisely because
+an untenanted row is a public row — but it is a real runtime change and the
+writers must be found first. Waves 20 and 21 already fixed `ai_insights` (11
+sites), `compliance_flags`, `ai_predictions` (2), `ai_autopilot_plans`,
+`conversation_intelligence` and `ai-prediction-outcomes`. The remaining ones are
+what the census for this work has to enumerate **before** the migration lands,
+not after.
+
+Sequencing note: this work writes migrations, and so does the W21-5 narrowing
+(m396/m397) already in flight. It waits until that lands rather than racing it.
