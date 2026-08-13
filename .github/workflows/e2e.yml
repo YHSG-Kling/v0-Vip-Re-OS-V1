@@ -42,6 +42,13 @@ jobs:
       # Creds-gated: skips exit-0 without secrets.
       - name: Live-schema drift check (committed snapshot vs live DDL)
         run: npx tsx scripts/check-live-schema-drift.ts
+      # A MIGRATION FILE IS NOT A MIGRATION (wave 27): m392-m397 — the entire
+      # waves-20/22 RLS remediation — sat in supabase/migrations/ unapplied while
+      # six waves recorded them as done, because nothing in this repo applies
+      # migrations. No filesystem check can see that; this asks the ledger.
+      # Creds-gated like the drift check above: stated skip, exit 0, without them.
+      - name: Migration ledger check (every migration file actually applied)
+        run: npx tsx scripts/migration-ledger-guard.ts
       # The FULL guard chain against main nightly — per-push runs cover PRs;
       # this catches anything that landed on main between deploys.
       - name: Full guard chain

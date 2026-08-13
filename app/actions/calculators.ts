@@ -3,6 +3,102 @@
 import { createClient } from "@/lib/supabase/server"
 import { generateAIJSON } from "@/lib/ai"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
+import { checkPublicRateLimit, publicCallerIp } from "@/lib/security/public-rate-limit"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PUBLIC-SURFACE ABUSE BOUNDS FOR THE LOGGED-OUT CALCULATORS
+//
+// OWNER RULING: rate-limit, keep it open. The zero-friction public calculator is
+// the lead-gen funnel and it stays anonymous — `tool_usage_sessions_insert` is a
+// DELIBERATE, NAMED anon carve-out (m394 `keep_anon_insert`, carried forward by
+// m396 and asserted by m395/m397) and is not touched here. What is bounded is the
+// volume and the size of what an anonymous caller can push through it.
+//
+// REUSE, NOT A SECOND LIMITER. `lib/security/public-rate-limit.ts` already exists
+// and already fronts signup, the get-started coupon probe and the embed widget.
+// Its honesty note applies unchanged: it is a per-instance fixed-window counter,
+// so the real ceiling is (limit × warm instances). That stops a tight abuse loop,
+// which is the exposure here; it is not a distributed quota.
+//
+// 🚩 DEGRADATION IS DELIBERATELY OPEN, NOT CLOSED — this is the one surface in the
+// tree where that is the correct posture, and it is the owner's explicit ruling.
+// A limiter outage must not take down a public marketing page. So:
+//   · over the limit  → REJECT THE WRITE, still return the computed result;
+//   · limiter itself unavailable/throwing → ALLOW, and say so on the console.
+// Everything the limiter guards here is analytics or a convenience save. Nothing
+// behind it is an authorization decision, and no gate in this file is implemented
+// with it — gates elsewhere in the tree fail CLOSED and must keep doing so.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Largest `session_data_json` / persisted payload we will store, in bytes. */
+const MAX_PERSISTED_PAYLOAD_BYTES = 8 * 1024
+/** Longest caller-supplied text we will put in an unbounded `text` column. */
+const MAX_PUBLIC_TEXT_CHARS = 200
+
+const PUBLIC_CALC_LIMITS = {
+  /** Analytics pings. Generous — a real visitor clicking through tools trips several. */
+  toolUsage: { limit: 30, windowMs: 60_000 },
+  /** Persisted saves, keyed to a visitor id. */
+  saveCalculation: { limit: 10, windowMs: 60_000 },
+  /** Outbound mail. Tightest — the platform's sending reputation is on the line. */
+  emailResults: { limit: 5, windowMs: 60_000 },
+  /** Paid comp providers + an LLM call per invocation. Tight for spend, not for abuse alone. */
+  homeValue: { limit: 5, windowMs: 60_000 },
+} as const
+
+/**
+ * Per-IP verdict for one public calculator surface.
+ *
+ * NEVER THROWS. The limiter is in-process and `publicCallerIp()` already swallows
+ * a missing request scope, but this wrapper is what makes the open-degradation
+ * ruling above true BY CONSTRUCTION rather than by hoping nothing raises.
+ */
+async function publicCalcRateVerdict(
+  surface: keyof typeof PUBLIC_CALC_LIMITS,
+): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
+  try {
+    const ip = await publicCallerIp()
+    return checkPublicRateLimit(`calculators:${surface}`, ip, PUBLIC_CALC_LIMITS[surface])
+  } catch (e) {
+    // DEGRADE OPEN — see the ruling above. Recorded, never silent.
+    console.error(`[calculators] rate limiter unavailable for "${surface}", allowing:`, e)
+    return { allowed: true, retryAfterSeconds: 0 }
+  }
+}
+
+/**
+ * Bound a caller-supplied JSON payload before it reaches a jsonb column.
+ *
+ * The inputs objects handed to `trackToolUsage` are whatever the client posted —
+ * `calculateAffordability` and `calculateRentVsBuy` forward their ENTIRE `data`
+ * argument — so without this an anonymous caller sets the row size, not us.
+ * Oversize payloads are REPLACED by a stub rather than dropping the row: the
+ * analytics fact ("this tool was used") survives; the unbounded blob does not.
+ */
+function boundPersistedPayload(payload: unknown): unknown {
+  let serialized: string
+  try {
+    serialized = JSON.stringify(payload) ?? ""
+  } catch {
+    // Cyclic or otherwise unserializable — it was never going to reach jsonb.
+    return { omitted: true, reason: "unserializable" }
+  }
+  if (serialized.length <= MAX_PERSISTED_PAYLOAD_BYTES) return payload
+  return {
+    omitted: true,
+    reason: "payload_too_large",
+    bytes: serialized.length,
+    limit_bytes: MAX_PERSISTED_PAYLOAD_BYTES,
+  }
+}
+
+/** Bound a caller-supplied string headed for an unbounded `text` column. */
+function boundPublicText(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  return trimmed.slice(0, MAX_PUBLIC_TEXT_CHARS)
+}
 
 // ============================================
 // SELLER NET PROCEEDS CALCULATOR
@@ -603,7 +699,24 @@ export async function saveCalculatorResult(data: {
 // PUBLIC TOOLS (Zero Friction, No Email Required)
 // ============================================
 
-// Track tool usage anonymously
+/**
+ * Track tool usage anonymously.
+ *
+ * This is the anon write the m394 carve-out exists for: `tool_usage_sessions`
+ * INSERT is `WITH CHECK (TRUE)` to role PUBLIC (verified live), so an anonymous
+ * caller can write it and that is intended. It is bounded here in three ways —
+ * per-IP volume, payload size, and column-shaped clamps on the caller-supplied
+ * text and integer.
+ *
+ * NEVER THROWS AND NEVER CHANGES THE CALLER'S RESULT. Every caller awaits this
+ * mid-computation and returns its own calculation afterwards, so a rejected or
+ * refused tracking write must not affect what the visitor sees. That is the
+ * degradation the owner asked for: reject the write, still return the result.
+ *
+ * The `try/catch` this used to carry CAUGHT NOTHING: supabase-js RESOLVES a
+ * refused insert rather than rejecting, so a 23502/42501 arrived as a fulfilled
+ * promise and the handler never ran. `error` is destructured now.
+ */
 async function trackToolUsage(data: {
   tool: string
   visitorId: string
@@ -611,19 +724,39 @@ async function trackToolUsage(data: {
   location?: string
   timeSpent?: number
 }) {
+  const verdict = await publicCalcRateVerdict("toolUsage")
+  if (!verdict.allowed) {
+    // Over the per-IP window: the analytics row is dropped, the calculation the
+    // caller asked for is unaffected. Not an error the visitor ever sees.
+    console.warn(
+      `[calculators.trackToolUsage] rate limited (tool=${data.tool}); analytics row dropped, result still returned`,
+    )
+    return
+  }
+
   const supabase = await createClient()
 
-  try {
-    await supabase.from("tool_usage_sessions").insert({
-      tool_name: data.tool,
-      visitor_id: data.visitorId,
-      session_data_json: { inputs: data.inputs, location: data.location },
-      time_spent_seconds: data.timeSpent || 0,
-      timestamp: new Date().toISOString(),
-    })
-  } catch (e) {
-    // Silently fail - don't block user experience
-    console.error("[v0] Tool tracking failed:", e)
+  // time_spent_seconds is a NOT NULL int4 fed straight from the client. Clamped
+  // to a real day so a caller cannot overflow the column (which supabase-js would
+  // hand back as a resolved "success") or file a nonsense negative duration.
+  const timeSpent = Number.isFinite(data.timeSpent)
+    ? Math.min(Math.max(Math.trunc(data.timeSpent as number), 0), 86_400)
+    : 0
+
+  const { error } = await supabase.from("tool_usage_sessions").insert({
+    tool_name: boundPublicText(data.tool) ?? "unknown",
+    visitor_id: boundPublicText(data.visitorId),
+    session_data_json: boundPersistedPayload({
+      inputs: data.inputs,
+      location: boundPublicText(data.location),
+    }),
+    time_spent_seconds: timeSpent,
+    timestamp: new Date().toISOString(),
+  })
+
+  if (error) {
+    // Recorded, never rethrown — analytics must not break a public calculator.
+    console.error("[calculators.trackToolUsage] tracking insert refused:", error.message)
   }
 }
 
@@ -686,11 +819,22 @@ function generateVisitorId(): string {
  *      is a thing the visitor legitimately holds; a tenant uuid is not.
  *   3. neither → refused.
  *
- * 🚩 STILL OPEN (needs an owner decision, deliberately not guessed): even with the
- * brokerage pinned to a real public surface, this endpoint has NO RATE LIMIT. One
- * script pointed at one agent's slug can still burn that brokerage's comp-provider
- * quota and model spend. There is no rate-limit helper in this repo to reach for.
- * The sibling public lane (submitHomeValueRequest) has the same exposure.
+ * ✅ RESOLVED (owner ruling: rate-limit, keep it open). This lane is now bounded
+ * per-IP through `lib/security/public-rate-limit.ts`, the limiter that already
+ * fronts signup and the embed widget — the note that used to sit here ("there is
+ * no rate-limit helper in this repo to reach for") was written before that module
+ * existed and was stale.
+ *
+ * The check runs BEFORE the paid work, which is the only placement that bounds
+ * anything: `runAiCma` calls paid comparable-sales providers and then an LLM, so
+ * a limiter consulted after the fact would rate-limit only the response. That is
+ * also why this one surface REFUSES on the limit instead of degrading like the
+ * analytics write does — there is no already-computed result to hand back, and
+ * the thing being protected is a brokerage's provider spend.
+ *
+ * 🚩 STILL OPEN: the sibling public lane `submitHomeValueRequest`
+ * (app/actions/home-value.ts) has the same exposure and is NOT in this file's
+ * scope. It should take the same treatment.
  */
 export async function calculateHomeValue(
   address: string,
@@ -717,9 +861,21 @@ export async function calculateHomeValue(
   const { BatchDataClient } = await import("@/lib/batchdata-client")
   const { runAiCma } = await import("@/lib/cma/ai-cma-orchestrator")
 
-  const batchData = new BatchDataClient()
-
   const vid = opts.visitorId || generateVisitorId()
+
+  // ── BOUND THE SPEND BEFORE INCURRING IT ────────────────────────────────────
+  // Ahead of the provider clients and ahead of runAiCma, because everything below
+  // this line costs the resolved brokerage real money per call.
+  const rateVerdict = await publicCalcRateVerdict("homeValue")
+  if (!rateVerdict.allowed) {
+    return {
+      success: false,
+      error: `Too many valuation requests from this connection. Please try again in ${rateVerdict.retryAfterSeconds} seconds.`,
+      visitorId: vid,
+    }
+  }
+
+  const batchData = new BatchDataClient()
 
   // ── Resolve the brokerage this CMA (and its paid provider spend) runs under ──
   const { getAgentContext } = await import("@/lib/identity/get-agent-context")
@@ -1067,6 +1223,27 @@ export async function calculateRentVsBuy(data: {
 // SAVE & SHARE FUNCTIONALITY
 // ============================================
 
+/**
+ * Persist a calculation under a visitor id.
+ *
+ * SECOND LOGGED-OUT WRITE PATH ON THIS SURFACE, covered on the same ruling as
+ * `trackToolUsage` — per-IP volume plus a payload cap, degrading OPEN if the
+ * limiter is unavailable.
+ *
+ * MEASURED CORRECTION, recorded rather than assumed: unlike `tool_usage_sessions`,
+ * this table is NOT anon-writable. `saved_calculations_insert` is granted to role
+ * `authenticated` only (verified live), so a genuinely logged-out visitor's save is
+ * refused by RLS today and this action honestly returns `success: false`. The
+ * rate limit is still the right bound — the endpoint is reachable by any signed-in
+ * caller and by anyone once that policy is widened to match the "no email
+ * required" copy — but it is not, as of now, the last line of defence it would be
+ * on `tool_usage_sessions`. The comments in `getSavedCalculations` and
+ * `emailCalculationResults` below that describe this table's rows as
+ * "anon-readable via the `brokerage_id IS NULL` clause" are WRONG for the same
+ * reason: that policy is scoped to `authenticated`, and role `anon` matches no
+ * SELECT policy at all. Left in place rather than rewritten here — correcting a
+ * security narrative is worth its own deliberate pass.
+ */
 export async function saveCalculation(data: {
   toolName: string
   calculationData: any
@@ -1074,17 +1251,28 @@ export async function saveCalculation(data: {
   email?: string
   name?: string
 }) {
+  const verdict = await publicCalcRateVerdict("saveCalculation")
+  if (!verdict.allowed) {
+    return {
+      success: false,
+      error: `Too many saves from this connection. Please try again in ${verdict.retryAfterSeconds} seconds.`,
+    }
+  }
+
   const supabase = await createClient()
 
   try {
     const { data: saved, error } = await supabase
       .from("saved_calculations")
       .insert({
-        tool_name: data.toolName,
-        visitor_id: data.visitorId,
-        calculation_data_json: data.calculationData,
-        user_email: data.email || null,
-        user_name: data.name || null,
+        // Caller-supplied text into unbounded `text` columns, and a caller-supplied
+        // blob into jsonb. All three are bounded for the same reason the tracking
+        // row is: on a public lane the caller otherwise decides the row size.
+        tool_name: boundPublicText(data.toolName) ?? "unknown",
+        visitor_id: boundPublicText(data.visitorId),
+        calculation_data_json: boundPersistedPayload(data.calculationData),
+        user_email: boundPublicText(data.email),
+        user_name: boundPublicText(data.name),
       })
       .select()
       .single()
@@ -1229,6 +1417,19 @@ export async function emailCalculationResults(data: {
   recipientEmail?: string
   recipientName?: string
 }) {
+  // THIRD LOGGED-OUT PATH ON THIS SURFACE. It is not a database write, it is an
+  // OUTBOUND SEND, which is why it carries the tightest window of the four: the
+  // visitor-id binding above already stops an attacker choosing the destination,
+  // but nothing stopped them re-sending the same legitimate message in a loop and
+  // burning the platform's sending reputation on it.
+  const verdict = await publicCalcRateVerdict("emailResults")
+  if (!verdict.allowed) {
+    return {
+      success: false,
+      error: `Too many email requests from this connection. Please try again in ${verdict.retryAfterSeconds} seconds.`,
+    }
+  }
+
   const supabase = await createClient()
 
   try {

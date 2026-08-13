@@ -136,6 +136,32 @@ export function resolveBrandTemplateBrokerageId(client: TenantReadClient, templa
   return readBrokerageId(client, "brand_templates", templateId)
 }
 
+/**
+ * `users.brokerage_id` — for activities whose only anchor is the ACTING USER, i.e.
+ * rows about a person rather than about a record (`lib/security/rbac.ts`'s
+ * permission-denial audit and its access-grant/revoke ledger).
+ *
+ * There IS an `agent_user_id → users` branch in `activities_set_brokerage`, so this
+ * is not a branch gap. It is a SECURITY INVOKER hole and a NULLABLE-COLUMN hole:
+ *
+ *   · the trigger's SELECT runs under the inserting caller's RLS, so it resolves
+ *     only what that caller may read on `users`;
+ *   · `users.brokerage_id` is NULLABLE (unlike `leads`/`brand_templates` above), so
+ *     even a perfectly readable user can answer NULL — and NULL into a NOT NULL
+ *     column is a refused insert, 23502, which supabase-js resolves as success.
+ *
+ * `{ ok: true, brokerageId: null }` therefore means "this user genuinely has no
+ * brokerage", which callers must treat as "do not attempt the insert", NOT as
+ * "stamp null". It is a different outcome from `{ ok: false }` ("the users read was
+ * refused") and the two are kept apart for the reason stated at the top of this file.
+ *
+ * The id passed here is a **users.id** (`auth.uid()` / `users.id`), never an
+ * `agents.id`. Those are disjoint spaces; this resolver reads exactly one table.
+ */
+export function resolveUserBrokerageId(client: TenantReadClient, userId: string | null | undefined) {
+  return readBrokerageId(client, "users", userId)
+}
+
 // NOTE — there is deliberately NO document resolver here. `activities` rows filed
 // as `entity_type: "document"` are also a branch gap, but their one writer
 // (`app/actions/documents.ts:askDocumentQuestion`) already holds the whole

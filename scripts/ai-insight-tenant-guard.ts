@@ -2167,6 +2167,412 @@ function assertOneLeadTenantResolver(): boolean {
   )
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// WAVE 27 — THE AI-ISA HANDOFF: ONE PROP, ONE ID SPACE, AND A BELL THAT RINGS
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// `app/dashboard/voice/isa/handoff-queue-panel.tsx` took an `agentId` prop that
+// ONE caller filled with an `agents.id` and the OTHER with a `users.id`, and then
+// used that single value for THREE columns. Wrong in one caller either way.
+//
+// ── THE RULING, AND THE FACT THAT SETTLES IT ────────────────────────────────
+//
+// The owner's ruling: this is the AI handing a live caller off to a HUMAN agent,
+// because the caller asked for a person. So the queue assigns a human and must
+// notify that human.
+//
+// The three columns were then read off the LIVE CATALOGUE rather than off their
+// names, and all three FK `users(id)`:
+//
+//   ai_isa_qualifications.assigned_to_agent_id → users(id)   ← despite the NAME
+//   lifecycle_events.actor_user_id             → users(id)
+//   notifications.user_id                      → users(id)
+//
+// `assigned_to_agent_id` is the trap, and it is a name collision rather than a
+// subtlety: `tasks.assigned_to_agent_id` — the SAME COLUMN NAME on another table
+// — really does FK `agents(id)`, and a dozen call sites in this tree carry
+// comments saying so. This repo already recorded the difference:
+// `scripts/agent-fk-columns.ts:258` lists `ai_isa_qualifications.
+// assigned_to_agent_id` under `USERS_FK_AGENTISH_COLUMNS`. So the brief's
+// premise — "assigned_to_agent_id → an agents.id" — is FALSIFIED BY THE FK, and
+// the contract collapses to ONE identity rather than two.
+//
+// ── SO THE `voice/isa` CALLER WAS THE WRONG ONE, AND WRONG THREE TIMES ──────
+//
+// Proven live, RLS on, as the recipient's own authenticated session, in a
+// transaction that was rolled back and verified rolled back (probe_leftovers 0):
+//
+//   agents.id → assigned_to_agent_id ......... REFUSED 23503
+//                (ai_isa_qualifications_assigned_to_agent_id_fkey)
+//   agents.id → lifecycle_events.actor_user_id REFUSED 23503
+//   agents.id → notifications.user_id ........ REFUSED 23503
+//   resolved users.id → all three ............ ACCEPTED; badge-counts returns 1,
+//                the `users!assigned_to_agent_id` embed resolves 1, the kernel
+//                event lands 1, and the queue stops listing it as unclaimed.
+//
+// And supabase-js RESOLVES a refused query, so with a `try/catch` that catches
+// NOTHING and two writes that never destructured `error`, every claim on that
+// console removed the row from the queue and navigated to the contact page while
+// assigning nobody and notifying nobody. A live handoff that notifies nobody.
+//
+//   W1  ALL THREE users-FK COLUMNS IN THE PANEL COME FROM ONE IDENTIFIER. The
+//       original defect was one value used for three columns; the FIX is not
+//       three values, it is ONE value of the RIGHT CLASS. If a later edit splits
+//       them, the panel is back to answering "who is the human" twice.
+//   W2  NO CALLER FEEDS IT AN AGENTS-CLASS VALUE. The construct, not the name:
+//       the passed expression — and the local binding it names — must not
+//       resolve to `getAgentContext().agentId`, a `<row>.agent_id` column read,
+//       or an `agents` table read. This is C7a's rule applied to a prop.
+//   W3  AND IT MUST RESOLVE TO A USERS-CLASS SOURCE. W2 alone passes on a
+//       literal, on `""`, on anything unrecognised. The positive half is what
+//       makes it an assertion rather than a blocklist.
+//   W4  THE AMBIGUOUS PROP IS GONE FROM THE CONTRACT AND FROM EVERY CALL SITE.
+//       `agentId` on this component meant two different id spaces on two
+//       different pages; a caller that reintroduces it fails here.
+//   W5  EVERY WRITE IN THE PANEL DESTRUCTURES `error`. Two of the three did not,
+//       and the enclosing try/catch caught nothing, which is the entire reason
+//       three refused writes read as a successful handoff.
+//   W6  THE ISA ASSIGNMENT WRITER CROSSES THE SPACE THROUGH THE SHARED RESOLVER.
+//       `lib/ai-isa/qualification-evaluator.ts` wrote `evaluateAndAssignLead`'s
+//       return — an `agents.id` in every branch — straight into
+//       `assigned_to_agent_id`, and destructured no `error`, so the whole update
+//       (`assigned_at`, `qualified_at`, `qualification_result` with it) was
+//       refused and lost. It must resolve via `resolveAgentRecipient`, not grow
+//       a private copy of `agents.user_id` — E7's rule for a second table.
+
+const W27_PANEL = "app/dashboard/voice/isa/handoff-queue-panel.tsx"
+const W27_CALLERS = ["app/dashboard/voice/isa/page.tsx", "app/dashboard/isa/page.tsx"]
+const W27_ISA_ASSIGNMENT_WRITER = "lib/ai-isa/qualification-evaluator.ts"
+const W27_RECIPIENT_RESOLVER = "lib/notifications/recipient-tenant.ts"
+
+/** The prop the panel's contract now declares: a `users.id`, and only that. */
+const W27_PROP = "assignedToUserId"
+/** The prop it used to declare, which meant `agents.id` on one page and `users.id` on the other. */
+const W27_AMBIGUOUS_PROP = "agentId"
+
+/**
+ * The value written into each of the panel's three `users(id)` FK columns.
+ *
+ * Read out of the source rather than matched as a string: `assigned_to_agent_id`
+ * and `actor_user_id` are properties of insert/update objects, `user_id` is a
+ * property of the notifications insert. All three are found through the same
+ * `topLevelProps` walker the rest of this guard uses, so a reformatted object or
+ * a wrapped call is followed rather than missed.
+ */
+function w27PanelRecipientValues(): Array<{ column: string; value: string }> {
+  if (!existsSync(resolve(ROOT, W27_PANEL))) return []
+  const src = blankComments(raw(W27_PANEL))
+  const out: Array<{ column: string; value: string }> = []
+
+  // The two INSERTs resolve through the shared site walker.
+  for (const [table, column] of [
+    ["lifecycle_events", "actor_user_id"],
+    ["notifications", "user_id"],
+  ] as const) {
+    for (const s of insertSites(W27_PANEL, table)) {
+      const p = s.props.find((x) => x.key === column)
+      if (p) out.push({ column: `${table}.${column}`, value: p.value.trim() })
+    }
+  }
+
+  // The UPDATE is not an insert site, so it is resolved directly: find the
+  // `.update(` that follows `.from("ai_isa_qualifications")` and walk its object.
+  const from = /\.from\(\s*["']ai_isa_qualifications["']\s*\)/g
+  let m: RegExpExecArray | null
+  while ((m = from.exec(src)) !== null) {
+    const after = m.index + m[0].length
+    let window = src.slice(after, after + 4000)
+    const nextFrom = window.search(/\.\s*from\s*\(/)
+    if (nextFrom !== -1) window = window.slice(0, nextFrom)
+    const upd = /^[\s\S]{0,400}?\.\s*update\s*\(/.exec(window)
+    if (!upd) continue
+    const openParen = after + upd[0].length - 1
+    const resolved = resolveRowObject(src, openParen)
+    if (!resolved) continue
+    const p = topLevelProps(src, resolved.open).find((x) => x.key === "assigned_to_agent_id")
+    if (p) out.push({ column: "ai_isa_qualifications.assigned_to_agent_id", value: p.value.trim() })
+  }
+  return out
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// W1 — one identifier feeds all three users-FK columns
+// ─────────────────────────────────────────────────────────────────────────────
+function assertHandoffWritesOneIdentity(): boolean {
+  const vals = w27PanelRecipientValues()
+  if (vals.length < 3) {
+    return check(
+      "W1  the handoff panel still writes all three users-FK columns",
+      false,
+      `found ${vals.length} of 3: ${vals.map((v) => v.column).join(", ") || "(none)"} — if a write was removed the handoff stopped doing one of the three things it exists to do`,
+    )
+  }
+  const distinct = [...new Set(vals.map((v) => v.value))]
+  return check(
+    "W1  ai_isa_qualifications.assigned_to_agent_id, lifecycle_events.actor_user_id and notifications.user_id all come from ONE identifier",
+    distinct.length === 1,
+    distinct.length === 1
+      ? ""
+      : `${vals.map((v) => `${v.column} ← ${v.value}`).join("; ")} — three users(id) columns describing one human must not be fed from more than one expression`,
+  )
+}
+
+/**
+ * What a caller's `assignedToUserId={…}` expression RESOLVES to, following one
+ * hop through a local binding in the same file.
+ *
+ * One hop, deliberately: both live callers are one hop (`user.id` direct;
+ * `userIdForHandoff` ← `userId ?? ""` off the `getAgentContext()` destructuring).
+ * Chasing further would need a type checker, and an assertion that quietly gives
+ * up on the second hop is worse than one that says so.
+ */
+function w27ResolvePropExpression(file: string): { expr: string; resolved: string } | null {
+  if (!existsSync(resolve(ROOT, file))) return null
+  const src = blankComments(raw(file))
+  const attr = new RegExp(`${W27_PROP}\\s*=\\s*\\{([^}]*)\\}`).exec(src)
+  if (!attr) return null
+  const expr = attr[1].trim()
+  const ident = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(expr) ? expr : null
+  if (!ident) return { expr, resolved: expr }
+  const bind = new RegExp(`\\b(?:const|let|var)\\s+${ident}\\s*(?::[^=]+)?=\\s*([^\\n]+)`).exec(src)
+  return { expr, resolved: bind ? `${expr} = ${bind[1].trim()}` : expr }
+}
+
+/** An AGENTS-class source, established by the schema rather than by spelling. */
+function w27LooksAgentsClass(text: string): boolean {
+  return (
+    // `<row>.agent_id` — every `.agent_id` column reached from these pages FKs
+    // agents(id). `.user_id` present means it has already been resolved across.
+    (/(?:^|[^A-Za-z0-9_$.])[A-Za-z0-9_$]+(?:\?)?\.agent_id\b/.test(text) && !/\.user_id\b/.test(text)) ||
+    // the `agentId` field of getAgentContext(), however it is aliased on the way
+    // out — AND `<result>.agentId` as a PROPERTY READ, which is how the live
+    // defect is actually spelled: `evaluateAndAssignLead` returns `{ agentId }`
+    // and every branch of it is an `agents.id`.
+    //
+    // The `.` is deliberately NOT excluded here, and that is the difference
+    // between this and C7a. C7a excludes it because it is looking for the
+    // snake_case COLUMN `<row>.agent_id`; the camelCase `.agentId` in this
+    // sub-tree is always the agents-side field of a resolver result
+    // (`getAgentContext().agentId`, `assignResult.agentId`). Leaving `.` in the
+    // exclusion made the W6a control STAY GREEN over exactly the write it exists
+    // to catch — `assigned_to_agent_id: assignResult.agentId ?? null`, the live
+    // defect, character for character.
+    /\bagentId\s*:/.test(text) ||
+    /(?:^|[^A-Za-z0-9_$])agentId(?:Raw)?\b/.test(text) ||
+    // read straight off the agents table
+    /\.from\(\s*["']agents["']\s*\)/.test(text)
+  )
+}
+
+/** A USERS-class source. */
+function w27LooksUsersClass(text: string): boolean {
+  return /\buser\.id\b/.test(text) || /\buserId\b/.test(text) || /\.user_id\b/.test(text)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// W2 / W3 — the callers, both halves
+// ─────────────────────────────────────────────────────────────────────────────
+function assertHandoffCallersPassUsersId(): boolean {
+  const agentsClass: string[] = []
+  const unrecognised: string[] = []
+  let seen = 0
+  for (const f of W27_CALLERS) {
+    const r = w27ResolvePropExpression(f)
+    if (!r) continue
+    seen++
+    if (w27LooksAgentsClass(r.resolved)) agentsClass.push(`${f} → ${r.resolved}`)
+    else if (!w27LooksUsersClass(r.resolved)) unrecognised.push(`${f} → ${r.resolved}`)
+  }
+  const found = check(
+    `W2a both HandoffQueuePanel callers still pass \`${W27_PROP}\``,
+    seen === W27_CALLERS.length,
+    seen === W27_CALLERS.length ? "" : `found ${seen} of ${W27_CALLERS.length}`,
+  )
+  const a = check(
+    "W2b no HandoffQueuePanel caller passes an AGENTS-class value (agents.id is DISJOINT from users.id — all three FKs refuse it 23503)",
+    agentsClass.length === 0,
+    agentsClass.join("; "),
+  )
+  const b = check(
+    "W3  every HandoffQueuePanel caller passes a value resolvable to a USERS-class source",
+    unrecognised.length === 0,
+    unrecognised.length === 0
+      ? ""
+      : `${unrecognised.join("; ")} — a value this guard cannot place in an id space is not a value the FK will accept on trust`,
+  )
+  return found && a && b
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// W4 — the ambiguous prop is gone from the contract AND from every call site
+// ─────────────────────────────────────────────────────────────────────────────
+function assertAmbiguousHandoffPropIsGone(): boolean {
+  const offenders: string[] = []
+  if (existsSync(resolve(ROOT, W27_PANEL))) {
+    const src = blankComments(raw(W27_PANEL))
+    const iface = /interface\s+HandoffQueuePanelProps\s*\{([\s\S]*?)\n\}/.exec(src)
+    if (!iface) offenders.push(`${W27_PANEL}: HandoffQueuePanelProps not found`)
+    else {
+      if (new RegExp(`(?:^|\\n)\\s*${W27_AMBIGUOUS_PROP}\\s*[?:]`).test(iface[1])) {
+        offenders.push(`${W27_PANEL}: HandoffQueuePanelProps still declares \`${W27_AMBIGUOUS_PROP}\``)
+      }
+      if (!new RegExp(`(?:^|\\n)\\s*${W27_PROP}\\s*[?:]`).test(iface[1])) {
+        offenders.push(`${W27_PANEL}: HandoffQueuePanelProps does not declare \`${W27_PROP}\``)
+      }
+    }
+  }
+  for (const f of W27_CALLERS) {
+    if (!existsSync(resolve(ROOT, f))) continue
+    const src = blankComments(raw(f))
+    // Only inside a <HandoffQueuePanel …> element: these pages legitimately pass
+    // `agentId` to OTHER components (CoachingInsightsPanel, ISAConfigSummary),
+    // where it really is an agents.id and is correct.
+    for (const el of src.matchAll(/<HandoffQueuePanel\b[\s\S]*?\/>/g)) {
+      if (new RegExp(`${W27_AMBIGUOUS_PROP}\\s*=`).test(el[0])) {
+        offenders.push(`${f}: <HandoffQueuePanel> still passes \`${W27_AMBIGUOUS_PROP}\``)
+      }
+    }
+  }
+  return check(
+    `W4  the ambiguous \`${W27_AMBIGUOUS_PROP}\` prop is gone from HandoffQueuePanelProps and from every <HandoffQueuePanel> call site`,
+    offenders.length === 0,
+    offenders.join("; "),
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// W5 — every write in the panel reads its own refusal
+//
+// NOT `destructuresError`. That helper takes the LAST `const {…} = await` within
+// 400 characters and requires no `;` between it and the read — wave 24's rule,
+// written after an earlier statement was caught answering for a later one. THIS
+// TREE WRITES NO SEMICOLONS, so in a function with three consecutive supabase
+// writes the FIRST write's `const { error: … } = await` answers for the second
+// and third: the W5 control below (which strips the notification write's
+// destructuring) STAYED GREEN under that helper. A false green on the exact
+// property the assertion exists to catch — the third of this family in this
+// sequence, and found the same way, by watching a control fail to go red.
+//
+// So W5 does not scan a window at all. It walks BACKWARDS from the `.from(` over
+// its own receiver — `… = await supabase` — and requires the destructuring that
+// binds THIS call, syntactically. An earlier statement cannot reach it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * True when the supabase call whose `.from(` starts at `fromIndex` is itself
+ * bound to a destructuring containing `error`.
+ *
+ * Walks the receiver chain backwards: `.from(` ← `supabase` ← `await` ← `=` ←
+ * `}` … `{`, and reads the bindings out of the braces it lands on. Every step is
+ * an adjacency, so nothing that belongs to a previous statement can satisfy it.
+ */
+function w27ErrorBoundAt(src: string, fromIndex: number): boolean {
+  let i = fromIndex
+  const backWs = () => {
+    while (i > 0 && /\s/.test(src[i - 1])) i--
+  }
+  backWs()
+  // the receiver identifier, e.g. `supabase`
+  const idEnd = i
+  while (i > 0 && /[A-Za-z0-9_$]/.test(src[i - 1])) i--
+  if (i === idEnd) return false
+  backWs()
+  if (i < 5 || src.slice(i - 5, i) !== "await") return false
+  if (i - 6 >= 0 && /[A-Za-z0-9_$]/.test(src[i - 6])) return false
+  i -= 5
+  backWs()
+  if (src[i - 1] !== "=") return false
+  i--
+  backWs()
+  if (src[i - 1] !== "}") return false
+  const close = i - 1
+  let depth = 0
+  let j = close
+  for (; j >= 0; j--) {
+    if (src[j] === "}") depth++
+    else if (src[j] === "{") {
+      depth--
+      if (depth === 0) break
+    }
+  }
+  if (j < 0) return false
+  return /\berror\b/.test(src.slice(j + 1, close))
+}
+
+function assertHandoffWritesDestructureError(): boolean {
+  if (!existsSync(resolve(ROOT, W27_PANEL))) {
+    return check("W5  the handoff panel exists", false, `${W27_PANEL} is missing`)
+  }
+  const src = blankComments(raw(W27_PANEL))
+  const undestructured: string[] = []
+  let writes = 0
+  for (const m of src.matchAll(/\.from\(\s*["']([a-z_]+)["']\s*\)/g)) {
+    const after = m.index! + m[0].length
+    let window = src.slice(after, after + 4000)
+    const nextFrom = window.search(/\.\s*from\s*\(/)
+    if (nextFrom !== -1) window = window.slice(0, nextFrom)
+    if (!/^[\s\S]{0,400}?\.\s*(?:insert|upsert|update|delete)\s*\(/.test(window)) continue
+    writes++
+    if (!w27ErrorBoundAt(src, m.index!)) undestructured.push(`${m[1]} at offset ${m.index}`)
+  }
+  const found = check(
+    "W5a the handoff panel still makes its three writes",
+    writes === 3,
+    writes === 3 ? "" : `found ${writes}`,
+  )
+  const ok = check(
+    "W5b every write in the handoff panel is bound to a destructuring containing `error` (supabase-js RESOLVES a refusal — the try/catch that used to wrap these caught NOTHING)",
+    undestructured.length === 0,
+    undestructured.join(", "),
+  )
+  return found && ok
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// W6 — the ISA assignment writer crosses the space, through the shared resolver
+// ─────────────────────────────────────────────────────────────────────────────
+function assertIsaAssignmentResolvesRecipient(): boolean {
+  if (!existsSync(resolve(ROOT, W27_ISA_ASSIGNMENT_WRITER))) {
+    return check("W6  the ISA assignment writer exists", false, `${W27_ISA_ASSIGNMENT_WRITER} is missing`)
+  }
+  const src = blankComments(raw(W27_ISA_ASSIGNMENT_WRITER))
+
+  // W6a — the value written must not be the assignment engine's return, which is
+  // an agents.id in every branch (rule pool from `agents`, capacity pick from
+  // `agents`, `resolveSoloAgentOwner` returns `agents.id`).
+  const written = [...src.matchAll(/assigned_to_agent_id\s*:\s*([^,\n]+)/g)].map((m) => m[1].trim())
+  const agentsClass = written.filter((v) => w27LooksAgentsClass(v))
+  const a = check(
+    "W6a `ai_isa_qualifications.assigned_to_agent_id` is never written from `evaluateAndAssignLead`'s agents.id (the column FKs users(id) — 23503, and the whole update is lost with it)",
+    written.length > 0 && agentsClass.length === 0,
+    written.length === 0
+      ? "no assigned_to_agent_id write found at all — the qualification outcome stopped being recorded"
+      : agentsClass.join(", "),
+  )
+
+  // W6b — and it crosses through the SHARED resolver rather than a private copy.
+  // E7's rule, for a second table: two resolvers is how two callers come to
+  // disagree about which human an agent row belongs to.
+  const usesShared =
+    new RegExp(`from\\s+['"]@/${W27_RECIPIENT_RESOLVER.replace(/\.ts$/, "")}['"]`).test(src) ||
+    new RegExp(`import\\(\\s*['"]@/${W27_RECIPIENT_RESOLVER.replace(/\.ts$/, "")}['"]`).test(src)
+  const privateCopy = /\.from\(\s*["']agents["']\s*\)[\s\S]{0,120}?["']user_id["']/.test(src)
+  const b = check(
+    `W6b it crosses the id space through \`resolveAgentRecipient\` in ${W27_RECIPIENT_RESOLVER}, not a private \`agents.user_id\` read`,
+    usesShared && !privateCopy,
+    usesShared && !privateCopy ? "" : `usesSharedResolver=${usesShared} privateAgentsUserIdRead=${privateCopy}`,
+  )
+
+  // W6c — and it reads the refusal. The original update destructured nothing, so
+  // a 23503 arrived as a settled promise and the outcome silently vanished.
+  const c = check(
+    "W6c the qualification-outcome update destructures `error`",
+    /const\s*\{[^}]*\berror\b[^}]*\}\s*=\s*await\s+supabase[\s\S]{0,400}?assigned_to_agent_id/.test(src),
+    "the outcome update must read its own refusal — supabase-js resolves one",
+  )
+  return a && b && c
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // NEGATIVE CONTROLS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2662,6 +3068,11 @@ function main(): void {
   assertCoveredServiceWritersStayService()
   assertLifecycleHelperCallersStamp()
   assertOneLeadTenantResolver()
+  assertHandoffWritesOneIdentity()
+  assertHandoffCallersPassUsersId()
+  assertAmbiguousHandoffPropIsGone()
+  assertHandoffWritesDestructureError()
+  assertIsaAssignmentResolvesRecipient()
 
   for (const table of TENANT_TABLES) {
     const files = filesTouching(table)
@@ -3704,6 +4115,175 @@ function main(): void {
         } else {
           console.log("  ✗ SPECIFICITY CONTROL S2 — went RED; the insert window runs past the next .from()")
           failures.push("window-boundary control went red")
+        }
+      }
+    }
+
+    // ── WAVE 27 CONTROLS ─────────────────────────────────────────────────────
+
+    // W1 — one of the three columns fed from a different expression. This is the
+    //      original defect's SHAPE (one component answering "who is the human"
+    //      more than one way), not its original spelling.
+    controlled(
+      "the handoff panel notifies a different identity from the one it assigns",
+      {
+        file: W27_PANEL,
+        find: "      user_id: assignedToUserId,",
+        replace: "      user_id: brokerageId,",
+      },
+      assertHandoffWritesOneIdentity,
+    )
+
+    // W2b — THE DEFECT ITSELF, restored: the voice/isa console passing the
+    //       `agents.id` it holds. Proven live to be 23503 on all three writes.
+    controlled(
+      "the voice/isa console passes its agents.id to the handoff panel again",
+      {
+        file: "app/dashboard/voice/isa/page.tsx",
+        find: `assignedToUserId={userIdForHandoff}`,
+        replace: `assignedToUserId={agentId}`,
+      },
+      assertHandoffCallersPassUsersId,
+    )
+
+    // W2b — and the same defect ONE HOP BACK, where a name-based check cannot
+    //       see it: the JSX still reads `assignedToUserId={userIdForHandoff}`,
+    //       and only the binding underneath it crosses back into the agents
+    //       space. This is the hop that makes W2 a construct rather than a
+    //       spelling test.
+    controlled(
+      "the users.id binding behind the prop is quietly rebound to the agents.id",
+      {
+        file: "app/dashboard/voice/isa/page.tsx",
+        find: "const userIdForHandoff = userId ?? \"\"",
+        replace: "const userIdForHandoff = agentIdRaw ?? \"\"",
+      },
+      assertHandoffCallersPassUsersId,
+    )
+
+    // W4 — the ambiguous prop reintroduced on the component's contract.
+    controlled(
+      "HandoffQueuePanelProps re-declares the ambiguous `agentId`",
+      {
+        file: W27_PANEL,
+        find: "  assignedToUserId: string\n}",
+        replace: "  assignedToUserId: string\n  agentId: string\n}",
+      },
+      assertAmbiguousHandoffPropIsGone,
+    )
+
+    // W5 — the notification write stops reading its own refusal. This is the
+    //      exact shape that made three refused writes look like a completed
+    //      handoff: supabase-js resolves, so nothing throws and nothing is read.
+    controlled(
+      "the handoff notification write stops destructuring `error`",
+      {
+        file: W27_PANEL,
+        find: "const { error: notifyErr } = await supabase.from(\"notifications\").insert({",
+        replace: "await supabase.from(\"notifications\").insert({",
+      },
+      assertHandoffWritesDestructureError,
+    )
+
+    // W6a — the ISA assignment writer putting the assignment engine's agents.id
+    //       straight back into a users(id) column.
+    controlled(
+      "the ISA assignment writer writes evaluateAndAssignLead's agents.id into assigned_to_agent_id",
+      {
+        file: W27_ISA_ASSIGNMENT_WRITER,
+        find: "          assigned_to_agent_id: recipient.userId,",
+        replace: "          assigned_to_agent_id: assignResult.agentId ?? null,",
+      },
+      assertIsaAssignmentResolvesRecipient,
+    )
+
+    // W6b — the shared resolver replaced by a private `agents.user_id` read.
+    //       Two resolvers is how two callers come to disagree about which human
+    //       an agent row belongs to — E7's rule, on a second table.
+    controlled(
+      "the ISA assignment writer grows a private agents.user_id resolver",
+      {
+        file: W27_ISA_ASSIGNMENT_WRITER,
+        find: "    const { resolveAgentRecipient } = await import('@/lib/notifications/recipient-tenant')\n    const recipient = await resolveAgentRecipient(supabase, assignResult.agentId)",
+        replace: "    const { data: agentRow } = await supabase.from('agents').select('user_id').eq('id', assignResult.agentId).maybeSingle()\n    const recipient = { ok: true as const, userId: agentRow?.user_id ?? null }",
+      },
+      assertIsaAssignmentResolvesRecipient,
+    )
+
+    // S5. SPECIFICITY FOR W4. These pages pass `agentId` to OTHER components on
+    //     the SAME page — `CoachingInsightsPanel`, `ISAConfigSummary` — where it
+    //     genuinely is an `agents.id` and is correct. W4 is scoped to the
+    //     `<HandoffQueuePanel>` element, so a NEW `agentId` prop on a sibling
+    //     component must stay GREEN. A guard that flags the identifier anywhere
+    //     on the page would force the wrong fix on three correct call sites.
+    {
+      const file = "app/dashboard/voice/isa/page.tsx"
+      const before = raw(file)
+      const beforeSha = sha(file)
+      const patched = before.replace(
+        "      <ISAConfigSummary config={voiceConfig} agentId={agentId} />",
+        "      <ISAConfigSummary config={voiceConfig} agentId={agentId} secondAgentId={agentId} />",
+      )
+      let stayedGreen = false
+      if (patched === before) {
+        console.log("  ✗ SPECIFICITY CONTROL S5 sibling component keeps its agentId — PATCH DID NOT APPLY")
+        failures.push("specificity control did not apply: sibling agentId prop")
+      } else {
+        try {
+          writeFileSync(resolve(ROOT, file), patched)
+          const marker = failures.length
+          stayedGreen = assertAmbiguousHandoffPropIsGone()
+          while (failures.length > marker) failures.pop()
+        } finally {
+          writeFileSync(resolve(ROOT, file), before)
+          if (sha(file) !== beforeSha) {
+            failures.push(`FAILED TO RESTORE ${file}`)
+            console.log(`  ✗ FAILED TO RESTORE ${file}`)
+          }
+        }
+        if (stayedGreen) {
+          console.log("  ✓ SPECIFICITY CONTROL S5 an `agentId` prop on a SIBLING component — stayed GREEN (W4 is scoped to <HandoffQueuePanel>, where the id space is the defect)")
+        } else {
+          console.log("  ✗ SPECIFICITY CONTROL S5 — went RED; W4 is flagging the identifier rather than the call site")
+          failures.push("W4 specificity control went red: the assertion is not scoped to HandoffQueuePanel")
+        }
+      }
+    }
+
+    // S6. SPECIFICITY FOR W2/W3. The `isa/page.tsx` caller passes `user.id`
+    //     DIRECTLY rather than through a local, and reformatting the JSX
+    //     attribute must not be enough to trip the resolver. If S6 goes red, W2
+    //     is testing layout rather than id class.
+    {
+      const file = "app/dashboard/isa/page.tsx"
+      const before = raw(file)
+      const beforeSha = sha(file)
+      const patched = before.replace(
+        "            assignedToUserId={user.id}",
+        "            assignedToUserId={ user.id }",
+      )
+      let stayedGreen = false
+      if (patched === before) {
+        console.log("  ✗ SPECIFICITY CONTROL S6 reformatted prop expression — PATCH DID NOT APPLY")
+        failures.push("specificity control did not apply: reformatted prop expression")
+      } else {
+        try {
+          writeFileSync(resolve(ROOT, file), patched)
+          const marker = failures.length
+          stayedGreen = assertHandoffCallersPassUsersId()
+          while (failures.length > marker) failures.pop()
+        } finally {
+          writeFileSync(resolve(ROOT, file), before)
+          if (sha(file) !== beforeSha) {
+            failures.push(`FAILED TO RESTORE ${file}`)
+            console.log(`  ✗ FAILED TO RESTORE ${file}`)
+          }
+        }
+        if (stayedGreen) {
+          console.log("  ✓ SPECIFICITY CONTROL S6 the prop expression reformatted — stayed GREEN (W2/W3 resolve the expression, they do not match a layout)")
+        } else {
+          console.log("  ✗ SPECIFICITY CONTROL S6 — went RED; W2/W3 are whitespace tests")
+          failures.push("W2/W3 specificity control went red: the check is layout-sensitive")
         }
       }
     }

@@ -125,17 +125,58 @@ export async function persistQualificationSignals(
     brokerageId: lead.brokerage_id,
   })
 
-  // Step 6: Update qualification record with the outcome
+  // Step 6: Update qualification record with the outcome.
+  //
+  // ── THE ID SPACE, AND WHY THIS UPDATE HAS BEEN REFUSED ────────────────────
+  //
+  // `ai_isa_qualifications.assigned_to_agent_id` FKs **users(id)**, not
+  // agents(id) — verified against the live catalogue, and already recorded in
+  // `scripts/agent-fk-columns.ts:258` under `USERS_FK_AGENTISH_COLUMNS`
+  // ("columns that FK public.users(id) but whose NAME reads agent-ish"). The
+  // reader agrees: `app/actions/ai-isa.ts:528` embeds
+  // `assigned_agent:users!assigned_to_agent_id (…)`.
+  //
+  // `evaluateAndAssignLead` returns an **agents.id** in every branch — the rule
+  // pool is built from `agents` (`assignment-engine.ts:104`), the capacity pick
+  // reads `agents`, and `resolveSoloAgentOwner` returns `agents.id`. The two
+  // spaces are DISJOINT (measured live: zero overlap), so writing it straight in
+  // is a 23503 foreign-key violation — and supabase-js RESOLVES a refused query,
+  // so with no `error` destructured this whole update silently did nothing:
+  // `assigned_at`, `qualified_at` and `qualification_result` were lost with it.
+  // The handoff queue reads `.is("assigned_to_agent_id", null)`, so the lead sat
+  // in the queue as unassigned after Engine 2 had assigned it.
+  //
+  // Crossed with the resolver wave 23 added for exactly this, rather than a
+  // second private copy of `select user_id from agents`.
   if (qualRecord?.id) {
-    await supabase
-      .from('ai_isa_qualifications')
-      .update({
-        assigned_to_agent_id: assignResult.agentId ?? null,
-        assigned_at: assignResult.assigned ? new Date().toISOString() : null,
-        qualified_at: new Date().toISOString(),
-        qualification_result: 'qualified',
-      })
-      .eq('id', qualRecord.id)
+    const { resolveAgentRecipient } = await import('@/lib/notifications/recipient-tenant')
+    const recipient = await resolveAgentRecipient(supabase, assignResult.agentId)
+    if (!recipient.ok) {
+      // A REFUSAL is not "this agent has no user". Fail loudly rather than
+      // writing null over a real assignment.
+      console.error('[AI ISA] could not resolve the assigned agent to a user:', recipient.reason)
+    } else {
+      if (assignResult.agentId && !recipient.userId) {
+        console.error(
+          '[AI ISA] assigned agent has no linked users row; recording the qualification without an assignee:',
+          assignResult.agentId,
+        )
+      }
+      const { error: outcomeErr } = await supabase
+        .from('ai_isa_qualifications')
+        .update({
+          // users.id — see above. `recipient.userId` is null only when the agent
+          // row carries no `user_id`, which is the honest "nobody to assign".
+          assigned_to_agent_id: recipient.userId,
+          assigned_at: assignResult.assigned && recipient.userId ? new Date().toISOString() : null,
+          qualified_at: new Date().toISOString(),
+          qualification_result: 'qualified',
+        })
+        .eq('id', qualRecord.id)
+      if (outcomeErr) {
+        console.error('[AI ISA] failed to record the qualification outcome:', outcomeErr.message)
+      }
+    }
   }
 
   // Step 7: If Engine 2 couldn't find an agent, the qualified+consented lead would

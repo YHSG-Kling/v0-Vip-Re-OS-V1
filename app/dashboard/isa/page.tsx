@@ -475,10 +475,15 @@ export default async function AIISAOperationsConsolePage() {
 
         {/* Handoff Queue Tab - Qualified leads ready for agent */}
         <TabsContent value="handoff" className="mt-4">
+          {/* `user.id` is a `users.id`, which is what every column the panel
+              writes actually FKs — this caller was already passing the right
+              VALUE under a prop name that claimed otherwise. Only the name
+              changed here; the sibling console at /dashboard/voice/isa was the
+              one passing an `agents.id`. */}
           <HandoffQueuePanel
             queue={handoffQueue}
             brokerageId={brokerageId}
-            agentId={user.id}
+            assignedToUserId={user.id}
           />
         </TabsContent>
 

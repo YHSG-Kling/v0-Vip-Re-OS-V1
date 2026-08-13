@@ -4,9 +4,12 @@ import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
 import { generateObject } from "@/lib/ai/generate"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
-import { openai } from "@ai-sdk/openai"
 import { z } from "zod"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+// `openai` (the raw transcription model handle) and `callConnector` (the raw
+// asset download) were both imported ONLY for the inline Whisper block that used
+// to live in transcribeAudio. That block is gone — the fetch, the cap, the vendor
+// choice and the metering all belong to lib/repurpose/transcribe-core.ts now — so
+// the imports go with it rather than sitting here as a second way to do it.
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
@@ -376,39 +379,79 @@ Provide:
   }
 }
 
-// Transcribe audio using the Vercel AI SDK (OpenAI Whisper) and persist
-// the result into call_transcriptions.
+// Transcribe a call recording and LAND THE TRANSCRIPT ON THE CONTACT RECORD.
 //
 // Schema notes: call_transcriptions is keyed by voice_call_id + brokerage_id
-// (both NOT NULL). It carries full_text, speaker_turns (jsonb), word_count,
-// language and transcribed_at — there is no separate "processing/completed"
-// status column. We therefore fetch the audio, transcribe synchronously, and
-// insert a single row when we have the final text. Failures don't write a row.
+// (both NOT NULL) and carries a UNIQUE index on voice_call_id
+// (uq_call_transcriptions_voice_call, verified live). It holds full_text,
+// speaker_turns (jsonb), word_count, language and transcribed_at — there is no
+// "processing/completed" status column. So we fetch the audio, transcribe
+// synchronously, and insert a single row when we have the final text. Failures
+// don't write a row.
+//
+// ── OWNER RULING, AND WHAT IT REVEALED ───────────────────────────────────────
+// Carried since wave 2 as "recorded, needs an owner decision". The ruling:
+//
+//     "transcribeaudio is necessary and then added to the contact record, etc to
+//      use later.. which elevenlabs can do or other free options"
+//
+// KEEP IT — and it was missing the half that makes it worth having. What it did
+// with its output before this wave was: write ONE `call_transcriptions` row and
+// return the string. That row is a LEAF. Its only readers are two dashboards
+// (app/dashboard/isa/page.tsx:213 and app/dashboard/voice/review/[callId]/page.tsx:117),
+// and nothing else on the platform can see it. In particular the transcript was
+// invisible to:
+//
+//   · `lib/voice/call-analysis.ts:sweepVoiceCallIntelligence`, whose candidate
+//     query is `.not("transcription", "is", null)` — a column this action never
+//     touched;
+//   · `call_analyses` (the row the coaching brief, the intelligence dashboards,
+//     `runMeetingFollowthroughForCall` and `composeMeetingRecap` all read);
+//   · `contact_memory`, the per-contact vector recall the drafting rails query
+//     through `lib/ai-isa/brand-voice-prompt.ts`.
+//
+// So the transcript existed and was not "usable later" anywhere. THREE writes
+// now close that, all onto rails that already exist:
+//
+//   1. `voice_calls.transcription` — THE one voice-transcript ledger. Written
+//      only when it is EMPTY, so a live turn-by-turn transcript from
+//      app/api/voice/twilio/turn/route.ts is never overwritten by a post-hoc
+//      recording transcription.
+//   2. `lib/voice/call-analysis.ts:analyzeVoiceCallRow` — THE one conversation
+//      -intel extractor, stamped with its own provenance. This is EXACTLY the
+//      shape `lib/connections/zoom-transcripts.ts:210-222` uses: a transcript
+//      arriving from outside the turn loop attaches to the ledger and is analyzed
+//      through the shared extractor, never a fork. It is called directly rather
+//      than left to the hourly sweep because `isAnalyzableCall` requires a
+//      `Caller:`-prefixed line, which is a shape the TURN LOOP produces and a
+//      recording transcription does not — the sweep would skip it forever.
+//   3. `lib/agents/contact-memory.ts:embedContactMemory` — the extended-memory
+//      rail, so the transcript is recallable by the per-contact agents and the
+//      portal chat. Best-effort, matching the kernel fanout's own call at
+//      lib/kernel/event-fanout.ts:711-723.
+//
+// TENANT. `voice_calls.brokerage_id` is the record's own tenant and is what the
+// `call_transcriptions` row and the analysis carry. The `contact_memory` row is
+// about the CONTACT, so its brokerage_id is resolved THROUGH THE CONTACT ROW —
+// a different record, therefore a different read, `error` destructured. Where the
+// call has no contact_id, or the contact cannot be read, NOTHING is written and
+// the reason is named in the result. Ids are never carried between spaces:
+// `voice_calls.contact_id` is a contacts.id and is used only as one.
 //
 // ⚠️ AUTH IS LOAD-BEARING HERE, AND IT WAS ABSENT. This export had no gate at
-// all. Two things happen before any row is written, both driven entirely by
-// caller-supplied input:
+// all. The explicit session gate below is one, and the lookup is scoped to the
+// caller's brokerage so the id cannot be borrowed either.
 //
-//   1. a server-side GET of `params.audioUrl` — an ARBITRARY caller-chosen URL,
-//      fetched with `auth: none` (SSRF), and
-//   2. an OpenAI Whisper transcription of whatever came back — real, unmetered
-//      spend on the platform's key.
-//
-// The only thing standing between an anonymous request and both of those was the
-// incidental RLS on the voice_calls lookup. That is not a gate, it is a side
-// effect. The explicit session gate below is, and the lookup is now additionally
-// scoped to the caller's brokerage so the id cannot be borrowed either.
-//
-// STILL OPEN (needs an owner decision, see docs/orphan-burndown-slice2.md):
-//   · `audioUrl` remains unvalidated, so an AUTHENTICATED caller still gets an
-//     arbitrary server-side fetch. There is no SSRF/allowlist helper anywhere in
-//     this repo today and every other `asset-download` call site passes a
-//     provider-returned URL rather than a user-supplied one — this is the only
-//     one that takes it from the caller. It wants a host allowlist (the storage
-//     bucket + the telephony provider) or a signed-URL requirement.
-//   · There is no usage cap or metering on the Whisper call. Compare
-//     app/api/elevenlabs/voice-clone/route.ts, which wraps its provider spend in
-//     checkUsageCap() + logMediaUsage(); this path bills nobody and caps nothing.
+// ── THE SSRF SURFACE, WHICH THE RULING DOES NOT WAIVE ────────────────────────
+// "Necessary" settles whether the action exists, not that it should fetch
+// arbitrary addresses. `audioUrl` is now checked against
+// `lib/security/audio-source-allowlist.ts:platformAudioHostRules()` — the hosts
+// THIS system produces or stores audio on, each rule naming the code that puts
+// audio there. The fetch, the byte cap, the vendor budget gate and the vendor
+// ledger all live in the ONE transcription primitive
+// (lib/repurpose/transcribe-core.ts:transcribeMediaUrl), which replaced the
+// inline Whisper block that used to sit here — so this lane and the repurpose
+// lane can no longer drift on which vendor transcribes or how big a file may be.
 export async function transcribeAudio(params: {
   voiceCallId: string
   audioUrl: string
@@ -422,10 +465,12 @@ export async function transcribeAudio(params: {
   const supabase = await createClient()
 
   try {
-    // Look up the parent voice_calls row to recover brokerage_id.
+    // Look up the parent voice_calls row to recover brokerage_id — and the two
+    // fields the contact-side rails need: the contact this call is filed against,
+    // and whether the ledger already carries a transcript.
     const { data: voiceCall, error: lookupErr } = await supabase
       .from("voice_calls")
-      .select("id, brokerage_id")
+      .select("id, brokerage_id, contact_id, agent_id, direction, duration_seconds, transcription")
       .eq("id", params.voiceCallId)
       .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle()
@@ -434,20 +479,29 @@ export async function transcribeAudio(params: {
       return { success: false, error: "voice_call not found" }
     }
 
-    const audioResponse = await callConnector<Buffer>({
-      connector: "asset-download", baseUrl: "", path: "", url: params.audioUrl,
-      method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 60_000,
+    // ONE primitive: allowlist → fetch → content-type → 25MB cap → budget gate →
+    // vendor → ledger. ElevenLabs Scribe is the owner's named provider and rides
+    // the platform ELEVENLABS_API_KEY through the `elevenlabs` connector, the
+    // same credential path as every other ElevenLabs egress here; it falls back
+    // to the existing Whisper path only when that key is unset, and refuses
+    // honestly when neither vendor is configured.
+    const { platformAudioHostRules } = await import("@/lib/security/audio-source-allowlist")
+    const { transcribeMediaUrl } = await import("@/lib/repurpose/transcribe-core")
+    const spoken = await transcribeMediaUrl(params.audioUrl, {
+      allowedHosts: platformAudioHostRules(),
+      brokerageId: voiceCall.brokerage_id,
+      provider: "elevenlabs",
+      language: params.language ?? null,
+      systemSource: "call_transcription",
     })
-    if (!audioResponse.ok || !audioResponse.data) {
-      return { success: false, error: "Could not fetch audio file from URL" }
+    if (!spoken.success) {
+      // The reason is carried through rather than flattened: "that host is not
+      // one we store audio on" and "no vendor is configured" are different facts
+      // about a refusal, and a surface that cannot tell them apart tells the user
+      // the wrong thing.
+      return { success: false, error: spoken.message, reason: spoken.reason }
     }
-
-    const { experimental_transcribe } = await import("ai")
-    const result = await experimental_transcribe({
-      model: openai.transcription("whisper-1"),
-      audio: new Uint8Array(audioResponse.data),
-    })
-    const transcriptText = result.text
+    const transcriptText = spoken.transcript
 
     const { data: transcription, error: insertErr } = await supabase
       .from("call_transcriptions")
@@ -467,10 +521,138 @@ export async function transcribeAudio(params: {
       return { success: false, error: insertErr?.message ?? "Failed to persist transcription" }
     }
 
+    // ── 1. THE LEDGER ─────────────────────────────────────────────────────────
+    // `voice_calls.transcription` is what every downstream voice surface reads.
+    // Only filled when EMPTY: the turn loop's interleaved `Caller:`/`AI:`
+    // transcript is the live record of the conversation and a post-hoc
+    // transcription of the recording must not replace it.
+    let ledgerStamped = false
+    if (!(voiceCall.transcription ?? "").trim()) {
+      const { error: ledgerErr } = await supabase
+        .from("voice_calls")
+        .update({ transcription: transcriptText.slice(0, 60_000) })
+        .eq("id", voiceCall.id)
+        .eq("brokerage_id", voiceCall.brokerage_id)
+      // Destructured: supabase-js RESOLVES a refused update, so a bare await here
+      // would report a transcript on the call record that was never written.
+      if (ledgerErr) {
+        console.error(
+          `[voice-transcription] voice_calls.transcription NOT stamped for call ${voiceCall.id}:`,
+          ledgerErr.message,
+        )
+      } else {
+        ledgerStamped = true
+      }
+    }
+
+    // ── 2. THE CONTACT-SIDE INSIGHT ROW ───────────────────────────────────────
+    // The Zoom lane's shape exactly: attach, then analyze through THE shared
+    // extractor with its own provenance. Deduped on the live UNIQUE index
+    // (uq_call_analyses_voice_call) rather than racing it. Best-effort — a
+    // failed analysis never invalidates the transcript that is already persisted.
+    let analyzed = false
+    if (voiceCall.contact_id) {
+      const { data: priorAnalysis, error: priorErr } = await supabase
+        .from("call_analyses")
+        .select("id")
+        .eq("voice_call_id", voiceCall.id)
+        .maybeSingle()
+      if (priorErr) {
+        console.error(
+          `[voice-transcription] could not check for a prior analysis on call ${voiceCall.id}:`,
+          priorErr.message,
+        )
+      } else if (!priorAnalysis) {
+        const { analyzeVoiceCallRow } = await import("@/lib/voice/call-analysis")
+        const res = await analyzeVoiceCallRow(
+          supabase,
+          {
+            id: voiceCall.id,
+            brokerage_id: voiceCall.brokerage_id,
+            contact_id: voiceCall.contact_id,
+            agent_id: voiceCall.agent_id ?? null,
+            direction: voiceCall.direction ?? null,
+            // The ledger's own duration wins; the vendor's measured duration is
+            // the fallback, and null when NEITHER is known — never a fabricated 0,
+            // which would render as a zero-length call on the coaching surfaces.
+            duration_seconds:
+              voiceCall.duration_seconds ??
+              (spoken.durationSeconds != null ? Math.round(spoken.durationSeconds) : null),
+            transcription: transcriptText,
+          },
+          "audio_transcription",
+        )
+        analyzed = res.ok
+        if (!res.ok) {
+          console.error(`[voice-transcription] call analysis failed for ${voiceCall.id}:`, res.error)
+        }
+      }
+    }
+
+    // ── 3. THE EXTENDED-MEMORY RAIL ───────────────────────────────────────────
+    // TENANT RESOLVED THROUGH THE RECORD THE ROW IS ABOUT. The memory belongs to
+    // the CONTACT, so its brokerage_id comes from the contact's own row — not
+    // from the caller's context and not from the call's. Where the contact is
+    // absent or unreadable, nothing is written and the reason is returned.
+    let memoryId: string | null = null
+    let memorySkipped: string | null = null
+    if (!voiceCall.contact_id) {
+      memorySkipped = "voice_call has no contact_id — nothing to file the transcript against"
+    } else {
+      const { data: contact, error: contactErr } = await supabase
+        .from("contacts")
+        .select("id, brokerage_id")
+        .eq("id", voiceCall.contact_id)
+        .maybeSingle()
+      if (contactErr) {
+        memorySkipped = `contact ${voiceCall.contact_id} unreadable: ${contactErr.message}`
+      } else if (!contact?.brokerage_id) {
+        memorySkipped = `contact ${voiceCall.contact_id} resolved no tenant`
+      } else {
+        const { embedContactMemory } = await import("@/lib/agents/contact-memory")
+        const embedded = await embedContactMemory({
+          brokerageId: contact.brokerage_id,
+          entityType: "contact",
+          entityId: contact.id,
+          // `agent_note` — the closest admitted value of the LIVE CHECK
+          // (contact_memory_memory_kind_check: transparency_update | portal_message
+          // | agent_note | showing_feedback | persona_signal | preference |
+          // bba_event | agent_message). The provenance that makes it a CALL rather
+          // than a typed note rides source_table/source_id + metadata, which is
+          // what a reader can filter on without a schema change.
+          memoryKind: "agent_note",
+          // embedContactMemory caps its own input at 4000 chars for retrieval
+          // quality (lib/agents/contact-memory.ts:65). That is a RECALL index,
+          // not the record: the full text is already durable on
+          // call_transcriptions.full_text and voice_calls.transcription above, so
+          // nothing is lost by the cap.
+          content: transcriptText,
+          sourceTable: "call_transcriptions",
+          sourceId: transcription.id,
+          metadata: {
+            provenance: "call_transcription",
+            voice_call_id: voiceCall.id,
+            transcription_provider: spoken.provider,
+            duration_seconds: spoken.durationSeconds,
+            language: params.language ?? null,
+          },
+        })
+        if (embedded.ok) memoryId = embedded.memoryId ?? null
+        else memorySkipped = embedded.error ?? "embedding failed"
+      }
+    }
+
+    if (voiceCall.contact_id) revalidatePath(`/crm/contacts/${voiceCall.contact_id}`)
+
     return {
       success: true,
       transcriptionId: transcription.id,
       transcript: transcriptText,
+      provider: spoken.provider,
+      ledgerStamped,
+      analyzed,
+      memoryId,
+      memorySkipped,
     }
   } catch (error) {
     return handleError(error, "transcribeAudio")

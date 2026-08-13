@@ -33,9 +33,17 @@ export const metadata = {
 
 export default async function VoiceISAPage() {
   const supabase = await createClient()
-  const { agentId: agentIdRaw, brokerageId: brokerageIdRaw } = await getAgentContext()
+  const { agentId: agentIdRaw, brokerageId: brokerageIdRaw, userId } = await getAgentContext()
   const agentId = agentIdRaw ?? ""
   const brokerageId = brokerageIdRaw ?? ""
+  // `agents.id` and `users.id` are DISJOINT id spaces (measured live: zero
+  // overlap). `agentId` is the right value for `ai_isa_calls.agent_id` /
+  // `ai_isa_qualifications.agent_id` below — both FK `agents(id)` — and the WRONG
+  // value for the handoff panel, every column of which FKs `users(id)`. This page
+  // passed `agentId` there, so every claim on this surface was refused 23503
+  // three times over while reporting success. `getAgentContext()` returns the
+  // same human's `users.id` in the very same call, so the crossing costs nothing.
+  const userIdForHandoff = userId ?? ""
 
   // Get today's date at midnight
   const today = new Date()
@@ -386,7 +394,7 @@ export default async function VoiceISAPage() {
         <HandoffQueuePanel
           queue={(handoffQueue || []) as any[]}
           brokerageId={brokerageId}
-          agentId={agentId}
+          assignedToUserId={userIdForHandoff}
         />
       </div>
 

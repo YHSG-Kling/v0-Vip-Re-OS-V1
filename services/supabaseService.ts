@@ -6,19 +6,58 @@ import { aiMappingService } from "./aiMappingService"
 
 let supabaseInstance: SupabaseClient | null = null
 
+/**
+ * The SERVICE-ROLE client. It bypasses RLS, and every caller in this file is
+ * written on that assumption: `getContacts`, `getCommissions`, `getVendors` and
+ * the rest apply their tenant filters IN THE QUERY precisely because the client
+ * underneath them enforces none.
+ *
+ * ── IT USED TO FAIL OPEN ────────────────────────────────────────────────────
+ *
+ * The key was resolved as
+ *
+ *     process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+ *
+ * so a missing service-role key did not stop anything — it silently downgraded
+ * `getSupabaseAdmin()` to an **anon** client. Nothing announced the downgrade.
+ * The `!supabaseUrl || !supabaseKey` guard below could not catch it either,
+ * because the anon key had already satisfied `supabaseKey`; the guard's own
+ * message named SUPABASE_SERVICE_ROLE_KEY for a condition that could be true
+ * with that variable perfectly set and false with it entirely absent.
+ *
+ * The result was not "fewer rows". It was reads and writes running under `anon`
+ * RLS while ~85 call sites believed RLS was bypassed — and because supabase-js
+ * RESOLVES a refused query, every one of those refusals arrived as an empty
+ * array or a null through methods that log-and-return-`[]`. A misconfigured
+ * deploy would have looked like an empty database, and any write that anon RLS
+ * permitted would have run as anon while being reported as an admin write.
+ *
+ * There is no fallback now. A function named `getSupabaseAdmin` either hands
+ * back an admin client or refuses, naming the variable that is missing.
+ */
 function getSupabaseAdmin() {
   if (supabaseInstance) {
     return supabaseInstance
   }
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 
-  if (!supabaseUrl || !supabaseKey) {
-    throw new Error("Supabase is not configured. Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
+  if (!supabaseUrl) {
+    throw new Error("Supabase is not configured. Missing NEXT_PUBLIC_SUPABASE_URL")
   }
 
-  supabaseInstance = createClient(supabaseUrl, supabaseKey, {
+  // FAIL CLOSED. Never substitute NEXT_PUBLIC_SUPABASE_ANON_KEY here: an anon
+  // client returned from a function called `getSupabaseAdmin` is a lie its
+  // callers cannot detect, and it degrades into "no data" rather than an error.
+  if (!serviceRoleKey) {
+    throw new Error(
+      "getSupabaseAdmin() requires the service-role key. Missing SUPABASE_SERVICE_ROLE_KEY. " +
+        "This client bypasses RLS by design and must not silently fall back to NEXT_PUBLIC_SUPABASE_ANON_KEY.",
+    )
+  }
+
+  supabaseInstance = createClient(supabaseUrl, serviceRoleKey, {
     auth: {
       persistSession: false,
       autoRefreshToken: false,

@@ -156,6 +156,9 @@ const M395 = "supabase/migrations/m395-assert-no-tenant-escape-granted-to-public
 const M396 =
   "supabase/migrations/m396-narrow-anonymous-insert-on-tenant-tables-to-authenticated.sql"
 const M397 = "supabase/migrations/m397-assert-no-anonymous-insert-on-tenant-tables.sql"
+const M398 =
+  "supabase/migrations/m398-offer-strategy-templates-active-means-published-to-the-tenant.sql"
+const M399 = "supabase/migrations/m399-assert-no-tenant-table-publishes-on-is-active-alone.sql"
 
 /**
  * FROZEN. These are the applied migrations that already carry the construct, as
@@ -532,6 +535,214 @@ function assertM396CarveOutsNamedAgreedAndSuperset(): boolean {
   )
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// m398 / m399 — A FLAG IS NOT A TENANT
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// A THIRD anonymous-read path onto a tenant table, and it is not the escape and
+// not an INSERT. `public.offer_strategy_templates` carries:
+//
+//     CREATE POLICY "Read active templates" ON public.offer_strategy_templates
+//       FOR SELECT USING (is_active = true);
+//
+// No `TO` clause ⇒ PUBLIC ⊇ `anon`. An offer strategy template is a brokerage's
+// NEGOTIATION PLAYBOOK — price guidance, earnest-money guidance, contingency
+// recommendations and win rates per market condition. The table is empty today,
+// which is the only reason nothing has leaked; the moment a brokerage marks one
+// active it is world-readable. Proven live, RLS on, in a rolled-back transaction:
+// one active row inserted, `anon` reads 1 and ANOTHER BROKERAGE'S authenticated
+// user reads 1.
+//
+// ── WHY THIS ONE IS NOT AN m394-SHAPED FIX ──────────────────────────────────
+//
+// `is_active = true` says nothing about a tenant, so the leak survives a role
+// narrowing: `TO authenticated` closes `anon` and leaves every other brokerage
+// reading, which is most of the defect wearing the fix's clothes. m398 therefore
+// REWRITES THE PREDICATE as well as the role — the only migration in this family
+// that does, and the reason it gets its own narrowing assertion (A19) instead of
+// `assertNarrowingOnly`, which requires m394/m396 NOT to touch an expression.
+//
+// The replacement predicate was read off this schema rather than invented, from
+// the four comparable template tables — `brokerage_form_library`,
+// `content_templates`, `chat_templates`, `thank_you_note_templates`. None gates
+// SELECT on `is_active`; all four scope on `brokerage_id` with a NULL branch for
+// platform-seeded rows. m398 uses the spelling this table's own sibling policies
+// already use, and `is_active` is KEPT as a conjunct: the ruling is that active
+// means published TO THIS TENANT'S PEOPLE, not that active stops meaning
+// anything. Same before/after, rolled back and verified rolled back: `anon` 1→0,
+// other brokerage 1→0, OWNING brokerage 1→1, policy count 5→5.
+//
+// ── AND THE PUBLIC-READER CHECK WAS RUN FIRST ───────────────────────────────
+//
+// wave 22 § W22-2's two axes. No browser-client file touches the table at all,
+// and its ONE reader (`app/actions/buyer-offers.ts:411`) is inside a `"use
+// server"` export that builds `createServiceClient()` — BYPASSRLS, so no policy
+// is consulted for it. The table also has no runtime writer
+// (`scripts/writerless-read-sweep.ts:33` lists it as seeded reference data).
+// There is no legitimate public reader, so m398's carve-out array is empty.
+//
+//   A17 m398 selects on the CONSTRUCT (SELECT-to-PUBLIC, USING exactly
+//       `(is_active = true)`, on a `brokerage_id` table), never on polname.
+//   A18 m399 asserts the RULING rather than m398's spelling — `is_active`
+//       consulted, `brokerage_id` never consulted — so `is_active IS TRUE` and
+//       `is_active AND published` are caught too, and it is deliberately NOT
+//       scoped to PUBLIC, because the cross-tenant half survives a role fix.
+//   A19 m398 CONJOINS the tenant predicate and keeps `is_active`. Two ways to
+//       get this wrong and both are checked: dropping to a role-only narrowing
+//       (leaves every other brokerage reading), and replacing `is_active`
+//       instead of ANDing it (a widening, publishing inactive drafts).
+//   A20 m398's world-readable carve-out array is EMPTY, and m399 names the same
+//       set — the m394/m396 discipline: a carve-out that is not named is not a
+//       carve-out.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * A17 — m398 keys on its construct: PERMISSIVE, `polcmd = 'r'`, PUBLIC in
+ * `polroles`, USING exactly `(is_active = true)`, and a live `brokerage_id`
+ * attribute on the table.
+ *
+ * The `brokerage_id` column qualifier is load-bearing for m396's reason: it is
+ * what keeps m398 off `video_templates."Anyone can view active templates"`, the
+ * one other policy on this database with the identical shape, whose table has no
+ * `brokerage_id` and is a platform catalogue rather than a tenant's playbook.
+ */
+function assertKeysOnActiveFlagConstruct(path: string, label: string): boolean {
+  if (!existsSync(resolve(ROOT, path))) return check(label, false, `${path} is missing`)
+  const body = stripSqlComments(raw(path)).replace(/\s+/g, " ")
+
+  const toPublic = /0\s*=\s*any\s*\(\s*p\.polroles\s*\)/.test(body)
+  const selectHalf = /p\.polcmd\s*=\s*'r'/.test(body) && /p\.polpermissive/.test(body)
+  const exactFlagPredicate =
+    /pg_get_expr\s*\(\s*p\.polqual[\s\S]{0,140}?=\s*'\(is_active = true\)'/.test(body)
+  const tenantColumn =
+    /pg_attribute/.test(body) &&
+    /a\.attname\s*=\s*'brokerage_id'/.test(body) &&
+    /a\.attisdropped/.test(body)
+  const keysOnName = /\bp\.polname\s+(?:i?like|=|~)/i.test(body)
+
+  const ok = toPublic && selectHalf && exactFlagPredicate && tenantColumn && !keysOnName
+  return check(
+    label,
+    ok,
+    ok
+      ? ""
+      : `toPublic=${toPublic} selectHalf=${selectHalf} exactFlagPredicate=${exactFlagPredicate} tenantColumn=${tenantColumn} keysOnName=${keysOnName}`,
+  )
+}
+
+/**
+ * A18 — m399 asserts the RULING, not m398's exact spelling.
+ *
+ * It must key on "consults `is_active`, never consults `brokerage_id`", so that
+ * `is_active IS TRUE`, a bare `is_active`, and `is_active AND <anything but the
+ * tenant>` are all caught. And it must NOT be scoped to PUBLIC: a policy
+ * narrowed to `authenticated` while still deciding on the flag alone has closed
+ * `anon` and left every other brokerage reading, which is the half that matters
+ * most and the half a PUBLIC-scoped assertion would bless.
+ */
+function assertM399AssertsTheRuling(): boolean {
+  if (!existsSync(resolve(ROOT, M399))) return check("A18", false, `${M399} is missing`)
+  const body = stripSqlComments(raw(M399)).replace(/\s+/g, " ")
+
+  // `[^)]*` cannot cross the `)` of the nested `pg_get_expr(…)` these calls wrap,
+  // so both of these read FALSE against the real file — which is how the A18
+  // controls came back red for the wrong reason. Bounded `[\s\S]` spans instead.
+  const consultsFlag = /strpos\(\s*[\s\S]{0,120}?p\.polqual[\s\S]{0,80}?'is_active'\s*\)\s*>\s*0/.test(body)
+  const neverTenant = /strpos\(\s*[\s\S]{0,120}?p\.polqual[\s\S]{0,80}?'brokerage_id'\s*\)\s*=\s*0/.test(body)
+  const tenantColumn =
+    /a\.attname\s*=\s*'brokerage_id'/.test(body) && /a\.attisdropped/.test(body)
+  // The load-bearing negative: it must NOT restrict itself to PUBLIC.
+  const roleScoped = /0\s*=\s*any\s*\(\s*p\.polroles\s*\)/.test(body)
+  const raises = /\braise\s+exception\b/i.test(body)
+  const keysOnName = /\bp\.polname\s+(?:i?like|=|~)/i.test(body)
+
+  const ok = consultsFlag && neverTenant && tenantColumn && !roleScoped && raises && !keysOnName
+  return check(
+    "A18 m399 asserts the RULING (consults `is_active`, never consults `brokerage_id`) and is NOT scoped to PUBLIC",
+    ok,
+    ok
+      ? ""
+      : `consultsFlag=${consultsFlag} neverTenant=${neverTenant} tenantColumn=${tenantColumn} ` +
+          `roleScoped=${roleScoped} raises=${raises} keysOnName=${keysOnName}`,
+  )
+}
+
+/**
+ * A19 — m398 CONJOINS. Unlike m394/m396 it is allowed — required — to rewrite
+ * the USING expression, so `assertNarrowingOnly` is the wrong assertion for it.
+ * What must hold instead:
+ *   · it narrows the ROLE too (`to authenticated`), or every other brokerage
+ *     keeps reading;
+ *   · it AND-joins the tenant predicate this schema already uses;
+ *   · it KEEPS `is_active` rather than replacing it — replacing it would publish
+ *     inactive drafts to the tenant, which is a WIDENING dressed as a fix;
+ *   · and it still does not DROP or CREATE a policy.
+ */
+function assertM398ConjoinsTenantPredicate(): boolean {
+  if (!existsSync(resolve(ROOT, M398))) return check("A19", false, `${M398} is missing`)
+  // Adjacent string literals are GLUED first, the way `policyStatements` glues
+  // `'…' || '…'`. The ALTER m398 builds is already spelled as two adjacent
+  // literals, and re-wrapping the predicate across a different pair of them must
+  // not read as "the tenant predicate is gone" — that is a whitespace test, not
+  // a security assertion, and the specificity control below is what caught it.
+  // `''` (the empty-string literal, no whitespace between the quotes) is left
+  // alone on purpose: it is an argument, not a continuation.
+  const body = stripSqlComments(raw(M398))
+    .replace(/\s+/g, " ")
+    .replace(/'\s+'/g, "")
+
+  const alter = /alter policy %I on public\.%I to authenticated/i.test(body)
+  const keepsFlag = /using\s*\(\s*is_active\s*=\s*true\s+and\b/i.test(body)
+  const conjoinsTenant =
+    /brokerage_id is null or brokerage_id = current_user_brokerage_id\(\)/i.test(body)
+  const drops = /\bdrop\s+policy\b/i.test(body)
+  const creates = /\bcreate\s+policy\b/i.test(body)
+
+  const ok = alter && keepsFlag && conjoinsTenant && !drops && !creates
+  return check(
+    "A19 m398 narrows the ROLE and AND-joins the tenant predicate while KEEPING `is_active` (no DROP, no CREATE)",
+    ok,
+    ok
+      ? ""
+      : `altersToAuthenticated=${alter} keepsIsActiveConjunct=${keepsFlag} conjoinsTenant=${conjoinsTenant} drops=${drops} creates=${creates}`,
+  )
+}
+
+/** The `keep_world_readable` array of m398 / m399, read the way `carveOutSet` reads m394's. */
+function worldReadableCarveOutSet(path: string): string[] {
+  const body = stripSqlComments(raw(path)).replace(/\s+/g, " ")
+  const m = /keep_world_readable[^=]*:=\s*(array\s*\[[^\]]*\]|'\{\}')/i.exec(body)
+  if (!m) return ["<no keep_world_readable array found>"]
+  if (/^'\{\s*\}'$/.test(m[1].trim())) return []
+  return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1])
+}
+
+/**
+ * A20 — the carve-out array exists on BOTH files and names the same set.
+ *
+ * It is empty today, and the reading behind that is recorded in m398's header:
+ * no browser client touches the table, its one reader is a service client, and
+ * the table has no runtime writer. If it is ever non-empty the two files must
+ * still agree, or m398 reopens a policy every time it runs and m399 demands it
+ * be closed — m394/m395's A12 failure mode, on a different pair.
+ */
+function assertWorldReadableCarveOutsAgree(): boolean {
+  if (!existsSync(resolve(ROOT, M398)) || !existsSync(resolve(ROOT, M399))) {
+    return check("A20", false, "m398 or m399 is missing")
+  }
+  const inM398 = worldReadableCarveOutSet(M398)
+  const inM399 = worldReadableCarveOutSet(M399)
+  const declared = !inM398.includes("<no keep_world_readable array found>") &&
+    !inM399.includes("<no keep_world_readable array found>")
+  const agreed = inM398.length === inM399.length && inM398.every((x) => inM399.includes(x))
+  const ok = declared && agreed
+  return check(
+    "A20 m398 and m399 declare a `keep_world_readable` carve-out array and name the SAME set",
+    ok,
+    ok ? "" : `declared=${declared} m398=[${inM398.join(", ")}] m399=[${inM399.join(", ")}]`,
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // CONTROLS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -685,6 +896,11 @@ const A15 = () =>
     M396,
     "A15 m396 only ALTERs … TO authenticated (no DROP, no CREATE, no expression rewrite)",
   )
+const A17 = () =>
+  assertKeysOnActiveFlagConstruct(
+    M398,
+    "A17 m398 selects on the CONSTRUCT (SELECT-to-PUBLIC, USING exactly `(is_active = true)`, on a `brokerage_id` table), not on polname",
+  )
 
 // The probe statements the negative controls splice in.
 const ESCAPE_PROBE =
@@ -719,6 +935,10 @@ function main(): void {
   A14()
   A15()
   assertM396CarveOutsNamedAgreedAndSuperset()
+  A17()
+  assertM399AssertsTheRuling()
+  assertM398ConjoinsTenantPredicate()
+  assertWorldReadableCarveOutsAgree()
 
   console.log(
     `\n  escape      applied ${tally(APPLIED_DIR, isAnonReachableEscape).total}` +
@@ -973,6 +1193,119 @@ function main(): void {
       assertM396CarveOutsNamedAgreedAndSuperset,
     )
 
+    // ── m398 / m399: A FLAG IS NOT A TENANT ──────────────────────────────────
+
+    // A17 — m398 rewritten to select on the policy NAME. Same mistake as A9/A13
+    // in a third spelling: it would find whatever is called `Read active %` and
+    // miss every differently-named one.
+    negative(
+      "m398 rewritten to select on polname instead of the construct",
+      {
+        file: M398,
+        find: "n.nspname = 'public'",
+        replace: "p.polname like 'Read active%' and n.nspname = 'public'",
+      },
+      A17,
+    )
+
+    // A17 — the TENANT-COLUMN qualifier dropped. Without it m398 also rewrites
+    // `video_templates."Anyone can view active templates"`, whose table has no
+    // `brokerage_id` at all — so the ALTER would install a predicate naming a
+    // column that does not exist, on a platform catalogue nobody censused.
+    negative(
+      "m398's `brokerage_id` column qualifier removed (it would reach video_templates)",
+      {
+        file: M398,
+        find: "and  a.attname  = 'brokerage_id'",
+        replace: "and  a.attname  = a.attname",
+      },
+      A17,
+    )
+
+    // A18 — THE ONE m399 EXISTS FOR. Scope the assertion to PUBLIC, the way m395
+    // and m397 legitimately do, and it starts blessing the half-fix: a policy
+    // narrowed to `authenticated` that still decides on the flag alone has shut
+    // `anon` out and left every OTHER BROKERAGE reading the playbook.
+    negative(
+      "m399 scoped to PUBLIC (it would bless a role-only fix that leaves every other brokerage reading)",
+      {
+        file: M399,
+        find: "    and  p.polpermissive                                         -- PERMISSIVE: it ORs",
+        replace:
+          "    and  0 = any(p.polroles)\n" +
+          "    and  p.polpermissive                                         -- PERMISSIVE: it ORs",
+      },
+      assertM399AssertsTheRuling,
+    )
+
+    // A18 — m399 rewritten to key on m398's EXACT spelling. It would then pass
+    // over `is_active IS TRUE`, over a bare `is_active`, and over `is_active AND
+    // published_at IS NOT NULL` — the same defect in three other spellings.
+    negative(
+      "m399 keyed on m398's exact predicate spelling instead of the ruling",
+      {
+        file: M399,
+        find: "    and  strpos(coalesce(pg_get_expr(p.polqual, p.polrelid), ''), 'is_active')    > 0",
+        replace:
+          "    and  coalesce(btrim(pg_get_expr(p.polqual, p.polrelid)), '') = '(is_active = true)'",
+      },
+      assertM399AssertsTheRuling,
+    )
+
+    // A19 — m398 downgraded to m394's remedy. `TO authenticated` alone closes
+    // `anon` and leaves the cross-tenant read wide open, which is most of the
+    // defect and the easiest wrong fix to reach for.
+    negative(
+      "m398 downgraded to a role-only narrowing (the cross-tenant read survives)",
+      {
+        file: M398,
+        find:
+          "      'alter policy %I on public.%I to authenticated '\n" +
+          "      'using (is_active = true and (brokerage_id is null or brokerage_id = current_user_brokerage_id()))',",
+        replace: "      'alter policy %I on public.%I to authenticated',",
+      },
+      assertM398ConjoinsTenantPredicate,
+    )
+
+    // A19 — `is_active` REPLACED rather than AND-ed. That is a WIDENING wearing
+    // the fix's clothes: every inactive draft becomes readable across the tenant.
+    negative(
+      "m398 replaces `is_active` instead of conjoining it (inactive drafts published to the tenant)",
+      {
+        file: M398,
+        find: "'using (is_active = true and (brokerage_id is null",
+        replace: "'using ((brokerage_id is null",
+      },
+      assertM398ConjoinsTenantPredicate,
+    )
+
+    // A20 — the carve-out array removed from m399 while m398 still has one. The
+    // two files would then disagree about which policies are deliberately
+    // world-readable, which is A12's failure mode on a new pair.
+    negative(
+      "m399 loses its `keep_world_readable` array while m398 keeps one",
+      {
+        file: M399,
+        find: "  keep_world_readable     text[] := '{}';",
+        replace: "  unused_placeholder      text[] := '{}';",
+      },
+      assertWorldReadableCarveOutsAgree,
+    )
+
+    // A20 — and the two disagreeing on CONTENT rather than existence: m398
+    // silently spares a policy m399 still demands be closed, so the migration
+    // reopens it on every run and the assertion fails forever after.
+    negative(
+      "m398 gains a world-readable carve-out that m399 does not exempt",
+      {
+        file: M398,
+        find: "  keep_world_readable text[] := '{}';",
+        replace:
+          "  keep_world_readable text[] := array['offer_strategy_templates.Read active templates'];",
+      },
+      assertWorldReadableCarveOutsAgree,
+    )
+
     // ── SPECIFICITY: the guard must not flag a correctly-spelled policy ──────
     specificity(
       "an escape policy that DOES say TO authenticated is not flagged",
@@ -1008,6 +1341,32 @@ function main(): void {
         replace: "0  =  any( p.polroles )",
       },
       A13,
+    )
+    // A17 keys on the CONSTRUCT, not on one exact layout of it. Reformatting the
+    // predicate must not be enough to trip a guard, or the guard is a whitespace
+    // test wearing a security label.
+    specificity(
+      "m398's construct predicate reformatted (whitespace) is still recognised",
+      {
+        file: M398,
+        find: "0 = any(p.polroles)",
+        replace: "0  =  any( p.polroles )",
+      },
+      A17,
+    )
+    // A19 must accept the tenant predicate however it is laid out — it is
+    // asserting that the conjunction is THERE, not that it is on one line.
+    specificity(
+      "m398's conjoined tenant predicate re-wrapped is still recognised",
+      {
+        file: M398,
+        find:
+          "      'using (is_active = true and (brokerage_id is null or brokerage_id = current_user_brokerage_id()))',",
+        replace:
+          "      'using (is_active = true and (brokerage_id is null '\n" +
+          "      'or brokerage_id = current_user_brokerage_id()))',",
+      },
+      assertM398ConjoinsTenantPredicate,
     )
     // A16 keys on the carve-out SET, not on how the array is laid out.
     specificity(
