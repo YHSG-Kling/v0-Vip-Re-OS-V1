@@ -234,6 +234,27 @@ export interface ScrapingDiagnosticsData {
     leads_created: number | null
     error_message: string | null
   }>
+  /**
+   * Dimensions whose read FAILED, so the panel above can say so instead of
+   * rendering an empty state.
+   *
+   * Every array on this interface used to be `result.data ?? []`, which turns
+   * "this query was refused" into "there is nothing here" — the six panels of a
+   * DIAGNOSTICS page, of all things, reporting a healthy zero for an outage.
+   * supabase-js RESOLVES a failed query, so nothing threw and nothing was
+   * logged. Empty is a legitimate answer for this page (the platform has no
+   * scraped data yet), which is exactly why it could not be told apart from a
+   * failure by looking.
+   *
+   * One entry per failed dimension, `dimension` matching the field it would
+   * have filled. Empty array = every read succeeded. Shaped after the
+   * `{ coverage, error }` pairs this page's own TenantCoverageCard already
+   * uses rather than app/actions/system-health.ts's HealthRead<T>: this loader
+   * runs on the SERVICE client, so a failure here is a broken query or an
+   * outage, never an authorization verdict, and HealthRead's `unauthorized` /
+   * `not_scoped` states would be states that cannot occur.
+   */
+  readErrors: Array<{ dimension: string; message: string }>
 }
 
 export interface RetryFailedBatchParams {
@@ -1082,6 +1103,26 @@ export async function loadScrapingDiagnostics(
       .limit(20),
   ])
 
+  // A REFUSED READ IS NOT AN EMPTY ONE. supabase-js RESOLVES a failed query, so
+  // every `result.data ?? []` below used to render a broken read as a healthy
+  // zero — on the page whose whole purpose is telling the operator what the
+  // pipeline is doing. Nothing threw and nothing was logged. Empty is a
+  // legitimate answer here (the platform has no scraped data yet), which is
+  // precisely why a failure could not be told apart from one by looking.
+  const readErrors: ScrapingDiagnosticsData['readErrors'] = []
+  const collect = (dimension: string, result: { error: { message: string } | null }) => {
+    if (result.error) {
+      console.error(`[scraping-diagnostics] ${dimension} read FAILED: ${result.error.message}`)
+      readErrors.push({ dimension, message: result.error.message })
+    }
+  }
+  collect('markets',        marketsResult)
+  collect('executions',     executionsResult)
+  collect('funnel',         rawLeadsResult)     // funnel + gatingDecisions both derive from this
+  collect('dedupDecisions', dedupResult)
+  collect('cronHistory',    cronResult)
+  collect('failedBatches',  failedBatchesResult)
+
   // Apply brokerage filter to executions if provided
   const executions = ((executionsResult.data ?? []) as any[]).filter(
     e => !params.brokerageId || e.brokerage_id === params.brokerageId,
@@ -1132,6 +1173,7 @@ export async function loadScrapingDiagnostics(
     gatingDecisions,
     cronHistory:    (cronResult.data       ?? []) as ScrapingDiagnosticsData['cronHistory'],
     failedBatches:  (failedBatchesResult.data ?? []) as ScrapingDiagnosticsData['failedBatches'],
+    readErrors,
   }
 }
 

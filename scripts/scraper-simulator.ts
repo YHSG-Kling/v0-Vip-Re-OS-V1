@@ -87,6 +87,8 @@ import { scopeCascade, isConnectionAllowed, writeScopeFor, isProviderAllowedForS
 import { buildCredentialWrite, isOAuthConnection, oauthStartPath, connectionScopeForUserType, isConnectSupported, selfConnectableDomains } from "../lib/connections/field-spec"
 import { isPlatformStaffIdentity } from "../lib/auth/resolve-user-role"
 import { isPlatformStaffRole } from "../lib/platform/platform-staff-roster"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import { matchTriggersForEvent, isCooldownActive, type LifecycleTrigger } from "../lib/marketing/trigger-match"
 import { findReusableRun, type ExistingRun } from "../lib/workflow-orchestrator/run-dedupe"
 
@@ -106,6 +108,49 @@ function check(name: string, cond: boolean, detail?: string) {
 }
 
 const MARKET = { city: "Tampa", state: "FL" }
+
+// ── 0. Diagnostics honesty ───────────────────────────────────────────────────
+// STRUCTURAL, and deliberately so. loadScrapingDiagnostics needs a service-role
+// client and six live tables; there is no fixture that makes a Postgres read
+// FAIL on demand, so the thing worth proving is the shape of the code, not a
+// round trip. What is asserted is the CONSTRUCT — that every one of the six
+// reads has its `error` inspected and that the page has somewhere to say so —
+// never a particular variable name or message string.
+//
+// The defect this pins: all six reads were `result.data ?? []`. supabase-js
+// RESOLVES a failed query, so a refused read rendered as an empty panel and a
+// zero in the stat cards — a DIAGNOSTICS page reporting health for an outage,
+// with nothing thrown and nothing logged. Empty is a legitimate answer for this
+// page today, which is exactly why it could not be told apart from a failure.
+function testDiagnosticsHonesty() {
+  console.log("\n[scrape diagnostics — a refused read is stated, not rendered as empty]")
+  const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
+
+  const kernel = src("lib/kernel/scraping.ts")
+  const client = src("app/dashboard/admin/scrape-diagnostics/scrape-diagnostics-client.tsx")
+
+  // The loader must CARRY the failures out, not just log them: a console line on
+  // a server render is invisible to the operator looking at the page.
+  check("ScrapingDiagnosticsData carries the failed dimensions to the surface",
+    /readErrors\s*:\s*Array<\{[^}]*dimension[^}]*message[^}]*\}>/.test(kernel))
+  check("the loader returns readErrors (not only computes it)",
+    /return\s*\{[\s\S]{0,800}?\breadErrors\b/.test(kernel))
+
+  // Six reads, six inspections. Counted rather than named, so renaming a
+  // dimension does not turn this red while dropping one still does.
+  const inspected = [...kernel.matchAll(/collect\(\s*['"][a-zA-Z]+['"]\s*,/g)].length
+  check(`every diagnostic read has its error inspected (${inspected} of 6)`, inspected === 6,
+    `found ${inspected}`)
+  check("the inspection reads `.error`, so a RESOLVED failure is still caught",
+    /if\s*\(\s*result\.error\s*\)/.test(kernel))
+
+  // A failure the page cannot render is a failure nobody sees.
+  check("the page renders the failed dimensions instead of an empty state",
+    /data\.readErrors\.length\s*>\s*0/.test(client) &&
+    /data\.readErrors\.map/.test(client))
+  check("the banner warns the counts below are partial, not a healthy zero",
+    /incomplete|partial/i.test(client) && /readErrors/.test(client))
+}
 
 // ── 1. Zillow JSON parse ─────────────────────────────────────────────────────
 function testZillow() {
@@ -1371,6 +1416,7 @@ async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" SCRAPER SIMULATOR — parse / normalize / gate / client")
   console.log("══════════════════════════════════════════════════")
+  testDiagnosticsHonesty()
   testZillow()
   testRealtor()
   testRedfin()
