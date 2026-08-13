@@ -126,7 +126,14 @@ export const STATIC_AUDIO_HOST_RULES: readonly AudioHostRule[] = [
  * process.env, and so a caller can prove the fail-closed branch.
  */
 export function platformAudioHostRules(
-  env: { NEXT_PUBLIC_SUPABASE_URL?: string } = process.env,
+  // Indexed rather than a single optional key: `{ NEXT_PUBLIC_SUPABASE_URL?: string }`
+  // is a WEAK type (all properties optional), and `process.env` resolves here to
+  // Next's `ProcessEnv` augmentation, which shares no property with it — so TS
+  // rejects the default with TS2559. An index signature turns off weak-type
+  // detection and keeps the parameter injectable, which is the whole point: a
+  // caller can pass `{}` to prove the fail-closed branch without touching
+  // process.env. Cast-free on purpose.
+  env: { readonly [key: string]: string | undefined } = process.env,
 ): AudioHostRule[] {
   const rules: AudioHostRule[] = [...STATIC_AUDIO_HOST_RULES]
   const raw = (env.NEXT_PUBLIC_SUPABASE_URL ?? "").trim()
