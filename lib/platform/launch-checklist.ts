@@ -110,9 +110,15 @@ const ROWS: RowDef[] = [
   },
   {
     key: "ai_gateway",
-    capability: "AI model gateway (any one key)",
-    envVars: ["AI_GATEWAY_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY"],
-    anyOf: true,
+    capability: "AI model gateway",
+    // ONE key, not "any one of four". The provider SDKs are gone: every
+    // text/object/image/transcription call resolves through the Vercel AI Gateway,
+    // so ANTHROPIC_API_KEY / OPENAI_API_KEY / XAI_API_KEY no longer reach a model
+    // and must not read as a satisfied launch requirement.
+    // (ANTHROPIC_API_KEY still has ONE job — Anthropic's Managed Agents API in
+    // lib/agents/managed-agents-egress.ts, which the gateway does not proxy — but
+    // that is an agent-session surface, not the model lane this row gates.)
+    envVars: ["AI_GATEWAY_API_KEY"],
     whatLightsUp: "Every AI manager, copilot, widget chat, and content lane — the routing table selects per feature.",
     tier: "launch-blocking",
   },
@@ -244,8 +250,13 @@ const ROWS: RowDef[] = [
   },
   {
     key: "research_search",
-    capability: "Neural search / research (Exa · Tavily · Perplexity)",
-    envVars: ["EXA_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY"],
+    capability: "Neural search / research (Exa · Tavily)",
+    // PERPLEXITY_API_KEY was named here and has NO reader left in production:
+    // Perplexity's search-augmented models (perplexity-sonar / perplexity-sonar-pro
+    // in AI_TASK_ROUTING) are reached through the AI Gateway on AI_GATEWAY_API_KEY
+    // like every other model. A checklist row that green-lights on a key nothing
+    // reads is a row that lies.
+    envVars: ["EXA_API_KEY", "TAVILY_API_KEY"],
     anyOf: true,
     whatLightsUp: "Buyer-intent discovery, competitor intelligence, research-backed content lanes.",
     tier: "optional",

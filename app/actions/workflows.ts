@@ -480,12 +480,23 @@ export async function generateScriptContent(
     const brokerageId = ctx.brokerageId
     const agentId = ctx.agentId
 
-    const { generateText } = await import("ai")
-    const { anthropic } = await import("@ai-sdk/anthropic")
+    // ON THE GATEWAY. This used to construct an `@ai-sdk/anthropic` client
+    // directly — `anthropic("claude-sonnet-4-20250514")` — which reached the
+    // provider on ANTHROPIC_API_KEY, off the gateway's key/bill/egress, and
+    // skipped the routing table, the fair-use pre-flight, the Data Guard
+    // redaction and the ai_tool_usage cost ledger that every other generation
+    // on this platform goes through. generateTextRouted resolves
+    // "marketing_script_generation" → claude-sonnet → the SAME model
+    // (anthropic/claude-sonnet-4-20250514, MODEL_CONFIG in lib/ai/models.ts),
+    // so the output is unchanged and the accounting now exists.
+    const { generateTextRouted } = await import("@/lib/ai/models")
 
-    const { text: script } = await generateText({
-      model: anthropic("claude-sonnet-4-20250514"),
+    const { text: script } = await generateTextRouted({
       prompt: `Generate a ${scriptType} script for a real estate agent. Context: ${JSON.stringify(context)}`,
+      feature: "marketing_script_generation",
+      userId: ctx.userId,
+      brokerageId,
+      agentId: agentId ?? undefined,
     })
 
     // Store generated script. scripts is scoped by created_by (no agent_id/brokerage_id);

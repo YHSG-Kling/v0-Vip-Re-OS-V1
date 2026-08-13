@@ -139,8 +139,8 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
   {
     provider: "ai_gateway",
     models: ["platform_metered"],
-    why: "All LLM/image inference rides the platform AI gateway with per-tenant cost tracking + the god-switch; tenants never hold model keys.",
-    envVars: ["AI_GATEWAY_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
+    why: "All LLM/image/transcription inference rides the platform AI gateway with per-tenant cost tracking + the god-switch; tenants never hold model keys. ONE platform key: the provider SDKs are gone, so a bare ANTHROPIC/OPENAI key no longer reaches a model.",
+    envVars: ["AI_GATEWAY_API_KEY"],
   },
 ]
 

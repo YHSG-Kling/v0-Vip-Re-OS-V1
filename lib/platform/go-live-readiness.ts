@@ -166,9 +166,16 @@ export async function runGoLiveReadiness(svc: any): Promise<GoLiveReadiness> {
     },
     async () => {
       const r = d("ai_gateway", "AI model gateway", false)
-      const any = process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || process.env.AI_GATEWAY_API_KEY || process.env.XAI_API_KEY
-      if (!any) return r("not_configured", "No model key found (OPENAI/ANTHROPIC/AI_GATEWAY) — every AI manager depends on one")
-      return r("ready", "Model key present (routing table selects per feature)")
+      // ONE MODEL KEY. This used to accept OPENAI_API_KEY / ANTHROPIC_API_KEY /
+      // XAI_API_KEY as substitutes, which was true while provider SDKs still
+      // shipped. They no longer do — every text/object/image/transcription call
+      // resolves through the Vercel AI Gateway on AI_GATEWAY_API_KEY — so a
+      // deployment holding only a provider key would have reported "ready" and
+      // then thrown "AI_GATEWAY_API_KEY is not configured" on every AI feature.
+      if (!process.env.AI_GATEWAY_API_KEY) {
+        return r("not_configured", "AI_GATEWAY_API_KEY unset — every AI manager routes through the Vercel AI Gateway; a bare provider key no longer reaches a model")
+      }
+      return r("ready", "Gateway key present (routing table selects the model per feature)")
     },
 
     // ── Records / enrichment providers (PLATFORM setup — owner rule: BatchData,

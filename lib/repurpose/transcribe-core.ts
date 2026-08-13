@@ -56,6 +56,33 @@
 // The default stays `"whisper"`, so the repurpose lane's behaviour is unchanged
 // by this file's arrival; only the caller that asks for ElevenLabs gets it.
 //
+// ── WHISPER IS ON THE GATEWAY TOO (the owner ruling: "ai goes through vercel ai
+//    gateway"), AND HERE IS WHY IT LOOKS DIFFERENT FROM EVERY OTHER AI CALL ────
+// The Whisper lane used to construct an `@ai-sdk/openai` client
+// (`openai.transcription("whisper-1")` + `experimental_transcribe`) and reach
+// api.openai.com on OPENAI_API_KEY — the last direct provider SDK in production
+// code. It now reaches `openai/whisper-1` THROUGH the Vercel AI Gateway on
+// AI_GATEWAY_API_KEY, the same single key/bill/egress as every text call.
+//
+// It uses the gateway's REST modality endpoint (`POST /v4/ai/transcription-model`,
+// model in the `ai-model-id` header, base64 audio + mediaType in the body) rather
+// than the SDK binding, because the SDK binding — `gateway.transcriptionModel(…)`
+// with `experimental_transcribe` — first exists in `ai@7.0.31` /
+// `@ai-sdk/gateway@4.0.23`. This repo is pinned at `ai@6.0.16` /
+// `@ai-sdk/gateway@3.0.x`, whose `GatewayProvider` exposes only
+// language/embedding/image/video/reranking factories (`KNOWN_MODEL_TYPES` in
+// @ai-sdk/gateway/dist/index.d.ts lists no transcription type). Adopting the SDK
+// binding therefore means a two-major framework upgrade touching every
+// generateText call site — a separate decision, not a transcription decision.
+// The REST surface is version-independent, and it is the SAME pattern the two
+// other gateway-REST call sites in this repo already use:
+// `lib/ai/gateway-chat.ts` (/v1/chat/completions) and
+// `lib/ai/image-generation.ts` (/v1/images/generations).
+//
+// There is deliberately NO direct-OpenAI second lane behind it. An unset
+// AI_GATEWAY_API_KEY produces the same honest `not_configured` refusal an unset
+// OPENAI_API_KEY used to — never an empty transcript that reads as success.
+//
 // ── GATE + METER ─────────────────────────────────────────────────────────────
 // When `brokerageId` is supplied the call is pre-flighted against the vendor
 // budget gate and the real spend is recorded to `vendor_usage_tracking` — the
@@ -69,7 +96,6 @@
 // the only duration signal that exists before the vendor answers.
 
 import "server-only"
-import { openai } from "@ai-sdk/openai"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { checkAudioSourceUrl, type AudioHostRule } from "@/lib/security/audio-source-allowlist"
 
@@ -166,12 +192,13 @@ export async function transcribeMediaUrl(
   }
 
   // ── Which vendor, and is one configured at all? ─────────────────────────────
+  // Whisper's credential is the GATEWAY key, not a provider key — see the header.
   const elevenLabsKey = process.env.ELEVENLABS_API_KEY
-  const openAiKey = process.env.OPENAI_API_KEY
+  const gatewayKey = process.env.AI_GATEWAY_API_KEY
   const wantsElevenLabs = options.provider === "elevenlabs"
   const provider: TranscriptionProvider =
     wantsElevenLabs && elevenLabsKey ? "elevenlabs_scribe" : "openai_whisper"
-  if (provider === "openai_whisper" && !openAiKey) {
+  if (provider === "openai_whisper" && !gatewayKey) {
     // HONEST REFUSAL. An unconfigured provider must never look like a call that
     // happened and heard nothing — that is the shape that writes an empty
     // transcript onto a contact record and calls it a success.
@@ -179,7 +206,7 @@ export async function transcribeMediaUrl(
       success: false,
       reason: "not_configured",
       message: wantsElevenLabs
-        ? "Transcription is not configured (neither ELEVENLABS_API_KEY nor OPENAI_API_KEY is set)"
+        ? "Transcription is not configured (neither ELEVENLABS_API_KEY nor AI_GATEWAY_API_KEY is set)"
         : "Transcription is not configured",
     }
   }
@@ -226,7 +253,7 @@ export async function transcribeMediaUrl(
     const spoken =
       provider === "elevenlabs_scribe"
         ? await transcribeWithScribe(res.data, contentType, elevenLabsKey as string, options.language ?? null)
-        : await transcribeWithWhisper(res.data)
+        : await transcribeWithGatewayWhisper(res.data, contentType, gatewayKey as string)
     if (!spoken.ok) {
       return { success: false, reason: "error", message: spoken.message }
     }
@@ -243,6 +270,10 @@ export async function transcribeMediaUrl(
       const billedSeconds = spoken.durationSeconds ?? ceilingSeconds
       const { meterVendorSpend } = await import("@/lib/vendor-governance/meter-vendor")
       void meterVendorSpend({
+        // Stays "openai" for the Whisper lane even though the bytes now travel via the
+        // Vercel AI Gateway: the ledger names the MODEL VENDOR whose published rate
+        // STT_USD_PER_SECOND.openai_whisper is computed from, and renaming it would
+        // split this row type from every historical row without changing the number.
         vendorName: provider === "elevenlabs_scribe" ? "elevenlabs" : "openai",
         usageType: "stt",
         cost: round4(STT_USD_PER_SECOND[provider] * billedSeconds),
@@ -318,20 +349,55 @@ async function transcribeWithScribe(
   }
 }
 
-/** OpenAI Whisper — the path that was already here, unchanged in behaviour. */
-async function transcribeWithWhisper(audio: Buffer): Promise<SpokenResult> {
-  const { experimental_transcribe } = await import("ai")
-  const result = await experimental_transcribe({
-    model: openai.transcription("whisper-1"),
-    audio: new Uint8Array(audio),
+interface GatewayTranscriptionBody {
+  text?: string
+  language?: string
+  durationInSeconds?: number
+  segments?: Array<{ text?: string; startSecond?: number; endSecond?: number }>
+  warnings?: unknown[]
+}
+
+/**
+ * OpenAI Whisper THROUGH THE VERCEL AI GATEWAY — one key, one bill, one egress,
+ * the same as every text generation on the platform.
+ *
+ * `POST https://ai-gateway.vercel.sh/v4/ai/transcription-model`, model named in
+ * the `ai-model-id` header, audio as base64 with its MIME type in the body. The
+ * response carries `text` and `durationInSeconds` — exactly the two fields the
+ * old `experimental_transcribe` result supplied, so nothing downstream changes.
+ * See the file header for why this is the REST surface and not the SDK binding.
+ *
+ * A failure is REPORTED, never swallowed and never re-billed to a second vendor.
+ */
+async function transcribeWithGatewayWhisper(
+  audio: Buffer,
+  contentType: string,
+  gatewayKey: string,
+): Promise<SpokenResult> {
+  const res = await callConnector<GatewayTranscriptionBody>({
+    connector: "vercel-ai-gateway",
+    baseUrl: "https://ai-gateway.vercel.sh",
+    path: "/v4/ai/transcription-model",
+    method: "POST",
+    auth: { style: "bearer", token: gatewayKey },
+    headers: { "ai-model-id": "openai/whisper-1" },
+    body: {
+      audio: audio.toString("base64"),
+      mediaType: (contentType.split(";")[0] || "audio/mpeg").trim(),
+    },
+    responseType: "json",
+    timeoutMs: 120_000,
   })
-  // `durationInSeconds` is present on the SDK result for verbose responses and
-  // absent otherwise. Never fabricated when missing — null means "we do not know",
-  // and the ledger falls back to the same ceiling the gate used.
-  const reported = (result as { durationInSeconds?: number }).durationInSeconds
+  if (!res.ok || !res.data) {
+    return { ok: false, message: `AI Gateway transcription (${res.status ?? "—"}): ${res.error || "request failed"}` }
+  }
+  // `durationInSeconds` is present when the model reports it and absent otherwise.
+  // Never fabricated when missing — null means "we do not know", and the ledger
+  // falls back to the same ceiling the gate used.
+  const reported = res.data.durationInSeconds
   return {
     ok: true,
-    text: result.text ?? "",
+    text: res.data.text ?? "",
     durationSeconds: typeof reported === "number" && reported > 0 ? reported : null,
   }
 }

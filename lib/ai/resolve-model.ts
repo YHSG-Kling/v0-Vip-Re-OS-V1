@@ -1,30 +1,29 @@
 // lib/ai/resolve-model.ts
-// Maps string model IDs to Vercel AI Gateway models.
+// ─────────────────────────────────────────────────────────────────────────────
+// THE ONE PLACE A MODEL ALIAS BECOMES A MODEL STRING.
 //
-// Uses the Vercel AI Gateway which provides zero-config access to multiple providers
-// when AI_GATEWAY_API_KEY is configured. The gateway automatically routes requests
-// to the correct provider (OpenAI, Anthropic, Google, etc.) based on the model string.
+// Resolves short aliases ("claude-sonnet") and bare ids ("gpt-4o") into the
+// canonical `provider/model` strings the Vercel AI Gateway understands
+// ("anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"). AI SDK 6 takes those
+// strings directly, and the gateway — authenticated with AI_GATEWAY_API_KEY —
+// routes them to the underlying provider (OpenAI, Anthropic, Google, Perplexity,
+// xAI, …). No provider client is constructed here, and none should be: a
+// provider SDK imported anywhere in production code is a second lane, off the
+// gateway's single key, single bill and single egress.
+//
+// This function does NOT talk to the network. It returns a string; the caller
+// hands that string to `generateText` (which resolves it through the gateway
+// automatically) or wraps it with `createGateway({ apiKey })(...)` when it wants
+// the key checked explicitly — see lib/ai/models.ts:toGatewayModel and
+// lib/ai/generate.ts:resolveGatewayModel.
 //
 // Usage:
-//   import { resolveModel } from "@/lib/ai/resolve-model"
-//   const model = resolveModel("openai/gpt-4o-mini")
-//   await generateText({ model, prompt })
-//
-// When a model string is already a resolved provider instance (from a previous
-// call), it is returned unchanged so double-resolution is safe.
-
-// lib/ai/resolve-model.ts
-//
-// Resolves string model IDs to Vercel AI SDK 6 model strings.
-//
-// AI SDK 6 uses model strings directly (e.g. "openai/gpt-4o") — the Vercel AI
-// Gateway handles routing to the correct provider using AI_GATEWAY_API_KEY.
-// No custom provider client is needed.
-//
-// Usage in server actions / route handlers:
 //   import { generateText } from "ai"
 //   import { resolveModel } from "@/lib/ai/resolve-model"
 //   await generateText({ model: resolveModel("claude-sonnet"), prompt })
+//
+// An already-resolved provider instance (a non-string) is returned unchanged, so
+// double-resolution is safe.
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ProviderModel = any

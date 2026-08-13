@@ -80,6 +80,7 @@ export const AI_TASK_ROUTING: Record<string, {
   social_post_generation:    { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Public-facing social content — Them-First + fair housing check" },
   listing_description:       { model: "claude-sonnet", fallback: "gpt-4o",       reason: "MLS-facing listing copy — fair housing compliance required" },
   video_script_generation:   { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Video scripts — brand voice, persona-aware, Them-First scored" },
+  marketing_script_generation:{ model: "claude-sonnet", fallback: "gpt-4o",      reason: "Call/listing/objection scripts saved to the scripts library — agent-facing copy, brand voice" },
   direct_mail_copy:          { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Physical mailer copy — compliance + persona targeting" },
   blog_post_generation:      { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Long-form blog — SEO + brand voice" },
   ai_reply_coach:            { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Coaching agent reply drafts — nuanced tone guidance" },
@@ -339,22 +340,19 @@ async function executeModelCall(
     throw new Error(`Unknown model: ${model}`)
   }
   
-  // Build the namespaced string and resolve to a provider instance
-  let modelInstance: ReturnType<typeof resolveModel>
-  
-  if (config.provider === "perplexity") {
-    // Perplexity uses a custom OpenAI-compatible base URL — handle separately
-    const { createOpenAI } = await import("@ai-sdk/openai")
-    const perplexity = createOpenAI({
-      apiKey: process.env.PERPLEXITY_API_KEY || "",
-      baseURL: "https://api.perplexity.ai"
-    })
-    modelInstance = perplexity(config.modelId)
-  } else {
-    // All other providers: build "provider/modelId", resolve alias, wrap with gateway
-    const modelStr = `${config.provider}/${config.modelId}` as Parameters<typeof resolveModel>[0]
-    modelInstance = toGatewayModel(resolveModel(modelStr) as string)
-  }
+  // ONE LANE. Every provider in MODEL_CONFIG — including Perplexity — is reached
+  // as "provider/modelId" through the Vercel AI Gateway.
+  //
+  // Perplexity used to be special-cased here with a direct `createOpenAI` client
+  // pointed at https://api.perplexity.ai on PERPLEXITY_API_KEY. That was the only
+  // text-generation call in the repo that left the gateway, and it disagreed with
+  // generateTextRouted/generateObjectRouted BELOW IN THIS SAME FILE, which have
+  // always sent perplexity-sonar / perplexity-sonar-pro through toGatewayModel.
+  // The gateway carries them (`perplexity/sonar`, `perplexity/sonar-pro` are
+  // GatewayModelId members in @ai-sdk/gateway), so the second client bought
+  // nothing but a second key, a second bill and a second failure mode.
+  const modelStr = `${config.provider}/${config.modelId}` as Parameters<typeof resolveModel>[0]
+  const modelInstance: ReturnType<typeof resolveModel> = toGatewayModel(resolveModel(modelStr) as string)
 
   // ── DATA GUARD — the model-boundary checkpoint ────────────────────────────
   // Redact high-confidence secrets (SSN/ITIN, EIN, card PAN, bank account/routing) from the

@@ -378,7 +378,18 @@ function assertActionPassesAllowlist(): boolean {
   )
 }
 
-const DIRECT_STT_CONSTRUCTS = ["experimental_transcribe", "openai.transcription("]
+/** Every spelling of "this module dispatches audio to a speech-to-text vendor".
+ *  `experimental_transcribe` / `openai.transcription(` are the AI-SDK spellings the
+ *  Whisper lane used before it moved onto the Vercel AI Gateway; `/v4/ai/transcription-model`
+ *  is the gateway REST modality endpoint it uses now (see the header of
+ *  lib/repurpose/transcribe-core.ts for why the REST surface and not the SDK binding).
+ *  `v1/speech-to-text` is ElevenLabs Scribe. All four must keep resolving to ONE file. */
+const DIRECT_STT_CONSTRUCTS = [
+  "experimental_transcribe",
+  "openai.transcription(",
+  "/v4/ai/transcription-model",
+  "v1/speech-to-text",
+]
 
 function assertNoDirectSttInAction(): boolean {
   const body = blankComments(raw(ACTION))
