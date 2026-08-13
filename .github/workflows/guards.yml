@@ -51,12 +51,10 @@ jobs:
       NODE_OPTIONS: --max-old-space-size=12288
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - name: Install dependencies
-        run: npm ci
+      # Node + `npm ci` live in ONE composite action for all four workflows —
+      # see .github/actions/node-deps/action.yml for why the ffmpeg-static
+      # postinstall no longer sits on the critical path of every check.
+      - uses: ./.github/actions/node-deps
       - name: Run egress integrity guards
         run: npm run guard
       - name: Run compliance / consent guards

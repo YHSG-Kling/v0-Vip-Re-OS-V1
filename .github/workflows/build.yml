@@ -78,11 +78,8 @@ jobs:
       CRON_SECRET: ${{ secrets.CRON_SECRET || 'placeholder-cron-secret' }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-      - name: Install dependencies
-        run: npm ci
+      # Node + `npm ci` live in ONE composite action for all four workflows —
+      # see .github/actions/node-deps/action.yml.
+      - uses: ./.github/actions/node-deps
       - name: Production build (next build)
         run: npm run build

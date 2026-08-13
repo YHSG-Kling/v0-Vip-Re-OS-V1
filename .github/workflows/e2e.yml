@@ -29,12 +29,9 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - name: Install dependencies
-        run: npm ci
+      # Node + `npm ci` live in ONE composite action for all four workflows —
+      # see .github/actions/node-deps/action.yml.
+      - uses: ./.github/actions/node-deps
       - name: Type-check
         run: npm run type-check
       - name: Run end-to-end business-process flows (live DB seed/assert/cleanup)
