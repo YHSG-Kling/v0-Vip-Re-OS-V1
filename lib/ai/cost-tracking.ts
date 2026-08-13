@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 
 export type AIModel = 
   | "claude-sonnet" 
@@ -254,15 +255,29 @@ export async function getCurrentMonthUsage(params: {
 }
 
 /**
- * Check if AI features are enabled at platform level
+ * Check if AI features are enabled at platform level.
+ *
+ * READ ON THE SERVICE CLIENT, DELIBERATELY. This is a PLATFORM kill switch —
+ * `emergency_mode` and `ai_enabled` are the superadmin's stop button for every
+ * tenant at once — and it holds no tenant data, so there is nothing here for
+ * a caller's own session to scope. Reading it through `createClient()` made the
+ * switch depend on the CALLER's row-level permissions, and the failure below is
+ * fail-OPEN: a refused read returns `{ enabled: true }`. That combination means
+ * any caller who could not read `platform_settings` would sail past a live
+ * emergency stop while the log line scrolled by. The service client removes the
+ * dependency entirely, which is also what lets `platform_settings` come off
+ * `SELECT USING (true) TO PUBLIC` (m417) without disarming the switch.
+ *
+ * Fail-open is kept on purpose: a settings outage should not take AI down for
+ * every tenant. What changes is that the read now actually succeeds.
  */
 export async function checkPlatformAIEnabled(): Promise<{
   enabled: boolean
   reason?: string
 }> {
   try {
-    const supabase = await createClient()
-    
+    const supabase = createServiceClient()
+
     const { data, error } = await supabase
       .from("platform_settings")
       .select("ai_enabled, emergency_mode")

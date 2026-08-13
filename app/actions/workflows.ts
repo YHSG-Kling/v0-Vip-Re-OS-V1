@@ -501,13 +501,39 @@ export async function generateScriptContent(
 
     // Store generated script. scripts is scoped by created_by (no agent_id/brokerage_id);
     // title is NOT NULL; script_type→category; status CHECK is draft|approved|archived.
-    await supabase.from("scripts").insert({
+    //
+    // `error` IS DESTRUCTURED, AND THAT CHANGES THE ANSWER. supabase-js RESOLVES
+    // a refused write, so a bare `await …insert()` returned normally and this
+    // action reported `{ success: true }` for a row that was never created.
+    // `scripts` is the PLATFORM approved-script catalogue: its INSERT policy is
+    // `is_platform_admin()` with no per-author clause, so this write has been
+    // refused for every ordinary agent since the policy was written — which is
+    // why the table holds zero rows. The refusal is now reported rather than
+    // swallowed: the generated text is still returned (it is the useful output
+    // and the caller can use it), but the caller is told it was not saved
+    // instead of being told it was.
+    //
+    // Deliberately NOT "fixed" by widening the policy or switching to the
+    // service client. Either would let any agent write into the catalogue the
+    // voice console reads from, and this action has no UI caller to justify it.
+    // Whether agent-authored scripts deserve their own author-scoped home is a
+    // product decision, not something to settle from inside a catch block.
+    const { error: storeError } = await supabase.from("scripts").insert({
       title: `${scriptType} script`,
       category: scriptType,
       content: script,
       status: "draft",
       created_by: ctx.userId,
     })
+
+    if (storeError) {
+      console.error("[workflows] script generated but NOT stored:", storeError.message)
+      return {
+        success: true,
+        content: script,
+        error: `Script generated but not saved to the library: ${storeError.message}`,
+      }
+    }
 
     return { success: true, content: script }
   } catch (error: any) {
