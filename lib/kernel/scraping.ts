@@ -1002,6 +1002,20 @@ export async function loadScrapingDiagnostics(
   const supabase = createServiceClient()
   const limit = params.limit ?? 50
 
+  // The tenant disjunction is applied while the chain is still a FILTER builder.
+  // `.or()` is declared on PostgrestFilterBuilder; `.order()` / `.limit()` return
+  // a PostgrestTransformBuilder, which does not declare it — so scoping after
+  // those would still run but would not type-check.
+  const cronBase = supabase
+    .from('cron_execution_logs')
+    .select('id, cron_name, cron_path, status, duration_ms, records_processed, error_message, started_at, completed_at')
+
+  const cronQuery = (params.brokerageId
+    ? cronBase.or(`brokerage_id.is.null,brokerage_id.eq.${params.brokerageId}`)
+    : cronBase)
+    .order('started_at', { ascending: false })
+    .limit(30)
+
   const [
     marketsResult,
     executionsResult,
@@ -1036,12 +1050,28 @@ export async function loadScrapingDiagnostics(
       .order('created_at', { ascending: false })
       .limit(100),
 
-    // Cron run history
-    supabase
-      .from('cron_execution_logs')
-      .select('id, cron_name, cron_path, status, duration_ms, records_processed, error_message, started_at, completed_at')
-      .order('started_at', { ascending: false })
-      .limit(30),
+    // Cron run history.
+    //
+    // TENANT SCOPE — this runs on a SERVICE client, so RLS is bypassed and the
+    // predicate below IS the boundary. It is written to compute exactly what
+    // `cron_execution_logs`' own SELECT policy computes for a session client:
+    //
+    //     (brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id())
+    //
+    // `params.brokerageId` is undefined ONLY for a platform admin — the single
+    // caller, app/dashboard/admin/scrape-diagnostics/page.tsx, passes
+    // `userType === "superadmin" ? undefined : brokerageId` behind an
+    // admin/broker/superadmin gate. So: a superadmin sees every tenant's runs; a
+    // broker sees their OWN tenant's runs plus the untenanted platform sweeps,
+    // and never another tenant's job names or failure messages.
+    //
+    // IT IS AN `.or()`, NOT AN `.eq()`, AND THAT IS THE WHOLE POINT. `NULL =
+    // <uuid>` is NULL, so an `.eq()` would silently drop every platform sweep —
+    // and every row this ledger currently receives is one: all 130
+    // `createCronRunContextAction` call sites pass no brokerage_id, and the two
+    // direct writers (api/cron/health-check, api/cron/contact-enrichment) stamp
+    // an explicit `brokerage_id: null`. An `.eq()` would leave this panel blank.
+    cronQuery,
 
     // Failed batches — retryable
     supabase

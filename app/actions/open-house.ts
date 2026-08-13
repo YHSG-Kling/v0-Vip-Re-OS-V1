@@ -432,13 +432,22 @@ export async function sendOpenHouseInvites(openHouseId: string): Promise<{
 
     const service = createServiceClient()
 
-    // Fetch the event to get listing_id
-    const { data: event } = await service
+    // Fetch the event to get listing_id.
+    //
+    // DESTRUCTURED: supabase-js RESOLVES a refused read, so `const { data:
+    // event }` alone reports "permission denied" as `event === null`, which the
+    // next line renders as "Event not found" — an authorization failure wearing
+    // a missing-record message, sending the operator to look for a row that is
+    // sitting right there.
+    const { data: event, error: eventError } = await service
       .from("open_house_events")
       .select("id, listing_id, brokerage_id, event_date")
       .eq("id", openHouseId)
       .maybeSingle()
 
+    if (eventError) {
+      return { success: false, error: `Could not read the open house: ${eventError.message}` }
+    }
     if (!event) return { success: false, error: "Event not found" }
 
     if (event.brokerage_id !== ctx.brokerageId) {
@@ -468,10 +477,29 @@ export async function sendOpenHouseInvites(openHouseId: string): Promise<{
     if (!contacts || contacts.length === 0) return { success: true, sent: 0 }
 
     // Insert invitations (skip duplicates via on-conflict)
+    //
+    // THE TENANT IS THE EVENT'S, RESOLVED THROUGH THE RECORD — not the caller's.
+    // An invitation is filed against `event_id`, so the row belongs to whichever
+    // brokerage owns that open house. The two values are provably equal HERE,
+    // because the guard 25 lines above returns "Unauthorized" unless
+    // `event.brokerage_id === ctx.brokerageId` — so this is not a live
+    // cross-tenant write today. It is stamped from the record anyway for the
+    // reason settled in wave 26: of the 28 brokerage-equality readers in this
+    // class, 26 compare the CALLER's `users.brokerage_id` and 2 compare the
+    // RECORD's own, they coincide only under the tenancy invariant, and the
+    // record-based answer is also what the DB-side triggers compute. Resolving
+    // through the record satisfies both families, and it keeps this insert
+    // correct if the guard above is ever loosened (e.g. to let a platform admin
+    // send invites for a brokerage that is not their own) — at which point
+    // `ctx.brokerageId` would start filing rows across the boundary silently.
+    //
+    // `agent_id` stays the CALLER's: it records who sent the invitation, which
+    // is a different question from which tenant owns it, and `agents.id` and
+    // `brokerages.id` are disjoint id spaces that must never be bridged.
     const invitations = contacts.map((c) => ({
       event_id: openHouseId,
       contact_id: c.id,
-      brokerage_id: ctx.brokerageId,
+      brokerage_id: event.brokerage_id,
       agent_id: ctx.agentId,
       channel: "email",
       status: "pending",

@@ -171,6 +171,16 @@ export default async function CronHealthPage() {
                             {r.last_error_message}
                           </p>
                         )}
+                        {/* WITHHELD IS NOT THE SAME AS CLEAN. cron_health_snapshot
+                            has no tenant column, so its free-text failure message
+                            can carry another tenant's data and is shown only to
+                            platform admins. Rendering nothing here would let a
+                            failing cron read as a healthy one. */}
+                        {r.error_message_redacted && (
+                          <p className="text-xs text-muted-foreground mt-0.5 italic">
+                            failure detail withheld — platform admin only
+                          </p>
+                        )}
                       </td>
                       <td className="px-4 py-2.5">
                         {statusBadge(r.last_status, r.is_stale)}

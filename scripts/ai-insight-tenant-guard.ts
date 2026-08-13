@@ -1362,13 +1362,30 @@ function assertNoAgentIdInNotificationRecipient(): boolean {
 //       so the allow-list is what stops `: null` becoming a way to turn D1 green
 //       without thinking. Three writes, two files, one class: a run that swept
 //       EVERY brokerage.
-//   D5  …AND THE PLATFORM READERS THAT MAKE THOSE ROWS READABLE STILL CARRY NO
-//       BROKERAGE PREDICATE. This is D4's defence asserted rather than claimed:
-//       `pl-truth-engine.ts:getCronHealth` and `scraping.ts:
-//       loadScrapingDiagnostics` both read this ledger cross-tenant, which is
-//       what makes an untenanted platform run VISIBLE rather than lost. The day
-//       either one gains a brokerage predicate, the allow-list stops being
-//       defensible — so the assertion is on the ABSENCE of one.
+//   D5  …AND THE PLATFORM READERS SCOPE **DISJUNCTIVELY**, so a broker sees
+//       their own tenant's runs AND the untenanted platform sweeps, never
+//       another tenant's. REWRITTEN IN WAVE 27, and the reason matters.
+//
+//       This assertion used to demand the ABSENCE of any brokerage predicate,
+//       on the theory that cross-tenant reading is what keeps an allow-listed
+//       untenanted row visible. That was true of the rows and false of the
+//       people: `getCronHealth` and `loadScrapingDiagnostics` showed a
+//       broker_admin every tenant's cron job names and failure text.
+//
+//       The owner ruled that a broker sees their own tenant's runs. Taken
+//       literally that would show a broker an EMPTY PAGE — 0 of 130
+//       `createCronRunContextAction` routes pass a `brokerage_id`, and by
+//       architecture none can: a Vercel cron fires once, platform-wide, and
+//       `daily-briefing` sweeps every brokerage in a single run. So the
+//       reconciliation is `.or(brokerage_id.is.null, brokerage_id.eq.<tenant>)`
+//       — own tenant plus the platform sweeps.
+//
+//       An `.eq()` here would be WRONG, not merely stricter: `NULL = <uuid>` is
+//       NULL, so it would hide every platform sweep from the only surface that
+//       reports them. That is the failure this assertion now guards, and it is
+//       why D5 tests for the disjunction rather than for silence. The predicate
+//       is exactly what `cron_execution_logs`' own SELECT policy computes, so
+//       the service-client read and the policy cannot drift apart.
 //   D6  `createCronRunContext` STAMPS THE TENANT IT WAS GIVEN. D1 is satisfied by
 //       any value; the defect here was specifically that the accepted input never
 //       reached the row, so this asserts the VALUE EXPRESSION carries it.
@@ -1491,8 +1508,9 @@ const W24_READERS: TenantReaderCase[] = [
 ]
 
 /**
- * The cross-tenant readers that make an untenanted `cron_execution_logs` row
- * readable. Asserted to have NO brokerage predicate — see D5.
+ * The two readers of `cron_execution_logs`. Asserted to scope DISJUNCTIVELY —
+ * own tenant OR untenanted platform sweep — see D5. (`system-health.ts:
+ * getCronExecutionLogs` was already scoped and is not one of these two.)
  */
 const W24_PLATFORM_READERS: Array<{ label: string; file: string; fn: string }> = [
   { label: "getCronHealth (7-day run/failure counts)", file: "app/actions/pl-truth-engine.ts", fn: "getCronHealth" },
@@ -1610,13 +1628,38 @@ function assertPlatformCronReadersStayCrossTenant(): boolean {
       all = check(`D5  ${p.label} read found`, false, `no cron_execution_logs read found in ${p.fn} (${p.file})`) && all
       continue
     }
-    const narrowed = chain.links.some((l) => CONJUNCTIVE.has(l.method) && /["']brokerage_id["']/.test(l.args))
+    // The read is built across TWO statements (`runsBase`/`cronBase`, then a
+    // ternary that applies the scope), so the chain walker alone cannot see the
+    // `.or()`. Follow one hop through the local binding by reading the whole
+    // function body — the same move W6 makes for the agents-class detector.
+    const span = functionBody(chain.src, p.fn)
+    const body = span ? chain.src.slice(span[0], span[1]) : ""
+
+    // The CONSTRUCT, not a spelling: a disjunction that admits the untenanted
+    // sweep AND the caller's own tenant. Both terms are required — either one
+    // alone is a different (and wrong) policy.
+    const admitsPlatformSweep = /brokerage_id\.is\.null/.test(body)
+    const admitsOwnTenant = /brokerage_id\.eq\./.test(body)
+    const isDisjunction = /\.or\s*\(/.test(body)
+
+    // An `.eq("brokerage_id", …)` in the CHAIN is the specific regression this
+    // guards: `NULL = <uuid>` is NULL, so it would hide every platform sweep
+    // from the only surface that reports them. `.or` is not in CONJUNCTIVE, and
+    // the scope string carries no quoted "brokerage_id", so the disjunctive form
+    // cannot trip this by accident.
+    const conjunctive = chain.links.some((l) => CONJUNCTIVE.has(l.method) && /["']brokerage_id["']/.test(l.args))
+
+    const scoped = isDisjunction && admitsPlatformSweep && admitsOwnTenant && !conjunctive
     all = check(
-      `D5  ${p.label} still reads cron_execution_logs WITHOUT a brokerage predicate — which is what makes the allow-listed untenanted rows readable`,
-      !narrowed,
-      narrowed
-        ? "a brokerage predicate appeared here: the three deliberately-untenanted platform-sweep rows are now invisible to their own surface, so the D4 allow-list is no longer defensible and those writes must be reconsidered — not silently kept"
-        : "",
+      `D5  ${p.label} scopes cron_execution_logs DISJUNCTIVELY — own tenant OR untenanted platform sweep, never another tenant's`,
+      scoped,
+      scoped
+        ? ""
+        : conjunctive
+          ? "a CONJUNCTIVE brokerage predicate appeared here. `NULL = <uuid>` is NULL, so every untenanted platform sweep — which is all 130 of them, since no cron route passes a brokerage_id and a Vercel cron fires once platform-wide — just went dark on the only surface that reports it. The scope must be `.or(brokerage_id.is.null, brokerage_id.eq.<tenant>)`, which is exactly what this table's SELECT policy computes"
+          : !isDisjunction
+            ? "no `.or()` scope found: this reader uses a service client, so RLS is NOT the enforcement here and an unscoped read shows a broker_admin every other tenant's cron job names and failure text"
+            : `the disjunction is incomplete (admits platform sweep: ${admitsPlatformSweep}, admits own tenant: ${admitsOwnTenant}) — both terms are required, and dropping either one silently changes who sees what`,
     ) && all
   }
   return all
@@ -1844,12 +1887,19 @@ const W25_TRIGGER_COVERED: ReadonlyArray<{ file: string; sites: number; client: 
     client: "session",
     why: "carries `...(params.brokerage_id ? { brokerage_id } : {})` and every caller in content-generation-engine.ts passes `brokerage_id: auth.brokerageId`; the agent_id/agent_user_id anchors are the caller's own besides",
   },
-  {
-    file: "lib/security/rbac.ts",
-    sites: 1,
-    client: "session",
-    why: "the anchor is the CALLER (`agent_user_id: userId`, always the session user). SEPARATELY: this call is never awaited and never `.then()`ed, and a PostgrestBuilder only issues its request from `then()` — so it has never written a row at all. That is a live defect, reported rather than switched on here, because making five audit writes per permission check start firing is a product decision, not a tenant one",
-  },
+  // `lib/security/rbac.ts` WAS HERE AND IS DELIBERATELY GONE (wave 27).
+  //
+  // Its entry existed to record a defect it was not yet authorised to fix: the
+  // audit insert was never awaited and never `.then()`ed, and a PostgrestBuilder
+  // only issues its request from `then()`, so it had never written a row at all.
+  // The owner ruled — log DENIALS only — so the write now fires, and it stamps
+  // the tenant explicitly rather than leaning on the trigger. A file that stamps
+  // is not trigger-covered, so keeping it allow-listed would make E2 assert a
+  // reliance that no longer exists.
+  //
+  // The old note also said "five audit call sites". There are SIX (rbac.ts
+  // lines 39/55/67/78 permission_check, 106 access_granted, 125 access_revoked);
+  // the wrong count had propagated into manager-registry.ts as well.
 ]
 
 /** E1's floors — the sites this wave repaired, per file. */
@@ -3863,16 +3913,33 @@ function main(): void {
       assertCronContextCarriesItsInputTenant,
     )
 
-    // 48. D4'S DEFENCE GOES AWAY. `getCronHealth` gains a brokerage predicate, so
-    //     the three deliberately-untenanted platform-sweep rows stop being visible
-    //     anywhere — at which point keeping them untenanted is no longer a
-    //     defensible decision, it is just a hole. D5 must notice.
+    // 48. THE DISJUNCTION COLLAPSES INTO AN EQUALITY. REWRITTEN IN WAVE 27 with
+    //     D5 itself: the old control ADDED a predicate to an unscoped read,
+    //     which is now the correct state rather than the defect. The defect it
+    //     must model today is the seductive one — swapping the `.or()` for the
+    //     `.eq()` that "looks stricter". It is not stricter, it is wrong:
+    //     `NULL = <uuid>` is NULL, so every untenanted platform sweep — all of
+    //     them, since no cron route passes a brokerage_id — disappears from the
+    //     only surface that reports it, and the broker gets an empty page.
     controlled(
-      "the platform cron reader gains a brokerage predicate (the untenanted sweep rows go dark)",
+      "the platform cron reader's `.or()` tenant scope collapses into an `.eq()` (every untenanted sweep goes dark)",
       {
         file: "app/actions/pl-truth-engine.ts",
-        find: '      .gte("started_at", sevenDaysAgo)',
-        replace: '      .eq("brokerage_id", auth.brokerageId)\n      .gte("started_at", sevenDaysAgo)',
+        find: "    (auth.isPlatformAdmin ? runsBase : runsBase.or(tenantScope))",
+        replace: '    (auth.isPlatformAdmin ? runsBase : runsBase.eq("brokerage_id", auth.brokerageId))',
+      },
+      assertPlatformCronReadersStayCrossTenant,
+    )
+
+    // 48b. THE SCOPE GOES AWAY ENTIRELY — the wave-24 state, where a broker_admin
+    //      read every other tenant's cron job names and failure text through a
+    //      service client with no predicate at all. D5 must still catch this.
+    controlled(
+      "the platform cron reader drops its tenant scope entirely (back to cross-tenant reads on a service client)",
+      {
+        file: "app/actions/pl-truth-engine.ts",
+        find: "    (auth.isPlatformAdmin ? runsBase : runsBase.or(tenantScope))",
+        replace: "    runsBase",
       },
       assertPlatformCronReadersStayCrossTenant,
     )
