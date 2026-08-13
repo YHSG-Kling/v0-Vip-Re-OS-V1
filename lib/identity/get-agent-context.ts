@@ -1,7 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { isPlatformStaff, isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
+import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
 import { resolveActiveImpersonation } from "@/lib/platform/impersonation"
 
 export interface AgentContext {

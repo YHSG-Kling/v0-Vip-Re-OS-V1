@@ -38,8 +38,25 @@ console.log("\n── the authoring actions (admin-gated, brokerage-scoped) ─�
     a.includes("brokerage_id.eq.${auth.brokerageId},brokerage_id.is.null"))
   check("edit/delete refuse anything but the tenant's OWN step (platform defaults read-only)",
     (a.match(/Step not found for this brokerage/g) ?? []).length >= 2)
-  check("category is validated + step_key is normalized",
-    a.includes("CATEGORIES.has(input.category)") && a.includes("replace(/[^a-z0-9_]+/g"))
+  // ASSERT THE CONSTRUCT, NOT THE SPELLING. This used to require the literal
+  // `CATEGORIES.has(input.category)`, which pinned one function name in one
+  // file. When the vocabulary moved into lib/onboarding/step-categories.ts —
+  // the fix for a defect where FOUR of the seven offered categories were
+  // refused by onboarding_steps_category_check, and where the blank form's
+  // stepOrder default of 0 made the FIRST save of a fresh create form always
+  // fail — this assertion went red on strictly better code. What matters is
+  // that `input.category` is validated against the SHARED source before it
+  // reaches the insert, not what the validator is called.
+  check("category is validated against the shared vocabulary + step_key is normalized",
+    /from ["']@\/lib\/onboarding\/step-categories["']/.test(a) &&
+    /\binput\.category\b/.test(a) &&
+    /(Category|category)[A-Za-z]*\s*\(\s*input\.category\s*\)|input\.category\s*\)/.test(a) &&
+    a.includes("replace(/[^a-z0-9_]+/g"))
+  // ONE list, not three. The vocabulary drifted precisely because the action and
+  // the picker each kept their own copy next to a CHECK constraint neither read.
+  check("the picker imports the SAME vocabulary module as the action (no third copy)",
+    /from ["']@\/lib\/onboarding\/step-categories["']/.test(
+      src("app/dashboard/admin/onboarding/onboarding-curriculum-editor.tsx")))
   check("does NOT write the generated brokerage_id_or_zero column",
     !a.includes("brokerage_id_or_zero"))
 }

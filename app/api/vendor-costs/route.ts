@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireAuth } from "@/lib/kernel/api-auth"
-import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
+import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
 import { checkVendorBudget, getBrokerageBudgetWarningEnabled } from "@/lib/vendor-governance/budget-gate"
 import { redactBudgetForActor } from "@/lib/vendor-governance/budget-visibility"
 
@@ -13,8 +13,15 @@ export async function GET(request: NextRequest) {
 
   // PRIVACY: brokerage/subscriber users NEVER see vendor names or dollar amounts.
   // They get only a coarse status level + a (superadmin-toggled) "approaching limit"
-  // warning. Full vendor-spend detail is platform-staff only (superadmin/support).
-  if (!isPlatformStaff(auth.userType)) {
+  // warning. Full vendor-spend detail is platform-staff only — the owner's four
+  // roles, resolved from users.platform_role.
+  //
+  // This gate previously read `isPlatformStaff(auth.userType)`: a roster of
+  // platform_role values matched against user_type. It leaked in one direction and
+  // locked out in the other — any TENANT user whose user_type is 'support' (a legal
+  // tenant role) got the full vendor-name breakdown, while the platform's actual
+  // superadmin (user_type='admin', platform_role='superadmin') did not.
+  if (!isPlatformStaffIdentity(auth.userType, auth.platformRole)) {
     const [budget, warningEnabled] = await Promise.all([
       checkVendorBudget({ brokerageId: auth.brokerageId }),
       getBrokerageBudgetWarningEnabled(),

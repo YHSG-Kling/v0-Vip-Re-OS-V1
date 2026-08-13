@@ -7,6 +7,11 @@
  * — it is ignored.
  */
 
+// The roster is defined ONCE, in lib/platform/platform-staff-roster.ts. This module
+// consumes it; it does not restate it. (That module is pure and imports nothing, so
+// there is no cycle and no server-only leak into this pure helper.)
+import { isPlatformStaffRole } from "@/lib/platform/platform-staff-roster"
+
 export type UserRole =
   | "agent"
   | "broker"
@@ -25,32 +30,44 @@ export type UserRole =
   | "support"
 
 /**
- * Platform-staff roles operate ABOVE any brokerage. `superadmin` has full control
- * (config, billing, brokerage management); `support` is a platform support tier with
- * the same cross-brokerage visibility for triaging platform issues, intended for
- * assistance rather than destructive platform configuration.
- */
-export const PLATFORM_STAFF_ROLES = ["superadmin", "support"] as const
-
-/** True for platform-staff roles (superadmin OR support) — cross-brokerage visibility. */
-/**
- * ROUND-19 PARITY: dual-column staff identity. 'admin'/'marketing' are roster
- * roles carried ONLY in platform_role ('admin' is also a tenant user_type, so
- * user_type participates solely via the legacy 'superadmin' marker).
+ * PLATFORM-STAFF IDENTITY — the ONE gate, and it takes BOTH columns.
+ *
+ * This file used to carry two answers to "who is platform staff", six lines apart:
+ * a `PLATFORM_STAFF_ROLES = ["superadmin","support"]` const with an `isPlatformStaff`
+ * that consulted it, and this function with a four-role array inlined — under a
+ * comment claiming it kept the four roles "in ONE place". Both are gone. The roster
+ * lives in lib/platform/platform-staff-roster.ts, which is what this now imports,
+ * and which is the same four roles as users_platform_role_check and the RLS helper
+ * public.is_platform_staff() (m408).
+ *
+ * WHY BOTH COLUMNS, AND WHY THE SINGLE-COLUMN VERSION WAS A BUG NOT A SHORTHAND.
+ * `users` carries the staff answer across TWO columns and they do not hold the same
+ * vocabulary. Measured on the live database, the mapping the staff CRUD writes
+ * (app/actions/superadmin/platform-staff.ts#roleColumns) is:
+ *
+ *     platform_role   user_type
+ *     superadmin      superadmin
+ *     admin           admin
+ *     support         support
+ *     marketing       system      ← 'marketing' is not a legal user_type at all
+ *
+ * users_user_type_check admits fourteen values and 'marketing' is not one of them.
+ * So a roster of platform_role values matched against user_type silently graded
+ * `marketing` as not-staff, and `admin` as not-staff, no matter what the roster
+ * said. Worse, the ONE live superadmin on this database is
+ * (user_type='admin', platform_role='superadmin') — so the user_type-only gate
+ * refused the platform's only administrator. Every caller now passes both columns.
+ *
+ * user_type participates ONLY through the legacy 'superadmin' marker, which is how
+ * public.is_platform_admin() and public.is_platform_staff() read it too — an account
+ * predating the platform_role column is not demoted by this.
  */
 export function isPlatformStaffIdentity(
   userType: string | null | undefined,
   platformRole: string | null | undefined,
 ): boolean {
   if (userType === "superadmin") return true
-  // Lazy import avoided — the roster is pure; inline the roster check here to
-  // keep this module dependency-light and the four roles in ONE place there.
-  const ROSTER = ["superadmin", "admin", "marketing", "support"]
-  return !!platformRole && ROSTER.includes(platformRole)
-}
-
-export function isPlatformStaff(role: string | null | undefined): boolean {
-  return !!role && (PLATFORM_STAFF_ROLES as readonly string[]).includes(role)
+  return isPlatformStaffRole(platformRole)
 }
 
 export function resolveUserRole(profile: {
@@ -77,7 +94,7 @@ export function requireRole(
 // The legacy spellings stay HERE and only here. This function judges a value a
 // CALLER hands in, which can be anything; it is not a query. They were also
 // sitting in 24 `.in("user_type", [...])` RECIPIENT lookups, where they were
-// provably dead: users_user_type_check admits fifteen values and broker_admin is
+// provably dead: users_user_type_check admits fourteen values and broker_admin is
 // not one of them, and the constraint is VALIDATED, so no row was grandfathered
 // either. Those were harmless — every list also carried broker/admin, so the
 // lookups still found their recipients — but they read as though broker_admin

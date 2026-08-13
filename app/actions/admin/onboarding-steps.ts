@@ -20,9 +20,20 @@
 import { revalidatePath } from "next/cache"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
+// The category vocabulary and the two integer ranges are the DATABASE's, not
+// this file's. They were hand-written here AND in the editor, and four of the
+// seven categories offered (license / tech / brand / other) were refused live by
+// onboarding_steps_category_check — while the blank form's stepOrder default of 0
+// was refused by onboarding_steps_step_order_check, so the very first save of a
+// freshly-opened create form always failed. Sourced from the one module now.
+import {
+  ONBOARDING_STEP_CATEGORIES,
+  isStorableOnboardingStepCategory,
+  clampOnboardingStepDay,
+  clampOnboardingStepOrder,
+} from "@/lib/onboarding/step-categories"
 
 const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin"])
-const CATEGORIES = new Set(["license", "compliance", "tech", "training", "practice", "brand", "other"])
 
 async function requireAdmin(): Promise<
   | { ok: true; brokerageId: string; userId: string }
@@ -110,9 +121,14 @@ export async function saveOnboardingStepAction(
   if (!stepName) return { ok: false, error: "Step name is required" }
   const stepKey = (input.stepKey ?? "").trim().toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "")
   if (!stepKey) return { ok: false, error: "Step key is required" }
-  if (!CATEGORIES.has(input.category)) return { ok: false, error: `Category must be one of: ${[...CATEGORIES].join(", ")}` }
-  const dayNumber = Number.isFinite(input.dayNumber) && input.dayNumber >= 1 ? Math.floor(input.dayNumber) : 1
-  const stepOrder = Number.isFinite(input.stepOrder) ? Math.floor(input.stepOrder) : 0
+  if (!isStorableOnboardingStepCategory(input.category)) {
+    return { ok: false, error: `Category must be one of: ${ONBOARDING_STEP_CATEGORIES.join(", ")}` }
+  }
+  // Clamp rather than pass through: day_number is CHECKed to 1..7 and step_order
+  // to >= 1, so an out-of-range value reached the database as a raw 23514 with a
+  // constraint name in it instead of anything an admin could act on.
+  const dayNumber = clampOnboardingStepDay(input.dayNumber)
+  const stepOrder = clampOnboardingStepOrder(input.stepOrder)
   const targetRole = Array.isArray(input.targetRole) && input.targetRole.length > 0
     ? input.targetRole.map((r) => String(r).toLowerCase())
     : null

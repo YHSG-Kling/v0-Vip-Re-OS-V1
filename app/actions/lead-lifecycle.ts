@@ -1,7 +1,7 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
-import { isPlatformStaff } from '@/lib/auth/resolve-user-role'
+import { isPlatformStaffIdentity } from '@/lib/auth/resolve-user-role'
 import { createPortalInviteForContact } from './portal-invites'
 import { syncContactToCRM } from '@/lib/crm/sync'
 import { convertLeadToContact as kernelConvertLeadToContact } from '@/lib/kernel'
@@ -27,7 +27,7 @@ async function requireLeadDesk(targetBrokerageId: string): Promise<void> {
 
   const role = profile?.user_type ?? 'agent'
   // Platform staff may act across brokerages (support/repair paths).
-  if (role === 'superadmin' || isPlatformStaff(profile?.platform_role)) return
+  if (isPlatformStaffIdentity(role, profile?.platform_role)) return
 
   if (!LEAD_DESK_ROLES.has(role)) {
     throw new Error('Forbidden — leads are managed at the brokerage level')

@@ -1,7 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
+import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
 import { getAgentContext } from "@/lib/identity"
 import {
   serviceGetLeads,
@@ -41,7 +41,7 @@ async function requireLeadDesk(): Promise<
     .single()
 
   const role = profile?.user_type ?? "agent"
-  const platformStaff = role === "superadmin" || isPlatformStaff(profile?.platform_role)
+  const platformStaff = isPlatformStaffIdentity(role, profile?.platform_role)
   if (!platformStaff && !(LEAD_DESK_ROLES as readonly string[]).includes(role)) {
     return { ok: false, error: "Forbidden" }
   }

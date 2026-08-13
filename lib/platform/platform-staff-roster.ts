@@ -1,12 +1,32 @@
 // lib/platform/platform-staff-roster.ts
 // ─────────────────────────────────────────────────────────────────────────────
+// THE ROSTER. One definition of who platform staff are, for the whole codebase.
+//
 // Platform EMPLOYEES (not tenant users): the people who run the platform itself.
-// Two recognized platform roles — superadmin (full control) and support (limited
-// operator). These are the roles the platform gates already accept (requireStaff
-// across ai-ops / os-sentinel / plan-catalog checks user_type|platform_role ∈
-// {superadmin, support}). A platform employee has NO brokerage_id — they sit above
-// every tenant. Pure validation so the superadmin CRUD can't create a malformed
-// or wrongly-scoped staff account.
+// The owner's ruling is verbatim:
+//
+//   "the platform roles are the staff including superadmin, admin, support,
+//    marketing."
+//
+// Four roles, and this array is the only place they are written down in
+// TypeScript. It is the same four the database enforces — users_platform_role_check
+// admits exactly {superadmin, admin, marketing, support} plus the non-human
+// ai_isa_system marker — and the same four the RLS helper public.is_platform_staff()
+// carries (migration m408). A platform employee has NO brokerage_id: they sit above
+// every tenant.
+//
+// WHY THE HEADER USED TO SAY "TWO". It said "Two recognized platform roles —
+// superadmin and support" directly above a four-element array, because the array
+// was widened and the prose was not. That drift was not cosmetic: a SECOND
+// PLATFORM_STAFF_ROLES lived in lib/auth/resolve-user-role.ts still holding
+// ["superadmin","support"], and it was the one the notification fan-out and every
+// isPlatformStaff() caller actually imported — so `admin` and `marketing` staff were
+// invisible to half the platform. That duplicate is deleted; this is the survivor.
+// If the roster changes, it changes HERE, and the DB CHECK plus is_platform_staff()
+// change with it.
+//
+// `ai_isa_system` is deliberately absent. It is a legal users.platform_role value,
+// but it marks the two automated ISA service accounts, not a member of staff.
 
 export const PLATFORM_STAFF_ROLES = ["superadmin", "admin", "marketing", "support"] as const
 export type PlatformStaffRole = (typeof PLATFORM_STAFF_ROLES)[number]

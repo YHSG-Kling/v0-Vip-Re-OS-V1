@@ -17,7 +17,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
-import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
+import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 import { revalidatePath } from "next/cache"
 import {
@@ -74,7 +74,7 @@ export async function getManagerTrustScorecard(): Promise<
   const { data: profile } = user
     ? await svc.from("users").select("platform_role").eq("id", user.id).maybeSingle()
     : { data: null }
-  const isPlatform = ctx.userType === "superadmin" || isPlatformStaff(profile?.platform_role)
+  const isPlatform = isPlatformStaffIdentity(ctx.userType, profile?.platform_role)
   if (!isPlatform && !ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
 
   // 1) All graded outcomes (brokerage-scoped).

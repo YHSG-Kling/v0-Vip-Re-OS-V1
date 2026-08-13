@@ -18,13 +18,27 @@ import {
   type CurriculumStep,
 } from "@/app/actions/admin/onboarding-steps"
 
-const CATEGORIES = ["license", "compliance", "tech", "training", "practice", "brand", "other"]
+// The category list and the two numeric bounds are the DATABASE's, not this
+// file's. This dropdown offered license / compliance / tech / training /
+// practice / brand / other while onboarding_steps_category_check admits only
+// system_setup / training / practice / compliance / certification — four of the
+// seven options were refused with a raw 23514. The blank form below also
+// defaulted Order to "0", which onboarding_steps_step_order_check (>= 1) refuses,
+// so the first save of a freshly-opened form failed regardless of the category.
+import {
+  ONBOARDING_STEP_CATEGORIES,
+  onboardingStepCategoryLabel,
+  ONBOARDING_STEP_DAY_MIN,
+  ONBOARDING_STEP_DAY_MAX,
+  ONBOARDING_STEP_ORDER_MIN,
+} from "@/lib/onboarding/step-categories"
+
 const ROLES = ["agent", "broker", "admin", "tc", "isa", "team_lead", "compliance_officer"]
 
 const EMPTY = {
   id: null as string | null,
   dayNumber: "1",
-  stepOrder: "0",
+  stepOrder: "1",
   stepKey: "",
   stepName: "",
   category: "training",
@@ -129,15 +143,15 @@ export function OnboardingCurriculumEditor() {
                 </div>
                 <div className="grid grid-cols-4 gap-3">
                   <div className="space-y-1.5"><Label className="text-xs">Day</Label>
-                    <Input type="number" min={1} value={form.dayNumber} onChange={(e) => setForm({ ...form, dayNumber: e.target.value })} /></div>
+                    <Input type="number" min={ONBOARDING_STEP_DAY_MIN} max={ONBOARDING_STEP_DAY_MAX} value={form.dayNumber} onChange={(e) => setForm({ ...form, dayNumber: e.target.value })} /></div>
                   <div className="space-y-1.5"><Label className="text-xs">Order</Label>
-                    <Input type="number" value={form.stepOrder} onChange={(e) => setForm({ ...form, stepOrder: e.target.value })} /></div>
+                    <Input type="number" min={ONBOARDING_STEP_ORDER_MIN} value={form.stepOrder} onChange={(e) => setForm({ ...form, stepOrder: e.target.value })} /></div>
                   <div className="space-y-1.5"><Label className="text-xs">Est. minutes</Label>
                     <Input type="number" value={form.estimatedMinutes} onChange={(e) => setForm({ ...form, estimatedMinutes: e.target.value })} /></div>
                   <div className="space-y-1.5"><Label className="text-xs">Category</Label>
                     <Select value={form.category} onValueChange={(v) => setForm({ ...form, category: v })}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>{CATEGORIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                      <SelectContent>{ONBOARDING_STEP_CATEGORIES.map((c) => <SelectItem key={c} value={c}>{onboardingStepCategoryLabel(c)}</SelectItem>)}</SelectContent>
                     </Select></div>
                 </div>
                 <div className="space-y-1.5"><Label className="text-xs">Applies to roles (none = everyone)</Label>

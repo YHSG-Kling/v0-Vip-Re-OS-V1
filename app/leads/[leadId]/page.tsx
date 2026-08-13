@@ -6,7 +6,7 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
+import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { LeadQuickActions } from "@/components/lead/LeadQuickActions"
@@ -47,7 +47,7 @@ export default async function LeadDetailPage({ params }: PageProps) {
   // officers do NOT reach lead rows — agents work CONTACTS only (post-promotion).
   const { data: profile } = await svc.from("users")
     .select("user_type, platform_role, brokerage_id").eq("id", user.id).maybeSingle()
-  const isPlatform = profile?.user_type === "superadmin" || isPlatformStaff(profile?.platform_role)
+  const isPlatform = isPlatformStaffIdentity(profile?.user_type, profile?.platform_role)
   const BROKERAGE_ROLES = new Set(["broker","broker_owner","broker_admin","admin"])
   const isBrokerageMatch =
     !!profile?.user_type && BROKERAGE_ROLES.has(profile.user_type)

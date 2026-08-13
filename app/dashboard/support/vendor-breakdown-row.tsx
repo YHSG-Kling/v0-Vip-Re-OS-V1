@@ -8,8 +8,10 @@
 //
 // PRIVACY CONTRACT (lib/vendor-governance/budget-visibility.ts): vendor names and
 // dollar figures are PLATFORM-ONLY. The gate lives in the action
-// (`isPlatformStaff(actor.userType)`), not here — this component just refuses to
-// render anything it was not handed.
+// (`isPlatformStaffIdentity(actor.userType, actor.platformRole)` — staff identity is
+// dual-column; the single-column form it replaced both leaked to tenant users whose
+// user_type is 'support' and locked out the platform's own superadmin), not here —
+// this component just refuses to render anything it was not handed.
 
 import { useState } from "react"
 import { Badge } from "@/components/ui/badge"

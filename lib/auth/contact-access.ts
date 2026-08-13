@@ -22,7 +22,6 @@
 import "server-only"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
 import { isPlatformStaffRole } from "@/lib/platform/platform-staff-roster"
 
 export interface ContactAccessRow {

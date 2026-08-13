@@ -57,7 +57,14 @@ export async function listPlatformStaffAction(): Promise<{ ok: true; staff: any[
   const { data, error } = await svc
     .from("users")
     .select("id, email, first_name, last_name, user_type, platform_role, status, created_at")
-    .or(`user_type.in.(superadmin,support),platform_role.in.(${PLATFORM_STAFF_ROLES.join(",")})`)
+    // The user_type half is the LEGACY 'superadmin' MARKER ONLY. It used to read
+    // `user_type.in.(superadmin,support)`, which listed every TENANT user carrying
+    // user_type='support' — a legal tenant role with no platform employment — as a
+    // member of platform staff on the staff-management console, where a superadmin
+    // could then change their "platform role". platform_role is the roster column;
+    // user_type participates solely through the legacy marker, exactly as
+    // isPlatformStaffIdentity() and public.is_platform_staff() define it.
+    .or(`user_type.eq.superadmin,platform_role.in.(${PLATFORM_STAFF_ROLES.join(",")})`)
     .order("created_at", { ascending: false })
   if (error) return { ok: false, error: error.message }
   return { ok: true, staff: data ?? [] }

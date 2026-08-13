@@ -85,7 +85,8 @@ import { manifestToMcpTools, inputsToJsonSchema, toToolName } from "../lib/agent
 import { computeFreeSlots } from "../lib/providers/calendar/free-slots"
 import { scopeCascade, isConnectionAllowed, writeScopeFor, isProviderAllowedForScope, domainsForScope, selectableConnectionsForScope, CONNECTOR_PROVIDERS } from "../lib/connections/scope"
 import { buildCredentialWrite, isOAuthConnection, oauthStartPath, connectionScopeForUserType, isConnectSupported, selfConnectableDomains } from "../lib/connections/field-spec"
-import { isPlatformStaff } from "../lib/auth/resolve-user-role"
+import { isPlatformStaffIdentity } from "../lib/auth/resolve-user-role"
+import { isPlatformStaffRole } from "../lib/platform/platform-staff-roster"
 import { matchTriggersForEvent, isCooldownActive, type LifecycleTrigger } from "../lib/marketing/trigger-match"
 import { findReusableRun, type ExistingRun } from "../lib/workflow-orchestrator/run-dedupe"
 
@@ -530,10 +531,26 @@ async function testVendorGateway() {
   check("zero/invalid budget falls back to default ceiling", evaluateVendorBudget(0, 0, 1).budget === MONTHLY_VENDOR_BUDGET_USD.solo_agent)
 
   // ── Role-scoped visibility (PRIVACY: brokerages never see vendor names/$) ───
-  check("support is platform staff", isPlatformStaff("support"))
-  check("superadmin is platform staff", isPlatformStaff("superadmin"))
-  check("broker is NOT platform staff", !isPlatformStaff("broker"))
-  check("agent is NOT platform staff", !isPlatformStaff("agent"))
+  // The ROSTER — one definition, four roles (lib/platform/platform-staff-roster.ts),
+  // the same four as users_platform_role_check and public.is_platform_staff() (m408).
+  check("support is platform staff", isPlatformStaffRole("support"))
+  check("superadmin is platform staff", isPlatformStaffRole("superadmin"))
+  check("admin is platform staff", isPlatformStaffRole("admin"))
+  check("marketing is platform staff", isPlatformStaffRole("marketing"))
+  check("broker is NOT platform staff", !isPlatformStaffRole("broker"))
+  check("agent is NOT platform staff", !isPlatformStaffRole("agent"))
+  check("ai_isa_system is NOT platform staff (service account, not a person)", !isPlatformStaffRole("ai_isa_system"))
+  // DUAL-COLUMN IDENTITY. The gate takes (user_type, platform_role) because the two
+  // columns hold different vocabularies. These four cases are the ones the old
+  // single-column isPlatformStaff(user_type) got wrong on live data.
+  check("live superadmin shape (user_type=admin, platform_role=superadmin) IS staff",
+    isPlatformStaffIdentity("admin", "superadmin"))
+  check("marketing staff shape (user_type=system, platform_role=marketing) IS staff",
+    isPlatformStaffIdentity("system", "marketing"))
+  check("TENANT user_type=support with no platform_role is NOT staff",
+    !isPlatformStaffIdentity("support", null))
+  check("legacy user_type=superadmin marker alone IS staff",
+    isPlatformStaffIdentity("superadmin", null))
 
   check("budgetLevel ok/approaching/paused", budgetLevel({ allowed: true, softWarning: false }) === "ok" && budgetLevel({ allowed: true, softWarning: true }) === "approaching" && budgetLevel({ allowed: false, softWarning: false }) === "paused")
 

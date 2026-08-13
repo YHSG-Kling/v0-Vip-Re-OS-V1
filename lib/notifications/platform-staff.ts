@@ -1,13 +1,21 @@
 // lib/notifications/platform-staff.ts
 // ─────────────────────────────────────────────────────────────────────────────
 // Platform-staff notification — the single way a manager (or platform process) raises
-// a PLATFORM-level alert to superadmin/support, who operate ABOVE any brokerage. Used
+// a PLATFORM-level alert to the platform staff, who operate ABOVE any brokerage. Used
 // for platform-owned concerns (scraper/connector health, raw-lead ingestion) where the
 // owner is the platform, not a brokerage. Resolves recipients via the canonical
 // PLATFORM_STAFF_ROLES set and writes to the same in-app notifications feed.
+//
+// THE IMPORT ON THE NEXT LINE USED TO POINT SOMEWHERE ELSE, AND THAT WAS THE BUG.
+// It read PLATFORM_STAFF_ROLES from lib/auth/resolve-user-role.ts, where a SECOND
+// declaration of that same name held only ["superadmin","support"]. So every
+// platform alert this module has ever raised — connector health, scraper failures,
+// raw-lead ingestion — was addressed to two of the four staff roles, and `admin` and
+// `marketing` staff were never told. Nothing failed loudly: the fan-out reported the
+// count it did deliver. The duplicate is deleted; this now imports the one roster.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { PLATFORM_STAFF_ROLES } from "@/lib/auth/resolve-user-role"
+import { PLATFORM_STAFF_ROLES } from "@/lib/platform/platform-staff-roster"
 // The ONE way a notifications row gets its tenant — the recipient's
 // users.brokerage_id, the exact value badge-counts compares against.
 import { resolveRecipientBrokerageIds } from "@/lib/notifications/recipient-tenant"

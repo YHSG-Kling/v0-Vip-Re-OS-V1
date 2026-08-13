@@ -20,7 +20,7 @@
  */
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
+import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
 import { revalidatePath } from "next/cache"
 
 interface LeadRow {
@@ -59,7 +59,7 @@ async function assertCanActOnLead(leadId: string): Promise<
     .select("user_type, platform_role, brokerage_id").eq("id", user.id).maybeSingle()
 
   // Platform admin / staff always allowed (including for platform-only leads where brokerage_id IS NULL).
-  if (profile?.user_type === "superadmin" || isPlatformStaff(profile?.platform_role)) {
+  if (isPlatformStaffIdentity(profile?.user_type, profile?.platform_role)) {
     return { ok: true, userId: user.id, lead: l }
   }
 

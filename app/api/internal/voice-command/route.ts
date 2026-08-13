@@ -676,8 +676,14 @@ Respond with ONLY the intent string, nothing else.`,
       // (this authenticated route proves the caller's identity; the underlying action also
       // re-checks requireSuperadmin, so this is defence in depth). Routes to the SAME tested,
       // audited createTenantUserAction the god console uses — the "voice admin does it" story.
-      const isPlatformStaff = profile.user_type === "superadmin" || (profile as any).platform_role === "superadmin"
-      if (!isPlatformStaff) {
+      // NAMED FOR WHAT IT TESTS. This local was called `isPlatformStaff`, which reads
+      // as the four-role roster helper and is not what it does — it is the
+      // superadmin-only test (both columns, the is_platform_admin() shape), and that
+      // is CORRECT here: creating tenant users is superadmin-only by design, and the
+      // underlying action re-checks requireSuperadmin. Deliberately NOT widened to the
+      // staff roster; only renamed so it cannot be mistaken for it.
+      const isSuperadmin = profile.user_type === "superadmin" || (profile as any).platform_role === "superadmin"
+      if (!isSuperadmin) {
         spokenResponse = "Creating platform users is a superadmin-only command — I can't run that for your role."
       } else {
         const extract = await generateText({

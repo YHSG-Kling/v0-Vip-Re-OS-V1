@@ -677,7 +677,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 9007,
+  "census": 9026,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1036,7 +1036,7 @@
     "app/actions/podcast-generation.ts": 26,
     "app/actions/portal-buyer-financial.ts": 4,
     "app/actions/portal-document-requests.ts": 1,
-    "app/actions/portal-education.ts": 3,
+    "app/actions/portal-education.ts": 4,
     "app/actions/portal-invites.ts": 2,
     "app/actions/portal-lifetime.ts": 14,
     "app/actions/portal-loan-checklist.ts": 1,
@@ -2728,6 +2728,7 @@
     "hooks/use-mobile.ts": 1,
     "hooks/use-toast.ts": 1,
     "lib/academy/quiz.ts": 3,
+    "lib/activities/activity-tenant.ts": 3,
     "lib/ads/ad-creative-engine.ts": 4,
     "lib/ads/ad-creator.ts": 6,
     "lib/ads/ad-engagement-decay.ts": 1,
@@ -2911,7 +2912,7 @@
     "lib/auth/platform-guard.ts": 2,
     "lib/auth/provision-isa-actor.ts": 1,
     "lib/auth/require-admin-maintenance-access.ts": 1,
-    "lib/auth/resolve-user-role.ts": 5,
+    "lib/auth/resolve-user-role.ts": 4,
     "lib/auth/useAuth.ts": 1,
     "lib/avm/provider-chain.ts": 3,
     "lib/behavior-learning/prediction-engine.ts": 2,
@@ -3078,7 +3079,7 @@
     "lib/compliance-rules/state-fair-housing.ts": 2,
     "lib/connections/accounting-scopes.ts": 10,
     "lib/connections/field-spec.ts": 6,
-    "lib/connections/resolve-scoped.ts": 1,
+    "lib/connections/resolve-scoped.ts": 2,
     "lib/connections/scope.ts": 7,
     "lib/connections/vendor-quickbooks.ts": 2,
     "lib/connections/vendor-stripe.ts": 4,
@@ -3282,7 +3283,7 @@
     "lib/income-engine/gap-analyzer.ts": 1,
     "lib/income-forecast/forecaster.ts": 1,
     "lib/integrations/ad-campaign-vocabulary.ts": 1,
-    "lib/integrations/connection-manager.ts": 3,
+    "lib/integrations/connection-manager.ts": 4,
     "lib/integrations/integration-status.ts": 1,
     "lib/integrations/providers/brokerage-authority.ts": 7,
     "lib/integrations/providers/catalog.ts": 7,
@@ -3555,7 +3556,7 @@
     "lib/kernel/outreach-reasons.ts": 2,
     "lib/kernel/overnight-digest.ts": 2,
     "lib/kernel/override-vocab.ts": 3,
-    "lib/kernel/portal-auth.ts": 4,
+    "lib/kernel/portal-auth.ts": 6,
     "lib/kernel/portal-contracts.ts": 2,
     "lib/kernel/portal-template-render.ts": 1,
     "lib/kernel/portal-value.ts": 2,
@@ -3806,6 +3807,7 @@
     "lib/notifications/buyer-preferences.ts": 3,
     "lib/notifications/notify-helpers.ts": 3,
     "lib/notifications/platform-staff.ts": 2,
+    "lib/notifications/recipient-tenant.ts": 3,
     "lib/notifications/route-resolver.ts": 1,
     "lib/notifications/transaction-parties-packet.ts": 8,
     "lib/offers/buyer-closing-costs.ts": 2,
@@ -3836,6 +3838,7 @@
     "lib/onboarding/setup-readiness.ts": 3,
     "lib/onboarding/state-license-registry.ts": 3,
     "lib/onboarding/state-machine.ts": 2,
+    "lib/onboarding/step-categories.ts": 4,
     "lib/open-house/instant-greeting.ts": 1,
     "lib/orchestrator/access-scope.ts": 4,
     "lib/orchestrator/contact-identity.ts": 3,
@@ -3931,6 +3934,7 @@
     "lib/property/listing-source.ts": 1,
     "lib/property/neighborhood-scoring.ts": 4,
     "lib/property/property-evaluation.ts": 1,
+    "lib/property/rentcast-eligibility.ts": 2,
     "lib/property/rentcast-normalize.ts": 2,
     "lib/property/rentcast.ts": 7,
     "lib/property/resolve-property-facts.ts": 4,
@@ -4006,8 +4010,10 @@
     "lib/repurpose/actions.ts": 10,
     "lib/repurpose/distribute.ts": 1,
     "lib/repurpose/shared.ts": 1,
+    "lib/repurpose/transcribe-core.ts": 1,
     "lib/repurpose/transcribe.ts": 1,
     "lib/revenue-protection/scorer.ts": 1,
+    "lib/security/audio-source-allowlist.ts": 2,
     "lib/security/authorization.ts": 6,
     "lib/security/credential-rotation.ts": 3,
     "lib/security/oauth-refresh.ts": 4,
@@ -6709,6 +6715,7 @@
     "app/actions/portal-education.ts": [
       "getLessonFeed",
       "markLessonRead",
+      "notifyPortalEducationCompleted",
       "getLessonByKey"
     ],
     "app/actions/portal-invites.ts": [
@@ -12637,6 +12644,11 @@
       "hasQuiz",
       "gradeQuiz"
     ],
+    "lib/activities/activity-tenant.ts": [
+      "resolveLeadBrokerageId",
+      "resolveBrandTemplateBrokerageId",
+      "resolveUserBrokerageId"
+    ],
     "lib/ads/ad-creative-engine.ts": [
       "rankCompetitorAds",
       "fallbackCreative",
@@ -13570,7 +13582,6 @@
     ],
     "lib/auth/resolve-user-role.ts": [
       "isPlatformStaffIdentity",
-      "isPlatformStaff",
       "resolveUserRole",
       "requireRole",
       "isAdminOrBroker"
@@ -14441,6 +14452,7 @@
       "selfConnectableDomains"
     ],
     "lib/connections/resolve-scoped.ts": [
+      "resolveScopedConnectionResult",
       "resolveScopedConnection"
     ],
     "lib/connections/scope.ts": [
@@ -15397,6 +15409,7 @@
     "lib/integrations/connection-manager.ts": [
       "canonicalProvider",
       "aliasesFor",
+      "resolveConnectionResult",
       "resolveConnection"
     ],
     "lib/integrations/integration-status.ts": [
@@ -16850,6 +16863,8 @@
       "requireLenderVendorActor",
       "requireTitleActor",
       "requireVendorActor",
+      "resolveExternalPartnerIdentity",
+      "externalPartnerTransactionLane",
       "requireOverrideActor"
     ],
     "lib/kernel/portal-contracts.ts": [
@@ -18171,6 +18186,11 @@
       "resolvePlatformStaffIds",
       "notifyPlatformStaff"
     ],
+    "lib/notifications/recipient-tenant.ts": [
+      "resolveRecipientBrokerageIds",
+      "resolveRecipientBrokerageId",
+      "resolveAgentRecipient"
+    ],
     "lib/notifications/route-resolver.ts": [
       "resolveNotificationHref"
     ],
@@ -18329,6 +18349,12 @@
     "lib/onboarding/state-machine.ts": [
       "advanceBrokerageOnboarding",
       "acceptUserInvitationOnFirstLogin"
+    ],
+    "lib/onboarding/step-categories.ts": [
+      "onboardingStepCategoryLabel",
+      "isStorableOnboardingStepCategory",
+      "clampOnboardingStepDay",
+      "clampOnboardingStepOrder"
     ],
     "lib/open-house/instant-greeting.ts": [
       "sendInstantOpenHouseGreeting"
@@ -18850,6 +18876,10 @@
     "lib/property/property-evaluation.ts": [
       "evaluatePropertyValue"
     ],
+    "lib/property/rentcast-eligibility.ts": [
+      "rentcastBudgetBlocked",
+      "resolveRentcastEligibility"
+    ],
     "lib/property/rentcast-normalize.ts": [
       "normalizeRentcastComps",
       "normalizeRentcastMarketStats"
@@ -19225,11 +19255,18 @@
     "lib/repurpose/shared.ts": [
       "extractHashtags"
     ],
+    "lib/repurpose/transcribe-core.ts": [
+      "transcribeMediaUrl"
+    ],
     "lib/repurpose/transcribe.ts": [
       "transcribeFromUrl"
     ],
     "lib/revenue-protection/scorer.ts": [
       "calculateRevenueProtection"
+    ],
+    "lib/security/audio-source-allowlist.ts": [
+      "platformAudioHostRules",
+      "checkAudioSourceUrl"
     ],
     "lib/security/authorization.ts": [
       "requireSuperAdmin",
@@ -20408,5 +20445,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 269
+  "trulyDead": 263
 }

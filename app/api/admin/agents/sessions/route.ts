@@ -19,7 +19,7 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
+import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -32,7 +32,7 @@ export async function GET(req: NextRequest) {
   const svc = createServiceClient()
   const { data: profile } = await svc.from("users")
     .select("user_type, platform_role, brokerage_id").eq("id", user.id).maybeSingle()
-  const isPlatform = profile?.user_type === "superadmin" || isPlatformStaff(profile?.platform_role)
+  const isPlatform = isPlatformStaffIdentity(profile?.user_type, profile?.platform_role)
   const callerBrokerage = (profile?.brokerage_id as string | null) ?? null
   if (!isPlatform && !callerBrokerage) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 })
