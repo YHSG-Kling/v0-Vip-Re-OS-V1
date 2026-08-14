@@ -550,6 +550,21 @@ export const supabaseService = {
     }
   },
 
+  /**
+   * REFUSES rather than writing an untenanted engagement row, and the policy is
+   * why. `video_engagement_events_tenant` is FOR ALL with
+   * `(brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id())`, so
+   * a NULL row is not hidden from its owner — it is readable AND WRITABLE by
+   * every tenant on the platform. This runs on the service client, so RLS is
+   * bypassed on the way in and the payload is the entire boundary.
+   *
+   * Both sibling writers (app/api/video/engagement/route.ts:187,
+   * app/actions/video-generation.ts) already stamp it; this one did not.
+   *
+   * The tenant is resolved THROUGH THE RECORD — the contact the event is about,
+   * else the video asset it is against — never from ambient context, because
+   * there is no caller identity on a service-client path to take it from.
+   */
   async logVideoEngagement(event: {
     video_asset_id?: string
     contact_id?: string
@@ -558,9 +573,32 @@ export const supabaseService = {
   }) {
     try {
       const supabase = getSupabaseAdmin()
+
+      let brokerageId: string | null = null
+      if (event.contact_id) {
+        const { data: c, error: cErr } = await supabase
+          .from("contacts").select("brokerage_id").eq("id", event.contact_id).maybeSingle()
+        if (cErr) console.error("[Supabase Service] contact lookup refused:", cErr.message)
+        brokerageId = (c as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+      }
+      if (!brokerageId && event.video_asset_id) {
+        const { data: v, error: vErr } = await supabase
+          .from("video_assets").select("brokerage_id").eq("id", event.video_asset_id).maybeSingle()
+        if (vErr) console.error("[Supabase Service] video asset lookup refused:", vErr.message)
+        brokerageId = (v as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+      }
+      if (!brokerageId) {
+        console.error(
+          "[Supabase Service] logVideoEngagement: no tenant resolvable from contact_id or video_asset_id — " +
+          "refusing rather than writing a row every brokerage could read and write.",
+        )
+        return null
+      }
+
       const { data, error } = await supabase
         .from("video_engagement_events")
         .insert({
+          brokerage_id: brokerageId,
           video_asset_id: event.video_asset_id || null,
           contact_id: event.contact_id || null,
           event_type: event.event_type,
