@@ -44,12 +44,53 @@ export interface ReferralEconomics {
   partnerValueGenerated: number
 }
 
+/**
+ * Production and company dollar for ONE office of a multi-location brokerage.
+ *
+ * THE OFFICE IS DERIVED, NOT STORED — and that is the decision, not an
+ * accident. `commission_splits`, `agent_commissions` and
+ * `transaction_commissions` carry `brokerage_id` and no `location_id`; the only
+ * office anchor in the schema is `agents.location_id`. So an office total is a
+ * JOIN through the producing agent, computed at read time.
+ *
+ * What that buys: no migration, no backfill, and no second place for the number
+ * to drift from. What it costs, stated plainly because it is a real trade: an
+ * agent who TRANSFERS offices retroactively moves their whole commission
+ * history with them, because the join asks where they are NOW, not where they
+ * were when the deal closed. If closings must stay with the office that earned
+ * them, `location_id` has to be stamped on the split at write time — both
+ * writers (app/actions/agents.ts:625, lib/kernel/financial.ts:1165) already
+ * resolve the agent, so that is a small change when the answer is needed. It is
+ * deliberately NOT made now: with no closed deals on the platform yet there is
+ * no history to preserve, and stamping a column nobody reads is how the last
+ * three writer-less columns got here.
+ */
+export interface OfficeProduction {
+  /** `locations.id`, or null for the bucket of agents with no office set. */
+  locationId: string | null
+  name: string
+  gci: number
+  closings: number
+  /** Company dollar attributed to this office (commission_splits.brokerage_amount). */
+  brokerageNet: number
+  /** Paid to this office's agents (commission_splits.agent_amount). */
+  agentPayouts: number
+  agentCount: number
+}
+
 export interface BrokeragePnl {
   brokerageId: string
   since: string
   until: string
   revenue: BrokerageRevenue
   byAgent: AgentProduction[]
+  /**
+   * Empty array when the brokerage has no `locations` rows — a single-office
+   * brokerage gets no office breakdown rather than one meaningless "Main
+   * Office" row covering 100% of everything. Callers should render this section
+   * only when it is non-empty.
+   */
+  byOffice: OfficeProduction[]
   recruiting: RecruitingEconomics
   referrals: ReferralEconomics
 }
@@ -104,13 +145,19 @@ export async function generateBrokeragePnl(
   // Company dollar / agent payouts for those transactions.
   const txnIds = transactions.map((t) => t.id)
   let brokerageNet = 0, agentPayouts = 0
+  // `agent_id` is selected so the same rows can be folded a second time BY
+  // OFFICE below. One read, two rollups — re-querying commission_splits per
+  // office would give the office totals a chance to disagree with the
+  // brokerage total they are supposed to sum to.
+  let splitRows: Array<{ agent_id: string | null; brokerage_amount: number | null; agent_amount: number | null }> = []
   if (txnIds.length > 0) {
     const { data: splits } = await supabase
       .from("commission_splits")
-      .select("brokerage_amount, agent_amount")
+      .select("agent_id, brokerage_amount, agent_amount")
       .eq("brokerage_id", params.brokerageId)
       .in("transaction_id", txnIds)
-    const rolled = rollupSplits((splits ?? []) as Array<{ brokerage_amount: number | null; agent_amount: number | null }>)
+    splitRows = (splits ?? []) as typeof splitRows
+    const rolled = rollupSplits(splitRows)
     brokerageNet = rolled.brokerageNet
     agentPayouts = rolled.agentPayouts
   }
@@ -126,6 +173,25 @@ export async function generateBrokeragePnl(
   }
   const agentIds = Array.from(byAgentMap.keys())
   const nameById = new Map<string, string>()
+  // Office of every agent who appears EITHER as a producer or on a split. The
+  // two sets are not identical — a split can name an agent whose transaction
+  // fell outside the window's producer set — and an agent missing from this map
+  // would silently drop their money out of the office totals.
+  const officeByAgent = new Map<string, string | null>()
+  const splitAgentIds = splitRows.map((s) => s.agent_id).filter((x): x is string => !!x)
+  const agentIdsForOffice = Array.from(new Set([...agentIds, ...splitAgentIds]))
+  if (agentIdsForOffice.length > 0) {
+    const { data: officeRows, error: officeErr } = await supabase
+      .from("agents").select("id, location_id").in("id", agentIdsForOffice)
+    if (officeErr) {
+      // A refused read here would otherwise file EVERY agent under "No office"
+      // and read as a real finding on the report.
+      console.error("[brokerage-pnl] agent office read FAILED:", officeErr.message)
+    }
+    for (const a of (officeRows ?? []) as Array<{ id: string; location_id: string | null }>) {
+      officeByAgent.set(a.id, a.location_id ?? null)
+    }
+  }
   if (agentIds.length > 0) {
     const { data: agentRows } = await supabase
       .from("agents").select("id, user_id").in("id", agentIds)
@@ -145,6 +211,66 @@ export async function generateBrokeragePnl(
   const byAgent: AgentProduction[] = agentIds
     .map((id) => ({ agentId: id, name: nameById.get(id) ?? "Agent", gci: byAgentMap.get(id)!.gci, closings: byAgentMap.get(id)!.closings }))
     .sort((a, b) => b.gci - a.gci)
+
+  // ── BY OFFICE ──────────────────────────────────────────────────────────────
+  // Only for a brokerage that actually HAS offices. A single-office brokerage
+  // gets an empty array, not one row labelled "Main Office" restating the
+  // brokerage total — a breakdown that never breaks anything down is noise the
+  // reader has to learn to ignore.
+  const byOffice: OfficeProduction[] = []
+  const { data: officeList, error: officeListErr } = await supabase
+    .from("locations")
+    .select("id, name")
+    .eq("brokerage_id", params.brokerageId)
+    .order("name")
+  if (officeListErr) {
+    console.error("[brokerage-pnl] locations read FAILED:", officeListErr.message)
+  }
+  const offices = (officeList ?? []) as Array<{ id: string; name: string | null }>
+  if (offices.length > 0) {
+    const nameByLocation = new Map<string | null, string>(offices.map((o) => [o.id, o.name || "Office"]))
+    // The null bucket is NAMED, not hidden. Agents with no office set still
+    // produce, and their money has to land somewhere the reader can see — an
+    // office report whose parts do not sum to the brokerage total is worse than
+    // no office report.
+    nameByLocation.set(null, "No office assigned")
+
+    const acc = new Map<string | null, OfficeProduction>()
+    const seenAgents = new Map<string | null, Set<string>>()
+    const bucket = (loc: string | null): OfficeProduction => {
+      let b = acc.get(loc)
+      if (!b) {
+        b = {
+          locationId: loc,
+          name: nameByLocation.get(loc) ?? "Office",
+          gci: 0, closings: 0, brokerageNet: 0, agentPayouts: 0, agentCount: 0,
+        }
+        acc.set(loc, b)
+        seenAgents.set(loc, new Set())
+      }
+      return b
+    }
+
+    for (const [agentId, prod] of byAgentMap) {
+      const loc = officeByAgent.get(agentId) ?? null
+      const b = bucket(loc)
+      b.gci += prod.gci
+      b.closings += prod.closings
+      seenAgents.get(loc)!.add(agentId)
+    }
+    for (const s of splitRows) {
+      const loc = s.agent_id ? (officeByAgent.get(s.agent_id) ?? null) : null
+      const b = bucket(loc)
+      b.brokerageNet += Number(s.brokerage_amount ?? 0)
+      b.agentPayouts += Number(s.agent_amount ?? 0)
+      if (s.agent_id) seenAgents.get(loc)!.add(s.agent_id)
+    }
+    for (const [loc, ids] of seenAgents) {
+      const b = acc.get(loc)
+      if (b) b.agentCount = ids.size
+    }
+    byOffice.push(...Array.from(acc.values()).sort((a, b) => b.gci - a.gci))
+  }
 
   // Recruiting economics — latest ROI snapshot per recruited agent.
   const { data: roiRows } = await supabase
@@ -180,6 +306,7 @@ export async function generateBrokeragePnl(
     since, until,
     revenue: { gci, brokerageNet, agentPayouts, closings, avgCommission },
     byAgent,
+    byOffice,
     recruiting,
     referrals,
   }

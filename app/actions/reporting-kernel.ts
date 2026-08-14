@@ -7,6 +7,7 @@
 // All mutations are handled by the kernel layer.
 
 import { createClient } from "@/lib/supabase/server"
+import { pickUserOffice } from "@/lib/kernel/resolve-user-office"
 import {
   loadReportingWorkspace,
   generateSourcePerformanceReport,
@@ -44,7 +45,7 @@ async function resolveActorContext(): Promise<ReportingActorContext | null> {
 
   const { data: profile } = await supabase
     .from("users")
-    .select("id, brokerage_id, user_type, team_id")
+    .select("id, brokerage_id, user_type, team_id, location_id")
     .eq("id", user.id)
     .maybeSingle()
 
@@ -70,7 +71,15 @@ async function resolveActorContext(): Promise<ReportingActorContext | null> {
     agentId:     agent?.id ?? "",
     brokerageId: profile.brokerage_id,
     userType:    profile.user_type ?? "agent",
-    locationId:  agent?.location_id ?? null,
+    // pickUserOffice, not `agent?.location_id` — the office set on the PERSON
+    // wins over the one on their agent record, and a pure-admin on a
+    // brokerage/multi_location tenant HAS no agent record (requiresAgentRow),
+    // so reading only the agents row silently un-narrowed every office admin
+    // on the one tier that has offices.
+    locationId:  pickUserOffice(
+                   (profile as { location_id?: string | null }).location_id ?? null,
+                   agent?.location_id ?? null,
+                 ).locationId,
     teamId:      agent?.team_id ?? (profile as { team_id?: string | null }).team_id ?? null,
   }
 }

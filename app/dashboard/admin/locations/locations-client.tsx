@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { Building2, MapPin, Plus, Trash2, Users, Pencil } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import {
-  createLocationAction, deleteLocationAction, assignAgentToLocationAction,
+  createLocationAction, deleteLocationAction, assignUserToLocationAction,
   updateLocationAction,
   type OfficeLocation, type BrokerageAgentRow,
 } from "@/app/actions/admin/locations"
@@ -33,11 +33,11 @@ export function LocationsClient({
   const unassignedCount = useMemo(() => agents.filter((a) => !a.locationId).length || initialUnassigned, [agents, initialUnassigned])
   const countFor = (locId: string) => agents.filter((a) => a.locationId === locId).length
 
-  async function handleAssign(agentId: string, value: string) {
+  async function handleAssign(userId: string, value: string) {
     const locationId = value === UNASSIGNED ? null : value
     const prev = agents
-    setAgents((cur) => cur.map((a) => (a.id === agentId ? { ...a, locationId } : a)))
-    const r = await assignAgentToLocationAction(agentId, locationId)
+    setAgents((cur) => cur.map((a) => (a.userId === userId ? { ...a, locationId } : a)))
+    const r = await assignUserToLocationAction(userId, locationId)
     if (!r.ok) { setAgents(prev); toast({ title: "Could not reassign", description: r.error, variant: "destructive" }) }
     else toast({ title: "Agent reassigned" })
   }
@@ -152,7 +152,7 @@ export function LocationsClient({
                       <p className="font-medium truncate">{a.name}</p>
                       {a.email && <p className="text-xs text-muted-foreground truncate">{a.email}</p>}
                     </div>
-                    <Select value={a.locationId ?? UNASSIGNED} onValueChange={(v) => handleAssign(a.id, v)}>
+                    <Select value={a.locationId ?? UNASSIGNED} onValueChange={(v) => handleAssign(a.userId, v)}>
                       <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>

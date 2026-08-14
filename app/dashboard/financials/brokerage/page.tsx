@@ -749,6 +749,60 @@ async function RecruitingAndReferralEconomics({ brokerageId }: { brokerageId: st
       .format(Number(n ?? 0))
 
   return (
+    <div className="space-y-6">
+    {/* BY OFFICE — rendered only for a brokerage that HAS offices. generateBrokeragePnl
+        returns an empty array for a single-office brokerage rather than one row
+        restating the brokerage total, so this whole card disappears instead of
+        showing a breakdown that breaks nothing down. The office comes from
+        agents.location_id joined through the producing agent — see the
+        OfficeProduction doc comment for why it is derived rather than stored,
+        and what that costs when an agent transfers offices. */}
+    {pnl.byOffice.length > 0 && (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Building2 className="h-5 w-5" /> Production by office
+          </CardTitle>
+          <CardDescription>
+            Company dollar and payouts per office. Offices are set in Admin → Office Locations;
+            an agent with no office lands in “No office assigned” so the parts still sum to the total.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="border-b bg-muted/40">
+                <tr className="text-left">
+                  <th className="px-4 py-2 font-medium">Office</th>
+                  <th className="px-4 py-2 font-medium text-right">Agents</th>
+                  <th className="px-4 py-2 font-medium text-right">Closings</th>
+                  <th className="px-4 py-2 font-medium text-right">GCI</th>
+                  <th className="px-4 py-2 font-medium text-right">Company dollar</th>
+                  <th className="px-4 py-2 font-medium text-right">Agent payouts</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pnl.byOffice.map((o) => (
+                  <tr key={o.locationId ?? "unassigned"} className="border-b last:border-0">
+                    <td className="px-4 py-2">
+                      {o.name}
+                      {o.locationId === null && (
+                        <span className="ml-2 text-xs text-amber-700">needs assignment</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-right tabular-nums">{o.agentCount}</td>
+                    <td className="px-4 py-2 text-right tabular-nums">{o.closings}</td>
+                    <td className="px-4 py-2 text-right tabular-nums">{usd(o.gci)}</td>
+                    <td className="px-4 py-2 text-right tabular-nums">{usd(o.brokerageNet)}</td>
+                    <td className="px-4 py-2 text-right tabular-nums">{usd(o.agentPayouts)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    )}
     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
       <Card>
         <CardHeader>
@@ -782,6 +836,7 @@ async function RecruitingAndReferralEconomics({ brokerageId }: { brokerageId: st
           <p className="text-xs text-muted-foreground pt-2">Credited automatically by the referral closing loop as deals close.</p>
         </CardContent>
       </Card>
+    </div>
     </div>
   )
 }

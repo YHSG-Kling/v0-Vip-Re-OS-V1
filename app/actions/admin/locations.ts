@@ -7,7 +7,15 @@
  * it — a `locations` table (brokerage_id, name, address, city, state) and
  * `agents.location_id` FK → locations — but there was no UI or actions, so a
  * multi-office brokerage couldn't model its offices or place agents in them.
- * This wires office CRUD + agent↔office assignment to those live tables.
+ * This wires office CRUD + person↔office assignment to those live tables.
+ *
+ * THE OFFICE NOW LIVES ON `users.location_id` (m423). It used to live only on
+ * `agents.location_id`, which meant this screen could not place the very person
+ * it exists for: requiresAgentRow() deliberately gives a pure-admin owner of a
+ * brokerage / multi_location tenant NO agents row, so the office admin that
+ * resolveEgressScope implements was unreachable on the one tier that has
+ * offices. Reads go through pickUserOffice, which prefers the person's office
+ * and falls back to their agent record.
  *
  * All writes are brokerage-scoped and admin-gated (broker / broker_admin / admin /
  * superadmin / team_lead), identity resolved server-side.
@@ -17,6 +25,7 @@ import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
+import { pickUserOffice } from "@/lib/kernel/resolve-user-office"
 
 const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
 
@@ -47,16 +56,28 @@ export async function listLocationsAction(): Promise<
   if (!auth.ok) return auth
   const svc = createServiceClient()
 
-  const [{ data: locs, error }, { data: agents }] = await Promise.all([
+  // Headcount is counted over the SAME population the roster below lists —
+  // brokerage users, office resolved by pickUserOffice — not over `agents`. When
+  // this counted agents and the roster listed users the two disagreed by however
+  // many people had no agents row, and a headcount that contradicts the list
+  // under it is worse than no headcount.
+  const [{ data: locs, error }, { data: people }, { data: agentOffices }] = await Promise.all([
     svc.from("locations").select("id, name, address, city, state, created_at").eq("brokerage_id", auth.brokerageId).order("name"),
-    svc.from("agents").select("id, location_id").eq("brokerage_id", auth.brokerageId),
+    svc.from("users").select("id, location_id").eq("brokerage_id", auth.brokerageId)
+      .not("user_type", "in", "(contact,vendor,lender,system)"),
+    svc.from("agents").select("user_id, location_id").eq("brokerage_id", auth.brokerageId),
   ])
   if (error) return { ok: false, error: error.message }
 
+  const agentOfficeByUser = new Map<string, string | null>()
+  for (const a of (agentOffices ?? []) as Array<{ user_id: string | null; location_id: string | null }>) {
+    if (a.user_id) agentOfficeByUser.set(a.user_id, a.location_id)
+  }
+
   const counts = new Map<string, number>()
   let unassigned = 0
-  for (const a of agents ?? []) {
-    const lid = (a.location_id as string | null) ?? null
+  for (const p of (people ?? []) as Array<{ id: string; location_id: string | null }>) {
+    const lid = pickUserOffice(p.location_id, agentOfficeByUser.get(p.id) ?? null).locationId
     if (lid) counts.set(lid, (counts.get(lid) ?? 0) + 1)
     else unassigned += 1
   }
@@ -133,7 +154,12 @@ export async function deleteLocationAction(id: string): Promise<{ ok: true } | {
   const auth = await requireAdmin()
   if (!auth.ok) return auth
   const svc = createServiceClient()
-  // Unassign first so no agent is orphaned by a dangling FK reference.
+  // Unassign BOTH office columns first so nobody is left pointing at a deleted
+  // office. users.location_id is ON DELETE SET NULL at the FK, so the database
+  // would handle that one — this is explicit anyway because agents.location_id
+  // is the pre-m423 column and is not covered by that FK behaviour, and because
+  // clearing them in the same place keeps the two from drifting.
+  await svc.from("users").update({ location_id: null }).eq("location_id", id).eq("brokerage_id", auth.brokerageId)
   await svc.from("agents").update({ location_id: null }).eq("location_id", id).eq("brokerage_id", auth.brokerageId)
   const { error } = await svc.from("locations").delete().eq("id", id).eq("brokerage_id", auth.brokerageId)
   if (error) return { ok: false, error: error.message }
@@ -146,6 +172,24 @@ export interface BrokerageAgentRow {
   name: string
   email: string | null
   locationId: string | null
+  /**
+   * `users.id`. The office is written HERE, not on the agents row — see
+   * assignUserToLocationAction. Present on every person in the brokerage,
+   * including the ones with no agents row at all.
+   */
+  userId: string
+  role: string
+  /**
+   * false when this person has no `agents` row. NOT a defect and NOT hidden:
+   * requiresAgentRow() deliberately withholds one from a pure-admin owner of a
+   * brokerage / multi_location tenant, and from tc / compliance_officer style
+   * roles. Measured on the live database when this was written: 8 of 13
+   * non-client users, including 2 of 3 admins. Listing agents ONLY — which is
+   * what this action used to do — hid most of the brokerage from the office
+   * assignment UI, and hid the office ADMIN in particular, who is the entire
+   * reason office scoping exists.
+   */
+  hasAgentRecord: boolean
 }
 
 export async function listBrokerageAgentsAction(): Promise<
@@ -154,29 +198,72 @@ export async function listBrokerageAgentsAction(): Promise<
   const auth = await requireAdmin()
   if (!auth.ok) return auth
   const svc = createServiceClient()
-  const { data, error } = await svc
-    .from("agents")
-    .select("id, location_id, users:user_id ( first_name, last_name, email )")
-    .eq("brokerage_id", auth.brokerageId)
-    .limit(500)
+
+  // DRIVEN OFF `users`, NOT `agents`. This used to select from `agents`, which
+  // meant the roster silently showed only the people who happen to have an
+  // agents row — and requiresAgentRow() withholds one from exactly the person
+  // this screen exists for: the admin of a multi_location brokerage, who owns
+  // no listings and therefore gets no agents row. `agents` is now a LEFT-JOIN
+  // lookup for the legacy office value, not the source of the roster.
+  const [{ data: userRows, error }, { data: agentRows }] = await Promise.all([
+    svc.from("users")
+      .select("id, first_name, last_name, email, user_type, location_id")
+      .eq("brokerage_id", auth.brokerageId)
+      .not("user_type", "in", "(contact,vendor,lender,system)")
+      .limit(500),
+    svc.from("agents")
+      .select("id, user_id, location_id")
+      .eq("brokerage_id", auth.brokerageId)
+      .limit(500),
+  ])
   if (error) return { ok: false, error: error.message }
 
-  const agents: BrokerageAgentRow[] = (data ?? []).map((a: Record<string, unknown>) => {
-    const u = Array.isArray(a.users) ? a.users[0] : (a.users as Record<string, unknown> | null)
-    const name = [u?.first_name, u?.last_name].filter(Boolean).join(" ") || "Unnamed agent"
+  const agentByUser = new Map<string, { id: string; location_id: string | null }>()
+  for (const a of (agentRows ?? []) as Array<{ id: string; user_id: string | null; location_id: string | null }>) {
+    if (a.user_id) agentByUser.set(a.user_id, { id: a.id, location_id: a.location_id })
+  }
+
+  const agents: BrokerageAgentRow[] = ((userRows ?? []) as Array<Record<string, unknown>>).map((u) => {
+    const userId = u.id as string
+    const agent = agentByUser.get(userId)
+    const name = [u.first_name, u.last_name].filter(Boolean).join(" ") || "Unnamed user"
     return {
-      id: a.id as string,
+      // `id` stays the AGENT id where one exists so existing callers keep
+      // working; it falls back to the user id for people who have none.
+      id: agent?.id ?? userId,
+      userId,
       name,
-      email: (u?.email as string | null) ?? null,
-      locationId: (a.location_id as string | null) ?? null,
+      email: (u.email as string | null) ?? null,
+      role: (u.user_type as string | null) ?? "user",
+      hasAgentRecord: !!agent,
+      // Same precedence the scope resolver uses: the office set on the person
+      // wins over the one on their agent record.
+      locationId: pickUserOffice(
+        (u.location_id as string | null) ?? null,
+        agent?.location_id ?? null,
+      ).locationId,
     }
   })
   return { ok: true, agents }
 }
 
-/** Place an agent in an office (or pass null to move them to Unassigned). Both must belong to the brokerage. */
-export async function assignAgentToLocationAction(
-  agentId: string,
+/**
+ * Place a PERSON in an office (or pass null to move them to Unassigned). Both
+ * must belong to the caller's brokerage.
+ *
+ * WRITES `users.location_id`, which is why this takes a userId. It used to take
+ * an agentId and write `agents.location_id`, and that could not place the one
+ * person the feature exists for: a pure-admin on a brokerage / multi_location
+ * tenant has no agents row (requiresAgentRow), so there was no row to update
+ * and the office admin `resolveEgressScope` implements was unreachable.
+ *
+ * `agents.location_id` is left alone rather than dual-written. Two columns
+ * holding the same fact is how they start disagreeing; the read side
+ * (pickUserOffice) already prefers this one and falls back to the agent row for
+ * anyone provisioned before m423.
+ */
+export async function assignUserToLocationAction(
+  userId: string,
   locationId: string | null,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const auth = await requireAdmin()
@@ -184,15 +271,24 @@ export async function assignAgentToLocationAction(
   const svc = createServiceClient()
 
   if (locationId) {
-    const { data: loc } = await svc.from("locations").select("id").eq("id", locationId).eq("brokerage_id", auth.brokerageId).maybeSingle()
+    const { data: loc, error: locErr } = await svc.from("locations")
+      .select("id").eq("id", locationId).eq("brokerage_id", auth.brokerageId).maybeSingle()
+    if (locErr) return { ok: false, error: locErr.message }
     if (!loc) return { ok: false, error: "Office not found in your brokerage" }
   }
-  const { error } = await svc
-    .from("agents")
+
+  // `.eq("brokerage_id", …)` is the tenancy check on the SUBJECT: without it an
+  // admin could pin a user from another brokerage into one of their offices.
+  const { data: updated, error } = await svc
+    .from("users")
     .update({ location_id: locationId })
-    .eq("id", agentId)
+    .eq("id", userId)
     .eq("brokerage_id", auth.brokerageId)
+    .select("id")
+    .maybeSingle()
   if (error) return { ok: false, error: error.message }
+  if (!updated) return { ok: false, error: "User not found in your brokerage" }
+
   revalidatePath("/dashboard/admin/locations")
   return { ok: true }
 }
