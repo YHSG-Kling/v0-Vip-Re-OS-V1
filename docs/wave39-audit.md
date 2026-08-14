@@ -417,3 +417,62 @@ are why:
   195 tables. **#180 records this class as "72". That number is wrong.** The task
   has been corrected, and m447 claim 5 prints the real count on every run so a
   green guard is never read as "the class is gone".
+
+---
+
+# Wave 43 — an UPDATE may not move a row out of its tenant
+
+m447 measured this class and reported it rather than sweeping it. This is the
+burn-down of what it counted.
+
+## The construct, and why four of ten were already safe
+
+When an UPDATE policy has no `WITH CHECK`, **Postgres reuses `USING` as the
+check**. `USING` answers *which rows may I act on*; it never answers *what may
+this row become*. Those coincide only when the `USING` happens to constrain every
+column the caller could change.
+
+So of the 10 UPDATE policies schema-wide with no `WITH CHECK`:
+
+- **4 already name the tenant in `USING`** (`compliance_flags`,
+  `contacts.broker_update_brokerage_contacts`, `listing_health_interventions`,
+  `presentation_sections`). The reused check forces the new row to satisfy the
+  tenant test too — the row cannot leave. **Checked, not assumed; left untouched.**
+- **5 establish only OWNERSHIP** on a table that has a `brokerage_id`. The owner
+  could rewrite `brokerage_id` to any brokerage and still pass, because they were
+  still the owner.
+- **1** (`conversation_audit_flags`) is a different defect in the same shape.
+
+## Proved before writing
+
+`agent@vip.demo` moved one of their own **contacts** into Your Brokerage — 1 row.
+That record carries the person's **PII and their TCPA consent**, and both left the
+tenant with it. That is why this was not deferred behind the 195-policy INSERT
+backlog.
+
+## The fix is purely subtractive, and that was verified both ways
+
+`WITH CHECK` becomes `<the existing USING> AND has_brokerage_access(brokerage_id)`.
+The `USING` is untouched, so *which rows* each caller may act on does not change —
+only what the row may *become* is narrowed.
+
+The existing `USING` is **read from the catalogue rather than retyped**, so the
+amendment cannot drift from the policy it is amending.
+
+| | result |
+|---|---|
+| agent moves their own contact to another brokerage | **refused** (was 1 row) |
+| same agent edits that contact inside its own tenant | **still 1** |
+
+`has_brokerage_access(NULL)` is FALSE, so an unstamped row would become
+un-updatable — measured first: **all five tables have zero rows with a NULL
+`brokerage_id`**, so no live write is refused.
+
+## Reported, deliberately not fixed
+
+`conversation_audit_flags.audit_flags_update_policy` gates on `user_type IN
+('admin','compliance_officer')` with no tenant term — and **the table has no
+tenant column at all**. Nothing to move, nothing to anchor to; what it means is
+that an admin at any brokerage may alter any brokerage's conversation audit flags.
+Whether an audit flag belongs to a tenant is a **schema ruling**, not a policy
+edit, so inventing a column here was not this migration's call.
