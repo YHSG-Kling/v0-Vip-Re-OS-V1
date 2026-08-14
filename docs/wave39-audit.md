@@ -156,3 +156,201 @@ assertion was negative-controlled **before** its change: m441's control named
 exactly the seven class-A policies and nothing else schema-wide. m440's outcome
 was verified by querying the catalogue afterwards rather than by trusting a clean
 apply — the discipline that caught the DELETE hole m433 opened.
+
+---
+
+# Wave 40 — the settlement record gets a tenant
+
+Follow-on, from what W39's verification surfaced (#200). Same class m438 closed on
+`closing_disclosure_agreement`, still open on its two sibling tables.
+
+## Two defects, stacked
+
+**Six policies, `FOR ALL`, TO PUBLIC, whose entire predicate was one bare
+`user_type` comparison** — plus `agent_select_closing_disclosure`, a read with
+neither a tenant *nor* an ownership term. A broker at one brokerage could read,
+alter and **DELETE** another brokerage's settlement figures; every agent on the
+platform could read every closing disclosure. `FOR ALL` is what makes that
+include DELETE — USING alone governs it, with no WITH CHECK to stop it (m437).
+
+The correctly-scoped `closing_disclosure_tenant` beside them protected nothing:
+**permissive policies OR together**, so adding a good policy next to a bad one
+changes nothing at all.
+
+**And that "good" policy carried the NULL escape:**
+`(brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id())`. It reads
+as "untenanted rows are hidden" and means the reverse — an unstamped row satisfies
+the first disjunct for **every** caller of **every** tenant, so it is *published
+platform-wide*, on all four commands, and anyone could create one.
+
+## The fix inherits the parent's tier rather than authoring a second answer
+
+`closing_disclosure_agreement` is already correctly tiered, so both tables adopt
+its predicate. `cda_comparison_results` has **no `brokerage_id` at all** — its
+tenant is reached through `cda_id` → the parent, which is exactly what its own
+surviving agent policy already did. No column was added to carry a copy of the
+parent's tenant; a copied tenant is immediately a second place the truth lives.
+
+All twelve new policies are **per-command**, so the m437 failure mode cannot recur
+on these tables by construction.
+
+## A capability restored, not just a predicate deleted
+
+m440 dropped two `title_agent` policies as dead — correctly, since m307 removed
+that `user_type`. But the schema turns out to make the title party **mandatory**:
+`closing_disclosure.title_agent_id` is **NOT NULL**, with a real FK to `users`.
+Discovered while building the fixture, not assumed. So every closing disclosure
+has a title party, and dropping the dead predicate without restoring the
+capability would have left a required party with no route at all.
+
+It comes back through the column that actually carries it — `title_agent_id =
+auth.uid()` — which is **strictly better than what was dropped**: per-row rather
+than per-role, so it cannot leak one title company's closing to another's. The
+existing `vendor_has_transaction_access()` is reused for the vendor route rather
+than reinvented. m443 claim 5 asserts all three preserved capabilities, because
+claims 1–4 would pass just as happily if someone deleted every policy.
+
+## Proof — rolled-back live fixture, three tenancies
+
+| principal | reads | |
+|---|---|---|
+| broker@vip.demo (VIP) | **1** | only VIP's |
+| admin@yourbrokerage | **1** | only Your Brokerage's |
+| compliance@vip.demo | **1** | only VIP's |
+| title@vip.demo (named on B) | **1** | the row naming it — **cross-tenant, per-row** |
+| vendor@vip.demo (named on A) | **1** | the row naming it |
+| agent@vip.demo | **1** | owns the transaction |
+| seller@vip.demo (contact) | **0** | owner ruling |
+| lender@vip.demo | **0** | owner ruling |
+
+The **unstamped row reached none of the eight.** Under the old NULL escape it
+reached all of them. And:
+
+- VIP broker DELETEs Your Brokerage's settlement record → **0 rows**
+- VIP broker CREATEs another unstamped row → **0** (refused)
+
+## The number that matters most in this wave
+
+m443's claims are **scoped to the settlement family on purpose**, and the
+measurement is why: the NULL-escape construct is on **464 policies across ~180
+tables** right now. That is the true remaining size of #156's tail. A schema-wide
+hard claim would have gone red the day it applied, on someone else's table —
+which is how a guard gets commented out. So it is HARD where the work was done
+and a **counted warning** everywhere else, printed with its number so a green run
+is never read as "the class is gone".
+
+The sibling construct — a bare `user_type` policy with no tenant or ownership
+term — is nearly closed: **6 policies**, on `contacts`, `cron_health_snapshot`,
+`tenant_safety_findings`, `transactions` and `vendor_bookings`. Some are
+legitimately platform-scoped tables with no tenant to anchor to, which is a
+per-table judgement rather than a sweep.
+
+---
+
+# Wave 41 — leading a team is a fact, not a role
+
+Two owner rulings. **The first one corrects m440**, which this wave shipped
+earlier today.
+
+> "a team lead is an agent that runs their own team"
+> "the consumer credit data should only be exposed to their lender who is a type
+> of vendor"
+
+## m440 gated on a test uncorrelated with the fact it claimed to check
+
+m440 put the team board behind `is_team_lead_role()` — `user_type IN
+('team_lead','team_leader')`. W37 then recorded that the ruling was "inert on
+live data until `users.user_type` is corrected". **That note was wrong.** There
+was nothing to correct in the data; the policy was wrong. Measured live, it was
+inverted on both accounts that exist:
+
+| account | `user_type` | teams run | m440's gate |
+|---|---|---|---|
+| `teamlead@vip.demo` | **agent** | **1** | **FALSE** — the real lead locked out |
+| `buyer@yourbrokerage.com` | team_lead | **0** | **TRUE** — runs nothing, let in |
+
+Both halves fail *silently*: an empty board reads as "no deals", and the account
+that passed the gate had no team to expose yet. Nothing would have surfaced this
+except the ruling.
+
+**Leading is recorded in `teams.team_lead_id` — a real FK.** A role column is a
+label; the FK is the fact. `current_user_led_team_id()` reads the fact, and the
+two team policies now carry **no role test at all**.
+
+It is deliberately **not** `current_user_team_id()`. That one answers "which team
+am I *on*" (lead **or** member **or** agent row) and would hand every
+rank-and-file member the whole team's board — the opposite of "teams should only
+see their own board". Two questions, two functions; m445 claim 2 stops them being
+collapsed.
+
+`can_read_agent_books()` carried the same defect **plus** a second one — it read
+`agents.team_id` directly, a fifth answer to a question m431 made single. It
+decides the agent tier on **45 money tables**, so a stale copy of the rule there
+outranks every policy that calls it.
+
+### Proof
+
+`transactions` is the discriminating table, because an agent sees only their own
+deals there — so the team board is the only thing that can widen a lead:
+
+- **`teamlead@vip.demo` (runs team A, owns no deal himself): transactions = 2** —
+  team A's two, **not** team B's. Under m440 this was **0**.
+- `buyer@yourbrokerage.com` (`user_type='team_lead'`, runs nothing): **0**.
+
+On `listings` the lead reads all 4, and that is now correct rather than a leak:
+a team lead **is an agent**, and `agent_read_own_listings` is deliberately
+brokerage-wide for MLS/co-op. The team policy adds nothing there and does the
+real work on transactions.
+
+## Consumer credit reaches the contact's own lender, and nobody else
+
+`credit_accounts` carried the **NULL escape** on all four commands, so every
+contact, lender and vendor account in the brokerage read every contact's
+`current_credit_score`, `credit_amount`, stage history and notes — and an
+unstamped row was published to every tenant on the platform.
+
+The ruling maps exactly onto the schema as already built — nothing invented:
+`vendors.category` admits `'lender'` and `'refinance_lender'`, and
+`vendor_has_contact_access()` already resolves the per-contact grant in
+`vendor_contact_assignments`. "Their lender" is both halves: **a lender-category
+vendor holding a live assignment to that contact.** Drop the category test and
+every assigned inspector reads the credit file; drop the assignment test and
+every lender reads *every* contact's file — wider than the defect being fixed.
+m445 claim 5 asserts both.
+
+**How the ruling was read, stated so it can be corrected:** read strictly, "only
+their lender" would also exclude the brokerage's own agents and brokers. It is
+not implemented that way, because `app/actions/credit-copilot.ts` is a live
+**session-client** surface that states its own tier in a comment — *"An agent sees
+only their own book; broker/admin roles see the brokerage."* Cutting the
+brokerage out would blank the credit pipeline for the people who run it. So the
+ruling was applied to the **outside** parties. If it was meant stricter — the
+lender and the named agent only — it is a one-line change.
+
+Deliberately **no platform branch**: `can_read_tenant_financials()` is for a
+*tenant's* financials, and a private individual's credit file is not the
+brokerage's money. Fail closed, and reported.
+
+| principal | credit files read | |
+|---|---|---|
+| lender assigned to contact 1 | **1** | only their own contact |
+| a vendor who is not a lender | **0** | was 2 |
+| a contact | **0** | was 2 |
+| the title vendor | **0** | was 2 |
+| broker | 2 | the credit pipeline screen still works |
+| the agent named on both | 2 | own book |
+
+## The id-class trap, again
+
+`credit_accounts.agent_id` FKs **users**; `contacts.agent_id` holds an
+**agents.id**. Both appear in one predicate. Verified in `pg_constraint` before
+writing — swap the two comparisons and both branches are false for every row that
+will ever exist, granting nothing while reading as though the owning agent can
+see the file. Same class as m390 and m441 claim 6.
+
+## Sources repaired, not annotated
+
+`scripts/111` and `rls-governance/004`, `/005`, `/014` carried the old team
+predicate in runnable `CREATE POLICY` text — **7 predicates** repointed to
+`current_user_led_team_id()`, and the surrounding prose corrected so the comments
+no longer describe a rule the SQL beneath them stopped following.

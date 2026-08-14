@@ -155,12 +155,11 @@ DROP POLICY IF EXISTS "agent_manage_interaction_history" ON interaction_history;
 CREATE POLICY "team_leader_read_team_contacts"
   ON contacts FOR SELECT TO authenticated
   USING (
-    public.is_team_lead_role()
+    public.current_user_led_team_id() IS NOT NULL
     AND public.has_brokerage_access(brokerage_id)
-    AND public.current_user_team_id() IS NOT NULL
     AND (
-      team_id = public.current_user_team_id()
-      OR public.agent_team_id(agent_id) = public.current_user_team_id()
+      team_id = public.current_user_led_team_id()
+      OR public.agent_team_id(agent_id) = public.current_user_led_team_id()
     )
   );
 
@@ -214,19 +213,18 @@ CREATE POLICY "agent_read_own_transactions"
     )
   );
 
--- Team Lead (m440). Same repair as 004-transactions-policies.sql: the roster comes
--- from public.is_team_lead_role() rather than an inlined 'team_leader' the CHECK
--- cannot store, and the team from m431's ONE rule rather than users.team_id.
+-- Team Lead (m440, corrected by m444). No role test: leading a team is the FACT
+-- teams.team_lead_id records, read by public.current_user_led_team_id(); the row's
+-- team comes from m431's public.agent_team_id().
 CREATE POLICY "team_leader_read_team_transactions"
   ON transactions FOR SELECT TO authenticated
   USING (
-    public.is_team_lead_role()
+    public.current_user_led_team_id() IS NOT NULL
     AND public.has_brokerage_access(brokerage_id)
-    AND public.current_user_team_id() IS NOT NULL
     AND (
-      public.agent_team_id(agent_id)        = public.current_user_team_id()
-      OR public.agent_team_id(seller_agent_id) = public.current_user_team_id()
-      OR public.agent_team_id(buyer_agent_id)  = public.current_user_team_id()
+      public.agent_team_id(agent_id)        = public.current_user_led_team_id()
+      OR public.agent_team_id(seller_agent_id) = public.current_user_led_team_id()
+      OR public.agent_team_id(buyer_agent_id)  = public.current_user_led_team_id()
     )
   );
 
@@ -378,10 +376,9 @@ CREATE POLICY "agent_update_own_listings"
 CREATE POLICY "team_leader_read_team_listings"
   ON listings FOR SELECT TO authenticated
   USING (
-    public.is_team_lead_role()
+    public.current_user_led_team_id() IS NOT NULL
     AND public.has_brokerage_access(brokerage_id)
-    AND public.current_user_team_id() IS NOT NULL
-    AND public.agent_team_id(agent_id) = public.current_user_team_id()
+    AND public.agent_team_id(agent_id) = public.current_user_led_team_id()
   );
 
 -- ─────────────────────────────────────────────────────────────────────────────

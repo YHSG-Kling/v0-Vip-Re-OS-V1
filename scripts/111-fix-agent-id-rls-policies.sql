@@ -213,19 +213,20 @@ CREATE POLICY "agent_read_own_transactions"
     )
   );
 
--- Team Lead (m440). Same spelling defect and same four-way team problem as the
--- listings policy above; all three agent columns FK agents(id), so each is asked
--- the row's-team question through public.agent_team_id().
+-- Team Lead (m440, corrected by m444). Same spelling defect and same four-way team
+-- problem as the listings policy above; all three agent columns FK agents(id), so
+-- each is asked the row's-team question through public.agent_team_id(). The reader
+-- is resolved by public.current_user_led_team_id() — the team they RUN — with no
+-- role test, per the owner's ruling.
 CREATE POLICY "team_leader_read_team_transactions"
   ON transactions FOR SELECT TO authenticated
   USING (
-    public.is_team_lead_role()
+    public.current_user_led_team_id() IS NOT NULL
     AND public.has_brokerage_access(brokerage_id)
-    AND public.current_user_team_id() IS NOT NULL
     AND (
-      public.agent_team_id(agent_id)        = public.current_user_team_id()
-      OR public.agent_team_id(seller_agent_id) = public.current_user_team_id()
-      OR public.agent_team_id(buyer_agent_id)  = public.current_user_team_id()
+      public.agent_team_id(agent_id)        = public.current_user_led_team_id()
+      OR public.agent_team_id(seller_agent_id) = public.current_user_led_team_id()
+      OR public.agent_team_id(buyer_agent_id)  = public.current_user_led_team_id()
     )
   );
 
@@ -461,22 +462,25 @@ CREATE POLICY "agent_delete_own_listings"
     AND agent_id = (SELECT id FROM agents WHERE user_id = auth.uid() LIMIT 1)
   );
 
--- Team Lead (m440). THREE defects in the original, all removed:
+-- Team Lead (m440, corrected by m444). THREE defects in the original, all removed —
+-- and m444 then removed the role test entirely, because the owner ruled that a team
+-- lead is an agent who runs their own team, so leading is a FACT (teams.team_lead_id)
+-- and not a user_type:
 --   · 'team_leader' is unstorable — the CHECK stores 'team_lead'.
 --   · the first disjunct was `brokerage_id = <the caller's brokerage>`, i.e. the
 --     WHOLE brokerage, which contradicts the owner ruling "teams should only see
 --     their own board" and made the team clause beside it decoration.
 --   · it resolved the team through users.team_id — one of the FOUR places a team
 --     is recorded and the one that is NULL for every live user. m431's
---     resolve_team_id() is THE ONE RULE; current_user_team_id() is the reader's
---     side and agent_team_id(agents.id) is the row's side, so both are decided by
---     identical logic. NULL is fail-closed: no team resolves to no rows, never to
---     the brokerage.
+--     resolve_team_id() is THE ONE RULE for the ROW's side, reached through
+--     agent_team_id(agents.id). The READER's side is current_user_led_team_id() —
+--     the team they RUN — not current_user_team_id(), which answers "which team am
+--     I on" and would widen this to every member of the team. NULL is fail-closed:
+--     run no team, see no board, never the brokerage.
 CREATE POLICY "team_leader_read_team_listings"
   ON listings FOR SELECT TO authenticated
   USING (
-    public.is_team_lead_role()
+    public.current_user_led_team_id() IS NOT NULL
     AND public.has_brokerage_access(brokerage_id)
-    AND public.current_user_team_id() IS NOT NULL
-    AND public.agent_team_id(agent_id) = public.current_user_team_id()
+    AND public.agent_team_id(agent_id) = public.current_user_led_team_id()
   );

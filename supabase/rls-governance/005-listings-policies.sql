@@ -119,28 +119,32 @@ CREATE POLICY "agent_read_own_listings"
 --
 --   · `auth.is_team_leader()` inlined `user_type = 'team_leader'`, which
 --     users_user_type_check cannot store, so the policy was false for every user
---     who will ever exist. public.is_team_lead_role() is a POSITIVE roster naming
---     the live spelling and the legacy one.
+--     who will ever exist. m444 then went further, on the owner's ruling that
+--     "a team lead is an agent that runs their own team": there is no role test
+--     here AT ALL. Leading is a FACT in teams.team_lead_id, and the live data
+--     proves the role column is uncorrelated with it — the real team lead carries
+--     user_type='agent', while the one account carrying 'team_lead' runs no team.
+--     public.current_user_led_team_id() reads the fact.
 --   · the first disjunct was `auth.has_brokerage_access(brokerage_id) OR …`, i.e.
 --     the WHOLE BROKERAGE. Had the spelling ever been storable, a team lead would
 --     have read every listing in the brokerage and the team clause beside it would
 --     have been decoration. Owner ruling: "teams should only see their own board."
 --     The tenant test is now an AND, not an OR.
 --   · the team was resolved through `users.team_id` — one of FOUR places a team is
---     recorded on this schema, and the one that is NULL for every live user. m431
---     made public.resolve_team_id() the ONE rule; current_user_team_id() is the
---     reader's side and agent_team_id(agents.id) is the row's side, so both are
---     decided by identical logic.
+--     recorded on this schema, and the one that is NULL for every live user. The
+--     row's side is now public.agent_team_id(agents.id), m431's ONE rule. The
+--     reader's side is current_user_led_team_id() — the team they RUN — and NOT
+--     current_user_team_id(), which returns the team you are ON and would hand
+--     every rank-and-file team member the whole team's board.
 --
 -- NULL is FAIL-CLOSED and the explicit IS NOT NULL guard makes that visible: a
 -- team lead with no resolvable team gets an empty board, never the brokerage.
 CREATE POLICY "team_leader_read_team_listings"
   ON listings FOR SELECT TO authenticated
   USING (
-    public.is_team_lead_role()
+    public.current_user_led_team_id() IS NOT NULL
     AND public.has_brokerage_access(brokerage_id)
-    AND public.current_user_team_id() IS NOT NULL
-    AND public.agent_team_id(agent_id) = public.current_user_team_id()
+    AND public.agent_team_id(agent_id) = public.current_user_led_team_id()
   );
 
 -- =====================================================

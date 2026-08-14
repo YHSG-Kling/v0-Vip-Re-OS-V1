@@ -104,14 +104,18 @@ CREATE POLICY "agent_read_own_transactions"
 
 -- Team Lead: read the deals of the agents on THEIR team — and no others.
 --
--- Brought level with what m440 installed on the live database. `auth
--- .is_team_leader()` inlined `user_type = 'team_leader'`, a value
+-- Brought level with what m440 and then m444 installed on the live database.
+-- `auth.is_team_leader()` inlined `user_type = 'team_leader'`, a value
 -- users_user_type_check cannot store, so this policy was false for every user who
 -- will ever exist; and it resolved the team through `users.team_id`, one of the
--- FOUR places a team is recorded here and the one that is NULL for every live
--- user. public.is_team_lead_role() is the positive roster, and m431's
--- public.current_user_team_id() / public.agent_team_id() are the ONE team rule,
--- so the reader's team and the row's team are decided by identical logic.
+-- FOUR places a team is recorded here and the one that is NULL for every live user.
+--
+-- There is now NO role test. Owner ruling: "a team lead is an agent that runs
+-- their own team" — leading is a fact in teams.team_lead_id, read by
+-- public.current_user_led_team_id(). The row's team comes from m431's
+-- public.agent_team_id(). Measured live: the real lead is user_type='agent' and
+-- failed the old role gate, while the one 'team_lead' account runs no team and
+-- passed it.
 --
 -- All three agent columns FK agents(id), so each is asked the row's-team question
 -- the same way. The tenant anchor is an AND: a team lead never widens to the
@@ -119,13 +123,12 @@ CREATE POLICY "agent_read_own_transactions"
 CREATE POLICY "team_leader_read_team_transactions"
   ON transactions FOR SELECT TO authenticated
   USING (
-    public.is_team_lead_role()
+    public.current_user_led_team_id() IS NOT NULL
     AND public.has_brokerage_access(brokerage_id)
-    AND public.current_user_team_id() IS NOT NULL
     AND (
-      public.agent_team_id(agent_id)        = public.current_user_team_id()
-      OR public.agent_team_id(seller_agent_id) = public.current_user_team_id()
-      OR public.agent_team_id(buyer_agent_id)  = public.current_user_team_id()
+      public.agent_team_id(agent_id)        = public.current_user_led_team_id()
+      OR public.agent_team_id(seller_agent_id) = public.current_user_led_team_id()
+      OR public.agent_team_id(buyer_agent_id)  = public.current_user_led_team_id()
     )
   );
 
