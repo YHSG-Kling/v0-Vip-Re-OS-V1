@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
+import { recordingPlaybackPath } from "@/lib/voice/call-recording"
 
 export interface VoiceCallRow {
   id: string
@@ -168,7 +169,11 @@ export function VoiceCallHistoryTable({ calls }: VoiceCallHistoryTableProps) {
                               className="h-6 w-6"
                               asChild
                             >
-                              <a href={call.recording_url} target="_blank" rel="noreferrer">
+                              {/* recording_url holds the api.twilio.com URL,
+                                  which is behind HTTP Basic auth — linking to it
+                                  directly gives the agent a 401. Playback goes
+                                  through the authenticated same-origin proxy. */}
+                              <a href={recordingPlaybackPath(call.id)} target="_blank" rel="noreferrer">
                                 <Play className="h-3 w-3" />
                                 <span className="sr-only">Play recording</span>
                               </a>

@@ -173,6 +173,26 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // ── RECORDING (opt-in per brokerage, DEFAULT OFF) ───────────────────────────
+  // The greeting we are about to speak already announces recording
+  // (buildReceptionPrompt passes `recorded: true` — the uniform national
+  // posture), so ANNOUNCED ⊇ RECORDED holds either way and arming this can never
+  // record a caller who was not told. <Gather> has no record attribute and
+  // <Record> is a blocking single-shot verb that would replace the conversation,
+  // so an inbound call is recorded by creating a Recording against the LIVE call
+  // — one Twilio round trip, and only for a tenant that opted in. A failure
+  // means the call is simply not recorded; it is logged, never assumed away.
+  if (callSid) {
+    const { resolveCallRecordingPolicy, startCallRecording } = await import("@/lib/voice/call-recording")
+    const recordingPolicy = await resolveCallRecordingPolicy(svc, ctx.brokerageId)
+    if (recordingPolicy.enabled) {
+      const started = await startCallRecording(svc, ctx.brokerageId, callSid, url.replace(/\/api\/voice\/twilio\/inbound$/, ""))
+      if (!started.ok) {
+        console.error(`[voice/inbound] recording NOT armed for CallSid ${callSid}: ${started.error}`)
+      }
+    }
+  }
+
   const turnUrl = `${url.replace(/\/inbound$/, "/turn")}`
   return xml(answerTwiml(firstMessage, turnUrl))
 }

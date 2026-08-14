@@ -43,8 +43,15 @@ export async function POST(request: NextRequest) {
   }
 
   // Machine answered → honest voicemail, ledger closed as voicemail.
+  // The recording announcement in that voicemail is DERIVED from the brokerage's
+  // actual recording posture, never hardcoded: Twilio's Record parameter (armed
+  // at dial time in lib/voice/twilio-outbound.ts) captures this AMD leg too, so
+  // a fixed `recorded: false` here would be the one spoken line in the system
+  // that contradicts what is actually happening. See lib/voice/call-recording.ts.
   if (answeredBy.startsWith("machine")) {
-    const vm = composeVoicemailMessage(brief, ctx.identity.brokerageName)
+    const { resolveCallRecordingPolicy } = await import("@/lib/voice/call-recording")
+    const recordingPolicy = await resolveCallRecordingPolicy(svc, ctx.brokerageId)
+    const vm = composeVoicemailMessage(brief, ctx.identity.brokerageName, { recorded: recordingPolicy.enabled })
     await svc.from("voice_calls").update({
       status: "completed", outcome: "voicemail", ended_at: new Date().toISOString(),
       transcription: appendTranscript(null, null, vm),

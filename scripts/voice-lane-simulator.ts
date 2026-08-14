@@ -124,9 +124,16 @@ console.log("\n── PURE: the OUTBOUND lane (ISA calls off Vapi) ──")
     decoded !== null && decoded.objective === brief.objective && decoded.systemPrompt === "PERSONA: speak like Dana.")
   check("legacy/foreign ai_notes decode to null (reception fallback, never a crash)",
     decodeOutboundBrief("engine:twilio") === null && decodeOutboundBrief(null) === null && decodeOutboundBrief('{"engine":"vapi"}') === null)
-  const vm = composeVoicemailMessage(brief, "VIP Premier")
+  // `recorded` is explicit now that call recording is real: the voicemail has to
+  // state that the call is being recorded when it is, and must NOT claim it when
+  // it is not. Both directions are asserted below — a disclosure that is right
+  // only in the default case is the shape that lies to the callee.
+  const vm = composeVoicemailMessage(brief, "VIP Premier", { recorded: false })
   check("machine answer → HONEST voicemail: identifies the AI + office, capped",
     /\bAI\b/i.test(vm) && vm.includes("VIP Premier") && vm.length <= 450)
+  const vmRecorded = composeVoicemailMessage(brief, "VIP Premier", { recorded: true })
+  check("recorded call → the voicemail SAYS it is recorded; unrecorded does not",
+    /record/i.test(vmRecorded) && !/record/i.test(vm) && vmRecorded.length <= 450)
 }
 
 console.log("\n── PURE: the PLATFORM scope (the app's own line) ──")

@@ -46,13 +46,33 @@
 //      (lib/providers/tenancy-matrix.ts:38-42, `platform_subaccount`), the
 //      `twilio` connector's baseUrl at ~20 call sites, and Twilio serves call
 //      recordings from `api.twilio.com/2010-04-01/Accounts/<Sid>/Recordings/<Sid>`.
-//      HONEST CAVEAT, recorded rather than smoothed over: there is no `<Record>`
-//      verb in the repo today and NO in-repo writer of `voice_calls.recording_url`
-//      — the column is read (app/dashboard/voice/review/[callId]/page.tsx:282
-//      plays it, three more dashboards render it) and never written. So this rule
-//      is derived from WHICH VENDOR THE COLUMN IS FOR, not from a live row. It is
-//      the one rule here that anticipates rather than records, and it is named as
-//      such so a later reader can delete it if recordings never land.
+//      THIS RULE NO LONGER ANTICIPATES — it records a live producer. Earlier
+//      revisions of this header said, correctly at the time, that there was no
+//      `<Record>` verb and no in-repo writer of `voice_calls.recording_url`, and
+//      invited a later reader to delete the rule if recordings never landed.
+//      They landed. The producer is now, end to end:
+//        · lib/voice/call-recording.ts — the opt-in posture
+//          (`brokerage_settings.settings.call_recording.enabled`, default OFF
+//          because all-party-consent states make the BROKER the party who
+//          answers for a recorded call), `recordingDialParams` which arms
+//          Twilio's Record parameter on the dial, and `startCallRecording`
+//          which arms it on a live inbound `<Gather>` call.
+//        · lib/voice/twilio-outbound.ts:placeOutboundAiCall — spreads those
+//          parameters into POST /Calls.json for outbound AI ISA calls.
+//        · app/api/voice/twilio/inbound/route.ts — arms recording on inbound
+//          reception calls.
+//        · app/api/voice/twilio/recording/route.ts — the RecordingStatusCallback
+//          handler, THE writer of `voice_calls.recording_url`. It stores the
+//          normalized `…/Recordings/<Sid>.mp3` form of the vendor URL, and it
+//          validates that URL through `checkAudioSourceUrl` against THIS
+//          allowlist before storing, so the writer can never leave behind a host
+//          the reader would refuse.
+//      The stored URL is deliberately the VENDOR one rather than a playable one:
+//      Twilio serves this media behind HTTP Basic auth, so browsers play it
+//      through the authenticated same-origin proxy at
+//      `app/api/voice/recording/[callId]/route.ts`, while THIS rule governs the
+//      server-side fetches — the proxy's, and
+//      `app/actions/ai-voice-transcription.ts`'s.
 //
 //   4. ZOOM — `*.zoom.us`. `lib/connections/zoom-transcripts.ts:111-117` already
 //      downloads a Zoom-returned recording asset through the gateway, and the
@@ -109,7 +129,7 @@ export const STATIC_AUDIO_HOST_RULES: readonly AudioHostRule[] = [
   {
     kind: "exact",
     host: "api.twilio.com",
-    why: "Twilio call recordings — the telephony provider (lib/providers/tenancy-matrix.ts) and the vendor voice_calls.recording_url points at",
+    why: "Twilio call recordings — the telephony provider (lib/providers/tenancy-matrix.ts) and the vendor voice_calls.recording_url points at, written by app/api/voice/twilio/recording/route.ts",
   },
   {
     kind: "suffix",

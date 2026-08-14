@@ -62,11 +62,24 @@ export function decodeOutboundBrief(aiNotes: string | null | undefined): Outboun
 }
 
 /** PURE: the honest voicemail when a machine answers — identifies the AI and
- *  the office, states the reason briefly, never fakes a human callback. */
-export function composeVoicemailMessage(brief: OutboundCallBrief, officeName: string | null): string {
+ *  the office, states the reason briefly, never fakes a human callback.
+ *
+ *  `recorded` IS REQUIRED, deliberately. It used to be hardcoded `false`, which
+ *  was true only while `voice_calls.recording_url` had no writer at all. With
+ *  the recording producer live (lib/voice/call-recording.ts), Twilio's Record
+ *  parameter captures the AMD/voicemail leg too — so a hardcoded `false` would
+ *  make this the one spoken output in the system that tells the callee the call
+ *  is not recorded while it is being recorded. Making the flag a required
+ *  parameter means no call site can reinstate that by omission; it must pass the
+ *  brokerage's resolved policy. See disclosureCoversRecording. */
+export function composeVoicemailMessage(
+  brief: OutboundCallBrief,
+  officeName: string | null,
+  opts: { recorded: boolean },
+): string {
   const office = officeName ?? "our office"
   const base = `${brief.contactName ? `Hi ${brief.contactName}, ` : "Hi, "}this is the AI assistant calling from ${office}. ${brief.objective.slice(0, 160)} We'll follow up — no need to call back unless it's convenient. Thank you!`
-  return withAiCallDisclosures(base, { recorded: false }).slice(0, 450)
+  return withAiCallDisclosures(base, { recorded: opts.recorded }).slice(0, 450)
 }
 
 export interface PlaceOutboundParams {
@@ -150,6 +163,17 @@ export async function placeOutboundAiCall(svc: any, params: PlaceOutboundParams)
   if (!appUrl) return { ok: false, error: "NEXT_PUBLIC_APP_URL not set — the answer webhook can't be registered. No call was placed." }
   const base = appUrl.replace(/\/$/, "")
 
+  // 2b. RECORDING POSTURE — opt-in per brokerage, DEFAULT OFF (all-party-consent
+  //     states + a TCPA surface: the broker, not the platform, answers for a
+  //     recorded conversation). recordingDialParams returns {} when the tenant
+  //     has not opted in, so a non-opted dial body is byte-identical to what it
+  //     was before recording existed. The spoken side needs no change: the
+  //     opener from buildOutboundPrompt already carries the recording
+  //     announcement on every call (ANNOUNCED ⊇ RECORDED — see
+  //     lib/voice/call-recording.ts).
+  const { resolveCallRecordingPolicy, recordingDialParams } = await import("@/lib/voice/call-recording")
+  const recordingPolicy = await resolveCallRecordingPolicy(svc, params.brokerageId)
+
   // 3. Dial.
   const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
   const res = await callConnector<{ sid?: string }>({
@@ -166,6 +190,7 @@ export async function placeOutboundAiCall(svc: any, params: PlaceOutboundParams)
       MachineDetection: "Enable",
       StatusCallback: `${base}/api/voice/twilio/status`,
       StatusCallbackMethod: "POST",
+      ...recordingDialParams(recordingPolicy, base),
     },
     auth: { style: "basic", username: creds.accountSid, password: creds.authToken },
   })

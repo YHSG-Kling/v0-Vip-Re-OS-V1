@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { TranscriptViewer } from "@/components/voice/TranscriptViewer"
 import { CoachingInsightCard } from "@/components/voice/CoachingInsightCard"
+import { CallRecordingPlayer } from "@/components/voice/CallRecordingPlayer"
+import { recordingPlaybackPath } from "@/lib/voice/call-recording"
 import {
   Phone,
   PhoneIncoming,
@@ -279,7 +281,10 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <AudioPlayer src={voiceCall.recording_url} />
+            {/* The SRC is the authenticated same-origin proxy, never
+                voiceCall.recording_url — that is the api.twilio.com URL, which
+                is behind HTTP Basic auth and 401s in a browser. */}
+            <CallRecordingPlayer src={recordingPlaybackPath(voiceCall.id)} />
           </CardContent>
         </Card>
       )}
@@ -469,48 +474,9 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
   )
 }
 
-// Audio Player Component with speed controls
-function AudioPlayer({ src }: { src: string }) {
-  return (
-    <div className="space-y-3">
-      <audio controls className="w-full" preload="metadata">
-        <source src={src} type="audio/mpeg" />
-        Your browser does not support the audio element.
-      </audio>
-      <AudioSpeedControls />
-    </div>
-  )
-}
-
-function AudioSpeedControls() {
-  return (
-    <div className="flex items-center gap-2">
-      <span className="text-xs text-muted-foreground">Playback speed:</span>
-      <div className="flex gap-1">
-        {["0.75x", "1x", "1.25x", "1.5x", "2x"].map((speed) => (
-          <button
-            key={speed}
-            className="px-2 py-1 text-xs rounded hover:bg-muted transition-colors data-[active=true]:bg-primary data-[active=true]:text-primary-foreground"
-            data-active={speed === "1x"}
-            onClick={(e) => {
-              const audio = e.currentTarget
-                .closest(".space-y-3")
-                ?.querySelector("audio")
-              if (audio) {
-                audio.playbackRate = parseFloat(speed)
-                // Update active state
-                e.currentTarget
-                  .closest(".flex.gap-1")
-                  ?.querySelectorAll("button")
-                  .forEach((btn) => btn.setAttribute("data-active", "false"))
-                e.currentTarget.setAttribute("data-active", "true")
-              }
-            }}
-          >
-            {speed}
-          </button>
-        ))}
-      </div>
-    </div>
-  )
-}
+// The recording player used to live here as AudioPlayer + AudioSpeedControls.
+// It was defined in THIS file — an async SERVER component — while attaching an
+// onClick handler to its speed buttons, which React cannot serialize onto a host
+// element in a server component. It never threw only because voice_calls.recording_url
+// had no writer, so the branch that renders it was unreachable. Now that recordings
+// land it is a real client component: @/components/voice/CallRecordingPlayer.
