@@ -253,21 +253,53 @@ async function fireStageAutomations(listingId: string, toStage: string, actorUse
       // Queue the MLS listing packet on go-live (idempotent — skip if one already exists). Restored
       // here on the canonical stage after the retired markListingLiveService (the legacy
       // triggerStageActions "mls_active" case is dead).
-      const { data: existing } = await svc
+      // THE LISTING IS THE JOB'S TENANT. listing_packet_jobs.listing_id FKs
+      // listings, so the packet belongs to whichever brokerage owns the listing —
+      // not to actorUserId, which is a users.id and not a tenant at all. The
+      // panel's own queueing path (app/actions/ai-listing-packet.ts) stamps
+      // auth.brokerageId, and BOTH readers there narrow on it:
+      // getListingPacketStatus filters `.eq("brokerage_id", auth.brokerageId)`
+      // and aiPacketQualityCheck refuses on `packet.brokerage_id !== …`. An
+      // untenanted job is therefore queued, never listed, and rejected as
+      // Forbidden by the quality check — invisible work.
+      const { data: packetListing, error: packetListingError } = await svc
+        .from("listings")
+        .select("brokerage_id")
+        .eq("id", listingId)
+        .maybeSingle()
+      if (packetListingError) {
+        console.error("[fireStageAutomations] could not read listing tenant for the MLS packet:", packetListingError.message)
+        return
+      }
+      if (!packetListing?.brokerage_id) {
+        console.error(`[fireStageAutomations] listing ${listingId} has no brokerage — refusing to queue an MLS packet no tenant can read`)
+        return
+      }
+
+      const { data: existing, error: existingError } = await svc
         .from("listing_packet_jobs")
         .select("id")
         .eq("listing_id", listingId)
         .eq("job_type", "mls_packet")
         .limit(1)
         .maybeSingle()
+      // A refused read is not "no job yet" — treating it as one queues a duplicate.
+      if (existingError) {
+        console.error("[fireStageAutomations] could not check for an existing MLS packet:", existingError.message)
+        return
+      }
       if (!existing) {
-        await svc.from("listing_packet_jobs").insert({
+        const { error: packetInsertError } = await svc.from("listing_packet_jobs").insert({
           listing_id: listingId,
+          brokerage_id: packetListing.brokerage_id,
           agent_user_id: actorUserId, // FK → users.id
           job_type: "mls_packet",
           status: "pending",
           config: { includeFlyer: true, includeDisclosures: true, includePropertyReports: true, includeBinderCopies: true },
         })
+        if (packetInsertError) {
+          console.error("[fireStageAutomations] failed to queue the MLS packet:", packetInsertError.message)
+        }
       }
     }
   } catch (err) {

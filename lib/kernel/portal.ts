@@ -389,23 +389,55 @@ export async function logPortalAccess(
   agentId?: string
 ): Promise<void> {
   try {
+    // THE CONTACT IS THE LOG LINE'S TENANT. portal_access_logs.contact_id FKs
+    // contacts, and the sibling writer (app/actions/workflows.ts grantPortalAccess)
+    // already stamps the brokerage on this same table. Unstamped, the row is
+    // invisible to the compliance audit trail, which reads portal_access_logs
+    // through the caller's tenant-scoped client
+    // (app/api/admin/audit-events/route.ts) — portal access is the one event class
+    // that exists to be auditable, so a row no brokerage can see is not a log.
+    // The `error` is destructured because a refused read resolves in supabase-js:
+    // without it, "permission denied" would read as "this contact has no
+    // brokerage" and we would write the unanchored row anyway.
+    const { data: contactRow, error: contactError } = await supabase
+      .from("contacts")
+      .select("brokerage_id")
+      .eq("id", contactId)
+      .maybeSingle()
+
+    if (contactError) {
+      console.warn("[Portal] Unable to resolve contact tenant for access log:", contactError.message)
+      return
+    }
+    const brokerageId = contactRow?.brokerage_id ?? null
+    if (!brokerageId) {
+      console.warn(`[Portal] Contact ${contactId} has no brokerage — skipping the access log rather than writing an untenanted audit row`)
+      return
+    }
+
     // Insert access log
-    await supabase
+    const { error: logError } = await supabase
       .from("portal_access_logs")
       .insert({
         contact_id: contactId,
+        brokerage_id: brokerageId,
         module_key: moduleKey,
         action,
         agent_id: agentId,
         accessed_at: new Date().toISOString(),
       })
+    if (logError) {
+      console.warn("[Portal] Unable to write portal access log:", logError.message)
+    }
 
-    // Emit kernel event
+    // Emit kernel event. brokerageId was the empty string here — a value that
+    // matches no tenant — for want of a resolved contact; it now carries the real
+    // one resolved above.
     await processKernelEvent({
       event: KernelEvent.PORTAL_ACCESSED,
       entityType: "contact",
       entityId: contactId,
-      brokerageId: '',
+      brokerageId,
     })
   } catch (error) {
     // Fail silently — portal_access_logs table may not exist yet

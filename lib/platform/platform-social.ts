@@ -226,7 +226,21 @@ export interface PlatformTokenPayload {
 }
 
 /** Owner-keyed update-or-insert on platform_credentials (m104 unique:
- *  owner_type, owner_id, platform). Returns the credential row id. */
+ *  owner_type, owner_id, platform). Returns the credential row id.
+ *
+ *  brokerage_id IS DELIBERATELY ABSENT AND MUST STAY ABSENT. These rows hold the
+ *  PLATFORM's own company social tokens — the OS marketing itself — and the
+ *  platform is not a tenant. m273 dropped NOT NULL from
+ *  platform_credentials.brokerage_id for exactly this row class ("platform-owned
+ *  rows have NO tenant"), and m102/m104 made (owner_type, owner_id, platform) the
+ *  real key, which is why this function writes owner_type='platform' /
+ *  owner_id='platform' instead. Nothing here is hidden by a tenant-narrowed
+ *  reader: the scope cascade (lib/connections/resolve-scoped.ts) reaches these
+ *  rows by owner_type, never by brokerage_id, and m273 gave the platform channels
+ *  DISTINCT platform keys ('platform_social_<channel>') precisely so a tenant's
+ *  cascade can never resolve them. Stamping a brokerage_id here would invent a
+ *  tenant for the company's own account and hand it a credential it does not own.
+ *  A tenant social connection is a different code path and does carry the stamp. */
 async function upsertPlatformCredential(
   svc: ServiceClient,
   channel: PlatformSocialChannel,

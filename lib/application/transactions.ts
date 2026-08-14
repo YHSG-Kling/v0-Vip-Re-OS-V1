@@ -1371,7 +1371,14 @@ export async function getPendingDocuments(transactionId?: string, limit = 20) {
 
 export async function generateClientTimeline(transactionId: string, transactionType: string, financingType: string) {
   const supabase = await createClient()
-  const { data: transaction } = await supabase.from("transactions").select("*").eq("id", transactionId).single()
+  const { data: transaction, error: transactionError } = await supabase
+    .from("transactions")
+    .select("*")
+    .eq("id", transactionId)
+    .single()
+  // A refused read resolves in supabase-js — without this, "permission denied"
+  // would arrive as `transaction === null` and read as "no such transaction".
+  if (transactionError) return { success: false, error: transactionError.message }
   if (!transaction) return { success: false }
 
   const timelinePrompt = `Generate realistic transaction timeline:
@@ -1397,16 +1404,33 @@ Return JSON array of milestones.`
 
     const timeline = JSON.parse(await runPipelineSimple(timelinePrompt, { feature: "transaction_timeline" }))
 
+  // THE TRANSACTION IS THE MILESTONE'S TENANT, and it is already loaded above.
+  // Every consumer of transaction_milestones narrows on brokerage_id —
+  // lib/transactions/milestone-service (seed/ensure/complete, which also DEDUPES
+  // on it, so unstamped rows get silently duplicated), deadline-monitor,
+  // closing-orchestration, closing-war-room, title-closing-watchtower,
+  // lib/kernel/transactions, copilot, the calendar and the lender portal — so an
+  // AI-generated client timeline written without the stamp was invisible to the
+  // deadline monitor, the war room and the client portal alike, while still
+  // occupying the transaction's milestone list for nobody.
+  if (!transaction.brokerage_id) {
+    return { success: false, error: "Transaction has no brokerage — refusing to write untenanted milestones" }
+  }
+
   if (timeline.data?.milestones) {
     for (const milestone of timeline.data.milestones) {
-      await supabase.from("transaction_milestones").insert({
+      const { error: milestoneError } = await supabase.from("transaction_milestones").insert({
         transaction_id: transactionId,
+        brokerage_id: transaction.brokerage_id,
         milestone_name: milestone.name,
         milestone_type: milestone.type || "date_driven",
         target_date: milestone.target_date,
         status: "pending", // CHECK: pending|completed|overdue|cancelled
         is_client_visible: true,
       })
+      if (milestoneError) {
+        console.error(`[generateClientTimeline] failed to insert milestone "${milestone.name}":`, milestoneError.message)
+      }
     }
   }
 

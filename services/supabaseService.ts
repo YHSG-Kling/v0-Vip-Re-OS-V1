@@ -1597,9 +1597,32 @@ export const supabaseService = {
   async updatePropertyInterests(contactId: string, updates: any) {
     try {
       const supabase = getSupabaseAdmin()
+
+      // THE CONTACT IS THE TENANT, AND THIS CLIENT IS SERVICE-ROLE. getSupabaseAdmin
+      // bypasses RLS, so there is no policy behind this payload to catch a missing
+      // stamp — what is written here IS the tenancy boundary. Both other writers of
+      // this table already stamp it (the buyer search screen and
+      // app/actions/multi-persona.ts), and multi-persona records the live policy:
+      //   property_interests_tenant_select is
+      //     (brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id())
+      // so an unanchored row is not merely hidden — it is readable by EVERY tenant
+      // on the platform, price range, saved locations and notes included.
+      // Resolved from contacts.brokerage_id (property_interests.contact_id FKs
+      // contacts) and applied AFTER the spread so a caller-supplied `updates`
+      // cannot re-tenant somebody else's buyer.
+      const { data: contactRow, error: contactError } = await supabase
+        .from("contacts")
+        .select("brokerage_id")
+        .eq("id", contactId)
+        .maybeSingle()
+      if (contactError) throw contactError
+      if (!contactRow?.brokerage_id) {
+        throw new Error(`Contact ${contactId} has no brokerage — refusing to write an untenanted property_interests row`)
+      }
+
       const { data, error } = await supabase
         .from("property_interests")
-        .upsert({ contact_id: contactId, ...updates })
+        .upsert({ contact_id: contactId, ...updates, brokerage_id: contactRow.brokerage_id })
         .select()
         .single()
 

@@ -1210,12 +1210,26 @@ export async function assignVendorToTransaction(data: {
 
   if (assignError) throw assignError
 
-  // Create vendor job
+  // Create vendor job.
+  //
+  // TENANT STAMP — the same one lib/kernel/vendors.ts already carries on its own
+  // vendor_jobs insert, and for the same reason it records there: vendor_jobs
+  // is NULLABLE on brokerage_id and the live policy vendor_jobs_tenant reads
+  //   ((brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id()))
+  // so an untenanted job row satisfies the predicate for EVERY brokerage on the
+  // platform — job title, notes and the vendor relationship included. The tenant
+  // is profile.brokerage_id, which is not merely the caller's ambient context: it
+  // was proven above to own BOTH the vendor and the transaction this job hangs
+  // off, so it cannot be some other tenant's. The reader in
+  // app/actions/ai-vendor-management.ts compares brokerage_id explicitly and
+  // refuses an untenanted row, so this job was also unreachable by the vendor it
+  // was created for.
   const { error: jobError } = await supabase
     .from("vendor_jobs")
     .insert({
       assignment_id: assignment.id,
       vendor_id: data.vendorId,
+      brokerage_id: profile.brokerage_id,
       job_title: data.assignmentType,
       status: "pending",
       created_at: new Date().toISOString(),

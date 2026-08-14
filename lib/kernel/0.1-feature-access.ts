@@ -181,7 +181,15 @@ export async function canAccessFeature(
       .or(`user_id.eq.${userId},team_id.not.is.null,brokerage_id.not.is.null`)
       .order("created_at", { ascending: false })
     if (overrideError) throw new Error(`[FeatureAccess] Failed to load overrides: ${overrideError.message}`)
-    const o = overrides?.find((x) => x.user_id === userId) ?? overrides?.[0] ?? null
+    // MOST-SPECIFIC-FIRST, AND NEVER SOMEBODY ELSE'S ROW. A user-scoped override
+    // carries a brokerage_id too (that is what makes it visible to the tenant's
+    // governance screen — see grantFeatureTrial / feature-governance-client), so
+    // it also satisfies the `brokerage_id.not.is.null` arm of the .or() above.
+    // The old fallback was `overrides?.[0]`, the most RECENT row of any scope —
+    // which meant one teammate's personal trial or personal disable became the
+    // answer for every other user in the brokerage. The tenant-wide fallback is
+    // only ever a row that names no user.
+    const o = overrides?.find((x) => x.user_id === userId) ?? overrides?.find((x) => x.user_id === null) ?? null
     if (o) override = { type: o.override_type, trialEndsAt: o.trial_ends_at, disabledReason: o.disabled_reason }
   }
 
@@ -315,6 +323,25 @@ export async function grantFeatureTrial(
   const trialEndsAt = new Date()
   trialEndsAt.setDate(trialEndsAt.getDate() + trialDaysFromNow)
 
+  // THE GRANTEE IS THE TENANT. A user-scoped override still belongs to the
+  // brokerage that user belongs to, and the feature-governance screen lists
+  // overrides with a flat `.eq("brokerage_id", brokerageId)`
+  // (app/dashboard/admin/feature-governance/page.tsx) — user_id rows included.
+  // The UI's own grant path already writes BOTH columns for this exact
+  // operation (feature-governance-client.tsx), so a trial granted through this
+  // kernel function landed as a row no admin screen could list and no admin
+  // could revoke. Resolved from users.brokerage_id, the same lookup
+  // incrementFeatureUsage above already performs — never from a caller-supplied
+  // value, and never from createdByUserId, who may be a superadmin in no tenant.
+  const { data: granteeRow, error: granteeError } = await supabase
+    .from("users")
+    .select("brokerage_id, team_id")
+    .eq("id", userId)
+    .maybeSingle()
+  if (granteeError) {
+    return { success: false, error: `Could not resolve the grantee's brokerage: ${granteeError.message}` }
+  }
+
   // Remove any existing disabled override so the trial takes effect
   await supabase
     .from("feature_access_overrides")
@@ -325,6 +352,7 @@ export async function grantFeatureTrial(
 
   const { error } = await supabase.from("feature_access_overrides").insert({
     user_id: userId,
+    brokerage_id: granteeRow?.brokerage_id ?? null,
     feature_key: featureKey,
     override_type: "grant_trial",
     trial_ends_at: trialEndsAt.toISOString(),
@@ -370,10 +398,27 @@ export async function disableFeatureFor(
 
   await deleteQuery
 
+  // Same tenant rule as grantFeatureTrial: a user-scoped disable still belongs to
+  // that user's brokerage, and the governance screen lists by brokerage_id alone.
+  // Only resolve when the caller named a user and no explicit brokerage — a
+  // team- or brokerage-scoped call already carries its own anchor.
+  let resolvedBrokerageId = brokerageId ?? null
+  if (!resolvedBrokerageId && userId) {
+    const { data: targetRow, error: targetError } = await supabase
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", userId)
+      .maybeSingle()
+    if (targetError) {
+      return { success: false, error: `Could not resolve the target user's brokerage: ${targetError.message}` }
+    }
+    resolvedBrokerageId = targetRow?.brokerage_id ?? null
+  }
+
   const { error } = await supabase.from("feature_access_overrides").insert({
     feature_key: featureKey,
     user_id: userId ?? null,
-    brokerage_id: brokerageId ?? null,
+    brokerage_id: resolvedBrokerageId,
     team_id: teamId ?? null,
     override_type: "disable",
     disabled_reason: disabledReason ?? null,
