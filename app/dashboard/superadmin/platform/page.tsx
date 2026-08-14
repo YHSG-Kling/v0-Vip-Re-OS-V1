@@ -12,7 +12,7 @@ import {
   getCronHealthAction,
   getTenantSafetyFeedAction,
 } from "@/app/actions/superadmin/platform-overview"
-import { createClient } from "@/lib/supabase/server"
+import { requireSuperadmin } from "@/lib/auth/platform-guard"
 import { redirect } from "next/navigation"
 import { getBrokerageBudgetWarningEnabled } from "@/lib/vendor-governance/budget-gate"
 import { BudgetWarningToggle } from "./budget-warning-toggle"
@@ -89,17 +89,23 @@ function quotaBadge(s: string | null) {
 }
 
 export default async function SuperadminPlatformPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/login")
-
-  const { data: profile } = await supabase
-    .from("users")
-    .select("user_type")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (profile?.user_type !== "superadmin") {
-    return <div className="p-6 text-red-600">Forbidden: superadmin access only</div>
+  // GATE. This page used to read `profile.user_type !== 'superadmin'` — a
+  // predicate NO live row satisfies (the one platform superadmin is
+  // platform_role='superadmin' with user_type='admin', because 'admin' is also
+  // a tenant user_type and the roster therefore lives on platform_role). So the
+  // god-switch board rendered "Forbidden" to everybody, the owner included, and
+  // the three actions it calls carried the same dead test underneath it.
+  //
+  // STAYS RAW SUPERADMIN. This board is deliberately NOT capability-widened —
+  // scripts/platform-controls-simulator.ts pins that decision, and it is the
+  // right one: it carries every tenant's MRR/margin, the tenant-isolation
+  // findings, and the emergency-mode god switches. requireSuperadmin
+  // (lib/auth/platform-guard.ts) is the shared gate that reads BOTH identity
+  // columns, so the rule is unchanged and now actually admits its one account.
+  const gate = await requireSuperadmin()
+  if (!gate.ok) {
+    if (gate.error === "Unauthenticated") redirect("/login")
+    return <div className="p-6 text-red-600">Forbidden: {gate.error}</div>
   }
 
   const [overviewRes, cronRes, safetyRes, budgetWarningEnabled, platformControls, statusNotice] = await Promise.all([

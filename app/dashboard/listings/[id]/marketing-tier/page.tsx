@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server"
 import { notFound, redirect } from "next/navigation"
 import { MarketingTierClient } from "./marketing-tier-client"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { resolvePlatformRole } from "@/lib/platform/require-capability"
 import { getMarketingPackageStatus } from "@/app/actions/marketing-package-automation"
 import {
   getTierForListing,
@@ -29,14 +30,27 @@ export default async function ListingMarketingTierPage({ params }: PageProps) {
   await ensureAgentContextInPlace()
   const { data: userRow } = await supabase
     .from("users")
-    .select("brokerage_id, user_type")
+    .select("brokerage_id, user_type, platform_role")
     .eq("id", user.id)
     .single()
 
   if (!userRow?.brokerage_id) redirect("/dashboard")
 
-  // Marketing tiers are superadmin-only — redirect everyone else
-  if (userRow.user_type !== "superadmin") {
+  // Marketing tiers are superadmin-only — redirect everyone else.
+  //
+  // THE PREDICATE THAT REDIRECTED EVERYONE. This read `user_type !==
+  // 'superadmin'`, and no live users row carries that value: the one platform
+  // superadmin is platform_role='superadmin' with user_type='admin' ('admin'
+  // being also a tenant user_type is why the roster lives on platform_role).
+  // So this page bounced 100% of visitors — including the only person it was
+  // written for — straight back to the lifecycle page, silently.
+  //
+  // resolvePlatformRole is the canonical reader of that dual-source identity.
+  // The rule is UNCHANGED and deliberately NOT widened: this is a tenant listing
+  // screen whose authority the owner has not ruled on, so it stays exactly as
+  // narrow as it says it is — superadmin only, which is now one real account
+  // instead of none.
+  if (resolvePlatformRole(userRow) !== "superadmin") {
     redirect(`/dashboard/listings/${listingId}/lifecycle`)
   }
 

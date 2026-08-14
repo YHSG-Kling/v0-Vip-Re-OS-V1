@@ -9,29 +9,44 @@
  *  - cron-health rollup (stale + recent failures) from cron_health_snapshot (1053)
  *  - tenant-isolation feed (unresolved findings) from tenant_safety_findings (1033)
  *
- * Every action requires user_type='superadmin'; non-superadmin returns
- * { ok: false, error: "Forbidden" } so the page can render an inline
- * permission error instead of a 403.
+ * Gating returns { ok: false, error } rather than throwing, so the page can
+ * render an inline permission error instead of a 403.
  */
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireSuperadmin } from "@/lib/auth/platform-guard"
 
-async function requireSuperadmin(): Promise<
-  | { ok: true; userId: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
-  const { data } = await supabase
-    .from("users")
-    .select("user_type")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (data?.user_type !== "superadmin") return { ok: false, error: "Forbidden" }
-  return { ok: true, userId: user.id }
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// THE GATE THIS FILE USED TO CARRY, AND WHY IT ADMITTED NOBODY
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The local requireSuperadmin() here tested exactly `users.user_type !==
+// 'superadmin'`. Measured live (2026-08): 23 rows in public.users, ZERO with
+// user_type = 'superadmin'. The one platform superadmin is
+// superadmin@vip.demo — user_type='admin', platform_role='superadmin' — because
+// 'admin' is ALSO a tenant user_type, so the platform roster is deliberately
+// carried on platform_role (lib/platform/platform-staff-roster.ts).
+//
+// So this predicate was UNSATISFIABLE: every caller, the owner included, got
+// { ok: false, error: "Forbidden" }, and /dashboard/superadmin/platform — whose
+// own page gate carried the same dead test — never rendered a single number.
+// v_platform_margin has 2 live rows and cron_health_snapshot 64; none of them
+// has ever reached a screen.
+//
+// WHY superadmin AND NOT A ROSTER CAPABILITY. The obvious merge was to gate the
+// cross-tenant margin read on 'billing' and the two health reads on 'sentinel'.
+// That would have been WIDER than the standing decision: the ONLY caller of all
+// three exports is /dashboard/superadmin/platform, the god-switch board, which
+// scripts/platform-controls-simulator.ts pins as "raw superadmin BY DESIGN (not
+// capability-widened)". A dead gate that refused everyone was failing CLOSED;
+// replacing it with 'billing' would have quietly handed every platform admin the
+// cross-tenant MRR/margin book, and 'sentinel' the tenant-isolation findings.
+// The defect is that the gate never ran, not that it was too narrow — so this
+// imports the shared requireSuperadmin (lib/auth/platform-guard.ts), which reads
+// BOTH identity columns and admits exactly the one account the rule always
+// named. Same rule, now satisfiable.
+//
+// No mutation lives in this file — every export is a read.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MARGIN PER TENANT

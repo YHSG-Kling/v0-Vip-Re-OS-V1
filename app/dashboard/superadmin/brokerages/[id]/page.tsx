@@ -116,9 +116,19 @@ export default async function SuperadminBrokerageDetailPage(
             subscription (above) → archive. Nothing is deleted by exporting; transaction and communication
             records remain under their legal retention window.
           </p>
-          <a href={`/api/superadmin/tenant-export/${brokerage.id}`} className="rounded-md border px-3 py-1.5 text-sm font-medium text-indigo-600 hover:bg-indigo-50">
-            Download tenant export
-          </a>
+          {/* This page admits the 'tenants' capability (all four staff roles);
+              the export route is superadmin-only — a tenant's whole book leaving
+              the platform as a file is not marketing's or support's authority.
+              Show the link only to the role the route will actually serve. */}
+          {gate.role === "superadmin" ? (
+            <a href={`/api/superadmin/tenant-export/${brokerage.id}`} className="rounded-md border px-3 py-1.5 text-sm font-medium text-indigo-600 hover:bg-indigo-50">
+              Download tenant export
+            </a>
+          ) : (
+            <span className="rounded-md border px-3 py-1.5 text-sm text-muted-foreground">
+              Export is superadmin-only
+            </span>
+          )}
         </CardContent>
       </Card>
 

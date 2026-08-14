@@ -22,5 +22,12 @@ export default async function ApiTokensPage() {
   const res = await listAgenticTokens()
   const rows = res.ok ? res.rows : []
 
-  return <ApiTokensClient initialRows={rows} loadError={res.ok ? null : res.error} />
+  // READ vs MINT. This page admits the 'providers' capability ({superadmin,
+  // admin}); minting/revoking a Bearer credential stays superadmin-only in the
+  // action (app/actions/agentic-tokens.ts). Pass that split down rather than
+  // offering a platform admin a Mint button whose action will refuse them —
+  // a page and its action disagreeing is the exact defect this round fixed.
+  const canMint = gate.role === "superadmin"
+
+  return <ApiTokensClient initialRows={rows} loadError={res.ok ? null : res.error} canMint={canMint} />
 }

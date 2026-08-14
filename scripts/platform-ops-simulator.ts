@@ -122,7 +122,18 @@ console.log("\n── SOURCE: wiring ──")
   const exportLib = src("lib/platform/tenant-export.ts")
   check("tenant export names its tables + never deletes (honest scope)", exportLib.includes("TENANT_EXPORT_TABLES") && exportLib.includes("does not delete"))
   const exportRoute = src("app/api/superadmin/tenant-export/[brokerageId]/route.ts")
-  check("export route superadmin-gated + audit-logged", exportRoute.includes('!== "superadmin"') && exportRoute.includes("superadmin_audit_log"))
+  // ASSERT THE CONSTRUCT, NOT THE SPELLING. This used to require the literal
+  // `!== "superadmin"` in the route — which pinned the DEFECT in place. That
+  // predicate tested users.user_type, and no live row carries that value (the
+  // platform superadmin is platform_role='superadmin', user_type='admin'), so
+  // the assertion was proving the presence of a gate that refused everyone,
+  // this route's own 403 included. What matters is that the route routes
+  // through the ONE shared superadmin guard — which reads both identity
+  // columns — and still audit-logs the export.
+  check("export route superadmin-gated + audit-logged",
+    exportRoute.includes("requireSuperadmin") &&
+    exportRoute.includes("@/lib/auth/platform-guard") &&
+    exportRoute.includes("superadmin_audit_log"))
   const brokeragePage = src("app/dashboard/superadmin/brokerages/[id]/page.tsx")
   check("offboarding panel on the brokerage detail page", brokeragePage.includes("tenant-export") && brokeragePage.includes("Offboarding"))
   for (const key of ["billing_dunning", "support_sla_csat", "shared_image_library", "tenant_offboarding_export"]) {

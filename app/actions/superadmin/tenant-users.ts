@@ -13,7 +13,7 @@ import { inviteTenantMember, type UserDomainRole } from "@/lib/kernel/users"
 import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS, roleConsumesSeat, seatCheck, parseSeatOverride, SEAT_ROLES } from "@/lib/kernel/tier-role-matrix"
 import { requireSuperadmin } from "@/lib/auth/platform-guard"
 import { resolveSeatUsage } from "@/lib/kernel/seat-usage"
-import { requirePlatformCapability } from "@/lib/platform/require-capability"
+import { requirePlatformCapability, resolvePlatformRole } from "@/lib/platform/require-capability"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 
@@ -280,9 +280,17 @@ export async function setTenantUserStatusAction(params: { userId: string; status
   if (!auth.ok) return auth
   if (params.status !== "active" && params.status !== "suspended") return { ok: false, error: "Invalid status" }
   const svc = createServiceClient()
-  const { data: target } = await svc.from("users").select("brokerage_id, user_type").eq("id", params.userId).maybeSingle()
+  const { data: target } = await svc.from("users").select("brokerage_id, user_type, platform_role").eq("id", params.userId).maybeSingle()
   if (!target) return { ok: false, error: "User not found" }
-  if ((target as any).user_type === "superadmin") return { ok: false, error: "Refusing to change a superadmin's status" }
+  // SELF-PROTECTION THAT NEVER FIRED. This read only target.user_type ===
+  // 'superadmin' — a value no live row carries, because the platform superadmin
+  // is platform_role='superadmin' with user_type='admin'. So the one account the
+  // check exists to protect was the one account it could not recognise, and
+  // suspending it — locking the platform out of its own console — was permitted.
+  // resolvePlatformRole is the canonical reader of that dual-source identity.
+  if (resolvePlatformRole(target as any) === "superadmin") {
+    return { ok: false, error: "Refusing to change a superadmin's status" }
+  }
   const { error } = await svc.from("users").update({ status: params.status, updated_at: new Date().toISOString() }).eq("id", params.userId)
   if (error) return { ok: false, error: error.message }
   await audit(auth.userId, auth.email, params.status === "suspended" ? "user.suspended" : "user.reactivated", params.userId, { brokerage_id: (target as any).brokerage_id, status: params.status })

@@ -34,8 +34,16 @@ export default async function ObservabilityPage(
     dashboard = await fetchObservabilityDashboard(selectedBrokerageId)
     automationErrors = await fetchAutomationErrors({ brokerageId: selectedBrokerageId, limit: 100 })
     syncLogs = await fetchCalendarSyncLogs({ brokerageId: selectedBrokerageId, limit: 50 })
-  } catch {
-    return <div className="text-red-600 p-6">Failed to load observability data</div>
+  } catch (err) {
+    // REPORT THE REASON. This catch used to discard it, which is how the
+    // unsatisfiable `user_type === 'superadmin'` gate underneath stayed
+    // invisible: staff passed the capability check above, the kernel threw
+    // "Forbidden", and the page said only "Failed to load observability data".
+    return (
+      <div className="text-red-600 p-6">
+        Failed to load observability data — {err instanceof Error ? err.message : String(err)}
+      </div>
+    )
   }
 
   return (
