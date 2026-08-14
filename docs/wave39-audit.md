@@ -354,3 +354,66 @@ see the file. Same class as m390 and m441 claim 6.
 predicate in runnable `CREATE POLICY` text — **7 predicates** repointed to
 `current_user_led_team_id()`, and the surrounding prose corrected so the comments
 no longer describe a rule the SQL beneath them stopped following.
+
+---
+
+# Wave 42 — the deal table
+
+Found by **measuring the outcome of m440 rather than reading a policy**: the
+fixture that proved the team board reported, as a side effect, that a **broker
+read 0 of 3 transactions in their own brokerage**. That was not the thing under
+test, and it was the most broken thing on the table.
+
+Every defect below was then **proved live in a rolled-back fixture before a line
+was written**.
+
+## Three defects on one table
+
+**1. Nobody who runs the brokerage could see its deals.** The live SELECT
+policies were exactly four — agent (own rows), platform admin, team lead, and a
+scoped vendor. No broker, no admin, no tc, no compliance clause.
+`rls-governance/004` *declares* all four in words and in `CREATE POLICY` blocks —
+but that file has never run here (it depends on the `auth.*` family m440 showed
+was never installed). Declared, believed, absent. It fails closed, so it was a
+dead screen rather than a leak — but `transactions` is read by a **session
+client** from dozens of surfaces, so RLS is the real gate.
+
+The obvious helper, `is_tenant_staff()`, is **wrong** here: it includes `agent`,
+which would hand every agent the whole brokerage's deal book. The roster matching
+004's declared intent exactly is `can_read_brokerage_books() OR is_tc_role()` —
+composed from two existing helpers rather than minted as a third near-duplicate.
+
+**2. A contact could create a deal.** `users_insert_transactions` was `TO PUBLIC`
+with a bare tenant test and **no role test**. `users.brokerage_id` is stamped on a
+contact exactly as on a broker's. *Proved:* `seller@vip.demo`, `user_type =
+'contact'`, created a transaction in VIP Premier.
+
+**3. An agent could move a deal into another brokerage.**
+`agent_update_own_transactions` had a USING and **no WITH CHECK**. When WITH CHECK
+is absent Postgres reuses USING — and that USING contained **no brokerage term at
+all**, so an agent could set `brokerage_id` to any brokerage on the platform and
+still pass, because they were still the agent on it. *Proved:* one live deal moved
+into Your Brokerage. The deal leaves the brokerage's book entirely, taking its
+commission with it.
+
+## Proof
+
+| | before | after |
+|---|---|---|
+| broker / tc / compliance read own deals | **0** | **2** |
+| agent moves a deal to another brokerage | **1 row moved** | **refused** |
+| a contact creates a deal | **1 row created** | **refused** |
+| other tenant / agent / contact / lender / vendor | — | unchanged |
+
+## The two numbers this wave corrected
+
+m447's hard claims are scoped to `transactions` on purpose, and the measurements
+are why:
+
+- **10** UPDATE policies schema-wide have a USING and no WITH CHECK, on 9 tables.
+  **6** of them have no tenant term in USING at all — so on six more tables a row
+  can still be moved into another tenant.
+- **195** INSERT policies reach a tenant with no role or ownership test, across
+  195 tables. **#180 records this class as "72". That number is wrong.** The task
+  has been corrected, and m447 claim 5 prints the real count on every run so a
+  green guard is never read as "the class is gone".
