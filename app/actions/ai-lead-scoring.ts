@@ -108,13 +108,32 @@ Provide a JSON response with:
     if (mode === "override") {
       updates.lead_score = scores.overallScore
     }
-    await supabase
+    const { error: contactUpdateError } = await supabase
       .from("contacts")
       .update(updates)
       .eq("id", params.contactId)
+    if (contactUpdateError) throw contactUpdateError
 
-    // Log scoring event
-    await supabase.from("lead_score_history").insert({
+    // Log scoring event.
+    //
+    // TENANT — from the CONTACT this history row is filed against, read at the
+    // top of this function (`select("*")`, so brokerage_id is already in hand)
+    // and never from `params.agentId`, which is an agents.id and not a tenant.
+    // The other three lead_score_history writers — contact-capture.ts,
+    // lead-acquisition-handlers.ts, enrichment-orchestrator.ts — all stamp
+    // brokerage_id; this one did not, so the same table has been taking rows
+    // with and without a tenant, and any reader that narrows to
+    // `.eq("brokerage_id", …)` hides exactly the unstamped half.
+    const scoreBrokerageId = (contact.brokerage_id as string | null) ?? null
+    if (!scoreBrokerageId) {
+      // Honest rather than invented: an untenanted contact has no tenant to
+      // inherit, and agent_id is not one.
+      console.warn(
+        `[ai-lead-scoring] contact ${params.contactId} carries no brokerage_id — lead_score_history row written untenanted`,
+      )
+    }
+    const { error: historyError } = await supabase.from("lead_score_history").insert({
+      brokerage_id: scoreBrokerageId,
       contact_id: params.contactId,
       overall_score: scores.overallScore,
       engagement_score: scores.engagement,
@@ -124,6 +143,9 @@ Provide a JSON response with:
       factors: scores.reasoning,
       ai_recommendations: scores.priorities,
     })
+    // supabase-js RESOLVES a refused insert, so an unread error here is a
+    // scoring event that silently never happened.
+    if (historyError) throw historyError
 
     return {
       success: true,

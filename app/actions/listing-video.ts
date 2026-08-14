@@ -28,20 +28,67 @@ export async function generateListingVideo(params: {
     let photos: any[] = []
 
     if (params.transactionId && isValidUUID(params.transactionId)) {
-      const { data: transaction } = await supabase
+      // supabase-js RESOLVES a refused query, so `const { data }` alone turns
+      // "permission denied" into "Property not found" — a message naming the
+      // wrong problem, on the read that also carries this video's tenant.
+      const { data: transaction, error: transactionError } = await supabase
         .from('transactions')
         .select('*, listings(*)')
         .eq('id', params.transactionId)
         .single()
 
+      if (transactionError) {
+        return { success: false, error: `Could not read the transaction — ${transactionError.message}` }
+      }
       property = transaction?.listings
     } else if (params.propertyId && isValidUUID(params.propertyId)) {
-      const { data } = await supabase.from('listings').select('*').eq('id', params.propertyId).single()
+      const { data, error: listingError } = await supabase
+        .from('listings')
+        .select('*')
+        .eq('id', params.propertyId)
+        .single()
+      if (listingError) {
+        return { success: false, error: `Could not read the listing — ${listingError.message}` }
+      }
       property = data
     }
 
     if (!property) {
       return { success: false, error: 'Property not found' }
+    }
+
+    // TENANT ANCHOR — from the LISTING this video is filed against, not from the
+    // caller. ai_video_projects.listing_id FKs listings(id) and listings carries
+    // brokerage_id, so the parent row IS the answer; nothing here is inferred
+    // from an id space that isn't a tenant (params.agentId is an agents.id).
+    //
+    // This matters because ai_video_projects.brokerage_id was omitted entirely:
+    // the table's own policy is permissive (`ai_video_projects_all` USING(true)),
+    // but every APP reader narrows — getVideoAnalytics does
+    // `.eq("brokerage_id", auth.brokerageId)`, and `NULL = <uuid>` is NULL, never
+    // true. So each project this action created was written successfully and then
+    // never appeared on any brokerage's video surface again.
+    let videoBrokerageId = (property.brokerage_id as string | null) ?? null
+    if (!videoBrokerageId) {
+      // Legacy listings can carry no tenant. Fall back to the OTHER parent this
+      // row already names — agents(id), whose brokerage_id is a real tenant.
+      // agents.id and brokerages.id are disjoint; the column is read, never the id.
+      const { data: videoAgent, error: videoAgentError } = await supabase
+        .from('agents')
+        .select('brokerage_id')
+        .eq('id', params.agentId)
+        .maybeSingle()
+      if (videoAgentError) {
+        return { success: false, error: `Could not resolve the agent's brokerage — ${videoAgentError.message}` }
+      }
+      videoBrokerageId = (videoAgent?.brokerage_id as string | null) ?? null
+    }
+    if (!videoBrokerageId) {
+      return {
+        success: false,
+        error:
+          'This listing and this agent both carry no brokerage, so the video project would be invisible to every brokerage video surface. Assign the listing to a brokerage first.',
+      }
     }
 
     // Get listing photos — listing_media rows of media_type='photo'
@@ -76,9 +123,10 @@ export async function generateListingVideo(params: {
     }
 
     // 2. Create video project
-    const { data: project } = await supabase
+    const { data: project, error: projectError } = await supabase
       .from('ai_video_projects')
       .insert({
+        brokerage_id: videoBrokerageId, // resolved above from the listing (then the agent)
         agent_id: params.agentId,
         listing_id: property.id, // this is a listing video, not a contact
         video_type: mapVideoType(videoType), // map to the CHECK-valid vocabulary
@@ -94,6 +142,9 @@ export async function generateListingVideo(params: {
       .select()
       .single()
 
+    if (projectError) {
+      return { success: false, error: `Failed to create video project — ${projectError.message}` }
+    }
     if (!project) {
       return { success: false, error: 'Failed to create video project' }
     }

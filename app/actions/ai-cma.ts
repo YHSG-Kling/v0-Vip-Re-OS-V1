@@ -97,12 +97,18 @@ export async function generateAICMA(params: CMAParams) {
   if (!user) {
     return { success: false, error: "Unauthorized" }
   }
-  const { data: agentRow } = await supabase
+  const { data: agentRow, error: agentRowError } = await supabase
     .from("agents")
     .select("id, brokerage_id")
     .eq("id", params.agentId)
     .eq("user_id", user.id)
     .maybeSingle()
+  // A refused read resolves, so without this the authorization gate below would
+  // read "permission denied" as "that agent isn't you" — and this row is also
+  // the tenant fallback for the report written at the end.
+  if (agentRowError) {
+    return { success: false, error: `Agent lookup refused: ${agentRowError.message}` }
+  }
   if (!agentRow) {
     return { success: false, error: "Unauthorized: agentId does not match authenticated user" }
   }
@@ -122,7 +128,10 @@ export async function generateAICMA(params: CMAParams) {
   }
   const { data: cmaContact, error: cmaContactError } = await supabase
     .from("contacts")
-    .select("id")
+    // brokerage_id rides along on the lookup this function already makes: the
+    // report is FILED AGAINST this contact, so the contact's tenant is the
+    // report's tenant. See the stamp at the insert below.
+    .select("id, brokerage_id")
     .eq("id", params.contactId)
     .maybeSingle()
   // supabase-js RESOLVES a refused query. An unread error here would turn a
@@ -138,6 +147,33 @@ export async function generateAICMA(params: CMAParams) {
     }
   }
   const cmaContactId = cmaContact.id as string
+
+  // TENANT — the contact this report is filed against, then the agents row this
+  // function ALREADY proved belongs to the authenticated user. Both are read
+  // columns named brokerage_id on a real parent row; neither is an agents.id
+  // pressed into service as a tenant.
+  //
+  // Contact first because the report hangs off the contact and cma_reports.
+  // contact_id is NOT NULL. Contacts may legitimately carry no brokerage_id
+  // (nullable), and an untenanted contact must not push a NULL onto the report —
+  // hence the fall back to the verified agent, which is the same brokerage the
+  // readers below use as `ctx.brokerageId`.
+  //
+  // Why this was load-bearing: updateCMA, deleteCMA and getCMAReports in THIS
+  // FILE all narrow with `.eq("brokerage_id", ctx.brokerageId)`. `NULL = <uuid>`
+  // is NULL, never true, so a CMA generated here — after paying a comps provider
+  // — could not afterwards be listed, updated or deleted by the very agent who
+  // generated it.
+  const cmaBrokerageId =
+    ((cmaContact.brokerage_id as string | null) ?? null) ||
+    ((agentRow.brokerage_id as string | null) ?? null)
+  if (!cmaBrokerageId) {
+    return {
+      success: false,
+      error:
+        "Neither this contact nor your agent profile carries a brokerage, so the CMA would be written where no CMA surface can read it. No comps were purchased.",
+    }
+  }
 
   try {
     // 1. Fetch comparable properties from database/MLS
@@ -162,6 +198,7 @@ export async function generateAICMA(params: CMAParams) {
     const { data: cmaReport, error } = await supabase
       .from("cma_reports")
       .insert({
+        brokerage_id: cmaBrokerageId, // resolved above: contact → verified agent
         agent_id: params.agentId,
         contact_id: cmaContactId,
         listing_id: params.listingId ?? null,

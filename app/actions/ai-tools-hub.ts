@@ -99,7 +99,37 @@ export async function executeAITool(
   
   // Log usage. ai_tool_usage real columns: context_json (was input_data),
   // output_text (was output_data); no user_type column.
-  await supabase.from("ai_tool_usage").insert({
+  //
+  // TENANT — read from the USERS ROW this usage record is filed against
+  // (ai_tool_usage.user_id FKs users(id), and users carries brokerage_id), not
+  // from `userType`, which is a role string, and not from any agents id: agents.id
+  // and brokerages.id are disjoint spaces.
+  //
+  // Omitting it was not cosmetic. lib/finance/usage-metering.ts rolls the AI
+  // meter up per brokerage with `.eq("brokerage_id", b.id)`, as does the
+  // brokerage P&L cron — and `NULL = <uuid>` is NULL, never true — so every run
+  // logged through this hub was billed to nobody and counted toward no
+  // brokerage's usage. Meanwhile lib/kernel/ai-tools.ts reads the same rows by
+  // user_id, which is why the feature looked fine from the agent's own screen.
+  const { data: toolUserRow, error: toolUserError } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", userId)
+    .maybeSingle()
+  // supabase-js RESOLVES a refused query, so an unread error here would silently
+  // downgrade "this read was denied" into "this user has no brokerage".
+  if (toolUserError) {
+    console.error("[ai-tools-hub] users lookup for tenant stamp refused:", toolUserError.message)
+  }
+  const toolBrokerageId = (toolUserRow?.brokerage_id as string | null) ?? null
+  if (!toolBrokerageId) {
+    console.error(
+      `[ai-tools-hub] user ${userId} carries no brokerage_id — ai_tool_usage row written untenanted and will not appear in the brokerage usage meter`,
+    )
+  }
+
+  const { error: usageError } = await supabase.from("ai_tool_usage").insert({
+    brokerage_id: toolBrokerageId,
     user_id: userId,
     tool_name: toolName,
     context_json: JSON.stringify(params ?? {}),
@@ -108,7 +138,10 @@ export async function executeAITool(
     success,
     tokens_used: result?.tokensUsed || 0,
   })
-  
+  if (usageError) {
+    console.error("[ai-tools-hub] ai_tool_usage insert failed:", usageError.message)
+  }
+
   return { success, result }
 }
 

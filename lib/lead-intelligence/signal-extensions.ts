@@ -180,10 +180,15 @@ export async function applySignalDelta(delta: SignalDelta): Promise<{ applied: b
 
   // Read the previous full scoring snapshot from history (it carries every
   // bucket); fall back to whatever's on contacts when there's no history.
-  const [{ data: contact }, { data: lastHistory }] = await Promise.all([
+  // brokerage_id is pulled alongside the two score columns because it is the
+  // TENANT of the history row written below — the contact this delta is filed
+  // against is the row that knows it. One extra column on a read this function
+  // already makes; no second round trip, and no id-space bridge (delta.source /
+  // evidenceId are not tenants, and there is no agent id on this path at all).
+  const [{ data: contact, error: contactError }, { data: lastHistory }] = await Promise.all([
     supabase
       .from("contacts")
-      .select("engagement_score, intent_score")
+      .select("engagement_score, intent_score, brokerage_id")
       .eq("id", delta.contactId)
       .maybeSingle(),
     supabase
@@ -196,7 +201,12 @@ export async function applySignalDelta(delta: SignalDelta): Promise<{ applied: b
       .limit(1)
       .maybeSingle(),
   ])
+  // supabase-js RESOLVES a refused query — without this, "permission denied"
+  // and "no such contact" are the same empty result and both report
+  // contact_not_found.
+  if (contactError) return { applied: false, reason: `contact_lookup_refused: ${contactError.message}` }
   if (!contact) return { applied: false, reason: "contact_not_found" }
+  const signalBrokerageId = (contact.brokerage_id as string | null) ?? null
 
   const prev = {
     overall: Number(lastHistory?.overall_score ?? 0),
@@ -232,7 +242,13 @@ export async function applySignalDelta(delta: SignalDelta): Promise<{ applied: b
   const nextReadiness = delta.setReadinessAtLeast
   const proposedReadinessRank = nextReadiness ? READINESS_RANK[nextReadiness] ?? 0 : -1
 
-  await supabase.from("lead_score_history").insert({
+  if (!signalBrokerageId) {
+    console.warn(
+      `[signal-extensions] contact ${delta.contactId} carries no brokerage_id — lead_score_history row written untenanted`,
+    )
+  }
+  const { error: historyInsertError } = await supabase.from("lead_score_history").insert({
+    brokerage_id: signalBrokerageId,
     contact_id: delta.contactId,
     overall_score: next.overall,
     engagement_score: next.engagement,
@@ -252,6 +268,11 @@ export async function applySignalDelta(delta: SignalDelta): Promise<{ applied: b
     ai_recommendations: null,
     scored_at: new Date().toISOString(),
   })
+  // The history row IS the idempotency record this function checks at entry —
+  // a swallowed insert error would make the same signal re-apply every call.
+  if (historyInsertError) {
+    return { applied: false, reason: `history_insert_refused: ${historyInsertError.message}` }
+  }
 
   return { applied: true }
 }

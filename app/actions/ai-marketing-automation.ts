@@ -370,7 +370,10 @@ export async function generateAIDirectMail(params: DirectMailParams): Promise<Di
     // piece went out attributed to an agent with no name, phone or email.
     // Read the users row THROUGH the agents row instead of guessing the class.
     const [agentResult, brandResult, propertyResult] = await Promise.all([
-      supabase.from("agents").select("users(first_name, last_name, phone, email)").eq("id", params.agentId).maybeSingle(),
+      // brokerage_id rides along on the lookup already being made: it is the
+      // TENANT of the campaign written at the end of this function. See the
+      // stamp on the insert below.
+      supabase.from("agents").select("brokerage_id, users(first_name, last_name, phone, email)").eq("id", params.agentId).maybeSingle(),
       supabase.from("brand_voice_profile").select("*").eq("agent_id", params.agentId).maybeSingle(),
       params.propertyId
         ? supabase.from("listings").select("*").eq("id", params.propertyId).single()
@@ -378,7 +381,37 @@ export async function generateAIDirectMail(params: DirectMailParams): Promise<Di
     ])
 
     // Unwrap the nested users row from the agents join above.
-    const agent = (agentResult.data as { users?: { first_name?: string; last_name?: string; phone?: string; email?: string } | null } | null)?.users ?? null
+    const agentRow = agentResult.data as {
+      brokerage_id?: string | null
+      users?: { first_name?: string; last_name?: string; phone?: string; email?: string } | null
+    } | null
+    const agent = agentRow?.users ?? null
+
+    // TENANT — the AGENTS row this piece is filed under. direct_mail_campaigns
+    // .agent_id FKs agents(id) (see the identity-class note above), and agents
+    // carries brokerage_id; `params.agentId` itself is never used as the tenant,
+    // because agents.id and brokerages.id are disjoint spaces.
+    //
+    // supabase-js RESOLVES a refused query, so the error is read explicitly:
+    // without it, "this read was denied" and "no such agent" are the same empty
+    // result, and this function would go on to spend an AI call and then write a
+    // campaign nobody can see.
+    if (agentResult.error) {
+      return { success: false, error: `Agent lookup refused: ${agentResult.error.message}` }
+    }
+    const mailBrokerageId = (agentRow?.brokerage_id as string | null) ?? null
+    if (!mailBrokerageId) {
+      // Every direct-mail surface narrows: listDirectMailCampaigns,
+      // getDirectMailPerformance, the marketing approval queue and the bundle
+      // attribution cron all filter `.eq("brokerage_id", …)`, and `NULL = <uuid>`
+      // is NULL, never true. An unstamped piece is generated, costed, and then
+      // absent from the queue that is supposed to approve it before it mails.
+      return {
+        success: false,
+        error:
+          "That agent profile carries no brokerage, so the mail piece could not be filed where the approval queue can see it.",
+      }
+    }
     const brandVoice = brandResult.data
     const property = propertyResult.data
 
@@ -473,6 +506,7 @@ Return JSON:
     const { data: saved, error: saveError } = await supabase
       .from("direct_mail_campaigns")
       .insert({
+        brokerage_id: mailBrokerageId, // resolved above from the agents row
         agent_id: params.agentId,
         campaign_name: `${params.mailType} – ${params.targetAudience}`,
         piece_type: params.mailType,

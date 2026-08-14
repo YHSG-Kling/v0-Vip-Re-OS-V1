@@ -111,12 +111,40 @@ Generate a response that helps the agent communicate more effectively while main
           // ai_suggestions live columns: session_id, suggestion_type, suggestion_content,
           // confidence_score (no message_id/content/them_first_score columns — the
           // them-first score is still returned to the client in the SSE done event below).
-          await supabase.from("ai_suggestions").insert({
+          //
+          // TENANT — `session.brokerage_id`, i.e. the CONVERSATION this suggestion
+          // hangs off, already read and access-checked above with `select("*")`.
+          // It is deliberately NOT taken from a session/ctx: this file is a ROUTE
+          // handler on a SERVICE client, `userId` arrives in the POST body, and
+          // there is no authenticated caller here to derive a tenant from. The
+          // parent row is the only source on this path that cannot be forged into
+          // a different tenant than the row it is attached to.
+          //
+          // Unstamped is not merely untidy here: getChatSession in
+          // app/actions/ai-chat.ts reads suggestions back with
+          // `.eq("brokerage_id", brokerageId)`, and `NULL = <uuid>` is NULL, so
+          // every suggestion this streaming route ever wrote was invisible in the
+          // chat UI that asked for it. The `ai_suggestions_set_brokerage` BEFORE
+          // INSERT trigger (migration 065) could not save it either — it resolves
+          // only from agent_id, which this insert does not set.
+          const suggestionBrokerageId = (session.brokerage_id as string | null) ?? null
+          if (!suggestionBrokerageId) {
+            console.error(
+              `[v0] conversation ${sessionId} carries no brokerage_id — ai_suggestions row written untenanted and will not be read back`,
+            )
+          }
+          const { error: suggestionError } = await supabase.from("ai_suggestions").insert({
+            brokerage_id: suggestionBrokerageId,
             session_id: sessionId,
             suggestion_type: "response",
             suggestion_content: fullResponse,
             confidence_score: 0.9,
           })
+          // supabase-js RESOLVES a refused insert; unread, a lost suggestion is
+          // indistinguishable from a stored one.
+          if (suggestionError) {
+            console.error("[v0] ai_suggestions insert failed:", suggestionError.message)
+          }
 
           // Send completion signal
           controller.enqueue(
