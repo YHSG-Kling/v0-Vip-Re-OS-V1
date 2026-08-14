@@ -82,7 +82,10 @@ export default function DataHealthPage() {
         toast.success(`Scan complete — ${(result as any).invalidCount ?? 0} issues found`)
         await loadData()
       } else {
-        toast.error("Scan failed")
+        // Surface the reason verbatim — the scan now refuses honestly
+        // (unauthenticated / no brokerage on the session / contacts unreadable)
+        // and a bare "Scan failed" would hide which of those happened.
+        toast.error((result as any).error ?? "Scan failed")
       }
     })
   }

@@ -1,6 +1,8 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
@@ -34,6 +36,48 @@ interface ExpenseEntry {
 }
 
 type CommissionEntry = CalculateCommissionInput
+
+/**
+ * Resolves the acting tenant from the SESSION and authorizes a caller-supplied
+ * agents.id against it.
+ *
+ * This file is "use server", so every export below is a reachable HTTP endpoint
+ * and `params.agentId` is whatever the caller typed. Deriving the brokerage FROM
+ * that id would let the caller pick which tenant to write into — the exact defect
+ * fixed in submitQuizAttempt. So the tenant comes from getAgentContext() ONLY,
+ * and the named agent is then looked up SCOPED BY that brokerage: a foreign
+ * agents.id simply finds nothing and the write is refused.
+ *
+ * The lookup uses the service client (same convention as
+ * app/actions/admin/team-members.ts) because it is an AUTHORIZATION decision,
+ * not a tenant read — the agents SELECT policy only admits a fixed list of
+ * user_types, so an RLS read would refuse legitimate callers (TC on a colleague's
+ * deal) as if the agent were foreign. Scoping by ctx.brokerageId is what makes it
+ * safe; the actual row writes stay on the RLS-bound client.
+ */
+async function resolveAgentTenant(
+  agentId: string,
+): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+
+  const svc = createServiceClient()
+  const { data: agent, error } = await svc
+    .from("agents")
+    .select("id")
+    .eq("id", agentId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
+
+  // A refused/failed lookup is NOT "no such agent" — surface it rather than
+  // letting a broken read fall through into an untenanted write.
+  if (error) return { ok: false, error: error.message }
+  if (!agent) return { ok: false, error: "Agent not found in your brokerage" }
+
+  return { ok: true, brokerageId: ctx.brokerageId }
+}
 
 /**
  * AI Expense Categorization and Entry
@@ -413,6 +457,12 @@ export async function aiGenerateProfitLossReport(params: {
   const supabase = await createClient()
 
   try {
+    // Tenant comes from the session; params.agentId is authorized against it.
+    const tenant = await resolveAgentTenant(params.agentId)
+    if (!tenant.ok) {
+      return { success: false, error: tenant.error }
+    }
+
     // Get all income for period
   const summaryResult = await loadAgentProfitLossSummaryAction({
   agentId: params.agentId,
@@ -522,6 +572,10 @@ Provide comprehensive analysis:
       .from("financial_reports")
       .insert({
         agent_id: params.agentId,
+        // STAMP: a P&L is the agent's own book inside one brokerage. Left NULL it
+        // satisfies the tenant policy for EVERY brokerage, publishing this agent's
+        // income and expense breakdown to every signed-in user on the platform.
+        brokerage_id: tenant.brokerageId,
         report_type: "profit_loss",
         period_start: params.startDate,
         period_end: params.endDate,
@@ -622,6 +676,12 @@ export async function aiCreateBudget(params: {
   const supabase = await createClient()
 
   try {
+    // Tenant comes from the session; params.agentId is authorized against it.
+    const tenant = await resolveAgentTenant(params.agentId)
+    if (!tenant.ok) {
+      return { success: false, error: tenant.error }
+    }
+
     // Get historical data
     const lastYear = params.year - 1
     const { data: lastYearExpenses } = await supabase
@@ -715,6 +775,11 @@ Create a detailed budget with monthly allocations:
       .from("budgets")
       .insert({
         agent_id: params.agentId,
+        // STAMP: a budget is one agent's income plan and category spend inside one
+        // brokerage. Left NULL it satisfies the tenant policy for EVERY brokerage —
+        // and the policy carries the same NULL escape on UPDATE and DELETE, so a
+        // competing brokerage could read, rewrite or drop this agent's plan.
+        brokerage_id: tenant.brokerageId,
         year: params.year,
         income_goal: params.incomeGoal || lastYearIncome * 1.2,
         budget_data: budget,
@@ -823,12 +888,25 @@ export async function trackDeposit(params: {
   const supabase = await createClient()
 
   try {
+    // Tenant comes from the session, never from params.agentId — this dialog is
+    // opened from the transaction page and passes the TRANSACTION'S agent (a TC or
+    // broker records deposits on a colleague's deal), so the id stays in the
+    // signature and is authorized against the session brokerage instead.
+    const tenant = await resolveAgentTenant(params.agentId)
+    if (!tenant.ok) {
+      return { success: false, error: tenant.error }
+    }
+
     // Create deposit record
     const { data: deposit, error } = await supabase
       .from("deposits")
       .insert({
         agent_id: params.agentId,
         transaction_id: params.transactionId,
+        // STAMP: escrow money. Left NULL this row is readable, editable AND
+        // deletable by every signed-in user of every other brokerage — including
+        // the amount, escrow company and check number.
+        brokerage_id: tenant.brokerageId,
         amount: params.amount,
         deposit_type: params.depositType,
         received_date: params.receivedDate,
@@ -844,16 +922,24 @@ export async function trackDeposit(params: {
 
     if (error) throw error
 
-    // Create compliance task for deposit delivery
-    await supabase.from("compliance_tasks").insert({
+    // Create compliance task for deposit delivery.
+    // The insert error is now READ: this row IS the escrow-delivery obligation, and
+    // the bare await swallowed a refusal — the deposit landed while the duty to
+    // deliver it silently never existed.
+    const { error: complianceError } = await supabase.from("compliance_tasks").insert({
       agent_id: params.agentId,
       transaction_id: params.transactionId,
+      // STAMP: same tenant as the deposit it tracks. Left NULL the obligation is
+      // visible to — and deletable by — every other brokerage on the platform.
+      brokerage_id: tenant.brokerageId,
       task_type: "deposit_delivery",
       description: `Deliver ${params.depositType} of $${params.amount.toLocaleString()} to escrow`,
       due_date: params.dueDate || new Date(new Date(params.receivedDate).getTime() + 3 * 24 * 60 * 60 * 1000).toISOString(),
       status: "pending",
       created_at: new Date().toISOString(),
     })
+
+    if (complianceError) throw complianceError
 
     revalidatePath("/financials")
     revalidatePath("/dashboard/transactions")

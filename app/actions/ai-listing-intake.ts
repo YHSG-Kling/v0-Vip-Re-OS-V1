@@ -156,14 +156,40 @@ Provide realistic estimates in JSON format:
       prompt: enrichmentPrompt,
     })
 
-    // Log the enrichment
-    await supabase.from("ai_usage_log").insert({
+    // Log the enrichment.
+    //
+    // VERDICT: STAMP. This is the METERING ledger — tokens_used per action — and
+    // unstamped it meters to nobody: any per-brokerage cost roll-up keyed on
+    // `brokerage_id` misses the row entirely, while `ai_usage_log_select`
+    // (`is_platform_admin() OR brokerage_id IS NULL OR has_brokerage_access(...)
+    // OR (is_agent_role() AND agent_id = current_user_agent_id())`, granted to
+    // `authenticated`) lets every signed-in user of every OTHER brokerage read it
+    // through the NULL clause. The agent keeps their own rows via that last
+    // clause, so stamping costs them nothing.
+    //
+    // CONVENTION MATCHED, not invented: the sibling metering writer
+    // lib/ai/cost-tracking.ts::logAIUsage stamps `ai_tool_usage.brokerage_id`
+    // from a session-resolved tenant and console.errors a refused insert rather
+    // than swallowing it. Same shape here.
+    //
+    // TENANT SOURCE IS THE SESSION. `ctx` came from getAgentContext() at the top
+    // of this function; the `_agentId` parameter is deliberately ignored, so
+    // neither the agent nor the brokerage on this row is the caller's to name.
+    //
+    // The error is destructured because the enclosing try/catch CANNOT see it —
+    // supabase-js resolves a refused insert, so a rejected metering write was
+    // vanishing silently and the spend went unbilled.
+    const { error: usageLogError } = await supabase.from("ai_usage_log").insert({
       agent_id: agentId,
+      brokerage_id: ctx.brokerageId,
       action_type: "property_enrichment",
       input_data: { address },
       output_data: propertyData,
       tokens_used: 500,
     })
+    if (usageLogError) {
+      console.error("[AI Listing Intake] ai_usage_log insert refused (enrichment unmetered):", usageLogError.message)
+    }
 
     return { success: true, data: propertyData }
   } catch (error) {

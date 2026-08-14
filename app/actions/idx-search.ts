@@ -268,26 +268,92 @@ export async function unsaveProperty(data: {
   return { success: true, message: "Property removed from saved" }
 }
 
-// Track property view for engagement scoring
+/**
+ * Track property view for engagement scoring.
+ *
+ * GATED AND TENANT-STAMPED, both of which were missing.
+ *
+ * All four live `property_views` policies (select / insert-check /
+ * update-both-clauses / delete), granted to `authenticated`, read
+ * `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`. A NULL
+ * brokerage_id SATISFIES that predicate for EVERY tenant, so an unstamped view row —
+ * which names a buyer and how long they stared at a home — was published to, and
+ * editable and deletable by, every signed-in user of every other brokerage.
+ *
+ * `contactId` arrives from a `?contactId=` QUERY PARAM on a page that needs no
+ * session, straight into a `"use server"` export. The tenant is therefore NOT looked
+ * up from it and stamped — that would let the caller choose the brokerage. It goes
+ * through `requireContactAccess`, which proves the caller is either that contact or
+ * staff in the contact's brokerage and only then yields the brokerage id. This also
+ * closes the intent_score write below, which previously let any caller move a lead
+ * score on any contact in any brokerage.
+ *
+ * Service client after the gate, matching `trackPortalActivity` in
+ * app/actions/collaborative-search.ts: the caller here is often the portal contact
+ * themselves, whose `current_user_brokerage_id()` need not be the contact's
+ * brokerage, so they may satisfy neither the stamped INSERT check nor the `contacts`
+ * update under RLS. Every service-client statement is re-scoped by
+ * `access.brokerageId`, so the bypass can only ever touch the tenant the gate proved.
+ */
 export async function trackPropertyView(data: {
   contactId: string
   mlsNumber: string
   timeSpent: number
 }) {
   try {
-    const supabase = await createClient()
+    const { requireContactAccess } = await import("@/lib/portal/require-contact-access")
+    const access = await requireContactAccess(data.contactId)
+    if (!access.ok) {
+      console.error("Track view NOT recorded — caller is not on this contact:", access.error)
+      return { success: false, error: access.error }
+    }
 
-    await supabase.from("property_views").insert({
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const svc = createServiceClient()
+
+    // The result was discarded entirely. supabase-js RESOLVES a refused write rather
+    // than throwing, so the surrounding try/catch never saw an RLS denial and the
+    // action reported success for a row that was never written.
+    const { error: viewError } = await svc.from("property_views").insert({
+      brokerage_id: access.brokerageId,
       contact_id: data.contactId,
       time_spent_seconds: data.timeSpent,
     })
+    if (viewError) {
+      console.error("Track view error:", viewError.message)
+      return { success: false, error: viewError.message }
+    }
 
     if (data.timeSpent > 120) {
-      const { data: contact } = await supabase.from("contacts").select("intent_score").eq("id", data.contactId).single()
+      // `error` is destructured: a refused read used to arrive as `data: null`, which
+      // `(contact?.intent_score || 0)` then laundered into a score of 0 — and the line
+      // below wrote 5 back over whatever the real score was. A failed read must not
+      // become a score reset, so it aborts the bump instead.
+      const { data: contact, error: contactError } = await svc
+        .from("contacts")
+        .select("intent_score")
+        .eq("id", data.contactId)
+        .eq("brokerage_id", access.brokerageId)
+        .maybeSingle()
 
-      const newScore = Math.min((contact?.intent_score || 0) + 5, 100)
+      if (contactError || !contact) {
+        console.error(
+          "Intent score NOT raised — current score unreadable:",
+          contactError?.message ?? "contact not found in this brokerage",
+        )
+        return { success: true }
+      }
 
-      await supabase.from("contacts").update({ intent_score: newScore }).eq("id", data.contactId)
+      const newScore = Math.min((contact.intent_score || 0) + 5, 100)
+
+      const { error: scoreError } = await svc
+        .from("contacts")
+        .update({ intent_score: newScore })
+        .eq("id", data.contactId)
+        .eq("brokerage_id", access.brokerageId)
+      if (scoreError) {
+        console.error("Intent score NOT raised:", scoreError.message)
+      }
     }
 
     return { success: true }

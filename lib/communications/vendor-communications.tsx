@@ -30,14 +30,54 @@ export async function sendVendorBookingConfirmation(params: {
       .eq("id", params.vendorId)
       .single()
 
-    const { data: transaction } = await supabase
+    // The tenant of the ledger row below is derived from this read, so its error
+    // is destructured: supabase-js RESOLVES a refused query, and an un-checked
+    // `{ data }` would turn "permission denied" into an indistinguishable
+    // "not found" — on the one read that decides which brokerage owns the record.
+    const { data: transaction, error: txError } = await supabase
       .from("transactions")
       .select("*, listings(*)")
       .eq("id", params.transactionId)
       .single()
 
+    if (txError && txError.code !== "PGRST116") {
+      console.error("[v0] Vendor booking: transaction read refused:", txError.message)
+      return { success: false, error: "Could not load the transaction for this booking" }
+    }
+
     if (!vendor || !transaction) {
       return { success: false, error: "Vendor or transaction not found" }
+    }
+
+    // ── TENANT OF THIS DELIVERY LEDGER ROW ────────────────────────────────────
+    // VERDICT: STAMP. A vendor communication is TENANT data, not platform data.
+    // The distinction the repo already draws is on the vendor, not on the
+    // booking: `vendors` (which replaced the writer-less `vendor_directory`) is
+    // itself brokerage-scoped but keeps a shared lane — `vendors_tenant_select`
+    // is `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`, so
+    // a NULL-brokerage vendor is a SHARED directory entry several brokerages may
+    // book. What is never shared is the BOOKING: this row records that THIS
+    // brokerage engaged that vendor for that listing on that date.
+    //
+    // Therefore the tenant is the TRANSACTION's, not the vendor's. That matters,
+    // because the live BEFORE INSERT trigger `vendor_communications_set_brokerage()`
+    // back-fills from `vendors.brokerage_id` — precisely the wrong source for a
+    // shared vendor, where it yields NULL. The trigger only fires
+    // `IF NEW.brokerage_id IS NULL`, so an explicit stamp pre-empts it.
+    //
+    // Leaving it NULL does not hide the row. `vc_select` is
+    // `is_platform_admin() OR brokerage_id IS NULL OR has_brokerage_access(...)`,
+    // granted to `authenticated` — so an unstamped row is PUBLISHED to every
+    // signed-in user of every other brokerage.
+    const brokerageId: string | null = (transaction as any).brokerage_id ?? null
+    if (!brokerageId) {
+      // Refused rather than sent-and-filed-untenanted: dispatchEmail needs a real
+      // brokerage for its autonomy/budget gates anyway, so this fails closed on
+      // both halves instead of publishing the ledger row to the whole platform.
+      return {
+        success: false,
+        error: "This transaction has no brokerage, so the booking cannot be sent or recorded",
+      }
     }
 
     const property = transaction.listings
@@ -75,7 +115,7 @@ export async function sendVendorBookingConfirmation(params: {
     // Vendors are B2B service partners, not contacts/leads, so no contactId.
     const { dispatchEmail } = await import("@/lib/providers/dispatch")
     const send = await dispatchEmail({
-      brokerageId: (transaction as any).brokerage_id,
+      brokerageId,
       from: "",
       to: params.vendorEmail,
       subject: `New booking — ${params.serviceType}${property?.address ? ` at ${property.address}` : ""}`,
@@ -88,12 +128,25 @@ export async function sendVendorBookingConfirmation(params: {
     }
 
     // Delivery ledger — written ONLY after a real successful dispatch.
-    await supabase.from("vendor_communications").insert({
+    //
+    // The error is destructured for that exact reason: the mail HAS gone out by
+    // this line, so a silently-refused insert means a real message with no record
+    // of it. supabase-js resolves a refused insert, and the enclosing try/catch
+    // would never have seen it. The send is not un-done (it cannot be), but the
+    // gap is reported instead of vanishing.
+    const { error: ledgerError } = await supabase.from("vendor_communications").insert({
+      brokerage_id: brokerageId,
       vendor_id: params.vendorId,
       service_id: params.serviceId,
       communication_type: "booking_confirmation",
       sent_at: new Date().toISOString(),
     })
+    if (ledgerError) {
+      console.error(
+        `[v0] Vendor booking confirmation SENT to ${params.vendorEmail} but the delivery-ledger write was refused (service ${params.serviceId}):`,
+        ledgerError.message,
+      )
+    }
 
     return { success: true }
   } catch (error) {
@@ -120,11 +173,19 @@ export async function sendVendorServiceReminder(params: {
     // Live FK: listing_marketing_services.vendor_id → vendors(id) — the old
     // vendor_directory embed had no FK to resolve, so PostgREST errored this
     // whole select and the reminder could never send (round-4 repoint).
-    const { data: service } = await supabase
+    // Error destructured — this read is the tenant source for the ledger row
+    // below, and a refused query resolves rather than throwing (see the note in
+    // sendVendorBookingConfirmation above).
+    const { data: service, error: serviceError } = await supabase
       .from("listing_marketing_services")
       .select("*, vendors(*), transactions(*, listings(*))")
       .eq("id", params.serviceId)
       .single()
+
+    if (serviceError && serviceError.code !== "PGRST116") {
+      console.error("[v0] Vendor reminder: service read refused:", serviceError.message)
+      return { success: false, error: "Could not load the service for this reminder" }
+    }
 
     if (!service) {
       return { success: false, error: "Service not found" }
@@ -132,6 +193,24 @@ export async function sendVendorServiceReminder(params: {
 
     const vendor = service.vendors
     const property = service.transactions?.listings
+
+    // ── TENANT OF THIS DELIVERY LEDGER ROW ────────────────────────────────────
+    // VERDICT: STAMP, on the same reasoning recorded in
+    // sendVendorBookingConfirmation above — the vendor may be a shared directory
+    // entry, but the engagement this row records belongs to one brokerage.
+    //
+    // `listing_marketing_services` carries its own `brokerage_id` (back-filled by
+    // the live `listing_marketing_services_set_brokerage_trg`), so the service row
+    // is the nearest tenant of record; the parent transaction is the fallback.
+    // Neither is caller-supplied: both are read from the row named by serviceId.
+    const brokerageId: string | null =
+      ((service as any).brokerage_id ?? (service as any).transactions?.brokerage_id) || null
+    if (!brokerageId) {
+      return {
+        success: false,
+        error: "This service has no brokerage, so the reminder cannot be sent or recorded",
+      }
+    }
 
     const emailHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -154,7 +233,7 @@ export async function sendVendorServiceReminder(params: {
     if (!vendor?.email) return { success: false, error: "Vendor has no email on file" }
     const { dispatchEmail } = await import("@/lib/providers/dispatch")
     const send = await dispatchEmail({
-      brokerageId: (service as any).transactions?.brokerage_id,
+      brokerageId,
       from: "",
       to: vendor.email,
       subject: `Service reminder — ${service.service_type} due in ${params.daysUntilDue} day${params.daysUntilDue === 1 ? "" : "s"}`,
@@ -166,13 +245,22 @@ export async function sendVendorServiceReminder(params: {
       return { success: false, error: send.error ?? "Email dispatch failed" }
     }
 
-    // Delivery ledger — written ONLY after a real successful dispatch.
-    await supabase.from("vendor_communications").insert({
+    // Delivery ledger — written ONLY after a real successful dispatch. Error
+    // checked for the same reason as the booking ledger above: the reminder has
+    // already left, so a silently-refused row is a sent message with no record.
+    const { error: ledgerError } = await supabase.from("vendor_communications").insert({
+      brokerage_id: brokerageId,
       vendor_id: params.vendorId,
       service_id: params.serviceId,
       communication_type: "service_reminder",
       sent_at: new Date().toISOString(),
     })
+    if (ledgerError) {
+      console.error(
+        `[v0] Vendor service reminder SENT to ${vendor.email} but the delivery-ledger write was refused (service ${params.serviceId}):`,
+        ledgerError.message,
+      )
+    }
 
     return { success: true }
   } catch (error) {

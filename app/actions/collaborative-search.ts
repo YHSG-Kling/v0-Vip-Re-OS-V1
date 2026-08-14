@@ -8,6 +8,39 @@ const COLLAB_SEARCH_AVAILABLE = process.env.COLLABORATIVE_SEARCH_ENABLED !== 'fa
 
 // ==================== COLLABORATIVE SEARCH CRUD ====================
 
+/**
+ * Create a family/collaborative search for a contact.
+ *
+ * GATED AND TENANT-STAMPED, both of which were missing.
+ *
+ * All four live `collaborative_searches` policies (select / insert-check /
+ * update-both-clauses / delete), granted to `authenticated`, read
+ * `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`. A NULL
+ * brokerage_id SATISFIES that predicate for EVERY tenant, so an unstamped search —
+ * which carries the buyer's name and their search criteria — was published to, and
+ * editable and deletable by, every signed-in user of every other brokerage.
+ *
+ * The tenant is NOT looked up from `contactId` and stamped: that argument is
+ * caller-supplied into a `"use server"` export, and taking the tenant from it would
+ * let the caller choose which brokerage to write into. It goes through
+ * `requireContactAccess`, the same shared portal gate `trackPortalActivity` below
+ * uses — which PROVES the caller is either that contact or staff in the contact's
+ * brokerage before yielding the brokerage id. A foreign contactId is refused, not
+ * stamped.
+ *
+ * Service client for the writes, for the reason documented on `trackPortalActivity`
+ * below: the gate has already proven the caller, and a portal contact (whose own
+ * `current_user_brokerage_id()` need not be the contact's) may satisfy neither the
+ * stamped INSERT check nor a read of their own `contacts` row under RLS. Both
+ * statements are re-scoped by `access.brokerageId` so the bypass can only touch the
+ * tenant the gate proved.
+ *
+ * Stamping does NOT lock the buyer out of their own search: the second SELECT policy
+ * `portal_read_collaborative_searches` admits rows via `portal_member_searches()`,
+ * a SECURITY DEFINER function that matches on the caller's JWT email against the
+ * search's contact / created_by contact or an invited member row. It carries no
+ * brokerage test at all, so the portal reader is untouched by this change.
+ */
 export async function createCollaborativeSearch(
   contactId: string,
   name: string,
@@ -15,11 +48,21 @@ export async function createCollaborativeSearch(
   searchCriteria?: Record<string, any>,
 ) {
   if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not yet available." }
-  const supabase = await createClient()
 
-  const { data, error } = await supabase
+  const { requireContactAccess } = await import("@/lib/portal/require-contact-access")
+  const access = await requireContactAccess(contactId)
+  if (!access.ok) {
+    console.error("[v0] Error creating collaborative search: caller is not on this contact:", access.error)
+    return { error: access.error }
+  }
+
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+
+  const { data, error } = await svc
     .from("collaborative_searches")
     .insert({
+      brokerage_id: access.brokerageId,
       contact_id: contactId,
       name,
       description,
@@ -33,15 +76,22 @@ export async function createCollaborativeSearch(
     return { error: error.message }
   }
 
-  // Add the contact as the owner member
-  const { data: contact } = await supabase
+  // Add the contact as the owner member. `error` is destructured because supabase-js
+  // RESOLVES a refused read — `const { data: contact }` alone reported a denial as
+  // "this contact has no email" and silently produced an owner-less search.
+  const { data: contact, error: contactError } = await svc
     .from("contacts")
     .select("email, first_name, last_name")
     .eq("id", contactId)
-    .single()
+    .eq("brokerage_id", access.brokerageId)
+    .maybeSingle()
+
+  if (contactError) {
+    console.error("[v0] Owner lookup refused — search created without an owner member:", contactError.message)
+  }
 
   if (contact?.email) {
-    await supabase.from("collaborative_search_members").insert({
+    const { error: memberError } = await svc.from("collaborative_search_members").insert({
       collaborative_search_id: data.id,
       email: contact.email,
       name: `${contact.first_name || ""} ${contact.last_name || ""}`.trim() || "Owner",
@@ -49,6 +99,9 @@ export async function createCollaborativeSearch(
       invite_status: "accepted",
       accepted_at: new Date().toISOString(),
     })
+    if (memberError) {
+      console.error("[v0] Owner member NOT recorded for collaborative search:", memberError.message)
+    }
   }
 
   revalidatePath(`/portal/${contactId}`)

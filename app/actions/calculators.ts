@@ -38,7 +38,10 @@ const MAX_PUBLIC_TEXT_CHARS = 200
 const PUBLIC_CALC_LIMITS = {
   /** Analytics pings. Generous — a real visitor clicking through tools trips several. */
   toolUsage: { limit: 30, windowMs: 60_000 },
-  /** Persisted saves, keyed to a visitor id. */
+  /** Persisted saves, keyed to a visitor id. NOT a logged-out lane despite this
+   *  block's heading — `saveCalculation` is reached only from the signed-in
+   *  dashboard and now requires a session to resolve its tenant. The per-IP bound
+   *  stays because the endpoint is still a reachable `"use server"` export. */
   saveCalculation: { limit: 10, windowMs: 60_000 },
   /** Outbound mail. Tightest — the platform's sending reputation is on the line. */
   emailResults: { limit: 5, windowMs: 60_000 },
@@ -716,6 +719,38 @@ export async function saveCalculatorResult(data: {
  * The `try/catch` this used to carry CAUGHT NOTHING: supabase-js RESOLVES a
  * refused insert rather than rejecting, so a 23502/42501 arrived as a fulfilled
  * promise and the handler never ran. `error` is destructured now.
+ *
+ * ── TENANT VERDICT: DECIDE FOR THE ANONYMOUS LANE, STAMP FOR THE REST ────────
+ * This writer is reached from BOTH sides, which is why it is neither a flat
+ * "always NULL" nor a flat "always stamp":
+ *
+ *   · A genuinely logged-out visitor on the public calculators has NO tenant.
+ *     NULL is the correct value for them, and forcing one on would be inventing
+ *     an attribution. The m394 `keep_anon_insert` carve-out (carried by m396,
+ *     asserted by m395/m397) exists precisely so that lane keeps working, and
+ *     nothing here narrows it — `tool_usage_sessions_insert` is still
+ *     `WITH CHECK (true)` to PUBLIC (verified live).
+ *   · But `calculateRentVsBuy` is called from /dashboard/calculators and
+ *     /dashboard/ai-tools — signed-in screens — and `calculateHomeValue` has
+ *     ALREADY resolved a brokerage before it gets here (session, or
+ *     `agents.public_slug` for a public visitor). Those rows have a real tenant
+ *     and were being filed without it.
+ *
+ * WHY THAT MATTERED, both ways round. `tool_usage_sessions_select` is
+ * `is_platform_admin() OR brokerage_id IS NULL OR has_brokerage_access(...)`
+ * granted to `authenticated`, so an unstamped row is not hidden — it is readable
+ * by every signed-in user of every other brokerage. And in the other direction,
+ * the one reader that exists (app/actions/analytics.ts aggregateValueDelivered)
+ * filters `.eq("brokerage_id", brokerageId)`; `NULL = <uuid>` is NULL, never
+ * true, so that metric has been counting ZERO tool sessions for every brokerage
+ * since the column was added. Stamping the attributable rows is what makes it
+ * count anything. Anonymous rows stay uncounted, which is honest — they cannot
+ * be attributed to a brokerage.
+ *
+ * `brokerageId` is only ever passed here already-RESOLVED by the caller (from a
+ * session or from a public slug). It is never taken from a caller-supplied
+ * parameter — `calculateRentVsBuy` accepts a `brokerageId` argument for its
+ * commission lookup and that value is deliberately NOT used for this stamp.
  */
 async function trackToolUsage(data: {
   tool: string
@@ -723,6 +758,8 @@ async function trackToolUsage(data: {
   inputs: any
   location?: string
   timeSpent?: number
+  /** Session- or slug-resolved tenant. NULL for a genuinely anonymous visitor. */
+  brokerageId?: string | null
 }) {
   const verdict = await publicCalcRateVerdict("toolUsage")
   if (!verdict.allowed) {
@@ -746,6 +783,9 @@ async function trackToolUsage(data: {
   const { error } = await supabase.from("tool_usage_sessions").insert({
     tool_name: boundPublicText(data.tool) ?? "unknown",
     visitor_id: boundPublicText(data.visitorId),
+    // Tenant when one was resolved, NULL for the anonymous lane. See the verdict
+    // in the doc comment above — this is the one column that must NOT be forced.
+    brokerage_id: data.brokerageId ?? null,
     session_data_json: boundPersistedPayload({
       inputs: data.inputs,
       location: boundPublicText(data.location),
@@ -758,6 +798,36 @@ async function trackToolUsage(data: {
     // Recorded, never rethrown — analytics must not break a public calculator.
     console.error("[calculators.trackToolUsage] tracking insert refused:", error.message)
   }
+}
+
+/**
+ * The caller's brokerage, from the SESSION, or null when there is no session.
+ *
+ * The one legitimate way for a public-surface action in this file to learn a
+ * tenant: `getAgentContext()` reads `supabase.auth.getUser()` and never throws,
+ * returning an unauthenticated context instead. Dynamic import to match
+ * `calculateHomeValue` below, which already resolves its brokerage this way.
+ *
+ * NULL here is a real answer ("this visitor is anonymous"), not a failed lookup —
+ * which is exactly why it is safe to write it to `tool_usage_sessions`, a table
+ * with a deliberate anon carve-out, and NOT to `saved_calculations`, which has
+ * none.
+ *
+ * ONE DIVERGENCE WORTH KNOWING, since a stamp taken from here is later matched by
+ * RLS: `current_user_brokerage_id()` is `SELECT brokerage_id FROM users WHERE
+ * id = auth.uid()`, whereas getAgentContext() falls back to
+ * `user_role_assignments.brokerage_id` and then to auth metadata when
+ * `users.brokerage_id` is null. For every normal user the two agree (the dashboard
+ * page that reaches these actions reads `users.brokerage_id` itself). For a user
+ * carrying a brokerage ONLY on a role assignment they would diverge, and that user
+ * could not read back their own saved row. Not papered over with a NULL stamp —
+ * that would publish the row to the whole platform, which is strictly worse.
+ * Reconciling the two resolvers is a change to lib/identity, not to this file.
+ */
+async function sessionBrokerageIdOrNull(): Promise<string | null> {
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const session = await getAgentContext()
+  return session.isAuthenticated && session.brokerageId ? session.brokerageId : null
 }
 
 // Generate an anonymous visitor ID.
@@ -944,12 +1014,15 @@ export async function calculateHomeValue(
       }),
     ])
 
-    // Track usage anonymously regardless of whether comps were found.
+    // Track usage regardless of whether comps were found. The tenant is the one
+    // RESOLVED above (session, else `agents.public_slug`) — the same brokerage
+    // this call's paid comp sourcing is billed to. Never a caller-named uuid.
     await trackToolUsage({
       tool: "home_value",
       visitorId: vid,
       inputs: { address, city: opts.city ?? null, state: opts.state, zipCode: opts.zipCode ?? null },
       location: opts.city ?? undefined,
+      brokerageId,
     })
 
     // No comp survived → there is no value to show. Say that; do not fall back to
@@ -1083,11 +1156,14 @@ export async function calculateAffordability(data: {
 
   const totalMonthlyPayment = monthlyPI + monthlyPropertyTax + monthlyInsurance + monthlyPMI + hoaFees
 
-  // Track usage
+  // Track usage. Tenant from the SESSION only — this action takes no brokerage
+  // argument and must not acquire one, so a logged-out visitor files an
+  // untenanted (anonymous) row and a signed-in caller files an attributable one.
   await trackToolUsage({
     tool: "affordability",
     visitorId: vid,
     inputs: data,
+    brokerageId: await sessionBrokerageIdOrNull(),
   })
 
   return {
@@ -1181,12 +1257,17 @@ export async function calculateRentVsBuy(data: {
     (data.downPayment + data.homePrice * 0.025) / ((totalMonthlyOwnership - data.rentAmount) * 12 + data.homePrice * appreciationRate),
   )
 
-  // Track usage
+  // Track usage. NOT `data.brokerageId` — that parameter is the caller's to name
+  // (this is a `"use server"` export), and stamping from it would let any caller
+  // choose which tenant's analytics they land in. The commission lookup above can
+  // live with a caller-supplied id because it only READS a config; a tenant stamp
+  // cannot. Resolved from the session instead, NULL when there is none.
   await trackToolUsage({
     tool: "rent_vs_buy",
     visitorId: vid,
     inputs: data,
     location: data.city,
+    brokerageId: await sessionBrokerageIdOrNull(),
   })
 
   const recommendation =
@@ -1226,23 +1307,45 @@ export async function calculateRentVsBuy(data: {
 /**
  * Persist a calculation under a visitor id.
  *
- * SECOND LOGGED-OUT WRITE PATH ON THIS SURFACE, covered on the same ruling as
- * `trackToolUsage` — per-IP volume plus a payload cap, degrading OPEN if the
- * limiter is unavailable.
+ * Covered by the same abuse ruling as `trackToolUsage` — per-IP volume plus a
+ * payload cap, degrading OPEN if the limiter is unavailable.
  *
- * MEASURED CORRECTION, recorded rather than assumed: unlike `tool_usage_sessions`,
- * this table is NOT anon-writable. `saved_calculations_insert` is granted to role
- * `authenticated` only (verified live), so a genuinely logged-out visitor's save is
- * refused by RLS today and this action honestly returns `success: false`. The
- * rate limit is still the right bound — the endpoint is reachable by any signed-in
- * caller and by anyone once that policy is widened to match the "no email
- * required" copy — but it is not, as of now, the last line of defence it would be
- * on `tool_usage_sessions`. The comments in `getSavedCalculations` and
- * `emailCalculationResults` below that describe this table's rows as
- * "anon-readable via the `brokerage_id IS NULL` clause" are WRONG for the same
- * reason: that policy is scoped to `authenticated`, and role `anon` matches no
- * SELECT policy at all. Left in place rather than rewritten here — correcting a
- * security narrative is worth its own deliberate pass.
+ * ── THE LANE IS NOT LOGGED-OUT. THE COMMENT SAID IT WAS. ─────────────────────
+ * This was documented as the "second logged-out write path on this surface".
+ * Measured, not assumed: the ONLY caller of saveCalculation is
+ * app/dashboard/calculators/calculators-client.tsx (three call sites), and
+ * app/dashboard/calculators/page.tsx `redirect("/login")`s an unauthenticated
+ * visitor before that client ever mounts. So every real save already comes from
+ * a signed-in dashboard user — which is exactly what the live policy says too:
+ * `saved_calculations_insert` is granted to `authenticated` only, so a genuinely
+ * logged-out save was being refused by RLS and returning `success: false`. The
+ * wiring and the policy agree; only the comment disagreed with both.
+ *
+ * ── TENANT VERDICT: STAMP ────────────────────────────────────────────────────
+ * A session is therefore always available, so a tenant always is. It is resolved
+ * from the SESSION (`getAgentContext()`), never from anything the caller sends —
+ * this is a `"use server"` export and every argument is the caller's to choose.
+ *
+ * ── WHAT LEAVING IT NULL ACTUALLY DID (the correction this pass exists for) ──
+ * The earlier note said the sibling comments describing these rows as
+ * "anon-readable" were wrong, and it was right — every SELECT policy on
+ * `saved_calculations` is granted to `authenticated`, and role `anon` matches no
+ * SELECT policy at all. Verified live again today.
+ *
+ * But the true statement is NOT "so there is no exposure". `saved_calculations_select`
+ * is `is_platform_admin() OR brokerage_id IS NULL OR has_brokerage_access(...)`,
+ * and this function never stamped `brokerage_id` — so EVERY row in the table was
+ * readable by EVERY SIGNED-IN USER OF EVERY OTHER BROKERAGE through that middle
+ * clause. The rows carry `user_email` and `user_name`. That is real PII crossing
+ * a real tenant boundary; it is only the ANONYMOUS half of the old claim that was
+ * overstated. Stamping closes it: `has_brokerage_access(brokerage_id)` then
+ * admits only the saver's own brokerage.
+ *
+ * The mitigations downstream (the blank-visitorId refusal and the enumerated
+ * columns in `getSavedCalculations`, the visitor-id binding and on-record
+ * destination in `emailCalculationResults`) are UNCHANGED and still necessary —
+ * the visitor id is still the retrieval credential, and a colleague inside the
+ * same brokerage is still not the person who saved the row.
  */
 export async function saveCalculation(data: {
   toolName: string
@@ -1259,6 +1362,19 @@ export async function saveCalculation(data: {
     }
   }
 
+  // Tenant BEFORE the write. Refused rather than filed untenanted: an unstamped
+  // row here is not a hidden row, it is one published to every other brokerage
+  // (see the verdict above), and this table has no anon carve-out to preserve —
+  // its INSERT policy is `authenticated`-only, so a session-less caller was
+  // already being refused by RLS. This just refuses it honestly and in words.
+  const brokerageId = await sessionBrokerageIdOrNull()
+  if (!brokerageId) {
+    return {
+      success: false,
+      error: "Sign in to save a calculation — saved calculations belong to your brokerage.",
+    }
+  }
+
   const supabase = await createClient()
 
   try {
@@ -1270,6 +1386,7 @@ export async function saveCalculation(data: {
         // row is: on a public lane the caller otherwise decides the row size.
         tool_name: boundPublicText(data.toolName) ?? "unknown",
         visitor_id: boundPublicText(data.visitorId),
+        brokerage_id: brokerageId,
         calculation_data_json: boundPersistedPayload(data.calculationData),
         user_email: boundPublicText(data.email),
         user_name: boundPublicText(data.name),
@@ -1330,12 +1447,18 @@ export async function saveCalculation(data: {
  * browser); the missing piece is now purely UI. See the handoff in
  * docs/orphan-burndown-w2s2.md.
  *
- * Public by design (these are the no-login lead-magnet calculators), so the
- * visitor id IS the credential — and RLS does not help: the live SELECT policy on
- * saved_calculations is
- * `is_platform_admin() OR brokerage_id IS NULL OR has_brokerage_access(...)`, and
- * saveCalculation never sets brokerage_id, so every row is anon-readable by that
- * middle clause. Two consequences handled here:
+ * The visitor id IS the retrieval credential, and RLS is not a substitute for it.
+ * CORRECTED (this comment previously said these rows were "anon-readable", which
+ * was wrong in one direction and complacent in the other): the live SELECT policy
+ * on saved_calculations is
+ * `is_platform_admin() OR brokerage_id IS NULL OR has_brokerage_access(...)`
+ * granted to `authenticated` — role `anon` matches NO select policy on this table,
+ * so an anonymous caller reads nothing. What the `brokerage_id IS NULL` clause did
+ * instead was PUBLISH every unstamped row to every signed-in user of every OTHER
+ * brokerage, because saveCalculation never stamped. It stamps now, so this read is
+ * scoped by `has_brokerage_access` to the saver's own brokerage — but a colleague
+ * inside that brokerage is still not the person who saved the row, which is why
+ * both mitigations below stay exactly as they are:
  *   · an empty/blank id is refused outright, so this can never degrade into
  *     `.eq("visitor_id", "")` matching rows saved with a missing id;
  *   · the columns are enumerated instead of `select("*")`. user_email and
@@ -1387,15 +1510,25 @@ export async function getSavedCalculations(visitorId: string) {
  *      sending domain to any address they chose, with attacker-influenced
  *      content (the calculation body). That is a deliverability/reputation
  *      incident waiting to happen, not a theoretical one.
- *   2. PII EXFILTRATION. The row carries user_email and user_name. RLS does
- *      NOT stop this read: the live SELECT policy is
+ *   2. PII EXFILTRATION. The row carries user_email and user_name, and RLS did
+ *      NOT stop this read. CORRECTED — this said "anon-readable", which is not
+ *      what the policy does. The live SELECT policy is
  *      `is_platform_admin() OR brokerage_id IS NULL OR has_brokerage_access(...)`
- *      and saveCalculation() above never sets brokerage_id — so EVERY row in
- *      this table is anon-readable by that second clause. Verified against the
- *      live schema, not assumed.
+ *      granted to `authenticated`; role `anon` matches no SELECT policy on this
+ *      table at all. But saveCalculation() above never set brokerage_id, so that
+ *      middle clause made EVERY row readable by EVERY SIGNED-IN USER OF EVERY
+ *      OTHER BROKERAGE — cross-tenant PII, not anonymous PII. Re-verified against
+ *      the live policy, not assumed. saveCalculation() stamps now, so rows are
+ *      scoped to the saving brokerage. No backfill was needed: the table held
+ *      zero rows when the stamp went in (counted live, not presumed).
  *
- * The fix keeps the lane public (requiring a login would defeat a lead-magnet
- * calculator) but binds both ends to something the caller must already hold:
+ * The fix binds both ends to something the caller must already hold. It leaves
+ * the ENDPOINT unauthenticated — it is still a reachable `"use server"` export
+ * with no login gate, which is what "public" meant here — but note that since
+ * saveCalculation() now stamps `brokerage_id`, the row read below is reachable
+ * only by the saving brokerage, so in practice an anonymous caller gets nothing
+ * from this action either. The two bindings are what make that safe rather than
+ * incidental:
  *
  *   · The row is fetched scoped by `visitorId`, the same opaque per-visitor
  *     secret getSavedCalculations() already treats as the retrieval key. You

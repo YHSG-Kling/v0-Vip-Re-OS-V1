@@ -104,29 +104,77 @@ export async function getDataHealthStats() {
 }
 
 // Run data hygiene scan
+/**
+ * A hygiene scan is ONE TENANT'S scan, and both rows it writes are that
+ * tenant's data — not the platform's.
+ *
+ * Both writes used to omit brokerage_id, and the SELECT policy on each table is
+ * `is_platform_admin() OR (brokerage_id IS NULL) OR has_brokerage_access(brokerage_id)`
+ * granted to `authenticated`. A NULL brokerage_id SATISFIES that predicate for
+ * every tenant, so every unstamped scan and every unstamped finding was
+ * readable by every signed-in user of every other brokerage. That matters most
+ * on data_health_logs, whose `current_value` column holds the offending field
+ * VERBATIM — a real contact's email address or phone number. The leak was
+ * contact PII, not just scan metadata.
+ *
+ * Stamping also repairs a control that could never fire: the delete policy on
+ * both tables is `is_platform_admin() OR (is_brokerage_admin() AND
+ * has_brokerage_access(brokerage_id))`, and `has_brokerage_access(NULL)` is
+ * false — so until now a brokerage admin could not delete their own scan
+ * history at all.
+ */
 export async function runDataHygieneScan() {
+  // Tenant from the SESSION, never from a parameter (this export takes none).
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) {
+    return { success: false, error: "Unauthenticated", invalidCount: 0 }
+  }
+  if (!ctx.brokerageId) {
+    return { success: false, error: "Brokerage not configured", invalidCount: 0 }
+  }
+
   const supabase = await createClient()
-  
+
   try {
     // Create a new scan record
     const { data: scan, error: scanError } = await supabase
       .from("data_health_scans")
       .insert({
+        brokerage_id: ctx.brokerageId,
         scan_type: "full",
         status: "running",
         started_at: new Date().toISOString(),
       })
       .select()
       .single()
-    
+
     if (scanError) throw scanError
-    
-    // Get all contacts to validate
-    const { data: contacts } = await supabase
+
+    // Get all contacts to validate — scoped to the brokerage the scan is filed
+    // under (same anchor getDataHealthStats uses). RLS alone is not enough here:
+    // a platform-admin session reads contacts across every tenant, and a scan
+    // that walked several brokerages' contacts must not be stamped as one
+    // brokerage's scan.
+    const { data: contacts, error: contactsError } = await supabase
       .from("contacts")
       .select("id, email, phone, first_name, last_name")
+      .eq("brokerage_id", ctx.brokerageId)
       .limit(1000)
-    
+
+    // A refused read is NOT "no contacts". Completing the scan on a read that
+    // failed would file a clean bill of health nobody measured.
+    if (contactsError) {
+      await supabase
+        .from("data_health_scans")
+        .update({ status: "failed", completed_at: new Date().toISOString() })
+        .eq("id", scan.id)
+      return {
+        success: false,
+        error: `Could not read contacts, so nothing was scanned: ${contactsError.message}`,
+        invalidCount: 0,
+      }
+    }
+
     if (!contacts || contacts.length === 0) {
       await supabase
         .from("data_health_scans")
@@ -142,16 +190,22 @@ export async function runDataHygieneScan() {
     }
     
     let issuesFound = 0
-    
+    let issuesRecorded = 0
+
     // Validate each contact
     for (const contact of contacts) {
       const validationResult = await validateContact(contact)
-      
+
       if (validationResult.status !== "Valid") {
         issuesFound++
-        
-        // Log the invalid/risky contact
-        await supabase.from("data_health_logs").insert({
+
+        // Log the invalid/risky contact — same tenant as the parent scan.
+        // Migration 051 installs a BEFORE INSERT trigger that denormalizes
+        // brokerage_id off data_health_scans, but that trigger only copies what
+        // the scan carries and runs with the caller's rights; the stamp is
+        // written explicitly here so this row's tenancy does not depend on it.
+        const { error: logError } = await supabase.from("data_health_logs").insert({
+          brokerage_id: ctx.brokerageId,
           scan_id: scan.id,
           entity_type: "contact",
           entity_id: contact.id,
@@ -163,21 +217,38 @@ export async function runDataHygieneScan() {
           severity: validationResult.status === "Invalid" ? "high" : "medium",
           detected_at: new Date().toISOString(),
         })
+        // A refused insert used to vanish: issues_found counted findings the log
+        // never received, so the dashboard showed an Invalid count with no rows
+        // behind it and purgeInvalidContacts had nothing to act on.
+        if (logError) {
+          console.error(
+            `[runDataHygieneScan] could not record finding for contact ${contact.id}:`,
+            logError.message,
+          )
+          continue
+        }
+        issuesRecorded++
       }
     }
-    
-    // Update scan with results
+
+    // Update scan with results — issues_found is what the log ACTUALLY holds,
+    // so the scan row and the log rows agree.
     await supabase
       .from("data_health_scans")
       .update({
         status: "completed",
         completed_at: new Date().toISOString(),
         total_records_scanned: contacts.length,
-        issues_found: issuesFound,
+        issues_found: issuesRecorded,
       })
       .eq("id", scan.id)
-    
-    return { success: true, invalidCount: issuesFound, scannedCount: contacts.length }
+
+    return {
+      success: true,
+      invalidCount: issuesFound,
+      recordedCount: issuesRecorded,
+      scannedCount: contacts.length,
+    }
   } catch (error) {
     console.error("Failed to run data hygiene scan:", error)
     return { success: false, error: "Failed to run scan", invalidCount: 0 }

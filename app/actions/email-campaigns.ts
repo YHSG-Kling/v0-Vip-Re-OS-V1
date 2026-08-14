@@ -689,10 +689,23 @@ export async function prepareListingEmailCampaign(params: {
 
     // A refused email_sends insert used to vanish: the campaign reported N
     // recipients while the queue the sender drains stayed empty.
+    //
+    // brokerage_id is stamped explicitly from `brokerageId` above — resolved
+    // from the listing/transaction this session was allowed to READ (both
+    // tables' SELECT policies are strictly tenant-scoped with no NULL escape),
+    // so it is session-authorized, not inherited from params.transactionId.
+    // Migration 052 installs a BEFORE INSERT trigger that would denormalize it
+    // off email_campaigns, but it only fires when the column is NULL and runs
+    // with the caller's rights; an email_sends row names a real contact and the
+    // campaign that targeted them — recipient-targeting data — and the SELECT
+    // policy's `brokerage_id IS NULL` branch publishes an unstamped row to every
+    // signed-in user of every other brokerage. That guarantee should not rest on
+    // a trigger.
     const uniqueRecipients = [...new Set(recipients.filter(Boolean))]
     let queued = 0
     for (const contactId of uniqueRecipients) {
       const { error: queueError } = await supabase.from("email_sends").insert({
+        brokerage_id: brokerageId,
         campaign_id: campaign.id,
         contact_id: contactId,
         status: "queued",

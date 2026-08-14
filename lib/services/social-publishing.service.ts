@@ -127,19 +127,63 @@ export async function schedulePost(params: {
 
     const supabase = await createClient()
 
-    // Update post with schedule
-    const { error } = await supabase
+    // TENANT ANCHOR. params.postId is caller-supplied, so the post is READ FIRST
+    // through the session client: social_posts' SELECT policy is tenant-scoped,
+    // so a post this session may not see does not come back and the schedule is
+    // refused instead of silently no-op'ing. The row it returns is also where
+    // the orchestrator task's brokerage_id comes from — resolved before anything
+    // is mutated, so a post with no tenant is refused rather than half-scheduled.
+    const { data: post, error: postError } = await supabase
+      .from("social_posts")
+      .select("id, brokerage_id")
+      .eq("id", params.postId)
+      .maybeSingle()
+
+    if (postError) throw postError
+    if (!post) throw new NotFoundError("Post not found")
+
+    const brokerageId = (post as { brokerage_id: string | null }).brokerage_id
+    if (!brokerageId) {
+      // Not a "could not find the tenant" shrug — the post itself carries no
+      // brokerage, so there is no tenant to file the queued task under and
+      // stamping it from anywhere else would be a guess.
+      return { success: false, error: "Post has no brokerage — cannot schedule it" }
+    }
+
+    // Update post with schedule. .select("id") because supabase-js RESOLVES a
+    // query RLS refused: an update that matched zero rows returns error null,
+    // so `if (error) throw` alone reported success for a post that never moved.
+    const { data: updated, error } = await supabase
       .from("social_posts")
       .update({
         status: "scheduled",
         scheduled_for: params.scheduledFor
       })
       .eq("id", params.postId)
+      .select("id")
 
     if (error) throw error
+    if (!updated || updated.length === 0) {
+      return { success: false, error: "Post could not be scheduled — the update was refused" }
+    }
 
-    // Create orchestrator task for scheduled publishing
-    await supabase.from("orchestrator_tasks").insert({
+    // Create orchestrator task for scheduled publishing.
+    //
+    // STAMPED, and the insert is CHECKED. This row is the queue entry the
+    // queue-drain cron reconciles; it belongs to the post's brokerage, not to
+    // the platform. Unstamped it satisfied the `brokerage_id IS NULL` branch of
+    // ot_select and was readable — payload post ids and all — by every signed-in
+    // user of every other brokerage. Worse, ot_update is
+    // `is_platform_admin() OR has_brokerage_access(brokerage_id)` with NO NULL
+    // branch and has_brokerage_access(NULL) is false, so an untenanted task
+    // could never be updated by its own tenant: cancelScheduledPost below could
+    // not actually cancel it.
+    //
+    // The bare `await …insert(…)` inside this try/catch checked nothing —
+    // supabase-js resolves a refused insert, so the catch caught nothing and a
+    // post could report "scheduled" with no queue entry behind it.
+    const { error: taskError } = await supabase.from("orchestrator_tasks").insert({
+      brokerage_id: brokerageId,
       task_type: "publish_scheduled_post",
       scheduled_for: params.scheduledFor,
       payload: {
@@ -148,6 +192,16 @@ export async function schedulePost(params: {
       },
       status: "pending"
     })
+
+    if (taskError) {
+      // Say the truth: the post reads as scheduled but nothing will pick it up
+      // from this queue. (The canonical publish-social-posts cron reads
+      // social_posts directly, so this is a degraded state, not a silent one.)
+      return {
+        success: false,
+        error: `Post marked scheduled but the publish task could not be queued: ${taskError.message}`,
+      }
+    }
 
     return { success: true }
   } catch (error) {

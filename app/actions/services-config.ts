@@ -218,6 +218,20 @@ export async function getPlaybooks() {
   return { playbooks: data || [] }
 }
 
+/**
+ * Create a playbook.
+ *
+ * STAMPED (was not) — this is the root cause `togglePlaybook` below was pointing at.
+ * A playbook is unambiguously tenant configuration, and every live `plan_tasks` policy
+ * (select/insert-check/update-both-clauses/delete, all granted to `authenticated`) reads
+ * `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`. A NULL
+ * brokerage_id SATISFIES that predicate for EVERY tenant, so an unstamped playbook was
+ * published to — and editable and deletable by — every signed-in user of every other
+ * brokerage. The column is nullable, so the write always succeeded and nothing surfaced.
+ *
+ * The tenant comes from the SESSION via `getAgentContext()`, never from a parameter:
+ * this is a `"use server"` export, so any argument is caller-chosen.
+ */
 export async function createPlaybook(params: {
   playbook_name: string
   trigger_type: string
@@ -225,10 +239,22 @@ export async function createPlaybook(params: {
   target_persona_ids: string[]
 }) {
   const supabase = await createClient()
+  const { brokerageId } = await getAgentContext()
+  // Refuse rather than write untenanted — a NULL stamp publishes the playbook platform-wide.
+  if (!brokerageId) return { success: false as const, error: "Not authenticated" }
 
   const { data, error } = await supabase
     .from("plan_tasks")
     .insert({
+      brokerage_id: brokerageId,
+      // plan_tasks is a MERGED table (copilot plan tasks + playbooks) and
+      // `task_description` is NOT NULL with no default and no trigger. This
+      // writer never set it, so every call raised a not-null violation and hit
+      // `throw error` below — createPlaybook has never once created a row, which
+      // is why plan_tasks is empty. Mirroring the name is the convention its
+      // sibling already uses: academy.ts:cloneTemplate writes the same value to
+      // both columns.
+      task_description: params.playbook_name,
       playbook_name: params.playbook_name,
       trigger_type: params.trigger_type,
       steps: params.steps,
@@ -260,12 +286,15 @@ export async function createPlaybook(params: {
  * the anonymous path without narrowing which rows a signed-in user may toggle,
  * so nothing that works today stops working.
  *
- * ROOT CAUSE LEFT FOR THE OWNER, deliberately not fixed here because it is
- * outside this orphan's blast radius: `createPlaybook` above never sets
- * `brokerage_id`, so every playbook this product creates lands with
- * `brokerage_id IS NULL` and therefore lands in that permissive RLS branch.
- * Scoping this toggle by brokerage today would make every existing playbook
- * untoggleable — the fix belongs at the writer, plus a backfill.
+ * ROOT CAUSE NOW CLOSED AT THE WRITER: `createPlaybook` above stamps
+ * `brokerage_id` from the session, so new playbooks no longer land in that
+ * permissive `brokerage_id IS NULL` branch — the same RLS predicate that used to
+ * publish them now scopes them. No `.eq("brokerage_id", …)` is added here on top
+ * of that: `plan_tasks_tenant_update` already carries the brokerage test in both
+ * its USING and WITH CHECK clauses, so a stamped row is only toggleable by its
+ * own tenant. `plan_tasks` held zero rows when the writer was fixed (verified
+ * live), so there is no NULL-tenant backlog to backfill and nothing that works
+ * today stops working.
  */
 export async function togglePlaybook(playbookId: string, active: boolean) {
   const supabase = await createClient()
