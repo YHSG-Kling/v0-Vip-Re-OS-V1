@@ -248,8 +248,29 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
 
       // Store scoring snapshot in lead_engagement_scores (live: overall_score + per-factor
       // int columns + score_breakdown jsonb; no score_type/score_value/factors columns).
-      await supabase.from("lead_engagement_scores").insert({
+      //
+      // ── TENANT: `record.brokerage_id`, AND NOTHING ELSE ────────────────────
+      // lead_engagement_scores carries the same live policy as the rest of this
+      // family — `FOR ALL … USING ((brokerage_id IS NULL) OR (brokerage_id =
+      // current_user_brokerage_id()))` — so an unstamped snapshot is not hidden,
+      // it is readable AND writable by every brokerage on the platform.
+      //
+      // It is taken from THE RECORD BEING SCORED, which this function already
+      // read by primary key and refused on absence above (NotFoundError). Not
+      // from the caller: `params.agentId` is explicitly documented as inert
+      // caller context, and `record.agent_id` is an owner, not a tenant —
+      // agents.id and brokerages.id are disjoint id spaces.
+      //
+      // MIRRORS RATHER THAN INVENTS. This branch scores the pre-conversion lane,
+      // where a record that has not been distributed to a brokerage genuinely has
+      // no tenant. `?? null` reproduces the parent's tenancy exactly: a
+      // distributed record's snapshot is scoped to its brokerage, an
+      // undistributed one's stays platform-level like the record it describes.
+      // Stamping anything else here would attribute a platform record to a
+      // tenant that does not own it.
+      const { error: engagementScoreError } = await supabase.from("lead_engagement_scores").insert({
         lead_id: params.id,
+        brokerage_id: record.brokerage_id ?? null,
         overall_score: totalScore,
         email_engagement_score: engagementScore,
         property_interest_score: intentScore,
@@ -263,6 +284,11 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
           responsiveness: responsivenessScore,
         },
       })
+      // supabase-js RESOLVES a failed write, so `const { }` with no `error`
+      // turns a refusal into a silent no-op. Report it.
+      if (engagementScoreError) {
+        console.error("[lead-management] lead_engagement_scores insert error:", engagementScoreError)
+      }
     }
 
     return {

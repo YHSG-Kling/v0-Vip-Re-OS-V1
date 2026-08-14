@@ -405,7 +405,7 @@ export async function advanceStage(params: {
     // 1. Get transaction to find seller_contact_id and listing_id
     const { data: closedTxn } = await supabase
       .from("transactions")
-      .select("seller_contact_id, buyer_contact_id, contact_id, listing_id, close_date")
+      .select("seller_contact_id, buyer_contact_id, contact_id, listing_id, close_date, brokerage_id")
       .eq("id", params.transactionId)
       .eq("brokerage_id", params.brokerageId)
       .maybeSingle()
@@ -467,9 +467,16 @@ export async function advanceStage(params: {
       } catch { /* best-effort */ }
 
       // 3. Grant portal access to the sold listing view if not already enabled
+      //    Tenant comes from the TRANSACTION record this grant hangs off —
+      //    closedTxn.brokerage_id, which the select above already constrained
+      //    to params.brokerageId, so the row cannot carry a tenant the deal
+      //    doesn't belong to. Unstamped it would be readable AND writable by
+      //    every brokerage (`brokerage_id IS NULL OR …` policy), which for a
+      //    portal-access grant means any tenant could toggle a client's portal.
       await supabase
         .from("contact_portal_modules")
         .upsert({
+          brokerage_id: closedTxn.brokerage_id,
           contact_id: closedTxn.seller_contact_id,
           module_key: "sold_listing",
           is_enabled: true,

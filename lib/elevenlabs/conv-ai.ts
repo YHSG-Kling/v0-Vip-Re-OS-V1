@@ -285,9 +285,31 @@ You are role-playing a real estate prospect for training purposes. STAY IN CHARA
     }
   }
 
+  // Tenant for the cache row comes from the AGENT it is provisioned for
+  // (agents.brokerage_id). Although the SCENARIO catalogue (key, label,
+  // prompt, opening line) is platform-wide and lives in code, a ROW here is
+  // not: migration 1025 re-keyed the table on (scenario_key, agent_id) and
+  // stores that agent's own prospect_voice_id, so each row is one agent's
+  // provisioned ElevenLabs agent — tenant data. agent_id is an agents.id, not
+  // a tenant; the id spaces are disjoint. Unstamped, the row is readable AND
+  // writable by every brokerage under the table's
+  // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()` policy,
+  // which would let one tenant repoint another's practice session at an
+  // arbitrary ElevenLabs agent.
+  const { data: agentRow, error: agentErr } = await supabase
+    .from("agents")
+    .select("brokerage_id")
+    .eq("id", params.agentId)
+    .maybeSingle()
+  if (agentErr) return { ok: false, error: `Could not resolve brokerage for agent: ${agentErr.message}` }
+  if (!agentRow?.brokerage_id) {
+    return { ok: false, error: "Could not resolve brokerage for agent — practice unavailable." }
+  }
+
   await supabase
     .from("objection_scenario_agents")
     .upsert({
+      brokerage_id: agentRow.brokerage_id,
       scenario_key: params.scenarioKey,
       agent_id: params.agentId,
       conv_ai_agent_id: data.agent_id,

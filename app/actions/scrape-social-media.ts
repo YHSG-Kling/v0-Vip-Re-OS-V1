@@ -98,6 +98,17 @@ export async function scrapeSocialMedia(params: {
 
         if (analysis.confidence < 0.70) continue
 
+        // TENANCY: brokerage_id is deliberately left NULL here. This is the
+        // PLATFORM raw-lead pool, not tenant data — the owner's rule is that
+        // raw leads are platform-viewable and feed deduping/enrichment, and a
+        // tenant only ever sees its own leads. The tenant-scoped artifact is
+        // produced below by processRawRecord(rawRecord.id, brokerageId), which
+        // is what carries the brokerage. Every reader agrees: getMotivatedSellers
+        // and getIntelligenceDashboardStats (app/actions/lead-intelligence.ts)
+        // query this table unscoped on purpose while scoping their sibling
+        // queries by brokerage, and the neighborhood report reads property
+        // history across a whole zip. Stamping a tenant here would fragment the
+        // dedup pool. Same call as platform_credentials in m273.
         const { data: rawRecord } = await supabase
           .from('batchdata_motivated_sellers_raw')
           .insert({
@@ -165,6 +176,9 @@ export async function scrapeSocialMedia(params: {
 
       if (analysis.confidence < 0.70) continue
 
+      // TENANCY: brokerage_id deliberately NULL — platform raw-lead pool, not
+      // tenant data. See the matching note on the Facebook insert above; the
+      // tenant-scoped artifact is created by processRawRecord(..., brokerageId).
       const { data: rawRecord } = await supabase
         .from('batchdata_motivated_sellers_raw')
         .insert({

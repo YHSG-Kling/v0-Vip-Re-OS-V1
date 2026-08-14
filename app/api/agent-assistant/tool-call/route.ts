@@ -158,6 +158,13 @@ export async function POST(request: NextRequest) {
   // ── Audit log + counter ────────────────────────────────────────────────
   await Promise.all([
     supabase.from("agent_assistant_tool_calls").insert({
+      // Tenant comes from the agent_assistant_sessions row this call hangs off
+      // (session.brokerage_id) — NOT from caller context: this webhook is
+      // authenticated by a shared ElevenLabs secret, so there is no session
+      // cookie or JWT and no ambient tenant to read. Unstamped, the audit row
+      // would be readable AND writable by every brokerage, because the table's
+      // policy is `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`.
+      brokerage_id: session.brokerage_id,
       session_id: session.id,
       tool_name: toolName,
       tool_input: params,

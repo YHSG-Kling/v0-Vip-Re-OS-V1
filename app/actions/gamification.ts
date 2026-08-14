@@ -123,10 +123,27 @@ export async function awardBadge(data: {
     return { alreadyAwarded: true }
   }
 
+  // Tenant for the badge row comes from the AGENT it is awarded to
+  // (agents.brokerage_id) — agent_id is an agents.id, not a tenant, and the
+  // two id spaces are disjoint. This lookup already existed below for the
+  // lifecycle event; it is hoisted so the badge row itself is stamped. An
+  // unstamped row is readable AND writable by every brokerage under the
+  // `brokerage_id IS NULL OR …` policy, so refuse rather than write one.
+  const { data: agentData, error: agentErr } = await supabase
+    .from("agents")
+    .select("brokerage_id")
+    .eq("id", data.agentId)
+    .single()
+  if (agentErr) throw agentErr
+  if (!agentData?.brokerage_id) {
+    throw new Error(`awardBadge: no brokerage resolvable from agent ${data.agentId}`)
+  }
+
   // Insert new badge
   const { data: newBadge, error } = await supabase
     .from("agent_badges")
     .insert({
+      brokerage_id: agentData.brokerage_id,
       agent_id: data.agentId,
       badge_id: data.badgeId,
       awarded_reason: data.reason,
@@ -149,10 +166,9 @@ export async function awardBadge(data: {
 
   if (error) throw error
 
-  // Emit kernel event - get brokerage_id from agent
-  const { data: agentData } = await supabase.from("agents").select("brokerage_id").eq("id", data.agentId).single()
+  // Emit kernel event — brokerage_id resolved above, from the agent record.
   await supabase.from("lifecycle_events").insert({
-    brokerage_id: agentData?.brokerage_id,
+    brokerage_id: agentData.brokerage_id,
     event_type: KernelEvent.GAMIFICATION_BADGE_AWARDED,
     entity_type: "agent_badge",
     entity_id: newBadge.id,

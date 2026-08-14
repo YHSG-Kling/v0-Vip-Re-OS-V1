@@ -673,9 +673,34 @@ export const supabaseService = {
   async updateCreditStatus(contactId: string, updates: any) {
     try {
       const supabase = getSupabaseAdmin()
+
+      // Tenant comes from the CONTACT the credit file belongs to
+      // (contacts.brokerage_id) — same resolution logVideoEngagement uses.
+      // This is a SERVICE-ROLE client, so RLS is bypassed on the way in and
+      // this payload is the entire tenancy boundary; there is no policy behind
+      // it to catch a miss. credit_status is client financial data (score,
+      // DTI, notes) and the table's policy is
+      // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`,
+      // so an unstamped row is readable AND writable by every brokerage.
+      const { data: contactRow, error: contactErr } = await supabase
+        .from("contacts")
+        .select("brokerage_id")
+        .eq("id", contactId)
+        .maybeSingle()
+      if (contactErr) throw contactErr
+
+      const brokerageId = contactRow?.brokerage_id ?? null
+      if (!brokerageId) {
+        console.error(
+          "[Supabase Service] updateCreditStatus: no tenant resolvable from contact_id — " +
+          "refusing rather than writing client credit data every brokerage could read and write.",
+        )
+        return null
+      }
+
       const { data, error } = await supabase
         .from("credit_status")
-        .upsert({ contact_id: contactId, ...updates })
+        .upsert({ brokerage_id: brokerageId, contact_id: contactId, ...updates })
         .select()
         .single()
 

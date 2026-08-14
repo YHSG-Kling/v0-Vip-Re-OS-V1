@@ -42,10 +42,36 @@ export async function logConversationMetadata(params: {
     // AI analyzes conversation for sentiment and topics
     const analysis = await analyzeConversationSentiment(params.conversationHistory)
 
+    // Tenant comes from the CONTACT the conversation is with
+    // (contacts.brokerage_id). params.agentId is an agents.id — a user-space
+    // id, not a tenant, and the id spaces are disjoint. conversation_logs
+    // holds transcript-derived sentiment, topics and insights about a client;
+    // unstamped, the row is readable AND writable by every brokerage on the
+    // platform, because the policy is
+    // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`.
+    const { data: contactRow, error: contactErr } = await supabase
+      .from("contacts")
+      .select("brokerage_id")
+      .eq("id", params.contactId)
+      .maybeSingle()
+
+    if (contactErr) {
+      console.error("[conversation-analytics] Failed to resolve tenant from contact:", contactErr)
+      return { success: false, error: contactErr.message }
+    }
+    if (!contactRow?.brokerage_id) {
+      console.error(
+        "[conversation-analytics] No tenant resolvable from contact " +
+          `${params.contactId} — refusing to write a conversation log every brokerage could read and write.`,
+      )
+      return { success: false, error: "Could not resolve brokerage for contact" }
+    }
+
     // Save conversation log
     const { data: log, error } = await supabase
       .from("conversation_logs")
       .insert({
+        brokerage_id: contactRow.brokerage_id,
         contact_id: params.contactId,
         agent_id: params.agentId,
         start_time: startTime.toISOString(),

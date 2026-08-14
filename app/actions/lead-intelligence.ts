@@ -735,23 +735,49 @@ export async function enrichLeadData(leadId: string) {
 
   if (!lead) throw new Error("Lead not found")
 
+  // ── THE TENANT, RESOLVED ONCE, THROUGH THE RECORD ─────────────────────────
+  //
+  // Every table this enrichment writes carries the same live policy:
+  // `FOR ALL … USING ((brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id()))`
+  // — so a row written with a NULL tenant is not merely orphaned, it is READABLE
+  // AND WRITABLE by every brokerage on the platform. These are OSINT profiles,
+  // people-data, property ownership and search history about a named person, so
+  // an unstamped row is that person's dossier published to every competitor.
+  //
+  // WHERE IT COMES FROM, AND WHY IT CANNOT BE WRONG: the contact row above — the
+  // record these rows hang off, resolved by primary key and refused on absence
+  // two lines up. Not the caller's session, which would stamp whoever happened to
+  // press the button; not `lead.agent_id`, which is an `agents.id` and not a
+  // tenant at all. Resolved ONCE here and threaded down, so the seven writers
+  // below agree by construction instead of by seven repeated lookups that could
+  // drift apart.
+  const contactBrokerageId = ((lead as { brokerage_id?: string | null }).brokerage_id) ?? null
+  if (!contactBrokerageId) {
+    // Said out loud rather than swallowed: the parent contact carries no tenant,
+    // so every derived row below inherits that exposure. Widening the contact's
+    // own tenancy is not this function's decision to make.
+    console.error(
+      `[v0] enrichLeadData: contact ${leadId} carries no brokerage — enrichment rows will be written untenanted and are visible platform-wide`,
+    )
+  }
+
   const dataSources: string[] = []
 
   try {
     // 1. Enrich with people data
     if (lead.email || lead.phone) {
-      await enrichWithPeopleData(leadId, lead)
+      await enrichWithPeopleData(leadId, lead, contactBrokerageId)
       dataSources.push("peopledata")
     }
 
     // 2. Get property ownership data
     if (lead.address || lead.city) {
-      await enrichWithPropertyOwnership(leadId, lead)
+      await enrichWithPropertyOwnership(leadId, lead, contactBrokerageId)
       dataSources.push("batchdata_property")
     }
 
     // 3. Search for online activity
-    await searchOnlineActivity(leadId, lead)
+    await searchOnlineActivity(leadId, lead, contactBrokerageId)
     dataSources.push("osint")
 
     // 4. Get IDX Broker interactions. The source is recorded only when the sync
@@ -783,7 +809,7 @@ export async function enrichLeadData(leadId: string) {
     await detectMotivatedSellerSignals(leadId)
 
     // 7. Update intelligence profile
-    await updateIntelligenceProfile(leadId, dataSources)
+    await updateIntelligenceProfile(leadId, dataSources, contactBrokerageId)
 
     revalidatePath("/intelligence")
     return { success: true, dataSources }
@@ -793,7 +819,11 @@ export async function enrichLeadData(leadId: string) {
   }
 }
 
-async function enrichWithPeopleData(leadId: string, lead: Record<string, unknown>) {
+async function enrichWithPeopleData(
+  leadId: string,
+  lead: Record<string, unknown>,
+  brokerageId: string | null,
+) {
   const supabase = createServiceClient()
   const peopleData = new PeopleDataClient()
 
@@ -806,8 +836,9 @@ async function enrichWithPeopleData(leadId: string, lead: Record<string, unknown
     })
 
     if (enrichedData) {
-      await supabase.from("lead_people_data").insert({
+      const { error: peopleError } = await supabase.from("lead_people_data").insert({
         lead_id: leadId,
+        brokerage_id: brokerageId,
         demographic_data: enrichedData.demographics as Record<string, unknown> | null,
         employment_data: enrichedData.employment as Record<string, unknown> | null,
         financial_indicators: enrichedData.financial as Record<string, unknown> | null,
@@ -816,18 +847,23 @@ async function enrichWithPeopleData(leadId: string, lead: Record<string, unknown
         contact_enrichment: enrichedData.additionalContacts as Record<string, unknown>[] | null,
         data_source: "peopledata",
       })
+      // supabase-js RESOLVES a refused or failed write, so an undestructured
+      // `error` is indistinguishable from a success. Say it.
+      if (peopleError) console.error("[v0] lead_people_data insert error:", peopleError)
 
       // Collect OSINT data from social profiles
       const socialProfiles = enrichedData.social as unknown as Record<string, unknown> | null
       if (socialProfiles?.profiles) {
         for (const profile of (socialProfiles.profiles as Record<string, unknown>[])) {
-          await supabase.from("lead_osint_data").insert({
+          const { error: osintError } = await supabase.from("lead_osint_data").insert({
             lead_id: leadId,
+            brokerage_id: brokerageId,
             data_type: "social_profile",
             data_source: (profile.platform as string) || "unknown",
             data_content: profile,
             confidence_score: 0.85,
           })
+          if (osintError) console.error("[v0] lead_osint_data insert error:", osintError)
         }
       }
     }
@@ -836,7 +872,11 @@ async function enrichWithPeopleData(leadId: string, lead: Record<string, unknown
   }
 }
 
-async function enrichWithPropertyOwnership(leadId: string, lead: Record<string, unknown>) {
+async function enrichWithPropertyOwnership(
+  leadId: string,
+  lead: Record<string, unknown>,
+  brokerageId: string | null,
+) {
   const supabase = createServiceClient()
   const batchData = new BatchDataClient()
 
@@ -863,8 +903,9 @@ async function enrichWithPropertyOwnership(leadId: string, lead: Record<string, 
       const now = new Date()
       const ownershipMonths = Math.floor((now.getTime() - purchaseDate.getTime()) / (1000 * 60 * 60 * 24 * 30))
 
-      await supabase.from("lead_property_ownership").insert({
+      const { error: ownershipError } = await supabase.from("lead_property_ownership").insert({
         lead_id: leadId,
+        brokerage_id: brokerageId,
         property_address: property.address as string,
         property_details: {
           bedrooms: property.bedrooms,
@@ -883,13 +924,14 @@ async function enrichWithPropertyOwnership(leadId: string, lead: Record<string, 
         motivation_indicators: {} as Record<string, unknown>,
         data_source: "batchdata",
       })
+      if (ownershipError) console.error("[v0] lead_property_ownership insert error:", ownershipError)
     }
   } catch (error) {
     console.error("[v0] Property ownership enrichment error:", error)
   }
 }
 
-async function searchOnlineActivity(leadId: string, lead: any) {
+async function searchOnlineActivity(leadId: string, lead: any, brokerageId: string | null) {
   const supabase = createServiceClient()
   const zenrows = new ZenrowsClient()
 
@@ -909,28 +951,30 @@ async function searchOnlineActivity(leadId: string, lead: any) {
       const detectedIntent = analyzeSearchIntent(results as unknown as any[])
 
       if (detectedIntent) {
-        await supabase.from("google_search_activity").insert({
+        const { error: searchActivityError } = await supabase.from("google_search_activity").insert({
           lead_id: leadId,
+          brokerage_id: brokerageId,
           search_location: `${lead.city}, ${lead.state}`,
           search_terms: [query],
           detected_intent: detectedIntent,
           search_patterns: { results_count: results.length },
           scraped_via: "zenrows",
         })
+        if (searchActivityError) console.error("[v0] google_search_activity insert error:", searchActivityError)
       }
     }
 
     if (lead.city && lead.state) {
-      await searchNextdoorActivity(leadId, lead)
+      await searchNextdoorActivity(leadId, lead, brokerageId)
     }
 
-    await searchRealEstateSites(leadId, lead)
+    await searchRealEstateSites(leadId, lead, brokerageId)
   } catch (error) {
     console.error("[v0] Online activity search error:", error)
   }
 }
 
-async function searchNextdoorActivity(leadId: string, lead: any) {
+async function searchNextdoorActivity(leadId: string, lead: any, brokerageId: string | null) {
   const supabase = createServiceClient()
   const zenrows = new ZenrowsClient()
 
@@ -942,8 +986,9 @@ async function searchNextdoorActivity(leadId: string, lead: any) {
       const nameMatch = activity.content.toLowerCase().includes(`${lead.first_name} ${lead.last_name}`.toLowerCase())
 
       if (nameMatch || activity.relevance_score > 70) {
-        await supabase.from("nextdoor_activity").insert({
+        const { error: nextdoorError } = await supabase.from("nextdoor_activity").insert({
           lead_id: leadId,
+          brokerage_id: brokerageId,
           activity_type: activity.type,
           content_snippet: activity.content.substring(0, 500),
           neighborhood: activity.neighborhood,
@@ -951,6 +996,7 @@ async function searchNextdoorActivity(leadId: string, lead: any) {
           activity_url: activity.url,
           relevance_score: activity.relevance_score,
         })
+        if (nextdoorError) console.error("[v0] nextdoor_activity insert error:", nextdoorError)
       }
     }
   } catch (error) {
@@ -958,7 +1004,7 @@ async function searchNextdoorActivity(leadId: string, lead: any) {
   }
 }
 
-async function searchRealEstateSites(leadId: string, lead: any) {
+async function searchRealEstateSites(leadId: string, lead: any, brokerageId: string | null) {
   const supabase = createServiceClient()
   const zenrows = new ZenrowsClient()
 
@@ -970,14 +1016,16 @@ async function searchRealEstateSites(leadId: string, lead: any) {
       const searchResults = await zenrows.scrape(siteUrl) as any
 
       if (searchResults.properties?.length > 0) {
-        await supabase.from("lead_property_searches").insert({
+        const { error: propertySearchError } = await supabase.from("lead_property_searches").insert({
           lead_id: leadId,
+          brokerage_id: brokerageId,
           search_source: site,
           search_location: `${lead.city}, ${lead.state}`,
           properties_viewed: searchResults.properties,
           search_criteria: searchResults.filters,
           detected_via: "zenrows_scrape",
         })
+        if (propertySearchError) console.error(`[v0] lead_property_searches insert error (${site}):`, propertySearchError)
       }
     } catch (error) {
       console.error(`[v0] ${site} scraping error:`, error)
@@ -1200,7 +1248,11 @@ async function detectMotivatedSellerSignals(leadId: string) {
   return signals
 }
 
-async function updateIntelligenceProfile(leadId: string, dataSources: string[]) {
+async function updateIntelligenceProfile(
+  leadId: string,
+  dataSources: string[],
+  brokerageId: string | null,
+) {
   const supabase = createServiceClient()
 
   const { data: propertySearches } = await supabase.from("lead_property_searches").select("*").eq("lead_id", leadId)
@@ -1278,8 +1330,9 @@ async function updateIntelligenceProfile(leadId: string, dataSources: string[]) 
     hasFinancialData: !!propertyOwnership?.[0]?.equity_estimate,
   })
 
-  await supabase.from("lead_intelligence").upsert({
+  const { error: intelligenceError } = await supabase.from("lead_intelligence").upsert({
     lead_id: leadId,
+    brokerage_id: brokerageId,
     buyer_seller_type: buyerSellerType,
     identified_interests: [],
     property_preferences: {},
@@ -1293,6 +1346,7 @@ async function updateIntelligenceProfile(leadId: string, dataSources: string[]) 
     last_enriched_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   })
+  if (intelligenceError) console.error("[v0] lead_intelligence upsert error:", intelligenceError)
 }
 
 /**
