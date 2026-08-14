@@ -837,17 +837,21 @@ A.push({
     },
     {
       // ai-cma.ts checks the contact only AFTER the comps have been bought.
+      //
+      // ANCHORED ON THE BINDING AND THE TABLE, NOT THE COLUMN LIST. This control
+      // used to pin all five lines of the read including `.select("id")`, so when
+      // the CMA tenant fix widened it to `.select("id, brokerage_id")` the
+      // mutation silently stopped applying — and the harness caught it as
+      // "the control is theatre" rather than passing on a control that no longer
+      // does anything. That report is the guard working; re-pinning the whole
+      // statement would only queue up the same failure for the next edit. The two
+      // lines below are what the control actually needs: the binding it swaps and
+      // the table it swaps away from.
       file: F.cma,
-      find: `  const { data: cmaContact, error: cmaContactError } = await supabase
-    .from("contacts")
-    .select("id")
-    .eq("id", params.contactId)
-    .maybeSingle()`,
-      replace: `  const { data: cmaContact, error: cmaContactError } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("id", params.contactId)
-    .maybeSingle()`,
+      find: `const { data: cmaContact, error: cmaContactError } = await supabase
+    .from("contacts")`,
+      replace: `const { data: cmaContact, error: cmaContactError } = await supabase
+    .from("agents")`,
     },
   ],
 })
