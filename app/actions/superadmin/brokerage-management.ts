@@ -25,10 +25,11 @@
  *   archived   → eligible for purge (handled by separate cron, not this commit)
  */
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { headers } from "next/headers"
+import { requireSuperadmin } from "@/lib/auth/platform-guard"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import {
   stripeCancelAtPeriodEnd, stripeResume, stripeSwapPrice, stripeExtendTrial, stripePauseCollection,
   computeTrialExtension, isStripeConfigured,
@@ -36,20 +37,41 @@ import {
 
 type CanonicalTier = "solo_agent" | "team" | "brokerage" | "multi_location"
 
-async function requireSuperadmin(): Promise<
-  | { ok: true; userId: string; email: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthenticated" }
-  const { data } = await supabase
-    .from("users")
-    .select("user_type, email")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (data?.user_type !== "superadmin") return { ok: false, error: "Forbidden" }
-  return { ok: true, userId: user.id, email: data.email ?? user.email ?? "" }
+// ─────────────────────────────────────────────────────────────────────────────
+// THE GATE THIS FILE USED TO CARRY, AND WHY IT ADMITTED NOBODY
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Every action here called a LOCAL requireSuperadmin() whose whole test was
+// `users.user_type !== 'superadmin'`. Measured live: no row in public.users has
+// user_type = 'superadmin'. The one platform superadmin account is
+// platform_role = 'superadmin' with user_type = 'admin' — because 'admin' is
+// also a TENANT user_type, the roster is deliberately carried on platform_role
+// (lib/platform/platform-staff-roster.ts). So this gate returned "Forbidden" to
+// EVERY caller, and /dashboard/superadmin/brokerages rendered
+// "Failed: Forbidden" for the superadmin too. The subtree gate above it
+// (requirePlatformStaff) let staff in; this one then refused them the data.
+//
+// lib/auth/platform-guard.ts:requireSuperadmin reads BOTH identity columns, which
+// is the whole reason it exists. Importing it is the fix; the local copy is gone
+// so it cannot drift again.
+//
+// READS vs WRITES. The owner's ruling is "platform needs to see all tenants and
+// their users" — a READ grant for the platform staff roster, not for the
+// superadmin alone. The two read-only actions below (listBrokeragesAction,
+// getBrokerageDetailAction) therefore gate on the platform 'tenants' capability,
+// which is exactly what the two PAGES that call them already gate on
+// (requirePlatformCapability("tenants") in brokerages/page.tsx and
+// brokerages/[id]/page.tsx) — before this change a platform admin/support/
+// marketing operator could open those pages and was then handed "Forbidden" by
+// the action, which is a gate disagreeing with itself. Every MUTATION in this
+// file (tier change, suspend, cancel, refund, trial, pause) stays superadmin-only.
+
+/** Read-only tenant oversight: the platform 'tenants' capability, which the
+ *  capability map grants to all four staff roles. Same gate as the pages. */
+async function requireTenantRead(): Promise<{ ok: true } | { ok: false; error: string }> {
+  const gate = await requirePlatformCapability("tenants")
+  if (!gate.ok) return { ok: false, error: gate.error ?? "Forbidden" }
+  return { ok: true }
 }
 
 async function writeAuditLog(params: {
@@ -110,7 +132,7 @@ export async function listBrokeragesAction(filter?: {
   | { ok: true; rows: BrokerageListRow[]; totals: { count: number; total_mrr_cents: number; total_ai_cents: number } }
   | { ok: false; error: string }
 > {
-  const auth = await requireSuperadmin()
+  const auth = await requireTenantRead()   // read-only: the whole staff roster
   if (!auth.ok) return auth
   const svc = createServiceClient()
 
@@ -184,7 +206,7 @@ export async function getBrokerageDetailAction(brokerageId: string): Promise<
   | { ok: true; brokerage: any; users: any[]; subscriptions: any[]; auditEntries: any[] }
   | { ok: false; error: string }
 > {
-  const auth = await requireSuperadmin()
+  const auth = await requireTenantRead()   // read-only: the whole staff roster
   if (!auth.ok) return auth
   const svc = createServiceClient()
 

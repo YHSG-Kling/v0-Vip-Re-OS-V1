@@ -60,12 +60,29 @@ async function lastSignInsFor(svc: ReturnType<typeof createServiceClient>, ids: 
   return out
 }
 
+/**
+ * The tenant's user roster, for the god console.
+ *
+ * READ-ONLY, gated on the platform 'tenants' capability rather than on
+ * superadmin. Owner ruling: "platform needs to see all tenants and THEIR USERS"
+ * — that names the platform staff roster (superadmin/admin/marketing/support),
+ * not the superadmin alone. This panel is rendered by
+ * /dashboard/superadmin/brokerages/[id], whose own gate is
+ * requirePlatformCapability("tenants"); a support operator could therefore open
+ * the page and be handed "Forbidden" by the panel inside it, which is one gate
+ * disagreeing with another about the same question.
+ *
+ * It grants no data the roster could not already reach: searchUsersByEmailAction
+ * below returns the same identity fields for the same capability, cross-tenant,
+ * and has done since it was written. Every MUTATION in this file
+ * (create/suspend/resend/revoke) remains superadmin-only.
+ */
 export async function listTenantUsersAction(brokerageId: string): Promise<
   | { ok: true; users: TenantUserRow[]; invites: TenantInviteRow[]; teams: TenantTeamRow[]; planTier: string | null }
   | { ok: false; error: string }
 > {
-  const auth = await requireSuperadmin()
-  if (!auth.ok) return auth
+  const gate = await requirePlatformCapability("tenants")
+  if (!gate.ok) return { ok: false, error: gate.error ?? "Forbidden" }
   const svc = createServiceClient()
   const [{ data: users }, { data: invites }, { data: teams }, { data: brk }] = await Promise.all([
     svc.from("users").select("id, email, first_name, last_name, user_type, status, team_id").eq("brokerage_id", brokerageId).is("deleted_at", null).limit(500),
