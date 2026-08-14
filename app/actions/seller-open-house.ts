@@ -219,17 +219,40 @@ export async function inviteFarmContacts(params: {
 
   if (invErr) return { success: false, error: invErr.message }
 
+  // THE TENANT IS THE EVENT'S, RESOLVED THROUGH THE RECORD — same rule as the
+  // invitation rows above (and the worked rationale at
+  // app/actions/open-house.ts:481-498). A tracking row is filed against
+  // `event_id`, so it belongs to whichever brokerage owns that open house.
+  // `evOwn.event.brokerage_id` is the event row's own value, read by
+  // verifyEventOwnership() and already proven equal to auth.brokerageId by its
+  // Forbidden guard — so this is not a live cross-tenant write, it is stamped
+  // from the record so it stays correct if that guard is ever loosened.
+  //
+  // This upsert stamped nothing, and open_house_rsvp_tracking's RLS policy is
+  // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()` (see
+  // open-house-automation.ts:695) — an untenanted row there is readable AND
+  // writable by every user of every tenant. That is the concrete cost of the
+  // NULLs this line was writing.
   const rsvpRows = contacts.map((contact) => ({
     event_id: params.eventId,
     contact_id: contact.id,
+    brokerage_id: evOwn.event.brokerage_id,
     rsvp_status: "invited",
     source: params.channel === "email" ? "email" : "sms",
     rsvp_updated_at: new Date().toISOString(),
   }))
 
-  await supabase
+  const { error: rsvpErr } = await supabase
     .from("open_house_rsvp_tracking")
     .upsert(rsvpRows, { onConflict: "event_id,contact_id", ignoreDuplicates: true })
+
+  if (rsvpErr) {
+    // The invitations above landed. Say what did and did not happen rather than
+    // reporting a clean success — supabase-js RESOLVES a refused write, so
+    // without this check a "permission denied" was indistinguishable from a
+    // successful no-op.
+    console.error("[inviteFarmContacts] rsvp tracking upsert failed:", rsvpErr.message)
+  }
 
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
   return { success: true, invited: invitationRows.length }
@@ -262,17 +285,32 @@ export async function updateRsvp(params: {
     .eq("contact_id", params.contactId)
     .eq("brokerage_id", auth.brokerageId)
 
-  await supabase
+  // Tenant from the EVENT record (verifyEventOwnership above already read it and
+  // refused anything outside the caller's brokerage). Without it this upsert
+  // wrote a NULL-tenant tracking row that the
+  // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()` policy
+  // leaves open to every tenant — and that the invitation UPDATE two statements
+  // up, which narrows on .eq("brokerage_id", …), could never match.
+  const { error: rsvpErr } = await supabase
     .from("open_house_rsvp_tracking")
     .upsert(
       {
         event_id: params.eventId,
         contact_id: params.contactId,
+        brokerage_id: evOwn.event.brokerage_id,
         rsvp_status: params.rsvpResponse,
         rsvp_updated_at: new Date().toISOString(),
       },
       { onConflict: "event_id,contact_id" }
     )
+
+  if (rsvpErr) {
+    // Reported as a failure on purpose: the tracking row is what the dashboard
+    // tallies read, so a landed invitation with no tracking row is not a
+    // recorded RSVP. Both writes are idempotent on (event_id, contact_id), so
+    // the retry this prompts is safe.
+    return { success: false, error: `RSVP tracking not saved: ${rsvpErr.message}` }
+  }
 
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
   return { success: true }

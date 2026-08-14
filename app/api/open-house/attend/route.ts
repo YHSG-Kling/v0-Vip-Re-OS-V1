@@ -157,18 +157,40 @@ export async function POST(req: NextRequest) {
     }
 
     // 3. UPSERT open_house_rsvp_tracking
-    await supabase
+    //
+    // brokerage_id from the EVENT record — the same source the contact insert
+    // and the attendee insert above already use, and the record-resolved tenant
+    // the worked example at app/actions/open-house.ts:481-498 argues for. There
+    // is no caller identity to fall back on here anyway: this is a public,
+    // unauthenticated sign-in route on the service client, so the event row is
+    // the ONLY thing that knows which brokerage the walk-in belongs to.
+    //
+    // Omitting it wrote a NULL-tenant row under a
+    // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`
+    // policy — world-readable and world-writable — and made the attendee, whose
+    // sibling insert 20 lines up IS stamped, invisible to any tracking reader
+    // that narrows by brokerage.
+    const { error: rsvpErr } = await supabase
       .from("open_house_rsvp_tracking")
       .upsert(
         {
           event_id: eventId,
           contact_id: contactId,
+          brokerage_id: event.brokerage_id,
           rsvp_status: "attended",
           source: "qr_code",
           rsvp_updated_at: new Date().toISOString(),
         },
         { onConflict: "event_id,contact_id" }
       )
+
+    // Non-fatal: the attendee row above is the load-bearing record of the
+    // check-in and it landed. Logged rather than swallowed — supabase-js
+    // RESOLVES a refused write, so the previous bare `await` could not tell a
+    // "permission denied" from a success.
+    if (rsvpErr) {
+      console.error("[open-house/attend] rsvp tracking upsert failed:", rsvpErr.message)
+    }
 
     // 4. UPDATE qr_codes scan_count + lead_count
     if (event.qr_code_id) {

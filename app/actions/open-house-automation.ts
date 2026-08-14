@@ -38,10 +38,43 @@ export async function scheduleOpenHouse(params: {
   try {
     const supabase = await createClient()
 
+    // THE TENANT IS THE LISTING'S, RESOLVED THROUGH THE RECORD — not the
+    // caller's. See the worked rationale at app/actions/open-house.ts:481-498:
+    // an open house is filed against `listing_id`, so the event belongs to
+    // whichever brokerage owns that listing, and resolving it from the record
+    // is also what the DB-side triggers compute.
+    //
+    // This insert stamped nothing at all, so it filed open_house_events rows
+    // with a NULL brokerage_id into a table every other writer stamps
+    // (open-house.ts:111, seller-open-house.ts:523,
+    // seller-listing/execution-engine.ts:854,
+    // lib/wizard-staging/content-staging.ts:192). `NULL = <uuid>` is NULL and
+    // never true, so those rows are invisible to every reader that narrows with
+    // .eq("brokerage_id", …) — including verifyEventOwnership() in
+    // seller-open-house.ts, which is what gates the RSVP and QR flows.
+    //
+    // `params.agentId` is passed through untouched: open_house_events.agent_id
+    // FKs agents(id), a disjoint id space from brokerages(id). The two must
+    // never be bridged.
+    const { data: listing, error: listingErr } = await supabase
+      .from("listings")
+      .select("brokerage_id")
+      .eq("id", params.listingId)
+      .maybeSingle()
+
+    if (listingErr) throw listingErr
+    if (!listing?.brokerage_id) {
+      return {
+        success: false,
+        error: "Listing not found, or it has no brokerage on record — the open house was not created.",
+      }
+    }
+
     const { data, error } = await supabase
       .from("open_house_events")
       .insert({
         listing_id: params.listingId,
+        brokerage_id: listing.brokerage_id,
         agent_id: params.agentId,
         event_date: params.startTime.split("T")[0],
         start_time: params.startTime,
@@ -1000,11 +1033,30 @@ export async function createOpenHouseEvent(params: {
   const supabase = await createClient()
 
   try {
+    // Tenant resolved through the RECORD (the listing this open house is on),
+    // for the reason spelled out on scheduleOpenHouse above and worked through
+    // at app/actions/open-house.ts:481-498. `params.agentId` stays as passed —
+    // agents(id) and brokerages(id) are disjoint id spaces.
+    const { data: listing, error: listingErr } = await supabase
+      .from("listings")
+      .select("brokerage_id")
+      .eq("id", params.propertyId)
+      .maybeSingle()
+
+    if (listingErr) throw listingErr
+    if (!listing?.brokerage_id) {
+      return {
+        success: false,
+        error: "Listing not found, or it has no brokerage on record — the open house was not created.",
+      }
+    }
+
     const { data: event, error } = await supabase
       .from("open_house_events")
       .insert({
         agent_id: params.agentId,
         listing_id: params.propertyId,
+        brokerage_id: listing.brokerage_id,
         event_date: params.eventDate,
         start_time: params.startTime,
         end_time: params.endTime,

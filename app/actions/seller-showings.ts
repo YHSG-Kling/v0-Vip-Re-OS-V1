@@ -108,6 +108,7 @@ export async function syncShowingTimeShowings(params: {
 
   let skippedNoParty = 0
   let skippedForeignShowingId = 0
+  let failedWrite = 0
   for (const s of stShowings) {
     const rowContactId = s.contactId ?? fallbackContactId
     const rowAgentId = s.agentId ?? fallbackAgentId
@@ -130,11 +131,27 @@ export async function syncShowingTimeShowings(params: {
       continue
     }
 
-    await supabase
+    // STAMP THE TENANT THE GUARD JUST VALIDATED. The skip above only fires when
+    // `existing.brokerage_id` is NON-NULL and foreign — a row this very loop
+    // wrote unstamped comes back with brokerage_id = NULL, `existingBrokerageId`
+    // is null, and the guard falls through and repoints it. So the missing stamp
+    // was not merely invisible to readers, it was disarming the cross-account
+    // showingtime_id defense that sits directly above it. Stamping makes the
+    // guard self-reinforcing: every row this loop writes is one the next pass
+    // can adjudicate.
+    //
+    // The value is the LISTING's own brokerage_id, resolved through the record
+    // (app/actions/open-house.ts:481-498) — a showing is filed against
+    // `listing_id`, so it belongs to whoever owns that home. It is provably
+    // equal to auth.brokerageId here because the check at line 74 returns
+    // Forbidden otherwise; taking it from the record keeps the write correct if
+    // that check is ever loosened, and it is the same value the guard compares.
+    const { error: upsertErr } = await supabase
       .from("showings")
       .upsert(
         {
           listing_id: params.listingId,
+          brokerage_id: listing.brokerage_id,
           showingtime_id: s.id,
           scheduled_at: s.scheduledAt,
           scheduled_date: s.date,
@@ -152,14 +169,24 @@ export async function syncShowingTimeShowings(params: {
         },
         { onConflict: "showingtime_id", ignoreDuplicates: false }
       )
+
+    // supabase-js RESOLVES a refused write, so the previous bare `await` counted
+    // every row as synced whether or not it landed — "permission denied" and
+    // "wrote the row" were the same value. Count the misses instead of
+    // reporting a sync that did not happen.
+    if (upsertErr) {
+      console.error("[syncShowingTimeShowings] upsert failed for showingtime_id", s.id, upsertErr.message)
+      failedWrite++
+    }
   }
 
   revalidatePath(`/dashboard/listings/${params.listingId}/showings`)
   return {
     success: true,
-    synced: stShowings.length - skippedNoParty - skippedForeignShowingId,
+    synced: stShowings.length - skippedNoParty - skippedForeignShowingId - failedWrite,
     skippedNoParty,
     skippedForeignShowingId,
+    failedWrite,
   }
 }
 
@@ -424,10 +451,22 @@ export async function approveShowingRequest(params: {
   }
 
   // INSERT showings — agent from session, not params
+  //
+  // brokerage_id from the LISTING record, resolved above at line 364 and proven
+  // to equal auth.brokerageId by the Forbidden guard at line 369. The showing is
+  // filed against `listing_id`, so the listing's tenant is the row's tenant —
+  // the record-resolved answer argued at app/actions/open-house.ts:481-498. This
+  // insert stamped nothing, while the sibling writers of this same table
+  // (tour-planner.ts:376, ai-showing-management.ts:346) both stamp it; the rows
+  // it produced were the ones no .eq("brokerage_id", …) reader could ever see.
+  //
+  // agent_id stays `approverAgentId`: agents(id), a disjoint id space from
+  // brokerages(id) — never bridge the two.
   const { data: showing, error: showErr } = await supabase
     .from("showings")
     .insert({
       listing_id:         params.listingId,
+      brokerage_id:       listing.brokerage_id,
       contact_id:         params.contactId ?? req.contact_id ?? fallbackSellerContactId, // real party or refuse — never a fake FK ref
       agent_id:           approverAgentId, // agents(id) — resolved + refused above when absent
       scheduled_at:       scheduledAt,
