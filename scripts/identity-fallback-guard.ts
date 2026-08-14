@@ -259,8 +259,21 @@ console.log("\n═══ 4. The sites fixed in this pass stay fixed ═══")
     !/aiGenerateReviewRequest\(\{[^}]*agentId: params\.userId/.test(stage))
 
   const mail = code(read("app/actions/ai-marketing-automation.ts"))
+  // ASSERT THE CONSTRUCT, NOT THE SPELLING. This used to require the select
+  // list to be EXACTLY `"users(first_name, last_name, phone, email)"`, so when
+  // the W33 tenant fix widened it to
+  // `"brokerage_id, users(first_name, last_name, phone, email)"` — carrying the
+  // brokerage onto the direct_mail_campaigns insert, which is strictly better
+  // code — this went red on an improvement. Same failure mode as the
+  // onboarding-steps simulator in wave 30.
+  //
+  // What actually matters is unchanged and is what is checked now: the identity
+  // fields are reached THROUGH the agents row via an embedded `users(...)`,
+  // keyed on the AGENTS id, rather than by querying `users` with an agents id
+  // (which matched nothing and rendered "AGENT: undefined undefined" onto every
+  // piece). Extra columns on that select are free.
   ok("generateAIDirectMail reads the agent's name/phone/email THROUGH the agents\n    row — it read `users` by the agents id, matched nothing, and every piece\n    was generated from a prompt that said \"AGENT: undefined undefined\"",
-    /\.from\("agents"\)\.select\("users\(first_name, last_name, phone, email\)"\)\.eq\("id", params\.agentId\)/.test(mail))
+    /\.from\("agents"\)\s*\.select\("[^"]*users\(first_name, last_name, phone, email\)"\)\s*\.eq\("id", params\.agentId\)/.test(mail))
   ok("...while direct_mail_campaigns.agent_id keeps the agents id, which is the\n    class that column's foreign key actually points at",
     /\.from\("direct_mail_campaigns"\)[\s\S]{0,120}agent_id: params\.agentId/.test(mail))
 
