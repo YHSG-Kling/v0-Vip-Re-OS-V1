@@ -48,6 +48,9 @@ interface VoiceInsight {
   silence_duration_seconds: number | null
   call_completion_status: string | null
   overall_sentiment: string | null
+  /** voice_calls.id — the key the authenticated playback proxy takes. Distinct
+   *  from `id`, which is the conversation_insights row. */
+  voice_call_id: string | null
   recording_url: string | null
   transcript: string | null
   updated_at: string

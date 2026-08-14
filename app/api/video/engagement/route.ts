@@ -429,4 +429,21 @@ async function checkPerformanceThresholds(
       entityId: tracking.id,
     }).catch(err => console.error("[v0] Kernel event failed:", err))
   }
+
+  // THE OWNER'S VIRAL RULE — "if the video goes viral using that script, it
+  // should be shared to the whole brokerage." Wired into the two lanes that
+  // already evaluate thresholds off these same aggregates, not onto a new path.
+  //
+  // Note what is NOT passed: this route's `brokerageId` comes from the request
+  // body and this handler has no auth gate, so the promoter is given the project
+  // id ALONE and re-resolves the view count, the video's tenant and the script's
+  // tenant from the database itself (recurring defect (d)). It also refuses a
+  // video/script tenant mismatch outright. Non-fatal: the engagement event has
+  // already been recorded and must not be lost to a failed promotion.
+  if (tracking.video_project_id) {
+    const { shareViralScriptWithBrokerage } = await import("@/lib/video/viral-script-share")
+    await shareViralScriptWithBrokerage(tracking.video_project_id).catch(err =>
+      console.error("[v0] viral script share failed:", err),
+    )
+  }
 }

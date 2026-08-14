@@ -89,10 +89,48 @@ export async function POST(request: NextRequest) {
 
   const rows = (updated ?? []) as Array<{ id: string }>
   if (rows.length === 0) {
-    console.warn(
-      `[voice/recording] no open voice_calls row for CallSid ${parsed.callSid} in brokerage ${ctx.brokerageId} — either the ledger row is missing or recording_url was already set (idempotent re-post)`,
+    // Zero rows is TWO different situations wearing the same face, and they call
+    // for opposite responses: "the ledger row was never written" is a bug in the
+    // dial/answer lane, while "recording_url was already set" is the idempotency
+    // guard doing its job on a Twilio retry. One extra scoped read tells them
+    // apart, so an operator reading the log is not left guessing.
+    const { data: existing, error: diagErr } = await svc
+      .from("voice_calls")
+      .select("id, recording_url")
+      .eq("vendor_call_id", parsed.callSid)
+      .eq("brokerage_id", ctx.brokerageId)
+
+    if (diagErr) {
+      console.warn(
+        `[voice/recording] nothing written for CallSid ${parsed.callSid} in brokerage ${ctx.brokerageId}, and the follow-up read to explain why was REFUSED: ${diagErr.message}`,
+      )
+      return NextResponse.json({ ok: true, stored: false, reason: "no matching row with an empty recording_url" })
+    }
+
+    const found = (existing ?? []) as Array<{ id: string; recording_url: string | null }>
+    if (found.length === 0) {
+      console.warn(
+        `[voice/recording] NO LEDGER ROW for CallSid ${parsed.callSid} in brokerage ${ctx.brokerageId} — recording ${parsed.recordingSid || "—"} exists at Twilio and has nowhere to land. The dial/answer lane did not write a voice_calls row for this call.`,
+      )
+      return NextResponse.json({ ok: true, stored: false, reason: "no voice_calls row carries this vendor_call_id" })
+    }
+
+    // Every matching row already holds a URL — the ordinary idempotent re-post.
+    // Named separately because it is NOT a fault, and it must not read like one.
+    console.log(
+      `[voice/recording] recording already stored for CallSid ${parsed.callSid} (voice_call ${found[0].id}) — idempotent re-post of recording ${parsed.recordingSid || "—"} ignored, the URL in hand was kept`,
     )
-    return NextResponse.json({ ok: true, stored: false, reason: "no matching row with an empty recording_url" })
+    return NextResponse.json({ ok: true, stored: false, reason: "recording_url already set for this call" })
+  }
+
+  // The CallSid → row match is expected to be one-to-one: a Twilio CallSid is
+  // unique, so more than one ledger row carrying it means the call was recorded
+  // into the ledger twice and the recording just landed on both. Said out loud
+  // rather than hidden behind rows[0], because the duplicate is the real defect.
+  if (rows.length > 1) {
+    console.warn(
+      `[voice/recording] CallSid ${parsed.callSid} matched ${rows.length} voice_calls rows in brokerage ${ctx.brokerageId} (${rows.map((r) => r.id).join(", ")}) — a CallSid is unique at Twilio, so the ledger holds duplicates for this call; the recording was written to all of them`,
+    )
   }
 
   console.log(

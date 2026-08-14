@@ -58,6 +58,14 @@
 //     session-authenticated, tenant-scoped streaming proxy
 //     (app/api/voice/recording/[callId]/route.ts) that resolves the tenant's own
 //     Twilio credentials server-side. The auth token never reaches the client.
+//
+// THAT HELPER DOES NOT LIVE HERE. It lives alone in
+// lib/voice/recording-playback-path.ts, because every player that needs it is a
+// CLIENT component and this module is server-side — it reaches the connector
+// gateway and reads brokerage settings. An identical copy used to be exported
+// from here as well, and every consumer imported THAT one, so the client-safe
+// module had zero importers while browser bundles pulled this file in for a
+// string. The copy is gone; the client-safe module is the single survivor.
 
 import { checkAudioSourceUrl, platformAudioHostRules } from "@/lib/security/audio-source-allowlist"
 import { hasRecordingDisclosure } from "@/lib/communication/call-disclosures"
@@ -144,12 +152,6 @@ export function disclosureCoversRecording(
   policy: CallRecordingPolicy,
 ): boolean {
   return !policy.enabled || hasRecordingDisclosure(spokenMessage)
-}
-
-/** PURE: the same-origin path a BROWSER plays a recording from. Never the
- *  api.twilio.com URL — see the module header. */
-export function recordingPlaybackPath(voiceCallId: string): string {
-  return `/api/voice/recording/${encodeURIComponent(voiceCallId)}`
 }
 
 /** PURE: the absolute webhook URL Twilio posts recording status to. */

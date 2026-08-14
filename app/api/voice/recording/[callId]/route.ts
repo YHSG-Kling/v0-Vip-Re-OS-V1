@@ -28,10 +28,12 @@ export const dynamic = "force-dynamic"
  *   2. the call must belong to the CALLER'S OWN brokerage, else 404 — the
  *      tenant boundary, and 404 rather than 403 so the endpoint cannot be used
  *      to probe which call ids exist in other tenants;
- *   3. a plain agent may only hear calls attributed to them; supervisory roles
- *      (team_lead / broker / broker_owner / admin / superadmin /
- *      compliance_officer) hear all of their brokerage's calls. This mirrors
- *      app/dashboard/voice/review/[callId]/page.tsx exactly, so the audio is not
+ *   3. a plain agent may only hear calls attributed to them — INCLUDING the
+ *      unattributed ones, which are the brokerage's own inbound traffic and
+ *      belong to nobody in particular; supervisory roles (team_lead / broker /
+ *      broker_owner / admin / superadmin / compliance_officer) hear all of their
+ *      brokerage's calls. This mirrors the predicate in
+ *      app/dashboard/voice/review/[callId]/page.tsx, so the audio is not
  *      reachable by a role that cannot open the page it plays on.
  *
  * The stored URL is re-checked against the audio-source allowlist before it is
@@ -88,8 +90,18 @@ export async function GET(
   }
 
   // Per-agent scoping, matching the review page's RBAC.
+  //
+  // The comparison is deliberately NOT guarded by `row.agent_id &&`. An
+  // UNATTRIBUTED call (agent_id NULL) is the brokerage's own inbound traffic —
+  // the inbound answer path stores agent_id NULL whenever the dialled number is
+  // a brokerage main line rather than an agent's DID — and skipping the check
+  // for those rows would let any plain agent in the tenant stream consumer
+  // conversations that were never theirs. The review page has always refused
+  // that case (`voiceCall.agent_id !== agentId` is TRUE when agent_id is NULL),
+  // so anything looser here would make the audio reachable through a route that
+  // cannot be opened through its own page.
   const canHearAll = SUPERVISORY_ROLES.has(ctx.userType)
-  if (!canHearAll && row.agent_id && row.agent_id !== ctx.agentId) {
+  if (!canHearAll && row.agent_id !== ctx.agentId) {
     return NextResponse.json({ error: "You can only play recordings of your own calls" }, { status: 403 })
   }
 

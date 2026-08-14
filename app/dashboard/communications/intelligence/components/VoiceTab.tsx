@@ -9,6 +9,7 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts"
+import { recordingPlaybackPath } from "@/lib/voice/recording-playback-path"
 
 interface VoiceInsight {
   id: string
@@ -20,6 +21,9 @@ interface VoiceInsight {
   silence_duration_seconds: number | null
   call_completion_status: string | null
   overall_sentiment: string | null
+  /** voice_calls.id — the key the authenticated playback proxy takes. Distinct
+   *  from `id`, which is the conversation_insights row. */
+  voice_call_id: string | null
   recording_url: string | null
   transcript: string | null
   updated_at: string
@@ -205,9 +209,14 @@ export default function VoiceTab({ voiceInsights }: VoiceTabProps) {
                         </span>
                       </td>
                       <td className="px-3 py-2">
-                        {row.recording_url ? (
+                        {/* recording_url holds the api.twilio.com media URL,
+                            which is behind HTTP Basic auth — linking to it
+                            directly gives the user a 401. Playback goes through
+                            the authenticated same-origin proxy, keyed by
+                            voice_calls.id. */}
+                        {row.recording_url && row.voice_call_id ? (
                           <a
-                            href={row.recording_url}
+                            href={recordingPlaybackPath(row.voice_call_id)}
                             target="_blank"
                             rel="noopener noreferrer"
                             onClick={e => e.stopPropagation()}

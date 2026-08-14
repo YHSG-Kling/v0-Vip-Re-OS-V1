@@ -24,6 +24,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { generateCallSummaryEmail, getAgentCallInsights } from "@/app/actions/ai-voice-transcription"
+import { recordingPlaybackPath } from "@/lib/voice/recording-playback-path"
 
 export interface CallRow {
   id: string
@@ -299,8 +300,16 @@ export function VoiceIntelligenceClient({ calls, agentId, brokerageId }: Props) 
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  {selected.recording_url && (
-                    <audio controls src={selected.recording_url} className="w-full" />
+                  {/* recording_url holds the api.twilio.com media URL, which is
+                      behind HTTP Basic auth — an <audio src> pointed at it is a
+                      guaranteed 401. Playback goes through the authenticated,
+                      tenant-scoped same-origin proxy, keyed by voice_calls.id. */}
+                  {selected.recording_url ? (
+                    <audio controls src={recordingPlaybackPath(selected.id)} className="w-full" />
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      No recording for this call.
+                    </p>
                   )}
                   {selected.summary && (
                     <div>

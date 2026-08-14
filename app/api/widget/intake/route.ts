@@ -3,6 +3,15 @@
 // Per spec: customer-facing consented submissions create/update CONTACTS (not leads).
 // Flow: validate → dedup → create or update contact → assign agent →
 //       enrichment queue → notify agent → emit lifecycle event → return.
+//
+// THE TENANT COMES FROM THE SESSION, NOT THE BODY. This route is public and it
+// used to take `brokerage_id` and `agent_id` straight off the POST, which meant
+// anyone could write a consented contact — with a TCPA consent record, an
+// enrichment queue row that spends money, and a notification — into ANY
+// brokerage, attributed to ANY agent. Both now come off the chat_sessions row
+// the `session_token` identifies; that token is opaque and was issued by
+// /api/widget/session against a slug-resolved tenant, so there is no
+// caller-supplied identity left to trust.
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { NextRequest, NextResponse } from 'next/server'
@@ -34,9 +43,8 @@ export async function POST(req: NextRequest) {
       email: rawEmail,
       phone: rawPhone,
       message,
-      // Attribution / routing
-      agent_id,
-      brokerage_id,
+      // Attribution / routing — the widget session is the ONLY thing that
+      // says which tenant (and which agent) this submission belongs to.
       session_token,
       source = 'widget',
       source_page_url,
@@ -50,8 +58,8 @@ export async function POST(req: NextRequest) {
       user_agent,
     } = body
 
-    if (!brokerage_id) {
-      return NextResponse.json({ error: 'brokerage_id is required' }, { status: 400 })
+    if (!session_token) {
+      return NextResponse.json({ error: 'session_token is required' }, { status: 400 })
     }
     if (!rawEmail && !rawPhone) {
       return NextResponse.json({ error: 'email or phone is required' }, { status: 400 })
@@ -60,6 +68,27 @@ export async function POST(req: NextRequest) {
     const email = normalizeEmail(rawEmail)
     const phoneDigits = normalizePhone(rawPhone)
     const supabase = createServiceClient()
+
+    // ── 0. Resolve the tenant from the session token ─────────────────────────
+    // Destructured error, not a bare `!session`: supabase-js reports a failed
+    // read as an empty result, and answering a database outage with "invalid
+    // session" would tell a real visitor their form was rejected.
+    const { data: session, error: sessionError } = await supabase
+      .from('chat_sessions')
+      .select('id, brokerage_id, agent_id, status')
+      .eq('widget_session_token', session_token)
+      .maybeSingle()
+
+    if (sessionError) {
+      console.error('[widget/intake] session lookup failed:', sessionError.message)
+      return NextResponse.json({ error: 'Intake is temporarily unavailable.' }, { status: 503 })
+    }
+    if (!session || !session.brokerage_id || session.status === 'closed') {
+      return NextResponse.json({ error: 'Invalid or closed session' }, { status: 403 })
+    }
+
+    const brokerage_id: string = session.brokerage_id
+    const agent_id: string | null = session.agent_id ?? null
 
     // ── 1. DEDUP: check existing contact by email, then phone ────────────────
     let existingContact: any = null
@@ -85,7 +114,7 @@ export async function POST(req: NextRequest) {
     }
 
     // ── 2. Resolve agent assignment ──────────────────────────────────────────
-    // Use widget-provided agent_id first; fall back to brokerage routing
+    // Use the session's agent_id first; fall back to brokerage routing
     let assignedAgentId: string | null = agent_id ?? null
 
     if (!assignedAgentId) {
@@ -172,13 +201,12 @@ export async function POST(req: NextRequest) {
       contactId = newContact.id
     }
 
-    // ── 4. Attach session to contact (if session_token provided) ────────────
-    if (session_token) {
-      await supabase
-        .from('chat_sessions')
-        .update({ contact_id: contactId, capture_state: 'captured', updated_at: new Date().toISOString() })
-        .eq('widget_session_token', session_token)
-    }
+    // ── 4. Attach session to contact ────────────────────────────────────────
+    // Keyed on the row already resolved above rather than re-matching the token.
+    await supabase
+      .from('chat_sessions')
+      .update({ contact_id: contactId, capture_state: 'captured', updated_at: new Date().toISOString() })
+      .eq('id', session.id)
 
     // ── 5. Log consent event ─────────────────────────────────────────────────
     if (tcpa_consent) {

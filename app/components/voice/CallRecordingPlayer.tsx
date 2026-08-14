@@ -20,7 +20,7 @@ import { useRef, useState } from "react"
  *  2. IT POINTED AT THE WRONG URL. Twilio serves recording media behind HTTP
  *     Basic auth, so `<audio src={recording_url}>` is a guaranteed 401. The
  *     `src` here is the authenticated same-origin proxy path
- *     (lib/voice/call-recording.ts:recordingPlaybackPath).
+ *     (lib/voice/recording-playback-path.ts:recordingPlaybackPath).
  *
  * Playback state is real React state rather than DOM poking, so the active
  * speed survives re-render.

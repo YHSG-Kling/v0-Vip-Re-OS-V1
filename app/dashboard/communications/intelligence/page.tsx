@@ -306,7 +306,12 @@ export default async function IntelligencePage() {
   const voiceInsightRows = voiceInsightsRes.data ?? []
   const voiceConversationIds = voiceInsightRows.map((r: any) => r.conversations?.id).filter(Boolean)
 
-  let voiceCallMap: Record<string, { recording_url: string | null; transcription: string | null }> = {}
+  // The voice_calls.id is carried alongside the recording URL because the UI
+  // cannot play recording_url: that is the api.twilio.com media URL, served
+  // behind HTTP Basic auth. The browser plays the authenticated same-origin
+  // proxy instead, which is keyed by voice_calls.id — so the id has to travel
+  // with the row rather than being dropped after the lookup.
+  let voiceCallMap: Record<string, { id: string; recording_url: string | null; transcription: string | null }> = {}
   if (voiceConversationIds.length > 0) {
     // voice_calls does not have a direct conversation_id FK; join via agent_id + contact_id proximity.
     // Best available match: fetch voice_calls for the brokerage, match by contact_id from the conversation.
@@ -321,7 +326,7 @@ export default async function IntelligencePage() {
         .in("contact_id", contactIds)
       for (const vc of vcRows ?? []) {
         if (!voiceCallMap[vc.contact_id]) {
-          voiceCallMap[vc.contact_id] = { recording_url: vc.recording_url ?? null, transcription: vc.transcription ?? null }
+          voiceCallMap[vc.contact_id] = { id: vc.id, recording_url: vc.recording_url ?? null, transcription: vc.transcription ?? null }
         }
       }
     }
@@ -342,6 +347,9 @@ export default async function IntelligencePage() {
       silence_duration_seconds: row.silence_duration_seconds ?? null,
       call_completion_status:   row.call_completion_status ?? null,
       overall_sentiment:        row.overall_sentiment ?? null,
+      // NOT row.id — that is the conversation_insights row. This is the
+      // voice_calls row the recording actually hangs on.
+      voice_call_id:            vc?.id ?? null,
       recording_url:            vc?.recording_url ?? null,
       // DB column is transcription (not transcript) — mapped here
       transcript:               vc?.transcription ?? null,

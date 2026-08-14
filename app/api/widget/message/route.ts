@@ -43,11 +43,27 @@ export async function POST(req: NextRequest) {
     const supabase = createServiceClient()
 
     // ── Validate session ──────────────────────────────────────────────────
-    const { data: session } = await supabase
+    // The token is the ONLY identity this route accepts: opaque, server-issued
+    // by /api/widget/session, and unique (chat_sessions_widget_token_idx). The
+    // tenant and the agent are read OFF THE ROW, never off the body — a body
+    // that named a brokerage next to this token would reopen the hole the
+    // session mint just closed.
+    const { data: session, error: sessionError } = await supabase
       .from('chat_sessions')
       .select('id, brokerage_id, agent_id, status, capture_state')
       .eq('widget_session_token', session_token)
       .maybeSingle()
+
+    // supabase-js resolves a failed query, so a bare `!session` reported a
+    // read failure as "invalid session" and told the visitor their chat was
+    // closed when the database was simply unreachable.
+    if (sessionError) {
+      console.error('[Widget/message] session lookup failed:', sessionError.message)
+      return new Response(JSON.stringify({ error: 'Chat is temporarily unavailable.' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
 
     if (!session || session.status === 'closed') {
       return new Response(JSON.stringify({ error: 'Invalid or closed session' }), {

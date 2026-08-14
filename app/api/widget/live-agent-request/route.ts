@@ -2,6 +2,18 @@
  * POST /api/widget/live-agent-request
  * Called when a website visitor explicitly requests an agent callback via the chat widget.
  * Per spec: consent is given → create contact (NOT lead) via kernel CRM.
+ *
+ * THE TENANT AND THE RECIPIENT COME FROM THE WIDGET SESSION. This route used to
+ * take `brokerageId`, `scope` and `ownerId` off the unauthenticated body, so a
+ * POST could create a consented contact in any brokerage and fire a
+ * high-priority notification at any user on the platform. Both now come off the
+ * chat_sessions row the server-issued `session_token` identifies.
+ *
+ * It also carried the m336 identity-class bug: `ownerId` was an agents.id (the
+ * widget URL is built from agents.id) and resolveWidgetNotificationTarget's
+ * agent branch looked it up as users.id, which never matches — so the agent
+ * scope silently fell through to no recipient and no contact. Resolving the
+ * session's agents.id THROUGH the agents row to a users.id fixes that here.
  */
 import { type NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -16,37 +28,61 @@ export async function POST(request: NextRequest) {
     phone,
     bestTime,
     tcpaConsent,
-    scope,
-    ownerId,
-    brokerageId,
+    session_token,
   }: {
     firstName?: string
     lastName?: string
     phone?: string
     bestTime?: string
     tcpaConsent: boolean
-    scope: "agent" | "team" | "brokerage"
-    ownerId: string
-    brokerageId: string
+    session_token?: string
   } = body
 
   if (!tcpaConsent) return NextResponse.json({ error: "TCPA consent required" }, { status: 400 })
-  if (!brokerageId) return NextResponse.json({ error: "brokerageId required" }, { status: 400 })
+  if (!session_token) return NextResponse.json({ error: "session_token required" }, { status: 400 })
 
   const supabase = createServiceClient()
 
-  // Resolve notification recipient
-  const recipient = await resolveWidgetNotificationTarget(scope, ownerId)
+  // ── Resolve the tenant from the widget session ──────────────────────────
+  // Destructured error: a failed read resolves in supabase-js, so `!session`
+  // alone would report an outage as a rejected callback request.
+  const { data: session, error: sessionError } = await supabase
+    .from("chat_sessions")
+    .select("id, brokerage_id, agent_id, status")
+    .eq("widget_session_token", session_token)
+    .maybeSingle()
 
-  // Resolve agent_id (agents.id) for the notification target
-  let agentId: string | null = null
-  if (recipient?.user_id) {
-    const { data: agentRow } = await supabase
+  if (sessionError) {
+    console.error("[widget/live-agent-request] session lookup failed:", sessionError.message)
+    return NextResponse.json({ error: "Callback requests are temporarily unavailable." }, { status: 503 })
+  }
+  if (!session || !session.brokerage_id || session.status === "closed") {
+    return NextResponse.json({ error: "Invalid or closed session" }, { status: 403 })
+  }
+
+  const brokerageId: string = session.brokerage_id
+  // chat_sessions.agent_id is an agents.id, and the session mint has already
+  // proven it belongs to THIS brokerage.
+  const agentId: string | null = session.agent_id ?? null
+
+  // ── Resolve who gets told ───────────────────────────────────────────────
+  // Agent-scoped session → that agent's users.id, resolved ACROSS the id
+  // classes. Brokerage-scoped → the brokerage's lead router / first broker.
+  let recipient: { user_id: string } | null = null
+  if (agentId) {
+    const { data: agentRow, error: agentError } = await supabase
       .from("agents")
-      .select("id")
-      .eq("user_id", recipient.user_id)
+      .select("user_id")
+      .eq("id", agentId)
+      .eq("brokerage_id", brokerageId)
       .maybeSingle()
-    agentId = agentRow?.id ?? null
+    if (agentError) {
+      console.error("[widget/live-agent-request] agent lookup failed:", agentError.message)
+    }
+    recipient = agentRow?.user_id ? { user_id: agentRow.user_id } : null
+  }
+  if (!recipient) {
+    recipient = await resolveWidgetNotificationTarget("brokerage", brokerageId)
   }
 
   // Create contact via kernel CRM (they gave TCPA consent, so they're a contact)
@@ -68,7 +104,7 @@ export async function POST(request: NextRequest) {
 
   // Send notification to scoped recipient
   if (recipient?.user_id) {
-    await supabase.from("notifications").insert({
+    const { error: notifyError } = await supabase.from("notifications").insert({
       user_id: recipient.user_id,
       brokerage_id: brokerageId,
       type: "website_live_agent_request",
@@ -82,6 +118,11 @@ export async function POST(request: NextRequest) {
       priority: "high",
       is_read: false,
     })
+    // A refused insert resolves — without this the callback request reported
+    // success while nobody was ever told about it.
+    if (notifyError) {
+      console.error("[widget/live-agent-request] notification insert refused:", notifyError.message)
+    }
   }
 
   return NextResponse.json({ ok: true, contactId })

@@ -1276,6 +1276,11 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   scripts: {
     status: ["approved", "archived", "draft"],
+    // m429. The AUDIENCE, deliberately separate from `status` (which is the
+    // editorial lifecycle above): private = the author's own, brokerage = shared
+    // with the whole brokerage by the owner's viral rule, platform = the
+    // catalogue, tied to brokerage_id IS NULL by a CHECK.
+    visibility: ["brokerage", "platform", "private"],
   },
   self_heal_events: {
     domain: ["connector", "data_flow"],

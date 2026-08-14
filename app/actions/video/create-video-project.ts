@@ -143,6 +143,23 @@ export interface CreateVideoProjectParams {
   sourceId?: string
   /** Free-text brief. Persisted to video_metadata.description (no column). */
   description?: string
+  /**
+   * SCRIPT PROVENANCE — the `public.scripts` row this video is being rendered
+   * from, when the agent picked a saved script instead of pasting raw text.
+   *
+   * m429 added ai_video_projects.source_script_id for this, and it is the link
+   * the owner's viral rule stands on: "if the video goes viral using that
+   * script, it should be shared to the whole brokerage."
+   * lib/video/viral-script-share.ts resolves the video → this script → its
+   * brokerage, and flips the script to brokerage-shared once the project passes
+   * VIRAL_VIEW_THRESHOLD views.
+   *
+   * Tenant-checked here for the reason the campaignId block below already
+   * records: the foreign key proves the script exists, never that it is ours.
+   * Note this is `public.scripts`, NOT `video_scripts_library` — two different
+   * tables. generateVideoFromScript's own `scriptId` names the latter.
+   */
+  sourceScriptId?: string
 }
 
 export interface VideoProject {
@@ -400,6 +417,41 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
     marketingCampaignId = campaign.id
   }
 
+  // SCRIPT PROVENANCE, tenant-checked on exactly the campaign block's reasoning:
+  // ai_video_projects.source_script_id is a foreign key, and a foreign key only
+  // proves the script EXISTS. Writing a caller-supplied id unverified would let
+  // a video attribute itself to another brokerage's script — and since
+  // lib/video/viral-script-share.ts follows this column to decide WHICH script a
+  // viral video promotes, that would be a cross-tenant write dressed up as an
+  // attribution. Resolve it inside the tenant or refuse.
+  //
+  // The `.eq("brokerage_id", …)` here is deliberate and is NOT the recurring
+  // `.eq` -vs- platform-row defect: a platform-catalogue script carries
+  // brokerage_id IS NULL and `NULL = <uuid>` is never true, so this lookup
+  // cannot match one. That is the wanted behaviour — the platform catalogue is
+  // not any tenant's to have promoted on its behalf, and viral-script-share.ts
+  // refuses a NULL-tenant script for the same reason.
+  let sourceScriptId: string | null = null
+  if (params.sourceScriptId) {
+    if (!isValidUUID(params.sourceScriptId)) {
+      return { success: false, error: "Invalid script ID" }
+    }
+    const { data: sourceScript, error: sourceScriptError } = await supabase
+      .from("scripts")
+      .select("id")
+      .eq("id", params.sourceScriptId)
+      .eq("brokerage_id", params.brokerageId)
+      .maybeSingle()
+    if (sourceScriptError) {
+      console.error("[create-video-project] Source script lookup error:", sourceScriptError)
+      return { success: false, error: sourceScriptError.message }
+    }
+    if (!sourceScript) {
+      return { success: false, error: "Script not found in this brokerage" }
+    }
+    sourceScriptId = sourceScript.id
+  }
+
   // Migration 1052: provider resolved (D-ID default; agent + brokerage
   // overrides). Hard-coded 'heygen' before — wrong; @d-id/client-sdk is
   // the primary in package.json and agent_voice_profiles defaults to 'did'.
@@ -444,6 +496,7 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
       background_url: params.backgroundUrl ?? null,
       video_metadata: Object.keys(videoMetadata).length > 0 ? videoMetadata : null,
       marketing_campaign_id: marketingCampaignId,
+      source_script_id: sourceScriptId,
       format: params.format,
       duration_seconds: params.durationSeconds,
       captions_enabled: params.captionsEnabled,

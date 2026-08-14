@@ -47,23 +47,25 @@ export interface ReferralEconomics {
 /**
  * Production and company dollar for ONE office of a multi-location brokerage.
  *
- * THE OFFICE IS DERIVED, NOT STORED — and that is the decision, not an
- * accident. `commission_splits`, `agent_commissions` and
- * `transaction_commissions` carry `brokerage_id` and no `location_id`; the only
- * office anchor in the schema is `agents.location_id`. So an office total is a
- * JOIN through the producing agent, computed at read time.
+ * THE OFFICE IS STAMPED, NOT DERIVED. Owner ruling: "the closed commission needs
+ * to stay on the office that closed the deal."
  *
- * What that buys: no migration, no backfill, and no second place for the number
- * to drift from. What it costs, stated plainly because it is a real trade: an
- * agent who TRANSFERS offices retroactively moves their whole commission
- * history with them, because the join asks where they are NOW, not where they
- * were when the deal closed. If closings must stay with the office that earned
- * them, `location_id` has to be stamped on the split at write time — both
- * writers (app/actions/agents.ts:625, lib/kernel/financial.ts:1165) already
- * resolve the agent, so that is a small change when the answer is needed. It is
- * deliberately NOT made now: with no closed deals on the platform yet there is
- * no history to preserve, and stamping a column nobody reads is how the last
- * three writer-less columns got here.
+ * Until m427 this rollup JOINed the producing agent to `agents.location_id` and
+ * so asked where that agent is NOW, not where they were when the deal closed —
+ * which meant an agent who TRANSFERRED offices retroactively took their whole
+ * commission history with them. That trade was documented here and has now been
+ * ruled against. m427 puts `location_id` on `commission_splits`; both writers
+ * (app/actions/agents.ts addAgentCommission, lib/kernel/financial.ts
+ * createCommissionRecord) stamp it at close through
+ * lib/kernel/resolve-user-office.ts — the ONE precedence rule for a person's
+ * office (users.location_id wins over agents.location_id). This function reads
+ * that stamp and re-derives nothing, which is the only way a transfer can leave
+ * closed history alone.
+ *
+ * A closing whose split carries no stamp — the producing agent was not pinned to
+ * an office, or the transaction has no split row at all — lands in the NAMED
+ * null bucket rather than being dropped, so the office rows still sum to the
+ * brokerage total.
  */
 export interface OfficeProduction {
   /** `locations.id`, or null for the bucket of agents with no office set. */
@@ -145,15 +147,16 @@ export async function generateBrokeragePnl(
   // Company dollar / agent payouts for those transactions.
   const txnIds = transactions.map((t) => t.id)
   let brokerageNet = 0, agentPayouts = 0
-  // `agent_id` is selected so the same rows can be folded a second time BY
-  // OFFICE below. One read, two rollups — re-querying commission_splits per
-  // office would give the office totals a chance to disagree with the
-  // brokerage total they are supposed to sum to.
-  let splitRows: Array<{ agent_id: string | null; brokerage_amount: number | null; agent_amount: number | null }> = []
+  // `agent_id`, `transaction_id` and the STAMPED `location_id` are selected so
+  // the same rows can be folded a second time BY OFFICE below. One read, two
+  // rollups — re-querying commission_splits per office would give the office
+  // totals a chance to disagree with the brokerage total they are supposed to
+  // sum to.
+  let splitRows: Array<{ agent_id: string | null; transaction_id: string | null; location_id: string | null; brokerage_amount: number | null; agent_amount: number | null }> = []
   if (txnIds.length > 0) {
     const { data: splits } = await supabase
       .from("commission_splits")
-      .select("agent_id, brokerage_amount, agent_amount")
+      .select("agent_id, transaction_id, location_id, brokerage_amount, agent_amount")
       .eq("brokerage_id", params.brokerageId)
       .in("transaction_id", txnIds)
     splitRows = (splits ?? []) as typeof splitRows
@@ -173,25 +176,6 @@ export async function generateBrokeragePnl(
   }
   const agentIds = Array.from(byAgentMap.keys())
   const nameById = new Map<string, string>()
-  // Office of every agent who appears EITHER as a producer or on a split. The
-  // two sets are not identical — a split can name an agent whose transaction
-  // fell outside the window's producer set — and an agent missing from this map
-  // would silently drop their money out of the office totals.
-  const officeByAgent = new Map<string, string | null>()
-  const splitAgentIds = splitRows.map((s) => s.agent_id).filter((x): x is string => !!x)
-  const agentIdsForOffice = Array.from(new Set([...agentIds, ...splitAgentIds]))
-  if (agentIdsForOffice.length > 0) {
-    const { data: officeRows, error: officeErr } = await supabase
-      .from("agents").select("id, location_id").in("id", agentIdsForOffice)
-    if (officeErr) {
-      // A refused read here would otherwise file EVERY agent under "No office"
-      // and read as a real finding on the report.
-      console.error("[brokerage-pnl] agent office read FAILED:", officeErr.message)
-    }
-    for (const a of (officeRows ?? []) as Array<{ id: string; location_id: string | null }>) {
-      officeByAgent.set(a.id, a.location_id ?? null)
-    }
-  }
   if (agentIds.length > 0) {
     const { data: agentRows } = await supabase
       .from("agents").select("id, user_id").in("id", agentIds)
@@ -229,10 +213,10 @@ export async function generateBrokeragePnl(
   const offices = (officeList ?? []) as Array<{ id: string; name: string | null }>
   if (offices.length > 0) {
     const nameByLocation = new Map<string | null, string>(offices.map((o) => [o.id, o.name || "Office"]))
-    // The null bucket is NAMED, not hidden. Agents with no office set still
-    // produce, and their money has to land somewhere the reader can see — an
-    // office report whose parts do not sum to the brokerage total is worse than
-    // no office report.
+    // The null bucket is NAMED, not hidden. A closing whose split carries no
+    // office stamp still happened, and its money has to land somewhere the
+    // reader can see — an office report whose parts do not sum to the brokerage
+    // total is worse than no office report.
     nameByLocation.set(null, "No office assigned")
 
     const acc = new Map<string | null, OfficeProduction>()
@@ -251,15 +235,26 @@ export async function generateBrokeragePnl(
       return b
     }
 
-    for (const [agentId, prod] of byAgentMap) {
-      const loc = officeByAgent.get(agentId) ?? null
+    // The office a CLOSING belongs to is the one stamped on its split. Keyed by
+    // (transaction, producing agent) rather than by transaction alone because a
+    // co-op deal carries one split per side and the two sides can sit in
+    // different offices. A transaction with no split row, and a split stamped
+    // NULL, both resolve to the named null bucket — the same place, because from
+    // the reader's side they are the same fact: no office of record.
+    const locByTxnAgent = new Map<string, string | null>()
+    for (const s of splitRows) {
+      if (s.transaction_id) locByTxnAgent.set(`${s.transaction_id}|${s.agent_id ?? ""}`, s.location_id ?? null)
+    }
+
+    for (const t of transactions) {
+      const loc = t.agent_id ? (locByTxnAgent.get(`${t.id}|${t.agent_id}`) ?? null) : null
       const b = bucket(loc)
-      b.gci += prod.gci
-      b.closings += prod.closings
-      seenAgents.get(loc)!.add(agentId)
+      b.gci += Number(t.commission_amount ?? 0)
+      b.closings += 1
+      if (t.agent_id) seenAgents.get(loc)!.add(t.agent_id)
     }
     for (const s of splitRows) {
-      const loc = s.agent_id ? (officeByAgent.get(s.agent_id) ?? null) : null
+      const loc = s.location_id ?? null
       const b = bucket(loc)
       b.brokerageNet += Number(s.brokerage_amount ?? 0)
       b.agentPayouts += Number(s.agent_amount ?? 0)

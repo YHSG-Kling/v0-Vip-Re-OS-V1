@@ -8,7 +8,7 @@ import { Separator } from "@/components/ui/separator"
 import { TranscriptViewer } from "@/components/voice/TranscriptViewer"
 import { CoachingInsightCard } from "@/components/voice/CoachingInsightCard"
 import { CallRecordingPlayer } from "@/components/voice/CallRecordingPlayer"
-import { recordingPlaybackPath } from "@/lib/voice/call-recording"
+import { recordingPlaybackPath } from "@/lib/voice/recording-playback-path"
 import {
   Phone,
   PhoneIncoming,

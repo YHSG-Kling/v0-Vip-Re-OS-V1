@@ -793,6 +793,24 @@ async function checkAndFirePerformanceEvents(brokerageId: string, tracking: any)
       entityId: tracking.id,
     }).catch(err => console.error("[video-generation] Kernel event failed:", err))
   }
+
+  // THE OWNER'S VIRAL RULE — "if the video goes viral using that script, it
+  // should be shared to the whole brokerage." This is the lane where video
+  // engagement is actually processed, so the promotion rides it rather than
+  // getting a path of its own. Safe on every event: below VIRAL_VIEW_THRESHOLD,
+  // and on every event after the first crossing, it is a no-op (the promotion is
+  // a conditional single-column UPDATE the database decides).
+  //
+  // It is passed ONLY the project id — it re-reads the view count and BOTH
+  // tenants itself, so nothing in this call can misdirect it. Non-fatal: a
+  // failed promotion must not lose the engagement event that was already
+  // recorded, so it is logged rather than thrown.
+  if (tracking.video_project_id) {
+    const { shareViralScriptWithBrokerage } = await import("@/lib/video/viral-script-share")
+    await shareViralScriptWithBrokerage(tracking.video_project_id).catch(err =>
+      console.error("[video-generation] viral script share failed:", err),
+    )
+  }
 }
 
 export async function getVideoPerformanceStats(agentId: string, _brokerageId?: string) {
@@ -1197,6 +1215,15 @@ export async function generateVideoFromScript(params: {
   title?: string
   /** Render an existing `video_scripts_library` row instead of raw text. */
   scriptId?: string
+  /**
+   * The `public.scripts` row this render came from — a DIFFERENT table from
+   * `scriptId` above, which names `video_scripts_library`. Recorded on the
+   * project as source_script_id (m429) so the owner's viral rule can find it:
+   * when the project passes VIRAL_VIEW_THRESHOLD views,
+   * lib/video/viral-script-share.ts flips that script from the author's private
+   * work to brokerage-shared. Tenant-checked inside createVideoProject.
+   */
+  sourceScriptId?: string
   type: "avatar" | "voice"
   avatarId?: string
   voiceId?: string
@@ -1292,6 +1319,10 @@ export async function generateVideoFromScript(params: {
       format:           "vertical",
       durationSeconds:  60,
       captionsEnabled:  true,
+      // Passed through unverified ON PURPOSE — createVideoProject resolves it
+      // inside the caller's brokerage and refuses a foreign id, so the check
+      // lives in exactly one place alongside the campaignId one it mirrors.
+      sourceScriptId:   params.sourceScriptId,
     })
 
     if (!created.success || !created.project) {

@@ -470,7 +470,7 @@ export async function generateScriptContent(
   scriptType: string,
   context: any,
   _agentId?: string // ignored — derived from session
-): Promise<{ success: boolean; content?: string; error?: string }> {
+): Promise<{ success: boolean; content?: string; scriptId?: string; error?: string }> {
   try {
     const supabase = await createClient()
     const ctx = await getAgentContext()
@@ -499,32 +499,53 @@ export async function generateScriptContent(
       agentId: agentId ?? undefined,
     })
 
-    // Store generated script. scripts is scoped by created_by (no agent_id/brokerage_id);
-    // title is NOT NULL; script_type→category; status CHECK is draft|approved|archived.
+    // Store generated script. title is NOT NULL; script_type→category; the
+    // status CHECK is draft|approved|archived and is the EDITORIAL lifecycle.
     //
-    // `error` IS DESTRUCTURED, AND THAT CHANGES THE ANSWER. supabase-js RESOLVES
-    // a refused write, so a bare `await …insert()` returned normally and this
-    // action reported `{ success: true }` for a row that was never created.
-    // `scripts` is the PLATFORM approved-script catalogue: its INSERT policy is
-    // `is_platform_admin()` with no per-author clause, so this write has been
-    // refused for every ordinary agent since the policy was written — which is
-    // why the table holds zero rows. The refusal is now reported rather than
-    // swallowed: the generated text is still returned (it is the useful output
-    // and the caller can use it), but the caller is told it was not saved
-    // instead of being told it was.
+    // THE PRODUCT DECISION THIS COMMENT USED TO DEFER HAS BEEN MADE. It read
+    // "whether agent-authored scripts deserve their own author-scoped home is a
+    // product decision, not something to settle from inside a catch block." The
+    // owner ruled: "agent authored scripts should save to scripts and if it the
+    // video goes viral using that script, it should be shared to the whole
+    // brokerage." m429 implements that ruling — `scripts` gained a nullable
+    // brokerage_id (NULL = the platform catalogue, per the m406/m408/m421
+    // convention) and a `visibility` column with its own vocabulary
+    // (private|brokerage|platform), and the INSERT policy now admits an ordinary
+    // agent writing their OWN script into their OWN brokerage.
     //
-    // Deliberately NOT "fixed" by widening the policy or switching to the
-    // service client. Either would let any agent write into the catalogue the
-    // voice console reads from, and this action has no UI caller to justify it.
-    // Whether agent-authored scripts deserve their own author-scoped home is a
-    // product decision, not something to settle from inside a catch block.
-    const { error: storeError } = await supabase.from("scripts").insert({
-      title: `${scriptType} script`,
-      category: scriptType,
-      content: script,
-      status: "draft",
-      created_by: ctx.userId,
-    })
+    // So this write stamps BOTH, and neither is optional:
+    //   · brokerage_id — the session tenant, never a caller-supplied one. An
+    //     untenanted script is a PLATFORM-catalogue script under m429, which the
+    //     SELECT policy publishes to every brokerage on the OS; the CHECK
+    //     constraint and the INSERT policy both refuse it from a non-platform
+    //     author, and this is the writer half of that.
+    //   · visibility 'private' — an agent's script starts as their own work.
+    //     lib/video/viral-script-share.ts is the ONLY thing that promotes it to
+    //     'brokerage', and only when a video rendered from it crosses
+    //     VIRAL_VIEW_THRESHOLD.
+    //
+    // `error` IS STILL DESTRUCTURED, AND THAT IS NOT NEGOTIABLE. supabase-js
+    // RESOLVES a refused write, so a bare `await …insert()` returns normally and
+    // reports `{ success: true }` for a row that was never created. Until m429
+    // the INSERT policy was `is_platform_admin()` with no per-author clause, so
+    // this write was refused for every ordinary agent — which is why the table
+    // held zero rows, and why the honest refusal report below existed at all.
+    // The policy is fixed; the honesty stays. A store that is refused for any
+    // future reason still returns the generated text (it is the useful output)
+    // WITH the error saying it was not saved — never a silent success.
+    const { data: stored, error: storeError } = await supabase
+      .from("scripts")
+      .insert({
+        title: `${scriptType} script`,
+        category: scriptType,
+        content: script,
+        status: "draft",
+        created_by: ctx.userId,
+        brokerage_id: brokerageId,
+        visibility: "private",
+      })
+      .select("id")
+      .single()
 
     if (storeError) {
       console.error("[workflows] script generated but NOT stored:", storeError.message)
@@ -534,8 +555,15 @@ export async function generateScriptContent(
         error: `Script generated but not saved to the library: ${storeError.message}`,
       }
     }
+    if (!stored?.id) {
+      return {
+        success: true,
+        content: script,
+        error: "Script generated but the library write returned no row",
+      }
+    }
 
-    return { success: true, content: script }
+    return { success: true, content: script, scriptId: stored.id }
   } catch (error: any) {
     return { success: false, error: error?.message ?? "Failed to generate script" }
   }

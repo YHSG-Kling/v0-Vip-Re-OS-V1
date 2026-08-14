@@ -30,6 +30,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
 import { syncAgentLedgerToStamp } from "@/lib/commission/ledger-sync"
+import { resolveUserOffice, pickUserOffice } from "./resolve-user-office"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 
@@ -1155,16 +1156,42 @@ export async function createCommissionRecord(
       return { success: false, error: error?.message || "Failed to create commission record" }
     }
 
+    // OFFICE OF RECORD for the PRODUCING agent — `agentId`, not `ctx.userId`,
+    // because a broker may be creating this record on an agent's behalf and the
+    // deal was closed out of the AGENT's office. Resolved through the ONE
+    // precedence rule (./resolve-user-office: users.location_id wins over
+    // agents.location_id); an agent with no linked user takes the pure form of
+    // that same rule rather than a second one written out here. Stamped on the
+    // split below so a later office transfer cannot drag closed history with it
+    // (owner ruling; see the OfficeProduction comment in
+    // lib/intelligence/brokerage-pnl.ts, which reads this stamp).
+    const { data: agentRow, error: agentOfficeErr } = await supabase
+      .from("agents").select("user_id, location_id").eq("id", agentId).maybeSingle()
+    if (agentOfficeErr) {
+      // Never silently becomes "no office": that would file real money under
+      // "No office assigned" on the owner's report and read as a real finding.
+      console.error(`[createCommissionRecord] agent office read REFUSED for ${agentId}: ${agentOfficeErr.message}`)
+    }
+    const agentOffice = (agentRow as { user_id?: string | null; location_id?: string | null } | null) ?? null
+    const office = agentOffice?.user_id
+      ? await resolveUserOffice(supabase, agentOffice.user_id)
+      : pickUserOffice(null, agentOffice?.location_id ?? null)
+
     // COMMISSION SPLITS LEDGER (burn-down round 4): the agent financials page
     // and brokerage-P&L intelligence read commission_splits — writer-less until
     // now, so both rendered empty forever. One split row per commission with
     // the SAME numbers the waterfall computed (fees + cap credit in metadata);
     // status mirrors the commission lifecycle (live CHECK: pending/approved/
     // paid/disputed/cancelled). Best-effort: the commission is already the
-    // source of truth — a split-ledger failure never blocks the close.
-    await supabase.from("commission_splits").insert({
+    // source of truth — a split-ledger failure never blocks the close. But it is
+    // never SILENT either: supabase-js resolves a refused write, so an
+    // undestructured insert would swallow a real failure — including the one
+    // ordering hazard this row now has, a deploy that lands ahead of m427 and so
+    // writes `location_id` to a column that does not exist yet.
+    const { error: splitErr } = await supabase.from("commission_splits").insert({
       agent_id: agentId,
       brokerage_id: ctx.brokerageId,
+      location_id: office.locationId,
       transaction_id: transactionId,
       commission_id: commission.id,
       agent_amount: agentNet,
@@ -1172,6 +1199,9 @@ export async function createCommissionRecord(
       status: "pending",
       metadata: { fee_breakdown: feeBreakdown, capped_amount: cappedAmount, agent_split_percent: agentSplit },
     })
+    if (splitErr) {
+      console.error(`[createCommissionRecord] commission_splits ledger write FAILED for commission ${commission.id}: ${splitErr.message}`)
+    }
 
     if (capRow && !cappedAmount) {
       await supabase

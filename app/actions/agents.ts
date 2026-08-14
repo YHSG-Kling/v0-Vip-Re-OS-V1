@@ -5,6 +5,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { resolveUserOffice, pickUserOffice } from "@/lib/kernel/resolve-user-office"
 
 interface AchievementRow {
   id: string
@@ -595,7 +596,7 @@ export async function addAgentCommission(commissionData: {
   // agent_commissions.agent_id is agents-class, so the brokerage anchor comes off the
   // agents row (NOT NULL on the table).
   const { data: agentRow, error: agentErr } = await supabase
-    .from("agents").select("brokerage_id").eq("id", commissionData.agent_id).maybeSingle()
+    .from("agents").select("brokerage_id, user_id, location_id").eq("id", commissionData.agent_id).maybeSingle()
   if (agentErr) {
     console.error("Error resolving agent brokerage:", agentErr)
     return { error: agentErr.message }
@@ -603,6 +604,18 @@ export async function addAgentCommission(commissionData: {
   if (!agentRow?.brokerage_id) {
     return { error: "Agent has no brokerage — cannot create a commission record" }
   }
+
+  // OFFICE OF RECORD for the PRODUCING agent — not the caller, who may be a
+  // broker filing this on someone else's behalf. Resolved through the ONE
+  // precedence rule (lib/kernel/resolve-user-office.ts: users.location_id wins
+  // over agents.location_id); the agents row is already in hand, so an agent
+  // with no linked user takes the pure form of the same rule rather than a
+  // second one written out here. Stamped on the split below because the owner
+  // ruled a closed commission stays with the office that closed the deal — a
+  // read-time join to agents.location_id would move it when the agent transfers.
+  const office = agentRow.user_id
+    ? await resolveUserOffice(supabase, agentRow.user_id)
+    : pickUserOffice(null, agentRow.location_id)
 
   const { data, error } = await supabase
     .from("agent_commissions")
@@ -625,6 +638,7 @@ export async function addAgentCommission(commissionData: {
   const { error: splitErr } = await supabase.from("commission_splits").insert({
     agent_id: commissionData.agent_id,
     brokerage_id: agentRow.brokerage_id,
+    location_id: office.locationId,
     transaction_id: commissionData.transaction_id,
     commission_id: data.id,
     agent_amount: agentCommission,

@@ -66,7 +66,19 @@ const ALLOWED: Record<string, string> = {
   playbooks: "canonical playbook library",
   prohibited_phrases: "Fair-Housing phrase list — must be readable by every tenant",
   required_disclosures: "state disclosure requirements",
-  scripts: "canonical call/objection script library",
+  // `scripts` was here as (a) global reference data — "canonical call/objection
+  // script library", i.e. every tenant reads the same rows. m429 makes that
+  // description false. The owner ruled that agents author into this table
+  // ("agent authored scripts should save to scripts"), so it now carries a
+  // brokerage_id, a private/brokerage/platform visibility, and a SELECT policy
+  // that is no longer `USING (true)`. It therefore drops out of `permissive`
+  // (tenant_scope_facts() selects on qual='true') and needs no cover.
+  //
+  // Removing the entry is the point, not housekeeping: `scripts` was already
+  // ANCHORED — scripts.created_by FKs users(id), and users carries brokerage_id
+  // — and already permissive, so this line was the only thing keeping this guard
+  // green over a table that was about to start holding one agent's private work
+  // readable by every brokerage on the platform.
   state_appraiser_adjustment_rates: "state appraisal reference rates",
   state_compliance_requirements: "state compliance reference",
   state_protected_classes: "Fair-Housing protected classes per state",

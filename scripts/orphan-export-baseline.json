@@ -679,7 +679,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 9041,
+  "census": 9040,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -4196,7 +4196,7 @@
     "lib/voice/a2p-registration.ts": 9,
     "lib/voice/broker-commands.ts": 3,
     "lib/voice/call-analysis.ts": 4,
-    "lib/voice/call-recording.ts": 9,
+    "lib/voice/call-recording.ts": 8,
     "lib/voice/campaign-command.ts": 1,
     "lib/voice/command-coverage.ts": 3,
     "lib/voice/conversation-relay.ts": 7,
@@ -20127,7 +20127,6 @@
       "readCallRecordingPolicy",
       "resolveCallRecordingPolicy",
       "disclosureCoversRecording",
-      "recordingPlaybackPath",
       "recordingCallbackUrl",
       "recordingDialParams",
       "normalizeRecordingUrl",

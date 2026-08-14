@@ -3,12 +3,22 @@
 // Creates or resumes a chat_session for an embedded widget.
 // Returns session token + resolved AI identity (assistant name, persona, tone).
 // No authentication required — widget is public-facing.
+//
+// PUBLIC ≠ UNGOVERNED. This route used to take `brokerage_id` and `agent_id`
+// straight off the POST body and hand them to the service client, so anyone who
+// knew a brokerage uuid could mint a session token against that tenant, spend
+// its AI budget through /api/widget/message and attribute the conversation to
+// any agent at all. The tenant is now resolved SERVER-SIDE from the brokerage's
+// public slug — see lib/widget/resolve-widget-tenant.ts for why that handle and
+// not embed_widgets — and the body no longer carries an identity the server
+// trusts. Same shape as /api/embed/session, the other public session mint.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { randomUUID } from 'crypto'
 import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'
+import { resolveWidgetTenant, widgetCallOriginAllowed } from '@/lib/widget/resolve-widget-tenant'
 
 export async function POST(req: NextRequest) {
   try {
@@ -23,26 +33,40 @@ export async function POST(req: NextRequest) {
       )
     }
 
+    // A browser that tells us where it is calling from has to be us — both
+    // widget entry points are iframes served from this app.
+    if (!widgetCallOriginAllowed(req)) {
+      return NextResponse.json({ error: 'This chat cannot be started from here.' }, { status: 403 })
+    }
+
     const body = await req.json()
     const {
-      brokerage_id,
+      brokerage_slug,
       agent_id,
       source = 'website_widget',
       visitor_fingerprint,
       resume_token,
     }: {
-      brokerage_id: string
+      brokerage_slug: string
       agent_id?: string | null
       source?: string
       visitor_fingerprint?: string | null
       resume_token?: string | null
     } = body
 
-    if (!brokerage_id) {
-      return NextResponse.json({ error: 'brokerage_id required' }, { status: 400 })
-    }
-
     const supabase = createServiceClient()
+
+    // The ONLY place brokerage_id and agent_id come from. `agent_id` is checked
+    // against the resolved brokerage in there, so a foreign agents.id refuses
+    // rather than being written into this tenant's session.
+    const resolution = await resolveWidgetTenant(supabase, {
+      brokerageSlug: brokerage_slug,
+      agentId: agent_id ?? null,
+    })
+    if (!resolution.ok) {
+      return NextResponse.json({ error: resolution.error }, { status: resolution.status })
+    }
+    const { brokerageId, agentId } = resolution.tenant
 
     // ── Resume existing session if token provided ─────────────────────────
     if (resume_token) {
@@ -50,11 +74,11 @@ export async function POST(req: NextRequest) {
         .from('chat_sessions')
         .select('id, widget_session_token, capture_state, status, brokerage_id, agent_id')
         .eq('widget_session_token', resume_token)
-        .eq('brokerage_id', brokerage_id)
+        .eq('brokerage_id', brokerageId)
         .maybeSingle()
 
       if (existing && existing.status !== 'closed') {
-        const identity = await resolveIdentity(supabase, brokerage_id, agent_id ?? null)
+        const identity = await resolveIdentity(supabase, brokerageId, agentId)
         return NextResponse.json({
           session_token: existing.widget_session_token,
           session_id: existing.id,
@@ -70,8 +94,8 @@ export async function POST(req: NextRequest) {
     const { data: session, error } = await supabase
       .from('chat_sessions')
       .insert({
-        brokerage_id,
-        agent_id: agent_id ?? null,
+        brokerage_id: brokerageId,
+        agent_id: agentId,
         source,
         visitor_fingerprint: visitor_fingerprint ?? null,
         widget_session_token: token,
@@ -87,7 +111,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Could not create session' }, { status: 500 })
     }
 
-    const identity = await resolveIdentity(supabase, brokerage_id, agent_id ?? null)
+    const identity = await resolveIdentity(supabase, brokerageId, agentId)
 
     return NextResponse.json({
       session_token: session.widget_session_token,

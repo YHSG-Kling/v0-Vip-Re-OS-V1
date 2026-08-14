@@ -2,7 +2,6 @@
 
 import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport } from "ai"
-import { useSearchParams } from "next/navigation"
 import { useEffect, useRef, useState, useCallback } from "react"
 import { Send, X, MessageCircle, Loader2, Phone, ArrowLeft } from "lucide-react"
 import { getMessageText } from "@/lib/ai/get-message-text"
@@ -41,14 +40,22 @@ function getFingerprint(): string {
 
 const SESSION_KEY = "vip_widget_session"
 
-export default function WidgetChatClient() {
-  const params = useSearchParams()
-  // Support both old (?agent=&brokerage=) and new (?scope=&id=&brokerage=) param shapes
-  const agentId = params.get("agent") ?? (params.get("scope") === "agent" ? params.get("id") : undefined) ?? undefined
-  const brokerageId = params.get("brokerage") ?? ""
-  const scopeParam = (params.get("scope") ?? (agentId ? "agent" : "brokerage")) as "agent" | "team" | "brokerage"
-  const ownerId = params.get("id") ?? agentId ?? brokerageId
-
+/**
+ * Both identity values arrive as PROPS, resolved by the server component from
+ * the ?brokerage= / ?agent= params. The client no longer reads them itself and
+ * no longer POSTs a brokerage uuid: `brokerageSlug` is a public handle and
+ * /api/widget/session re-resolves it (and re-checks the agent against it)
+ * before it will mint anything. Every downstream widget call — message, intake,
+ * capture-lead, callback — carries only the server-issued session token, so the
+ * tenant is read off the session row rather than off this form.
+ */
+export default function WidgetChatClient({
+  brokerageSlug,
+  agentId,
+}: {
+  brokerageSlug: string | null
+  agentId: string | null
+}) {
   const [sessionToken, setSessionToken] = useState<string | null>(null)
   const [identity, setIdentity] = useState<WidgetIdentity | null>(null)
   const [sessionReady, setSessionReady] = useState(false)
@@ -77,8 +84,8 @@ export default function WidgetChatClient() {
 
   // ── Session init ──────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!brokerageId) {
-      setSessionError("Widget misconfigured: brokerage ID missing.")
+    if (!brokerageSlug) {
+      setSessionError("This chat isn't available.")
       return
     }
     const stored = typeof window !== "undefined" ? sessionStorage.getItem(SESSION_KEY) : null
@@ -86,7 +93,7 @@ export default function WidgetChatClient() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        brokerage_id: brokerageId,
+        brokerage_slug: brokerageSlug,
         agent_id: agentId ?? null,
         source: "website_widget",
         visitor_fingerprint: getFingerprint(),
@@ -101,7 +108,7 @@ export default function WidgetChatClient() {
         setSessionReady(true)
       })
       .catch(() => setSessionError("Could not connect. Please try again later."))
-  }, [brokerageId, agentId])
+  }, [brokerageSlug, agentId])
 
   const [inputValue, setInputValue] = useState("")
   const { messages, sendMessage, status } = useChat({
@@ -149,8 +156,8 @@ export default function WidgetChatClient() {
             email: capturedEmail || null,
             phone: capturedPhone || null,
             message: lastMsg || null,
-            agent_id: agentId ?? null,
-            brokerage_id: brokerageId,
+            // No agent_id / brokerage_id: the intake route reads both off the
+            // session row this token identifies.
             session_token: sessionToken,
             source: "website_widget",
             tcpa_consent: true,
@@ -166,7 +173,7 @@ export default function WidgetChatClient() {
         setIntakeSubmitting(false)
       }
     },
-    [capturedName, capturedEmail, capturedPhone, messages, agentId, brokerageId, sessionToken, sendMessage]
+    [capturedName, capturedEmail, capturedPhone, messages, sessionToken, sendMessage]
   )
 
   // ── Callback submit ───────────────────────────────────────────────────────
@@ -186,9 +193,9 @@ export default function WidgetChatClient() {
             phone: cbPhone,
             bestTime: cbBestTime || undefined,
             tcpaConsent: true,
-            scope: scopeParam,
-            ownerId,
-            brokerageId,
+            // The callback route resolves brokerage AND recipient from the
+            // session row — it used to take both off this body.
+            session_token: sessionToken,
           }),
         })
         if (!res.ok) throw new Error("Request failed")
@@ -199,7 +206,7 @@ export default function WidgetChatClient() {
         setCbSubmitting(false)
       }
     },
-    [cbFirstName, cbLastName, cbPhone, cbBestTime, cbConsent, scopeParam, ownerId, brokerageId]
+    [cbFirstName, cbLastName, cbPhone, cbBestTime, cbConsent, sessionToken]
   )
 
   // ── Render guards ─────────────────────────────────────────────────────────

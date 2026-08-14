@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
 import { resolveIsaCallingReadiness } from "@/lib/voice/isa-readiness"
+import { recordingPlaybackPath } from "@/lib/voice/recording-playback-path"
 import { createClient } from '@/lib/supabase/server'
 import {
   listISACampaigns,
@@ -698,10 +699,14 @@ export default async function AIISAOperationsConsolePage() {
                           </details>
                         )}
 
-                        {/* Recording link */}
-                        {call.recording_url && (
+                        {/* Recording link — recording_url holds the api.twilio.com
+                            media URL, which is behind HTTP Basic auth, so linking
+                            to it directly hands the agent a 401. Playback goes
+                            through the authenticated same-origin proxy, keyed by
+                            voice_calls.id. */}
+                        {call.recording_url ? (
                           <a
-                            href={call.recording_url}
+                            href={recordingPlaybackPath(call.id)}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="inline-flex items-center gap-1.5 text-xs text-indigo-600 hover:underline"
@@ -709,6 +714,8 @@ export default async function AIISAOperationsConsolePage() {
                             <Mic className="w-3 h-3" />
                             Listen to Recording
                           </a>
+                        ) : (
+                          <p className="text-xs text-muted-foreground">No recording for this call.</p>
                         )}
                       </CardContent>
                     </Card>
