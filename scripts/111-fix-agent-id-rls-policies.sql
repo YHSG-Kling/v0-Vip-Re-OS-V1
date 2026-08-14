@@ -213,24 +213,19 @@ CREATE POLICY "agent_read_own_transactions"
     )
   );
 
--- Team Leader: join agents -> users for team resolution on all agent columns
+-- Team Lead (m440). Same spelling defect and same four-way team problem as the
+-- listings policy above; all three agent columns FK agents(id), so each is asked
+-- the row's-team question through public.agent_team_id().
 CREATE POLICY "team_leader_read_team_transactions"
-  ON transactions FOR SELECT
+  ON transactions FOR SELECT TO authenticated
   USING (
-    (SELECT user_type FROM users WHERE id = auth.uid()) = 'team_leader'
+    public.is_team_lead_role()
+    AND public.has_brokerage_access(brokerage_id)
+    AND public.current_user_team_id() IS NOT NULL
     AND (
-      agent_id IN (
-        SELECT a.id FROM agents a JOIN users u ON a.user_id = u.id
-        WHERE u.team_id = (SELECT team_id FROM users WHERE id = auth.uid())
-      ) OR
-      seller_agent_id IN (
-        SELECT a.id FROM agents a JOIN users u ON a.user_id = u.id
-        WHERE u.team_id = (SELECT team_id FROM users WHERE id = auth.uid())
-      ) OR
-      buyer_agent_id IN (
-        SELECT a.id FROM agents a JOIN users u ON a.user_id = u.id
-        WHERE u.team_id = (SELECT team_id FROM users WHERE id = auth.uid())
-      )
+      public.agent_team_id(agent_id)        = public.current_user_team_id()
+      OR public.agent_team_id(seller_agent_id) = public.current_user_team_id()
+      OR public.agent_team_id(buyer_agent_id)  = public.current_user_team_id()
     )
   );
 
@@ -401,20 +396,28 @@ CREATE POLICY "broker_delete_brokerage_listings"
     AND brokerage_id = (SELECT brokerage_id FROM users WHERE id = auth.uid())
   );
 
--- Compliance Manager
+-- Compliance Officer (m440). This block used to inline `user_type =
+-- 'compliance_manager'`, a value users_user_type_check cannot store, so the
+-- policy it created granted nothing to anybody. The spelling came from
+-- auth.is_compliance_manager() in supabase/rls-governance/000-helper-functions.sql,
+-- which was never installed. public.is_compliance_officer_role() is the built
+-- helper and already folds both spellings; has_brokerage_access() is the house
+-- tenant anchor and is FALSE for a NULL brokerage_id.
 CREATE POLICY "compliance_read_brokerage_listings"
-  ON listings FOR SELECT
+  ON listings FOR SELECT TO authenticated
   USING (
-    (SELECT user_type FROM users WHERE id = auth.uid()) = 'compliance_manager'
-    AND brokerage_id = (SELECT brokerage_id FROM users WHERE id = auth.uid())
+    public.is_compliance_officer_role()
+    AND public.has_brokerage_access(brokerage_id)
   );
 
--- TC
+-- TC (m440). Same defect, same cause: 'transaction_coordinator' is the legacy
+-- spelling lib/security/types.ts LEGACY_ROLE_MAP folds onto 'tc', and the CHECK
+-- stores only 'tc'. public.is_tc_role() is the named helper.
 CREATE POLICY "tc_read_brokerage_listings"
-  ON listings FOR SELECT
+  ON listings FOR SELECT TO authenticated
   USING (
-    (SELECT user_type FROM users WHERE id = auth.uid()) = 'transaction_coordinator'
-    AND brokerage_id = (SELECT brokerage_id FROM users WHERE id = auth.uid())
+    public.is_tc_role()
+    AND public.has_brokerage_access(brokerage_id)
   );
 
 -- Agent SELECT: brokerage-scoped (agents need all brokerage listings for MLS/co-op)
@@ -458,17 +461,22 @@ CREATE POLICY "agent_delete_own_listings"
     AND agent_id = (SELECT id FROM agents WHERE user_id = auth.uid() LIMIT 1)
   );
 
--- Team Leader: join agents -> users for team resolution
+-- Team Lead (m440). THREE defects in the original, all removed:
+--   · 'team_leader' is unstorable — the CHECK stores 'team_lead'.
+--   · the first disjunct was `brokerage_id = <the caller's brokerage>`, i.e. the
+--     WHOLE brokerage, which contradicts the owner ruling "teams should only see
+--     their own board" and made the team clause beside it decoration.
+--   · it resolved the team through users.team_id — one of the FOUR places a team
+--     is recorded and the one that is NULL for every live user. m431's
+--     resolve_team_id() is THE ONE RULE; current_user_team_id() is the reader's
+--     side and agent_team_id(agents.id) is the row's side, so both are decided by
+--     identical logic. NULL is fail-closed: no team resolves to no rows, never to
+--     the brokerage.
 CREATE POLICY "team_leader_read_team_listings"
-  ON listings FOR SELECT
+  ON listings FOR SELECT TO authenticated
   USING (
-    (SELECT user_type FROM users WHERE id = auth.uid()) = 'team_leader'
-    AND (
-      brokerage_id = (SELECT brokerage_id FROM users WHERE id = auth.uid())
-      OR agent_id IN (
-        SELECT a.id FROM agents a
-        JOIN users u ON a.user_id = u.id
-        WHERE u.team_id = (SELECT team_id FROM users WHERE id = auth.uid())
-      )
-    )
+    public.is_team_lead_role()
+    AND public.has_brokerage_access(brokerage_id)
+    AND public.current_user_team_id() IS NOT NULL
+    AND public.agent_team_id(agent_id) = public.current_user_team_id()
   );

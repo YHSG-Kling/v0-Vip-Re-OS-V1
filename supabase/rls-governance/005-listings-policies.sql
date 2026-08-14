@@ -1,3 +1,33 @@
+-- ⚠ m440 — THE ROLE-GATED SELECT POLICIES IN THIS FILE HAVE BEEN REPAIRED.
+--
+-- The team-lead / TC / compliance-officer SELECT policies below were installed on
+-- the live database (through scripts/111-fix-agent-id-rls-policies.sql, which
+-- inlines the auth.* helper bodies from 000-helper-functions.sql) gating on
+-- 'team_leader', 'transaction_coordinator' and 'compliance_manager' — three
+-- user_type values users_user_type_check CANNOT store. Every one of those
+-- policies was therefore false for every user who will ever exist, and the tc,
+-- compliance-officer and team-lead surfaces read ZERO rows.
+--
+-- m440 repaired them on the database: the role comes from the built public.*
+-- helper (is_tc_role / is_compliance_officer_role / is_team_lead_role, each a
+-- POSITIVE roster naming both spellings), the tenant from has_brokerage_access(),
+-- and the TEAM from m431's public.current_user_team_id() / public.agent_team_id()
+-- rather than users.team_id — which is NULL for every live user and is only one of
+-- the four places a team is recorded. m440 also removed the whole-brokerage
+-- disjunct that sat beside the team clause and contradicted the owner's ruling
+-- that "teams should only see their own board".
+--
+-- THE BLOCKS BELOW NOW MATCH THAT, so re-running this file reinstalls the repair
+-- instead of reinstating the defect. Annotating the risk was not enough: a warning
+-- header does not stop a bootstrap script, and this file's own CREATE POLICY text
+-- is what actually decides what exists after it runs. m441 asserts the repair on
+-- the database and goes red if any of it is undone.
+--
+-- The public.* helpers are the ones to use in anything added here. The auth.*
+-- family in 000-helper-functions.sql has never been installed on this database —
+-- that file needs a dashboard superuser connection and was never run — which is
+-- precisely how a spelling nothing could store ended up deciding live access.
+
 -- =====================================================
 -- RLS GOVERNANCE: LISTINGS TABLE POLICIES
 -- =====================================================
@@ -61,16 +91,16 @@ CREATE POLICY "broker_read_brokerage_listings"
 CREATE POLICY "compliance_read_brokerage_listings"
   ON listings FOR SELECT
   USING (
-    auth.is_compliance_manager()
-    AND auth.has_brokerage_access(brokerage_id)
+    public.is_compliance_officer_role()
+    AND public.has_brokerage_access(brokerage_id)
   );
 
 -- TC: Read listings tied to their brokerage's transactions
 CREATE POLICY "tc_read_brokerage_listings"
   ON listings FOR SELECT
   USING (
-    auth.is_tc()
-    AND auth.has_brokerage_access(brokerage_id)
+    public.is_tc_role()
+    AND public.has_brokerage_access(brokerage_id)
   );
 
 -- Agent: Read own listings + brokerage listings (agents need to see all brokerage listings for MLS/co-op)
@@ -82,20 +112,35 @@ CREATE POLICY "agent_read_own_listings"
     AND auth.has_brokerage_access(brokerage_id)
   );
 
--- Team Leader: Read listings for agents on their team
--- FIX: listings.agent_id stores agents.id; must join agents -> users for team lookup
+-- Team Lead: read the listings of the agents on THEIR team — and no others.
+--
+-- m440 rewrote this policy on the live database and this block is brought level
+-- with it. Three things changed, and each was a defect rather than a preference:
+--
+--   · `auth.is_team_leader()` inlined `user_type = 'team_leader'`, which
+--     users_user_type_check cannot store, so the policy was false for every user
+--     who will ever exist. public.is_team_lead_role() is a POSITIVE roster naming
+--     the live spelling and the legacy one.
+--   · the first disjunct was `auth.has_brokerage_access(brokerage_id) OR …`, i.e.
+--     the WHOLE BROKERAGE. Had the spelling ever been storable, a team lead would
+--     have read every listing in the brokerage and the team clause beside it would
+--     have been decoration. Owner ruling: "teams should only see their own board."
+--     The tenant test is now an AND, not an OR.
+--   · the team was resolved through `users.team_id` — one of FOUR places a team is
+--     recorded on this schema, and the one that is NULL for every live user. m431
+--     made public.resolve_team_id() the ONE rule; current_user_team_id() is the
+--     reader's side and agent_team_id(agents.id) is the row's side, so both are
+--     decided by identical logic.
+--
+-- NULL is FAIL-CLOSED and the explicit IS NOT NULL guard makes that visible: a
+-- team lead with no resolvable team gets an empty board, never the brokerage.
 CREATE POLICY "team_leader_read_team_listings"
-  ON listings FOR SELECT
+  ON listings FOR SELECT TO authenticated
   USING (
-    auth.is_team_leader()
-    AND (
-      auth.has_brokerage_access(brokerage_id) OR
-      agent_id IN (
-        SELECT a.id FROM agents a
-        JOIN users u ON a.user_id = u.id
-        WHERE u.team_id = auth.user_team_id()
-      )
-    )
+    public.is_team_lead_role()
+    AND public.has_brokerage_access(brokerage_id)
+    AND public.current_user_team_id() IS NOT NULL
+    AND public.agent_team_id(agent_id) = public.current_user_team_id()
   );
 
 -- =====================================================
