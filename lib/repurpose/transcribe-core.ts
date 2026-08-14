@@ -25,11 +25,18 @@
 //
 // ── TWO CALLERS, TWO OPPOSITE URL TRUST MODELS ───────────────────────────────
 // The merge could NOT merge the URL policy, which is why `allowedHosts` is a
-// parameter rather than a constant:
+// parameter rather than a constant. Note that this is the ONLY axis the two
+// callers still differ on — BOTH now supply a `brokerageId`, so both are gated
+// and metered:
 //
-//   · REPURPOSE (lib/repurpose/actions.ts) transcribes a link the agent PASTED —
-//     their own upload, a webinar recording, a competitor's clip. The URL being
-//     external is the entire feature. It passes no allowlist.
+//   · REPURPOSE (lib/repurpose/actions.ts → lib/repurpose/transcribe.ts)
+//     transcribes a link the agent PASTED — their own upload, a webinar
+//     recording, a competitor's clip. The URL being external is the entire
+//     feature, and `allowedHosts` has no "any public host" spelling, so it
+//     passes no allowlist. What bounds that fetch instead — the content-type
+//     cap, the byte cap, the credential-free connector, and now the metered
+//     gate — is argued in full in the header of lib/repurpose/transcribe.ts,
+//     including the part that is NOT closed.
 //   · transcribeAudio transcribes a recording THIS SYSTEM produced or stored, and
 //     the caller supplies only the pointer. It passes `platformAudioHostRules()`
 //     (lib/security/audio-source-allowlist.ts), so the server cannot be steered
@@ -84,6 +91,12 @@
 // OPENAI_API_KEY used to — never an empty transcript that reads as success.
 //
 // ── GATE + METER ─────────────────────────────────────────────────────────────
+// BOTH LANES SUPPLY A TENANT (owner ruling: "yes that gate STT needs to be
+// turned on"). The repurpose lane used to call this with no options at all, so
+// neither the gate nor the ledger engaged for it; its wrapper now resolves the
+// tenant from the session and passes it. `brokerageId` remains OPTIONAL in the
+// signature because it is the switch itself, not because any caller declines it.
+//
 // When `brokerageId` is supplied the call is pre-flighted against the vendor
 // budget gate and the real spend is recorded to `vendor_usage_tracking` — the
 // same two calls, in the same order, as `lib/voice/elevenlabs-tts.ts:82-89` and
@@ -155,7 +168,10 @@ export interface TranscribeOptions {
    *  pasted-link lane, where an external URL is the point. */
   allowedHosts?: readonly AudioHostRule[]
   /** The tenant the spend belongs to. Supplying it turns ON the budget gate and
-   *  the vendor ledger; omitting it leaves both off (the repurpose behaviour). */
+   *  the vendor ledger; omitting it leaves BOTH OFF — i.e. an unmetered vendor
+   *  call. Every caller in this repo supplies it, and a new one that cannot has
+   *  no business dispatching to a paid vendor: refuse instead, the way
+   *  lib/repurpose/transcribe.ts does when the session resolves no brokerage. */
   brokerageId?: string | null
   /** Vendor preference. "elevenlabs" falls back to Whisper ONLY when
    *  ELEVENLABS_API_KEY is unset — never when ElevenLabs answers with an error,
