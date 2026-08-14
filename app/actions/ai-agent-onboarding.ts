@@ -16,7 +16,23 @@
  *                                (overlaps with submitLicenseDetails — pick canonical)
  *   generateWelcomeMessage     → app/actions/onboarding/assistant.ts
  *   askOnboardingBuddy         → app/actions/onboarding/assistant.ts
- *   submitQuizAttempt          → app/actions/onboarding/onboarding-quiz-actions.ts
+ *   submitQuizAttempt          → RETIRED. Collapsed into the canonical
+ *                                lib/kernel/agent-onboarding.ts:submitQuizAttempt,
+ *                                reached via app/actions/onboarding/
+ *                                onboarding-quiz-actions.ts:submitQuiz, which
+ *                                resolves userId from the session and agentId
+ *                                from getAgentContext. The copy here took
+ *                                agentId FROM THE CALLER with no auth check and
+ *                                then derived the brokerage_id stamp from that
+ *                                same forgeable id. It had no .tsx caller.
+ *                                Richer return (correctCount / totalQuestions /
+ *                                attemptNumber / message) was ported to the
+ *                                survivor first. Its completeAISessionStep call
+ *                                was NOT ported — see that entry above: it
+ *                                writes the legacy agent_onboarding_sessions /
+ *                                agent_onboarding_steps family, not the
+ *                                onboarding_steps + agent_step_completions
+ *                                family the survivor's stepIds live in.
  *   certifyAgent               → app/actions/onboarding/progress.ts
  *                                (overlaps with claimCertification — pick canonical)
  *   getOnboardingAnalytics     → NEW app/actions/onboarding/analytics.ts
@@ -652,94 +668,6 @@ Provide a helpful, encouraging answer in 2-3 paragraphs. Include actionable next
   } catch (error) {
     console.error("AI Buddy error:", error)
     return handleError(error, "askOnboardingBuddy")
-  }
-}
-
-/**
- * Submit quiz attempt and validate answers
- */
-export async function submitQuizAttempt(params: {
-  agentId: string
-  quizId: string
-  answers: Record<string, string>
-  sessionId: string
-  stepId: string
-}) {
-  if (!isValidUUID(params.agentId) || !isValidUUID(params.quizId)) {
-    return { success: false, error: "Invalid agent or quiz ID" }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    // Get quiz with correct answers
-    const { data: quiz, error: quizError } = await supabase
-      .from("onboarding_quizzes")
-      .select("*")
-      .eq("id", params.quizId)
-      .single()
-
-    if (quizError) throw quizError
-
-    // Calculate score
-    const questions = quiz.questions as any[]
-    let correctCount = 0
-    questions.forEach((q: any) => {
-      if (params.answers[q.id] === q.correctAnswer) {
-        correctCount++
-      }
-    })
-    const score = Math.round((correctCount / questions.length) * 100)
-    const passed = score >= (quiz.passing_score || 80)
-
-    // Get attempt number
-    const { data: prevAttempts } = await supabase
-      .from("agent_quiz_attempts")
-      .select("attempt_number")
-      .eq("agent_id", params.agentId)
-      .eq("quiz_id", params.quizId)
-      .order("attempt_number", { ascending: false })
-      .limit(1)
-
-    const attemptNumber = (prevAttempts?.[0]?.attempt_number || 0) + 1
-
-    // Save attempt
-    const { data: quizBrok } = await supabase.from("agents").select("brokerage_id").eq("id", params.agentId).maybeSingle()
-    await supabase.from("agent_quiz_attempts").insert({
-      brokerage_id: quizBrok?.brokerage_id,
-      agent_id: params.agentId,
-      quiz_id: params.quizId,
-      score,
-      answers: params.answers,
-      passed,
-      attempt_number: attemptNumber,
-      created_at: new Date().toISOString(),
-    })
-
-  // If passed, complete the step
-  if (passed) {
-    await completeAISessionStep({
-      sessionId: params.sessionId,
-      stepId: params.stepId,
-        completedBy: params.agentId,
-        notes: `Quiz passed with ${score}% on attempt ${attemptNumber}`,
-      })
-    }
-
-    return {
-      success: true,
-      score,
-      passed,
-      correctCount,
-      totalQuestions: questions.length,
-      attemptNumber,
-      message: passed
-        ? `Congratulations! You passed with ${score}%`
-        : `Score: ${score}%. Need ${quiz.passing_score}% to pass. Review and try again.`,
-    }
-  } catch (error) {
-    console.error("Submit quiz error:", error)
-    return handleError(error, "submitQuizAttempt")
   }
 }
 

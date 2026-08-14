@@ -91,7 +91,9 @@ export {
   generateWelcomeMessage,
   getOnboardingAnalytics,
   askOnboardingBuddy,
-  submitQuizAttempt,
+  // submitQuizAttempt retired → canonical gated writer at
+  // lib/kernel/agent-onboarding.ts:submitQuizAttempt (reached from
+  // app/actions/onboarding/onboarding-quiz-actions.ts:submitQuiz)
   certifyAgent,
 } from "./ai-agent-onboarding"
 

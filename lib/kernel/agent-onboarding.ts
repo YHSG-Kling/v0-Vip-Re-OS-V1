@@ -521,7 +521,15 @@ export async function submitQuizAttempt(params: {
   agentId: string
   quizId: string
   answers: Record<string, unknown>
-}): Promise<{ score: number; passed: boolean }> {
+}): Promise<{
+  score: number
+  passed: boolean
+  correctCount: number
+  totalQuestions: number
+  attemptNumber: number
+  passingScore: number
+  message: string
+}> {
   const { brokerageId } = await assertCanAccessAgent({
     userId: params.userId,
     agentId: params.agentId,
@@ -555,11 +563,19 @@ export async function submitQuizAttempt(params: {
   const passed = score >= quiz.passing_score
 
   // Count existing attempts for attempt_number
-  const { count: prevAttempts } = await supabase
+  const { count: prevAttempts, error: attemptCountError } = await supabase
     .from("agent_quiz_attempts")
     .select("id", { count: "exact", head: true })
     .eq("agent_id", params.agentId)
     .eq("quiz_id", params.quizId)
+
+  // supabase-js RESOLVES a failed query, so a bare `{ count }` turns
+  // "permission denied" into 0 — which would both stamp attempt_number 1 on
+  // every retry (violating the attempt ledger) and report "attempt 1" back to
+  // the agent forever. attemptNumber is now user-visible, so this must throw.
+  if (attemptCountError) {
+    throw new Error(`Failed to count prior quiz attempts: ${attemptCountError.message}`)
+  }
 
   const attemptNumber = (prevAttempts ?? 0) + 1
 
@@ -592,5 +608,15 @@ export async function submitQuizAttempt(params: {
     }
   }
 
-  return { score, passed }
+  return {
+    score,
+    passed,
+    correctCount,
+    totalQuestions: questions.length,
+    attemptNumber,
+    passingScore: quiz.passing_score,
+    message: passed
+      ? `Congratulations! You passed with ${score}%`
+      : `Score: ${score}%. Need ${quiz.passing_score}% to pass. Review and try again.`,
+  }
 }

@@ -420,6 +420,7 @@
     "lib/kernel/referral-radar.ts": 4,
     "lib/kernel/regulatory-watcher.ts": 6,
     "lib/kernel/repair-digest.ts": 1,
+    "lib/kernel/resolve-user-office.ts": 1,
     "lib/kernel/returning-customer.ts": 4,
     "lib/kernel/reverse-prospecting.ts": 2,
     "lib/kernel/role-routes.ts": 1,
@@ -652,6 +653,7 @@
     "lib/video/video-plays.ts": 2,
     "lib/video/video-qr.ts": 1,
     "lib/video/video-status.ts": 2,
+    "lib/voice/call-recording.ts": 4,
     "lib/voice/command-coverage.ts": 1,
     "lib/voice/conversation-relay.ts": 3,
     "lib/voice/deal-decision.ts": 2,
@@ -677,7 +679,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 9026,
+  "census": 9041,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -727,7 +729,7 @@
     "app/actions/agentic-tokens.ts": 3,
     "app/actions/agents.ts": 21,
     "app/actions/ai-agent-goals.ts": 6,
-    "app/actions/ai-agent-onboarding.ts": 9,
+    "app/actions/ai-agent-onboarding.ts": 8,
     "app/actions/ai-auto-response.ts": 6,
     "app/actions/ai-buyer-search-push.ts": 1,
     "app/actions/ai-calendar-management.ts": 13,
@@ -1620,10 +1622,12 @@
     "app/api/videos/route.ts": 1,
     "app/api/voice/end-call/route.ts": 1,
     "app/api/voice/initiate-call/route.ts": 1,
+    "app/api/voice/recording/[callId]/route.ts": 1,
     "app/api/voice/relay/plan/route.ts": 1,
     "app/api/voice/twilio/inbound/route.ts": 1,
     "app/api/voice/twilio/intelligence/route.ts": 1,
     "app/api/voice/twilio/outbound/route.ts": 1,
+    "app/api/voice/twilio/recording/route.ts": 1,
     "app/api/voice/twilio/status/route.ts": 1,
     "app/api/voice/twilio/turn/route.ts": 1,
     "app/api/voice/twilio/whisper/route.ts": 1,
@@ -1919,6 +1923,7 @@
     "app/components/vendor/jobs-list.tsx": 1,
     "app/components/vendors/vendor-category-select.tsx": 1,
     "app/components/video/VideoGenerationButtons.tsx": 1,
+    "app/components/voice/CallRecordingPlayer.tsx": 1,
     "app/components/voice/CoachingInsightCard.tsx": 1,
     "app/components/voice/TranscriptViewer.tsx": 1,
     "app/config/navigation-config.ts": 2,
@@ -3036,7 +3041,7 @@
     "lib/commission/waterfall/10-fees.ts": 1,
     "lib/commission/waterfall/11-validate-persist.ts": 1,
     "lib/communication/call-compliance.ts": 5,
-    "lib/communication/call-disclosures.ts": 3,
+    "lib/communication/call-disclosures.ts": 4,
     "lib/communication/phone-reachability.ts": 2,
     "lib/communication/tcpa-gate.ts": 2,
     "lib/communication-spine/conversation-manager.ts": 1,
@@ -3573,6 +3578,7 @@
     "lib/kernel/reporting.ts": 11,
     "lib/kernel/reputation.ts": 8,
     "lib/kernel/resolve-event-contacts.ts": 1,
+    "lib/kernel/resolve-user-office.ts": 2,
     "lib/kernel/returning-customer.ts": 8,
     "lib/kernel/reverse-prospecting.ts": 3,
     "lib/kernel/role-routes.ts": 1,
@@ -4190,6 +4196,7 @@
     "lib/voice/a2p-registration.ts": 9,
     "lib/voice/broker-commands.ts": 3,
     "lib/voice/call-analysis.ts": 4,
+    "lib/voice/call-recording.ts": 9,
     "lib/voice/campaign-command.ts": 1,
     "lib/voice/command-coverage.ts": 3,
     "lib/voice/conversation-relay.ts": 7,
@@ -4204,6 +4211,7 @@
     "lib/voice/platform-reception.ts": 7,
     "lib/voice/reception-brain.ts": 8,
     "lib/voice/reception-inventory.ts": 3,
+    "lib/voice/recording-playback-path.ts": 1,
     "lib/voice/showing-request.ts": 1,
     "lib/voice/sms-inbound.ts": 5,
     "lib/voice/spoken-values.ts": 3,
@@ -4415,7 +4423,7 @@
       "updateLocationAction",
       "deleteLocationAction",
       "listBrokerageAgentsAction",
-      "assignAgentToLocationAction"
+      "assignUserToLocationAction"
     ],
     "app/actions/admin/manager-evals.ts": [
       "getManagerTrustScorecard",
@@ -4511,7 +4519,6 @@
       "verifyAgentLicense",
       "generateWelcomeMessage",
       "askOnboardingBuddy",
-      "submitQuizAttempt",
       "certifyAgent",
       "getOnboardingAnalytics"
     ],
@@ -9233,6 +9240,9 @@
     "app/api/voice/initiate-call/route.ts": [
       "POST"
     ],
+    "app/api/voice/recording/[callId]/route.ts": [
+      "GET"
+    ],
     "app/api/voice/relay/plan/route.ts": [
       "POST"
     ],
@@ -9243,6 +9253,9 @@
       "POST"
     ],
     "app/api/voice/twilio/outbound/route.ts": [
+      "POST"
+    ],
+    "app/api/voice/twilio/recording/route.ts": [
       "POST"
     ],
     "app/api/voice/twilio/status/route.ts": [
@@ -10147,6 +10160,9 @@
     ],
     "app/components/video/VideoGenerationButtons.tsx": [
       "VideoGenerationButtons"
+    ],
+    "app/components/voice/CallRecordingPlayer.tsx": [
+      "CallRecordingPlayer"
     ],
     "app/components/voice/CoachingInsightCard.tsx": [
       "CoachingInsightCard"
@@ -14249,6 +14265,7 @@
     ],
     "lib/communication/call-disclosures.ts": [
       "hasAiDisclosure",
+      "hasRecordingDisclosure",
       "ensureAiDisclosure",
       "withAiCallDisclosures"
     ],
@@ -16972,6 +16989,10 @@
     ],
     "lib/kernel/resolve-event-contacts.ts": [
       "resolveEventContacts"
+    ],
+    "lib/kernel/resolve-user-office.ts": [
+      "pickUserOffice",
+      "resolveUserOffice"
     ],
     "lib/kernel/returning-customer.ts": [
       "isReengageableLifetime",
@@ -20102,6 +20123,17 @@
       "analyzeVoiceCallRow",
       "sweepVoiceCallIntelligence"
     ],
+    "lib/voice/call-recording.ts": [
+      "readCallRecordingPolicy",
+      "resolveCallRecordingPolicy",
+      "disclosureCoversRecording",
+      "recordingPlaybackPath",
+      "recordingCallbackUrl",
+      "recordingDialParams",
+      "normalizeRecordingUrl",
+      "parseRecordingCallback",
+      "startCallRecording"
+    ],
     "lib/voice/campaign-command.ts": [
       "pickLaunchableCampaign"
     ],
@@ -20178,6 +20210,9 @@
       "extractAddressHints",
       "composeInventoryBlock",
       "loadInventoryContext"
+    ],
+    "lib/voice/recording-playback-path.ts": [
+      "recordingPlaybackPath"
     ],
     "lib/voice/showing-request.ts": [
       "voiceRequestShowing"
@@ -20445,5 +20480,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 263
+  "trulyDead": 265
 }
