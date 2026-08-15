@@ -572,6 +572,12 @@ async function main() {
     check("terms + measured GCI ride ONLY from real data; omitted facts drop their sections (never invented)",
       JSON.stringify(spec.sections).includes("85%") && JSON.stringify(spec.sections).includes("412,000")
       && !JSON.stringify(recruitingPitchSpec({ ...facts, splitToAgent: null, monthlyFee: null, recruitedGciDollars: null }, "p", brand, "d").sections).includes("The terms"))
+    // The BROKERAGE split IS the agent's share of GCI (the ordinary reading the
+    // /recruiting calculator applies), so its row stays a bare percentage — the
+    // base qualifier belongs to the team path alone.
+    check("the brokerage terms row is unqualified and unchanged — split to agent is its share of GCI, printed as a bare percentage",
+      JSON.stringify(spec.sections.find((s) => s.heading === "The terms")?.table?.rows ?? [])
+        === JSON.stringify([["Commission split to agent", "85%"], ["Monthly fee", "$99"]]))
     const pitchBytes = await renderClientPdf(spec)
     check("the pitch kit renders as a REAL branded PDF through the one engine",
       Buffer.from(pitchBytes.slice(0, 5)).toString() === "%PDF-" && (await PDFDocument.load(pitchBytes)).getPageCount() >= 1)
@@ -589,19 +595,54 @@ async function main() {
   // ───────────────────────────────────────────────────────────────────────────
   console.log("\n[20 · TEAMS RECRUIT TOO + THE TENANT WEBSITE (the OS loop closes on the public web)]")
   {
-    const { teamPitchFacts, pitchSettingsHash: tHash } = await import("../lib/recruiting/recruiting-pitch-kit")
-    const tf = teamPitchFacts({
+    const { teamPitchFacts, pitchSettingsHash: tHash, recruitingPitchSpec: tSpec } = await import("../lib/recruiting/recruiting-pitch-kit")
+    const teamRow = {
       name: "The Avery Group", tagline: "Volume with a life.", bio_text: "We cap at 20 agents on purpose.",
-      team_split_percent: 70, team_split_value: null, team_split_type: null,
-      team_fees_json: { monthly_fee: 150 }, phone: "(555) 010-3000",
-    })
+      team_split_percent: 70 as number | null, team_split_value: null as number | null,
+      team_split_type: null as string | null,
+      team_fees_json: { monthly_fee: 150 } as unknown, phone: "(555) 010-3000",
+    }
+    const tf = teamPitchFacts(teamRow)
+    const termsOf = (f: Parameters<typeof tSpec>[0]) =>
+      JSON.stringify(tSpec(f, "p", brand, "d").sections.find((s) => s.heading === "The terms")?.table?.rows ?? [])
     check("team pitch facts come from the team's OWN columns (tagline+bio → pitch, split fields → terms, fees json → fee) — no invented columns",
-      tf.pitch?.includes("Volume with a life.") === true && tf.splitToAgent === 70 && tf.monthlyFee === 150
+      tf.pitch?.includes("Volume with a life.") === true && tf.monthlyFee === 150
       && tf.contactLine?.includes("(555) 010-3000") === true)
+    // teams.team_split_percent is the TEAM LEAD's cut of the agent's net
+    // (lib/commission/team-lead-split.ts deducts agentNet * pct/100 FROM the agent),
+    // so a 70% team means the recruit KEEPS 30% — never 70%.
+    check("the team's split is INVERTED to what the recruit keeps (team takes 70% → agent keeps 30%), never printed as the agent's share",
+      tf.splitToAgent === 30 && termsOf(tf).includes("30%") && !termsOf(tf).includes("70%"))
+    check("the team row NAMES ITS BASE (a team cut comes off the agent's net after the brokerage split — not off GCI like the brokerage kit)",
+      /after the brokerage split/.test(tf.splitBasisNote ?? "") && /30% of your net, after the brokerage split/.test(termsOf(tf)))
+    // The money code picks its column from team_split_type ALONE
+    // (waterfall/08-team-split.ts) and the writer NULLs the unused column; a flat
+    // team's real term is dollars-per-closing, which must be STATED, not dropped.
+    const flatTeam = teamPitchFacts({ ...teamRow, team_split_percent: null, team_split_value: 500, team_split_type: "flat" })
+    check("the FLAT branch is surfaced as a real term (team_split_value = $500/closing), not silently dropped",
+      flatTeam.splitToAgent === null && flatTeam.flatSplitPerClosing === 500
+      && /Team split per closing/.test(termsOf(flatTeam))
+      && /\$500 from your net, after the brokerage split/.test(termsOf(flatTeam)))
+    const staleFlat = teamPitchFacts({ ...teamRow, team_split_percent: 70, team_split_value: 500, team_split_type: "flat" })
+    check("a STALE percent on a flat team is ignored — the kit picks the column team_split_type selects, exactly like the money code",
+      staleFlat.splitToAgent === null && staleFlat.flatSplitPerClosing === 500
+      && !termsOf(staleFlat).includes("70%") && !termsOf(staleFlat).includes("30%"))
+    const stalePct = teamPitchFacts({ ...teamRow, team_split_percent: 40, team_split_value: 500, team_split_type: "percent" })
+    check("a STALE flat value on a percent team is ignored the same way (percent column wins, agent keeps 60%)",
+      stalePct.splitToAgent === 60 && stalePct.flatSplitPerClosing === null && !termsOf(stalePct).includes("$500"))
+    check("out-of-range terms print NOTHING rather than a negative or >100% share (waterfall clamps the money; the document must not print nonsense)",
+      teamPitchFacts({ ...teamRow, team_split_percent: 140 }).splitToAgent === null
+      && teamPitchFacts({ ...teamRow, team_split_percent: -5 }).splitToAgent === null
+      && teamPitchFacts({ ...teamRow, team_split_percent: null, team_split_value: -20, team_split_type: "flat" }).flatSplitPerClosing === null
+      && !termsOf(teamPitchFacts({ ...teamRow, team_split_percent: 140 })).includes("%"))
     check("a team with no real pitch produces nothing (bio/tagline empty → skip)",
       teamPitchFacts({ name: "X", tagline: null, bio_text: null, team_split_percent: null, team_split_value: null, team_split_type: null, team_fees_json: null, phone: null }).pitch === null)
     check("team hash keys the refresh independently of the brokerage kit",
       tHash(tf) !== tHash({ ...tf, splitToAgent: 60 }))
+    check("EVERY printed term keys the refresh: the basis qualifier and the flat per-closing split both move the settings hash",
+      tHash(tf) !== tHash({ ...tf, splitBasisNote: null })
+      && tHash(flatTeam) !== tHash({ ...flatTeam, flatSplitPerClosing: 750 })
+      && tHash(flatTeam) !== tHash(tf) && tHash(flatTeam) === tHash({ ...flatTeam }))
     const kitRunner2 = src("lib/recruiting/recruiting-pitch-kit.ts")
     check("the runner has the TEAM PASS: teams with a pitch, hash-idempotent per team (metadata.team_id), TEAM LEAD notified",
       kitRunner2.includes("TEAM PASS") && kitRunner2.includes('contains("metadata", { team_id: t.id })')

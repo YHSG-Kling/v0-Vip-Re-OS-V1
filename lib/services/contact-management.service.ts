@@ -298,21 +298,55 @@ export async function getContact(contactId: string, agentId: string) {
 
     const supabase = await createClient()
 
+    // THIS READ NAMED THREE RELATIONSHIPS POSTGREST CANNOT EMBED. Any ONE of them
+    // refuses the WHOLE query, so this has never returned a contact — and the
+    // `throw` below rendered that refusal as "Contact not found".
+    //   · `buyer_persona(*)` — there is NO public.buyer_persona table and no such
+    //     column on contacts. It is a phantom; do not restore it. The per-contact
+    //     persona that DOES exist is client_detailed_personas
+    //     (client_detailed_personas.contact_id -> contacts.id, one row per contact,
+    //     written by lib/contacts/persona-builder.ts). Nothing here consumed the
+    //     persona, so it is dropped rather than repointed.
+    //   · `lead_intelligence` / `lead_behavioral_data` — both are keyed on `lead_id`
+    //     and declare NO foreign key to contacts (pg_constraint carries brokerage_id
+    //     only). PostgREST embeds on DECLARED relationships, so each raised PGRST200.
+    //     Nothing here read either one; both are dropped. Where they ARE consumed
+    //     they must be fetched by their lead_id link, never embedded on contacts —
+    //     see lead-management.service.ts and app/actions/ai-chat.ts.
+    // `transactions` has THREE foreign keys to contacts (contact_id, buyer_contact_id,
+    // seller_contact_id), so the bare `transactions(*)` embed was ambiguous (PGRST201)
+    // and would have failed on its own; it is now named by constraint, which picks the
+    // side meant here — the deals this contact is the client on.
+    // property_interactions IS a declared relationship (contact_id -> contacts.id) and
+    // stays. Columns are named explicitly — never `*` inside an embed, which hides
+    // drift from the schema guard (defect #214).
     const { data: contact, error } = await supabase
       .from("contacts")
       .select(`
         *,
-        lead_intelligence(*),
-        lead_behavioral_data(*),
-        buyer_persona(*),
-        property_interactions(*, listings(*)),
-        transactions(*)
+        property_interactions(
+          id,
+          interaction_type,
+          created_at,
+          listings(id, address, city, state, list_price, status)
+        ),
+        transactions!transactions_contact_id_fkey(
+          id,
+          deal_name,
+          property_address,
+          status,
+          close_date,
+          purchase_price
+        )
       `)
       .eq("id", contactId)
       .eq("agent_id", agentId)
       .single()
 
     if (error) {
+      // A refused query and an absent row arrive here identically, and answering a
+      // refusal with "not found" is how the broken embeds stayed invisible. Say which.
+      console.error("[getContact] contacts read failed:", error.message)
       throw new NotFoundError("Contact not found")
     }
 
@@ -333,13 +367,16 @@ export async function getContacts(agentId: string, filters?: { status?: string; 
 
     const supabase = await createClient()
 
+    // `buyer_persona(*)` named a relation that DOES NOT EXIST (no public.buyer_persona
+    // table, no such column on contacts), and `lead_intelligence` is keyed on lead_id
+    // with NO foreign key to contacts. Either one refuses the WHOLE query (PGRST200),
+    // so this list has never returned a contact — the caller rendered the refusal as an
+    // empty CRM. Nothing read either embed off this result, so both are dropped rather
+    // than repointed; the real per-contact persona is client_detailed_personas
+    // (contact_id -> contacts.id) and can be embedded if a consumer ever needs it.
     let query = supabase
       .from("contacts")
-      .select(`
-        *,
-        lead_intelligence(*),
-        buyer_persona(*)
-      `)
+      .select("*")
       .eq("agent_id", agentId)
       .is("deleted_at", null)
 
@@ -353,7 +390,12 @@ export async function getContacts(agentId: string, filters?: { status?: string; 
     }
 
     if (filters?.search) {
-      query = query.or(`full_name.ilike.%${filters.search}%,email.ilike.%${filters.search}%`)
+      // `full_name` is NOT a column on contacts (the live table carries first_name /
+      // last_name separately). A bad column in a filter refuses the query exactly the
+      // way a bad embed does, so every searched list came back as "no matches". Matched
+      // the way crm.ts:searchContacts already does it, against columns that exist.
+      const term = filters.search
+      query = query.or(`first_name.ilike.%${term}%,last_name.ilike.%${term}%,email.ilike.%${term}%`)
     }
 
     const { data: contacts, error } = await query.order("lead_score", { ascending: false })

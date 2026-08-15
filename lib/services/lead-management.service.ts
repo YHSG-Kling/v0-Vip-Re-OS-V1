@@ -84,25 +84,46 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
     let error: any
 
     if (table === "contacts") {
-      // lead_behavioral_data has no PostgREST FK to contacts — embedding it errors the
-      // whole query (PGRST200). It's an event log keyed by lead_id, fetched separately.
+      // TWO of the three embeds this read carried could never resolve, and ONE
+      // unresolvable embed refuses the WHOLE query (PGRST200) — so no contact has
+      // ever been scored here; every call fell through to the NotFoundError below.
+      //   · `buyer_persona(*)` — there is NO public.buyer_persona table and no such
+      //     column on contacts. A phantom; do not restore it. The real per-contact
+      //     persona is client_detailed_personas, which DOES declare
+      //     client_detailed_personas.contact_id -> contacts.id, so it is embeddable and
+      //     is embedded below — calculateFitScore genuinely consumes it.
+      //   · `lead_intelligence(*)` — keyed on lead_id, declares NO foreign key to
+      //     contacts (pg_constraint carries brokerage_id only), exactly like its
+      //     sibling lead_behavioral_data. Fetched below by the link that does exist.
+      // property_interactions IS a declared relationship (contact_id -> contacts.id)
+      // and stays. Every embed names its columns — never `*` inside an embed, which
+      // hides drift from the schema guard (defect #214). Only the persona's EXISTENCE
+      // is scored, so only its key is named.
       const result = await supabase
         .from("contacts")
         .select(`
           *,
-          lead_intelligence(*),
-          property_interactions(*),
-          buyer_persona(*)
+          property_interactions(id, interaction_type),
+          client_detailed_personas(id)
         `)
         .eq("id", params.id)
         .single()
       record = result.data
       error = result.error
-      // lead_behavioral_data has no PostgREST FK to contacts, so it cannot be
-      // embedded above — and it was never fetched here either, despite the comment
-      // saying so. Every behavioural factor was therefore computed from `undefined`
-      // for CONTACTS while the leads branch below did fetch it.
+      // The two relations that cannot be embedded on contacts, fetched by the link that
+      // does exist. lead_behavioral_data was never fetched here either, despite the old
+      // comment saying so, so every behavioural factor was computed from `undefined`
+      // for CONTACTS while the leads branch did fetch it.
+      // lead_id is the PRE-CONVERSION id class: a contact that was never a scraped lead
+      // legitimately has no intelligence/behaviour row, and that is an absence, not an
+      // error. Same lookup app/actions/ai-predictions.ts uses for these two tables.
       if (record) {
+        const { data: intelligence } = await supabase
+          .from("lead_intelligence")
+          .select("id, timeline, pre_approved")
+          .eq("lead_id", params.id)
+        record.lead_intelligence = intelligence || []
+
         const { data: behavioral } = await supabase
           .from("lead_behavioral_data")
           .select("event_type, event_data, occurred_at")
@@ -110,19 +131,46 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
         record.lead_behavioral_data = behavioral || []
       }
     } else {
+      // Same defect on the leads side, and it was equally fatal: NEITHER
+      // lead_intelligence NOR lead_motivated_seller_signals declares a foreign key to
+      // leads (pg_constraint carries brokerage_id only for both), so this read was
+      // refused too and no scraped lead has been scored either. Fixing one sibling and
+      // not the other is how a defect class survives being found.
       const result = await supabase
         .from("leads")
-        .select(`
-          *,
-          lead_intelligence(*),
-          lead_motivated_seller_signals(*)
-        `)
+        .select("*")
         .eq("id", params.id)
         .single()
       record = result.data
       error = result.error
-      // lead_behavioral_data has no FK to leads — fetch separately (event log).
+      // All three are keyed on lead_id and fetched by that link instead.
       if (record) {
+        const { data: intelligence } = await supabase
+          .from("lead_intelligence")
+          .select("id, timeline, pre_approved")
+          .eq("lead_id", params.id)
+        record.lead_intelligence = intelligence || []
+
+        // REPOINTED to the survivor. `lead_motivated_seller_signals` is the RETIRED
+        // twin: it has readers and NO WRITER anywhere in the tree, so this scoring
+        // component was structurally always zero — the writer-less-read sweep is what
+        // said so out loud. `motivated_seller_signals` is the live table: written by
+        // app/actions/lead-intelligence.ts:1245 and :2363, read by
+        // app/actions/ai-predictions.ts:204, and named as the target of this exact
+        // repoint in the eight-legacy-twin burn-down already recorded in
+        // scripts/doc-kernel-simulator.ts:2144. This file was the straggler.
+        //
+        // Both tables carry `lead_id` and `signal_strength`, which is all this scorer
+        // reads, so the threshold below is unchanged — it can simply now be met.
+        const { data: sellerSignals, error: sellerSignalsError } = await supabase
+          .from("motivated_seller_signals")
+          .select("id, signal_strength")
+          .eq("lead_id", params.id)
+        if (sellerSignalsError) {
+          console.error("[lead-management] motivated_seller_signals read failed:", sellerSignalsError.message)
+        }
+        record.motivated_seller_signals = sellerSignals || []
+
         const { data: behavioral } = await supabase
           .from("lead_behavioral_data")
           .select("event_type, event_data, occurred_at")
@@ -346,7 +394,7 @@ function calculateEngagementScore(record: any, table: string, behavior: Behavior
     // out of a possible 30 — every pre-conversion record silently scored up to
     // 30 points lower for a signal the product does not collect about them,
     // which is worse than not scoring it at all.
-    const sellerSignals = record.lead_motivated_seller_signals || []
+    const sellerSignals = record.motivated_seller_signals || []
 
     // Motivated seller signals
     const strongSignals = sellerSignals.filter((s: any) => s.signal_strength > 0.7).length
@@ -401,9 +449,14 @@ function calculateIntentScore(record: any, table: string): number {
   else if (intelligence?.timeline === "3-6_months") score += 20
   else if (intelligence?.timeline === "6-12_months") score += 10
 
-  // Pre-approval status
-  if (intelligence?.preapproval_status === "approved") score += 30
-  else if (intelligence?.preapproval_status === "in_process") score += 20
+  // Pre-approval status. `preapproval_status` is NOT a column on lead_intelligence —
+  // the live table carries a boolean `pre_approved` (plus `pre_approval_amount` and a
+  // free-text `financial_readiness`). Both branches below were therefore unreachable,
+  // which went unnoticed because the embed above meant `intelligence` was never
+  // populated at all. Mapped onto the column that exists; the old "in_process" branch
+  // is DELETED rather than guessed at, because no column carries that state — inventing
+  // a value for it would be inventing a score.
+  if (intelligence?.pre_approved === true) score += 30
 
   if (table === "contacts") {
     // Budget alignment
@@ -437,17 +490,22 @@ function calculateFitScore(record: any, table: string): number {
   let score = 50 // Base score
 
   if (table === "contacts") {
-    const persona = record.buyer_persona?.[0]
+    // Was `record.buyer_persona?.[0]` — a relation that DOES NOT EXIST (no
+    // public.buyer_persona table, no such column on contacts), so this was always
+    // undefined even before the embed naming it refused the whole read. The real
+    // per-contact persona is client_detailed_personas, fetched in calculateLeadScore.
+    const persona = record.client_detailed_personas?.[0]
 
     // Has complete profile
     if (record.email && record.phone) score += 10
     if (record.budget_min && record.budget_max) score += 10
 
-    // Persona match
-    if (persona) {
-      score += 15
-      if (persona.confidence_score > 0.8) score += 15
-    }
+    // Persona match. The second 15 points hung on `persona.confidence_score > 0.8`;
+    // client_detailed_personas has NO confidence_score column (nor did the phantom it
+    // was read off). DELETED, not repaired — the same call made for
+    // calculateResponsivenessScore below. Persona PRESENCE is the signal the schema
+    // actually supports, and it is now reachable for the first time.
+    if (persona) score += 15
 
     // Location preferences
     if (record.preferred_cities?.length > 0) score += 10
@@ -641,13 +699,17 @@ export async function getTopLeads(agentId: string, limit = 20) {
 
     const supabase = await createClient()
 
+    // `buyer_persona(*)` named a relation that DOES NOT EXIST (no public.buyer_persona
+    // table, no such column on contacts), and `lead_intelligence` is keyed on lead_id
+    // with NO foreign key to contacts. Either one refuses the WHOLE query (PGRST200),
+    // so this list has never returned a lead — the catch below turned that into an
+    // empty array, i.e. "this agent has no top leads". Nothing downstream read either
+    // embed off this result, so both are dropped rather than repointed; the real
+    // per-contact persona is client_detailed_personas (contact_id -> contacts.id) and
+    // is embeddable if a consumer ever needs it.
     const { data, error } = await supabase
       .from("contacts")
-      .select(`
-        *,
-        lead_intelligence(*),
-        buyer_persona(*)
-      `)
+      .select("*")
       .eq("agent_id", agentId)
       .eq("status", "active")
       .order("lead_score", { ascending: false })

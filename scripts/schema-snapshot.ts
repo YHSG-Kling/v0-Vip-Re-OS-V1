@@ -49,7 +49,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   agent_goals: ["agent_id", "brokerage_id", "created_at", "current_value", "goal_type", "id", "notes", "target_value", "updated_at", "year"],
   agent_handoffs: ["accepted_at", "brokerage_id", "completed_at", "context_package", "created_at", "entity_id", "entity_type", "from_agent_type", "handoff_reason", "handoff_status", "human_agent_id", "id", "session_id", "to_agent_type"],
   agent_intro_videos: ["agent_id", "brokerage_id", "contact_id", "created_at", "delivered_at", "delivery_channel", "error_message", "id", "status", "trigger", "trigger_year", "video_project_id"],
-  agent_licenses: ["agent_id", "brokerage_id", "created_at", "document_url", "eo_coverage_amount", "eo_expiration_date", "eo_insurance_carrier", "eo_policy_number", "expiration_date", "id", "license_number", "license_state", "license_status", "license_type", "updated_at", "verification_status", "verified_at"],
+  agent_licenses: ["agent_id", "brokerage_id", "created_at", "document_url", "eo_certificate_url", "eo_coverage_amount", "eo_expiration_date", "eo_insurance_carrier", "eo_policy_number", "expiration_date", "id", "license_number", "license_state", "license_status", "license_type", "updated_at", "verification_status", "verified_at"],
   agent_mentor_relationships: ["brokerage_id", "created_at", "end_date", "id", "mentee_agent_id", "mentor_agent_id", "notes", "start_date", "status"],
   agent_metrics: ["agent_id", "brokerage_id", "created_at", "id", "metadata", "metric_type", "metric_value", "recorded_at"],
   agent_monthly_earnings: ["agent_id", "brokerage_id", "created_at", "gross_total", "id", "metadata", "month_year", "net_total", "transaction_count", "updated_at"],

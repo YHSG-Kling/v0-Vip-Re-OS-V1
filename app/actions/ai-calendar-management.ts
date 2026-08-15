@@ -436,18 +436,40 @@ export async function scheduleSmartFollowUps(params: {
     const supabase = await createClient()
     const daysAhead = params.daysAhead || 7
 
-    // Get contacts needing follow-up
-    const { data: contacts } = await supabase
+    // Get contacts needing follow-up.
+    //
+    // This query was broken TWICE over, and each fault alone was fatal:
+    //  1. `interactions(*)` embedded a table that DOES NOT EXIST (no public.interactions,
+    //     and `interactions` is not an FK column on contacts). PostgREST rejects the whole
+    //     query on an unknown relation. Nothing in this function ever read
+    //     `c.interactions` — only `transactions.length` and the last-contact date are
+    //     consumed — so the embed is simply dropped rather than repointed. (The `activities`
+    //     read further down this file, ~line 714, is a separate query and is unaffected.)
+    //  2. `.or("last_interaction_date...")` filtered a column contacts DOES NOT HAVE. The
+    //     real column is `last_contacted_at`. A bad column in a filter fails the query the
+    //     same way a bad embed does.
+    // With `error` undestructured both faults surfaced as `contacts: null`, i.e. "all
+    // contacts have follow-ups scheduled" — this action has never scheduled anything.
+    //
+    // `transactions` has THREE foreign keys to contacts (contact_id, buyer_contact_id,
+    // seller_contact_id), so the bare `transactions(*)` embed was ambiguous and would have
+    // failed even on its own. It is now named by constraint, and only the column actually
+    // consumed (a count) is selected — never `*` inside an embed (defect #214).
+    const { data: contacts, error: contactsError } = await supabase
       .from("contacts")
       .select(`
         *,
-        interactions(*),
-        transactions(*)
+        transactions!transactions_contact_id_fkey(id)
       `)
       .eq("agent_id", params.agentId)
       .eq("status", "active")
-      .or(`last_interaction_date.is.null,last_interaction_date.lt.${new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()}`)
+      .or(`last_contacted_at.is.null,last_contacted_at.lt.${new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()}`)
       .limit(50)
+
+    if (contactsError) {
+      console.error("[scheduleSmartFollowUps] contacts read failed:", contactsError.message)
+      return { success: false, error: contactsError.message }
+    }
 
     // Get existing follow-ups scheduled
     const { data: existingFollowUps } = await supabase
@@ -487,12 +509,13 @@ export async function scheduleSmartFollowUps(params: {
       prompt: `Plan follow-ups for these contacts over the next ${daysAhead} days:
 
 ${contactsNeedingFollowUp.map((c: any) => `
+Contact ID: ${c.id}
 Contact: ${c.first_name} ${c.last_name}
-Stage: ${c.stage}
-Last Interaction: ${c.last_interaction_date || 'Never'}
+Stage: ${c.lifecycle_state || 'Unknown'}
+Last Contacted: ${c.last_contacted_at || 'Never'}
 Lead Score: ${c.lead_score || 'Unknown'}
 Transaction History: ${c.transactions?.length || 0} transactions
-Preferred Contact: ${c.preferred_contact_method || 'Any'}
+Preferred Contact: ${c.preferred_channel || 'Any'}
 `).join('\n---\n')}
 
 Create a balanced follow-up schedule that:

@@ -110,6 +110,7 @@
     "test:reporting-scope": "tsx scripts/reporting-scope-simulator.ts",
     "test:contact-inheritance": "tsx scripts/contact-inheritance-simulator.ts",
     "test:license-review": "tsx scripts/license-review-simulator.ts",
+    "test:license-eo-record": "tsx scripts/license-eo-record-simulator.ts",
     "test:marketing-qr": "tsx scripts/marketing-qr-simulator.ts",
     "test:home-value-capture": "tsx scripts/home-value-capture-simulator.ts",
     "test:stage-automations": "tsx scripts/stage-automations-simulator.ts",

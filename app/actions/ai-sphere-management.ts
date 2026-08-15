@@ -26,13 +26,24 @@ export async function aiScoreSphereEngagement(params: { agentId: string }) {
   const supabase = await createClient()
 
   try {
-    // Get all contacts in sphere
+    // TWO DEAD EMBEDS ON ONE SELECT, and either alone killed the whole query.
+    //
+    //  · `interactions(...)` named a table that DOES NOT EXIST. The canonical
+    //    per-contact activity log is `activities` (FK activities.contact_id);
+    //    its columns are activity_type / created_at, not interaction_type /
+    //    interaction_date, so the consumers below were renamed with it.
+    //  · `transactions(...)` bare is AMBIGUOUS: transactions carries THREE FKs
+    //    to contacts (contact_id, buyer_contact_id, seller_contact_id), so
+    //    PostgREST refuses with PGRST201 rather than picking one. Named by
+    //    constraint, the same way line 437 already named the referrals embed.
+    //
+    // This sphere score has therefore never been computed from real data.
     const { data: contacts } = await supabase
       .from("contacts")
       .select(`
         *,
-        interactions(id, interaction_type, interaction_date, outcome),
-        transactions(id, status, close_date)
+        activities(id, activity_type, outcome, created_at),
+        transactions!transactions_contact_id_fkey(id, status, close_date)
       `)
       .eq("agent_id", params.agentId)
       .in("contact_type", [LIFETIME_CUSTOMER_TYPE, "sphere", "referral_partner"])
@@ -43,13 +54,13 @@ export async function aiScoreSphereEngagement(params: { agentId: string }) {
 
     const scoredContacts = await Promise.all(
       contacts.map(async (contact) => {
-        const lastInteraction = contact.interactions?.[0]?.interaction_date
+        const lastInteraction = contact.activities?.[0]?.created_at
         const daysSinceContact = lastInteraction
           ? Math.floor((Date.now() - new Date(lastInteraction).getTime()) / (1000 * 60 * 60 * 24))
           : 999
 
         const totalTransactions = contact.transactions?.length || 0
-        const totalInteractions = contact.interactions?.length || 0
+        const totalInteractions = contact.activities?.length || 0
 
         // AI-enhanced scoring
         const { object: scoring } = await generateObject({
@@ -71,7 +82,7 @@ Total transactions with us: ${totalTransactions}
 Total interactions logged: ${totalInteractions}
 Home purchase/sale anniversary: ${contact.home_anniversary || "Unknown"}
 Birthday: ${contact.birthday || "Unknown"}
-Last interaction type: ${contact.interactions?.[0]?.interaction_type || "None"}
+Last interaction type: ${contact.activities?.[0]?.activity_type || "None"}
 
 Provide engagement score (0-100), referral potential, risk level, and recommended next action.`,
         })
@@ -132,8 +143,8 @@ export async function aiGenerateTouchpoint(params: {
       .from("contacts")
       .select(`
         *,
-        transactions(property_address, close_date, purchase_price),
-        interactions(interaction_type, notes, interaction_date)
+        transactions!transactions_contact_id_fkey(property_address, close_date, purchase_price),
+        activities(activity_type, notes, created_at)
       `)
       .eq("id", params.contactId)
       .single()
@@ -172,7 +183,7 @@ Relationship: ${contact.contact_type}
 Last property: ${lastTransaction?.property_address || "Unknown"}
 Close date: ${lastTransaction?.close_date || "Unknown"}
 Interests/Notes: ${contact.notes || "None recorded"}
-Recent interactions: ${JSON.stringify(contact.interactions?.slice(0, 3) || [])}
+Recent interactions: ${JSON.stringify(contact.activities?.slice(0, 3) || [])}
 
 Relationship to agent: ${params.relationshipType || contact.contact_type || "Past client"}
 What the agent says matters most right now: ${params.additionalContext?.trim() || "Not specified"}
@@ -257,7 +268,7 @@ export async function aiOptimizeReferralAsk(params: {
     // Load contact — load referrals separately to avoid FK name guessing
     const { data: contact } = await supabase
       .from("contacts")
-      .select("*, transactions(close_date, purchase_price)")
+      .select("*, transactions!transactions_contact_id_fkey(close_date, purchase_price)")
       .eq("id", params.contactId)
       .single()
 
@@ -342,7 +353,7 @@ export async function aiGetUpcomingMilestones(params: {
       .select(`
         id, first_name, last_name, email, phone,
         birthday, home_anniversary,
-        transactions(close_date, property_address)
+        transactions!transactions_contact_id_fkey(close_date, property_address)
       `)
       .eq("agent_id", params.agentId)
 
@@ -433,7 +444,7 @@ export async function aiSegmentSphere(params: { agentId: string }) {
       .from("contacts")
       .select(`
         *,
-        transactions(purchase_price, close_date),
+        transactions!transactions_contact_id_fkey(purchase_price, close_date),
         referrals:referrals!referrer_contact_id(id)
       `)
       .eq("agent_id", params.agentId)

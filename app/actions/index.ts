@@ -87,7 +87,10 @@ export {
   getOnboardingStatus,
   completeAISessionStep,
   // matchMentor retired → canonical deterministic matcher at app/actions/onboarding/mentorship.ts
-  verifyAgentLicense,
+  // verifyAgentLicense retired → the licence is verified against the STATE REGISTRY by
+  // app/actions/onboarding/license.ts:submitLicenseDetails → lib/onboarding/license-verifier.ts.
+  // The copy here asked an LLM to "simulate a verification result with high confidence"
+  // and wrote verification_status='verified' from the agent's own session.
   generateWelcomeMessage,
   getOnboardingAnalytics,
   askOnboardingBuddy,

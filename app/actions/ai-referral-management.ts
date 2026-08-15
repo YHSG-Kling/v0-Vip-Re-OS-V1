@@ -27,23 +27,57 @@ export async function identifyReferralOpportunities(agentId: string) {
 
     const supabase = await createClient()
 
-    // Get past clients and high-engagement contacts
-    const { data: contacts } = await supabase
+    // Get past clients and high-engagement contacts.
+    //
+    // `interactions(*)` embedded a table that DOES NOT EXIST in the live database
+    // (information_schema has no public.interactions, and `interactions` is not an FK
+    // column on contacts either) — PostgREST rejects the WHOLE query when a select
+    // names an unknown relation, so this read failed on every call and, with `error`
+    // undestructured, every caller got `contacts: null` and rendered "no candidates".
+    // The real per-contact activity log is `activities` (activities.contact_id → contacts.id).
+    //
+    // `transactions` and `referrals` each have MORE THAN ONE foreign key to contacts
+    // (transactions: contact_id/buyer_contact_id/seller_contact_id; referrals:
+    // referrer_contact_id/referred_contact_id), so the bare embeds were ambiguous and
+    // failed too. Both are now named by their constraint, which picks the side we mean:
+    // the deals this contact is the client on, and the referrals this contact GAVE.
+    //
+    // Columns are named explicitly, never `*` inside an embed — a wildcard embed hides
+    // drift from the schema guard (defect #214).
+    const { data: contacts, error: contactsError } = await supabase
       .from("contacts")
       .select(`
         *,
-        transactions(*),
-        interactions(*),
-        referrals(*)
+        transactions!transactions_contact_id_fkey(id, close_date, purchase_price),
+        activities(id, created_at),
+        referrals!referrals_referrer_contact_id_fkey(id)
       `)
       .eq("agent_id", agentId)
       .in("contact_type", [LIFETIME_CUSTOMER_TYPE, "sphere"])
       .order("last_contacted_at", { ascending: false })
       .limit(100)
 
+    if (contactsError) {
+      console.error("[identifyReferralOpportunities] contacts read failed:", contactsError.message)
+      return { success: false, error: contactsError.message }
+    }
+
     if (!contacts || contacts.length === 0) {
       return { success: true, opportunities: [], message: "No eligible contacts found" }
     }
+
+    // Embedded rows come back unordered; pick the most recent deal per contact here
+    // rather than trusting `[0]`.
+    const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000
+    const enriched = contacts.map((c: any) => {
+      const deals = (c.transactions ?? []) as Array<{ close_date: string | null; purchase_price: number | null }>
+      const lastDeal = deals
+        .filter((t) => t.close_date)
+        .sort((a, b) => new Date(b.close_date!).getTime() - new Date(a.close_date!).getTime())[0] ?? null
+      const recentActivityCount = ((c.activities ?? []) as Array<{ created_at: string | null }>)
+        .filter((a) => a.created_at && new Date(a.created_at).getTime() > thirtyDaysAgo).length
+      return { contact: c, lastDeal, recentActivityCount }
+    })
 
     const { object: analysis } = await generateObject({
       model: resolveModel("anthropic/claude-sonnet-4-20250514"),
@@ -78,14 +112,16 @@ export async function identifyReferralOpportunities(agentId: string) {
       }),
       prompt: `Analyze these contacts to identify referral opportunities:
 
-${contacts.map((c: any) => `
+${enriched.map(({ contact: c, lastDeal, recentActivityCount }) => `
+Contact ID: ${c.id}
 Contact: ${c.first_name} ${c.last_name}
-Stage: ${c.stage}
-Last Transaction: ${c.transactions?.[0]?.actual_close_date || 'N/A'}
-Transaction Value: $${c.transactions?.[0]?.purchase_price?.toLocaleString() || 'N/A'}
-Interactions (30 days): ${c.interactions?.filter((i: any) => new Date(i.interaction_date) > new Date(Date.now() - 30*24*60*60*1000)).length || 0}
+Stage: ${c.lifecycle_state || 'Unknown'}
+Last Transaction: ${lastDeal?.close_date || 'N/A'}
+Transaction Value: $${lastDeal?.purchase_price?.toLocaleString() || 'N/A'}
+Activities (30 days): ${recentActivityCount}
 Past Referrals Given: ${c.referrals?.length || 0}
-NPS Score: ${c.nps_score || 'Unknown'}
+Referral Potential: ${c.referral_potential || 'Unknown'}
+Engagement Score: ${c.engagement_score ?? 'Unknown'}
 `).join('\n---\n')}
 
 Identify:

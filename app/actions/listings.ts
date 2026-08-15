@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 import { getListingsService, createListingService } from "@/lib/application/listings"
+import { getListingTimelineService } from "@/lib/application/listing-lifecycle"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { handleError } from "@/lib/errors"
@@ -262,31 +263,30 @@ export async function deleteListing(listingId: string) {
 // updateListingStatus was migrated to app/actions/listings-kernel.ts
 // Import it from there: import { updateListingStatus } from "@/app/actions/listings-kernel"
 
+/**
+ * DUPLICATE COLLAPSED — this was the SECOND copy of the listing-timeline read.
+ *
+ * It embedded `completed_by:profiles(first_name, last_name)`; there is no
+ * public.profiles table in the live database, and PostgREST rejects the WHOLE
+ * query when a select names a relation it cannot resolve — so this read never
+ * returned a row. Its twin, getListingTimelineService, had already been
+ * repointed at `users` (listing_stage_history.completed_by FKs users(id)) and
+ * the fix never reached here, which is exactly what having two copies buys you.
+ *
+ * The query now lives in ONE place. The tenant ownership check this wrapper used
+ * to perform moved INTO the service with it — see the note there — so nothing it
+ * gated was given up; the service also reports its error instead of swallowing
+ * it. What stays here is what a wrapper is for: shape validation and the
+ * `{ success }` envelope this action's callers expect.
+ */
 export async function getListingTimeline(listingId: string) {
   try {
     if (!UUID_REGEX.test(listingId)) return { success: false, error: "Invalid listing ID" }
 
-    const auth = await requireCaller()
-    if (!auth.ok) return { success: false, error: auth.error }
+    const { timeline, error } = await getListingTimelineService(listingId)
+    if (error) return { success: false, error }
 
-    const supabase = createServiceClient()
-
-    // Verify the listing is in caller's brokerage
-    const { data: listing } = await supabase
-      .from("listings").select("brokerage_id").eq("id", listingId).maybeSingle()
-    if (!listing || listing.brokerage_id !== auth.brokerageId) {
-      return { success: false, error: "Forbidden" }
-    }
-
-    const { data: history, error } = await supabase
-      .from("listing_stage_history")
-      .select("*, completed_by:profiles(first_name, last_name)")
-      .eq("listing_id", listingId)
-      .order("entered_at", { ascending: true })
-
-    if (error) throw error
-
-    return { success: true, timeline: history || [] }
+    return { success: true, timeline }
   } catch (error) {
     return handleError(error, "getListingTimeline")
   }

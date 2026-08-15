@@ -10,9 +10,15 @@
  * checks each against the committed live-schema snapshot (scripts/schema-snapshot.ts).
  *
  *   Layer 1 — pure: the column parsers (select lists incl. concatenation/interpolation/
- *     embeds/aliases; object top-level keys) are correct.
+ *     embeds/aliases; object top-level keys; the .or()/.filter() filter DSL) are correct.
  *   Layer 2 — repo scan: every .from(guarded).select("...") column + every .insert/.upsert
- *     object key must exist in the snapshot, else fail (with file + offending column).
+ *     object key + every column named inside a .or()/.filter() filter string must exist in
+ *     the snapshot, else fail (with file + offending column).
+ *
+ * Every check publishes what it could NOT resolve (unresolved embeds, unreadable filter
+ * strings, unattributable call sites) alongside what it checked — a coverage number that
+ * hides its own exclusions is a number that rounds up. GUARD_EMBED_REPORT=1 and
+ * GUARD_DSL_REPORT=1 itemise those two blind spots.
  *
  * Run anywhere (no DB/creds). Regenerate the snapshot when a guarded table changes.
  * Run: npx tsx scripts/schema-drift-guard.ts  (npm run test:schema-drift)
@@ -406,6 +412,283 @@ function matchBrace(s: string, open: number): number {
   return -1
 }
 
+/**
+ * ── THE .or() / .filter() FILTER DSL ────────────────────────────────────────────────
+ *
+ * The filter-column block below checks the first string argument of `.eq/.gt/.in/.order/…`.
+ * It deliberately skipped `.or()` and `.filter()` because in those two the column names live
+ * INSIDE a string. PostgREST does not skip them: an unknown column inside an `.or()` string
+ * errors the entire request exactly like a phantom column in a `.select()` does, and the read
+ * returns nothing, forever.
+ *
+ *   CONFIRMED LIVE MISS — app/actions/ai-calendar-management.ts filters
+ *     .from("contacts").or(`last_interaction_date.is.null,last_interaction_date.lt.${…}`)
+ *   against a `contacts` that has no `last_interaction_date` (the real column is
+ *   `last_contacted_at`). Every "stale contact" sweep it drives has been dead.
+ *
+ * THE GRAMMAR IMPLEMENTED (PostgREST's horizontal-filter string):
+ *
+ *     filters   := term ("," term)*                  — commas at PAREN DEPTH 0 only
+ *     term      := group | condition
+ *     group     := ["not" "."] ("and" | "or") "(" filters ")"        — recursed into
+ *     condition := path "." ["not" "."] operator "." value
+ *     path      := column | relation "." column      — the 2-segment form is an EMBED ref
+ *     column    := name | name ("->" | "->>") jsonKey
+ *
+ * The column path is every dot-segment BEFORE the first segment that is a known operator, so a
+ * value is never mistaken for a column no matter what it looks like: in `status.eq.contact_id`
+ * the operator `eq` closes the path at `status`, and `contact_id` is data. Splits on commas and
+ * dots are both TOP-LEVEL only, so `status.in.(a,b,c)` stays one term and its list members are
+ * never read as terms (a regex that splits on every comma mangles exactly this).
+ *
+ * DELIBERATELY NOT RESOLVED — each of these is SKIPPED AND COUNTED, never guessed at and never
+ * silently passed (see the GUARD_DSL_REPORT listing):
+ *   • any column path containing an interpolation — `` `${col}.eq.1` `` names a column only at
+ *     runtime. Only the STATIC segments of a template literal are checked; a `${…}` becomes an
+ *     opaque marker that poisons the term it lands in if it lands in the column path (it is
+ *     harmless in the value position, which is where nearly all of them are).
+ *   • an argument that is not a string literal at all (`.or(someVar)`), or a `.or(str, {…})`
+ *     second argument (`referencedTable` re-points the whole string at another table).
+ *   • an embed path `relation.column` whose relation the FK map cannot name — same rule the
+ *     embedded-select walker follows: an unnameable target is skipped, because a false positive
+ *     gets a guard silenced and a skipped-and-counted gap does not.
+ */
+
+/** Stands in for a `${…}` interpolation (and any other non-literal expression fragment) inside
+ *  a recovered string. NUL is deliberate: it is not whitespace (so a `.trim()` downstream cannot
+ *  quietly erase it), it is not an identifier character, and it is not DSL punctuation. A marker
+ *  that survives every later step is the only way an interpolated column name reliably gets
+ *  SKIPPED rather than accidentally parsing as whatever name sits beside it. */
+export const INTERP = "\u0000"
+
+/** End index of the `}` closing the `${` whose `$` is at `dollar`. Respects nested braces and
+ *  quoted/backticked text inside the expression (`${xs.join(",")}` is one interpolation). */
+function matchInterpolation(s: string, dollar: number): number {
+  let d = 0
+  let q: string | null = null
+  for (let i = dollar + 1; i < s.length; i++) {
+    const ch = s[i]
+    if (q) { if (ch === "\\") { i++; continue } if (ch === q) q = null; continue }
+    if (ch === '"' || ch === "'" || ch === "`") { q = ch; continue }
+    if (ch === "{") d++
+    else if (ch === "}") { d--; if (d === 0) return i }
+  }
+  return -1
+}
+
+/** Read the JS string literal that starts at `start`, returning its STATIC text with every
+ *  `${…}` replaced by INTERP. Backticks are first-class here — the live miss above is a
+ *  template literal, and a `["']`-only reader misses it entirely. */
+export function readJsStringLiteral(s: string, start: number): { text: string; end: number } | null {
+  const q = s[start]
+  if (q !== '"' && q !== "'" && q !== "`") return null
+  let out = ""
+  let i = start + 1
+  while (i < s.length) {
+    const ch = s[i]
+    if (ch === "\\") { out += s[i + 1] ?? ""; i += 2; continue }
+    if (ch === q) return { text: out, end: i + 1 }
+    if (q === "`" && ch === "$" && s[i + 1] === "{") {
+      const close = matchInterpolation(s, i)
+      if (close === -1) return null
+      out += INTERP
+      i = close + 1
+      continue
+    }
+    out += ch
+    i++
+  }
+  return null
+}
+
+/** The statically-known text of an argument expression: string literals contribute their own
+ *  text, and EVERY other fragment (a variable, a ternary's `?`/`:`, a call) contributes INTERP
+ *  so it can only ever poison a term, never invent one. null when there is no literal at all. */
+export function staticFilterString(argText: string): string | null {
+  let out = ""
+  let sawLiteral = false
+  let i = 0
+  while (i < argText.length) {
+    const ch = argText[i]
+    if (ch === '"' || ch === "'" || ch === "`") {
+      const lit = readJsStringLiteral(argText, i)
+      if (!lit) return null
+      out += lit.text
+      sawLiteral = true
+      i = lit.end
+      continue
+    }
+    if (/\s/.test(ch) || ch === "+") { i++; continue }
+    out += INTERP
+    while (i < argText.length && !/["'`\s+]/.test(argText[i])) i++
+  }
+  return sawLiteral ? out : null
+}
+
+/** Split on a separator that is at paren depth 0 and outside PostgREST's `"…"` value quoting.
+ *  This is what keeps `status.in.(expired,accepted)` a single term and `col.eq."a.b"` a single
+ *  path segment. */
+export function splitTopLevel(s: string, sep: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let quoted = false
+  let start = 0
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (quoted) { if (ch === '"' && s[i - 1] !== "\\") quoted = false; continue }
+    if (ch === '"') { quoted = true; continue }
+    if (ch === "(") depth++
+    else if (ch === ")") depth--
+    else if (ch === sep && depth === 0) { parts.push(s.slice(start, i)); start = i + 1 }
+  }
+  parts.push(s.slice(start))
+  return parts
+}
+
+/** PostgREST horizontal-filter operators. `not` is here because it is the negation PREFIX that
+ *  sits between the column path and the real operator (`bio_text.not.is.null`) — finding it
+ *  closes the path just as the operator itself would. `and`/`or` are NOT here: they are group
+ *  keywords, matched as `and( … )` before a term is ever read as a condition. */
+export const PGRST_OPERATORS = new Set([
+  "eq", "gt", "gte", "lt", "lte", "neq", "like", "ilike", "match", "imatch",
+  "in", "is", "isdistinct", "fts", "plfts", "phfts", "wfts",
+  "cs", "cd", "ov", "sl", "sr", "nxr", "nxl", "adj", "not",
+])
+
+export type DslPathResult =
+  | { ok: true; relation: string | null; column: string }
+  | { ok: false; reason: "interpolated" | "unparseable" }
+
+/** Read one column PATH — the text before the operator in a DSL term, or the whole first
+ *  argument of `.filter(column, op, value)`. Strips a json path (`metadata->>k`, whose real
+ *  column is `metadata`) and a `::cast`; reports a 2-segment `relation.column` embed path via
+ *  `relation`; refuses anything deeper or anything interpolated. */
+export function parseDslColumnPath(path: string): DslPathResult {
+  const segs = splitTopLevel(path, ".").map((s) => s.trim()).filter((s) => s.length > 0)
+  if (segs.length === 0) return { ok: false, reason: path.includes(INTERP) ? "interpolated" : "unparseable" }
+  if (segs.some((s) => s.includes(INTERP))) {
+    // The json KEY may be interpolated while the COLUMN is static — `metadata->>${KEY}` still
+    // proves `metadata` exists, so only an interpolation in the column NAME disqualifies it.
+    const bases = segs.map((s) => s.split("->")[0])
+    if (bases.some((b) => b.includes(INTERP))) return { ok: false, reason: "interpolated" }
+  }
+  if (segs.length > 2) return { ok: false, reason: "unparseable" }
+  const relation = segs.length === 2 ? segs[0] : null
+  const column = segs[segs.length - 1].split("->")[0].replace(/::[a-z_]+$/i, "").trim()
+  const ident = /^[a-z_][a-z0-9_]*$/i
+  if (!ident.test(column)) return { ok: false, reason: "unparseable" }
+  if (relation !== null && !ident.test(relation)) return { ok: false, reason: "unparseable" }
+  return { ok: true, relation, column }
+}
+
+export interface DslRef { relation: string | null; column: string; term: string }
+export interface DslParse {
+  /** column references recovered from the string, each bound to its relation (null = the parent) */
+  refs: DslRef[]
+  /** terms that could NOT be resolved to a column — skipped, never failed */
+  skipped: Array<{ term: string; reason: "interpolated" | "unparseable" }>
+  /** condition terms seen (refs.length + skipped.length); group keywords are not terms */
+  terms: number
+}
+
+/** Parse a PostgREST `.or()` filter string (already reduced to static text with INTERP markers)
+ *  into the columns it names. `and(…)`/`or(…)`/`not.and(…)` groups are recursed into, so a
+ *  phantom column nested three groups deep is found at the same confidence as a top-level one. */
+export function parseFilterDsl(dsl: string): DslParse {
+  const res: DslParse = { refs: [], skipped: [], terms: 0 }
+  const walk = (list: string, depth: number) => {
+    if (depth > 12) return
+    for (const raw of splitTopLevel(list, ",")) {
+      const term = raw.trim()
+      if (!term) continue
+      const grp = term.match(/^(?:not\s*\.\s*)?(?:and|or)\s*\(([\s\S]*)\)$/i)
+      if (grp) { walk(grp[1], depth + 1); continue }
+      res.terms++
+      const segs = splitTopLevel(term, ".")
+      let opAt = -1
+      for (let i = 1; i < segs.length; i++) {
+        // `eq(any)` / `like(all)` are modifier spellings of the same operator.
+        const seg = segs[i].trim().replace(/\([\s\S]*\)$/, "").toLowerCase()
+        if (PGRST_OPERATORS.has(seg)) { opAt = i; break }
+      }
+      if (opAt < 1) { res.skipped.push({ term, reason: term.includes(INTERP) ? "interpolated" : "unparseable" }); continue }
+      const parsed = parseDslColumnPath(segs.slice(0, opAt).join("."))
+      if (!parsed.ok) { res.skipped.push({ term, reason: parsed.reason }); continue }
+      res.refs.push({ relation: parsed.relation, column: parsed.column, term })
+    }
+  }
+  walk(dsl, 0)
+  return res
+}
+
+function matchBracket(s: string, open: number): number {
+  let d = 0
+  for (let i = open; i < s.length; i++) {
+    if (s[i] === "[") d++
+    else if (s[i] === "]") { d--; if (d === 0) return i }
+  }
+  return -1
+}
+
+/** `[ "a.eq.1", "b.is.null" ].join(",")` is a comma-separated filter string spelled as an array,
+ *  and it reconstructs EXACTLY — so it is read rather than thrown away. Only a literal array of
+ *  string literals joined on a literal comma qualifies; one non-literal element and the whole
+ *  thing falls back to the generic reader (which will mark it interpolated). */
+export function staticJoinedArray(argText: string): string | null {
+  const t = argText.trim()
+  if (!t.startsWith("[")) return null
+  const close = matchBracket(t, 0)
+  if (close === -1) return null
+  if (!/^\s*\.\s*join\s*\(\s*(["'`]),\1\s*\)\s*$/.test(t.slice(close + 1))) return null
+  const parts: string[] = []
+  let i = 1
+  while (i < close) {
+    if (/[\s,]/.test(t[i])) { i++; continue }
+    const lit = readJsStringLiteral(t, i)
+    if (!lit || lit.end > close) return null
+    parts.push(lit.text)
+    i = lit.end
+  }
+  return parts.join(",")
+}
+
+/** Recover the DSL columns from a `.or( … )` call's RAW argument text (source, not a value).
+ *  Returns null — skip and count, never guess — when the call cannot be read statically:
+ *    • a real second argument is present: `.or(str, { referencedTable: "x" })` re-points the
+ *      ENTIRE string at an embedded table, so every column in it belongs to a table we were
+ *      not told. A TRAILING comma is not a second argument and must not be read as one.
+ *    • the first argument contains no string literal at all (`.or(builtFilter)`). */
+export function parseOrCallArgs(argsText: string): DslParse | null {
+  const first = firstArg(argsText)
+  const rest = argsText.slice(first.length).replace(/^\s*,\s*/, "")
+  if (rest.trim().length > 0) return null
+  const lit = staticJoinedArray(first) ?? staticFilterString(first)
+  if (lit === null) return null
+  return parseFilterDsl(lit)
+}
+
+/** The `.method( … )` calls chained at the TOP LEVEL of a fluent chain, in source order.
+ *  A `.filter(` or `.or(` sitting INSIDE another call's arguments — `.in("id", xs.filter(Boolean))`
+ *  is the common one — belongs to that expression, not to the query, and reading it as a query
+ *  filter is how a checker starts reporting Array.prototype against a database schema. Walks
+ *  exactly as contiguousChain does, so the two agree on what "chained" means. */
+export function topLevelChainCalls(chain: string): Array<{ name: string; args: string; index: number }> {
+  const out: Array<{ name: string; args: string; index: number }> = []
+  let i = 0
+  while (i < chain.length) {
+    while (i < chain.length && /\s/.test(chain[i])) i++
+    if (chain[i] !== ".") break
+    const mm = chain.slice(i).match(/^\.\s*([a-zA-Z_$][\w$]*)\s*\(/)
+    if (!mm) break
+    const open = i + mm[0].length - 1
+    const close = matchParen(chain, open)
+    if (close === -1) break
+    out.push({ name: mm[1], args: chain.slice(open + 1, close), index: i })
+    i = close + 1
+  }
+  return out
+}
+
 // ── Layer 1: parser self-tests ───────────────────────────────────────────────
 function testPure() {
   console.log("\n[Layer 1 · parsers]")
@@ -533,6 +816,140 @@ function testPure() {
       un.resolvedCount === 0 && !un.unresolved.some((u) => u.relation === "other_id"))
   }
 
+  // ── the .or() / .filter() FILTER DSL ────────────────────────────────────────────────
+  // Two halves, and BOTH must hold or the check is worthless: the NEGATIVE CONTROLS prove a
+  // phantom column is caught in every syntactic position it can hide in, and the SPECIFICITY
+  // CONTROLS prove the parser does not invent columns out of values, interpolations or embed
+  // refs. A checker that fails the second half gets switched off within a week.
+  {
+    // ── string recovery ──────────────────────────────────────────────────────────────
+    check("readJsStringLiteral: reads a plain double-quoted argument",
+      readJsStringLiteral(`"a.eq.1"`, 0)?.text === "a.eq.1")
+    check("readJsStringLiteral: reads a BACKTICK literal and marks its ${…} (a [\"']-only regex misses this entirely)",
+      readJsStringLiteral('`created_at.lt.${cutoff}`', 0)?.text === `created_at.lt.${INTERP}`)
+    check("readJsStringLiteral: a comma INSIDE an interpolation is not DSL text (${xs.join(\",\")})",
+      readJsStringLiteral('`role.in.(${ROLES.join(",")})`', 0)?.text === `role.in.(${INTERP})`)
+    check("staticFilterString: a non-literal argument yields NOTHING (skip, never guess)",
+      staticFilterString("builtFilterString") === null)
+    check("staticFilterString: a ternary's literal branches are fenced by markers, never spliced into one term",
+      (staticFilterString(`cond ? "a.eq.1" : "b.eq.2"`) ?? "").includes(INTERP))
+
+    // ── the grammar ──────────────────────────────────────────────────────────────────
+    check("splitTopLevel: commas inside an in.(…) list do NOT split terms (the naive-split mangle)",
+      JSON.stringify(splitTopLevel("status.in.(a,b,c),other.eq.1", ",")) ===
+        JSON.stringify(["status.in.(a,b,c)", "other.eq.1"]))
+    check("splitTopLevel: a dot inside a quoted value does not split the column path",
+      splitTopLevel(`col.eq."a.b"`, ".").length === 3)
+    check("parseFilterDsl: reads column + operator, ignoring the value",
+      JSON.stringify(parseFilterDsl("status.eq.hot,lead_score.gte.50").refs.map((r) => r.column)) ===
+        JSON.stringify(["status", "lead_score"]))
+    check("parseFilterDsl: a `not.` negation prefix closes the column path (bio_text.not.is.null)",
+      parseFilterDsl("bio_text.not.is.null").refs[0]?.column === "bio_text")
+    check("parseFilterDsl: an and(…) group is recursed into, not read as a column",
+      JSON.stringify(parseFilterDsl("status.eq.submitted,and(status.eq.approved,broker_approved_at.is.null)").refs.map((r) => r.column)) ===
+        JSON.stringify(["status", "status", "broker_approved_at"]))
+    check("parseFilterDsl: nested groups resolve at any depth",
+      parseFilterDsl("or(and(a_col.eq.1,or(deep_col.is.null)))").refs.some((r) => r.column === "deep_col"))
+
+    // ── NEGATIVE CONTROLS — a phantom column MUST be caught in every position ─────────
+    const contactCols = new Set(SCHEMA_SNAPSHOT.contacts)
+    const phantomsOf = (dsl: string) => parseFilterDsl(dsl).refs.filter((r) => !r.relation && !contactCols.has(r.column)).map((r) => r.column)
+
+    check("NEGATIVE CONTROL: phantom column in a PLAIN .or() string is caught",
+      phantomsOf("last_interaction_date.is.null,first_name.eq.x").join() === "last_interaction_date")
+    // The live miss, verbatim: app/actions/ai-calendar-management.ts:449 filters `contacts` on a
+    // `last_interaction_date` the table does not have (the real column is `last_contacted_at`).
+    const calendarCall = '`last_interaction_date.is.null,last_interaction_date.lt.${new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()}`'
+    const calendarDsl = parseOrCallArgs(calendarCall)
+    check("NEGATIVE CONTROL: the live ai-calendar-management TEMPLATE-LITERAL .or() is caught (contacts has no last_interaction_date)",
+      !!calendarDsl && calendarDsl.refs.length === 2 &&
+      calendarDsl.refs.every((r) => r.column === "last_interaction_date") &&
+      !contactCols.has("last_interaction_date") && contactCols.has("last_contacted_at"),
+      JSON.stringify(calendarDsl?.refs.map((r) => r.column)))
+    check("NEGATIVE CONTROL: phantom column nested inside an and(…) group is caught",
+      phantomsOf("status.eq.x,and(first_name.eq.y,phantom_nested_col.is.null)").join() === "phantom_nested_col")
+    check("NEGATIVE CONTROL: phantom column carrying an in.(a,b,c) list is caught, and the list members are not read as columns",
+      phantomsOf("status.in.(hot,warm,cold),phantom_list_col.in.(a,b,c)").join() === "phantom_list_col")
+
+    // ── SPECIFICITY CONTROLS — these must stay GREEN ─────────────────────────────────
+    check("SPECIFICITY: a REAL column passes (contacts.last_contacted_at — the live miss's true column)",
+      phantomsOf("last_contacted_at.is.null,last_contacted_at.lte.2026-01-01").length === 0)
+    check("SPECIFICITY: a VALUE that merely looks like a column is never read as one (status.eq.contact_id)",
+      JSON.stringify(parseFilterDsl("status.eq.contact_id,lead_source.in.(email,phone)").refs.map((r) => r.column)) ===
+        JSON.stringify(["status", "lead_source"]))
+    const interpCol = parseOrCallArgs('`${sortColumn}.eq.1,first_name.eq.x`')
+    check("SPECIFICITY: an INTERPOLATED column name is skipped and COUNTED, never guessed at",
+      !!interpCol && interpCol.refs.length === 1 && interpCol.refs[0].column === "first_name" &&
+      interpCol.skipped.length === 1 && interpCol.skipped[0].reason === "interpolated")
+    check("SPECIFICITY: an interpolated VALUE does not disqualify its static column",
+      parseOrCallArgs('`created_at.gte.${since}`')?.refs[0]?.column === "created_at")
+    const embRef = parseFilterDsl("agents.first_name.ilike.%x%,first_name.ilike.%x%")
+    check("SPECIFICITY: an EMBEDDED relation.column ref is bound to its relation, not to the parent table",
+      embRef.refs.length === 2 && embRef.refs[0].relation === "agents" && embRef.refs[0].column === "first_name" &&
+      embRef.refs[1].relation === null)
+    check("SPECIFICITY: an embed ref resolves through the SAME machinery as embedded selects (listings.agent_id → agents)",
+      resolveEmbedTable("listings", "agent_id") === "agents" &&
+      parseFilterDsl("agent_id.first_name.eq.x").refs[0]?.relation === "agent_id")
+    check("SPECIFICITY: a .or(str, { referencedTable }) 2nd argument re-points the whole string — skipped, not checked",
+      parseOrCallArgs(`"a_col.eq.1", { referencedTable: "agents" }`) === null)
+    check("SPECIFICITY: a TRAILING comma is not a second argument (the multi-line .or(`…`,\\n) shape)",
+      parseOrCallArgs('`contact_id.eq.${id},buyer_contact_id.eq.${id}`,\n    ')?.refs.map((r) => r.column).join() === "contact_id,buyer_contact_id")
+    check("staticJoinedArray: `[ \"a.eq.1\", \"b.is.null\" ].join(\",\")` reconstructs exactly",
+      staticJoinedArray(`[\n  "event_type.like.buyer.%",\n  "event_type.like.seller.%",\n].join(",")`) ===
+        "event_type.like.buyer.%,event_type.like.seller.%")
+    check("staticJoinedArray: one non-literal element disqualifies the whole array (skip, never guess)",
+      staticJoinedArray(`["a.eq.1", buildTerm].join(",")`) === null)
+    // `.in("id", xs.filter(Boolean))` is Array.prototype, not a query filter. Matching it would
+    // put JS built-ins into a report about database columns.
+    {
+      const chain = `.select("*").in("id", ids.filter(Boolean)).or("real_col.is.null")`
+      const calls = topLevelChainCalls(chain)
+      check("topLevelChainCalls: a .filter( INSIDE another call's arguments is NOT a chained query filter",
+        JSON.stringify(calls.map((c) => c.name)) === JSON.stringify(["select", "in", "or"]))
+    }
+    check("SPECIFICITY: a path deeper than relation.column is skipped, never guessed",
+      parseFilterDsl("a.b.c.eq.1").refs.length === 0 && parseFilterDsl("a.b.c.eq.1").skipped.length === 1)
+
+    // ── .filter(column, op, value) — the first argument IS a column reference ─────────
+    check("parseDslColumnPath: a json path checks its BASE column (metadata->>flag_key → metadata)",
+      JSON.stringify(parseDslColumnPath("metadata->>flag_key")) === JSON.stringify({ ok: true, relation: null, column: "metadata" }))
+    check("parseDslColumnPath: an interpolated json KEY still proves the base column (metadata->>${K})",
+      JSON.stringify(parseDslColumnPath(`metadata->>${INTERP}`)) === JSON.stringify({ ok: true, relation: null, column: "metadata" }))
+    check("parseDslColumnPath: an interpolated COLUMN name is skipped as interpolated",
+      JSON.stringify(parseDslColumnPath(`${INTERP}->>k`)) === JSON.stringify({ ok: false, reason: "interpolated" }))
+
+    // ── END-TO-END, through the real scanner ─────────────────────────────────────────
+    // A correct parser is not a correct CHECK: attribution, the op label and the snapshot
+    // lookup all live in scanFile. These drive synthetic source through it and assert on the
+    // violations it actually returns.
+    const scanOf = (src: string) => scanFile("test.ts", src)
+    const calendarScan = scanOf('await supabase.from("contacts").select("id").or(`last_interaction_date.is.null,last_interaction_date.lt.${cut}`)')
+    check("SCAN: the live template-literal .or() miss is reported against contacts (both terms)",
+      calendarScan.length === 2 && calendarScan.every((x) => x.table === "contacts" && x.op === "or" && x.column === "last_interaction_date"),
+      JSON.stringify(calendarScan))
+    check("SCAN: the REAL column (last_contacted_at) reports nothing",
+      scanOf('await supabase.from("contacts").select("id").or(`last_contacted_at.is.null,last_contacted_at.lt.${cut}`)').length === 0)
+    check("SCAN: a phantom column nested in an and(…) group is reported, its siblings are not",
+      scanOf('supabase.from("contacts").select("id").or("status.eq.x,and(first_name.eq.y,phantom_col.is.null)")')
+        .map((x) => x.column).join() === "phantom_col")
+    check("SCAN: a phantom column carrying an in.(…) list is reported and the list members are not",
+      scanOf('supabase.from("contacts").select("id").or("status.in.(hot,warm),phantom_col.in.(a,b)")')
+        .map((x) => x.column).join() === "phantom_col")
+    // THE MIS-ATTRIBUTION CONTROL. `teams` really does have bio_text and `notifications` really
+    // does not, so a "nearest preceding .from()" heuristic reports the phantom pair
+    // notifications.bio_text for a filter that runs on teams. A reassigned query variable is a
+    // separate statement belonging to no chain: it must be skipped and counted, never blamed
+    // on whichever .from() happened to be typed last.
+    check("SCAN: a reassigned-variable .or() is attributed to NOTHING (the notifications.bio_text census nonsense)",
+      scanOf('let q = supabase.from("teams").select("id")\n  const other = supabase.from("notifications").select("id").eq("user_id", u)\n  q = q.or("bio_text.not.is.null")').length === 0)
+    check("SCAN: .filter(Boolean) inside another call's arguments is not read as a query filter",
+      scanOf('supabase.from("contacts").select("id").in("id", ids.filter(Boolean))').length === 0)
+    check("SCAN: .filter(\"jsonb->>key\", op, v) checks the BASE column, not the json key",
+      scanOf('supabase.from("contacts").select("id").filter("metadata->>k", "eq", v)').length === 0 &&
+      scanOf('supabase.from("contacts").select("id").filter("not_a_column->>k", "eq", v)')
+        .map((x) => `${x.op}:${x.table}.${x.column}`).join() === "filter:contacts.not_a_column")
+  }
+
   // The exact bug we fixed must be caught:
   const badSel = parseSelectColumns("preferred_price_max, preferred_features, inferred_max_price")
   check("catches the legacy phantom column (preferred_features ∉ property_preferences)",
@@ -561,11 +978,30 @@ interface ScanStats {
   embedsUnresolved: number
   embedTargetUnguarded: number
   unresolved: Array<{ file: string; relation: string; parent: string | null }>
+  /** ── .or()/.filter() DSL coverage. Every one of these is printed, because the only honest
+   *  way to publish a coverage number is to publish what it EXCLUDES alongside it. */
+  dslStrings: number            // filter-DSL strings statically recovered and parsed
+  dslTerms: number              // condition terms inside them
+  dslColumns: number            // column refs actually checked against a snapshot
+  dslTargetUnguarded: number    // refs whose table has no column list — cannot check, do not guess
+  dslUnattributed: number       // DSL-shaped call sites not on any guarded .from() chain
+  dslSkipped: Array<{ file: string; kind: string; text: string; reason: string }>
+  dslUnattributedSites: Array<{ file: string; text: string }>
 }
-const newStats = (): ScanStats => ({ directColumns: 0, embedColumns: 0, embedsResolved: 0, embedsUnresolved: 0, embedTargetUnguarded: 0, unresolved: [] })
+const newStats = (): ScanStats => ({
+  directColumns: 0, embedColumns: 0, embedsResolved: 0, embedsUnresolved: 0, embedTargetUnguarded: 0, unresolved: [],
+  dslStrings: 0, dslTerms: 0, dslColumns: 0, dslTargetUnguarded: 0, dslUnattributed: 0, dslSkipped: [], dslUnattributedSites: [],
+})
+
+/** Violation ops produced by the filter-DSL check. They are kept OUT of both legacy baselines:
+ *  the direct-column baseline is held at zero and the embedded-column baseline at a hard zero,
+ *  and folding a brand-new check's findings into either would erase those standards. */
+const DSL_OPS = new Set(["or", "filter", "or(embed)", "filter(embed)"])
 
 function scanFile(file: string, src: string, stats: ScanStats = newStats()): Violation[] {
   const v: Violation[] = []
+  /** Absolute source indices of `.or(`/`.filter(` sites a guarded from()-chain reached. */
+  const dslAttributed = new Set<number>()
   const fromRe = /\.from\(\s*["'`]([a-z_]+)["'`]\s*\)/g
   let m: RegExpExecArray | null
   while ((m = fromRe.exec(src))) {
@@ -641,14 +1077,69 @@ function scanFile(file: string, src: string, stats: ScanStats = newStats()): Vio
     // method chain hanging directly off this .from() — a `query = query.eq("col", …)`
     // reassignment is a separate statement (not directly chained) and must NOT be
     // attributed to the most-recent from() (that mis-attributed agent_id/transaction_id/
-    // user_id to the wrong table). Skip embed paths (col with a `.`) and the .or()/.filter()
-    // string DSL (column names live inside a string).
-    const filterChain = contiguousChain(src, m.index + m[0].length)
+    // user_id to the wrong table). Skip embed paths (col with a `.`) here; `.or()`/`.filter()`
+    // are excluded from THIS block because their column names live inside a string — they are
+    // parsed by the filter-DSL block immediately below, off the very same chain.
+    const chainStart = m.index + m[0].length
+    const filterChain = contiguousChain(src, chainStart)
     for (const fm of filterChain.matchAll(/\.(eq|neq|gt|gte|lt|lte|like|ilike|in|is|contains|containedBy|order|not)\(\s*["'`]([a-zA-Z_][a-zA-Z0-9_.]*)["'`]/g)) {
       const col = fm[2]
       if (col.includes(".")) continue
       if (!set.has(col)) v.push({ file, table, op: fm[1], column: col })
     }
+
+    // ── FILTER-DSL columns: `.or("col.op.val,…")` and `.filter("col", op, val)` ──────────
+    // Same attribution as the block above — the CONTIGUOUS chain hanging off this .from(),
+    // nothing else. Attribution matters more here than the parser does: a "nearest preceding
+    // .from() within N characters" heuristic pairs a query on `teams` with a column from
+    // `notifications` and reports it as drift, which is how a guard earns its way to being
+    // switched off. A site the chain does not reach is counted as unattributed, never guessed.
+    const checkDslRef = (relation: string | null, column: string, op: string, term: string) => {
+      let target = table
+      if (relation) {
+        // `relation.column.op.value` addresses an EMBEDDED relation, not the parent — resolved
+        // through the same FK machinery as embedded selects, and SKIPPED when it cannot be named.
+        const resolved = resolveEmbedTable(table, relation)
+        if (!resolved) { stats.dslSkipped.push({ file, kind: op, text: term, reason: `embed relation "${relation}" unresolvable from ${table}` }); return }
+        target = resolved
+      }
+      if (!GUARDED.has(target)) { stats.dslTargetUnguarded++; return }
+      stats.dslColumns++
+      if (!new Set(SCHEMA_SNAPSHOT[target]).has(column)) {
+        v.push({ file, table: target, op: relation ? `${op}(embed)` : op, column })
+      }
+    }
+    for (const call of topLevelChainCalls(filterChain)) {
+      if (call.name !== "or" && call.name !== "filter") continue
+      dslAttributed.add(chainStart + call.index)
+      const argsText = call.args
+      if (call.name === "filter") {
+        // `.filter(column, operator, value)` — the first argument is a plain column reference
+        // (here, always a `jsonb->>key` path), NOT the or() DSL.
+        const lit = staticFilterString(firstArg(argsText))
+        if (lit === null) { stats.dslSkipped.push({ file, kind: "filter", text: firstArg(argsText).trim().slice(0, 60), reason: "not a static string" }); continue }
+        stats.dslStrings++
+        stats.dslTerms++
+        const p = parseDslColumnPath(lit)
+        if (!p.ok) { stats.dslSkipped.push({ file, kind: "filter", text: lit, reason: p.reason }); continue }
+        checkDslRef(p.relation, p.column, "filter", lit)
+      } else {
+        const parsed = parseOrCallArgs(argsText)
+        if (!parsed) { stats.dslSkipped.push({ file, kind: "or", text: argsText.trim().slice(0, 60), reason: "not a single static string argument" }); continue }
+        stats.dslStrings++
+        stats.dslTerms += parsed.terms
+        for (const s of parsed.skipped) stats.dslSkipped.push({ file, kind: "or", text: s.term, reason: s.reason })
+        for (const r of parsed.refs) checkDslRef(r.relation, r.column, "or", r.term)
+      }
+    }
+  }
+  // Coverage honesty: a DSL-shaped call site (`.or("…"` / `.filter("…"`) that no guarded
+  // .from() chain reached was NOT checked. Counting them is the difference between "we check
+  // the .or() DSL" and "we check the .or() DSL where we can prove which table it runs against".
+  for (const sm of src.matchAll(/\.(?:or|filter)\s*\(\s*["'`]/g)) {
+    if (dslAttributed.has(sm.index!)) continue
+    stats.dslUnattributed++
+    stats.dslUnattributedSites.push({ file, text: src.slice(sm.index!, sm.index! + 70).split("\n")[0] })
   }
   return v
 }
@@ -674,6 +1165,10 @@ function testScan() {
   console.log(`  · ${stats.directColumns} direct column refs + ${stats.embedColumns} embedded column refs checked`)
   console.log(`  · embeds: ${stats.embedsResolved} resolved to a table, ${stats.embedTargetUnguarded} embedded columns skipped (target table not column-guarded)`)
   console.log(`  · unresolved embeds: ${stats.embedsUnresolved} (skipped, never failed — set GUARD_EMBED_REPORT=1 to list them)`)
+  // ── .or()/.filter() FILTER-DSL coverage, stated out loud (same rule as the embeds above) ──
+  console.log(`  · filter DSL: ${stats.dslStrings} .or()/.filter() strings scanned (${stats.dslTerms} terms) — ${stats.dslColumns} column refs checked`)
+  console.log(`  · filter DSL: ${stats.dslSkipped.length} terms/strings unparseable or unresolvable, ${stats.dslUnattributed} call sites not attributable to a guarded .from() chain`)
+  console.log(`               (all skipped, never failed — set GUARD_DSL_REPORT=1 to list them)`)
   if (process.env.GUARD_EMBED_REPORT === "1" && stats.embedsUnresolved > 0) {
     const byRel = new Map<string, { parents: Set<string>; files: Set<string> }>()
     for (const u of stats.unresolved) {
@@ -690,16 +1185,37 @@ function testScan() {
 
   // Baseline ratchet: known PRE-EXISTING legacy violations are tolerated (burn-down list);
   // any NEW violation fails the guard immediately. Regenerate with GUARD_WRITE_BASELINE=1.
+  // The honest edge of the filter-DSL check, itemised: every string it could not read and
+  // every call site no guarded chain reached. Coverage that does not publish its exclusions
+  // is just a number that rounds up.
+  if (process.env.GUARD_DSL_REPORT === "1") {
+    const byReason = new Map<string, string[]>()
+    for (const s of stats.dslSkipped) {
+      const key = s.reason
+      if (!byReason.has(key)) byReason.set(key, [])
+      byReason.get(key)!.push(`${s.file}  .${s.kind}(  ${JSON.stringify(s.text)}`)
+    }
+    console.log("    skipped filter-DSL terms (reason — count — sites):")
+    for (const [reason, sites] of [...byReason.entries()].sort((a, b) => b[1].length - a[1].length)) {
+      console.log(`      ${reason}  ×${sites.length}`)
+      for (const s of [...new Set(sites)].sort()) console.log(`         ${s}`)
+    }
+    console.log(`    unattributed .or()/.filter() sites (×${stats.dslUnattributed}):`)
+    for (const s of stats.dslUnattributedSites) console.log(`      ${s.file}  ${s.text.trim()}`)
+  }
+
   if (process.env.GUARD_WRITE_BASELINE === "1") {
-    writeFileSync(BASELINE_PATH, JSON.stringify(all.filter((v) => v.op !== "select(embed)").map(vkey).sort(), null, 2) + "\n")
-    console.log(`  ⚙  wrote baseline: ${all.filter((v) => v.op !== "select(embed)").length} known direct-column violations → scripts/schema-drift-baseline.json`)
+    const legacyDirect = all.filter((v) => v.op !== "select(embed)" && !DSL_OPS.has(v.op))
+    writeFileSync(BASELINE_PATH, JSON.stringify(legacyDirect.map(vkey).sort(), null, 2) + "\n")
+    console.log(`  ⚙  wrote baseline: ${legacyDirect.length} known direct-column violations → scripts/schema-drift-baseline.json`)
   }
   // Embedded-relation columns are a NEWLY added check (see parseEmbeddedSelects). They
   // get their OWN ratchet: the direct-column baseline is held at zero-zero on purpose,
   // and folding a new check's pre-existing findings into it would erase that standard.
   // New check, own burn-down, same rule — nothing new may be added.
   const embedAll = all.filter((v) => v.op === "select(embed)")
-  const directAll = all.filter((v) => v.op !== "select(embed)")
+  const dslAll = all.filter((v) => DSL_OPS.has(v.op))
+  const directAll = all.filter((v) => v.op !== "select(embed)" && !DSL_OPS.has(v.op))
 
   if (process.env.GUARD_WRITE_BASELINE === "1") {
     writeFileSync(EMBED_BASELINE_PATH, JSON.stringify(embedAll.map(vkey).sort(), null, 2) + "\n")
@@ -730,6 +1246,39 @@ function testScan() {
     console.log("     query when an embed names a missing column, so each is a silent dead surface:")
     for (const k of [...embedBaseline].sort()) console.log(`       ${k.replace("::select(embed)", "")}`)
   }
+
+  // ── filter-DSL ratchet ───────────────────────────────────────────────────────────────
+  // A brand-new check gets its OWN burn-down, never a seat in an existing baseline file:
+  // the direct-column baseline and the embedded-column baseline are both held at zero, and
+  // absorbing new findings into either would silently redefine what "zero" means.
+  //
+  // This list is EXPLICIT, NAMED and SHRINK-ONLY. Every entry is a dead read that PostgREST
+  // rejects in full. Entries may only be REMOVED (by fixing the column); adding one is how
+  // the check gets quietly hollowed out, so the assertion below fails on any new hit.
+  const DSL_BURN_DOWN: string[] = []
+  const dslAllowed = new Set(DSL_BURN_DOWN)
+  const dslFresh = dslAll.filter((x) => !dslAllowed.has(vkey(x)))
+  check(`no phantom column inside a .or()/.filter() filter string (burn-down: ${DSL_BURN_DOWN.length} allowed)`,
+    dslFresh.length === 0,
+    dslFresh.map((x) => `${x.file}: ${x.table}.${x.column} (${x.op})`).join(" | "))
+  if (dslFresh.length > 0) {
+    // Never truncated. PostgREST errors the WHOLE request on an unknown column inside an
+    // .or() string, exactly as it does for a phantom column in a select — each line is a
+    // read that has been returning nothing and will keep returning nothing.
+    console.log(`  ⚠  ${dslFresh.length} filter-DSL column references name a column their table does not have.`)
+    console.log("     PostgREST rejects the WHOLE request for each — every one is a silently dead read:")
+    const byFile = new Map<string, string[]>()
+    for (const x of dslFresh) {
+      if (!byFile.has(x.file)) byFile.set(x.file, [])
+      byFile.get(x.file)!.push(`${x.table}.${x.column}  (.${x.op})`)
+    }
+    for (const [f, cols] of [...byFile.entries()].sort()) {
+      console.log(`       ${f}`)
+      for (const c of [...new Set(cols)].sort()) console.log(`         ✗ ${c}   [owner: ${resolveTableManager(c.split(".")[0]).label}]`)
+    }
+  }
+  const dslFixed = DSL_BURN_DOWN.filter((k) => !dslAll.some((x) => vkey(x) === k))
+  if (dslFixed.length > 0) console.log(`  ↘  ${dslFixed.length} filter-DSL burn-down entries are now fixed — delete them from DSL_BURN_DOWN.`)
 
   const all2 = directAll
   const baseline = new Set<string>(existsSync(BASELINE_PATH) ? JSON.parse(readFileSync(BASELINE_PATH, "utf8")) : [])

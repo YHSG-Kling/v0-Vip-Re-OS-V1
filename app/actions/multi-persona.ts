@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireBrokerageAdmin, type BrokerageAdminContext } from "@/lib/auth/require-brokerage-admin"
 import { revalidatePath } from "next/cache"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { TRANSACTION_STATUSES_IN_ESCROW, TRANSACTION_STATUSES_TERMINAL, closeConfidence } from "@/lib/transactions/transaction-status"
@@ -682,34 +683,114 @@ export async function submitClientFeedback(data: {
 // TEAM MANAGEMENT FUNCTIONS
 // ============================================
 
+/**
+ * Create a team. The ONLY writer of `public.teams` in the app.
+ *
+ * ── THE TENANT IS NOT AN ARGUMENT ────────────────────────────────────────────
+ * This used to take `brokerageId` from its caller, and its caller is a CLIENT
+ * component — so the tenant a row was written into came from the browser. It is
+ * resolved from the SESSION here instead, through the one shared gate
+ * (`lib/auth/require-brokerage-admin.ts`), which also asserts the caller may
+ * administer that tenant.
+ *
+ * The gate MIRRORS m457's `teams_tenant_insert`
+ * (`brokerage_id = current_user_brokerage_id() AND is_brokerage_admin()`); it
+ * never exceeds it. The session client is used deliberately — NOT the service
+ * client — so that policy still runs underneath this check and remains the
+ * final authority. A zero-row refusal from it is caught below.
+ *
+ * ── WHAT IS DELIBERATELY NOT WRITTEN ─────────────────────────────────────────
+ * `member_overrides_json` is left to its column default (`'[]'::jsonb`). Despite
+ * the name, its ONLY reader is `lib/kernel/brand-voice.ts:142`
+ * (`member_overrides_json.brand_voice`) — that column is the team's BRAND VOICE
+ * override, not money. PER-MEMBER MONEY lives in `team_members`
+ * (`split_percent`, `source_of_funds`, effective dating), written by
+ * `app/actions/admin/team-members.ts` and read by
+ * `lib/commission/waterfall/08-team-split.ts:82-102`. The old
+ * `commissionSplitRules` parameter (which no caller ever passed) wrote
+ * `JSON.stringify(...)` into it, storing a jsonb STRING SCALAR rather than an
+ * object — a shape the brand-voice reader can only see as `undefined`. Nothing
+ * read it back as splits. See the column inventory in
+ * `app/actions/team-branding.ts:149-166`, which reaches the same conclusion.
+ */
 export async function createTeam(data: {
   teamName: string
   teamLeaderId: string
-  brokerageId: string
-  commissionSplitRules?: any
 }) {
   const supabase = await createClient()
+
+  const { data: authData, error: authError } = await supabase.auth.getUser()
+  if (authError) throw new Error(`Could not verify your session: ${authError.message}`)
+  const user = authData?.user
+  if (!user) throw new Error("You must be signed in to create a team.")
+
+  // requireBrokerageAdmin THROWS on refusal and speaks in gate language. This
+  // string is shown verbatim in the dialog's toast, so a REFUSAL is translated
+  // into what the reader can act on, while anything that is not a refusal (a
+  // failed read, a malformed id) keeps its own reason — "you may not" and "we
+  // could not tell" must not look identical to the person at the screen.
+  let admin: BrokerageAdminContext
+  try {
+    admin = await requireBrokerageAdmin(supabase, user.id)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    if (message.startsWith("Forbidden") || message.startsWith("User not found")) {
+      throw new Error("Only a broker, brokerage admin or brokerage owner can create a team.")
+    }
+    throw new Error(`Could not create the team: ${message}`)
+  }
+
+  const name = typeof data.teamName === "string" ? data.teamName.trim() : ""
+  if (!name) throw new Error("Team name is required.")
+  if (!data.teamLeaderId) throw new Error("Select a team leader.")
+
+  // teams.team_lead_id is a FK to users.id (verified against the live schema:
+  // teams_team_lead_id_fkey → users(id)), and m457's UPDATE policy compares it
+  // to auth.uid() — so it is a USERS id, not an agents id. The picker in
+  // app/dashboard/team/page.tsx reads `users`, which is the right id class; this
+  // check is what stops a hand-crafted request naming a user from ANOTHER
+  // brokerage as the lead, which no database constraint would refuse.
+  const { data: lead, error: leadError } = await supabase
+    .from("users")
+    .select("id")
+    .eq("id", data.teamLeaderId)
+    .eq("brokerage_id", admin.brokerageId)
+    .maybeSingle()
+
+  // supabase-js RESOLVES a failed query, so an unchecked read would report a
+  // permission denial as "no such user" and blame the wrong thing.
+  if (leadError) throw new Error(`Could not verify the team leader: ${leadError.message}`)
+  if (!lead) throw new Error("That team leader is not a member of your brokerage.")
 
   // agent_teams does not exist — use teams table
   // teams: id, name, brokerage_id, team_lead_id, created_at, updated_at, deleted_at,
   // team_split_type, team_split_value, member_overrides_json, team_fees_json
-  const { data: team, error } = await supabase
+  const { data: inserted, error } = await supabase
     .from("teams")
     .insert({
-      name: data.teamName,
-      team_lead_id: data.teamLeaderId,
-      brokerage_id: data.brokerageId,
-      member_overrides_json: data.commissionSplitRules
-        ? JSON.stringify(data.commissionSplitRules)
-        : "[]",
+      name,
+      team_lead_id: lead.id,
+      brokerage_id: admin.brokerageId,
     })
-    .select()
-    .single()
+    .select("id, name, brokerage_id, team_lead_id")
 
-  if (error) throw error
+  if (error) throw new Error(`Could not create the team: ${error.message}`)
 
-  revalidatePath("/dashboard/teams")
-  return team
+  // A row refused by RLS comes back as `error: null` with ZERO rows — the insert
+  // is filtered, not failed. Without this the caller would be told the team was
+  // created and shown nothing. `.select()` returns a list precisely so that the
+  // refusal is countable; `.single()` would have turned it into a coercion error
+  // whose message says nothing about permissions.
+  if (!inserted || inserted.length === 0) {
+    throw new Error(
+      "The database refused to create this team. Only a broker, brokerage admin or brokerage owner may create teams, and only in their own brokerage.",
+    )
+  }
+
+  // /dashboard/teams is a redirect-only route; the team surface that lists these
+  // rows is /dashboard/team.
+  revalidatePath("/dashboard/team")
+  return inserted[0]
 }
 
 export async function getTeamDashboard(teamId: string) {

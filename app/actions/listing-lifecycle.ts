@@ -307,6 +307,10 @@ async function fireStageAutomations(listingId: string, toStage: string, actorUse
   }
 }
 
+// The session check and the brokerage ownership gate live in the service (which
+// is now the ONE timeline read — app/actions/listings.ts used to hold a second
+// copy that embedded a `profiles` table the database does not have). Do not
+// re-inline the query here.
 export async function getListingTimeline(listingId: string) {
   if (!listingId) throw new Error("listingId is required")
   return getListingTimelineService(listingId)

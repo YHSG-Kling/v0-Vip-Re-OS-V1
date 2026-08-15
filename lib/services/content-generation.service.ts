@@ -135,28 +135,77 @@ async function gatherContextData(params: ContentGenerationParams) {
 
   // Get property details if provided
   if (params.propertyId && isValidUUID(params.propertyId)) {
-    const { data: property } = await supabase.from("listings").select("*").eq("id", params.propertyId).single()
+    // No embed here, so nothing to repoint — but the error is read for the same reason
+    // its siblings below now read theirs: a refusal that is never destructured is
+    // indistinguishable from "no such listing", and the prompt goes out either way.
+    const { data: property, error: propertyError } = await supabase
+      .from("listings")
+      .select("*")
+      .eq("id", params.propertyId)
+      .maybeSingle()
+
+    if (propertyError) {
+      console.error("[gatherContextData] listing read failed:", propertyError.message)
+    }
+
     context.property = property
   }
 
   // Get contact details if provided
   if (params.contactId && isValidUUID(params.contactId)) {
-    const { data: contact } = await supabase
+    // `buyer_persona(*)` named a relation that DOES NOT EXIST — no public.buyer_persona
+    // table, and no such column on contacts. `lead_intelligence` is keyed on lead_id and
+    // declares NO foreign key to contacts. PostgREST embeds on DECLARED relationships, so
+    // either one refused the WHOLE query (PGRST200); with the error undestructured the
+    // contact came back null and EVERY prompt built here has gone to the model with no
+    // contact and no persona, silently.
+    // The real per-contact persona is client_detailed_personas (contact_id -> contacts.id,
+    // one row per contact, kept current by lib/contacts/persona-builder.ts) — so the array
+    // `?.[0]` the consumer already expects is the right shape, and `persona_name` (read by
+    // buildEmailPrompt) is a real column on it. Only that column is named: never `*` inside
+    // an embed, which hides drift from the schema guard (defect #214).
+    const { data: contact, error: contactError } = await supabase
       .from("contacts")
-      .select("*, lead_intelligence(*), buyer_persona(*)")
+      .select("*, client_detailed_personas(persona_name)")
       .eq("id", params.contactId)
-      .single()
+      .maybeSingle()
+
+    if (contactError) {
+      // supabase-js RESOLVES a refused query, so an unchecked read reports a real
+      // failure as an absence — which is exactly how this one hid.
+      console.error("[gatherContextData] contact read failed:", contactError.message)
+    }
+
     context.contact = contact
-    context.persona = contact?.buyer_persona?.[0]
+    context.persona = contact?.client_detailed_personas?.[0]
   }
 
   // Get transaction details if provided
   if (params.transactionId && isValidUUID(params.transactionId)) {
-    const { data: transaction } = await supabase
+    // Same defect class as the contact read above, different cause: `transactions` has
+    // THREE foreign keys to contacts (contact_id, buyer_contact_id, seller_contact_id),
+    // so the bare `contacts(*)` embed was AMBIGUOUS (PGRST201) and refused this whole
+    // query — `context.property` and `context.contact` have always been undefined on the
+    // transaction path. The embed is now named by constraint, picking the side meant
+    // here: the client on the deal. Columns are named, never `*` inside an embed (#214).
+    // NOTE for a future reader: buildEmailPrompt reads `property.price` and
+    // `property.square_feet`, which are NOT listings columns (the live names are
+    // `list_price` and `sqft`). That is a separate prompt-quality defect — it prints
+    // "undefined", it does not refuse the query — and is deliberately not changed here.
+    const { data: transaction, error: transactionError } = await supabase
       .from("transactions")
-      .select("*, listings(*), contacts(*)")
+      .select(`
+        *,
+        listings(id, address, city, state, list_price, bedrooms, bathrooms, sqft),
+        contacts!transactions_contact_id_fkey(id, first_name, last_name, lead_temperature)
+      `)
       .eq("id", params.transactionId)
-      .single()
+      .maybeSingle()
+
+    if (transactionError) {
+      console.error("[gatherContextData] transaction read failed:", transactionError.message)
+    }
+
     context.transaction = transaction
     context.property = transaction?.listings
     context.contact = transaction?.contacts

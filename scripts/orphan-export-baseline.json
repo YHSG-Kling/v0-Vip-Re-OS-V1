@@ -668,7 +668,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 9011,
+  "census": 9027,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -718,7 +718,7 @@
     "app/actions/agentic-tokens.ts": 3,
     "app/actions/agents.ts": 21,
     "app/actions/ai-agent-goals.ts": 6,
-    "app/actions/ai-agent-onboarding.ts": 8,
+    "app/actions/ai-agent-onboarding.ts": 7,
     "app/actions/ai-auto-response.ts": 6,
     "app/actions/ai-buyer-search-push.ts": 1,
     "app/actions/ai-calendar-management.ts": 13,
@@ -845,6 +845,7 @@
     "app/actions/compliance/seed-required-docs.ts": 1,
     "app/actions/compliance-bridge-actions.ts": 3,
     "app/actions/compliance-monitoring.ts": 17,
+    "app/actions/compliance-phrases.ts": 4,
     "app/actions/composition-library.ts": 1,
     "app/actions/connection-health.ts": 2,
     "app/actions/connections/connection-center.ts": 4,
@@ -1076,6 +1077,7 @@
     "app/actions/seller-updates.ts": 5,
     "app/actions/sequence-step-ai.ts": 2,
     "app/actions/services-config.ts": 10,
+    "app/actions/settings/brokerage-identity.ts": 2,
     "app/actions/settings/create-commission-structure.ts": 1,
     "app/actions/settings/create-email-template.ts": 1,
     "app/actions/settings/delete-commission-structure.ts": 1,
@@ -1154,6 +1156,7 @@
     "app/actions/tasks.ts": 5,
     "app/actions/tax-planning.ts": 3,
     "app/actions/tcpa-compliance.ts": 1,
+    "app/actions/team-branding.ts": 4,
     "app/actions/team-heatmap.ts": 7,
     "app/actions/tenant-connections.ts": 2,
     "app/actions/tenant-safety-actions.ts": 3,
@@ -2405,7 +2408,9 @@
     "app/dashboard/settings/components/os/settings-command-strip.tsx": 1,
     "app/dashboard/settings/components/os/setup-completeness-panel.tsx": 1,
     "app/dashboard/settings/components/os/user-access-panel.tsx": 1,
+    "app/dashboard/settings/components/prohibited-phrases-panel.tsx": 1,
     "app/dashboard/settings/components/showing-financial-gate-panel.tsx": 1,
+    "app/dashboard/settings/components/team-branding-panel.tsx": 1,
     "app/dashboard/settings/embeds/embed-editor.tsx": 1,
     "app/dashboard/settings/embeds/embeds-list-client.tsx": 1,
     "app/dashboard/settings/integrations/integrations-client.tsx": 1,
@@ -2902,6 +2907,7 @@
     "lib/auth/platform-guard.ts": 2,
     "lib/auth/provision-isa-actor.ts": 1,
     "lib/auth/require-admin-maintenance-access.ts": 1,
+    "lib/auth/require-brokerage-admin.ts": 2,
     "lib/auth/resolve-user-role.ts": 4,
     "lib/auth/useAuth.ts": 1,
     "lib/avm/provider-chain.ts": 3,
@@ -2926,6 +2932,7 @@
     "lib/brand-template-registry/template-classifier.ts": 5,
     "lib/branding/resolve-brand-context.ts": 1,
     "lib/branding/resolve-brokerage-brand.ts": 1,
+    "lib/brokerage/compliance-identity.ts": 1,
     "lib/brokerage/get-brokerage-settings.ts": 17,
     "lib/brokerage/get-default-commission-structure.ts": 1,
     "lib/brokerage/get-required-providers.ts": 4,
@@ -3054,6 +3061,7 @@
     "lib/compliance/offer-flag-resolution.ts": 3,
     "lib/compliance/phone-scrub-runner.ts": 2,
     "lib/compliance/phone-scrub.ts": 4,
+    "lib/compliance/phrase-vocabulary.ts": 2,
     "lib/compliance/raise-offer-flag.ts": 4,
     "lib/compliance/required-doc-presets.ts": 2,
     "lib/compliance/required-documents.ts": 3,
@@ -4498,7 +4506,6 @@
       "startAgentOnboarding",
       "getOnboardingStatus",
       "completeAISessionStep",
-      "verifyAgentLicense",
       "generateWelcomeMessage",
       "askOnboardingBuddy",
       "certifyAgent",
@@ -5450,6 +5457,12 @@
       "generateComplianceReport",
       "createTRIDTimeline",
       "updateTRIDMilestone"
+    ],
+    "app/actions/compliance-phrases.ts": [
+      "listCompliancePhrases",
+      "addCompliancePhrase",
+      "updateCompliancePhrase",
+      "deleteCompliancePhrase"
     ],
     "app/actions/composition-library.ts": [
       "getCompositionLibrarySnapshot"
@@ -7046,6 +7059,10 @@
       "createStageRule",
       "deleteStageRule"
     ],
+    "app/actions/settings/brokerage-identity.ts": [
+      "getBrokerageIdentity",
+      "updateBrokerageIdentity"
+    ],
     "app/actions/settings/create-commission-structure.ts": [
       "createCommissionStructure"
     ],
@@ -7491,6 +7508,12 @@
     ],
     "app/actions/tcpa-compliance.ts": [
       "recordContactConsentAction"
+    ],
+    "app/actions/team-branding.ts": [
+      "loadTeamBranding",
+      "saveTeamBranding",
+      "saveTeamSplits",
+      "saveTeamSignature"
     ],
     "app/actions/team-heatmap.ts": [
       "getHeatmapSnapshots",
@@ -11640,8 +11663,14 @@
     "app/dashboard/settings/components/os/user-access-panel.tsx": [
       "UserAccessPanel"
     ],
+    "app/dashboard/settings/components/prohibited-phrases-panel.tsx": [
+      "ProhibitedPhrasesPanel"
+    ],
     "app/dashboard/settings/components/showing-financial-gate-panel.tsx": [
       "ShowingFinancialGatePanel"
+    ],
+    "app/dashboard/settings/components/team-branding-panel.tsx": [
+      "TeamBrandingPanel"
     ],
     "app/dashboard/settings/embeds/embed-editor.tsx": [
       "EmbedEditor"
@@ -13553,6 +13582,10 @@
     "lib/auth/require-admin-maintenance-access.ts": [
       "requireAdminMaintenanceAccess"
     ],
+    "lib/auth/require-brokerage-admin.ts": [
+      "isPlatformSuperadmin",
+      "requireBrokerageAdmin"
+    ],
     "lib/auth/resolve-user-role.ts": [
       "isPlatformStaffIdentity",
       "resolveUserRole",
@@ -13677,6 +13710,9 @@
     ],
     "lib/branding/resolve-brokerage-brand.ts": [
       "resolveBrokerageBrandContext"
+    ],
+    "lib/brokerage/compliance-identity.ts": [
+      "resolveBrokerageComplianceIdentity"
     ],
     "lib/brokerage/get-brokerage-settings.ts": [
       "getBrokerageSettings",
@@ -14328,6 +14364,10 @@
       "dispositionOf",
       "electScrubbedPhones",
       "electionToColumnPatch"
+    ],
+    "lib/compliance/phrase-vocabulary.ts": [
+      "isPhraseSeverity",
+      "validateEffectivePhrasePattern"
     ],
     "lib/compliance/raise-offer-flag.ts": [
       "raiseOfferComplianceFlag",

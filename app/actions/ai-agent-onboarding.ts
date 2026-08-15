@@ -12,8 +12,17 @@
  *                                (likely keep one canonical reader)
  *   completeAISessionStep      → merge with agent-onboarding-actions.ts:completeMyOnboardingStep
  *   matchMentor                → NEW app/actions/onboarding/mentorship.ts
- *   verifyAgentLicense         → app/actions/onboarding/license.ts
- *                                (overlaps with submitLicenseDetails — pick canonical)
+ *   verifyAgentLicense         → RETIRED. The canonical path is
+ *                                app/actions/onboarding/license.ts:submitLicenseDetails
+ *                                → lib/onboarding/license-verifier.ts:runLicenseVerification,
+ *                                which checks the STATE REGULATOR'S REGISTRY and
+ *                                sends adverse findings to a human queue. The copy
+ *                                here asked an LLM to "simulate a verification
+ *                                result with high confidence" and then stamped
+ *                                agent_licenses.verification_status='verified'
+ *                                through the agent's OWN session. It had no .tsx
+ *                                caller. See the retirement note at its former
+ *                                site for what was checked before removing it.
  *   generateWelcomeMessage     → app/actions/onboarding/assistant.ts
  *   askOnboardingBuddy         → app/actions/onboarding/assistant.ts
  *   submitQuizAttempt          → RETIRED. Collapsed into the canonical
@@ -464,97 +473,36 @@ export async function completeAISessionStep(params: {
 // app/actions/onboarding/mentorship.ts (lib/recruiting/mentor-match.ts). The old LLM-freeform pick wrote
 // the deprecated agent_onboarding_sessions table; the canonical path writes agent_mentor_relationships.
 
-/**
- * Verify agent license with AI document analysis
- */
-export async function verifyAgentLicense(params: {
-  agentId: string
-  licenseImageUrl: string
-  licenseNumber: string
-  licenseState: string
-}) {
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    // AI verification (simulate OCR and validation)
-    const { object: verification } = await generateObject({
-      model: "openai/gpt-4o-mini",
-      schema: z.object({
-        isValid: z.boolean(),
-        extractedLicenseNumber: z.string(),
-        extractedState: z.string(),
-        extractedName: z.string(),
-        extractedExpiry: z.string(),
-        confidenceScore: z.number(),
-        issues: z.array(z.string()),
-      }),
-      prompt: `Simulate license verification for:
-License Number: ${params.licenseNumber}
-State: ${params.licenseState}
-
-In production, this would use OCR on the uploaded image.
-For now, simulate a verification result with high confidence.
-Check if license format matches ${params.licenseState} standards.`,
-    })
-
-    // Update agent record
-    if (verification.isValid) {
-      // license_expiry is a real agents column; the verification STATUS lives in the canonical
-      // agent_licenses table (verification_status/verified_at) — NOT on agents (those were phantom
-      // columns). Routing it there keeps a single source of truth with the onboarding/license flow.
-      await supabase
-        .from("agents")
-        .update({
-          license_expiry: verification.extractedExpiry,
-        })
-        .eq("id", params.agentId)
-      await supabase
-        .from("agent_licenses")
-        .update({
-          verification_status: "verified",
-          verified_at: new Date().toISOString(),
-        })
-        .eq("agent_id", params.agentId)
-
-      // Complete the license verification step
-      const { data: session } = await supabase
-        .from("agent_onboarding_sessions")
-        .select("id")
-        .eq("agent_id", params.agentId)
-        .single()
-
-      if (session) {
-        const { data: step } = await supabase
-          .from("agent_onboarding_steps")
-          .select("id")
-          .eq("session_id", session.id)
-          .eq("step_title", "License Verification")
-          .single()
-
-  if (step) {
-    await completeAISessionStep({
-      sessionId: session.id,
-      stepId: step.id,
-            completedBy: "system",
-            notes: `AI verified with ${verification.confidenceScore}% confidence`,
-          })
-        }
-      }
-    }
-
-    return {
-      success: true,
-      verification,
-    }
-  } catch (error) {
-    console.error("Verify license error:", error)
-    return handleError(error, "verifyAgentLicense")
-  }
-}
+// verifyAgentLicense RETIRED — a stub that FABRICATED a compliance fact.
+//
+// Its prompt read, verbatim: "In production, this would use OCR on the uploaded
+// image. For now, simulate a verification result with high confidence." It then
+// took that simulated answer and, through the AGENT'S OWN SESSION, wrote
+// agent_licenses.verification_status = 'verified' + verified_at, stamped
+// agents.license_expiry from a date the model invented, and logged the step as
+// "AI verified with N% confidence". A real-estate licence marked verified by a
+// language model that never saw a registry.
+//
+// The canonical path was already live and already richer:
+//   app/actions/onboarding/license.ts:submitLicenseDetails
+//     -> lib/onboarding/license-verifier.ts:runLicenseVerification
+// which queries the STATE REGULATOR'S REGISTRY (the source of truth for a real-
+// estate licence), routes an adverse finding to a human review queue with the
+// evidence and a one-click portal link, never rejects on its own, and runs on
+// the SERVICE client so the licence holder is not the one grading themselves.
+//
+// NOTHING WAS LOST IN THE MERGE. The one input this copy had that the survivor
+// might have lacked is the uploaded document: submitLicenseDetails already
+// forwards `documentUrl` into runLicenseVerification, which carries a
+// `document_ai` method for exactly that. The step it completed lived in
+// agent_onboarding_sessions / agent_onboarding_steps, the deprecated tables this
+// file's own header calls out (see the matchMentor note above); the canonical
+// flow records progress through agent_step_completions instead.
+//
+// It had no .tsx caller — only a re-export in app/actions/index.ts, removed with
+// it. m459 now also makes the shape impossible at the database: a trigger
+// refuses any change to verification_status / verified_at that arrives with a
+// session belonging to someone who is not a brokerage or platform admin.
 
 /**
  * Generate personalized onboarding welcome message

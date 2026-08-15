@@ -52,11 +52,26 @@ export async function generateMarketReport(params: {
   const supabase = await createClient()
 
   try {
-    // Get market data from database
+    // Get market data from database.
+    //
+    // `county` is NOT a column on market_data — the table geolocates by zip_code, city, state
+    // and the curated `market_area` label, and NO table in the schema has a `county` column at
+    // all. PostgREST rejects the ENTIRE request when an .or() string names an unknown column,
+    // so this read returned null for every caller (county supplied or not) and every "market
+    // report" below has been generated from an empty market_data set.
+    // The county term is DROPPED rather than repointed: `market_area` is a free-text area label
+    // written by market_data_sources ("Austin Metro"), not a county, so ilike-matching a county
+    // name against it would be a guess. Restoring county filtering needs a real
+    // market_data.county column first. params.county still reaches the model below, in the
+    // prompt's "Market Area" line.
+    //
+    // NB: this comment sits ABOVE the statement on purpose — a comment BETWEEN chained calls
+    // ends the contiguous method chain that schema-drift-guard attributes filters by, which
+    // would hide this very .or() from the check that found it.
     const { data: marketData } = await supabase
       .from("market_data")
       .select("*")
-      .or(`zip_code.eq.${params.zipCode},city.ilike.%${params.city}%,county.ilike.%${params.county}%`)
+      .or(`zip_code.eq.${params.zipCode},city.ilike.%${params.city}%`)
       .order("data_date", { ascending: false })
       .limit(100)
 

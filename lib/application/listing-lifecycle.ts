@@ -533,17 +533,60 @@ export async function scheduleClosingGift(listingId: string) {
   return { success: true }
 }
 
-export async function getListingTimelineService(listingId: string) {
+/**
+ * THE ONE LISTING-TIMELINE READ.
+ *
+ * There were TWO. app/actions/listings.ts carried a byte-for-byte copy of this
+ * query against a service-role client, and because they were two the fix landed
+ * on one of them: this twin had already been repointed off `profiles`, while the
+ * action twin still embedded it and therefore still failed on every call. The
+ * action is now a thin wrapper over this function, so there is one query to fix
+ * and one place a phantom relation can hide.
+ *
+ * ABSORBED FROM THE ACTION TWIN — its tenant ownership check. That twin read
+ * with a SERVICE-ROLE client (RLS bypassed), so its `listings.brokerage_id !==
+ * caller's brokerage -> Forbidden` gate was the only thing standing between a
+ * caller and any brokerage's stage history. Delegating without carrying that
+ * gate here would have deleted a real access control. It is kept — and made
+ * stronger, because listing_stage_history's RLS SELECT policy is
+ * `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`: a row
+ * written without the tenant stamp is readable by EVERY tenant, so the explicit
+ * `.eq("brokerage_id", …)` below is what actually scopes this read.
+ *
+ * `completed_by:profiles(...)` embedded a table that DOES NOT EXIST in the live
+ * database (information_schema has no public.profiles) — so this query failed on
+ * every call, and with the error undestructured the caller received
+ * `{ timeline: undefined }`, which every consumer renders as "no history".
+ * listing_stage_history.completed_by FKs users(id), so users is the embed.
+ */
+export async function getListingTimelineService(
+  listingId: string,
+): Promise<{ timeline: any[]; error?: string }> {
   const supabase = await createClient()
-  // `completed_by:profiles(...)` embedded a table that DOES NOT EXIST in the
-  // live database (information_schema has no public.profiles) — so this query
-  // failed on every call, and with the error undestructured the caller received
-  // `{ timeline: undefined }`, which every consumer renders as "no history".
-  // listing_stage_history.completed_by FKs users(id), so users is the embed.
+  const brokerageId = await callerBrokerageId(supabase)
+  if (!brokerageId) {
+    return { timeline: [], error: "Not authenticated, or no brokerage on this account" }
+  }
+
+  const { data: listing, error: listingError } = await supabase
+    .from("listings")
+    .select("id")
+    .eq("id", listingId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  // A refused read is not "no such listing" — reporting it as Forbidden would
+  // tell the caller their own listing is somebody else's.
+  if (listingError) {
+    console.error("[getListingTimelineService] listing lookup failed:", listingError.message)
+    return { timeline: [], error: listingError.message }
+  }
+  if (!listing) return { timeline: [], error: "Forbidden" }
+
   const { data: history, error } = await supabase
     .from("listing_stage_history")
     .select("*, completed_by:users(first_name, last_name)")
     .eq("listing_id", listingId)
+    .eq("brokerage_id", brokerageId)
     .order("entered_at", { ascending: true })
 
   if (error) {

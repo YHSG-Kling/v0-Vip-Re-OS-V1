@@ -79,7 +79,22 @@ create policy global_settings_tenant_delete on public.global_settings
 --
 -- VERIFIED FIRST: there are ZERO writers to `teams` anywhere in app/ or lib/
 -- besides the surface this wave adds, so narrowing these three commands cannot
--- break an existing flow. SELECT is deliberately untouched — an agent must see
+-- break an existing flow.
+--
+--   CORRECTION (W48, recorded here rather than silently edited, because the
+--   sentence above is an assertion of fact and a reader must be able to see it
+--   was wrong): there were TWO more writers.
+--     · app/actions/multi-persona.ts:createTeam — the session-client INSERT
+--       behind the Create Team dialog. It is now gated by
+--       requireBrokerageAdmin and resolves its tenant from the session, so the
+--       policy below is what it mirrors rather than something it trips over.
+--     · lib/kernel/users.ts:921 — signup provisioning creates a team when the
+--       chosen tier is "team". It runs on the SERVICE client, so RLS never
+--       applied to it and the narrowing could not have broken it.
+--   The conclusion holds; the evidence for it did not. Neither writer was
+--   broken by this migration, but only one of them was checked.
+--
+-- SELECT is deliberately untouched — an agent must see
 -- their own team, and lib/kernel/resolve-user-team.ts and
 -- app/dashboard/team/members depend on that read.
 drop policy if exists teams_tenant_insert on public.teams;

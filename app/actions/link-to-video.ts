@@ -499,9 +499,33 @@ export async function getVideoDetails(videoQueueId: string) {
   if (!access.ok) throw new Error("Forbidden")
 
   const supabase = createServiceClient()
+
+  // THIS FUNCTION HAD NEVER RETURNED — IT ALWAYS THREW.
+  //
+  // It embedded `video_processing_log(*)` and `video_social_publishes(*)`.
+  // NEITHER TABLE EXISTS in the live database, and in fact NOTHING in the schema
+  // carries a foreign key to video_generation_queue at all, so no relation of any
+  // name could ever have been embedded from this row. PostgREST rejects the whole
+  // query on an unresolvable embed, and the `if (error) throw error` below turned
+  // that into an exception on every single call.
+  //
+  // PROCESSING HISTORY IS REAL, ONE HOP AWAY. video_generation_queue.project_id
+  // FKs ai_video_projects — the rail that actually renders and reaches a terminal
+  // state (see the m365 note in getVideoQueue above) — and video_render_log.project_id
+  // FKs the same project. So the render attempts hang off the PROJECT, not off the
+  // queue row, and that is how they are read here.
+  //
+  // SOCIAL PUBLISHES ARE HONESTLY ABSENT. There is no publish ledger reachable
+  // from a queued video: social_publish_log keys on social_posts.id, and neither
+  // social_posts nor any table between it and ai_video_projects carries a video
+  // link. The queue row's own `social_caption` is as far as the schema goes. Do
+  // not re-add a `video_social_publishes` embed — it has never existed.
   const { data, error } = await supabase
     .from("video_generation_queue")
-    .select("*, video_processing_log(*), video_social_publishes(*)")
+    .select(
+      "*, ai_video_projects(id, title, status, video_provider, provider_job_id, provider_status, video_url, thumbnail_url, error_message, published_at, completed_at, created_at, " +
+        "video_render_log(id, status, provider, provider_job_id, render_duration_seconds, cost_usd, error_message, created_at))",
+    )
     .eq("id", videoQueueId)
     .single()
 

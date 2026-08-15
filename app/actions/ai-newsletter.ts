@@ -684,13 +684,33 @@ export async function aiPersonalizeNewsletter(params: {
       return { success: false, error: "Forbidden" }
     }
 
-    // Get contact data
-    const { data: contact } = await supabase
+    // Get contact data.
+    //
+    // `interactions(*)` and `saved_searches(*)` embedded tables that DO NOT EXIST in the
+    // live database (no public.interactions, no public.saved_searches, and neither name is
+    // an FK column on contacts). PostgREST rejects the ENTIRE query when a select names an
+    // unknown relation, so this read failed every time it ran; `error` was undestructured,
+    // so the caller saw `contact: null` and bailed out with "Contact or newsletter not
+    // found". Personalization has never actually personalized.
+    //   interactions  → `activities`       (activities.contact_id → contacts.id)
+    //   saved_searches → `property_alerts` (property_alerts.contact_id → contacts.id) —
+    //                    this is the real saved-search table in this schema.
+    // Columns are named explicitly; never `*` inside an embed (defect #214).
+    const { data: contact, error: contactError } = await supabase
       .from("contacts")
-      .select("*, interactions(*), saved_searches(*)")
+      .select(`
+        *,
+        activities(notes, created_at),
+        property_alerts(alert_name, cities, zip_codes, keywords, min_price, max_price, bedrooms_min, is_active)
+      `)
       .eq("id", params.contactId)
       .eq("brokerage_id", sessionBrokerageId)
       .maybeSingle()
+
+    if (contactError) {
+      console.error("[aiPersonalizeNewsletter] contact read failed:", contactError.message)
+      return { success: false, error: contactError.message }
+    }
 
     // Get newsletter content
     const { data: newsletter } = await supabase
@@ -703,6 +723,27 @@ export async function aiPersonalizeNewsletter(params: {
     if (!contact || !newsletter) {
       return { success: false, error: "Contact or newsletter not found" }
     }
+
+    // `property_alerts` has no single `criteria` blob (the old `saved_searches.criteria`
+    // was never a real column) — the search is spread across typed columns, so summarize
+    // the ones that exist. Embedded rows are unordered, so pick the newest activity here.
+    const alertSummaries = ((contact.property_alerts ?? []) as Array<Record<string, any>>)
+      .filter((s) => s.is_active !== false)
+      .map((s) =>
+        [
+          s.alert_name,
+          Array.isArray(s.cities) && s.cities.length ? s.cities.join("/") : null,
+          Array.isArray(s.zip_codes) && s.zip_codes.length ? s.zip_codes.join("/") : null,
+          s.min_price || s.max_price ? `$${s.min_price ?? 0}-${s.max_price ?? "any"}` : null,
+          s.bedrooms_min ? `${s.bedrooms_min}+ bd` : null,
+          Array.isArray(s.keywords) && s.keywords.length ? s.keywords.join("/") : null,
+        ].filter(Boolean).join(" · "),
+      )
+      .filter((s) => s.length > 0)
+
+    const lastActivity = ((contact.activities ?? []) as Array<{ notes: string | null; created_at: string | null }>)
+      .filter((a) => a.created_at)
+      .sort((a, b) => new Date(b.created_at!).getTime() - new Date(a.created_at!).getTime())[0] ?? null
 
     const { object: personalization } = await generateObject({
       model: resolveModel("openai/gpt-4o-mini"),
@@ -720,9 +761,9 @@ export async function aiPersonalizeNewsletter(params: {
 
 Contact:
 - Name: ${contact.first_name} ${contact.last_name}
-- Persona: ${contact.persona || "general"}
-- Interests: ${contact.saved_searches?.map((s: any) => s.criteria).join(", ") || "Unknown"}
-- Last Interaction: ${contact.interactions?.[0]?.notes || "None"}
+- Persona: ${contact.contact_persona || "general"}
+- Interests: ${alertSummaries.join(", ") || "Unknown"}
+- Last Interaction: ${lastActivity?.notes || "None"}
 
 Newsletter Topic: ${newsletter.topic}
 

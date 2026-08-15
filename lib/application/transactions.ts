@@ -2312,16 +2312,23 @@ export async function loadAgentDashboard() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
 
-  const { data: agent } = await supabase
+  // `profiles!inner(brokerage_id)` embedded a table that DOES NOT EXIST, and
+  // `!inner` made PostgREST reject the entire query — so `agent` was always null
+  // and the agent dashboard has always thrown "Agent brokerage not found". The
+  // id-class comment below was correct and was never the reason this failed.
+  // `agents` carries its own `brokerage_id`; there was never a join to make.
+  const { data: agent, error: agentError } = await supabase
     .from("agents")
-    .select("*, profiles!inner(brokerage_id)")
+    .select("id, brokerage_id")
     .eq("user_id", user.id)
     .maybeSingle()
+
+  if (agentError) throw new Error(`Could not resolve the agent's brokerage: ${agentError.message}`)
 
   // agent_id is agents.id, not users.id. For non-agent users there is no agent
   // row → return empty rather than filtering by a users.id (which never matches).
   const agentId = agent?.id ?? null
-  const brokerageId = agent?.profiles?.brokerage_id
+  const brokerageId = agent?.brokerage_id
   if (!brokerageId) throw new Error("Agent brokerage not found")
 
   const { data: transactions } = agentId

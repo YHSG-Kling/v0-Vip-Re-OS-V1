@@ -35,12 +35,28 @@ export async function analyzeAgentPerformance(params: {
       .order("created_at", { ascending: false })
       .limit(100)
 
-    // Get agent's contacts and lead conversion
-    const { data: contacts } = await supabase
+    // Get agent's contacts and lead conversion.
+    //
+    // `interactions(*)` embedded a table that DOES NOT EXIST in the live database (no
+    // public.interactions, and `interactions` is not an FK column on contacts). PostgREST
+    // rejects the ENTIRE query on an unknown relation, so this read always errored and,
+    // with `error` undestructured, `contacts` came back null — the coaching prompt below
+    // has always reported "Contacts: 0" and `metrics.contactCount` has always been 0.
+    // The embed is DROPPED rather than repointed to `activities`: nothing in this function
+    // (or its caller, app/academy/components/os/readiness-radar.tsx) ever read
+    // `c.interactions` — only `contacts.length` is consumed — and the agent's activity
+    // volume is already counted by the separate `activities` query directly below.
+    // For the same reason only `id` is selected; the rest of the row was never read.
+    const { data: contacts, error: contactsError } = await supabase
       .from("contacts")
-      .select("*, interactions(*)")
+      .select("id")
       .eq("agent_id", params.agentId)
       .limit(200)
+
+    if (contactsError) {
+      console.error("[analyzeAgentPerformance] contacts read failed:", contactsError.message)
+      return { success: false, error: contactsError.message }
+    }
 
     // Get agent's activities
     const { data: activities } = await supabase
@@ -222,12 +238,28 @@ export async function generateLearningPath(params: {
   const supabase = await createClient()
 
   try {
-    // Get agent's profile for personalization
-    const { data: agent } = await supabase
+    // Get agent's profile for personalization.
+    //
+    // `profile:user_profile(*)` embedded a table that DOES NOT EXIST — the name is
+    // SINGULAR and the real table is `user_profiles` (plural), joined by
+    // user_profiles.user_id → users.id (UNIQUE, so this embed resolves to a single object,
+    // not an array — `agent.profile` stays object-shaped for the JSON.stringify below).
+    // PostgREST rejects the whole query on an unknown relation, so with `error`
+    // undestructured `agent` was always null and the "Agent Profile:" line was always
+    // omitted from the prompt — every learning path generated so far was generic.
+    // Only the human-meaningful profile columns are named; `*` inside an embed hides
+    // drift from the schema guard (defect #214), and the verification flags/ids on
+    // user_profiles are noise in a coaching prompt.
+    const { data: agent, error: agentError } = await supabase
       .from("users")
-      .select("*, profile:user_profile(*)")
+      .select("*, profile:user_profiles(bio, avatar_url)")
       .eq("id", params.agentId)
       .maybeSingle()
+
+    if (agentError) {
+      console.error("[generateLearningPath] agent profile read failed:", agentError.message)
+      return { success: false, error: agentError.message, steps: [] }
+    }
 
     const { object: learningPath } = await generateObject({
       model: "openai/gpt-4o",

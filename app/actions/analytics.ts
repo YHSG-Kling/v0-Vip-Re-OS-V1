@@ -407,13 +407,19 @@ export async function loadValueDrivenDashboard(agentId: string, period: string =
   const supabase = await createClient()
 
   // Get agent's brokerage for commission structure
-  const { data: agent } = await supabase
+  // `profiles!inner(brokerage_id)` embedded a table that DOES NOT EXIST. With
+  // `!inner` PostgREST rejects the entire query, so `agent` was always null and
+  // this dashboard has always thrown "Agent brokerage not found". `agents`
+  // carries its own `brokerage_id` — there was never anything to join to.
+  const { data: agent, error: agentError } = await supabase
     .from("agents")
-    .select("*, profiles!inner(brokerage_id)")
+    .select("id, brokerage_id")
     .eq("id", agentId)
-    .single()
+    .maybeSingle()
 
-  const brokerageId = agent?.profiles?.brokerage_id
+  if (agentError) throw new Error(`Could not resolve the agent's brokerage: ${agentError.message}`)
+
+  const brokerageId = agent?.brokerage_id
   if (!brokerageId) {
     throw new Error("Agent brokerage not found")
   }

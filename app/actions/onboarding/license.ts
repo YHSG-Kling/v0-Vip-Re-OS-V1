@@ -247,7 +247,17 @@ export async function submitLicenseDetails(
       return { success: false, error: "Unauthorized" }
     }
 
-    // Resolve the proper agent ID
+    // Resolve the proper agent ID.
+    //
+    // REPORTED, NOT CHANGED HERE: resolveAgentId is the UNSCOPED resolver — it
+    // returns the user's oldest agents row across every brokerage, so a user who
+    // belongs to two tenants could file a licence against the wrong one. The
+    // scoped resolveUserIdToAgentRecord(userId, brokerageId) is what the reader
+    // above and the E&O writer below use. Changing it here needs the caller's
+    // tenant established first (this action derives the tenant FROM the agents
+    // row, so it would be circular), and m459 now makes the database refuse a
+    // mismatch outright rather than write into the wrong tenant. No live user
+    // has rows in two brokerages, so this is latent, not active.
     const agentId = await resolveAgentId(supabase, user.id)
     if (!agentId) {
       return { success: false, error: "Agent profile not found" }
@@ -403,28 +413,75 @@ export async function submitEOInsurance(
       return { success: false, error: "E&O insurance expiry date must be in the future" }
     }
 
+    // IDENTITY CLASS, AGAIN. `agent_licenses.agent_id` FKs AGENTS (verified
+    // against pg_constraint: agent_licenses_agent_id_fkey -> agents.id), and this
+    // read compared it to `user.id`, a USERS id. Two id spaces that never
+    // overlap, so the lookup matched nothing, `if (licenseRecord)` fell through,
+    // and E&O insurance was NEVER PERSISTED — while the action returned
+    // success:true and marked the step complete.
+    //
+    // The identical bug was found and fixed in getLicenseStatus (line 112) and
+    // submitLicenseDetails, both of which resolve the agents row first. This
+    // copy was missed, exactly as the comment at line 105 describes happening
+    // once already. Same resolver, same argument order.
+    const agentRecordId = await resolveUserIdToAgentRecord(user.id, agent.brokerage_id)
+    if (!agentRecordId) {
+      return { success: false, error: "No agent record for this user in this brokerage" }
+    }
+
     // Update the most recent license record with E&O info using the dedicated
-    // E&O columns on agent_licenses (eo_insurance_carrier/policy/coverage/expiration).
-    const { data: licenseRecord } = await supabase
+    // E&O columns on agent_licenses (eo_insurance_carrier/policy/coverage/
+    // expiration) plus eo_certificate_url, added by m459 — the certificate the
+    // intake form uploads to storage had nowhere to land and was being dropped.
+    // It is NOT document_url: that column holds the licence itself.
+    //
+    // The error is destructured now. supabase-js RESOLVES a failed query, so the
+    // old bare `{ data }` reported a PGRST116 (no rows) and a permission denial
+    // identically, as "nothing there".
+    const { data: licenseRecord, error: licenseLookupError } = await supabase
       .from("agent_licenses")
       .select("id")
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentRecordId)
       .eq("brokerage_id", agent.brokerage_id)
       .order("created_at", { ascending: false })
       .limit(1)
-      .single()
+      .maybeSingle()
 
-    if (licenseRecord) {
-      await supabase
-        .from("agent_licenses")
-        .update({
-          eo_insurance_carrier: data.insurerName,
-          eo_policy_number: data.policyNumber,
-          eo_coverage_amount: data.coverageAmount,
-          eo_expiration_date: data.expiryDate,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", licenseRecord.id)
+    if (licenseLookupError) {
+      console.error("[L11-License] E&O licence lookup failed:", licenseLookupError)
+      return { success: false, error: "Could not read your licence record" }
+    }
+
+    // E&O attaches TO a licence. With no licence on file there is nothing to
+    // attach it to, and silently succeeding is what hid this bug: say so.
+    if (!licenseRecord) {
+      return { success: false, error: "Add your licence details before submitting E&O insurance" }
+    }
+
+    // `.select("id")` on the UPDATE is not decoration. A zero-row RLS refusal on
+    // an UPDATE comes back as `error: null` with no rows — indistinguishable from
+    // a successful write unless the affected rows are counted. m459 narrowed this
+    // table to "your own row, or a brokerage admin", so a refusal is now possible
+    // and must not read as a save.
+    const { data: eoUpdated, error: eoError } = await supabase
+      .from("agent_licenses")
+      .update({
+        eo_insurance_carrier: data.insurerName,
+        eo_policy_number: data.policyNumber,
+        eo_coverage_amount: data.coverageAmount,
+        eo_expiration_date: data.expiryDate,
+        eo_certificate_url: data.certificateUrl ?? null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", licenseRecord.id)
+      .select("id")
+
+    if (eoError) {
+      console.error("[L11-License] Failed to save E&O insurance:", eoError)
+      return { success: false, error: "Failed to save E&O insurance" }
+    }
+    if (!eoUpdated || eoUpdated.length === 0) {
+      return { success: false, error: "E&O insurance was not saved — you may not have permission to edit this licence record" }
     }
 
     // Get or create step completion record
@@ -438,8 +495,16 @@ export async function submitEOInsurance(
       .single()
 
     if (stepRecord) {
-      await supabase.from("agent_step_completions").upsert({
-        agent_id: await resolveAgentId(supabase as any, user.id),
+      // agentRecordId, not resolveAgentId(user.id): the unscoped resolver returns
+      // the user's FIRST agents row across every brokerage, which is the wrong
+      // one for anyone who belongs to more than one. This is the same row the E&O
+      // write above landed on, so the completion cannot drift from the record.
+      //
+      // Reached only AFTER the E&O update is proven to have written — marking the
+      // step complete beside a write that did not happen is precisely how this
+      // defect stayed invisible: the checklist said done, the record was empty.
+      const { error: stepError } = await supabase.from("agent_step_completions").upsert({
+        agent_id: agentRecordId,
         brokerage_id: agent.brokerage_id,
         step_id: stepRecord.id,
         completed: true,
@@ -447,6 +512,11 @@ export async function submitEOInsurance(
       }, {
         onConflict: "agent_id,step_id",
       })
+      if (stepError) {
+        // The E&O record IS saved at this point; only the checklist tick failed.
+        // Report it rather than swallow it, but do not claim the save failed.
+        console.error("[L11-License] E&O saved but step completion failed:", stepError)
+      }
     }
 
     return { success: true }

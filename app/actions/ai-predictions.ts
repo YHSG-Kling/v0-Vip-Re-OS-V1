@@ -1787,13 +1787,23 @@ export async function massGenerateCMAs(_ignoredAgentId?: string) {
   const agentId = ctx.agentId
 
   // Get agent's brokerage for commission structure
-  const { data: agent } = await supabase
+  // `profiles!inner(brokerage_id)` embedded a table that DOES NOT EXIST, and the
+  // `!inner` made it fatal: PostgREST rejected the whole query, `agent` came back
+  // null, and this silently fell through to ctx.brokerageId every single time.
+  // The other two copies of this exact select (app/actions/analytics.ts:411,
+  // lib/application/transactions.ts:2316) had NO fallback and threw
+  // "Agent brokerage not found" instead.
+  //
+  // No embed is needed at all: `agents` carries its own `brokerage_id`.
+  const { data: agent, error: agentError } = await supabase
     .from("agents")
-    .select("*, profiles!inner(brokerage_id)")
+    .select("id, brokerage_id")
     .eq("id", agentId)
-    .single()
+    .maybeSingle()
 
-  const brokerageId = agent?.profiles?.brokerage_id ?? ctx.brokerageId
+  if (agentError) throw new Error(`Could not resolve the agent's brokerage: ${agentError.message}`)
+
+  const brokerageId = agent?.brokerage_id ?? ctx.brokerageId
   if (!brokerageId) {
     throw new Error("Agent brokerage not found")
   }

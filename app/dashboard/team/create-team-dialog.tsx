@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { createTeam } from "@/app/actions/multi-persona"
+import { BROKERAGE_ADMIN_USER_TYPES } from "@/lib/auth/require-brokerage-admin"
 import { Plus, Loader2 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 
@@ -19,12 +20,19 @@ interface AgentOption {
 }
 
 interface CreateTeamDialogProps {
-  brokerageId: string
+  /**
+   * ACCEPTED AND IGNORED. The tenant a team is written into is resolved from the
+   * SESSION inside `createTeam`, never sent up from the browser — an identity a
+   * client component can name is an identity a client component can change. The
+   * prop stays in the signature only so the existing call site keeps compiling;
+   * nothing here reads it.
+   */
+  brokerageId?: string
   agents: AgentOption[]
   userRole: string
 }
 
-export function CreateTeamDialog({ brokerageId, agents, userRole }: CreateTeamDialogProps) {
+export function CreateTeamDialog({ agents, userRole }: CreateTeamDialogProps) {
   const router = useRouter()
   const { toast } = useToast()
   const [open, setOpen] = useState(false)
@@ -32,7 +40,17 @@ export function CreateTeamDialog({ brokerageId, agents, userRole }: CreateTeamDi
   const [teamName, setTeamName] = useState("")
   const [teamLeaderId, setTeamLeaderId] = useState("")
 
-  const canCreate = ["broker", "admin"].includes(userRole)
+  // The same roster public.is_brokerage_admin() uses — admin | broker |
+  // broker_owner — imported rather than retyped. The hard-coded ["broker",
+  // "admin"] this replaces omitted broker_owner, so a brokerage OWNER whom
+  // m457's teams_tenant_insert policy PERMITS was shown no button at all: the
+  // database was broader than the app, and the owner of the brokerage could not
+  // create a team in it.
+  //
+  // This is presentation only. `createTeam` re-decides the same question from
+  // the session, and RLS decides it again underneath; hiding a button has never
+  // been a permission check.
+  const canCreate = BROKERAGE_ADMIN_USER_TYPES.has(userRole)
   if (!canCreate) return null
 
   async function handleSubmit(e: React.FormEvent) {
@@ -44,7 +62,6 @@ export function CreateTeamDialog({ brokerageId, agents, userRole }: CreateTeamDi
       await createTeam({
         teamName: teamName.trim(),
         teamLeaderId,
-        brokerageId,
       })
       toast({ title: "Team created", description: `${teamName} is ready. Add members from the team detail page.` })
       setOpen(false)

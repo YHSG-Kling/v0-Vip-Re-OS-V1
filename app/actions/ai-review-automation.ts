@@ -144,25 +144,70 @@ export async function aiDetermineReviewTiming(params: {
   const supabase = await createClient()
 
   try {
-    // Get transaction and client sentiment data
-    const { data: transaction } = await supabase
+    // Get transaction and client sentiment data.
+    //
+    // `interactions(...)` embedded a table that DOES NOT EXIST in the live database (no
+    // public.interactions; not an FK column on transactions either), so PostgREST rejected
+    // this whole query and — with `error` undestructured — every call fell through to
+    // "Transaction not found". The timing recommendation has never been computed from data.
+    //
+    // The repoint is a SPLIT, because no single real table carries both things this
+    // function reads:
+    //   • notes / what happened → `activities` (activities.transaction_id → transactions.id)
+    //   • sentiment            → `voice_calls`. NOTHING else contact-linked in this schema
+    //     has a `sentiment` column; activities does not. voice_calls FKs contacts, not
+    //     transactions, so it is fetched separately below off this deal's contact.
+    // The old `interaction_type` / `interaction_date` columns have no counterpart on
+    // activities; `activity_type` / `created_at` are the real ones.
+    //
+    // `contacts(*)` was also ambiguous: transactions has THREE FKs to contacts
+    // (contact_id, buyer_contact_id, seller_contact_id). Named by constraint now, and
+    // no `*` inside an embed (defect #214).
+    const { data: transaction, error: transactionError } = await supabase
       .from("transactions")
       .select(`
         *,
-        contacts(*),
-        interactions(interaction_type, notes, sentiment, interaction_date)
+        contacts!transactions_contact_id_fkey(id, first_name, last_name),
+        activities!activities_transaction_id_fkey(activity_type, notes, outcome, created_at)
       `)
       .eq("id", params.transactionId)
       .single()
+
+    if (transactionError) {
+      console.error("[aiDetermineReviewTiming] transaction read failed:", transactionError.message)
+      return { success: false, error: transactionError.message }
+    }
 
     if (!transaction) {
       return { success: false, error: "Transaction not found" }
     }
 
-    const recentInteractions = transaction.interactions?.slice(0, 10) || []
-    const sentimentScores = recentInteractions
-      .filter((i: any) => i.sentiment)
-      .map((i: any) => i.sentiment)
+    // Embedded rows are unordered — sort newest-first here instead of trusting slice(0, 10).
+    const recentInteractions = ((transaction.activities ?? []) as Array<{
+      activity_type: string | null; notes: string | null; outcome: string | null; created_at: string | null
+    }>)
+      .slice()
+      .sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime())
+      .slice(0, 10)
+
+    // Sentiment lives on voice_calls, keyed by contact rather than by deal.
+    let sentimentScores: string[] = []
+    const clientContactId = (transaction.contacts as { id?: string } | null)?.id
+    if (clientContactId) {
+      const { data: calls, error: callsError } = await supabase
+        .from("voice_calls")
+        .select("sentiment, outcome, created_at")
+        .eq("contact_id", clientContactId)
+        .not("sentiment", "is", null)
+        .order("created_at", { ascending: false })
+        .limit(10)
+      if (callsError) {
+        // Non-fatal: timing can still be judged without sentiment, but say so rather
+        // than letting an empty array masquerade as "no calls".
+        console.error("[aiDetermineReviewTiming] voice_calls sentiment read failed:", callsError.message)
+      }
+      sentimentScores = (calls ?? []).map((c: { sentiment: string | null }) => c.sentiment).filter((s): s is string => Boolean(s))
+    }
 
     const { object: timing } = await generateObject({
       model: "openai/gpt-4o",
@@ -225,14 +270,23 @@ export async function aiGenerateReviewRequest(params: {
   const supabase = await createClient()
 
   try {
-    const { data: transaction } = await supabase
+    // Same ambiguity as aiDetermineReviewTiming above: transactions has THREE foreign keys
+    // to contacts (contact_id, buyer_contact_id, seller_contact_id), so a bare
+    // `contacts(...)` embed cannot be resolved and PostgREST fails the ENTIRE query. Name
+    // the constraint so the client on the deal is the one that comes back.
+    const { data: transaction, error: transactionError } = await supabase
       .from("transactions")
       .select(`
         *,
-        contacts(first_name, last_name, email, phone)
+        contacts!transactions_contact_id_fkey(first_name, last_name, email, phone)
       `)
       .eq("id", params.transactionId)
       .single()
+
+    if (transactionError) {
+      console.error("[aiGenerateReviewRequest] transaction read failed:", transactionError.message)
+      return { success: false, error: transactionError.message }
+    }
 
     const { data: agent } = await supabase
       .from("agents")
@@ -478,20 +532,43 @@ export async function aiCreateRecoveryPlan(params: {
     // Get client history if available — pinned to the caller's brokerage. Both
     // ids arrive from the caller, so without the tenant predicate one uuid read
     // a stranger's contact record and its whole deal history back out.
-    let clientHistory = null
+    //
+    // `interactions(*)` embedded a table that DOES NOT EXIST (no public.interactions, and
+    // not an FK column on contacts) — PostgREST fails the entire query on an unknown
+    // relation, so `clientHistory` was always null and every recovery plan was written
+    // from "No client history available". The real per-contact log is `activities`
+    // (activities.contact_id → contacts.id).
+    //
+    // `transactions` has THREE FKs to contacts, so the bare embed was ambiguous and would
+    // have failed independently; it is named by constraint now. Only the columns actually
+    // consumed are selected — never `*` inside an embed (defect #214).
+    let clientHistory: {
+      transactions?: Array<{ id: string }> | null
+      activities?: Array<{ notes: string | null; created_at: string | null }> | null
+    } | null = null
     if (params.clientId && isValidUUID(params.clientId)) {
-      const { data } = await supabase
+      const { data, error: historyError } = await supabase
         .from("contacts")
         .select(`
           *,
-          transactions(*),
-          interactions(*)
+          transactions!transactions_contact_id_fkey(id),
+          activities(notes, created_at)
         `)
         .eq("id", params.clientId)
         .eq("brokerage_id", gate.brokerageId)
         .maybeSingle()
+      if (historyError) {
+        // Do not let a failed read look like "this client has no history" — that silently
+        // downgrades the plan. Surface it.
+        console.error("[aiCreateRecoveryPlan] client history read failed:", historyError.message)
+        return { success: false, error: historyError.message }
+      }
       clientHistory = data
     }
+
+    const lastClientActivity = (clientHistory?.activities ?? [])
+      .filter((a) => a.created_at)
+      .sort((a, b) => new Date(b.created_at!).getTime() - new Date(a.created_at!).getTime())[0] ?? null
 
     const { object: recoveryPlan } = await generateObject({
       model: "openai/gpt-4o",
@@ -523,8 +600,8 @@ Review: "${params.reviewText}"
 ${clientHistory ? `
 Client history:
 - Total transactions: ${clientHistory.transactions?.length || 0}
-- Total interactions: ${clientHistory.interactions?.length || 0}
-- Last interaction: ${clientHistory.interactions?.[0]?.notes || "N/A"}
+- Total logged activities: ${clientHistory.activities?.length || 0}
+- Last activity: ${lastClientActivity?.notes || "N/A"}
 ` : "No client history available"}
 
 Create a comprehensive recovery plan including:

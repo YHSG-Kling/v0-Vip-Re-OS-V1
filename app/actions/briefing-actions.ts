@@ -405,14 +405,20 @@ export async function getBuyerMatchCount(): Promise<{
 
     // Count buyer contacts who have an active search criteria and an active listing to match
     // We approximate this by counting contacts tagged as buyer with active/hot status
-    // who have a min_price / max_price set (search criteria)
+    // who have a budget range set (search criteria)
+    //
+    // `contacts` stores the buyer's search range as budget_min / budget_max — it has no
+    // min_price / max_price column (those names live on property_preferences-style tables,
+    // not here). PostgREST rejects the ENTIRE request when an .or() string names a column the
+    // table lacks, so this count never returned a number: it always came back as an error and
+    // the morning briefing reported "0 buyer matches" for every agent, every day.
     const { count, error } = await supabase
       .from("contacts")
       .select("id", { count: "exact", head: true })
       .eq("agent_id", agentId)
       .in("contact_type", ["buyer"])
       .in("status", ["active", "hot", "nurture"])
-      .or("min_price.not.is.null,max_price.not.is.null")
+      .or("budget_min.not.is.null,budget_max.not.is.null")
 
     if (error) {
       return { matchCount: 0, error: error.message }

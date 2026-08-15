@@ -494,14 +494,61 @@ export async function generateDailyGameplan(userId: string) {
     .limit(10)
 
   // Get approved content ready to post
-  const { data: contentReady } = await supabase
+  //
+  // THE "CONTENT TO POST" COLUMN WAS ALWAYS EMPTY, for two reasons in one select.
+  //
+  // (1) `generated_videos(*)` — there is NO public.generated_videos table in the
+  //     live database, and PostgREST rejects the ENTIRE query when a select names
+  //     a relation it cannot resolve. The `.is("generated_videos.published_at",
+  //     null)` filter hung off the same phantom.
+  // (2) `contacts(*)` — the table exists, but video_scripts_library.contact_id
+  //     carries NO foreign key (verified in pg_constraint: the table's only FKs
+  //     are agent_id, approved_by, brokerage_id, created_by, rejected_by,
+  //     template_id), and without one PostgREST has no relationship to embed.
+  //     Fixing only (1) would have left the query failing exactly as before.
+  //
+  // THE "NOT YET PUBLISHED" FILTER IS GONE BECAUSE NOTHING IN THE SCHEMA CAN
+  // ANSWER IT. Nothing links a video_scripts_library row to a rendered video:
+  // ai_video_projects.source_script_id FKs `public.scripts`, a DIFFERENT table
+  // (see app/actions/video/create-video-project.ts), and generateVideoFromScript
+  // deliberately records no library-script id on the project it creates. The only
+  // FKs pointing INTO video_scripts_library are marketing_campaigns.source_script_id
+  // and script_variations.script_library_id — neither is a video, let alone a
+  // published one. So this column now answers the question it CAN answer honestly:
+  // approved scripts belonging to this agent. Do not re-add a published-state
+  // filter without a real column or FK to hang it on.
+  const { data: contentReady, error: contentReadyError } = await supabase
     .from("video_scripts_library")
-    .select("*, generated_videos(*), contacts(*)")
+    .select("id, title, contact_id")
     .eq("agent_id", gameplanAgentId)
     .eq("brokerage_id", profile.brokerage_id)
     .eq("approval_status", "approved")
-    .is("generated_videos.published_at", null)
     .limit(5)
+
+  if (contentReadyError) {
+    console.error("[copilot] ready-to-post script read failed:", contentReadyError.message)
+  }
+
+  // contact_id has no FK, so the name is fetched rather than embedded — the same
+  // shape the hot-lead replies above use.
+  const contentContactIds = [...new Set((contentReady ?? []).map((c: any) => c.contact_id).filter(Boolean))]
+  const contentContactById = new Map<string, any>()
+  if (contentContactIds.length > 0) {
+    const { data: contentContacts, error: contentContactsError } = await supabase
+      .from("contacts")
+      .select("id, first_name, last_name")
+      .in("id", contentContactIds)
+      .eq("brokerage_id", profile.brokerage_id)
+    // A refused read is not "these scripts have no contact".
+    if (contentContactsError) {
+      console.error("[copilot] ready-to-post contact read failed:", contentContactsError.message)
+    }
+    for (const c of contentContacts ?? []) contentContactById.set(c.id as string, c)
+  }
+  const contentToPost = (contentReady ?? []).map((c: any) => ({
+    ...c,
+    contacts: c.contact_id ? contentContactById.get(c.contact_id) ?? null : null,
+  }))
 
   // Generate AI-powered gameplan summary
   const { text: aiSummary } = await generateText({
@@ -517,7 +564,7 @@ ${hotLeads?.map((lead) => `- ${lead.first_name} ${lead.last_name} (Score: ${lead
 ${atRiskDeals?.map((deal) => `- ${deal.transactions?.property_address || "Property"} - ${deal.title || deal.milestone_name} (Due: ${new Date(deal.target_date).toLocaleDateString()})`).join("\n") || "No at-risk deals"}
 
 **CONTENT TO POST (Ready to Publish):**
-${contentReady?.map((content) => `- Video: ${content.title || "Untitled"} for ${content.contacts?.first_name || "social media"}`).join("\n") || "No content ready"}
+${contentToPost.map((content) => `- Video: ${content.title || "Untitled"} for ${content.contacts?.first_name || "social media"}`).join("\n") || "No content ready"}
 
 **OVERDUE ITEMS:**
 ${overdueTasks?.map((task) => `- ${task.title} (${task.contacts?.first_name || "No contact"})`).join("\n") || "Nothing overdue"}
@@ -532,7 +579,7 @@ Format as actionable priorities with time estimates and recommended order of exe
   return {
     people_to_call: hotLeads || [],
     deals_to_protect: atRiskDeals || [],
-    content_to_post: contentReady || [],
+    content_to_post: contentToPost,
     overdue_tasks: overdueTasks || [],
     ai_summary: aiSummary,
     generated_at: new Date().toISOString(),

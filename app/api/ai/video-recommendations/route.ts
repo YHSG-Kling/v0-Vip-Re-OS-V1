@@ -63,15 +63,32 @@ export async function GET(request: NextRequest) {
     }
 
     // 2. New listings without videos
-    const { data: listingsWithoutVideos } = await supabase
+    // `transactions.listing_video_id` does not exist — nothing in the schema carries a
+    // per-listing video id column. The link runs the OTHER way: a video row points at its
+    // listing via ai_video_projects.listing_id. So "has no video yet" is a NOT EXISTS against
+    // that table and can never be expressed as a column filter on transactions. The phantom
+    // .or() made PostgREST reject the whole request (exactly like the leads filters above,
+    // fixed earlier), so this recommendation type has never produced a single row.
+    const { data: agentVideoProjects } = await supabase
+      .from("ai_video_projects")
+      .select("listing_id")
+      .eq("agent_id", agentId)
+      .not("listing_id", "is", null)
+    const listingIdsWithVideo = new Set((agentVideoProjects || []).map((p) => p.listing_id))
+
+    const { data: activeListingTxns } = await supabase
       .from("transactions")
       .select("*")
       .eq("agent_id", agentId)
       .eq("status", "active")
-      .or("listing_video_id.is.null")
-      .limit(5)
+      // Fetch wider than the 5 surfaced: the "already has a video" exclusion happens below,
+      // so a page-sized limit here could otherwise be consumed entirely by filtered-out rows.
+      .limit(50)
+    const listingsWithoutVideos = (activeListingTxns || [])
+      .filter((t) => !t.listing_id || !listingIdsWithVideo.has(t.listing_id))
+      .slice(0, 5)
 
-    for (const listing of listingsWithoutVideos || []) {
+    for (const listing of listingsWithoutVideos) {
       recommendations.push({
         type: "listing_opportunity",
         video_type: "listing_tour",
