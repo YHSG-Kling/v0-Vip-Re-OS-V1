@@ -595,7 +595,6 @@
     "lib/remotion/voiceover-mixer.ts": 1,
     "lib/security/oauth-refresh.ts": 3,
     "lib/security/secret-crypto.ts": 2,
-    "lib/seed-compliance-rules.ts": 3,
     "lib/seller-equity/scenarios.ts": 1,
     "lib/showings/dispatchers.ts": 2,
     "lib/showings/showingtime-ingest.ts": 1,
@@ -669,7 +668,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 9013,
+  "census": 9011,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2887,7 +2886,7 @@
     "lib/analytics/territory-roi.ts": 5,
     "lib/analytics/vendor-roi.ts": 2,
     "lib/application/ai-isa.ts": 6,
-    "lib/application/compliance-monitoring.ts": 17,
+    "lib/application/compliance-monitoring.ts": 18,
     "lib/application/lead-application-service.ts": 5,
     "lib/application/listing-lifecycle.ts": 16,
     "lib/application/listings.ts": 2,
@@ -4011,7 +4010,6 @@
     "lib/security/server-action-guard.ts": 2,
     "lib/security/share-password.ts": 2,
     "lib/security/types.ts": 6,
-    "lib/seed-compliance-rules.ts": 3,
     "lib/seller-coaching/coaching-generator.ts": 1,
     "lib/seller-coaching/persona-utils.ts": 1,
     "lib/seller-decision-governance/cma-quality-evaluator.ts": 3,
@@ -13404,6 +13402,7 @@
       "updateTRIDMilestoneService",
       "applyDocumentRetentionService",
       "exportAuditTrailService",
+      "scanForProhibitedPhrases",
       "scanContentComplianceService",
       "submitContentForApprovalService",
       "reviewContentApprovalService",
@@ -19280,11 +19279,6 @@
       "toCanonicalRoles",
       "isCanonicalRole"
     ],
-    "lib/seed-compliance-rules.ts": [
-      "seedComplianceRules",
-      "getProhibitedPhrases",
-      "getRequiredDisclosures"
-    ],
     "lib/seller-coaching/coaching-generator.ts": [
       "getSellerCoaching"
     ],
@@ -20424,5 +20418,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 239
+  "trulyDead": 236
 }

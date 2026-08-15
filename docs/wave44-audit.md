@@ -207,3 +207,314 @@ import anywhere. The one deletion flagged for a second pair of eyes
 (`registerUser`) was independently verified by the orchestrator: `/signup` is a
 `permanentRedirect`, `provisionTenantOwner` is a strict superset, no caller
 remained.
+
+---
+
+# The orphan that was a Fair Housing hole (#205)
+
+This is the case the governing rule exists for, so it is written out in full.
+
+`lib/seed-compliance-rules.ts` presented as a clean orphan: `seedComplianceRules()`
+had **no caller anywhere in the repository**. Under a "no caller → delete" sweep it
+would have been removed in a single line of a batch, and the diff would have looked
+tidy. It is instead the seeder for the platform's **Fair Housing phrase catalogue**.
+
+## What was actually true, measured before writing anything
+
+```
+prohibited_phrases   0 rows          ← the phrase scan's entire input
+compliance_rules    10 rows          ← the sibling catalogue WAS seeded
+```
+
+`lib/application/compliance-monitoring.ts` iterated `prohibitedPhrases || []`. With
+zero rows the loop body never executed, the scan produced no issues, and
+
+```ts
+passed: issues.filter((i) => i.severity === "blocking").length === 0
+```
+
+came back **true for every piece of content ever scanned**. `submitContentForApproval`
+turns that boolean into `status: "pending"` — i.e. queued as clean — instead of
+`"needs_revision"`. "Perfect for families", "no children", "adults only", "no Section
+8": every one of them approved, on every listing description and marketing asset that
+went through the lane. `app/actions/ai-chat.ts` reads the same empty table for
+outbound messages.
+
+**An empty compliance catalogue is not a neutral state. It is a gate that says yes to
+everything, and at the call site it is indistinguishable from a clean scan.**
+
+## And it could never have worked, which is the sharper half
+
+The seeder was not merely unwired. Its 17 Fair Housing rows carry
+`severity: "blocking"`, and the live constraint is
+
+```sql
+prohibited_phrases_severity_check CHECK (severity = ANY (ARRAY['info','warning','critical']))
+```
+
+so anyone who had called `seedComplianceRules()` by hand would have taken a **23514 on
+exactly those 17 rows** and seeded only the 8 harmless ones — a catalogue that looked
+populated and had lost precisely the phrases with statutory teeth. "Never called" was
+hiding a second defect underneath it.
+
+## Three vocabularies, one of them authoritative
+
+| source | vocabulary |
+|---|---|
+| the column's CHECK | `{info, warning, critical}` |
+| `scripts/check-vocabularies.ts:1190` (declared, in the chain, green) | `["critical","info","warning"]` |
+| the seeder | `{info, warning, blocking}` |
+| `compliance-monitoring.ts` issue grades | `{info, warning, blocking}` |
+
+The declared contract wins; the seeder's spelling is the outlier. But the reader's
+vocabulary is **also** `blocking`, and it intersects the column's on `info` and
+`warning` and **not on the value that stops content**. So seeding alone would have
+fixed nothing: the scan would have found the phrase, pushed it into `issues` as
+`critical`, and the `=== "blocking"` filter would have skipped straight past it —
+`passed: true` with a Fair Housing violation sitting in the list.
+
+Both halves therefore ship together:
+- **m450** seeds 25 phrases, verbatim from the authored file, mapping
+  blocking→critical (the CHECK's severest value). Nothing is downgraded.
+- **compliance-monitoring.ts** normalises `critical → blocking` at the boundary where
+  the two vocabularies meet.
+- **m451** asserts the pairing, so neither half can drift back alone.
+
+## Why a migration and not a button
+
+Checked before choosing a scope, because the m442 lesson is that guessing a tenant is
+how an unstamped row gets published to everyone:
+
+- `prohibited_phrases` has **no `brokerage_id` column at all** — nothing to stamp;
+- SELECT is `true` TO `authenticated` — every tenant reads the same list, which is
+  correct, because the Fair Housing Act is federal, not per-brokerage;
+- INSERT/UPDATE/DELETE are gated on `is_platform_admin()`.
+
+It is a platform catalogue **by construction**, and
+`scripts/child-tenant-scope-simulator.ts:67` already recorded the intent in words:
+*"Fair-Housing phrase list — must be readable by every tenant."* A federal compliance
+control must not depend on somebody remembering to click something, and must be
+present in every environment from first boot. The fix for "nothing runs it" is to
+stop needing anything to run it.
+
+## The scan now fails CLOSED
+
+`scanContentComplianceService` read the catalogue as `const { data } = …` — the
+recurring defect. supabase-js **resolves** a failed query, so a permission denial
+arrived as `data: null` and read as "nothing prohibited found". Both that and a
+genuinely empty table now throw rather than clear the content. m450/m451 guarantee the
+rows exist, so neither branch fires in normal operation — but if one ever does, the
+scan says so instead of quietly approving.
+
+## New guard: `npm run test:fair-housing-phrase-gate`
+
+39 checks, and it covers the half a migration cannot — that the seeded patterns work
+when the JavaScript scanner runs them. The phrase-scanning loop was extracted to
+`compliance-monitoring.ts:scanForProhibitedPhrases` so the guard exercises the **real**
+function, not a copy. Phrases are read from the m450 migration on disk, which m451
+asserts the database still matches. No fixture data.
+
+It asserts, among others:
+- every seeded pattern **compiles** as a JS RegExp — one that does not throws out of
+  `new RegExp` and takes the *whole* scan down, not just its own phrase;
+- every seeded pattern **matches its own phrase** — a pattern that cannot is
+  decorative, sitting in the catalogue looking like coverage and flagging nothing;
+- real violating listing copy produces a **blocking** issue and would route to
+  `needs_revision`, while clean copy produces **zero** issues;
+- the service destructures `error`, throws on a failed read, throws on an empty
+  catalogue, and calls the shared scanner rather than a second copy of the loop.
+
+Negative-controlled: removing the `critical → blocking` mapping turns exactly 3 checks
+red (`20 passed, 3 failed`); restoring it returns 23/23.
+
+## The lesson, stated plainly
+
+That export presented as an orphan. Deleting it on "no caller" would have removed a
+Fair Housing control **that was already not running**, and the deletion would have
+looked clean — no dangling import, no failing guard, no screen changed. Nobody would
+have found this for a long time, and the thing that would have found it is a discrimination
+complaint.
+
+**An orphan is a question, not a verdict.** This one's answer was that the capability
+was real, unrunnable, and load-bearing.
+
+## The second lane, found by asking who else reads the table
+
+`app/actions/ai-chat.ts:468` — `checkMessageCompliance` — read the same catalogue
+and carried **both** defects verbatim: its own inline copy of the RegExp loop, the
+same `severity === "blocking"` filter against a column storing `critical`, and the
+same swallowed read error. `sendMessage` turns its verdict into
+`compliance_flagged: !complianceCheck.passed`, so a Fair Housing violation in an AI
+chat message was **stored unflagged**. Fixing only `compliance-monitoring.ts` would
+have closed one half of one gate and left the outbound conversational lane open.
+
+Both lanes now call the same `scanForProhibitedPhrases`. The failure postures
+differ, correctly: `scanContentComplianceService` **blocks** — content that cannot be
+scanned must not be reported compliant, so it throws. `checkMessageCompliance`
+**flags** — it never blocked a send, so failing closed here means raising a
+`compliance_scan_unavailable` issue that makes `passed` false and puts the message in
+front of a human. Failing closed means the strictest thing the lane already does, not
+a new behaviour bolted on.
+
+Also checked and found clean: `submitContentForApprovalService`'s `submitterRow` read
+is unchecked, but a missing `brokerage_id` cannot produce an untenanted approval row —
+`activities_tenant_insert` WITH CHECK is `brokerage_id = current_user_brokerage_id()`
+and `activities_insert_own` requires an `agent_id` this writer never sets, so a NULL
+tenant is refused by RLS and `if (error) throw error` surfaces it. It fails closed and
+loudly. Left alone rather than changed.
+
+## Then the deletion audit found what the seed had left behind
+
+Only after m450/m451 did `lib/seed-compliance-rules.ts` become a candidate for
+deletion — and auditing it *for* deletion is what turned up two more things it
+carried that the survivor did not. This is precisely why the rule is merge-first.
+
+**(a) `suggested_alternative` is a column that does not exist.** Both readers emit
+it — `compliance-monitoring.ts` as `suggestedAlternative`, `ai-chat.ts` as
+`alternative` — and the live table's columns are `id, phrase, phrase_pattern,
+category, severity, is_active, notes, created_at, updated_at`. The field has been
+`undefined` on every issue the scanner has ever produced: the agent is told what is
+wrong and never what to write instead. It is also a **third** independent reason
+`seedComplianceRules()` could never have run — PostgREST rejects an unknown column
+outright (PGRST204). Zero rows, a severity the CHECK forbids, and a column that does
+not exist, in one unwired function. "No caller" was the least of it.
+
+**(b) `required_disclosures` was the *other* empty catalogue.** Measured: **0 rows**,
+and `scanContentComplianceService` iterates it as `requiredDisclosures || []` — the
+identical shape as the phrase list. The missing-disclosure warning had never once
+been raised. One empty catalogue is a coincidence; two is the pattern.
+
+**m452** adds the column and backfills 20 alternatives verbatim, and seeds 3
+disclosures. **m453** asserts both — and carries a correction to m452's own prose,
+which said "19" and "six" where the measured figures are **20** and **five**. The SQL
+was right; the sentence was not. Corrections belong in the next migration, not in a
+silent edit of one already applied.
+
+### Why three disclosures and not the authored five
+
+The reader's test is a literal substring match —
+`!content.contentBody.includes(disclosure.disclosure_text)` — so the text must be a
+string compliant copy actually contains. Two of the authored five are not:
+
+| row | authored text | why it cannot ship |
+|---|---|---|
+| `brokerage_name` | "Brokerage Name Required" | a **label**, not a disclosure. No real asset contains that string, so it would warn on 100% of email/print/social content forever. |
+| `license_number` | "Licensed Real Estate Agent" | the requirement is the agent's licence **number**, a per-agent fact. An agent writing "License #12345" satisfies the law and would still be warned. |
+
+Both are per-tenant/per-agent facts wearing placeholder text, and the table has no
+tenant column to hold them. They need a resolver substituting `brokerages.name` and
+the agent's licence number per asset, which does not exist. **Reported for a ruling,
+not guessed at** — because a check that always fires is worth exactly as much as one
+that never does, and m453 claim 3 asserts that constraint as a construct so no future
+edit can reintroduce a placeholder.
+
+### `lib/seed-compliance-rules.ts` — DELETED, survivors named
+
+Only once everything it carried was merged forward:
+
+- `seedComplianceRules()` → **m450** (25 phrases) + **m452** (20 alternatives, 3
+  disclosures). The 2 unshippable disclosures are preserved verbatim in m452's header
+  rather than lost with the file.
+- `getProhibitedPhrases()` → duplicate. Survivor:
+  `lib/application/compliance-monitoring.ts:scanContentComplianceService` and
+  `app/actions/ai-chat.ts:checkMessageCompliance`, which both read the table directly.
+- `getRequiredDisclosures(channel, state)` → duplicate. Survivor: the channel/state
+  filtering already done inline in `scanContentComplianceService`.
+
+Verified before deleting: zero importers of the module path, zero references to any
+of the three symbols anywhere in `app/`, `lib/`, `hooks/`, `services/`, `scripts/`,
+`contexts/`, `types/` or `e2e/`.
+
+### The screen effect of the merged column
+
+`suggested_alternative` is not a field with no home. Two screens already render it
+and both were guaranteed blank:
+
+- `app/components/shared/compliance/submit-content-form.tsx:265` — *"Try instead:
+  …"*
+- `app/components/shared/compliance/pending-approvals-list.tsx:182` — *"Suggestion:
+  …"*
+
+Every prohibited-phrase issue ever shown on either screen carried the violation and
+no remedy, because the column the value came from did not exist. After m452, an agent
+who writes "perfect for families" is shown *"This home offers generous space and a
+welcoming layout"*. `app/actions/ai-chat.ts` surfaces the same value as `alternative`
+on flagged messages.
+
+### Negative controls
+
+- **Guard** — removing the `critical → blocking` mapping turns exactly 3 of the 39
+  checks red; restoring it returns 39/39.
+- **m453 claim 3, live** — inserting the real `brokerage_name => "Brokerage Name
+  Required"` row inside a DO block that always raises: the claim caught it by name.
+  The `raise` rolled the fixture back by construction, and `required_disclosures` was
+  re-counted afterwards at exactly 3 rows — `advertising_disclosure, equal_housing,
+  mls_disclaimer`. Zero leftovers.
+
+## The deletion's own consequence, caught by the guard chain
+
+Half B went red on `test:writerless-reads` — and it was right:
+
+```
+✗ NEW required_disclosures ← lib/application/compliance-monitoring.ts, lib/compliance/vendor-respa.ts
+```
+
+Deleting the seeder removed the only runtime writer that table had, leaving two
+readers over a table nothing writes. The guard's framing — *"build the writer,
+repoint the read, or delete the dead surface"* — has a fourth answer it already
+supports, and it is the correct one here.
+
+`compliance_rules` and `prohibited_phrases` were **already** in that file's
+`SEEDED_REFERENCE` set. `required_disclosures` is the third sibling of that exact
+pair and escaped classification only because the seeder was its runtime writer — a
+writer that, as m450 establishes, could never actually run. Two independent facts
+confirm the class:
+
+1. **By construction** — no `brokerage_id`, `SELECT true` to `authenticated`, writes
+   gated on `is_platform_admin()`. It is a platform catalogue, now seeded by m452 and
+   asserted by m453.
+2. **By its other reader** — `lib/compliance/vendor-respa.ts:294` reads it purely as
+   an *override* store for three `respa_*` disclosure types, with hardcoded fallbacks
+   that "guarantee real language even before a brokerage customizes it." It expects
+   rows to be absent and degrades correctly.
+
+A runtime writer is not expected there and never was. Added to `SEEDED_REFERENCE`
+next to its two siblings with the reasoning inline — an auditable exemption, not a
+baseline entry that hides the question.
+
+## Baseline burn
+
+`test:orphan-exports` named **exactly** the three deleted exports and nothing else,
+which is what makes the deletion safe to accept. Re-baselined deliberately:
+
+| | before | after |
+|---|---|---|
+| files with orphaned exports | 668 | **667** |
+| C. referenced NOWHERE (the real burn-down list) | 239 | **236** |
+
+−3, matching the three deleted symbols precisely. No unrelated export was swept up.
+
+## And the chain caught the guard itself having no owner
+
+`test:proof-ownership` then flagged exactly one new unowned proof —
+`test:fair-housing-phrase-gate`, mine. That is #92's rule doing its job on the work
+that was closing #205: *a feature nobody owns is a feature nobody fixes*.
+
+Registered as `fair_housing_phrase_catalogue` under `compliance_officer`, which
+already owns `video_script_compliance` and `fair_housing_dispatch_backstop`.
+
+**Recorded deliberately in that entry: this is NOT the same control as
+`fair_housing_dispatch_backstop`.** That one carries its own hardcoded
+`FAIR_HOUSING_PATTERNS` / `detectFairHousingViolations` and runs at the physical
+dispatch chokepoint, on the final assembled message. This one is the
+platform-admin-editable catalogue scanned at COMPOSE time. Two independent layers by
+design — a later reader looking at "two Fair Housing detectors" should not collapse
+them, and the registry entry says so in as many words. Noting it here because that is
+exactly the shape of a "duplicate" that is not one.
+
+Verification of the registry edit: `test:proof-ownership` 377 owned (was 376),
+unowned 309 against baseline 309 — the proof moved into ownership and nothing else
+drifted. `test:manager-ownership` 73/73. All nine other guards that read
+`MAINTENANCE_DOMAINS` re-run individually — doc-kernel, session-rails,
+egress-coverage, render-cache, living-video, partners-meeting-reel, crm-pull,
+platform-ops-wiring, outcome-ledger — zero failure markers each.

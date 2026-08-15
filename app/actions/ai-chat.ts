@@ -65,6 +65,7 @@ import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { getAgentContext } from "@/lib/identity"
+import { scanForProhibitedPhrases } from "@/lib/application/compliance-monitoring"
 import {
   resolveReplyStyle,
   isReplyModel,
@@ -464,21 +465,47 @@ async function checkMessageCompliance(message: string, sessionId: string): Promi
 
   const issues: any[] = []
 
-  // Check prohibited phrases
-  const { data: prohibitedPhrases } = await supabase.from("prohibited_phrases").select("*").eq("is_active", true)
+  // THE SECOND HALF OF THE SAME GATE. This lane ran its own copy of the phrase
+  // scan and inherited both of its defects verbatim:
+  //
+  //   1. It graded on `severity === "blocking"` (see `passed` below) while the
+  //      column stores {info, warning, critical} — so a stored 'critical' row
+  //      landed in `issues` and was invisible to the filter, and the caller wrote
+  //      `compliance_flagged: false` on a message carrying a Fair Housing
+  //      violation. scanForProhibitedPhrases normalises that at the boundary.
+  //   2. `prohibited_phrases` held ZERO rows until m450, and this read swallowed
+  //      its error, so "catalogue unreadable" and "nothing prohibited found" were
+  //      the same outcome. They are not.
+  //
+  // Unlike scanContentComplianceService this lane does not BLOCK a send — it
+  // flags for review — so failing closed here means FLAGGING, not throwing. An
+  // unreadable or empty catalogue produces an issue of its own, which makes
+  // `passed` false and puts the message in front of a human. Silence would put
+  // it through unread.
+  const { data: prohibitedPhrases, error: phrasesError } = await supabase
+    .from("prohibited_phrases")
+    .select("*")
+    .eq("is_active", true)
 
-  prohibitedPhrases?.forEach((phrase) => {
-    const regex = new RegExp(phrase.phrase_pattern || phrase.phrase, "gi")
-    if (regex.test(message)) {
+  if (phrasesError || !prohibitedPhrases || prohibitedPhrases.length === 0) {
+    issues.push({
+      type: "compliance_scan_unavailable",
+      phrase: phrasesError ? "phrase catalogue unreadable" : "phrase catalogue is empty",
+      category: "fair_housing",
+      severity: "blocking",
+      alternative: "Flagged for human review: the prohibited-phrase scan could not run on this message.",
+    })
+  } else {
+    for (const hit of scanForProhibitedPhrases(prohibitedPhrases, message)) {
       issues.push({
-        type: "prohibited_phrase",
-        phrase: phrase.phrase,
-        category: phrase.category,
-        severity: phrase.severity,
-        alternative: phrase.suggested_alternative,
+        type: hit.type,
+        phrase: hit.found,
+        category: hit.category,
+        severity: hit.severity,
+        alternative: hit.suggestedAlternative,
       })
     }
-  })
+  }
 
   // Check for cold lead channel restrictions
   if (session?.contacts?.lead_temperature === "cold") {

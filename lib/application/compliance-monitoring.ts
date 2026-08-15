@@ -461,6 +461,64 @@ export async function exportAuditTrailService(params: {
 // CONTENT COMPLIANCE
 // ============================================
 
+export type ProhibitedPhraseRow = {
+  phrase: string
+  phrase_pattern?: string | null
+  category?: string | null
+  severity?: string | null
+  suggested_alternative?: string | null
+}
+
+// TWO VOCABULARIES MEET HERE, AND THEY DO NOT INTERSECT ON THE VALUE THAT
+// DECIDES PASS/FAIL. Normalise at this boundary or the gate silently passes.
+//
+//   the COLUMN stores  {info, warning, critical}
+//     — the live CHECK, and exactly what scripts/check-vocabularies.ts:1190
+//       declares for prohibited_phrases.severity.
+//   scanContentComplianceService grades {info, warning, blocking}
+//     — its own literals for the three non-DB issue types, and `passed` is
+//       computed as `issues.filter(i => i.severity === "blocking").length === 0`.
+//
+// So a stored 'critical' row pushed through unmapped lands in `issues` but is
+// invisible to that filter, and `passed` comes back TRUE with a Fair Housing
+// violation sitting in the list. Seeding the catalogue (m450) without this
+// mapping would have fixed nothing — the scan would find the phrase and still
+// clear the content.
+//
+// 'critical' is the CHECK's severest value and is what m450 stores for the 17
+// phrases the authored catalogue marked "blocking", so it maps to blocking
+// here. Anything else passes through unchanged.
+export const DB_SEVERITY_TO_ISSUE_GRADE: Record<string, string> = { critical: "blocking" }
+
+/**
+ * The prohibited-phrase scan, as a pure function over rows the caller has
+ * already read. Extracted from scanContentComplianceService so the Fair Housing
+ * gate can be exercised against the REAL seeded catalogue without a session —
+ * see scripts/fair-housing-phrase-gate-simulator.ts. The service calls this; the
+ * two do not carry separate copies of the logic.
+ *
+ * A malformed stored pattern throws out of `new RegExp` and aborts the whole
+ * scan. That is deliberate and is left as-is: a scan that cannot compile its own
+ * catalogue must fail loudly, not skip the phrase and report the content clean.
+ */
+export function scanForProhibitedPhrases(phrases: ProhibitedPhraseRow[], contentBody: string) {
+  const found: any[] = []
+  for (const phrase of phrases) {
+    const regex = new RegExp(phrase.phrase_pattern || phrase.phrase, "gi")
+    if (regex.test(contentBody)) {
+      found.push({
+        type: "prohibited_phrase",
+        category: phrase.category,
+        severity: DB_SEVERITY_TO_ISSUE_GRADE[phrase.severity as string] ?? phrase.severity,
+        found: phrase.phrase,
+        suggestedAlternative: phrase.suggested_alternative,
+        location: "content_body",
+      })
+    }
+  }
+  return found
+}
+
 export async function scanContentComplianceService(content: {
   contentBody: string
   contentType: string
@@ -473,24 +531,39 @@ export async function scanContentComplianceService(content: {
   const issues: any[] = []
   const warnings: any[] = []
 
-  const { data: prohibitedPhrases } = await supabase
+  // A COMPLIANCE SCAN THAT COULD NOT READ ITS CATALOGUE IS NOT A CLEAN SCAN.
+  //
+  // supabase-js RESOLVES a failed query: without destructuring `error`, a
+  // permission denial arrives here as `data: null` and the loop below reads it
+  // as "no prohibited phrases found" — the caller then stores the content with
+  // status "pending" (see submitContentForApprovalService), i.e. APPROVED. The
+  // same is true of a genuinely empty table, which is how this gate spent its
+  // whole life: prohibited_phrases held zero rows until m450 seeded it, so every
+  // piece of listing and marketing copy ever scanned came back passed:true.
+  //
+  // Both cases fail CLOSED now. m450 guarantees the rows exist and m451 asserts
+  // it in the database, so neither branch fires in normal operation — but if one
+  // ever does, the scan says so instead of quietly clearing the content.
+  const { data: prohibitedPhrases, error: phrasesError } = await supabase
     .from("prohibited_phrases")
     .select("*")
     .eq("is_active", true)
 
-  for (const phrase of prohibitedPhrases || []) {
-    const regex = new RegExp(phrase.phrase_pattern || phrase.phrase, "gi")
-    if (regex.test(content.contentBody)) {
-      issues.push({
-        type: "prohibited_phrase",
-        category: phrase.category,
-        severity: phrase.severity,
-        found: phrase.phrase,
-        suggestedAlternative: phrase.suggested_alternative,
-        location: "content_body",
-      })
-    }
+  if (phrasesError) {
+    throw new Error(
+      `Compliance scan could not read the prohibited-phrase catalogue: ${phrasesError.message}. ` +
+        "Refusing to report content as compliant against a catalogue that was never read.",
+    )
   }
+  if (!prohibitedPhrases || prohibitedPhrases.length === 0) {
+    throw new Error(
+      "Compliance scan aborted: the prohibited-phrase catalogue holds no active phrases, so the " +
+        "Fair Housing scan would pass every piece of content. Apply the phrase-catalogue migration " +
+        "(supabase/migrations/m450-*) before scanning content.",
+    )
+  }
+
+  issues.push(...scanForProhibitedPhrases(prohibitedPhrases, content.contentBody))
 
   if (content.targetAudience === "cold_lead") {
     const allowedChannels = ["email", "print"]

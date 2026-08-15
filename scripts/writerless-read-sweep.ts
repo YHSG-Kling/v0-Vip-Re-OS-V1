@@ -45,6 +45,17 @@ const SEEDED_REFERENCE = new Set([
   // classifications is the routing RULE set (brokerage_id-null global default
   // rows); form_field_maps is per-form-template field mapping.
   "behavioral_patterns", "brokerage_forms", "document_classifications", "form_field_maps",
+  // W44: the THIRD sibling of compliance_rules + prohibited_phrases, both already
+  // above. It only escaped this list because lib/seed-compliance-rules.ts was its
+  // runtime writer — and that file could never actually run (see m450: zero rows,
+  // a severity the CHECK forbids, and an upsert carrying a column that does not
+  // exist). Now seeded by m452 and asserted by m453, and the classification is
+  // right on its own terms twice over: it has NO brokerage_id, SELECT `true` to
+  // authenticated and writes gated on is_platform_admin() — a platform catalogue
+  // by construction; and lib/compliance/vendor-respa.ts:294 reads it purely as an
+  // OVERRIDE store, with hardcoded fallbacks that guarantee real RESPA language
+  // when a row is absent. A runtime writer is not expected here and never was.
+  "required_disclosures",
 ])
 
 /** Database VIEWS — written through their base tables by definition; a read
