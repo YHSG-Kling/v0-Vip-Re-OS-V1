@@ -43,13 +43,12 @@ interface Template {
   approval_status: 'draft' | 'pending_review' | 'approved' | 'rejected'
   is_default: boolean
   version_number: number
-  sections: Array<{
-    id: string
-    section_name: string
-    section_type: string
-    section_order: number
-    is_dynamic: boolean
-  }>
+  // NO `sections` — a saved template's sections are not readable. The live
+  // newsletter_sections table hangs off newsletter_campaigns, and has no FK (and
+  // no column) tying a section to a broker template, so listTemplates cannot
+  // embed them. See the explanation in app/actions/newsletter/list-templates.ts.
+  // The section count is therefore no longer shown on the card rather than
+  // being reported as 0, which would be a fabricated number.
   created_at: string
 }
 
@@ -507,7 +506,7 @@ export function TemplateBuilder() {
                       </Badge>
                     </div>
                     <CardDescription className="mt-1">
-                      {template.sections.length} sections • v{template.version_number}
+                      v{template.version_number}
                     </CardDescription>
                   </div>
 

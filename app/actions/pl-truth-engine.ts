@@ -130,7 +130,7 @@ export async function getAgentPLSummary(monthYear?: string): Promise<
       ai_cost_cents, fee_income_cents, net_brokerage_margin,
       roi_multiple, transaction_count, computed_at,
       agents:agent_id (
-        users:user_id (full_name, email)
+        users:user_id (first_name, last_name, email)
       )
     `)
     .eq("brokerage_id", auth.brokerageId)
@@ -140,11 +140,15 @@ export async function getAgentPLSummary(monthYear?: string): Promise<
 
   if (error) return { ok: false, error: error.message }
 
+  // `users` has NO `full_name` (verified against information_schema) — the name
+  // is first_name + last_name. Naming full_name made PostgREST reject the ENTIRE
+  // select, so the agent P&L table on the broker dashboard has never rendered.
   const rows: AgentPLRow[] = (data ?? []).map((r: any) => {
     const user = r.agents?.users
+    const fullName = [user?.first_name, user?.last_name].filter(Boolean).join(" ")
     return {
       agent_id:             r.agent_id,
-      agent_name:           user?.full_name ?? user?.email ?? "Unknown Agent",
+      agent_name:           fullName || user?.email || "Unknown Agent",
       month_year:           r.month_year,
       gci_gross:            r.gci_gross ?? 0,
       agent_payout:         r.agent_payout ?? 0,
@@ -215,15 +219,21 @@ export async function getAgentAICostRanking(monthYear?: string): Promise<
   const gciByAgent: Record<string, number> = {}
   for (const r of plRows ?? []) gciByAgent[r.agent_id] = r.gci_gross ?? 0
 
-  const { data: agentUsers } = await svc
+  // Same dead column as above: `users` has first_name/last_name, never
+  // full_name. This select was rejected outright, so every row in the AI-cost
+  // ranking was labelled "Unknown".
+  const { data: agentUsers, error: agentUsersErr } = await svc
     .from("agents")
-    .select("id, users:user_id (full_name, email)")
+    .select("id, users:user_id (first_name, last_name, email)")
     .in("id", agentIds)
+
+  if (agentUsersErr) return { ok: false, error: agentUsersErr.message }
 
   const nameByAgent: Record<string, string> = {}
   for (const a of agentUsers ?? []) {
     const u = (a as any).users
-    nameByAgent[a.id] = u?.full_name ?? u?.email ?? "Unknown"
+    nameByAgent[a.id] =
+      [u?.first_name, u?.last_name].filter(Boolean).join(" ") || u?.email || "Unknown"
   }
 
   const rows: AgentAICostRow[] = Object.entries(byAgent)

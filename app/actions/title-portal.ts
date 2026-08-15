@@ -32,7 +32,15 @@ export async function getTitleDashboard(titleUserId: string) {
   }
 
   // Get all transactions assigned to this title company
-  const { data: titleEscrowRecords } = await supabase
+  //
+  // TWO defects in the old embed, either one fatal to the WHOLE query:
+  //  1. `agents` has NO first_name / last_name / email / phone — those live on
+  //     `users` via agents_user_id_fkey (the only agents→users FK, so an OBJECT).
+  //  2. `agents(...)` was UNHINTED, and `transactions` has THREE FKs to agents
+  //     (agent_id, buyer_agent_id, seller_agent_id), so PostgREST could not pick
+  //     one. It is now pinned to agent_id, the listing/deal agent.
+  // The result was that the title company's entire deal pipeline rendered empty.
+  const { data: titleEscrowRecords, error: recordsError } = await supabase
     .from("transaction_title_escrow")
     .select(`
       id,
@@ -55,14 +63,46 @@ export async function getTitleDashboard(titleUserId: string) {
         purchase_price,
         buyer_contact_id,
         agent_id,
-        agents(id, first_name, last_name, email, phone)
+        agents:agent_id(
+          id, phone_mobile, phone_office,
+          users:user_id(first_name, last_name, email, phone)
+        )
       )
     `)
     .eq("title_company_email", titleUser.email)
     .order("created_at", { ascending: false })
 
+  // supabase-js RESOLVES a failed query, so `const { data }` alone reported a
+  // rejected select as "this title company has no deals".
+  if (recordsError) {
+    throw new Error(`Could not load the title pipeline: ${recordsError.message}`)
+  }
+
+  // Flattened to the same agent shape the title detail page renders, so a row
+  // carries agent identity in one predictable form across both surfaces.
+  const records = (titleEscrowRecords ?? []).map((r: any) => {
+    const tx = Array.isArray(r.transactions) ? r.transactions[0] : r.transactions
+    if (!tx) return r
+    const a = tx.agents as Record<string, any> | null
+    const u = (a?.users ?? null) as Record<string, any> | null
+    return {
+      ...r,
+      transactions: {
+        ...tx,
+        agents: a
+          ? {
+              id: a.id,
+              first_name: u?.first_name ?? null,
+              last_name: u?.last_name ?? null,
+              email: u?.email ?? null,
+              phone: a.phone_mobile ?? a.phone_office ?? u?.phone ?? null,
+            }
+          : null,
+      },
+    }
+  })
+
   // Calculate dashboard stats
-  const records = titleEscrowRecords || []
   const activeCount = records.filter((r) => {
     const tx = Array.isArray(r.transactions) ? r.transactions[0] : r.transactions
     return !["closed", "cancelled"].includes(tx?.status || "")
@@ -148,7 +188,10 @@ export async function getTitleTransactionDetail(transactionId: string, titleUser
       seller_contact_id,
       agent_id,
       contacts:buyer_contact_id(id, first_name, last_name, email, phone),
-      agents:agent_id(id, first_name, last_name, email, phone)
+      agents:agent_id(
+        id, phone_mobile, phone_office,
+        users:user_id(first_name, last_name, email, phone)
+      )
     `)
     .eq("id", transactionId)
     .single()
@@ -194,8 +237,27 @@ export async function getTitleTransactionDetail(transactionId: string, titleUser
     daysUntilClose = Math.ceil((date.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
   }
 
+  // Flattened to the shape the page already renders
+  // (app/portal/title/[transactionId]/page.tsx:360-374 reads
+  // transaction.agents.first_name / last_name / email / phone), so no consumer
+  // changes — but the values are now real.
+  const a = (transaction as any).agents as Record<string, any> | null
+  const u = (a?.users ?? null) as Record<string, any> | null
+  const transactionWithAgent = {
+    ...(transaction as any),
+    agents: a
+      ? {
+          id: a.id,
+          first_name: u?.first_name ?? null,
+          last_name: u?.last_name ?? null,
+          email: u?.email ?? null,
+          phone: a.phone_mobile ?? a.phone_office ?? u?.phone ?? null,
+        }
+      : null,
+  }
+
   return {
-    transaction,
+    transaction: transactionWithAgent,
     titleEscrow,
     milestones: milestones || [],
     documents: documents || [],

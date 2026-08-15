@@ -21,6 +21,7 @@ import { readFileSync, readdirSync, statSync, writeFileSync, existsSync } from "
 import { runtimeRoots } from "./runtime-roots"
 import { join } from "node:path"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
+import { SCHEMA_FK_MAP } from "./schema-fk-map"
 import { resolveTableManager } from "../lib/kernel/manager-registry"
 
 const BASELINE_PATH = join(process.cwd(), "scripts/schema-drift-baseline.json")
@@ -273,37 +274,128 @@ function matchParen(s: string, open: number): number {
 }
 
 /**
- * Columns requested INSIDE an embedded relation: `embedded_table (a, b, c)`.
+ * ── EMBEDDED SELECTS ────────────────────────────────────────────────────────────────
+ *
+ * Columns requested INSIDE an embedded relation: `[alias:]relation[!hint](a, b, c)`.
  *
  * parseSelectColumns deliberately strips embeds, because their columns belong to a
- * different table than the .from(). Stripping is right — but nothing then checked
- * them, and PostgREST rejects the ENTIRE query when an embed names a column its table
- * lacks. That is how `lead_scraping_property_params (id, is_active, target_sites, …)`
- * shipped against a table with neither column: the scrape-territory resolver's select
- * could not succeed, the error was discarded, and every run reported "no active
- * territories" — an outage that reads like an idle pipeline.
+ * DIFFERENT table than the .from(). Stripping is right — the bug was that nothing then
+ * checked them against any table at all, and PostgREST rejects the ENTIRE query when an
+ * embed names a column its table lacks. Two outages came out of that hole:
  *
- * Returns [embeddedTable, column] pairs for embeds whose target we can name. An embed
- * written `alias:fk_column(...)` is skipped: the alias is not the table name, and
- * guessing would produce false positives.
+ *   • `lead_scraping_property_params (id, is_active, target_sites, …)` against a table
+ *     with neither column — the scrape-territory resolver's select could not succeed,
+ *     the error was discarded, and every run reported "no active territories".
+ *   • `brokerage:brokerage_id(name, address, …)` in lib/kernel/listings.ts against a
+ *     `brokerages` that had no `address` — every listing-form prefill returned
+ *     `{ success: false }` and the licence block went out empty.
+ *
+ * The second one is the reason this is not a regex over table-shaped names. That embed
+ * names its target by FK COLUMN behind an alias; the old check saw `brokerage` (an alias,
+ * not a table), gave up, and reported nothing. PostgREST admits three spellings:
+ *
+ *     brokerages(name)              — by TABLE name    → SCHEMA_SNAPSHOT
+ *     brokerage_id(name)            — by FK COLUMN     → SCHEMA_FK_MAP[parent]
+ *     brokerage:brokerage_id(name)  — aliased FK col   → SCHEMA_FK_MAP[parent]
+ *
+ * plus a `!hint` (`agents!inner(…)`, `agents!listings_agent_id_fkey(…)`) that narrows
+ * WHICH relationship is used but never changes the target TABLE, so it is ignored here.
+ *
+ * A FALSE POSITIVE IS WORSE THAN THE GAP — a guard that cries wolf gets silenced. So an
+ * embed whose target cannot be named with certainty is SKIPPED and COUNTED (reported on
+ * the "unresolved embeds" line), never failed. Skipping is also why an unresolved embed
+ * is not descended into: without a parent table, its own nested embeds resolve against
+ * nothing, and guessing there is how you invent violations.
  */
-export function parseEmbeddedSelects(literal: string): Array<{ table: string; column: string }> {
-  const out: Array<{ table: string; column: string }> = []
-  const re = /([A-Za-z_][\w]*)\s*(?:!\w+)?\s*\(/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(literal))) {
-    const name = m[1]
-    // `alias:table(...)` — the captured word is the alias only when a ':' precedes it.
-    const before = literal.slice(0, m.index).trimEnd()
-    if (before.endsWith(":")) continue
-    const open = m.index + m[0].length - 1
-    const close = matchParen(literal, open)
-    if (close <= open) continue
-    const inner = literal.slice(open + 1, close)
-    for (const col of parseSelectColumns(inner)) out.push({ table: name, column: col })
-    re.lastIndex = close
+
+/** Split a select list on TOP-LEVEL commas — commas inside an embed's parens, inside
+ *  brackets, or inside a string belong to the inner list, not to this one. */
+export function splitSelectParts(literal: string): string[] {
+  const parts: string[] = []
+  let depth = 0, q: string | null = null, start = 0
+  for (let i = 0; i < literal.length; i++) {
+    const ch = literal[i]
+    if (q) { if (ch === q && literal[i - 1] !== "\\") q = null; continue }
+    if (ch === '"' || ch === "'" || ch === "`") { q = ch; continue }
+    if (ch === "(" || ch === "[" || ch === "{") depth++
+    else if (ch === ")" || ch === "]" || ch === "}") depth--
+    else if (ch === "," && depth === 0) { parts.push(literal.slice(start, i)); start = i + 1 }
+  }
+  parts.push(literal.slice(start))
+  return parts
+}
+
+export interface EmbedNode {
+  /** the relation token as written — a table name OR an FK column name */
+  relation: string
+  /** the `alias:` prefix, when present (never a table name) */
+  alias: string | null
+  /** the select list inside the parens */
+  inner: string
+}
+
+/** Top-level embeds of a select list, in source order. A part is an embed only when it
+ *  is `[…:]name[!hint]( … )` — a plain column, a rename, a cast or a json path is not. */
+export function parseEmbedNodes(literal: string): EmbedNode[] {
+  const out: EmbedNode[] = []
+  for (const raw of splitSelectParts(literal)) {
+    const part = raw.trim()
+    if (!part) continue
+    // `...relation(…)` is PostgREST's spread embed — same target resolution.
+    const body = part.startsWith("...") ? part.slice(3).trim() : part
+    const m = body.match(/^(?:([A-Za-z_]\w*)\s*:\s*)?([A-Za-z_]\w*)\s*(?:!\s*[A-Za-z_]\w*)?\s*\(([\s\S]*)\)$/)
+    if (!m) continue
+    out.push({ alias: m[1] ?? null, relation: m[2], inner: m[3] })
   }
   return out
+}
+
+/** The table an embed points at, or null when it cannot be named with certainty.
+ *  FK-column resolution needs the PARENT table; table-name resolution does not. The two
+ *  paths cannot disagree — no FK column name in this schema collides with a table name
+ *  (measured when scripts/schema-fk-map.ts was generated). */
+export function resolveEmbedTable(parent: string | null, relation: string): string | null {
+  if (parent) {
+    const viaFk = SCHEMA_FK_MAP[parent]?.[relation]
+    if (viaFk) return viaFk
+  }
+  if (Object.prototype.hasOwnProperty.call(SCHEMA_SNAPSHOT, relation)) return relation
+  return null
+}
+
+export interface EmbedResolution {
+  /** every embedded column, bound to the table it must exist on */
+  refs: Array<{ table: string; column: string; path: string }>
+  /** embeds whose target could not be named — skipped, never failed */
+  unresolved: Array<{ relation: string; parent: string | null; path: string }>
+  /** embeds whose target WAS named (at any depth) */
+  resolvedCount: number
+}
+
+/** Walk a select list to arbitrary depth, binding each embed's columns to ITS OWN table.
+ *  A nested embed resolves against its immediate parent, never against the root. */
+export function resolveEmbeddedSelects(literal: string, rootTable: string | null = null): EmbedResolution {
+  const res: EmbedResolution = { refs: [], unresolved: [], resolvedCount: 0 }
+  const walk = (list: string, parent: string | null, path: string) => {
+    for (const node of parseEmbedNodes(list)) {
+      const label = node.alias ? `${node.alias}:${node.relation}` : node.relation
+      const here = `${path}.${label}`
+      const target = resolveEmbedTable(parent, node.relation)
+      if (!target) { res.unresolved.push({ relation: node.relation, parent, path: here }); continue }
+      res.resolvedCount++
+      // The embed's OWN columns — parseSelectColumns strips its nested embeds, which is
+      // exactly right here: those belong to the next table down and are walked below.
+      for (const col of parseSelectColumns(node.inner)) res.refs.push({ table: target, column: col, path: here })
+      walk(node.inner, target, here)
+    }
+  }
+  walk(literal, rootTable, rootTable ?? "")
+  return res
+}
+
+/** Back-compatible view of the resolver: [embeddedTable, column] pairs only. */
+export function parseEmbeddedSelects(literal: string, rootTable: string | null = null): Array<{ table: string; column: string }> {
+  return resolveEmbeddedSelects(literal, rootTable).refs.map(({ table, column }) => ({ table, column }))
 }
 function matchBrace(s: string, open: number): number {
   let d = 0
@@ -375,11 +467,70 @@ function testPure() {
     const emb = parseEmbeddedSelects("id, name, lead_scraping_property_params (id, is_active, min_price)")
     check("parseEmbeddedSelects: finds embedded table + its columns",
       emb.some((e) => e.table === "lead_scraping_property_params" && e.column === "is_active"))
-    check("parseEmbeddedSelects: aliased embeds (alias:fk(...)) are skipped — alias is not a table",
+    check("parseEmbeddedSelects: an embed named by FK column is UNRESOLVABLE without a parent table",
       parseEmbeddedSelects("agent:agent_id(id, license_number)").length === 0)
     check("parseEmbeddedSelects: the scrape-territory outage shape is caught",
       parseEmbeddedSelects("lead_scraping_property_params (id, is_active, target_sites, min_price)")
         .filter((e) => !SCHEMA_SNAPSHOT.lead_scraping_property_params?.includes(e.column)).length === 2)
+  }
+
+  // ── embed TARGET RESOLUTION — the blind spot that hid brokerages.address ────────────
+  {
+    check("splitSelectParts: an embed's inner commas do not split the outer list",
+      JSON.stringify(splitSelectParts("id, agent:agent_id(a, b, x:y(c, d)), status").map((s) => s.trim())) ===
+        JSON.stringify(["id", "agent:agent_id(a, b, x:y(c, d))", "status"]))
+    check("parseEmbedNodes: a plain column / rename / cast / json path is NOT an embed",
+      parseEmbedNodes("id, price:list_price, created_at::date, meta->>'k'").length === 0)
+    check("parseEmbedNodes: reads alias, relation and inner list",
+      JSON.stringify(parseEmbedNodes("brokerage:brokerage_id!inner(name, city)")) ===
+        JSON.stringify([{ alias: "brokerage", relation: "brokerage_id", inner: "name, city" }]))
+    check("parseEmbedNodes: a spread embed (...rel(cols)) is still an embed",
+      parseEmbedNodes("...brokerages(name)")[0]?.relation === "brokerages")
+
+    check("resolveEmbedTable: by TABLE name, no parent needed", resolveEmbedTable(null, "brokerages") === "brokerages")
+    check("resolveEmbedTable: by FK COLUMN, via the parent's foreign key (listings.agent_id → agents)",
+      resolveEmbedTable("listings", "agent_id") === "agents")
+    check("resolveEmbedTable: two FK columns to the SAME table stay distinct (listings.seller_contact_id → contacts)",
+      resolveEmbedTable("listings", "seller_contact_id") === "contacts" && resolveEmbedTable("listings", "contact_id") === "contacts")
+    check("resolveEmbedTable: an unknown relation resolves to NOTHING (skip, never guess)",
+      resolveEmbedTable("listings", "not_a_column_or_table") === null)
+    check("resolveEmbedTable: an FK column of ANOTHER table is not resolvable from this parent",
+      resolveEmbedTable("brokerages", "agent_id") === null)
+
+    // The exact listings.ts prefill select, three levels deep. Every level must bind to
+    // its OWN table: listings → agents → users AND agents → brokerages.
+    const prefill = `
+      id, address, city,
+      seller:seller_contact_id(id, first_name, last_name),
+      agent:agent_id(
+        id, brokerage_id,
+        users:user_id(first_name, last_name, email),
+        license_number,
+        brokerage:brokerage_id(name, address, city)
+      )`
+    const r = resolveEmbeddedSelects(prefill, "listings")
+    check("resolveEmbeddedSelects: aliased FK-column embed binds to the FK's TARGET table (brokerage:brokerage_id → brokerages)",
+      r.refs.some((e) => e.table === "brokerages" && e.column === "address"))
+    check("resolveEmbeddedSelects: a NESTED embed resolves against its OWN parent, not the root",
+      r.refs.some((e) => e.table === "users" && e.column === "first_name") &&
+      !r.refs.some((e) => e.table === "listings" && e.column === "first_name"))
+    check("resolveEmbeddedSelects: the seller embed lands on contacts, not on listings",
+      r.refs.some((e) => e.table === "contacts" && e.column === "last_name"))
+    check("resolveEmbeddedSelects: the listings prefill select resolves EVERY embed (0 unresolved)",
+      r.unresolved.length === 0 && r.resolvedCount === 4, `resolved=${r.resolvedCount} unresolved=${r.unresolved.map((u) => u.relation).join(",")}`)
+    check("resolveEmbeddedSelects: the historical outage column is now CAUGHT (brokerages had no `address`)",
+      r.refs.filter((e) => e.table === "brokerages").length === 3)
+    check("resolveEmbeddedSelects: an embed's own non-embed columns are NOT attributed to the parent",
+      !r.refs.some((e) => e.table === "agents" && e.column === "first_name") &&
+      r.refs.some((e) => e.table === "agents" && e.column === "license_number"))
+
+    // A false positive here would get the guard silenced, so an unnameable target is
+    // SKIPPED and COUNTED — never failed.
+    const un = resolveEmbeddedSelects("id, mystery:whatever_id(a, b, deeper:other_id(c))", "listings")
+    check("resolveEmbeddedSelects: an unresolvable embed yields NO column refs (skipped, not failed)",
+      un.refs.length === 0 && un.unresolved.length === 1 && un.unresolved[0].relation === "whatever_id")
+    check("resolveEmbeddedSelects: an unresolvable embed is NOT descended into (its parent is unknown)",
+      un.resolvedCount === 0 && !un.unresolved.some((u) => u.relation === "other_id"))
   }
 
   // The exact bug we fixed must be caught:
@@ -401,7 +552,19 @@ function walk(dir: string, acc: string[]) {
 
 interface Violation { file: string; table: string; op: string; column: string }
 
-function scanFile(file: string, src: string): Violation[] {
+/** What the scan measured — printed so the embed check's COVERAGE is visible, not implied.
+ *  "unresolved" is the honest edge of the check: those embeds were skipped, not passed. */
+interface ScanStats {
+  directColumns: number
+  embedColumns: number
+  embedsResolved: number
+  embedsUnresolved: number
+  embedTargetUnguarded: number
+  unresolved: Array<{ file: string; relation: string; parent: string | null }>
+}
+const newStats = (): ScanStats => ({ directColumns: 0, embedColumns: 0, embedsResolved: 0, embedsUnresolved: 0, embedTargetUnguarded: 0, unresolved: [] })
+
+function scanFile(file: string, src: string, stats: ScanStats = newStats()): Violation[] {
   const v: Violation[] = []
   const fromRe = /\.from\(\s*["'`]([a-z_]+)["'`]\s*\)/g
   let m: RegExpExecArray | null
@@ -413,13 +576,22 @@ function scanFile(file: string, src: string): Violation[] {
     // SELECT columns
     const sel = collectSelectArg(src, m.index)
     if (sel) {
-      for (const c of parseSelectColumns(sel)) if (!set.has(c)) v.push({ file, table, op: "select", column: c })
-      // Embedded relations are a DIFFERENT table's columns — checked against that
-      // table's snapshot, because a bad embed column fails the whole query.
-      for (const e of parseEmbeddedSelects(sel)) {
-        if (!GUARDED.has(e.table)) continue
+      for (const c of parseSelectColumns(sel)) { stats.directColumns++; if (!set.has(c)) v.push({ file, table, op: "select", column: c }) }
+      // Embedded relations are a DIFFERENT table's columns — checked against that table's
+      // snapshot, because ONE bad embed column fails the whole query. Resolution starts
+      // from THIS from() table so `alias:fk_column(...)` embeds (and nested embeds, which
+      // resolve against their own parent) are checked instead of silently dropped.
+      const emb = resolveEmbeddedSelects(sel, table)
+      stats.embedsResolved += emb.resolvedCount
+      stats.embedsUnresolved += emb.unresolved.length
+      for (const u of emb.unresolved) stats.unresolved.push({ file, relation: u.relation, parent: u.parent })
+      for (const e of emb.refs) {
+        // Target is a real table we simply have no column list for — cannot check, do
+        // not guess. Counted as unresolved so the coverage number stays honest.
+        if (!GUARDED.has(e.table)) { stats.embedTargetUnguarded++; continue }
         // `related_table(count)` is PostgREST's related-row aggregate, not a column.
         if (e.column === "count") continue
+        stats.embedColumns++
         if (!new Set(SCHEMA_SNAPSHOT[e.table]).has(e.column)) {
           v.push({ file, table: e.table, op: "select(embed)", column: e.column })
         }
@@ -487,13 +659,33 @@ function testScan() {
   const files: string[] = []
   for (const d of runtimeRoots(root)) { try { walk(join(root, d), files) } catch {} }
   const all: Violation[] = []
+  const stats = newStats()
   for (const f of files) {
     let src = ""
     try { src = readFileSync(f, "utf8") } catch { continue }
     let hit = false
     for (const t of GUARDED) if (src.includes(`from("${t}")`) || src.includes(`from('${t}')`)) { hit = true; break }
     if (!hit) continue
-    all.push(...scanFile(f.replace(root + "/", ""), src))
+    all.push(...scanFile(f.replace(root + "/", ""), src, stats))
+  }
+
+  // COVERAGE, stated out loud. A guard that reports only failures hides its own blind
+  // spots; the embed check's blind spot is every embed whose target it could not name.
+  console.log(`  · ${stats.directColumns} direct column refs + ${stats.embedColumns} embedded column refs checked`)
+  console.log(`  · embeds: ${stats.embedsResolved} resolved to a table, ${stats.embedTargetUnguarded} embedded columns skipped (target table not column-guarded)`)
+  console.log(`  · unresolved embeds: ${stats.embedsUnresolved} (skipped, never failed — set GUARD_EMBED_REPORT=1 to list them)`)
+  if (process.env.GUARD_EMBED_REPORT === "1" && stats.embedsUnresolved > 0) {
+    const byRel = new Map<string, { parents: Set<string>; files: Set<string> }>()
+    for (const u of stats.unresolved) {
+      if (!byRel.has(u.relation)) byRel.set(u.relation, { parents: new Set(), files: new Set() })
+      const e = byRel.get(u.relation)!
+      e.parents.add(u.parent ?? "?")
+      e.files.add(u.file)
+    }
+    console.log("    unresolved embed relations (name — parent tables — files):")
+    for (const [rel, e] of [...byRel.entries()].sort((a, b) => b[1].files.size - a[1].files.size)) {
+      console.log(`      ${rel}  ← ${[...e.parents].sort().join(", ")}  (${e.files.size} file${e.files.size === 1 ? "" : "s"}, e.g. ${[...e.files].sort()[0]})`)
+    }
   }
 
   // Baseline ratchet: known PRE-EXISTING legacy violations are tolerated (burn-down list);
@@ -517,7 +709,22 @@ function testScan() {
   const embedFresh = embedAll.filter((v) => !embedBaseline.has(vkey(v)))
   check(`no NEW embedded-relation column drift (burn-down: ${embedBaseline.size} pre-existing — each one fails its ENTIRE query)`,
     embedFresh.length === 0,
-    embedFresh.slice(0, 20).map((x) => `${x.file}: ${x.table}.${x.column}`).join(" | "))
+    embedFresh.slice(0, 20).map((x) => `${x.file}: ${x.table}.${x.column}`).join(" | ") + (embedFresh.length > 20 ? ` … +${embedFresh.length - 20} more (full list above)` : ""))
+  if (embedFresh.length > 0) {
+    // Never truncate this one. A truncated list of dead queries is a list someone fixes
+    // the first twenty of and then declares done.
+    console.log(`  ⚠  ${embedFresh.length} embedded-column references name a column their table does not have.`)
+    console.log("     PostgREST rejects the WHOLE query for each — every one is a silently dead read:")
+    const byFile = new Map<string, string[]>()
+    for (const x of embedFresh) {
+      if (!byFile.has(x.file)) byFile.set(x.file, [])
+      byFile.get(x.file)!.push(`${x.table}.${x.column}`)
+    }
+    for (const [file, cols] of [...byFile.entries()].sort()) {
+      console.log(`       ${file}`)
+      for (const c of [...new Set(cols)].sort()) console.log(`         ✗ ${c}   [owner: ${resolveTableManager(c.split(".")[0]).label}]`)
+    }
+  }
   if (embedBaseline.size > 0) {
     console.log(`  ⚠  ${embedBaseline.size} embedded-column violations remain. PostgREST rejects the WHOLE`)
     console.log("     query when an embed names a missing column, so each is a silent dead surface:")

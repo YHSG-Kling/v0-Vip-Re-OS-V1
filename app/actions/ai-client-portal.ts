@@ -214,21 +214,35 @@ export async function getContactAgent(params: { contactId: string }) {
   const supabase = await createClient()
   
   try {
+    // FIVE OF THESE COLUMNS DID NOT EXIST, so PostgREST rejected the WHOLE query
+    // and this card has never once rendered. Verified against
+    // information_schema: `agents` has no `full_name`, `email` or `phone` — those
+    // are on the joined `users` row — and no `avg_days_to_sell` or
+    // `transactions_closed` at all.
+    //
+    // It survived because the schema-drift guard STRIPPED embedded relations
+    // before checking columns, so an embed could name anything. W47 taught the
+    // guard to resolve embeds (scripts/schema-fk-map.ts) and this was the first
+    // thing it found. The tracked note for this card blamed an id class, then a
+    // select/render shape mismatch; both were wrong. It was a dead embed.
+    //
+    // agents.user_id -> users.id is a single FK, so the embed returns an OBJECT,
+    // and name/email/phone are read off it the way every other portal reader
+    // does (app/portal/[contactId]/listing/page.tsx:155).
     const { data: contact, error } = await supabase
       .from("contacts")
       .select(`
         agent_id,
         agents:agent_id (
           id,
-          full_name,
-          email,
-          phone,
           photo_url,
+          profile_image_url,
           bio,
           specializations,
           years_experience,
-          avg_days_to_sell,
-          transactions_closed
+          phone_mobile,
+          phone_office,
+          users:user_id ( first_name, last_name, email, phone )
         )
       `)
       .eq("id", params.contactId)
@@ -236,7 +250,27 @@ export async function getContactAgent(params: { contactId: string }) {
 
     if (error) throw error
 
-    return { success: true, agent: contact?.agents || null }
+    // Flattened to the shape the caller already expects (`full_name`, `email`,
+    // `phone`), so no consumer changes — but the values are now real. Photo
+    // prefers photo_url, which is the column the agent's own profile editor
+    // writes (app/actions/user-profile.ts:155); profile_image_url is the older
+    // one and stays as the fallback.
+    const a = contact?.agents as Record<string, any> | null
+    const u = (a?.users ?? null) as Record<string, any> | null
+    const agent = a
+      ? {
+          id: a.id,
+          full_name: [u?.first_name, u?.last_name].filter(Boolean).join(" ") || null,
+          email: u?.email ?? null,
+          phone: a.phone_mobile ?? a.phone_office ?? u?.phone ?? null,
+          photo_url: a.photo_url ?? a.profile_image_url ?? null,
+          bio: a.bio ?? null,
+          specializations: a.specializations ?? null,
+          years_experience: a.years_experience ?? null,
+        }
+      : null
+
+    return { success: true, agent }
   } catch (error) {
     console.error("[getContactAgent] Error:", error)
     return { success: false, error: "Failed to fetch agent info", agent: null }

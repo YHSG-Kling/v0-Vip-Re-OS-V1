@@ -757,24 +757,36 @@ export async function getMarketPosition(contactId: string) {
 
 // ─── VENDOR DATA ──────────────────────────────────────────────────────────────
 
+/**
+ * Vendor assignments on the seller's transaction.
+ *
+ * Every branch returns the SAME `{ assignments, error }` shape so the caller can
+ * tell "there are no vendors on this deal" apart from "we could not find out".
+ * An empty list rendered without that distinction is an assertion the data does
+ * not support.
+ */
 export async function getSellerVendors(contactId: string, transactionId: string | null) {
   const access = await requireContactAccess(contactId)
-  if (!access.ok) return { assignments: [] }
+  if (!access.ok) return { assignments: [], error: "Forbidden" as string | null }
 
   if (!transactionId) {
-    return { assignments: [] }
+    return { assignments: [], error: null as string | null }
   }
 
   const supabase = createServiceClient()
 
   // Verify the transaction belongs to caller's brokerage AND involves this contact
-  const { data: tx } = await supabase
+  const { data: tx, error: txError } = await supabase
     .from("transactions")
     .select("brokerage_id, buyer_contact_id, seller_contact_id, contact_id")
     .eq("id", transactionId)
     .maybeSingle()
+  if (txError) {
+    console.error(`[portal-seller] transaction lookup failed for ${transactionId}: ${txError.message}`)
+    return { assignments: [], error: txError.message as string | null }
+  }
   if (!tx || tx.brokerage_id !== access.brokerageId) {
-    return { assignments: [] }
+    return { assignments: [], error: null as string | null }
   }
   const contactOnTx =
     tx.buyer_contact_id === contactId ||
@@ -783,19 +795,36 @@ export async function getSellerVendors(contactId: string, transactionId: string 
   // If caller is the contact themselves, require contact-on-transaction.
   // Agents in the same brokerage can already see the transaction.
   if (access.isContactSelf && !contactOnTx) {
-    return { assignments: [] }
+    return { assignments: [], error: null as string | null }
   }
 
-  const { data: assignments } = await supabase
+  // `vendors` HAS NO business_name / vendor_type / rating_avg. The live columns
+  // are `name`, `category` and `rating` — m355 ("one vendor system") absorbed
+  // vendor_directory INTO vendors, so there is no second relation these names
+  // could have belonged to; they are simply wrong. PostgREST rejected the WHOLE
+  // query, and because the result was destructured without `error`, the seller
+  // portal's Vendors card rendered "Vendor assignments will appear here" —
+  // telling a seller they have no vendors when the read had in fact failed.
+  //
+  // Aliased rather than renamed: app/portal/[contactId]/seller-home.tsx reads
+  // `va.vendor?.business_name` / `va.vendor?.vendor_type` on the rendered card,
+  // and buyer-home.tsx selects the same pair, so keeping the consumed keys makes
+  // both portals return an identical vendor shape with no consumer rewrite.
+  const { data: assignments, error: assignmentsError } = await supabase
     .from("vendor_assignments")
     .select(`
       id, assignment_type, status, scheduled_date, notes,
-      vendor:vendors(id, business_name, vendor_type, phone, email, rating_avg)
+      vendor:vendors(id, business_name:name, vendor_type:category, phone, email, rating_avg:rating)
     `)
     .eq("transaction_id", transactionId)
     .eq("brokerage_id", access.brokerageId)
 
-  return { assignments: assignments ?? [] }
+  if (assignmentsError) {
+    console.error(`[portal-seller] vendor assignments read failed for transaction ${transactionId}: ${assignmentsError.message}`)
+    return { assignments: [], error: assignmentsError.message }
+  }
+
+  return { assignments: assignments ?? [], error: null as string | null }
 }
 
 // ─── DOCUMENT DATA ────────────────────────────────────────────────────────────

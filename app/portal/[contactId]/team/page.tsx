@@ -7,7 +7,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/app/components/ui/avatar"
 import { Badge } from "@/app/components/ui/badge"
 import { Button } from "@/app/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
-import { Phone, Mail, MessageSquare, Building2, CreditCard, FileCheck, ArrowLeft, Star } from "lucide-react"
+import { Phone, Mail, MessageSquare, Building2, CreditCard, FileCheck, ArrowLeft, Star, User } from "lucide-react"
 import { getAgentReviews } from "@/app/actions/multi-persona"
 
 export default async function TeamPage({
@@ -43,13 +43,30 @@ export default async function TeamPage({
   // Parallel fetches
   const [agentResult, dealTeamResult, lenderResult, titleResult] = await Promise.all([
     // Primary agent
+    // contact.agent_id is AGENTS-class (FK contacts_agent_id_fkey → agents.id), so
+    // .eq("id", …) is the right comparison — this is NOT a users.id.
+    //
+    // TWO PHOTO COLUMNS, BOTH REAL. `agents` carries photo_url AND profile_image_url.
+    // The agent's own profile editor (app/actions/user-profile.ts:155) reads and writes
+    // photo_url, so an agent who sets their headshot from their profile lands it there
+    // and this card — which used to read profile_image_url alone — showed nothing.
+    // Resolve both, photo_url first, which is the convention the agent-facing surfaces
+    // already use (lib/video/video-plays.ts:189, lib/video/director-content.ts:423).
+    //
+    // PHONE likewise: users.phone is the personal number and is frequently null, while
+    // the client-facing numbers live on agents.phone_mobile / phone_office. The portal's
+    // own messages page (app/portal/[contactId]/messages/page.tsx:137) already prefers
+    // those two, so the Call button here now resolves the same way instead of going
+    // missing whenever users.phone is unset.
     contact.agent_id
       ? supabase
           .from("agents")
-          .select("id, profile_image_url, bio, users(first_name, last_name, phone, email)")
+          .select(
+            "id, photo_url, profile_image_url, bio, phone_mobile, phone_office, users(first_name, last_name, phone, email)"
+          )
           .eq("id", contact.agent_id)
           .single()
-      : Promise.resolve({ data: null }),
+      : Promise.resolve({ data: null, error: null }),
     // Deal team members
     activeTransaction
       ? supabase
@@ -75,17 +92,42 @@ export default async function TeamPage({
       : Promise.resolve({ data: null }),
   ])
 
-  const primaryAgent = agentResult.data
+  // `error` destructured deliberately: supabase-js RESOLVES a refused or failed read
+  // with data:null, so treating a null row as "this client has no agent" would have
+  // reported an RLS denial to the client as an absent agent. A failure now says so.
+  const agentError = ((agentResult as any).error ?? null) as { message?: string } | null
+  const agentRow = agentResult.data as any
+  // `users` is a MANY-TO-ONE embed (agents.user_id → users.id, agents_user_id_fkey),
+  // so PostgREST returns an object, not an array — the same shape the sibling readers
+  // read at app/portal/[contactId]/listing/page.tsx:155 and vendors/page.tsx:263.
+  const agentUser = (agentRow?.users as any) ?? null
+  const primaryAgent = agentRow
     ? {
-        id: (agentResult.data as any).id,
-        profile_photo_url: (agentResult.data as any).profile_image_url,
-        bio: (agentResult.data as any).bio,
-        first_name: ((agentResult.data as any).users as any)?.first_name ?? null,
-        last_name: ((agentResult.data as any).users as any)?.last_name ?? null,
-        phone: ((agentResult.data as any).users as any)?.phone ?? null,
-        email: ((agentResult.data as any).users as any)?.email ?? null,
+        id: agentRow.id,
+        // photo_url is the column the agent's own profile editor writes; keep
+        // profile_image_url as the fallback so older rows still resolve.
+        profile_photo_url: (agentRow.photo_url ?? agentRow.profile_image_url ?? null) as string | null,
+        bio: (agentRow.bio ?? null) as string | null,
+        first_name: (agentUser?.first_name ?? null) as string | null,
+        last_name: (agentUser?.last_name ?? null) as string | null,
+        // Business numbers first — this card is what a CLIENT dials.
+        phone: (agentRow.phone_mobile ?? agentRow.phone_office ?? agentUser?.phone ?? null) as string | null,
+        email: (agentUser?.email ?? null) as string | null,
       }
     : null
+
+  // Degrade cleanly rather than printing "null null" or an empty element: a missing
+  // name must not become a blank heading, and it must never reach the image alt text.
+  const agentName = primaryAgent
+    ? [primaryAgent.first_name, primaryAgent.last_name].filter(Boolean).join(" ")
+    : ""
+  const agentDisplayName = agentName || "Your agent"
+  const agentInitials = primaryAgent
+    ? [primaryAgent.first_name, primaryAgent.last_name]
+        .filter(Boolean)
+        .map((n) => (n as string).charAt(0).toUpperCase())
+        .join("")
+    : ""
   // deal_team_members has no agent_id/FK to agents — members render as external contacts.
   const dealTeamMembers = (dealTeamResult.data ?? []).map((m: any) => ({ ...m, agent: null }))
   const lender = lenderResult.data
@@ -122,6 +164,19 @@ export default async function TeamPage({
         </div>
       </div>
 
+      {/* A FAILED agent read must say so rather than falling through to the "your team
+          will appear here" empty state, which would tell a client with an assigned agent
+          that they have none. Same honesty rule the reviews card below already follows. */}
+      {contact.agent_id && !primaryAgent && agentError && (
+        <Card>
+          <CardContent className="py-6">
+            <p className="text-sm text-amber-700">
+              Your agent details could not be loaded right now: {agentError.message ?? "unknown error"}
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Primary Agent Card - Expanded */}
       {primaryAgent && (
         <Card>
@@ -134,17 +189,15 @@ export default async function TeamPage({
             <div className="flex flex-col sm:flex-row gap-6">
               <Avatar className="h-24 w-24 shrink-0">
                 {primaryAgent.profile_photo_url && (
-                  <AvatarImage src={primaryAgent.profile_photo_url} alt={`${primaryAgent.first_name} ${primaryAgent.last_name}`} />
+                  <AvatarImage src={primaryAgent.profile_photo_url} alt={agentDisplayName} />
                 )}
                 <AvatarFallback className="text-2xl">
-                  {primaryAgent.first_name?.charAt(0)}{primaryAgent.last_name?.charAt(0)}
+                  {agentInitials || <User className="h-10 w-10" />}
                 </AvatarFallback>
               </Avatar>
               <div className="flex-1 space-y-3">
                 <div>
-                  <h3 className="text-xl font-semibold">
-                    {primaryAgent.first_name} {primaryAgent.last_name}
-                  </h3>
+                  <h3 className="text-xl font-semibold">{agentDisplayName}</h3>
                   {primaryAgent.bio && (
                     <p className="text-sm text-muted-foreground mt-2 line-clamp-3">
                       {primaryAgent.bio}
@@ -345,7 +398,7 @@ export default async function TeamPage({
       )}
 
       {/* Empty State */}
-      {!primaryAgent && dealTeamMembers.length === 0 && !lender && !titleEscrow && (
+      {!primaryAgent && !agentError && dealTeamMembers.length === 0 && !lender && !titleEscrow && (
         <Card>
           <CardContent className="py-12 text-center">
             <Building2 className="h-12 w-12 text-muted-foreground mx-auto mb-4" />

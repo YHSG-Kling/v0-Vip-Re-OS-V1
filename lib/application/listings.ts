@@ -22,8 +22,19 @@ export async function getListingsService(params?: {
 
     let query = supabase
       .from("listings")
-      // seller_contact_id is the live FK to contacts (not seller_id)
-      .select("*, seller:seller_contact_id(first_name, last_name), agent:agent_id(first_name, last_name)")
+      // seller_contact_id is the live FK to contacts (not seller_id). `contacts`
+      // genuinely HAS first_name/last_name, so that half was always fine.
+      //
+      // `agents` does NOT: it has no first_name / last_name (verified against
+      // information_schema). A person's name lives on `users`, reached through
+      // agents_user_id_fkey — the only FK from agents to users, so an OBJECT
+      // embed. Naming them on `agents` made PostgREST reject the ENTIRE query,
+      // so getListingsService returned an error for every listing read.
+      .select(
+        `*,
+         seller:seller_contact_id(first_name, last_name),
+         agent:agent_id(id, users:user_id(first_name, last_name))`,
+      )
       .order("created_at", { ascending: false })
 
     if (params?.brokerageId) query = query.eq("brokerage_id", params.brokerageId)
@@ -34,7 +45,21 @@ export async function getListingsService(params?: {
 
     const { data, error } = await query
     if (error) throw error
-    return { success: true, listings: data || [] }
+
+    // Flattened to the {first_name, last_name} shape every agent-name reader in
+    // the app already consumes, so no caller changes.
+    const listings = (data ?? []).map((l: any) => {
+      const a = l?.agent ?? null
+      const u = a?.users ?? null
+      return {
+        ...l,
+        agent: a
+          ? { id: a.id, first_name: u?.first_name ?? null, last_name: u?.last_name ?? null }
+          : null,
+      }
+    })
+
+    return { success: true, listings }
   } catch (error) {
     return handleError(error, "getListingsService")
   }

@@ -167,11 +167,16 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
       .limit(3),
     // Education - resolved outside Promise.all via learning_assignments
     Promise.resolve({ data: [] }),
-    // Vendor assignments
+    // Vendor assignments. `vendors` has NO business_name / vendor_type — the
+    // live columns are `name` and `category` (m355 absorbed vendor_directory
+    // into vendors, so there is no other relation those names belonged to).
+    // PostgREST rejected the whole query. Aliased to the same keys
+    // app/actions/portal-seller.ts:getSellerVendors returns, so both portals
+    // hand the render an identical vendor shape.
     activeTransaction
       ? supabase
           .from("vendor_assignments")
-          .select("id, vendor_id, assignment_type, status, scheduled_date, vendor:vendors(id, business_name, vendor_type)")
+          .select("id, vendor_id, assignment_type, status, scheduled_date, vendor:vendors(id, business_name:name, vendor_type:category)")
           .eq("transaction_id", activeTransaction.id)
           .limit(3)
       : Promise.resolve({ data: [] }),
@@ -255,6 +260,16 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
   const savedProperties = savedPropertiesResult.data ?? []
   const messages = messagesResult.data ?? []
   const hasCompletedLessons = completedLessonKeys.length > 0
+  // Destructured via the settled result — supabase-js RESOLVES a refused read,
+  // so without this a denial is indistinguishable from "no vendors assigned".
+  // NOTE: `vendorAssignments` is currently read by nothing in this render; the
+  // buyer's vendor surface is <ContactVendorToolkitCard/> below, which fetches
+  // its own data. The query is left correct rather than deleted so the block it
+  // was fetched for can be wired up without re-deriving the shape.
+  const vendorAssignmentsError = (vendorAssignmentsResult as any).error ?? null
+  if (vendorAssignmentsError) {
+    console.error("[buyer-home] vendor assignments read failed:", vendorAssignmentsError.message ?? vendorAssignmentsError)
+  }
   const vendorAssignments = vendorAssignmentsResult.data ?? []
   const financialProfile = financialProfileResult.data ?? null
   const recentUpdates = (recentUpdatesResult as any).data ?? []

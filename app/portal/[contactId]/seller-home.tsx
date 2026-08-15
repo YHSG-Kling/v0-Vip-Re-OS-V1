@@ -210,6 +210,9 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
   const recentUpdates = (recentUpdatesResult as any).data ?? []
   const hasCompletedLessons = completedLessonKeys.length > 0
   const vendorAssignments = vendorData.assignments ?? []
+  // "No vendors on this deal" and "we could not read your vendors" are different
+  // statements. getSellerVendors now reports which one happened.
+  const vendorError = vendorData.error ?? null
 
   // Computed values
   const unreadMessageCount = messages.filter((m: any) => m.direction === "inbound" && !m.read_at).length
@@ -569,7 +572,11 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
             </div>
           </CardHeader>
           <CardContent>
-            {vendorAssignments.length === 0 ? (
+            {vendorError ? (
+              <p className="text-sm text-muted-foreground text-center py-4">
+                We could not load your vendors just now. Your agent can confirm who is on this deal.
+              </p>
+            ) : vendorAssignments.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-4">
                 Vendor assignments will appear here
               </p>

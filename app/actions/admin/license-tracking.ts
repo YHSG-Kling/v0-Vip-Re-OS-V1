@@ -100,7 +100,7 @@ export async function getBrokerageAgentLicenseStatuses(
           id,
           license_number,
           license_state,
-          expiry_date,
+          expiration_date,
           verification_status
         )
       )
@@ -153,7 +153,15 @@ export async function getBrokerageAgentLicenseStatuses(
     // license_expiry + agent_licenses live on the AGENT (agent_licenses FK is agent_id), not users.
     const license = Array.isArray(agentRow?.agent_licenses) ? agentRow.agent_licenses[0] : agentRow?.agent_licenses
 
-    const expiryRaw = license?.expiry_date ?? agentRow?.license_expiry ?? null
+    // `agent_licenses.expiry_date` DOES NOT EXIST — the live column is
+    // `expiration_date` (it is what app/actions/onboarding/license.ts writes on
+    // intake). Naming the wrong column made PostgREST reject this ENTIRE users
+    // query, so the admin licence-tracking view rendered zero agents — not zero
+    // licences, zero AGENTS — with `error` set but the screen showing a blank
+    // roster. Renamed rather than aliased: this is the only reader of the raw
+    // column, and it lives here, while every consumer outside this file reads
+    // the camelCase `expiryDate` below, which is unchanged.
+    const expiryRaw = license?.expiration_date ?? agentRow?.license_expiry ?? null
     const daysUntilExpiry = expiryRaw
       ? Math.ceil((new Date(expiryRaw).getTime() - now) / 86_400_000)
       : null

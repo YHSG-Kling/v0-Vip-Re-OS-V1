@@ -248,9 +248,14 @@ export async function listTwinsForEmbed(scope: "personal" | "brokerage"):
   if (!ctx.isAuthenticated) return { twins: [] }
   const supabase = createServiceClient()
 
+  // `agents` has NO `full_name` (verified against information_schema), so
+  // PostgREST rejected this ENTIRE query and the twin picker on
+  // /dashboard/settings/embeds has always been empty — not "no twins", a dead
+  // read. The name lives on `users`, reached through agents_user_id_fkey (the
+  // only FK from agents to users, so an OBJECT embed).
   const query = supabase
     .from("agent_avatar_assets")
-    .select("id, label, agent_id, agents:agent_id(full_name)")
+    .select("id, label, agent_id, agents:agent_id(id, users:user_id(first_name, last_name))")
     .eq("brokerage_id", ctx.brokerageId)
     .eq("status", "ready")
     .eq("approval_status", "approved")
@@ -260,13 +265,23 @@ export async function listTwinsForEmbed(scope: "personal" | "brokerage"):
     query.eq("agent_id", ctx.agentId)
   }
 
-  const { data } = await query
+  // supabase-js RESOLVES a failed query, so a bare `const { data }` reported a
+  // rejected select as "this brokerage has no approved twins".
+  const { data, error } = await query
+  if (error) {
+    console.error("[listTwinsForEmbed] twin read refused:", error.message)
+    return { twins: [] }
+  }
+
   return {
-    twins: (data ?? []).map((t: any) => ({
-      id: t.id,
-      label: t.label,
-      agentName: t.agents?.full_name ?? null,
-    })),
+    twins: (data ?? []).map((t: any) => {
+      const u = t.agents?.users ?? null
+      return {
+        id: t.id,
+        label: t.label,
+        agentName: [u?.first_name, u?.last_name].filter(Boolean).join(" ") || null,
+      }
+    }),
   }
 }
 

@@ -35,14 +35,27 @@ export type GlobalSettingsRow = {
 
 // ─── INTERNAL HELPER ─────────────────────────────────────────────────────────
 
+// The tenant roster, MIRRORING public.is_brokerage_admin() exactly:
+//
+//   SELECT user_type IN ('admin', 'broker', 'broker_owner') …
+//
+// which is what the global_settings INSERT/UPDATE/DELETE policies gate on. This
+// list previously read ["admin", "broker", "superadmin"] and so omitted
+// `broker_owner` — a user_type the users_user_type_check constraint genuinely
+// admits and that RLS genuinely permits. The database was correctly broader than
+// the app: the OWNER of a brokerage was refused their own brokerage settings by
+// app code the database would have let through. Widening to broker_owner brings
+// the app up to the database; it does not go past it.
+const BROKERAGE_ADMIN_USER_TYPES = new Set(["admin", "broker", "broker_owner"])
+
 async function requireBrokerAdmin(
   userId: string
-): Promise<{ brokerageId: string; userType: string }> {
+): Promise<{ brokerageId: string; userType: string; platformRole: string | null }> {
   const supabase = await createClient()
 
   const { data: user, error } = await supabase
     .from("users")
-    .select("brokerage_id, user_type")
+    .select("brokerage_id, user_type, platform_role")
     .eq("id", userId)
     .single()
 
@@ -50,11 +63,31 @@ async function requireBrokerAdmin(
     throw new Error("User not found")
   }
 
-  if (!["admin", "broker", "superadmin"].includes(user.user_type)) {
+  const userType = String((user as { user_type?: string | null }).user_type ?? "")
+  const platformRole = (user as { platform_role?: string | null }).platform_role ?? null
+
+  // PLATFORM STAFF, READ FROM BOTH IDENTITY COLUMNS. The old test was
+  // `user_type === 'superadmin'` alone, which is DEAD CODE on this database:
+  // measured on hrvaqgvukzxfskkcrwbt, ZERO users rows carry user_type='superadmin',
+  // and the platform's only superadmin is (user_type='admin', platform_role='superadmin').
+  // So the branch could never fire for the account it exists to admit. This is the
+  // same both-columns shape as public.is_platform_admin() in RLS, lib/auth/platform-guard.ts:
+  // requireSuperadmin and lib/kernel/api-auth.ts:requireSuperadminAuth; the canonical
+  // explanation is app/actions/vendor-budget.ts:136-147.
+  //
+  // Deliberately the SUPERADMIN test and NOT isPlatformStaffIdentity(): the four-role
+  // staff roster (superadmin | admin | marketing | support) would admit a
+  // platform_role='marketing' account whose user_type is 'system', which
+  // is_brokerage_admin() does NOT permit — that would push this gate PAST the database.
+  // Narrowing to superadmin keeps it at or inside RLS, and on live data it admits
+  // nobody new at all: the one superadmin already qualifies via user_type='admin'.
+  const isPlatformSuperadmin = userType === "superadmin" || platformRole === "superadmin"
+
+  if (!BROKERAGE_ADMIN_USER_TYPES.has(userType) && !isPlatformSuperadmin) {
     throw new Error("Forbidden: insufficient permissions")
   }
 
-  return { brokerageId: user.brokerage_id, userType: user.user_type }
+  return { brokerageId: user.brokerage_id, userType, platformRole }
 }
 
 // Returns the brokerage's settings row, creating it on first access. This makes
@@ -62,12 +95,14 @@ async function requireBrokerAdmin(
 // found" the first time a broker/admin opens the page or saves.
 //
 // Authorization is enforced by requireBrokerAdmin() in the callers; the row I/O
-// here uses the SERVICE client deliberately. The global_settings RLS policies
-// are admin-only for writes (and exclude superadmin from reads), which is
-// stricter than the app's admin/broker/superadmin permission model — running
-// the seed through the user-scoped client would deny brokers the INSERT and
-// superadmins the SELECT. Gating in app code + service-client I/O is the same
-// pattern the other global_settings actions in this codebase already use.
+// here uses the SERVICE client deliberately. The global_settings write policies
+// gate on is_brokerage_admin() AND brokerage_id = current_user_brokerage_id(),
+// and the SELECT policy is brokerage-scoped only — so a platform superadmin
+// operating outside their own brokerage would be denied the seed INSERT and the
+// read. requireBrokerAdmin above mirrors is_brokerage_admin()'s roster
+// (admin | broker | broker_owner) and adds only the platform-superadmin identity,
+// so the app gate never reaches past the database. Gating in app code +
+// service-client I/O is the same pattern the other global_settings actions use.
 async function ensureGlobalSettingsRow(
   brokerageId: string,
   userId: string
@@ -161,9 +196,9 @@ export async function updateGlobalSettings(params: {
   // Guarantee a row exists first so saving on a fresh brokerage creates it
   // instead of silently updating zero rows.
   await ensureGlobalSettingsRow(brokerageId, params.userId)
-  // Service client for the same RLS reason as ensureGlobalSettingsRow: the write
-  // policy is admin-only, but this function is authorized for admin/broker/
-  // superadmin via requireBrokerAdmin above.
+  // Service client for the same RLS reason as ensureGlobalSettingsRow. The caller
+  // is already authorized by requireBrokerAdmin above — is_brokerage_admin()'s own
+  // roster (admin | broker | broker_owner) plus the platform superadmin.
   const svc = createServiceClient()
 
   const { error } = await svc

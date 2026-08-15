@@ -66,11 +66,17 @@ export async function getAgents(): Promise<
   }
 
   const supabase = await createClient()
+  // `users` HAS NO `name` AND NO `avatar_url` (verified against
+  // information_schema), so PostgREST rejected this ENTIRE query and the roster
+  // has never rendered — the port-in picker on /dashboard/admin/phone-settings
+  // looked like a brokerage with no agents. A person's name lives on `users` as
+  // first_name/last_name; agents_user_id_fkey is the ONLY FK from agents to
+  // users, so the embed is an OBJECT.
   const { data, error } = await supabase
     .from("agents")
     .select(`
       *,
-      user:users(id, name, email, avatar_url)
+      user:users(id, first_name, last_name, email, phone)
     `)
     .eq("brokerage_id", ctx.brokerageId)
     .eq("is_active", true)
@@ -81,7 +87,22 @@ export async function getAgents(): Promise<
     return { ok: false, error: `Could not load the agent roster: ${error.message}` }
   }
 
-  return { ok: true, agents: data ?? [] }
+  // Flattened to the shape the caller already consumes (`user.name`), so no
+  // consumer changes — but the value is now real. There is no live equivalent of
+  // the old `user.avatar_url`: an agent's photo is `agents.photo_url` (what the
+  // profile editor writes) falling back to `profile_image_url`, and `*` already
+  // returns both, so the key is dropped rather than faked.
+  const agents = (data ?? []).map((row: any) => {
+    const u = row?.user ?? null
+    return {
+      ...row,
+      user: u
+        ? { ...u, name: [u.first_name, u.last_name].filter(Boolean).join(" ") || null }
+        : null,
+    }
+  })
+
+  return { ok: true, agents }
 }
 
 /**
@@ -123,11 +144,15 @@ async function requireAgentLedgerAccess(
 export async function getAgentById(agentId: string) {
   const supabase = await createClient()
 
+  // Same dead embed as getAgents: `users` has no `name` and no `avatar_url`, so
+  // this whole read returned an error and every caller saw `null` as "no such
+  // agent". Name comes off users.first_name/last_name; the photo is on `agents`
+  // itself and `*` already returns it.
   const { data, error } = await supabase
     .from("agents")
     .select(`
       *,
-      user:users(id, name, email, avatar_url, phone),
+      user:users(id, first_name, last_name, email, phone),
       commissions:agent_commissions(*),
       expenses:business_expenses(*),
       achievements:agent_achievements(*, achievement:achievements(*)),
@@ -141,7 +166,13 @@ export async function getAgentById(agentId: string) {
     return null
   }
 
-  return data
+  const u = (data as any)?.user ?? null
+  return {
+    ...(data as any),
+    user: u
+      ? { ...u, name: [u.first_name, u.last_name].filter(Boolean).join(" ") || null }
+      : null,
+  }
 }
 
 /**
@@ -419,6 +450,11 @@ export async function getLeaderboard(
     }
   }
 
+  // `agents` HAS gamification_points / profile_image_url / ytd_gci /
+  // ytd_transactions but NO first_name / last_name — those are on `users`,
+  // reached through agents_user_id_fkey (a single FK, so an OBJECT embed).
+  // Naming them here made PostgREST reject the WHOLE query, so this leaderboard
+  // has only ever returned [].
   let query = supabase
     .from("leaderboard_rankings")
     .select(`
@@ -426,7 +462,10 @@ export async function getLeaderboard(
       rank_position,
       metric_value,
       agent_id,
-      agents:agent_id(id, first_name, last_name, gamification_points, profile_image_url, ytd_gci, ytd_transactions)
+      agents:agent_id(
+        id, gamification_points, photo_url, profile_image_url, ytd_gci, ytd_transactions,
+        users:user_id(first_name, last_name)
+      )
     `)
     .eq("scope", "agent")
     .eq("metric_type", "points")
@@ -448,7 +487,26 @@ export async function getLeaderboard(
     return []
   }
 
-  return data || []
+  // Flattened back to first_name / last_name, the shape every agent-name reader
+  // in the app already uses, so the row keeps its declared shape.
+  return (data ?? []).map((row: any) => {
+    const a = row?.agents ?? null
+    const u = a?.users ?? null
+    return {
+      ...row,
+      agents: a
+        ? {
+            id: a.id,
+            first_name: u?.first_name ?? null,
+            last_name: u?.last_name ?? null,
+            gamification_points: a.gamification_points ?? null,
+            profile_image_url: a.photo_url ?? a.profile_image_url ?? null,
+            ytd_gci: a.ytd_gci ?? null,
+            ytd_transactions: a.ytd_transactions ?? null,
+          }
+        : null,
+    }
+  })
 }
 
 /**

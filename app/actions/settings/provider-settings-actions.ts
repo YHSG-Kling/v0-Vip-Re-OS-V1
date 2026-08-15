@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireBrokerageAdmin } from "@/lib/auth/require-brokerage-admin"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -30,47 +31,21 @@ export type ProviderSettingsPayload = {
 // so a user_type-only test graded the platform owner as an ordinary tenant admin.
 // See app/actions/vendor-budget.ts:136-147 for the canonical explanation, and
 // public.is_platform_admin() for the RLS shape this mirrors.
+/**
+ * DELETED — the THIRD copy of the brokerage-admin gate. It had already learned
+ * half the lesson (it reads platform_role and documents why), but its two role
+ * arrays still omitted `broker_owner`, so it locked a brokerage OWNER out of
+ * their own provider credentials.
+ *
+ * Survivor: lib/auth/require-brokerage-admin.ts:requireBrokerageAdmin, which
+ * carries this copy's platformRole return value and its user_role_assignments
+ * fallback (including the note that the fallback path is tenant-only by
+ * construction, so platformRole is null there).
+ */
 async function requireBrokerAdmin(userId: string): Promise<{ brokerageId: string; userType: string; platformRole: string | null }> {
-  // Use service client to bypass RLS
-  const supabase = createServiceClient()
-
-  // Try public.users first
-  const { data: user } = await supabase
-    .from("users")
-    .select("brokerage_id, user_type, platform_role")
-    .eq("id", userId)
-    .maybeSingle()
-
-  if (user?.brokerage_id) {
-    const userType = user.user_type || "admin"
-    if (!["admin", "broker", "superadmin"].includes(userType)) {
-      throw new Error("Forbidden: insufficient permissions")
-    }
-    return {
-      brokerageId: user.brokerage_id as string,
-      userType,
-      platformRole: (user as any).platform_role ?? null,
-    }
-  }
-
-  // Fallback: check user_role_assignments. This table carries no platform_role —
-  // it is a TENANT role grant — so platformRole is null here by construction, and
-  // a caller reaching the platform answer through this path is not platform staff.
-  const { data: roleAssignment } = await supabase
-    .from("user_role_assignments")
-    .select("brokerage_id, role")
-    .eq("user_id", userId)
-    .maybeSingle()
-
-  if (roleAssignment?.brokerage_id) {
-    const role = roleAssignment.role || "admin"
-    if (!["admin", "broker", "superadmin"].includes(role)) {
-      throw new Error("Forbidden: insufficient permissions")
-    }
-    return { brokerageId: roleAssignment.brokerage_id as string, userType: role, platformRole: null }
-  }
-
-  throw new Error("User not found or not associated with a brokerage")
+  // Service client: this module reads and writes credential rows the caller
+  // cannot see directly, so it deliberately bypasses RLS. Unchanged.
+  return requireBrokerageAdmin(createServiceClient(), userId)
 }
 
 /** "is superadmin" — BOTH columns, never user_type alone. Narrower than platform

@@ -1,21 +1,29 @@
 /**
  * app/dashboard/settings/teams/page.tsx
  * ─────────────────────────────────────────────────────────────────────────────
- * THE TEAM SETTINGS SURFACE — and, from this wave, the home of a team's own
- * logo and brand.
+ * THE TEAM SETTINGS SURFACE — the home of a team's own logo and brand, and from
+ * W47 also of its SPLIT and its EMAIL SIGNATURE.
  *
- * This route was a six-line `redirect("/settings/users")`. Two things already
- * pointed at it and neither arrived anywhere useful:
+ * This route was a six-line `redirect("/settings/users")`. FOUR things already
+ * pointed at it and none of them arrived anywhere useful:
  *
  *   lib/onboarding/setup-readiness.ts:210 — the REQUIRED team-lead task
  *     "Set your team logo & colors", href /dashboard/settings/teams
- *   app/config/navigation-config.ts:362  — the "Team Management" nav item
+ *   lib/onboarding/critical-setup.ts:277  — the REQUIRED item
+ *     `lead_team_structure` ("Set up your team")
+ *   lib/onboarding/critical-setup.ts:283  — the REQUIRED item
+ *     `lead_team_splits` ("Set your team splits"), whose stated reason is that
+ *     "Team P&L and per-agent payouts compute wrong (or not at all) until
+ *     team_split_type/value are set" — checked by `f.teamLead?.splitsSet`
+ *   app/config/navigation-config.ts:362   — the "Team Management" nav item
  *
- * So the checklist told a team lead to come here and set their logo, and this
- * page sent them to brokerage user management, where no such control exists.
- * `teams.logo_url` had no writer anywhere in the codebase. The panel below is
- * that writer's screen; the "Team Management" link is kept so the nav item's old
- * destination is still one click away rather than silently removed.
+ * So the checklist told a team lead to come here and set their logo AND their
+ * splits, and this page sent them to brokerage user management, where neither
+ * control exists. `teams.logo_url` and `teams.team_split_*` had no writer
+ * anywhere in the codebase; `teams.branding_override.email_signature_html` had a
+ * reader in the email assembler and no writer either. The panel below is that
+ * writer's screen for all three; the "Team Management" link is kept so the nav
+ * item's old destination is still one click away rather than silently removed.
  *
  * NO ROLE GATE HERE, on purpose. The neighbouring /dashboard/settings control
  * centre redirects anyone who is not broker/admin — which on the live data
@@ -33,7 +41,7 @@ import { createClient } from "@/lib/supabase/server"
 import { TeamBrandingPanel } from "../components/team-branding-panel"
 import { Users, ExternalLink } from "lucide-react"
 
-export const metadata = { title: "Team Settings | Brand" }
+export const metadata = { title: "Team Settings | Brand, Split & Signature" }
 
 export default async function DashboardSettingsTeamsPage() {
   const supabase = await createClient()
@@ -48,7 +56,9 @@ export default async function DashboardSettingsTeamsPage() {
         <h1 className="text-3xl font-bold tracking-tight">Team Settings</h1>
         <p className="text-muted-foreground mt-1">
           Your team&apos;s own logo, colours and contact details — and what they inherit from the
-          brokerage when you leave them blank.
+          brokerage when you leave them blank. Also the team&apos;s commission split, which the
+          payout calculation applies to every closing by an agent on this team, and the team&apos;s
+          fallback email signature.
         </p>
       </div>
 

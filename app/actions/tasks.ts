@@ -44,9 +44,18 @@ export async function getTasks(params?: {
 
     const supabase = await createClient()
 
+    // `agents` has NO first_name / last_name (verified against
+    // information_schema) — the assignee's name lives on `users`, reached
+    // through agents_user_id_fkey (the only agents→users FK, so an OBJECT).
+    // Naming them here made PostgREST reject the ENTIRE query, so getTasks
+    // threw on every call and the task list rendered as "no tasks".
+    // The !tasks_assigned_to_agent_id_fkey hint stays: `tasks` has TWO FKs to
+    // agents (assigned_to_agent_id and created_by_agent_id).
     let query = supabase
       .from("tasks")
-      .select("*, assigned_agent:agents!tasks_assigned_to_agent_id_fkey(id, first_name, last_name)")
+      .select(
+        "*, assigned_agent:agents!tasks_assigned_to_agent_id_fkey(id, users:user_id(first_name, last_name))",
+      )
       .eq("brokerage_id", ctx.brokerageId)
       .order("due_date", { ascending: true })
 
@@ -60,7 +69,20 @@ export async function getTasks(params?: {
 
     if (error) throw error
 
-    return { success: true, tasks: data }
+    // Flattened back to the declared assigned_agent shape (id/first_name/
+    // last_name), the form every agent-name reader in the app already uses.
+    const tasks = (data ?? []).map((t: any) => {
+      const a = t?.assigned_agent ?? null
+      const u = a?.users ?? null
+      return {
+        ...t,
+        assigned_agent: a
+          ? { id: a.id, first_name: u?.first_name ?? null, last_name: u?.last_name ?? null }
+          : null,
+      }
+    })
+
+    return { success: true, tasks }
   } catch (error) {
     return handleError(error, "getTasks")
   }

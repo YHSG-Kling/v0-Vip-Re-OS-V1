@@ -108,7 +108,7 @@ export interface CriticalSetupFacts {
   }
   teamLead?: {
     teamConfigured: boolean          // teams row led by this user
-    splitsSet: boolean               // teams.team_split_type set
+    splitsSet: boolean               // the VALUE for the chosen branch is set — not just the defaulted type
     teamBooksConnected: boolean      // team-scoped quickbooks credential
   }
   vendor?: {
@@ -548,7 +548,7 @@ export async function loadCriticalSetupFacts(
   // ── team-lead slice ────────────────────────────────────────────────────────
   if (params.includeTeamLead && params.userId) {
     const { data: team } = await svc.from("teams")
-      .select("id, team_split_type")
+      .select("id, team_split_type, team_split_percent, team_split_value")
       .eq("brokerage_id", brokerageId).eq("team_lead_id", params.userId)
       .is("deleted_at", null).limit(1).maybeSingle()
     const t = (team ?? null) as any
@@ -561,7 +561,25 @@ export async function loadCriticalSetupFacts(
     }
     facts.teamLead = {
       teamConfigured: !!t,
-      splitsSet: t?.team_split_type !== null && t?.team_split_type !== undefined && !!t,
+      // A CHECKLIST THAT PASSES ON A COLUMN DEFAULT IS NOT A CHECK.
+      // This used to be `team_split_type IS NOT NULL`, but that column is
+      // `DEFAULT 'percent'` — so every team ever created satisfied the REQUIRED
+      // billing item the moment the row existed, while the value the waterfall
+      // actually reads stayed NULL. MEASURED on the live team: type='percent',
+      // percent=NULL, item "done", and lib/commission/waterfall/08-team-split.ts
+      // computing a ZERO override on every payout.
+      //
+      // The honest test is that the VALUE for the chosen branch is set, because
+      // that is what the money reads: 08-team-split.ts:47 picks its column from
+      // the type alone (NULL and anything unrecognised read as 'percent'), then
+      // takes team_split_value for 'flat' and team_split_percent otherwise.
+      // 0 is a legitimate answer — "this team takes no cut" — so the test is
+      // "not null", never "truthy".
+      splitsSet: !!t && (
+        t.team_split_type === "flat"
+          ? t.team_split_value !== null && t.team_split_value !== undefined
+          : t.team_split_percent !== null && t.team_split_percent !== undefined
+      ),
       teamBooksConnected: teamBooks,
     }
   }

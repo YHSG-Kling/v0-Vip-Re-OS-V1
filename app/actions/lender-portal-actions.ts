@@ -36,6 +36,13 @@ export async function getLenderTransactionDetail(transactionId: string, _lenderI
     .eq("transaction_id", transactionId)
     .maybeSingle()
 
+  // `agents` has NO first_name / last_name / email / phone (verified against
+  // information_schema) — those live on `users`, reached through
+  // agents_user_id_fkey, the ONLY FK from agents to users, so the embed is an
+  // OBJECT. Naming them here made PostgREST reject the ENTIRE select, so
+  // getLenderTransactionDetail always threw "Transaction not found" and the
+  // whole lender portal page was dead, not just the agent card.
+  // `contacts` genuinely HAS first_name/last_name/email/phone — left as is.
   const { data: transaction, error: txnError } = await supabase
     .from("transactions")
     .select(`
@@ -49,7 +56,10 @@ export async function getLenderTransactionDetail(transactionId: string, _lenderI
       buyer_contact_id,
       agent_id,
       contacts:buyer_contact_id(id, first_name, last_name, email, phone),
-      agents:agent_id(id, first_name, last_name, email, phone)
+      agents:agent_id(
+        id, phone_mobile, phone_office,
+        users:user_id(first_name, last_name, email, phone)
+      )
     `)
     .eq("id", transactionId)
     .single()
@@ -77,8 +87,28 @@ export async function getLenderTransactionDetail(transactionId: string, _lenderI
     daysUntilClose = Math.ceil((closeDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
   }
 
+  // Flattened to the shape the page already renders
+  // (app/portal/lender/[transactionId]/page.tsx:345-359 reads
+  // transaction.agents.first_name / last_name / email / phone), so no consumer
+  // changes — but the values are now real. Phone prefers the agent's own
+  // client-facing numbers; users.phone is the fallback.
+  const a = (transaction as any).agents as Record<string, any> | null
+  const u = (a?.users ?? null) as Record<string, any> | null
+  const transactionWithAgent = {
+    ...(transaction as any),
+    agents: a
+      ? {
+          id: a.id,
+          first_name: u?.first_name ?? null,
+          last_name: u?.last_name ?? null,
+          email: u?.email ?? null,
+          phone: a.phone_mobile ?? a.phone_office ?? u?.phone ?? null,
+        }
+      : null,
+  }
+
   return {
-    transaction,
+    transaction: transactionWithAgent,
     lenderAssignment,
     milestones: milestones || [],
     documents: documents || [],

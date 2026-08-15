@@ -20,12 +20,26 @@ export default async function MentorshipPage() {
   // Existing mentor assignment — the CANONICAL agent_mentor_relationships is the single source of truth
   // (the deprecated agent_onboarding_sessions mentor columns are retired). The matcher stores the match
   // reason/score/topics as JSON in the notes column.
-  const { data: relationship } = await supabase
+  // `users` has NO `full_name` (verified against information_schema) — a name is
+  // first_name + last_name — so PostgREST rejected this ENTIRE select and the
+  // page could never show a mentor, even for a mentee who has one. The
+  // mentor_agent_id hint is required: agent_mentor_relationships has TWO FKs to
+  // agents (mentor_agent_id, mentee_agent_id). agents.user_id -> users.id is a
+  // single FK, so `user` is an OBJECT.
+  const { data: relationship, error: relationshipError } = await supabase
     .from("agent_mentor_relationships")
-    .select("mentor_agent_id, status, notes, agents:mentor_agent_id(id, user:users(full_name, email, phone))")
+    .select(
+      "mentor_agent_id, status, notes, agents:mentor_agent_id(id, phone_mobile, phone_office, user:users(first_name, last_name, email, phone))",
+    )
     .eq("mentee_agent_id", agent.id)
     .eq("status", "active")
     .maybeSingle()
+
+  // supabase-js RESOLVES a failed query, so `const { data }` alone rendered a
+  // rejected read as "you have no mentor yet".
+  if (relationshipError) {
+    console.error("[MentorshipPage] mentor read refused:", relationshipError.message)
+  }
 
   const parsedNotes = (() => {
     const n = relationship?.notes
@@ -37,12 +51,21 @@ export default async function MentorshipPage() {
     } catch { return { topics: [n], reason: null, score: null } }
   })()
 
+  // The READ has to move with the select: `?.user?.full_name` would still be
+  // undefined and mentorName would stay "Your Mentor" forever. Phone prefers the
+  // mentor's own client-facing numbers on `agents`; users.phone is the fallback.
+  const mentorAgent = (relationship?.agents ?? null) as Record<string, any> | null
+  const mentorUser = (mentorAgent?.user ?? null) as Record<string, any> | null
+  const mentorName =
+    [mentorUser?.first_name, mentorUser?.last_name].filter(Boolean).join(" ") || null
+
   const mentorData = relationship
     ? {
         mentorId: relationship.mentor_agent_id as string,
-        mentorName: (relationship.agents as any)?.user?.full_name ?? "Your Mentor",
-        mentorEmail: (relationship.agents as any)?.user?.email ?? null,
-        mentorPhone: (relationship.agents as any)?.user?.phone ?? null,
+        mentorName: mentorName ?? "Your Mentor",
+        mentorEmail: mentorUser?.email ?? null,
+        mentorPhone:
+          mentorAgent?.phone_mobile ?? mentorAgent?.phone_office ?? mentorUser?.phone ?? null,
         suggestedTopics: parsedNotes.topics,
         matchScore: parsedNotes.score,
         matchReason: parsedNotes.reason,

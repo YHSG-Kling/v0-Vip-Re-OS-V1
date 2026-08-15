@@ -484,9 +484,16 @@ export async function loadSetupReadiness(params: {
 
     // Team-lead team config + brand.
     if (role === "team_lead") {
-      const { data } = await svc.from("teams").select("team_split_type, logo_url, primary_color").eq("team_lead_id", userId).limit(1).maybeSingle()
+      const { data } = await svc.from("teams").select("team_split_type, team_split_percent, team_split_value, logo_url, primary_color").eq("team_lead_id", userId).limit(1).maybeSingle()
       const t = (data ?? {}) as any
-      snap.hasTeamConfig = t.team_split_type !== null && t.team_split_type !== undefined
+      // Same correction as lib/onboarding/critical-setup.ts:splitsSet — the old
+      // test was `team_split_type IS NOT NULL` against a column that is
+      // DEFAULT 'percent', so it reported configured for every team that had
+      // ever existed while the value the commission waterfall reads was NULL.
+      // Test the value on the branch the type selects; 0 is a valid answer.
+      snap.hasTeamConfig = t.team_split_type === "flat"
+        ? t.team_split_value !== null && t.team_split_value !== undefined
+        : t.team_split_percent !== null && t.team_split_percent !== undefined
       snap.hasTeamBrand = !!(t.logo_url || t.primary_color)
     }
   } catch (err) {
