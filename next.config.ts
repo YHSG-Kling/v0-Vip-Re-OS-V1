@@ -102,6 +102,14 @@ const nextConfig: NextConfig = {
     "esbuild",
     "@sparticuz/chromium-min",
     "ffmpeg-static",
+    // Wave 39: sharp is a native image module (used by lib/video/
+    // composite-attribution + lib/ai/image-generation). Turbopack can't
+    // bundle the .node binary; sharp is loaded via Node require() at
+    // runtime. Same posture as the Remotion natives above.
+    "sharp",
+    "bcrypt",
+    "bufferutil",
+    "utf-8-validate",
   ],
   reactStrictMode: true,
   poweredByHeader: false,
@@ -119,7 +127,7 @@ const nextConfig: NextConfig = {
         ignored: ['**/node_modules', '**/.git', '**/.next'],
       }
     }
-    return config
+    return code
   },
 }
 
