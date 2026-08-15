@@ -127,7 +127,7 @@ const nextConfig: NextConfig = {
         ignored: ['**/node_modules', '**/.git', '**/.next'],
       }
     }
-    return code
+    return config
   },
 }
 
