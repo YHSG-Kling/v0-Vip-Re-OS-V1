@@ -123,20 +123,44 @@ export async function requireBrokerageAdmin(
   // user_role_assignments carries NO platform_role: it is a TENANT role grant by
   // construction, so platformRole is null on this path and a caller reaching the
   // platform answer through it is, correctly, not platform staff.
-  const { data: roleAssignment, error: roleError } = await supabase
+  //
+  // ── ONE USER CAN HOLD SEVERAL GRANTS, AND .maybeSingle() CANNOT ────────────
+  //
+  // Both source copies read this with `.maybeSingle()`, and I merged that
+  // forward in W47 without checking whether it could hold. It cannot. The live
+  // table has a UNIQUE on (user_id, role) — not on user_id — so a user may hold
+  // MANY grants, and MEASURED on the live database one already holds three
+  // (agent + admin + isa) and another holds two.
+  //
+  // `.maybeSingle()` over more than one row is an ERROR, not a pick. So this
+  // path threw for exactly the users it exists to admit — and my own error
+  // check, added in the same change, is what turned a silent null into a hard
+  // refusal. Reading all the grants and CHOOSING is the only correct shape.
+  const { data: roleAssignments, error: roleError } = await supabase
     .from("user_role_assignments")
     .select("brokerage_id, role")
     .eq("user_id", userId)
-    .maybeSingle()
 
-  if (roleError) throw new Error(`Could not resolve the caller's role assignment: ${roleError.message}`)
+  if (roleError) throw new Error(`Could not resolve the caller's role assignments: ${roleError.message}`)
 
-  if (roleAssignment?.brokerage_id) {
-    const role = String((roleAssignment as { role?: string | null }).role ?? "admin")
-    if (!BROKERAGE_ADMIN_USER_TYPES.has(role)) {
-      throw new Error("Forbidden: insufficient permissions")
-    }
-    return { brokerageId: roleAssignment.brokerage_id as string, userType: role, platformRole: null }
+  const grants = (roleAssignments ?? []) as Array<{ brokerage_id?: string | null; role?: string | null }>
+
+  // A grant with a NULL brokerage_id is not a tenant grant — `contact` and
+  // `lender` rows carry no brokerage and must never be used as a tenant anchor.
+  // Among the tenanted ones, the ADMINISTERING grant is the one that answers
+  // this question; holding `agent` beside `admin` must not decide it.
+  const adminGrant = grants.find(
+    (g) => g.brokerage_id && BROKERAGE_ADMIN_USER_TYPES.has(String(g.role ?? "")),
+  )
+  if (adminGrant?.brokerage_id) {
+    return { brokerageId: adminGrant.brokerage_id, userType: String(adminGrant.role), platformRole: null }
+  }
+
+  // Tenanted, but no grant that administers. Distinguish this from "no record at
+  // all": one is a refusal, the other is a missing identity, and reporting them
+  // identically is how a permissions bug reads as a data bug.
+  if (grants.some((g) => g.brokerage_id)) {
+    throw new Error("Forbidden: insufficient permissions")
   }
 
   throw new Error("User not found or not associated with a brokerage")
