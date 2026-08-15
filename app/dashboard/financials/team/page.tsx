@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { resolveLedTeamId } from "@/lib/kernel/resolve-user-team"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
@@ -37,20 +38,41 @@ export default async function TeamFinancialsPage() {
   const agentId = agentIdRaw!
   const brokerageId = brokerageIdRaw!
 
-  // Check user role - only team_lead and broker allowed
+  // Who may see TEAM financials — and it is not a label.
+  //
+  // Owner ruling: "a team lead is an agent that runs their own team." Leading is
+  // a FACT recorded in teams.team_lead_id, and on live data the label is not just
+  // a weaker proxy for it, it is UNCORRELATED: teamlead@vip.demo runs a team and
+  // carries user_type='agent', while the one account carrying user_type='team_lead'
+  // runs no team at all. So the old roster gate bounced the real team lead to
+  // /dashboard/financials/agent and would have admitted somebody with no team.
+  //
+  // m444 fixed exactly this in RLS (public.current_user_led_team_id()). This is
+  // the same rule on the same side of the wire: resolveLedTeamId() is that
+  // function's app-side twin, so the page and the database cannot disagree about
+  // who runs a team.
+  //
+  // broker / admin keep their seat on the ROLE, because their claim to the team's
+  // books is the brokerage's book, not a team they run.
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
   const { data: profile } = await supabase
     .from("users")
-    .select("user_type")
+    .select("user_type, platform_role")
     .eq("id", user.id)
     .maybeSingle()
 
   const userRole = profile?.user_type || "agent"
+  const isSuperadmin =
+    userRole === "superadmin" ||
+    (profile as { platform_role?: string | null } | null)?.platform_role === "superadmin"
 
-  // Role gate: redirect non-team_lead/broker users
-  if (!["team_lead", "broker", "admin", "superadmin"].includes(userRole)) {
+  // The FACT first: resolved once here and reused as the team id below, so the
+  // gate and the data can never be answered differently.
+  const ledTeamId = await resolveLedTeamId(supabase, user.id)
+
+  if (!ledTeamId && !isSuperadmin && !["broker", "admin"].includes(userRole)) {
     redirect("/dashboard/financials/agent")
   }
 
@@ -58,12 +80,14 @@ export default async function TeamFinancialsPage() {
   // The TEAM's own QuickBooks — owner (owner_type='team', owner_id=team_id),
   // exact match, never the brokerage's connection. Only the team lead's login
   // maps to team scope in the OAuth route, so only they get the connect button.
-  const { data: teamRow } = await supabase
-    .from("users")
-    .select("team_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  const teamId = (teamRow?.team_id as string | null) ?? null
+  // The team id comes from the SAME resolution as the gate above — the lead link
+  // — not from users.team_id. That column is one of the four places a team can be
+  // recorded on this schema and it is NULL for all 23 live users, so reading it
+  // here meant the team's own QuickBooks/Zoom panels silently rendered as "not
+  // connected" even for the person who runs the team. m431 made resolve_team_id()
+  // the one rule; this page now defers to its lead-link entry point rather than
+  // holding a fifth answer.
+  const teamId = ledTeamId
   let teamBooks: ScopedAccountingStatus | null = null
   let teamLastSyncedAt: string | null = null
   let teamReconciliation: ScopeQbReconciliation | null = null
@@ -491,8 +515,8 @@ export default async function TeamFinancialsPage() {
               lastSyncedAt={teamLastSyncedAt}
               connectPath={teamBooks.quickbooks.offering.connectPath}
               note={teamBooks.quickbooks.offering.verdict}
-              canConnect={userRole === "team_lead"}
-              connectDisabledReason="Only the team lead's login connects the team's QuickBooks (the connection is owned by the team, resolved from the team lead's role)."
+              canConnect={Boolean(ledTeamId)}
+              connectDisabledReason="Only the team lead's login connects the team's QuickBooks — the connection is owned by the team, and 'team lead' is resolved from teams.team_lead_id, not from a role label."
             />
             <ProviderConnectionCard
               provider="stripe"

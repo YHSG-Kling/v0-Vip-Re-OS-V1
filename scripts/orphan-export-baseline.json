@@ -8,6 +8,7 @@
     "app/actions/agents.ts": 5,
     "app/actions/ai-auto-response.ts": 4,
     "app/actions/ai-calendar-management.ts": 1,
+    "app/actions/ai-client-portal.ts": 3,
     "app/actions/ai-closing-workflow.ts": 1,
     "app/actions/ai-cma.ts": 1,
     "app/actions/ai-content-generation.tsx": 4,
@@ -28,7 +29,6 @@
     "app/actions/ai-vendor-management.ts": 1,
     "app/actions/ai-voice-transcription.ts": 1,
     "app/actions/assistant.ts": 3,
-    "app/actions/auth.ts": 3,
     "app/actions/billing.ts": 3,
     "app/actions/blog.ts": 3,
     "app/actions/brand-template-registry.ts": 2,
@@ -52,7 +52,6 @@
     "app/actions/credit-copilot.ts": 1,
     "app/actions/crm.ts": 1,
     "app/actions/cron-kernel.ts": 1,
-    "app/actions/demo-auth.ts": 3,
     "app/actions/documents.ts": 1,
     "app/actions/dotloop-integration.ts": 1,
     "app/actions/email-campaigns.ts": 1,
@@ -99,7 +98,6 @@
     "app/actions/social-publishing.ts": 1,
     "app/actions/social-share.ts": 2,
     "app/actions/superadmin/parked-retention.ts": 2,
-    "app/actions/tour-planner.ts": 2,
     "app/actions/transaction-document-signatures.ts": 2,
     "app/actions/transaction-inspections.ts": 2,
     "app/actions/transaction-stage-machine.ts": 1,
@@ -120,14 +118,11 @@
     "app/dashboard/leaderboard/leaderboard-client.tsx": 1,
     "app/dashboard/settings/branding/agent-branding-client.tsx": 1,
     "app/dashboard/videos/components/BackgroundPicker.tsx": 1,
-    "app/newsletters/components/newsletter-ai-panel.tsx": 1,
     "app/routes-compatibility.ts": 1,
     "app/settings/email-templates/template-preview.tsx": 1,
     "hooks/use-click-outside.ts": 1,
-    "hooks/use-contact-dashboard.ts": 1,
     "hooks/use-debounce.ts": 1,
     "hooks/use-local-storage.ts": 1,
-    "hooks/use-media-query.ts": 7,
     "hooks/use-toast.ts": 1,
     "lib/ads/ad-creative-engine.ts": 3,
     "lib/ads/ad-lead-intake.ts": 2,
@@ -239,7 +234,7 @@
     "lib/connections/zoom.ts": 12,
     "lib/constants/index.ts": 1,
     "lib/contact-promotion/contact-creator.ts": 1,
-    "lib/contact-utils.ts": 5,
+    "lib/contact-utils.ts": 4,
     "lib/contacts/buyer-stage.ts": 1,
     "lib/contacts/contact-brief.ts": 1,
     "lib/contacts/persona-builder.ts": 5,
@@ -299,7 +294,6 @@
     "lib/geo/citation-share.ts": 1,
     "lib/geo/video-landing.ts": 1,
     "lib/goals/goal-types.ts": 1,
-    "lib/identity/resolve-contact-owner.ts": 1,
     "lib/inbound-mail/resolve-user-provider.ts": 1,
     "lib/integrations/integration-status.ts": 1,
     "lib/integrations/providers/catalog.ts": 2,
@@ -336,7 +330,7 @@
     "lib/intelligence/skill-freshness-board.ts": 1,
     "lib/intelligence/steer-my-day.ts": 1,
     "lib/intelligence/time-to-value-radar.ts": 1,
-    "lib/kernel/ads.ts": 4,
+    "lib/kernel/ads.ts": 2,
     "lib/kernel/agent-coaching.ts": 4,
     "lib/kernel/agent-identity-resolver.ts": 3,
     "lib/kernel/agent-identity.ts": 1,
@@ -403,7 +397,6 @@
     "lib/kernel/morning-standup.ts": 2,
     "lib/kernel/neighbor-farm.ts": 1,
     "lib/kernel/newsletter/section-types.ts": 1,
-    "lib/kernel/non-blocking.ts": 1,
     "lib/kernel/nothing-dropped-runner.ts": 1,
     "lib/kernel/objection-library.ts": 3,
     "lib/kernel/office-hours.ts": 1,
@@ -420,7 +413,6 @@
     "lib/kernel/referral-radar.ts": 4,
     "lib/kernel/regulatory-watcher.ts": 6,
     "lib/kernel/repair-digest.ts": 1,
-    "lib/kernel/resolve-user-office.ts": 1,
     "lib/kernel/returning-customer.ts": 4,
     "lib/kernel/reverse-prospecting.ts": 2,
     "lib/kernel/role-routes.ts": 1,
@@ -534,8 +526,6 @@
     "lib/onboarding/onboarding-roster.ts": 1,
     "lib/onboarding/setup-readiness.ts": 1,
     "lib/onboarding/state-license-registry.ts": 1,
-    "lib/orchestrator/access-scope.ts": 3,
-    "lib/orchestrator/contact-identity.ts": 2,
     "lib/osint-client.ts": 1,
     "lib/outcomes/reconciliation.ts": 1,
     "lib/platform/affiliates.ts": 3,
@@ -635,7 +625,7 @@
     "lib/vendors/credit-calculator.ts": 3,
     "lib/vendors/rank.ts": 1,
     "lib/vendors/vendor-scope.ts": 1,
-    "lib/vendors/vendor-validators.ts": 2,
+    "lib/vendors/vendor-validators.ts": 1,
     "lib/video/assistant-options.ts": 1,
     "lib/video/avatar-render-orchestrator.ts": 1,
     "lib/video/broll-picker.ts": 1,
@@ -679,7 +669,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 9040,
+  "census": 9013,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -786,7 +776,7 @@
     "app/actions/asset-manager-resolutions.ts": 2,
     "app/actions/assistant.ts": 8,
     "app/actions/auth/signup-brokerage.ts": 1,
-    "app/actions/auth.ts": 5,
+    "app/actions/auth.ts": 3,
     "app/actions/autonomy-halt.ts": 1,
     "app/actions/avatar-video.ts": 2,
     "app/actions/avatar-voice-catalog.ts": 3,
@@ -894,7 +884,7 @@
     "app/actions/deal-play.ts": 1,
     "app/actions/deal-risk-agent.ts": 1,
     "app/actions/deal-shaky.ts": 2,
-    "app/actions/demo-auth.ts": 5,
+    "app/actions/demo-auth.ts": 2,
     "app/actions/direct-mail-performance.ts": 1,
     "app/actions/direct-mail-presets.ts": 3,
     "app/actions/direct-mail-preview.ts": 1,
@@ -1172,7 +1162,7 @@
     "app/actions/tenant-webhooks.ts": 10,
     "app/actions/time-to-value.ts": 1,
     "app/actions/title-portal.ts": 6,
-    "app/actions/tour-planner.ts": 13,
+    "app/actions/tour-planner.ts": 11,
     "app/actions/transaction-compliance.ts": 6,
     "app/actions/transaction-document-signatures.ts": 4,
     "app/actions/transaction-hazard-insurance.ts": 2,
@@ -2609,7 +2599,6 @@
     "app/mobile/mobile-bottom-nav.tsx": 1,
     "app/mobile/voice/quick-dial-search.tsx": 1,
     "app/mobile/voice/voice-session-button.tsx": 1,
-    "app/newsletters/components/newsletter-ai-panel.tsx": 1,
     "app/newsletters/newsletters-client.tsx": 1,
     "app/open-house/[eventId]/rsvp/[invitationId]/rsvp-buttons.tsx": 1,
     "app/open-house/[eventId]/signin/sign-in-kiosk.tsx": 1,
@@ -2726,11 +2715,8 @@
     "app/workflows/components/os/workflow-health-radar.tsx": 1,
     "app/workflows/workflows-content.tsx": 1,
     "hooks/use-click-outside.ts": 1,
-    "hooks/use-contact-dashboard.ts": 1,
     "hooks/use-debounce.ts": 1,
     "hooks/use-local-storage.ts": 1,
-    "hooks/use-media-query.ts": 8,
-    "hooks/use-mobile.ts": 1,
     "hooks/use-toast.ts": 1,
     "lib/academy/quiz.ts": 3,
     "lib/activities/activity-tenant.ts": 3,
@@ -3098,7 +3084,7 @@
     "lib/contact-promotion/promotion-eligibility.ts": 1,
     "lib/contact-promotion/promotion-logger.ts": 1,
     "lib/contact-types.ts": 1,
-    "lib/contact-utils.ts": 7,
+    "lib/contact-utils.ts": 6,
     "lib/contact-validation.ts": 3,
     "lib/contacts/buyer-stage.ts": 1,
     "lib/contacts/card-classifier.ts": 1,
@@ -3270,12 +3256,10 @@
     "lib/goals/goal-types.ts": 2,
     "lib/home-value/listing-appointment.ts": 1,
     "lib/home-value/report-email.ts": 1,
-    "lib/hooks/use-media-query.ts": 1,
-    "lib/hooks/use-mobile.ts": 1,
     "lib/identity/ensure-agent-context.ts": 1,
     "lib/identity/get-agent-context.ts": 1,
     "lib/identity/policy-scope.ts": 1,
-    "lib/identity/resolve-contact-owner.ts": 2,
+    "lib/identity/resolve-contact-owner.ts": 1,
     "lib/inbound-mail/deal-doc-intake.ts": 1,
     "lib/inbound-mail/deal-doc-router.ts": 2,
     "lib/inbound-mail/oauth-fetchers.ts": 2,
@@ -3404,7 +3388,7 @@
     "lib/kernel/adapters/content-generation.ts": 1,
     "lib/kernel/adapters/financial.ts": 1,
     "lib/kernel/addressing.ts": 1,
-    "lib/kernel/ads.ts": 9,
+    "lib/kernel/ads.ts": 7,
     "lib/kernel/agent-coaching.ts": 8,
     "lib/kernel/agent-identity-resolver.ts": 5,
     "lib/kernel/agent-identity.ts": 4,
@@ -3539,7 +3523,6 @@
     "lib/kernel/neighbor-farm.ts": 3,
     "lib/kernel/newsletter/assemble.ts": 2,
     "lib/kernel/newsletter/section-types.ts": 3,
-    "lib/kernel/non-blocking.ts": 1,
     "lib/kernel/nothing-dropped-runner.ts": 1,
     "lib/kernel/nothing-dropped.ts": 2,
     "lib/kernel/notification-center.ts": 4,
@@ -3579,6 +3562,7 @@
     "lib/kernel/reputation.ts": 8,
     "lib/kernel/resolve-event-contacts.ts": 1,
     "lib/kernel/resolve-user-office.ts": 2,
+    "lib/kernel/resolve-user-team.ts": 3,
     "lib/kernel/returning-customer.ts": 8,
     "lib/kernel/reverse-prospecting.ts": 3,
     "lib/kernel/role-routes.ts": 1,
@@ -3846,8 +3830,6 @@
     "lib/onboarding/state-machine.ts": 2,
     "lib/onboarding/step-categories.ts": 4,
     "lib/open-house/instant-greeting.ts": 1,
-    "lib/orchestrator/access-scope.ts": 4,
-    "lib/orchestrator/contact-identity.ts": 3,
     "lib/orchestrator/internal.ts": 2,
     "lib/osint-client.ts": 2,
     "lib/outcomes/reconciliation-ledger.ts": 3,
@@ -4149,7 +4131,7 @@
     "lib/vendors/premium-placement.ts": 3,
     "lib/vendors/rank.ts": 3,
     "lib/vendors/vendor-scope.ts": 7,
-    "lib/vendors/vendor-validators.ts": 2,
+    "lib/vendors/vendor-validators.ts": 1,
     "lib/vendors/w9-vocab.ts": 3,
     "lib/vendors/w9.ts": 3,
     "lib/video/assistant-faces.ts": 1,
@@ -4193,6 +4175,7 @@
     "lib/video/video-qr.ts": 2,
     "lib/video/video-status.ts": 2,
     "lib/video/video-thumbnail-embed.ts": 1,
+    "lib/video/viral-script-share.ts": 1,
     "lib/voice/a2p-registration.ts": 9,
     "lib/voice/broker-commands.ts": 3,
     "lib/voice/call-analysis.ts": 4,
@@ -4240,6 +4223,7 @@
     "lib/wealth-advisor/fetch-market-rates.ts": 2,
     "lib/wealth-advisor/recommendation-status.ts": 1,
     "lib/wealth-advisor/scan-opportunities.ts": 1,
+    "lib/widget/resolve-widget-tenant.ts": 2,
     "lib/wire-fraud/wire-fraud-runner.ts": 1,
     "lib/wire-fraud/wire-fraud-sentinel.ts": 1,
     "lib/wizard-staging/content-staging.ts": 8,
@@ -5002,9 +4986,7 @@
     "app/actions/auth.ts": [
       "loginUser",
       "handleAuthCallback",
-      "signOut",
-      "getCurrentUser",
-      "registerUser"
+      "signOut"
     ],
     "app/actions/autonomy-halt.ts": [
       "getTenantAutonomyHaltAction"
@@ -5705,10 +5687,7 @@
     ],
     "app/actions/demo-auth.ts": [
       "demoSignIn",
-      "demoSignOut",
-      "getDemoUsers",
-      "getDemoUsersByRole",
-      "validateDemoCredentials"
+      "getDemoUsers"
     ],
     "app/actions/direct-mail-performance.ts": [
       "getDirectMailPerformance"
@@ -7569,8 +7548,6 @@
       "createTourPlan",
       "scheduleTourStops",
       "finalizeTour",
-      "approveTourPlan",
-      "sendTourReport",
       "confirmTourStop",
       "confirmTour",
       "rateTourStop",
@@ -12278,9 +12255,6 @@
     "app/mobile/voice/voice-session-button.tsx": [
       "VoiceSessionButton"
     ],
-    "app/newsletters/components/newsletter-ai-panel.tsx": [
-      "NewsletterAIPanel"
-    ],
     "app/newsletters/newsletters-client.tsx": [
       "NewslettersClient"
     ],
@@ -12630,27 +12604,11 @@
     "hooks/use-click-outside.ts": [
       "useClickOutside"
     ],
-    "hooks/use-contact-dashboard.ts": [
-      "useContactDashboard"
-    ],
     "hooks/use-debounce.ts": [
       "useDebounce"
     ],
     "hooks/use-local-storage.ts": [
       "useLocalStorage"
-    ],
-    "hooks/use-media-query.ts": [
-      "useMediaQuery",
-      "useIsSmall",
-      "useIsMedium",
-      "useIsLarge",
-      "useIsXLarge",
-      "useIs2XLarge",
-      "usePrefersDarkMode",
-      "usePrefersReducedMotion"
-    ],
-    "hooks/use-mobile.ts": [
-      "useIsMobile"
     ],
     "hooks/use-toast.ts": [
       "reducer"
@@ -14553,7 +14511,6 @@
     "lib/contact-utils.ts": [
       "getTimelineColor",
       "getTimelineUrgency",
-      "getPersonaDashboardRoute",
       "getPersonaDescription",
       "getUrgencyColor",
       "calculateDaysUntilTimeline",
@@ -15355,12 +15312,6 @@
     "lib/home-value/report-email.ts": [
       "composeHomeValueReportEmail"
     ],
-    "lib/hooks/use-media-query.ts": [
-      "useMediaQuery"
-    ],
-    "lib/hooks/use-mobile.ts": [
-      "useIsMobile"
-    ],
     "lib/identity/ensure-agent-context.ts": [
       "ensureAgentContextInPlace"
     ],
@@ -15371,7 +15322,6 @@
       "resolvePolicyScopeAccess"
     ],
     "lib/identity/resolve-contact-owner.ts": [
-      "resolveContactOwnerUserId",
       "resolveContactOwnerAgent"
     ],
     "lib/inbound-mail/deal-doc-intake.ts": [
@@ -15912,12 +15862,10 @@
       "loadAdsWorkspace",
       "createAdCampaign",
       "updateAdCampaign",
-      "pauseAdCampaign",
       "loadAudienceDefinitions",
       "syncAudience",
       "createAudienceSegment",
-      "previewAdCreative",
-      "approveAdCreative"
+      "previewAdCreative"
     ],
     "lib/kernel/agent-coaching.ts": [
       "composeCoachingBrief",
@@ -16762,9 +16710,6 @@
       "defaultOrderFor",
       "displayLabelFor"
     ],
-    "lib/kernel/non-blocking.ts": [
-      "ignoreSupabaseSideEffect"
-    ],
     "lib/kernel/nothing-dropped-runner.ts": [
       "runNothingDroppedSweep"
     ],
@@ -16993,6 +16938,11 @@
     "lib/kernel/resolve-user-office.ts": [
       "pickUserOffice",
       "resolveUserOffice"
+    ],
+    "lib/kernel/resolve-user-team.ts": [
+      "resolveLedTeamId",
+      "resolveUserTeam",
+      "resolveTeamAgentIds"
     ],
     "lib/kernel/returning-customer.ts": [
       "isReengageableLifetime",
@@ -18379,17 +18329,6 @@
     ],
     "lib/open-house/instant-greeting.ts": [
       "sendInstantOpenHouseGreeting"
-    ],
-    "lib/orchestrator/access-scope.ts": [
-      "resolveAccessScope",
-      "resolveAgentId",
-      "scopeRequiresBrokerage",
-      "getScopeBrekerageId"
-    ],
-    "lib/orchestrator/contact-identity.ts": [
-      "resolveContactId",
-      "getContactIdForUser",
-      "validateContactOwnership"
     ],
     "lib/orchestrator/internal.ts": [
       "emitEventFromCron",
@@ -19884,7 +19823,6 @@
       "resolveVendorActorScope"
     ],
     "lib/vendors/vendor-validators.ts": [
-      "validateVendor",
       "validateVendorPlan"
     ],
     "lib/vendors/w9-vocab.ts": [
@@ -20100,6 +20038,9 @@
     ],
     "lib/video/video-thumbnail-embed.ts": [
       "videoThumbnailEmbed"
+    ],
+    "lib/video/viral-script-share.ts": [
+      "shareViralScriptWithBrokerage"
     ],
     "lib/voice/a2p-registration.ts": [
       "validateA2pProfile",
@@ -20351,6 +20292,10 @@
     "lib/wealth-advisor/scan-opportunities.ts": [
       "runDailyWealthScan"
     ],
+    "lib/widget/resolve-widget-tenant.ts": [
+      "resolveWidgetTenant",
+      "widgetCallOriginAllowed"
+    ],
     "lib/wire-fraud/wire-fraud-runner.ts": [
       "runWireFraudSentinel"
     ],
@@ -20479,5 +20424,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 265
+  "trulyDead": 239
 }

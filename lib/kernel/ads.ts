@@ -24,9 +24,7 @@ import {
   AD_PLATFORMS_WITHOUT_CONNECTIONS,
   isConnectableAdPlatform,
 } from "@/lib/integrations/ad-campaign-vocabulary"
-import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
-import type { ActorContext } from "@/lib/kernel/types"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -191,11 +189,6 @@ export interface UpdateAdCampaignInput {
   }
 }
 
-export interface PauseAdCampaignInput {
-  ctx: AdsActorContext
-  campaignId: string
-}
-
 export interface LoadAudienceDefinitionsInput {
   ctx: AdsActorContext
   campaignId?: string
@@ -219,11 +212,6 @@ export interface PreviewAdCreativeInput {
   ctx: AdsActorContext
   campaignId: string
   creativeVariationId?: string
-}
-
-export interface ApproveAdCreativeInput {
-  ctx: AdsActorContext
-  creativeVariationId: string
 }
 
 export interface LoadAdPerformanceInput {
@@ -505,20 +493,33 @@ export async function updateAdCampaign(input: UpdateAdCampaignInput): Promise<Ke
   try {
     const supabase = createServiceClient()
 
-    // Check campaign exists and is editable
-    const { data: existing } = await supabase
+    // Check campaign exists and is editable.
+    // `error` is destructured and checked: a supabase-js query RESOLVES on a
+    // permission denial with data === null, so `if (!existing)` alone reports an
+    // RLS refusal to the caller as "Campaign not found" — a different claim.
+    const { data: existing, error: existingError } = await supabase
       .from("ad_campaigns")
       .select("status")
       .eq("id", campaignId)
       .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle()
 
+    if (existingError) throw existingError
+
     if (!existing) {
       return { success: false, error: "Campaign not found" }
     }
 
-    if (existing.status === "active" || existing.status === "launching") {
-      return { success: false, error: "Cannot update active or launching campaigns" }
+    // SCHEMA DRIFT (same defect lib/ads/ad-creator.ts:updateCampaignStatus already
+    // records): the guard used to read `status === "active"`, but
+    // ad_campaigns_status_check is CHECK (status IN ('draft','pending_review',
+    // 'approved','launching','live','paused','ended','failed')) — there is no
+    // 'active'. That branch was false for every row that will ever exist, so a
+    // campaign that was already SPENDING ('live') passed straight through and had
+    // its budget and targeting rewritten underneath it. 'live' is the real
+    // vocabulary for the state the guard was written to protect.
+    if (existing.status === "live" || existing.status === "launching") {
+      return { success: false, error: "Cannot update live or launching campaigns" }
     }
 
     // Build update object
@@ -548,53 +549,20 @@ export async function updateAdCampaign(input: UpdateAdCampaignInput): Promise<Ke
   }
 }
 
-// ─── COMMAND 4: pauseAdCampaign ───────────────────────────────────────────────
-// Pauses or resumes an ad campaign. Updates canonical status in ad_campaigns.
+// ─── COMMAND 4: pauseAdCampaign — DELETED (orphan burn-down w44) ──────────────
 //
-// Tables read: ad_campaigns
-// Tables written: ad_campaigns
-// Returns: campaign
-
-export async function pauseAdCampaign(input: PauseAdCampaignInput): Promise<KernelAdsResult> {
-  const { ctx, campaignId } = input
-
-  if (!ctx.brokerageId || !campaignId) {
-    return { success: false, error: "brokerageId and campaignId required" }
-  }
-
-  try {
-    const supabase = createServiceClient()
-
-    const { data: existing } = await supabase
-      .from("ad_campaigns")
-      .select("status")
-      .eq("id", campaignId)
-      .eq("brokerage_id", ctx.brokerageId)
-      .maybeSingle()
-
-    if (!existing) {
-      return { success: false, error: "Campaign not found" }
-    }
-
-    const newStatus = existing.status === "active" ? "paused" : "active"
-
-    const { data: campaign, error } = await supabase
-      .from("ad_campaigns")
-      .update({ status: newStatus, updated_at: new Date().toISOString() })
-      .eq("id", campaignId)
-      .select()
-      .maybeSingle()
-
-    if (error) throw error
-
-    return { success: true, campaign }
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : "pauseAdCampaign failed",
-    }
-  }
-}
+// REPLACED BY: lib/ads/ad-creator.ts:updateCampaignStatus(userId, campaignId,
+// brokerageId, "paused") — session-gated, tenant-predicated on the WRITE, and
+// zero-row-checked.
+//
+// This was not merely unwired, it could never have worked. It computed
+// `existing.status === "active" ? "paused" : "active"`, but ad_campaigns_status_check
+// is CHECK (status IN ('draft','pending_review','approved','launching','live',
+// 'paused','ended','failed')) — there is no 'active'. The left branch was false for
+// every row that will ever exist, so the function's only reachable behaviour was to
+// write 'active' and take a guaranteed 23514. Nothing is lost: the survivor writes
+// the real vocabulary and the toggle direction belongs to the caller, which knows
+// whether the agent pressed Pause or Resume.
 
 // ─── COMMAND 5: loadAudienceDefinitions ───────────────────────────────────────
 // Loads all audience definitions for the brokerage, optionally filtered by campaign.
@@ -903,91 +871,22 @@ export async function previewAdCreative(input: PreviewAdCreativeInput): Promise<
   }
 }
 
-// ─── COMMAND 9: approveAdCreative ─────────────────────────────────────────────
-// Approves an ad creative variation. Runs compliance and brand voice checks.
-// REQUIRED before campaign launch.
+// ─── COMMAND 9: approveAdCreative — MERGED-THEN-DELETED (orphan burn-down w44) ─
 //
-// Tables read: ad_creative_variations, ad_campaigns
-// Tables written: ad_creative_variations
-// Returns: creative
-
-export async function approveAdCreative(input: {
-  ctx: ActorContext
-  creativeVariationId: string
-}): Promise<KernelAdsResult> {
-  const { ctx, creativeVariationId } = input
-
-  if (!ctx.brokerageId) {
-    return { success: false, error: "brokerageId required" }
-  }
-
-  try {
-    const supabase = createServiceClient()
-
-    const { data: creative, error: creativeError } = await supabase
-      .from("ad_creative_variations")
-      .select("*")
-      .eq("id", creativeVariationId)
-      .eq("brokerage_id", ctx.brokerageId)
-      .maybeSingle()
-
-    if (creativeError) {
-      throw creativeError
-    }
-
-    if (!creative) {
-      return { success: false, error: "Creative not found" }
-    }
-
-    const contentText = `${creative.headline || ""}\n${creative.primary_text || ""}\n${creative.description || ""}`
-
-    const complianceResult = await evaluateOutbound({
-      actorContext: {
-        userId: ctx.userId,
-        brokerageId: ctx.brokerageId,
-        role: ctx.role,
-      },
-      journeyType: "seller",
-      persona: "other",
-      messageType: "email",
-      content: contentText,
-      contact: {
-        id: "",
-        first_name: "",
-        last_name: "",
-        contact_type: "seller",
-        tcpa_consent: true,
-        isa_reengage_allowed: false,
-        dnc_status: false,
-      },
-    })
-
-    if (!complianceResult.allowed) {
-      return {
-        success: false,
-        error: `Compliance violation: ${complianceResult.violations?.join(", ") || "Content not allowed"}`,
-      }
-    }
-
-    const { data: updatedCreative, error } = await supabase
-      .from("ad_creative_variations")
-      .update({
-        approval_status: "approved",
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", creativeVariationId)
-      .select()
-      .maybeSingle()
-
-    if (error) {
-      throw error
-    }
-
-    return { success: true, creatives: updatedCreative }
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : "approveAdCreative failed",
-    }
-  }
-}
+// SURVIVOR: lib/ads/ad-creator.ts:approveCreativeVariation — the surface the ads
+// dashboard actually calls (app/dashboard/campaigns/ads/ads-dashboard-client.tsx).
+// It is strictly stronger on every axis this one had, so NOTHING was merged
+// forward; the list below is what the survivor already did that this did not:
+//   · resolves the actor from the SESSION (resolveAdActor) instead of trusting a
+//     caller-supplied ctx.brokerageId — the identity rule, not an option;
+//   · idempotent: an already-approved variation returns success instead of
+//     re-running the compliance gate;
+//   · ledgers a compliance_events row AND flips approval_status to "rejected" on
+//     a failed gate, so the refusal is visible on the screen and in the audit
+//     trail — this one returned an error string and left the row untouched;
+//   · `.update(...).eq("brokerage_id", …).select("id")` with a zero-row check, so
+//     an RLS-hidden row reports failure instead of a silent success;
+//   · messageType "social" (an ad IS social) and a real broadcastAdContact(),
+//     where this one passed messageType "email" and a FABRICATED contact literal
+//     with `tcpa_consent: true` and an empty id — inventing consent to get past
+//     the gate is the one thing the compliance layer must never be handed.

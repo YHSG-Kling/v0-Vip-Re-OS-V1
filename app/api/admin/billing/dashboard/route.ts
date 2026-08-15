@@ -21,9 +21,15 @@ export async function GET(req: NextRequest) {
 
     const result = await loadBillingWorkspace({
       brokerageId,
+      // The cast is gone with the literal union it existed to satisfy: it claimed
+      // every caller was one of three values when `users.user_type` admits
+      // fifteen, and the platform's only superadmin ('admin') was none of the
+      // three. platform_role travels with it so the kernel can tell a genuine
+      // superadmin from a tenant admin.
       actorContext: {
         userId:   auth.userId,
-        userType: auth.userType as "superadmin" | "broker_admin" | "agent",
+        userType: auth.userType,
+        platformRole: auth.platformRole,
       },
     })
 

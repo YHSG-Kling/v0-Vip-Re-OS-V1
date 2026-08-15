@@ -25,20 +25,21 @@ import {
 } from "@/lib/kernel/billing"
 
 async function requireBillingCaller(): Promise<
-  | { ok: true; userId: string; brokerageId: string; userType: string }
+  | { ok: true; userId: string; brokerageId: string; userType: string; platformRole: string | null }
   | { ok: false; error: string }
 > {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthorized" }
   const { data: profile } = await supabase
-    .from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
+    .from("users").select("brokerage_id, user_type, platform_role").eq("id", user.id).maybeSingle()
   if (!profile?.brokerage_id) return { ok: false, error: "Unauthorized" }
   return {
     ok: true,
     userId: user.id,
     brokerageId: profile.brokerage_id,
     userType: profile.user_type ?? "agent",
+    platformRole: (profile as { platform_role?: string | null }).platform_role ?? null,
   }
 }
 
@@ -127,7 +128,20 @@ export async function loadRevenueSummaryAction(
     // SUPERADMIN gate — cross-tenant aggregate, was previously open.
     const auth = await requireBillingCaller()
     if (!auth.ok) return { success: false, error: auth.error }
-    if (!["superadmin", "super_admin"].includes(auth.userType)) {
+    // BOTH identity columns. `auth.userType` alone refused the platform's ONLY
+    // superadmin, whose row is (user_type='admin', platform_role='superadmin') —
+    // so the one real gate on the cross-tenant revenue aggregate refused the one
+    // account meant to pass it, and the kernel command behind it has no gate of
+    // its own. Same shape as public.is_platform_admin() in RLS; the reasoning is
+    // written out in app/actions/vendor-budget.ts:136-147.
+    //
+    // 'super_admin' is kept only as the legacy spelling it always was: it is not
+    // one of the 14 values users_user_type_check admits, so it matches nobody and
+    // widens this roster to nobody — the safe direction.
+    const isSuperadmin =
+      ["superadmin", "super_admin"].includes(auth.userType) ||
+      auth.platformRole === "superadmin"
+    if (!isSuperadmin) {
       return { success: false, error: "Forbidden: superadmin only" }
     }
 

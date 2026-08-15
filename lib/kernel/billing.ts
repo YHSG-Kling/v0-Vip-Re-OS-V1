@@ -26,12 +26,36 @@ export function isTierFeatureIncluded(
 // INPUT/OUTPUT CONTRACTS
 // ============================================================================
 
+/**
+ * THE BILLING ACTOR — and why `userType` alone was never enough.
+ *
+ * Staff identity on this database is DUAL-COLUMN. `users.platform_role` and
+ * `users.user_type` hold different vocabularies, and the platform's ONE
+ * superadmin is (user_type='admin', platform_role='superadmin'). Every gate in
+ * this file tested `userType === "superadmin"` — a test that account cannot pass
+ * — so applyFeatureOverride and updateSubscriptionState refused the only person
+ * they exist to admit. Both columns travel together now, exactly as they do on
+ * AuthResult in lib/kernel/api-auth.ts.
+ *
+ * `userType` is `string` rather than a literal union for the same reason: it is a
+ * raw `users.user_type` value and the genuine superadmin's is 'admin'. The union
+ * forced every call site to LABEL the caller "superadmin" to satisfy the compiler,
+ * which is the shape that hides an identity bug instead of surfacing it.
+ *
+ * `platformRole` is optional and null-by-default: a caller that does not know the
+ * column omits it and is treated as a tenant user. Absence never grants.
+ */
+export interface BillingActorContext {
+  userId: string
+  /** Raw `users.user_type` — 'superadmin' here is the LEGACY staff marker only. */
+  userType: string
+  /** Raw `users.platform_role` — null for every tenant user. */
+  platformRole?: string | null
+}
+
 export interface LoadBillingWorkspaceInput {
   brokerageId: string
-  actorContext: {
-    userId: string
-    userType: "superadmin" | "broker_admin" | "agent"
-  }
+  actorContext: BillingActorContext
 }
 
 export interface LoadBillingWorkspaceOutput {
@@ -109,10 +133,7 @@ export interface ApplyFeatureOverrideInput {
   featureKey: string
   overrideType: "enable_trial" | "disable" | "extend_trial"
   trialEndsAt?: string
-  actorContext: {
-    userId: string
-    userType: "superadmin"
-  }
+  actorContext: BillingActorContext
 }
 
 export interface ApplyFeatureOverrideOutput {
@@ -172,10 +193,7 @@ export interface UpdateSubscriptionStateInput {
   tier?: string
   newStatus: "active" | "trial" | "cancelled"
   cancellationReason?: string
-  actorContext: {
-    userId: string
-    userType: "superadmin"
-  }
+  actorContext: BillingActorContext
 }
 
 export interface UpdateSubscriptionStateOutput {
@@ -198,11 +216,31 @@ const BILLING_VALIDATION_RULES = {
   ONLY_SUPERADMIN: ["applyFeatureOverride", "updateSubscriptionState", "loadRevenueSummary"],
 }
 
-function validateSuperadminOnly(userType: string, command: string): boolean {
+/**
+ * SUPERADMIN GATE — BOTH COLUMNS, never `user_type` alone.
+ *
+ * It read `return userType === "superadmin"`. The platform's only superadmin is
+ * (user_type='admin', platform_role='superadmin'), so this returned false for
+ * them and applyFeatureOverride and updateSubscriptionState were refused to the
+ * one account entitled to call them. Adding the platform_role marker admits that
+ * account and nobody else: 'superadmin' in platform_role is written solely by the
+ * superadmin-gated staff CRUD (app/actions/superadmin/platform-staff.ts). This is
+ * the same shape public.is_platform_admin() uses in RLS.
+ *
+ * The legacy user_type='superadmin' marker is kept for the same reason RLS keeps
+ * it — an account predating the platform_role column must not be demoted.
+ *
+ * NOTE on `loadRevenueSummary`: it is named in ONLY_SUPERADMIN but never calls
+ * this function — its input carries no actor at all, and its only gate is in
+ * app/actions/admin/billing.ts:loadRevenueSummaryAction, which is still
+ * user_type-only. That is out of this file and is reported, not silently patched:
+ * giving the command a required actor would break its one live caller.
+ */
+function validateSuperadminOnly(actor: BillingActorContext, command: string): boolean {
   if (!BILLING_VALIDATION_RULES.ONLY_SUPERADMIN.includes(command)) {
     return true
   }
-  return userType === "superadmin"
+  return actor.userType === "superadmin" || actor.platformRole === "superadmin"
 }
 
 // ============================================================================
@@ -560,7 +598,7 @@ export async function applyFeatureOverride(
 ): Promise<ApplyFeatureOverrideOutput> {
   try {
     // Validate superadmin
-    if (!validateSuperadminOnly(input.actorContext.userType, "applyFeatureOverride")) {
+    if (!validateSuperadminOnly(input.actorContext, "applyFeatureOverride")) {
       return {
         success: false,
         error: "Only superadmins can apply feature overrides",
@@ -845,7 +883,7 @@ export async function updateSubscriptionState(
 ): Promise<UpdateSubscriptionStateOutput> {
   try {
     // Validate superadmin
-    if (!validateSuperadminOnly(input.actorContext.userType, "updateSubscriptionState")) {
+    if (!validateSuperadminOnly(input.actorContext, "updateSubscriptionState")) {
       return {
         success: false,
         error: "Only superadmins can update subscription state",

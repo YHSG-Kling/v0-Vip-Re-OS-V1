@@ -36,12 +36,20 @@ export default async function ScrapeDiagnosticsPage() {
 
   const { data: userData } = await supabase
     .from("users")
-    .select("user_type, brokerage_id")
+    .select("user_type, platform_role, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
 
   const userType    = userData?.user_type ?? "agent"
   const brokerageId = userData?.brokerage_id ?? undefined
+  // Platform scope from BOTH identity columns. `userType === "superadmin"` is
+  // FALSE for the platform's only superadmin (user_type='admin',
+  // platform_role='superadmin'), so this page always ran the brokerage-scoped
+  // branch: the owner saw one tenant's scrape runs behind a header reading
+  // "Production", and the tenant-coverage card (a card explicitly not meant for
+  // them) rendered instead. Same shape as public.is_platform_admin() in RLS —
+  // see app/actions/vendor-budget.ts:136-147.
+  const isSuperadmin = userType === "superadmin" || userData?.platform_role === "superadmin"
 
   if (!["admin", "broker", "superadmin"].includes(userType)) {
     redirect("/dashboard")
@@ -49,7 +57,7 @@ export default async function ScrapeDiagnosticsPage() {
 
   // Delegate all data loading to the kernel command
   const diagnostics = await loadScrapingDiagnostics({
-    brokerageId: userType === "superadmin" ? undefined : brokerageId,
+    brokerageId: isSuperadmin ? undefined : brokerageId,
     limit:       100,
   })
 
@@ -73,7 +81,7 @@ export default async function ScrapeDiagnosticsPage() {
   let tenantCoverageError: string | null = null
   let tenantRoi: TerritoryRoiReport | null = null
   let tenantRoiError: string | null = null
-  if (userType !== "superadmin" && brokerageId) {
+  if (!isSuperadmin && brokerageId) {
     const { createServiceClient } = await import("@/lib/supabase/service")
     const svc = createServiceClient()
     const [cov, roi] = await Promise.all([
@@ -91,10 +99,10 @@ export default async function ScrapeDiagnosticsPage() {
       <ScrapeDiagnosticsClient
         data={diagnostics}
         actorHealth={actorHealth ?? []}
-        isSuperadmin={userType === "superadmin"}
+        isSuperadmin={isSuperadmin}
         currentUserId={user.id}
       />
-      {userType !== "superadmin" && brokerageId && (
+      {!isSuperadmin && brokerageId && (
         <TenantCoverageCard
           coverage={tenantCoverage}
           coverageError={tenantCoverageError}

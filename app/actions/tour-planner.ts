@@ -651,40 +651,21 @@ export async function finalizeTour(params: {
   return { success: true, calendarEventCount }
 }
 
-// ─── DEPRECATED — old approval action retained for backwards compatibility ───
-/** @deprecated Use finalizeTour() instead. The two-step approve-then-send
- *  flow was wrong: the agent approves AFTER hearing back from listing agents,
- *  which is exactly what finalizeTour does in a single step.
- */
-export async function approveTourPlan(params: {
-  tourId:       string
-  agentUserId:  string
-  brokerageId:  string
-  editedNotes?: string
-  editedNarrative?: string
-}) {
-  return finalizeTour({
-    ...params,
-    reportChannels: ['portal'],
-  })
-}
-
-/** @deprecated Inlined into finalizeTour(). */
-export async function sendTourReport(params: {
-  tourId:        string
-  agentUserId:   string
-  brokerageId:   string
-  channels:      Array<'portal' | 'email' | 'sms'>
-  reportUrl?:    string
-}): Promise<{ success: boolean; error?: string }> {
-  return finalizeTour({
-    tourId:         params.tourId,
-    agentUserId:    params.agentUserId,
-    brokerageId:    params.brokerageId,
-    reportChannels: params.channels,
-    reportUrl:      params.reportUrl,
-  })
-}
+// ─── `approveTourPlan` and `sendTourReport` REMOVED ──────────────────────────
+// Both were @deprecated one-line shims that did nothing but call
+// `finalizeTour` above — approveTourPlan with `reportChannels: ['portal']`,
+// sendTourReport with the caller's `channels` renamed. The survivor is
+// `app/actions/tour-planner.ts:finalizeTour`, which the tour confirm tab
+// (app/crm/contacts/[contactId]/tours/components/tour-confirm-tab.tsx) already
+// calls directly, and which is strictly more capable: it takes every channel,
+// the report url and the agent's final edits in ONE step, resolves the actor
+// and the tenant from the SESSION (the shims accepted `agentUserId` and
+// `brokerageId` from the caller — parameters finalizeTour now ignores on
+// purpose), and stamps `report_sent_at` for lib/kernel/tour-optimizer.ts's
+// idempotency. Nothing was merged forward: neither shim held a line of logic
+// of its own, and the two-step approve-then-send flow they preserved is the
+// flow the deprecation note says was wrong — the agent approves AFTER the
+// listing agents reply, which is what finalizeTour does in a single call.
 
 // ─── 5. Confirm a single stop ─────────────────────────────────────────────────
 

@@ -78,18 +78,19 @@ export function getTimelineUrgency(timeline: ContactTimeline): "urgent" | "soon"
   }
 }
 
-/**
- * Returns the canonical portal URL for a contact.
- * Persona-specific view is determined automatically by lib/kernel/portal.ts.
- * The old /portal/[contactId]/dashboard/[persona] route has been removed.
- * The old /dashboard/contact/[persona] route never existed.
- */
-export function getPersonaDashboardRoute(
-  contactId: string,
-  persona?: ContactPersona | null
-): string {
-  return `/portal/${contactId}`
-}
+// getPersonaDashboardRoute — DELETED (orphan burn-down w44).
+//
+// REPLACED BY: the literal `/portal/${contactId}`, which is what every portal
+// surface already builds inline (app/components/portal/*, PortalUserMenu,
+// PortalSettingsPage, MilestoneProgressBar, SellerOfferCard, … ~20 sites).
+//
+// It was the residue of a routing scheme that no longer exists: its own docstring
+// recorded that /portal/[contactId]/dashboard/[persona] had been REMOVED and that
+// /dashboard/contact/[persona] never existed, which left it returning a constant
+// and IGNORING its `persona` argument. A helper that takes a persona and does
+// nothing with it is a trap for the next caller, not a route abstraction — the
+// persona-specific view is chosen by lib/kernel/portal.ts from the contact, never
+// from the URL.
 
 export function getPersonaDescription(persona: ContactPersona): string {
   const descriptions: Record<ContactPersona, string> = {

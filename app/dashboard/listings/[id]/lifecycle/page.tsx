@@ -56,7 +56,7 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   await ensureAgentContextInPlace()
   const { data: userRow } = await supabase
     .from("users")
-    .select("brokerage_id, user_type")
+    .select("brokerage_id, user_type, platform_role")
     .eq("id", user.id)
     .single()
 
@@ -299,7 +299,17 @@ const { data: listingVendorBookings } = await supabase
     .order("scheduled_date", { ascending: true })
 
   const canOverride = ["broker", "broker_owner", "admin", "team_lead", "superadmin"].includes(userRow.user_type ?? "")
-  const isSuperAdmin = userRow.user_type === "superadmin"
+  // BOTH identity columns. `userRow.user_type === "superadmin"` was FALSE for the
+  // platform's only superadmin (user_type='admin', platform_role='superadmin'),
+  // and this flag is the SOLE route to the marketing-tier controls: the tier
+  // selector on the readiness card, the tier row in the launch checklist
+  // (`hidden: !isSuperAdmin`) and the tier action in the launch panel were all
+  // invisible to the only account allowed to set a tier — while the launch gate
+  // still required `marketingReady`, so the listing was blocked by a control
+  // nobody could see. Same shape as public.is_platform_admin() in RLS; see
+  // app/actions/vendor-budget.ts:136-147.
+  const isSuperAdmin =
+    userRow.user_type === "superadmin" || (userRow as any).platform_role === "superadmin"
 
   // MLS NUMBER — the kernel's launch gate blocks on it (validateListingLaunchReadiness),
   // but this page never read the column, so the checklist showed "ready to launch"

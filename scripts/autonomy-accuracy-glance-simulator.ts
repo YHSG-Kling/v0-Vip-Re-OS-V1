@@ -59,8 +59,22 @@ console.log("\n── the Command Center is wired to the glance (best-effort, li
     /loadAccuracyGateReport[\s\S]*?loadAccuracyHoldRollup[\s\S]*?summarizeAutonomyAccuracy\(/.test(page))
   check("the load is best-effort (try/catch) so it never blocks the Command Center",
     /try \{[\s\S]*?summarizeAutonomyAccuracy[\s\S]*?\} catch/.test(page))
+  // ASSERT THE CONSTRUCT, NOT THE SPELLING.
+  //
+  // This used to pin the literal `brokerageId && userType !== "superadmin"`, and
+  // it went red on strictly better code: W44 replaced that test with
+  // `brokerageId && !isSuperadmin`, where isSuperadmin reads BOTH identity
+  // columns (user_type AND platform_role). The old spelling was not just
+  // narrower, it was WRONG — the platform's only superadmin carries
+  // user_type='admin' with platform_role='superadmin', so `userType !==
+  // "superadmin"` was TRUE for them and the Command Center silently loaded the
+  // brokerage-scoped glance for the one account that should see the platform view.
+  //
+  // What actually matters here is unchanged and is what is now asserted: the
+  // accuracy load happens ONLY when a brokerage is in scope AND the caller is not
+  // the platform superadmin — by whatever spelling that question is asked.
   check("the load is brokerage-scoped, not superadmin platform-wide",
-    /brokerageId && userType !== "superadmin"[\s\S]*?loadAccuracyGateReport/.test(page))
+    /if \(\s*brokerageId\s*&&[^)]*[sS]uperadmin[^)]*\)\s*\{[\s\S]*?loadAccuracyGateReport/.test(page))
   check("the card renders in the panel stack", /<AutonomyAccuracyCard summary=\{autonomyAccuracy\} \/>/.test(page))
 
   const card = src("app/dashboard/admin/command-center/autonomy-accuracy-card.tsx")

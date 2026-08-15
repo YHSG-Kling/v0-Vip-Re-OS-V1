@@ -44,13 +44,21 @@ export default async function AIUsagePage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
-  // Read user_type + brokerage_id to gate dollar visibility (superadmin only).
+  // Read BOTH identity columns + brokerage_id to gate dollar visibility
+  // (superadmin only). `profile?.user_type === "superadmin"` alone was FALSE for
+  // the platform's only superadmin, whose row is (user_type='admin',
+  // platform_role='superadmin') — so every dollar figure on this page (per-model
+  // cost, per-feature cost, the per-agent cost column and the ROI badge) was
+  // hidden from the one person the gate was written to show them to, and the page
+  // rendered its token-only broker view instead. Same shape as
+  // public.is_platform_admin() in RLS; see app/actions/vendor-budget.ts:136-147.
   const { data: profile } = await supabase
     .from("users")
-    .select("user_type, brokerage_id")
+    .select("user_type, platform_role, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
-  const isSuperadmin = profile?.user_type === "superadmin"
+  const isSuperadmin =
+    profile?.user_type === "superadmin" || (profile as any)?.platform_role === "superadmin"
   const brokerageId  = profile?.brokerage_id as string | null
 
   const [usage, agentRankingResult, quota] = await Promise.all([

@@ -30,6 +30,33 @@ import {
 
 const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead", "support"])
 
+/**
+ * Who reads/writes the ticket queue ACROSS brokerages instead of being pinned to
+ * their own tenant.
+ *
+ * Two halves, and only one of them worked. `ctx.userType === "support"` is live —
+ * 'support' is a storable user_type — but `ctx.userType === "superadmin"` matched
+ * NOBODY: the platform's only superadmin is (user_type='admin',
+ * platform_role='superadmin'), so the platform owner silently fell through to the
+ * brokerage-scoped branch and the support console showed them ONE tenant's tickets
+ * while reading as the whole queue. AgentContext does not carry platform_role, so
+ * it is read here. Both columns, the same shape as public.is_platform_admin() in
+ * RLS — see app/actions/vendor-budget.ts:136-147.
+ *
+ * NOT widened to the four-role platform-staff roster: that would newly admit
+ * platform 'admin' and 'marketing' to every tenant's support tickets, which is a
+ * scope decision this fix has no mandate to make. Only the dead half is repaired.
+ */
+async function callerReadsAllBrokerages(ctx: { userId: string; userType: string }): Promise<boolean> {
+  if (ctx.userType === "superadmin" || ctx.userType === "support") return true
+  const { data } = await createServiceClient()
+    .from("users")
+    .select("platform_role")
+    .eq("id", ctx.userId)
+    .maybeSingle()
+  return (data as { platform_role?: string | null } | null)?.platform_role === "superadmin"
+}
+
 function mapTicket(r: Record<string, unknown>): SupportTicket {
   return {
     id: r.id as string,
@@ -174,7 +201,7 @@ export async function listBrokerageTickets(filters?: {
     .limit(300)
 
   // Superadmin/support staff see all brokerages; everyone else is brokerage-scoped.
-  if (ctx.userType !== "superadmin" && ctx.userType !== "support") {
+  if (!(await callerReadsAllBrokerages(ctx))) {
     if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
     query = query.eq("brokerage_id", ctx.brokerageId)
   }
@@ -200,7 +227,7 @@ export async function updateTicketStatus(
 
   let q = svc.from("support_tickets").update(update).eq("id", ticketId)
   // Non-platform admins may only touch their own brokerage's tickets.
-  if (ctx.userType !== "superadmin" && ctx.userType !== "support") {
+  if (!(await callerReadsAllBrokerages(ctx))) {
     if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
     q = q.eq("brokerage_id", ctx.brokerageId)
   }
@@ -231,7 +258,7 @@ async function resolveAdminTicketScope(ticketId: string): Promise<
     .maybeSingle()
   if (error || !t) return { ok: false }
   // Non-platform admins may only touch their own brokerage's tickets.
-  if (ctx.userType !== "superadmin" && ctx.userType !== "support") {
+  if (!(await callerReadsAllBrokerages(ctx))) {
     if (!ctx.brokerageId || (t as { brokerage_id: string | null }).brokerage_id !== ctx.brokerageId) {
       return { ok: false }
     }

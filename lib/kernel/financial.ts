@@ -31,7 +31,9 @@ import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
 import { syncAgentLedgerToStamp } from "@/lib/commission/ledger-sync"
 import { resolveUserOffice, pickUserOffice } from "./resolve-user-office"
+import { resolveLedTeamId } from "./resolve-user-team"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
+import type { SupabaseClient } from "@supabase/supabase-js"
 
 
 // ─── CONSTANTS & ENUMS ────────────────────────────────────────────────────────
@@ -63,6 +65,22 @@ export interface FinancialActorContext {
   agentId:     string | null
   brokerageId: string
   userType:    "agent" | "team_lead" | "broker" | "admin" | "superadmin"
+  /**
+   * `users.platform_role` — the OTHER half of staff identity, and the half this
+   * shape was missing. Same reason it exists on AuthResult in
+   * lib/kernel/api-auth.ts: staff identity is DUAL-COLUMN, and the platform's
+   * only superadmin on this database is (user_type='admin',
+   * platform_role='superadmin'). A context carrying `userType` alone cannot
+   * represent that person, so `ctx.userType === "superadmin"` was a test no live
+   * account could ever pass.
+   *
+   * OPTIONAL AND NULL-BY-DEFAULT ON PURPOSE. Callers that legitimately do not
+   * know the column simply omit it; `undefined` means "unknown", and
+   * loadFinancialWorkspace then resolves the FACT from `users` rather than
+   * assuming one. `null` means "known, and this person is not staff" — every
+   * tenant user. Neither value ever grants anything on its own.
+   */
+  platformRole?: string | null
 }
 
 export interface KernelFinancialResult<T = void> {
@@ -121,6 +139,15 @@ export interface FinancialWorkspace {
   brokerageId:  string
   userType:     string
   accessLevel:  "personal" | "team" | "brokerage" | "system"
+  /**
+   * The team this actor LEADS (`teams.team_lead_id = userId`), or null. It is
+   * returned because `accessLevel: "team"` is otherwise an unusable answer — it
+   * says "scope this to your team" without naming the team, which is what forced
+   * every team surface to re-derive it from `users.team_id` and get a different
+   * answer. Null for everyone who leads no team, including brokerage/system
+   * actors whose wider scope does not come from a team link.
+   */
+  teamId:       string | null
   validatedAt:  string
 }
 
@@ -296,6 +323,39 @@ export interface EmailFinancialReportInput {
 // ─── COMMAND IMPLEMENTATIONS ──────────────────────────────────────────────────
 
 /**
+ * `users.platform_role` for one actor — the half of staff identity a caller may
+ * not have been able to supply.
+ *
+ * MODULE-PRIVATE. It exists so a context built by a caller that never read the
+ * column (`ctx.platformRole === undefined`) degrades to READING THE FACT rather
+ * than to assuming the person is not staff — which is precisely how the live
+ * superadmin was being refused. A caller that HAS read the column passes it
+ * (including as an explicit `null`) and no second query happens.
+ *
+ * The error is DESTRUCTURED: supabase-js resolves a refused read, so `const
+ * { data }` alone would report "permission denied" as "not staff". A refusal
+ * here returns null, which is fail-CLOSED — it can only ever narrow somebody to
+ * the scope their user_type already earns them, never widen them — but it is
+ * logged, because null is otherwise indistinguishable from a genuine tenant user.
+ */
+async function resolveActorPlatformRole(
+  client: SupabaseClient<any, any, any>,
+  userId: string,
+): Promise<string | null> {
+  const { data, error } = await client
+    .from("users")
+    .select("platform_role")
+    .eq("id", userId)
+    .maybeSingle()
+
+  if (error) {
+    console.error(`[financial] users.platform_role read REFUSED for ${userId}: ${error.message}`)
+    return null
+  }
+  return (data as { platform_role?: string | null } | null)?.platform_role ?? null
+}
+
+/**
  * loadFinancialWorkspace — Verify actor identity + determine access level
  */
 export async function loadFinancialWorkspace(
@@ -305,11 +365,52 @@ export async function loadFinancialWorkspace(
   const supabase = createServiceClient()
 
   try {
-    // Determine access level first — broker/admin users may not have an agents row
+    // ── ACCESS LEVEL — resolved from FACTS, not from the `user_type` label ────
+    //
+    // This block used to read:
+    //
+    //     if (ctx.userType === "team_lead")  accessLevel = "team"
+    //     if (ctx.userType === "superadmin") accessLevel = "system"
+    //
+    // and both tests were inverted against the live database.
+    //
+    // TEAM. The owner's ruling is "a team lead is an agent that runs their own
+    // team". Measured live, teamlead@vip.demo is user_type='agent' and LEADS one
+    // team — so the label test gave the real lead accessLevel="personal" and they
+    // never saw their team's numbers — while buyer@yourbrokerage.com is
+    // user_type='team_lead' and leads NOTHING, so the label test handed them a
+    // team scope for a team that does not exist. The fact is the
+    // `teams.team_lead_id` FK, which is what RLS was moved onto in m444 via
+    // public.current_user_led_team_id(). resolveLedTeamId() is that function's
+    // app-side twin, so the app and the database now give the same answer.
+    //
+    // SYSTEM. Staff identity is DUAL-COLUMN and the platform's only superadmin is
+    // (user_type='admin', platform_role='superadmin') — `ctx.userType ===
+    // "superadmin"` alone described nobody. Both columns are read, which is the
+    // same shape public.is_platform_admin() uses in RLS and requireSuperadmin()
+    // uses in app/actions/superadmin/platform-staff.ts. platform_role='superadmin'
+    // is written solely by the superadmin-gated staff CRUD, so this widens to the
+    // genuine superadmin and to nobody else.
+    //
+    // BROKER/ADMIN IS DELIBERATELY UNTOUCHED — 'broker' and 'admin' are real
+    // user_type values held by real brokerage users, and brokerage scope is still
+    // exactly what they get.
+    //
+    // ORDER IS PRECEDENCE, WIDEST LAST: a broker who also leads a team keeps
+    // brokerage scope (wider), and the superadmin keeps system scope, rather than
+    // being narrowed to one team by the lead link.
+    const platformRole =
+      ctx.platformRole !== undefined
+        ? ctx.platformRole
+        : await resolveActorPlatformRole(supabase, ctx.userId)
+    const isSuperadmin = ctx.userType === "superadmin" || platformRole === "superadmin"
+
+    const ledTeamId = await resolveLedTeamId(supabase, ctx.userId)
+
     let accessLevel: "personal" | "team" | "brokerage" | "system" = "personal"
-    if (ctx.userType === "team_lead") accessLevel = "team"
+    if (ledTeamId) accessLevel = "team"
     if (ctx.userType === "broker" || ctx.userType === "admin") accessLevel = "brokerage"
-    if (ctx.userType === "superadmin") accessLevel = "system"
+    if (isSuperadmin) accessLevel = "system"
 
     if (ctx.agentId) {
       // Agent path: verify identity via agents table
@@ -355,6 +456,7 @@ export async function loadFinancialWorkspace(
         brokerageId: ctx.brokerageId,
         userType:    ctx.userType,
         accessLevel,
+        teamId:      ledTeamId,
         validatedAt: new Date().toISOString(),
       },
     }

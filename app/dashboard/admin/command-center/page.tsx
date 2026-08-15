@@ -39,12 +39,23 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
 
   const { data: userData } = await supabase
     .from("users")
-    .select("user_type, brokerage_id")
+    .select("user_type, platform_role, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
 
   const userType    = userData?.user_type ?? "agent"
   const brokerageId = userData?.brokerage_id ?? undefined
+  // PLATFORM SCOPE — resolved from BOTH identity columns, and this page has ~13
+  // decisions hanging off it. Every one of them used to read
+  // `userType === "superadmin"`, which is FALSE for the platform's only
+  // superadmin (user_type='admin', platform_role='superadmin'). The consequence
+  // was not a refusal — it was a SILENT DOWNGRADE: the owner passed the
+  // admin/broker entry gate, then got the brokerage slice of the Command Center
+  // (their own brokerage's queue, Trust Meter, QBR) and the header said "Your
+  // brokerage". Platform-wide scope was never once granted on this surface.
+  // Same shape as public.is_platform_admin() in RLS and requireSuperadmin() in
+  // lib/auth/platform-guard.ts — see app/actions/vendor-budget.ts:136-147.
+  const isSuperadmin = userType === "superadmin" || userData?.platform_role === "superadmin"
   // TIER PARITY (owner rule): the Command Center — the feed, the Trust Meter,
   // Earned Autonomy — is for the tenancy's PRINCIPAL, whatever shape the
   // tenancy has. A solo agent IS their own broker; a team lead governs a team
@@ -72,13 +83,13 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
   // admin is scoped to their location while broker/broker_admin see all locations.
   let locationId: string | null = null
   let teamId: string | null = null
-  if (userType !== "superadmin" && brokerageId) {
+  if (!isSuperadmin && brokerageId) {
     const { data: agentRow } = await supabase
       .from("agents").select("location_id, team_id").eq("user_id", user.id).eq("brokerage_id", brokerageId).maybeSingle()
     locationId = (agentRow as any)?.location_id ?? null
     teamId = (agentRow as any)?.team_id ?? null
   }
-  const baseScope = userType !== "superadmin" && brokerageId
+  const baseScope = !isSuperadmin && brokerageId
     ? resolveEgressScope({ userType, userId: user.id, brokerageId, locationId, teamId })
     : undefined
 
@@ -128,29 +139,29 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
 
   const scopeLabel = effectiveScope
     ? describeScope(effectiveScope)
-    : (userType === "superadmin" ? "Platform — all brokerages" : "Your brokerage")
+    : (isSuperadmin ? "Platform — all brokerages" : "Your brokerage")
 
   const data = await loadCommandCenter({
-    brokerageId: userType === "superadmin" ? undefined : brokerageId,
+    brokerageId: isSuperadmin ? undefined : brokerageId,
     scope: effectiveScope,
     limit:       100,
   })
 
   // THE TRUST METER — per-manager human-approval rates + the broker's own rejection
   // reasons (outcome learning made visible; brokerage scope only).
-  const trust = brokerageId && userType !== "superadmin"
+  const trust = brokerageId && !isSuperadmin
     ? await computeManagerTrust(brokerageId).catch(() => null)
     : null
 
   // DEAL PLAY LIFT — did the AI-team play move listings? Honest by construction:
   // "still learning" until both cohorts clear the sample gate (never a thin-data claim).
-  const lift = brokerageId && userType !== "superadmin"
+  const lift = brokerageId && !isSuperadmin
     ? await loadDealPlayLift(createServiceClient(), brokerageId).catch(() => null)
     : null
 
   // EARNED AUTONOMY — the grant ledger beside the Trust Meter (broker/admin
   // only; the action enforces the role — a non-granting viewer sees nothing).
-  const earned = brokerageId && userType !== "superadmin"
+  const earned = brokerageId && !isSuperadmin
     ? await listEarnedAutonomyAction().catch(() => null)
     : null
 
@@ -158,7 +169,7 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
   // measured prediction accuracy, not toggled. The full per-domain report lives
   // on Manager Trust; this compact glance puts it on the operator's one screen.
   let autonomyAccuracy: import("@/lib/managers/accuracy-gate").AutonomyAccuracySummary | null = null
-  if (brokerageId && userType !== "superadmin") {
+  if (brokerageId && !isSuperadmin) {
     try {
       const { loadAccuracyGateReport, loadAccuracyHoldRollup, summarizeAutonomyAccuracy } =
         await import("@/lib/managers/accuracy-gate")
@@ -172,13 +183,13 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
 
   // YOUR AI TEAMMATES — the tenant's own chartered identities on the manager
   // bench (the action enforces tier-parity principal access; others see nothing).
-  const teammates = brokerageId && userType !== "superadmin"
+  const teammates = brokerageId && !isSuperadmin
     ? await listAiTeammatesAction().catch(() => null)
     : null
 
   // QUARTERLY BUSINESS REVIEW + adoption pulse — the principal's 90-day read
   // (the action enforces tier-parity principal access; others see nothing).
-  const qbr = brokerageId && userType !== "superadmin"
+  const qbr = brokerageId && !isSuperadmin
     ? await getQuarterlyReviewAction().catch(() => null)
     : null
 
@@ -232,7 +243,7 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
 
   // PER-TENANT AUTONOMY HALT — if platform staff paused this brokerage's autonomous AI, say so
   // honestly, up top, with the staff-entered reason (the same state the dispatch gate enforces).
-  const tenantHalt = brokerageId && userType !== "superadmin"
+  const tenantHalt = brokerageId && !isSuperadmin
     ? await loadTenantAutonomyHalt(brokerageId).catch(() => null)
     : null
 
@@ -241,7 +252,7 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
   // without (markets → scrape pipeline, assignment rules → Engine 2, providers
   // → egress, …). Server-composed from real tables; dismissals are UI-only.
   let setupReadiness: import("@/lib/onboarding/critical-setup").CriticalSetupReadiness | null = null
-  if (brokerageId && userType !== "superadmin") {
+  if (brokerageId && !isSuperadmin) {
     try {
       const { loadCriticalSetupFacts, composeSetupReadiness } = await import("@/lib/onboarding/critical-setup")
       const facts = await loadCriticalSetupFacts(createServiceClient(), { brokerageId })
@@ -265,7 +276,7 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
       {/* ANNOUNCE TO MY TEAM — the principal's internal broadcast composer.
           Page entry is already principal-gated (mayEnter above, the same
           tier-parity rule); the server action re-enforces it. In-app only. */}
-      {brokerageId && userType !== "superadmin" && (
+      {brokerageId && !isSuperadmin && (
         <div className="mx-6 mt-4">
           <TeamAnnouncementComposer canChooseScope={["admin", "broker"].includes(userType)} />
         </div>
@@ -310,7 +321,7 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
       )}
       <CommandCenterClient
         data={data}
-        scope={userType === "superadmin" ? "platform" : "brokerage"}
+        scope={isSuperadmin ? "platform" : "brokerage"}
         scopeLabel={scopeLabel}
         canSwitch={canSwitch}
         scopeOptions={scopeOptions}

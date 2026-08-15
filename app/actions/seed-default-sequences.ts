@@ -17,6 +17,34 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { resolveWriteContext } from "@/lib/kernel/identity"
 import { KernelEvent } from "@/lib/kernel/events"
 
+/**
+ * "Is this caller the platform superadmin?" — BOTH identity columns.
+ *
+ * WriteContext carries only `user_type`, and `ctx.userType !== "superadmin"` is
+ * TRUE for the platform's only superadmin, whose row is
+ * (user_type='admin', platform_role='superadmin'). Both cross-tenant escape
+ * hatches below were therefore dead: the platform owner could neither read nor
+ * seed another brokerage's default sequences, and got "Cannot seed for another
+ * brokerage" on the one account that is allowed to. This mirrors
+ * public.is_platform_admin() in RLS and requireSuperadmin() in
+ * lib/auth/platform-guard.ts — see app/actions/vendor-budget.ts:136-147.
+ *
+ * Deliberately superadmin-ONLY, not the four-role platform-staff roster: seeding
+ * writes campaign automation INTO a tenant, which support/marketing staff do not do.
+ *
+ * Called only on the branch that would otherwise refuse (caller asked for a
+ * brokerage that is not their own), so the common path costs no extra query.
+ */
+async function callerIsSuperadmin(userId: string, userType: string): Promise<boolean> {
+  if (userType === "superadmin") return true
+  const { data } = await createServiceClient()
+    .from("users")
+    .select("platform_role")
+    .eq("id", userId)
+    .maybeSingle()
+  return (data as { platform_role?: string | null } | null)?.platform_role === "superadmin"
+}
+
 interface SeqSeed {
   name:         string
   description:  string
@@ -192,7 +220,7 @@ export async function getDefaultSequenceCatalog(brokerageId?: string): Promise<{
   // Same tenant boundary as seedDefaultSequences: a client-supplied brokerageId
   // must be the caller's own (service client bypasses RLS) — only superadmin may
   // read another tenant's install state.
-  if (brokerageId && brokerageId !== ctx.brokerageId && ctx.userType !== "superadmin") {
+  if (brokerageId && brokerageId !== ctx.brokerageId && !(await callerIsSuperadmin(ctx.userId, ctx.userType))) {
     return { success: false, error: "Cannot read another brokerage", items: [] }
   }
 
@@ -235,7 +263,7 @@ export async function seedDefaultSequences(
   if (!targetBrokerageId) {
     return { success: false, error: "No brokerage in scope", created: 0, skipped: 0 }
   }
-  if (brokerageId && brokerageId !== ctx.brokerageId && ctx.userType !== "superadmin") {
+  if (brokerageId && brokerageId !== ctx.brokerageId && !(await callerIsSuperadmin(ctx.userId, ctx.userType))) {
     return { success: false, error: "Cannot seed for another brokerage", created: 0, skipped: 0 }
   }
 

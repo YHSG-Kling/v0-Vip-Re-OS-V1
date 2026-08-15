@@ -1,4 +1,5 @@
 import { getAgentContext } from '@/lib/identity/get-agent-context'
+import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import {
   SystemCommandStrip,
@@ -39,6 +40,23 @@ export default async function SystemPage() {
   }
 
   const { brokerageId } = context
+
+  // "Is superadmin" needs BOTH identity columns and AgentContext carries only
+  // user_type, so platform_role is read here. `context.userType === 'superadmin'`
+  // was FALSE for the platform's only superadmin (user_type='admin',
+  // platform_role='superadmin'), so the footer's link out to Superadmin
+  // Observability — the ONLY route to full observability offered from this page —
+  // never rendered for the one account that can use it. Same shape as
+  // public.is_platform_admin() in RLS; see app/actions/vendor-budget.ts:136-147.
+  const supabase = await createClient()
+  const { data: identity } = await supabase
+    .from('users')
+    .select('platform_role')
+    .eq('id', context.userId)
+    .maybeSingle()
+  const isSuperadmin =
+    context.userType === 'superadmin' ||
+    (identity as { platform_role?: string | null } | null)?.platform_role === 'superadmin'
 
   return (
     <div className="min-h-screen bg-background">
@@ -107,7 +125,7 @@ export default async function SystemPage() {
         <div className="text-center text-xs text-muted-foreground pt-4 border-t border-border">
           <p>
             This dashboard shows brokerage-level system health.
-            {context.userType === 'superadmin' && (
+            {isSuperadmin && (
               <span className="ml-1">
                 For full observability access, visit{' '}
                 <a 

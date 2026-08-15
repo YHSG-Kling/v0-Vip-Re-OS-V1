@@ -45,9 +45,16 @@ export async function POST(
       tier: body.tier,
       newStatus: body.newStatus,
       cancellationReason: body.cancellationReason,
+      // BOTH IDENTITY COLUMNS, VERBATIM — never a hand-written label. See the
+      // same seam in ../entitlements/[brokerageId]/route.ts: `userType:
+      // "superadmin"` was an assertion typed in to satisfy the old literal-union
+      // field, not the caller's real user_type (which for the platform's only
+      // superadmin is 'admin'). The kernel gate now gets the session's actual
+      // columns and reaches the verdict itself.
       actorContext: {
         userId: auth.userId,   // always from session, never from body/headers
-        userType: "superadmin",
+        userType: auth.userType,
+        platformRole: auth.platformRole,
       },
     })
 

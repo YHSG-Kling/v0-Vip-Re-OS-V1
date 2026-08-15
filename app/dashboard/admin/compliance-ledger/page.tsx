@@ -31,10 +31,17 @@ export default async function ComplianceLedgerPage({ searchParams }: { searchPar
   const { days, severity } = await searchParams
 
   const { data: userData } = await supabase
-    .from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
+    .from("users").select("user_type, platform_role, brokerage_id").eq("id", user.id).maybeSingle()
   const userType = userData?.user_type ?? "agent"
   if (!["admin", "broker", "superadmin"].includes(userType)) redirect("/dashboard")
-  const brokerageId = userType === "superadmin" ? null : (userData?.brokerage_id ?? null)
+  // Platform-wide ledger scope from BOTH identity columns. `userType ===
+  // "superadmin"` is FALSE for the platform's only superadmin (user_type='admin',
+  // platform_role='superadmin'), so brokerageId was never null and the
+  // platform-wide compliance audit trail — the cross-tenant Fair Housing /
+  // consent record this page exists to produce — was unreachable. Same shape as
+  // public.is_platform_admin() in RLS; see app/actions/vendor-budget.ts:136-147.
+  const isSuperadmin = userType === "superadmin" || userData?.platform_role === "superadmin"
+  const brokerageId = isSuperadmin ? null : (userData?.brokerage_id ?? null)
 
   const sinceDays = RANGES.includes(Number(days)) ? Number(days) : 30
   const sev = severity && SEVERITIES.includes(severity as any) && severity !== "all" ? severity : undefined

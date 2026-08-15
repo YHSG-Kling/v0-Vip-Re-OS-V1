@@ -1,14 +1,21 @@
 import { SupabaseClient } from "@supabase/supabase-js"
 
-/**
- * Pure helper function to extract the owner user ID from a contact object.
- * The contact.agent_id points directly to users.id in the current schema.
- */
-export function resolveContactOwnerUserId(contact: {
-  agent_id: string | null
-}): string | null {
-  return contact.agent_id
-}
+// resolveContactOwnerUserId — DELETED (orphan burn-down w44).
+//
+// It was not unwired-but-correct, it was WRONG: it returned `contact.agent_id`
+// under a name and docstring that both claimed the value is a users.id. It is an
+// agents.id. m366 re-pointed the last stragglers so the plain spelling `agent_id`
+// means agents(id) everywhere, lib/identity/get-agent-context.ts records the same
+// ("contacts.agent_id → agents.id, FK corrected in migration 114"), and
+// scripts/agent-id-class-guard.ts hard-codes `contact.agent_id` in its
+// AGENT_ID_EXPR list of expressions that ARE an agents.id. A one-line function
+// whose only job is to relabel one id class as the other is a trap for the next
+// caller, not a capability.
+//
+// The owner of a contact is reached by resolveContactOwnerAgent below (agents row
+// + user details) or by lib/identity/get-agent-context.ts:getAgentContext for the
+// CALLER's own identity. Neither needs a "contact → users.id" shortcut, because
+// there is no such column.
 
 /**
  * Resolve the full contact owner agent record.

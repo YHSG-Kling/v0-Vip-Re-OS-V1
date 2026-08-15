@@ -20,7 +20,23 @@ export default async function FeatureGovernancePage() {
 
   const supabase = await createClient()
   const brokerageId = context.brokerageId
-  const isSuperadmin = context.userType === "superadmin"
+
+  // "Is superadmin" needs BOTH identity columns and AgentContext carries only
+  // user_type, so platform_role is read here. `context.userType === "superadmin"`
+  // was FALSE for the platform's only superadmin (user_type='admin',
+  // platform_role='superadmin'), which made this page's entire write half dead
+  // for the one account that owns it: every flag toggle and tier checkbox
+  // rendered `disabled`, and the client showed the read-only "flags are managed
+  // by the platform team" notice TO the platform team. Same shape as
+  // public.is_platform_admin() in RLS; see app/actions/vendor-budget.ts:136-147.
+  const { data: identity } = await supabase
+    .from("users")
+    .select("platform_role")
+    .eq("id", context.userId)
+    .maybeSingle()
+  const isSuperadmin =
+    context.userType === "superadmin" ||
+    (identity as { platform_role?: string | null } | null)?.platform_role === "superadmin"
 
   const now = new Date()
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)

@@ -116,13 +116,23 @@ export async function orchestrateEventById(eventId: string) {
 
   const { data: u } = await supabase
     .from("users")
-    .select("brokerage_id, user_type")
+    .select("brokerage_id, user_type, platform_role")
     .eq("id", user.id)
     .maybeSingle()
   if (!u?.brokerage_id) return { success: false, error: "Unauthorized" }
   if (!REPLAY_ROLES.includes(u.user_type ?? "")) {
     return { success: false, error: "Forbidden" }
   }
+
+  // "Is superadmin" is not answerable from user_type. The platform's only
+  // superadmin is (user_type='admin', platform_role='superadmin'), so BOTH
+  // columns are read — the same shape as public.is_platform_admin() in RLS and
+  // requireSuperadmin() in lib/auth/platform-guard.ts. See
+  // app/actions/vendor-budget.ts:136-147.
+  const isSuperadmin =
+    u.user_type === "superadmin" ||
+    u.user_type === "super_admin" ||
+    (u as any).platform_role === "superadmin"
 
   try {
     const { data: event, error: fetchError } = await supabase
@@ -137,11 +147,15 @@ export async function orchestrateEventById(eventId: string) {
 
     // Superadmins can replay across brokerages; everyone else must be in the
     // same brokerage as the event.
-    if (
-      u.user_type !== "superadmin" &&
-      u.user_type !== "super_admin" &&
-      event.brokerage_id !== u.brokerage_id
-    ) {
+    //
+    // This is a NEGATIVE test ANDed into a DENIAL, so the dead literal failed
+    // CLOSED, not open: `u.user_type !== "superadmin"` was always true for the
+    // real superadmin, which collapsed the condition to the plain tenant check
+    // and denied the one account the exemption exists for. The gate it guards is
+    // the cross-tenant replay of a lifecycle_event — nothing was ever let through
+    // that should not have been; the platform owner was locked out of replaying
+    // any event outside their own brokerage_id.
+    if (!isSuperadmin && event.brokerage_id !== u.brokerage_id) {
       return { success: false, error: "Forbidden" }
     }
 

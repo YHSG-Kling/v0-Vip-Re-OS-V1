@@ -29,7 +29,7 @@ async function requireBrokerAdmin() {
   // your row" send an operator to two different places.
   const { data: row, error: userError } = await supabase
     .from("users")
-    .select("brokerage_id, user_type")
+    .select("brokerage_id, user_type, platform_role")
     .eq("id", user.id)
     .maybeSingle()
 
@@ -43,7 +43,14 @@ async function requireBrokerAdmin() {
     // Platform admins see every tenant's cron runs and the raw failure text.
     // Everyone else is confined to their own tenant plus the untenanted
     // platform sweeps — see getCronHealth.
-    isPlatformAdmin: row.user_type === "superadmin",
+    //
+    // BOTH identity columns. `row.user_type === "superadmin"` alone was FALSE for
+    // the platform's only superadmin, whose row is (user_type='admin',
+    // platform_role='superadmin') — so this flag was never once true and the
+    // platform-wide cron view and the raw failure text were unreachable. Same
+    // shape as public.is_platform_admin() in RLS and requireSuperadmin() in
+    // lib/auth/platform-guard.ts; see app/actions/vendor-budget.ts:136-147.
+    isPlatformAdmin: row.user_type === "superadmin" || (row as any).platform_role === "superadmin",
   }
 }
 

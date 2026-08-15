@@ -112,6 +112,50 @@ function isCurrentMembership(row: { is_active?: boolean | null; effective_to?: s
 }
 
 /**
+ * "DO YOU LEAD A TEAM?" — the app-side twin of public.current_user_led_team_id()
+ * (migration m444), which returns `teams.id WHERE team_lead_id = auth.uid() AND
+ * deleted_at IS NULL`. Same query, same NULL, same fail-closed reading.
+ *
+ * THIS IS THE ONLY LEGITIMATE TEST FOR "IS A TEAM LEAD", and the reason it has to
+ * exist separately from resolveUserTeam() is that the two questions are NOT the
+ * same question. resolveUserTeam() answers "which team is this person ON" and
+ * falls through four sources, so it returns a team for an ordinary member too.
+ * "Do you LEAD one" has exactly one source — the `teams.team_lead_id` FK — and a
+ * member must answer NO.
+ *
+ * The owner's ruling is "a team lead is an agent that runs their own team", and
+ * measured on the live database the `user_type` label is INVERTED on both
+ * accounts that exist: teamlead@vip.demo is user_type='agent' and runs one team,
+ * while buyer@yourbrokerage.com is user_type='team_lead' and runs none. So
+ * `user_type === 'team_lead'` gives the real lead a personal-only scope and hands
+ * the other account a team scope for a team that does not exist. A ROLE LABEL IS
+ * NOT A FACT; the FK is.
+ *
+ * NULL is fail-closed here for the reason set out in this module's header: an
+ * unresolved TEAM must never widen anybody to their brokerage. A refused read is
+ * logged loudly because supabase-js RESOLVES it, and NULL cannot distinguish
+ * "permission denied" from "leads nobody".
+ */
+export async function resolveLedTeamId(
+  client: SupabaseClient<any, any, any>,
+  userId: string,
+): Promise<string | null> {
+  const { data, error } = await client
+    .from("teams")
+    .select("id")
+    .eq("team_lead_id", userId)
+    .is("deleted_at", null)
+    .limit(1)
+    .maybeSingle()
+
+  if (error) {
+    console.error(`[resolve-user-team] teams read REFUSED for ${userId}: ${error.message}`)
+    return null
+  }
+  return (data as { id?: string } | null)?.id ?? null
+}
+
+/**
  * Resolve one person's team. `client` must be a service client or a session
  * client that can read `teams`, `users`, `team_members` and `agents`.
  *
@@ -131,18 +175,9 @@ export async function resolveUserTeam(
   userId: string,
   agentId?: string | null,
 ): Promise<UserTeam> {
-  const { data: ledRow, error: ledErr } = await client
-    .from("teams")
-    .select("id")
-    .eq("team_lead_id", userId)
-    .is("deleted_at", null)
-    .limit(1)
-    .maybeSingle()
-
-  if (ledErr) {
-    console.error(`[resolve-user-team] teams read REFUSED for ${userId}: ${ledErr.message}`)
-  }
-  const ledOf = (ledRow as { id?: string } | null)?.id ?? null
+  // Step 1 IS the lead-link question, so it is the same call resolveLedTeamId()
+  // makes rather than a second copy of that query written out here.
+  const ledOf = await resolveLedTeamId(client, userId)
   if (ledOf) return pickUserTeam(ledOf, null, null, null)
 
   const { data: userRow, error: userErr } = await client

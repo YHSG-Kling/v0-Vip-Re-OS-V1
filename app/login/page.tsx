@@ -10,6 +10,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { useState, useEffect, Suspense, useId } from 'react'
 import { Mail, Lock, Loader2, KeyRound } from 'lucide-react'
 import { checkSsoDomainAction } from '@/app/actions/tenant-sso'
+import { loginUser } from '@/app/actions/auth'
 
 function LoginContent() {
   const [email, setEmail] = useState('')
@@ -86,24 +87,37 @@ function LoginContent() {
     }
   }
 
+  // Password sign-in goes through the SERVER action, not the browser client.
+  //
+  // `loginUser` is the only sign-in path that runs `rejectIfSuspended` — the
+  // gate that reads the same `users.status` flag the tenant admin edit form
+  // (updateUser) and the superadmin suspend action (setTenantUserStatusAction)
+  // write. Calling `supabase.auth.signInWithPassword` from the browser skipped
+  // it entirely, so deactivating a user removed nothing: they could sign back
+  // in at this form and keep a live session until the token expired. The magic
+  // link and SSO lanes already land on /auth/callback, which runs the same gate
+  // via handleAuthCallback; password sign-in was the one door left open.
+  //
+  // The session still arrives in the browser: @supabase/ssr's server client
+  // stores the session in cookies (it forces persistSession + cookie storage
+  // regardless of the auth options lib/supabase/server.ts passes), and the
+  // browser client reads those same cookies. router.refresh() re-renders the
+  // server tree with the new session before we navigate.
   const handlePasswordLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsLoading(true)
     setError(null)
 
     try {
-      const supabase = createClient()
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      })
+      const result = await loginUser(email, password)
 
-      if (error) {
-        setError(error.message)
+      if (!result.success) {
+        setError(result.error)
         setIsLoading(false)
         return
       }
 
+      router.refresh()
       router.push('/dashboard')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An unexpected error occurred')

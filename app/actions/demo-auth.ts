@@ -147,51 +147,16 @@ export async function demoSignIn(userEmail: string) {
   }
 }
 
-/**
- * Sign out current user
- */
-export async function demoSignOut() {
-  try {
-    const cookieStore = await cookies();
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          get(name: string) {
-            return cookieStore.get(name)?.value;
-          },
-          set(name: string, value: string, options: any) {
-            cookieStore.set(name, value, options);
-          },
-          remove(name: string, options: any) {
-            cookieStore.delete(name);
-          },
-        },
-      }
-    );
-
-    const { error } = await supabase.auth.signOut();
-
-    if (error) {
-      return {
-        success: false,
-        error: error.message,
-      };
-    }
-
-    return {
-      success: true,
-      message: AUTH_MESSAGES.SIGN_OUT_SUCCESS,
-    };
-  } catch (error: any) {
-    console.error('Demo sign out error:', error);
-    return {
-      success: false,
-      error: error.message || 'Sign out failed',
-    };
-  }
-}
+// `demoSignOut()` REMOVED — a duplicate of `app/actions/auth.ts:signOut`, which
+// is the live one (called by app/components/layout/user-menu.tsx, the portal
+// user menu, and the /auth/logout route). Despite the name it was not demo
+// specific: it built its own createServerClient with the deprecated
+// get/set/remove cookie shape and called `supabase.auth.signOut()` — the exact
+// body of the survivor, which additionally uses the shared
+// `lib/supabase/server.ts` client. A demo session is a real Supabase session
+// (demoSignIn below signs in with a real password), so the survivor ends it.
+// Nothing was merged forward; the only difference was a success `message`
+// string no caller ever read.
 
 /**
  * Get all demo users (for demo selection UI)
@@ -212,49 +177,19 @@ export async function getDemoUsers() {
   }));
 }
 
-/**
- * Get demo users grouped by role
- */
-export async function getDemoUsersByRole() {
-  if (!DEMO_CONFIG.ENABLED) {
-    return {};
-  }
-
-  const grouped: Record<string, typeof DEMO_USERS> = {};
-
-  DEMO_USERS.forEach((user) => {
-    if (!grouped[user.role]) {
-      grouped[user.role] = [];
-    }
-    grouped[user.role].push(user);
-  });
-
-  return grouped;
-}
-
-/**
- * Validate demo credentials (for testing)
- */
-export async function validateDemoCredentials(email: string, password: string) {
-  const user = DEMO_USERS.find(
-    (u) => u.email.toLowerCase() === email.toLowerCase()
-  );
-
-  if (!user) {
-    return { valid: false, reason: 'User not found' };
-  }
-
-  if (user.password !== password) {
-    return { valid: false, reason: 'Invalid password' };
-  }
-
-  return {
-    valid: true,
-    user: {
-      id: user.id,
-      email: user.email,
-      name: `${user.firstName} ${user.lastName}`,
-      role: user.role,
-    },
-  };
-}
+// `getDemoUsersByRole()` REMOVED — a duplicate of `getDemoUsers` above, which is
+// the live one (app/auth/login/page.tsx renders its result and shows each user's
+// role on the row already). It read the same DEMO_USERS constant and differed
+// only by grouping — and by returning the RAW constant entries, `password`
+// field included, over a `"use server"` endpoint. `getDemoUsers` projects the
+// safe fields. Nothing merged forward: no surface asks for demo users grouped,
+// and the login page's flat list already carries the role.
+//
+// `validateDemoCredentials()` REMOVED — labelled "for testing" and used by no
+// test, no simulator and no surface. It compared a submitted password to the
+// plaintext in the DEMO_USERS constant in application code, which answers
+// nothing about whether the account can actually sign in. `demoSignIn` above is
+// the real check: it calls `supabase.auth.signInWithPassword` against the demo
+// account and provisions it on first use if it does not exist yet. Nothing
+// merged forward — the survivor validates against the identity provider, which
+// is strictly stronger than a constant-array comparison.

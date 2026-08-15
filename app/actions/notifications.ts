@@ -189,10 +189,26 @@ export async function createNotification(params: {
     targetAgent = ta
     // Broker/admin callers (no agentId) must stay within their own brokerage.
     // resolveWriteContext guarantees brokerageId is non-null, so only compare values.
-    if (!ctx.agentId && ctx.userType !== "superadmin") {
-      if (targetAgent.brokerage_id !== ctx.brokerageId) {
-        return { success: false, error: "Unauthorized" }
+    //
+    // The superadmin exemption reads BOTH identity columns. WriteContext carries
+    // only user_type, and `ctx.userType !== "superadmin"` was true for the
+    // platform's only superadmin — whose row is (user_type='admin',
+    // platform_role='superadmin') — so the platform owner was pinned to a single
+    // tenant and could not notify an agent in any other brokerage. platform_role
+    // is not on the context, so it is read here, and ONLY on the branch that would
+    // otherwise refuse: the tenant-matching common case never pays for the query.
+    // Same shape as public.is_platform_admin(); see app/actions/vendor-budget.ts:136-147.
+    if (!ctx.agentId && targetAgent.brokerage_id !== ctx.brokerageId) {
+      let isSuperadmin = ctx.userType === "superadmin"
+      if (!isSuperadmin) {
+        const { data: actorRow } = await supabase
+          .from("users")
+          .select("platform_role")
+          .eq("id", ctx.userId)
+          .maybeSingle()
+        isSuperadmin = (actorRow as { platform_role?: string | null } | null)?.platform_role === "superadmin"
       }
+      if (!isSuperadmin) return { success: false, error: "Unauthorized" }
     }
   }
 

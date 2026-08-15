@@ -24,14 +24,20 @@ export type ProviderSettingsPayload = {
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 
-async function requireBrokerAdmin(userId: string): Promise<{ brokerageId: string; userType: string }> {
+// Returns the caller's tenant + BOTH identity columns. `platformRole` is carried
+// alongside `userType` because "is superadmin" is not answerable from user_type:
+// the platform's only superadmin is (user_type='admin', platform_role='superadmin'),
+// so a user_type-only test graded the platform owner as an ordinary tenant admin.
+// See app/actions/vendor-budget.ts:136-147 for the canonical explanation, and
+// public.is_platform_admin() for the RLS shape this mirrors.
+async function requireBrokerAdmin(userId: string): Promise<{ brokerageId: string; userType: string; platformRole: string | null }> {
   // Use service client to bypass RLS
   const supabase = createServiceClient()
-  
+
   // Try public.users first
   const { data: user } = await supabase
     .from("users")
-    .select("brokerage_id, user_type")
+    .select("brokerage_id, user_type, platform_role")
     .eq("id", userId)
     .maybeSingle()
 
@@ -40,10 +46,16 @@ async function requireBrokerAdmin(userId: string): Promise<{ brokerageId: string
     if (!["admin", "broker", "superadmin"].includes(userType)) {
       throw new Error("Forbidden: insufficient permissions")
     }
-    return { brokerageId: user.brokerage_id as string, userType }
+    return {
+      brokerageId: user.brokerage_id as string,
+      userType,
+      platformRole: (user as any).platform_role ?? null,
+    }
   }
 
-  // Fallback: check user_role_assignments
+  // Fallback: check user_role_assignments. This table carries no platform_role —
+  // it is a TENANT role grant — so platformRole is null here by construction, and
+  // a caller reaching the platform answer through this path is not platform staff.
   const { data: roleAssignment } = await supabase
     .from("user_role_assignments")
     .select("brokerage_id, role")
@@ -55,10 +67,17 @@ async function requireBrokerAdmin(userId: string): Promise<{ brokerageId: string
     if (!["admin", "broker", "superadmin"].includes(role)) {
       throw new Error("Forbidden: insufficient permissions")
     }
-    return { brokerageId: roleAssignment.brokerage_id as string, userType: role }
+    return { brokerageId: roleAssignment.brokerage_id as string, userType: role, platformRole: null }
   }
 
   throw new Error("User not found or not associated with a brokerage")
+}
+
+/** "is superadmin" — BOTH columns, never user_type alone. Narrower than platform
+ *  staff (superadmin/admin/marketing/support); this stays superadmin-only because
+ *  it governs the system-only provider types the whole platform shares. */
+function isSuperadminIdentity(userType: string, platformRole: string | null): boolean {
+  return userType === "superadmin" || platformRole === "superadmin"
 }
 
 // SYSTEM_ONLY_TYPES mirror kernel/providers.ts — brokerage cannot override these.
@@ -89,8 +108,8 @@ export async function getProviderSettings(): Promise<{
   const { data: { user } } = await supabase.auth.getUser()
   if (!user?.id) throw new Error("Unauthorized")
 
-  const { brokerageId, userType } = await requireBrokerAdmin(user.id)
-  const isSuperadmin = userType === "superadmin"
+  const { brokerageId, userType, platformRole } = await requireBrokerAdmin(user.id)
+  const isSuperadmin = isSuperadminIdentity(userType, platformRole)
 
   const { data: rows, error } = await supabase
     .from("provider_overrides")
@@ -140,10 +159,10 @@ export async function saveProviderOverride(
   const { data: { user } } = await supabase.auth.getUser()
   if (!user?.id) throw new Error("Unauthorized")
 
-  const { brokerageId, userType } = await requireBrokerAdmin(user.id)
+  const { brokerageId, userType, platformRole } = await requireBrokerAdmin(user.id)
 
   // Brokerages cannot override system-only types
-  if (SYSTEM_ONLY_TYPES.has(payload.provider_type) && userType !== "superadmin") {
+  if (SYSTEM_ONLY_TYPES.has(payload.provider_type) && !isSuperadminIdentity(userType, platformRole)) {
     throw new Error(`Provider type "${payload.provider_type}" is superadmin-controlled and cannot be overridden by brokerage`)
   }
 
