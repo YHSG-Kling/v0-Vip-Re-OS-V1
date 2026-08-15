@@ -27,7 +27,8 @@ export default async function IntelligencePage() {
     redirect("/dashboard/onboarding")
   }
 
-  const { agentId, brokerageId } = agentContext
+  const agentId = agentContext.agentId!
+  const brokerageId = agentContext.brokerageId!
 
   // Calculate period labels
   const now = new Date()
@@ -121,33 +122,36 @@ export default async function IntelligencePage() {
   const processedRankings = leaderboardData.rankings.map(r => ({
     rank: r.rank_position,
     agentId: r.agent_id,
-    agentName: r.agents ? `${r.agents.first_name || ""} ${r.agents.last_name || ""}`.trim() : "Unknown",
-    avatarUrl: r.agents?.profile_image_url,
-    points: r.agents?.gamification_points || 0,
-    tier: getTierFromPoints(r.agents?.gamification_points || 0),
+    agentName: r.agents ? `${(r.agents as any).first_name || ""} ${(r.agents as any).last_name || ""}`.trim() : "Unknown",
+    avatarUrl: (r.agents as any)?.profile_image_url,
+    points: (r.agents as any)?.gamification_points || 0,
+    tier: getTierFromPoints((r.agents as any)?.gamification_points || 0),
     metricValue: r.metric_value,
     isCurrentUser: r.agent_id === leaderboardData.currentAgentId,
   }))
 
   // Process AI quality metrics
-  const thisWeekPositiveRate = thisWeekAIMetrics.totalFeedback > 0
-    ? Math.round((thisWeekAIMetrics.positiveCount / thisWeekAIMetrics.totalFeedback) * 100)
+  type WeeklyMetricsSummary = { totalFeedback: number; positiveCount: number; negativeCount: number; avgRating: number; editedCount: number; rejectedCount: number }
+  const thisWeek = thisWeekAIMetrics as WeeklyMetricsSummary
+  const lastWeek = lastWeekAIMetrics as WeeklyMetricsSummary
+  const thisWeekPositiveRate = thisWeek.totalFeedback > 0
+    ? Math.round((thisWeek.positiveCount / thisWeek.totalFeedback) * 100)
     : 0
-  const lastWeekPositiveRate = lastWeekAIMetrics.totalFeedback > 0
-    ? Math.round((lastWeekAIMetrics.positiveCount / lastWeekAIMetrics.totalFeedback) * 100)
+  const lastWeekPositiveRate = lastWeek.totalFeedback > 0
+    ? Math.round((lastWeek.positiveCount / lastWeek.totalFeedback) * 100)
     : 0
 
   const aiQualityMetrics = {
     thisWeekMetrics: {
-      totalFeedback: thisWeekAIMetrics.totalFeedback,
+      totalFeedback: thisWeek.totalFeedback,
       positiveRate: thisWeekPositiveRate,
-      avgRating: thisWeekAIMetrics.avgRating || 0,
-      editedResponses: thisWeekAIMetrics.editedCount || 0,
-      rejectedResponses: thisWeekAIMetrics.rejectedCount || 0,
+      avgRating: thisWeek.avgRating || 0,
+      editedResponses: thisWeek.editedCount || 0,
+      rejectedResponses: thisWeek.rejectedCount || 0,
     },
     weekOverWeekChange: {
       positiveRate: thisWeekPositiveRate - lastWeekPositiveRate,
-      avgRating: (thisWeekAIMetrics.avgRating || 0) - (lastWeekAIMetrics.avgRating || 0),
+      avgRating: (thisWeek.avgRating || 0) - (lastWeek.avgRating || 0),
     },
     recentIssues: [], // Would need a separate query for specific issues
   }
@@ -209,7 +213,7 @@ export default async function IntelligencePage() {
   return (
     <IntelligenceOSClient
       trustCapitalScore={trustCapital.trust_capital_score}
-      totalValueDelivered={valueDashboard?.valueMetrics?.totalValueDelivered || 0}
+      totalValueDelivered={valueDashboard?.valueMetrics?.total_value_delivered || 0}
       activePatternCount={patterns.length}
       highPriorityPatterns={highPriorityPatterns.length}
       accuracyStats={accuracyStats}

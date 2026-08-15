@@ -24,8 +24,14 @@ export type SourceKey =
   | 'facebook_group'
   | 'facebook_marketplace'
   | 'reddit_intent'
+  | 'instagram_intent'
   | 'craigslist_fsbo'
   | 'google_phrase_intent'
+  | 'rental_listing'
+  | 'expired_listing'
+  | 'linkedin_relocation'
+  | 'exa_buyer_intent'
+  | 'tavily_intent'
   | 'osint_signal'
 
 export type IntentType = 'buyer' | 'seller' | 'unknown'
@@ -81,45 +87,47 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
   },
 
   // ── Zillow behavioral signal ──────────────────────────────────────────────────
-  // Anonymous property views from Zillow search pages.
-  // Scores 35–65; anonymous until enrichment resolves identity.
+  // Real-estate sites yield BOTH online behaviors: FSBO/by-owner listings
+  // (SELLER) and saved-search / favorited / watching activity (BUYER). Intent is
+  // set per record by the parser (parsePropertySearchResults vs
+  // parseBuyerSavedSearches); the owner/buyer is resolved by enrichment.
   zenrows_zillow: {
-    intentType:                'buyer',
-    leadType:                  'buyer',
-    motivationType:            'active_property_search',
-    behaviorType:              'property_view',
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'real_estate_site_intent',
+    behaviorType:              'fsbo_listing',
     scoreRange:                [35, 65],
     baseScore:                 50,
-    boostSignals:              ['saved', 'contact_agent', 'schedule_showing', 'multiple_views', 'price_reduced'],
-    dampSignals:               ['single_view', 'no_contact'],
+    boostSignals:              ['by_owner', 'fsbo', 'make_me_move', 'coming_soon', 'price_reduced', 'expired_listing', 'saved_search', 'favorited', 'active_buyer'],
+    dampSignals:               ['agent_listed', 'rental', 'no_owner_contact'],
     identityPolicy:            'enrichment_first',
     canPromoteBeforeEnrichment: false,
   },
 
-  // ── Realtor.com behavioral signal ────────────────────────────────────────────
+  // ── Realtor.com — FSBO sellers + saved-search buyers ─────────────────────────
   zenrows_realtor: {
-    intentType:                'buyer',
-    leadType:                  'buyer',
-    motivationType:            'active_property_search',
-    behaviorType:              'property_view',
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'real_estate_site_intent',
+    behaviorType:              'fsbo_listing',
     scoreRange:                [35, 65],
     baseScore:                 48,
-    boostSignals:              ['saved', 'contact_agent', 'schedule_showing', 'open_house_rsvp'],
-    dampSignals:               ['single_view', 'no_contact'],
+    boostSignals:              ['by_owner', 'fsbo', 'make_me_move', 'coming_soon', 'price_reduced', 'saved_search', 'favorited', 'active_buyer'],
+    dampSignals:               ['agent_listed', 'rental', 'no_owner_contact'],
     identityPolicy:            'enrichment_first',
     canPromoteBeforeEnrichment: false,
   },
 
-  // ── Homes.com / generic property portal ──────────────────────────────────────
+  // ── Redfin / generic property portal — FSBO sellers + saved-search buyers ────
   zenrows_homes: {
-    intentType:                'buyer',
-    leadType:                  'buyer',
-    motivationType:            'active_property_search',
-    behaviorType:              'property_view',
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'real_estate_site_intent',
+    behaviorType:              'fsbo_listing',
     scoreRange:                [35, 60],
     baseScore:                 45,
-    boostSignals:              ['saved', 'contact_agent', 'schedule_showing'],
-    dampSignals:               ['single_view'],
+    boostSignals:              ['by_owner', 'fsbo', 'make_me_move', 'coming_soon', 'saved_search', 'favorited', 'active_buyer'],
+    dampSignals:               ['agent_listed', 'rental'],
     identityPolicy:            'enrichment_first',
     canPromoteBeforeEnrichment: false,
   },
@@ -143,9 +151,10 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
   // ── Facebook group post ───────────────────────────────────────────────────────
   // Often seller-side intent in real estate or neighborhood groups.
   facebook_group: {
-    intentType:                'seller',
-    leadType:                  'seller',
-    motivationType:            'social_seller_intent',
+    // Both buyer and seller posts; classified per post by the normalizer.
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'social_intent',
     behaviorType:              'social_intent',
     scoreRange:                [30, 65],
     baseScore:                 45,
@@ -173,14 +182,32 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
   // ── Reddit intent signal ─────────────────────────────────────────────────────
   // Often anonymous buyer intent; lower scores reflect anonymous identity.
   reddit_intent: {
-    intentType:                'buyer',
-    leadType:                  'buyer',
-    motivationType:            'buyer_research',
+    // Both buyer ("looking to buy", "first home") and seller ("selling my home")
+    // posts; the per-post normalizer sets the actual intent via detectIntent.
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'social_intent',
     behaviorType:              'social_intent',
     scoreRange:                [35, 55],
     baseScore:                 40,
     boostSignals:              ['pre_approved', 'looking_to_buy', 'first_time', 'moving_to', 'relocating', 'timeline'],
     dampSignals:               ['just_curious', 'hypothetical', 'no_timeline'],
+    identityPolicy:            'enrichment_first',
+    canPromoteBeforeEnrichment: false,
+  },
+
+  // ── Instagram intent (Apify) ──────────────────────────────────────────────────
+  // Real-estate hashtags/posts surface both buyer ("house hunting", "first home")
+  // and seller ("listing my home", "fsbo") intent; resolved per-post at enrichment.
+  instagram_intent: {
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'social_intent',
+    behaviorType:              'social_intent',
+    scoreRange:                [30, 55],
+    baseScore:                 38,
+    boostSignals:              ['looking_to_buy', 'house_hunting', 'first_home', 'selling', 'fsbo', 'listing_my_home', 'relocating'],
+    dampSignals:               ['agent_promo', 'just_browsing'],
     identityPolicy:            'enrichment_first',
     canPromoteBeforeEnrichment: false,
   },
@@ -214,6 +241,84 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     boostSignals:              ['sell_my_home', 'sell_house_fast', 'cash_offer', 'how_much_is_my_home_worth', 'homes_for_sale'],
     dampSignals:               ['general_research', 'low_intent'],
     identityPolicy:            'analytics_only',
+    canPromoteBeforeEnrichment: false,
+  },
+
+  // ── Rental listings (Craigslist apa) — landlord/investor SELLER signal ───────
+  // Owners listing rentals are prospective sellers (liquidating investment props).
+  rental_listing: {
+    intentType:                'seller',
+    leadType:                  'seller',
+    motivationType:            'investor_landlord',
+    behaviorType:              'rental_listing',
+    scoreRange:                [35, 60],
+    baseScore:                 45,
+    boostSignals:              ['by_owner', 'must_sell', 'tired_landlord', 'vacant', 'price_reduced'],
+    dampSignals:               ['property_manager', 'large_complex'],
+    identityPolicy:            'enrichment_first',
+    canPromoteBeforeEnrichment: false,
+  },
+
+  // ── Expired / withdrawn listings — top motivated SELLER signal ───────────────
+  // A listing that failed to sell (off-market / removed) is a high-intent seller.
+  expired_listing: {
+    intentType:                'seller',
+    leadType:                  'seller',
+    motivationType:            'expired_listing',
+    behaviorType:              'expired_listing',
+    scoreRange:                [60, 90],
+    baseScore:                 75,
+    boostSignals:              ['off_market', 'listing_removed', 'withdrawn', 'expired', 'price_reduced', 'days_on_market'],
+    dampSignals:               ['recently_sold', 'pending'],
+    identityPolicy:            'enrichment_first',
+    canPromoteBeforeEnrichment: false,
+  },
+
+  // ── LinkedIn relocation posts — inbound BUYER signal ─────────────────────────
+  // "Excited to start at {company} in {city}" → relocating buyer with timeline.
+  linkedin_relocation: {
+    intentType:                'buyer',
+    leadType:                  'buyer',
+    motivationType:            'relocation_buyer',
+    behaviorType:              'social_intent',
+    scoreRange:                [40, 70],
+    baseScore:                 52,
+    boostSignals:              ['relocating', 'new_job', 'moving_to', 'starting_at', 'excited_to_join'],
+    dampSignals:               ['remote', 'no_location'],
+    identityPolicy:            'enrichment_first',
+    canPromoteBeforeEnrichment: false,
+  },
+
+  // ── Exa neural-search buyer intent (AI-native) ───────────────────────────────
+  // Semantic discovery of buyer-intent content across the open web; per-result
+  // intent via detectIntent, anchored on the author handle.
+  exa_buyer_intent: {
+    intentType:                'buyer',
+    leadType:                  'buyer',
+    motivationType:            'ai_neural_buyer_intent',
+    behaviorType:              'search_signal',
+    scoreRange:                [35, 65],
+    baseScore:                 50,
+    boostSignals:              ['pre_approved', 'looking_to_buy', 'house_hunting', 'first_home', 'relocating', 'timeline'],
+    dampSignals:               ['just_browsing', 'no_timeline'],
+    identityPolicy:            'enrichment_first',
+    canPromoteBeforeEnrichment: false,
+  },
+
+  // ── Tavily agentic-search intent (AI-native) — buyer / seller / investor ─────
+  // Real-time ranked web content with snippets; per-result intent via detectIntent
+  // + isInvestor (investors tagged as buyers). Identity anchored on email/phone
+  // extracted from the snippet, else the source page URL.
+  tavily_intent: {
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'ai_search_intent',
+    behaviorType:              'search_signal',
+    scoreRange:                [35, 65],
+    baseScore:                 48,
+    boostSignals:              ['pre_approved', 'looking_to_buy', 'house_hunting', 'first_home', 'selling', 'fsbo', 'investor', '1031_exchange', 'cash_buyer', 'relocating'],
+    dampSignals:               ['just_browsing', 'no_timeline', 'agent_promo'],
+    identityPolicy:            'enrichment_first',
     canPromoteBeforeEnrichment: false,
   },
 
@@ -260,7 +365,7 @@ const FALLBACK_DEFINITION: SourceDefinition = {
  *   4. Clamp to source scoreRange [min, max]
  */
 export function calculateSourceScore(source: string, signals: string[]): number {
-  const def = SOURCE_MAP[source as SourceKey] ?? FALLBACK_DEFINITION
+  const def = SOURCE_MAP[resolveSourceKey(source)] ?? FALLBACK_DEFINITION
 
   const normalizedSignals = signals.map(s => s.toLowerCase().replace(/[\s\-]/g, '_'))
 
@@ -287,7 +392,124 @@ export function calculateSourceScore(source: string, signals: string[]): number 
  * Falls back to the default definition for unrecognised sources.
  */
 export function getSourceSemantics(source: string): SourceDefinition {
-  return SOURCE_MAP[source as SourceKey] ?? FALLBACK_DEFINITION
+  return SOURCE_MAP[resolveSourceKey(source)] ?? FALLBACK_DEFINITION
+}
+
+/**
+ * Maps the `source` values emitted by the scrapers/parsers to the canonical
+ * SOURCE_MAP keys. Without this, parser sources like "zillow"/"realtor"/"redfin"/
+ * "nextdoor" silently fell through to the unknown fallback (wrong intent + score).
+ * Already-canonical keys pass through unchanged.
+ */
+const SOURCE_ALIASES: Record<string, SourceKey> = {
+  zillow: "zenrows_zillow",
+  realtor: "zenrows_realtor",
+  "realtor.com": "zenrows_realtor",
+  redfin: "zenrows_homes",
+  homes: "zenrows_homes",
+  homes_com: "zenrows_homes",
+  nextdoor: "nextdoor_intent",
+  facebook: "facebook_group",
+  facebook_marketplace: "facebook_marketplace",
+  reddit: "reddit_intent",
+  instagram: "instagram_intent",
+  craigslist: "craigslist_fsbo",
+  google: "google_phrase_intent",
+  rental: "rental_listing",
+  expired: "expired_listing",
+  linkedin: "linkedin_relocation",
+  exa: "exa_buyer_intent",
+  tavily: "tavily_intent",
+  osint: "osint_signal",
+}
+
+/**
+ * Vendor routing contract — which scraping vendor owns each source.
+ *   • zenrows  — expensive; reserved for real-estate sites + Nextdoor only.
+ *   • apify    — Facebook / Instagram / Craigslist / Reddit / Google.
+ *   • batchdata — motivated-seller property data via quickLists (high-equity, preforeclosure,
+ *                 absentee, tax-default, vacant, tired-landlord, inherited, expired-listing).
+ *                 NOTE: BatchData has no divorce quickList — divorce is sourced via OSINT.
+ *   • osint    — public + court records (divorce / probate / foreclosure / tax-lien / eviction).
+ *   • peopledata is enrichment-only and never sources raw leads, so it is not here.
+ */
+export type ScrapeVendor = 'zenrows' | 'apify' | 'batchdata' | 'osint' | 'exa' | 'tavily'
+
+export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
+  zenrows_zillow:       'zenrows',
+  zenrows_realtor:      'zenrows',
+  zenrows_homes:        'zenrows',
+  nextdoor_intent:      'zenrows',
+  facebook_group:       'apify',
+  facebook_marketplace: 'apify',
+  instagram_intent:     'apify',
+  reddit_intent:        'apify',
+  craigslist_fsbo:      'apify',
+  google_phrase_intent: 'apify',
+  rental_listing:       'apify',   // Craigslist apartments section
+  linkedin_relocation:  'apify',
+  expired_listing:      'zenrows', // real-estate listing pages (off-market detection)
+  exa_buyer_intent:     'exa',     // AI-native neural search (buyer intent)
+  tavily_intent:        'tavily',  // AI-native agentic search (buyer/seller/investor)
+  batchdata_motivated:  'batchdata',
+  osint_signal:         'osint',
+}
+
+export function resolveSourceKey(source: string): SourceKey {
+  const key = source as SourceKey
+  if (key in SOURCE_MAP) return key
+  return SOURCE_ALIASES[source.toLowerCase()] ?? (source as SourceKey)
+}
+
+/**
+ * Gate token used by the lead-scraping cron's `enabledSources.has(...)` checks.
+ * The cron historically gated on short names ("facebook"), while DB config and
+ * normalizers use canonical keys ("facebook_group") — so a market configured with
+ * canonical keys silently scraped nothing. GATE_TOKEN maps each canonical key to
+ * the exact string the cron checks; expandEnabledSources() applies it so the gate
+ * matches regardless of which form (short / canonical / alias) the DB stored.
+ * The three ZenRows property sources collapse to the single "zillow_behavior"
+ * property-block gate the cron uses.
+ */
+const GATE_TOKEN: Record<SourceKey, string> = {
+  zenrows_zillow:       'zillow_behavior',
+  zenrows_realtor:      'zillow_behavior',
+  zenrows_homes:        'zillow_behavior',
+  nextdoor_intent:      'nextdoor',
+  facebook_group:       'facebook',
+  facebook_marketplace: 'facebook',
+  instagram_intent:     'instagram',
+  reddit_intent:        'reddit',
+  craigslist_fsbo:      'craigslist',
+  google_phrase_intent: 'google_phrase_intent',
+  rental_listing:       'rental',
+  linkedin_relocation:  'linkedin',
+  expired_listing:      'expired_listing',
+  exa_buyer_intent:     'exa',
+  tavily_intent:        'tavily',
+  batchdata_motivated:  'batchdata_motivated',
+  osint_signal:         'osint_signal',
+}
+
+/**
+ * Builds the set the cron tests with `enabledSources.has(...)`. For each configured
+ * value it adds: the raw value, its canonical SourceKey, and the cron gate token —
+ * so "facebook", "facebook_group", and the canonical key all activate the Facebook
+ * block. Pass-through values (e.g. "zillow_behavior", "recruiting_intent") are kept
+ * verbatim. This is the single bridge between DB `enabled_sources` config and the
+ * cron gate, eliminating the short-name/canonical-key drift.
+ */
+export function expandEnabledSources(raw: readonly string[] | null | undefined): Set<string> {
+  const out = new Set<string>()
+  for (const v of raw ?? []) {
+    if (!v) continue
+    out.add(v)
+    const key = resolveSourceKey(v)
+    out.add(key)
+    const token = GATE_TOKEN[key as SourceKey]
+    if (token) out.add(token)
+  }
+  return out
 }
 
 /**

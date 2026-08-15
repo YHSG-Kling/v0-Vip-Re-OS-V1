@@ -45,23 +45,41 @@ function stripHtml(html: string): string {
 export async function assembleEmail(params: AssembleEmailParams): Promise<AssembledEmail> {
   const supabase = createServiceClient()
 
-  // ── Load signature: user override first, then brokerage fallback ─────────
-  // Kernel OS order: per-user signature > brokerage_brand_settings default
+  // ── Load signature: agent → team → brokerage waterfall ──────────────────
+  // Kernel OS multi-tier order (most-specific wins):
+  //   1. Per-user signature (users.email_signature) — solo agent or team member override
+  //   2. Team-level signature (teams.branding_override.email_signature_html) — team tier
+  //   3. Brokerage-level signature (brokerage_brand_settings.email_signature_html) — brokerage / multi-location default
   let signatureHtml = ''
   let signatureText = ''
 
-  // 1. Try per-user signature (users.email_signature)
+  // 1. Try per-user signature
   const { data: userRow } = await supabase
     .from('users')
-    .select('email_signature')
+    .select('email_signature, team_id')
     .eq('id', params.userId)
     .maybeSingle()
 
   if (userRow?.email_signature) {
     signatureHtml = userRow.email_signature
     signatureText = stripHtml(userRow.email_signature)
-  } else {
-    // 2. Fall back to brokerage-level signature
+  } else if (userRow?.team_id) {
+    // 2. Team-level signature lives inside teams.branding_override JSONB
+    const { data: team } = await supabase
+      .from('teams')
+      .select('branding_override')
+      .eq('id', userRow.team_id)
+      .maybeSingle()
+
+    const teamSig = (team?.branding_override as any)?.email_signature_html
+    if (teamSig) {
+      signatureHtml = teamSig
+      signatureText = stripHtml(teamSig)
+    }
+  }
+
+  if (!signatureHtml) {
+    // 3. Fall back to brokerage-level signature
     const { data: brandSettings } = await supabase
       .from('brokerage_brand_settings')
       .select('email_signature_html')

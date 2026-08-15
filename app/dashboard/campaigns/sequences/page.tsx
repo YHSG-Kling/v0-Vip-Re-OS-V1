@@ -12,7 +12,7 @@ export const metadata = {
 export default async function CampaignSequencesPage({
   searchParams,
 }: {
-  searchParams: { action?: string }
+  searchParams: Promise<{ action?: string }>
 }) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -28,7 +28,8 @@ export default async function CampaignSequencesPage({
   if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   const { sequences } = await listCampaignSequences(profile.brokerage_id)
-  const openCreate = searchParams.action === "create"
+  const params = await searchParams
+  const openCreate = params.action === "create"
 
   return (
     <SequencesListClient
@@ -36,6 +37,7 @@ export default async function CampaignSequencesPage({
       brokerageId={profile.brokerage_id}
       userId={user.id}
       openCreate={openCreate}
+      pageType="marketing"
     />
   )
 }

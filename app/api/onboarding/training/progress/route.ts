@@ -143,7 +143,7 @@ export async function POST(request: NextRequest) {
       // Fire TRAINING_VIDEO_COMPLETED
       await processKernelEvent({
         event: KernelEvent.TRAINING_VIDEO_COMPLETED,
-        brokerageId,
+        brokerageId: brokerageId ?? "",
         entityType: "training_video",
         entityId: videoId,
       })
@@ -173,9 +173,9 @@ export async function POST(request: NextRequest) {
         // Fire TRAINING_COURSE_COMPLETED
         await processKernelEvent({
           event: KernelEvent.TRAINING_COURSE_COMPLETED,
-          brokerageId,
+          brokerageId: brokerageId ?? "",
           entityType: "agent",
-          entityId: agentId,
+          entityId: agentId ?? "",
         })
       }
     }

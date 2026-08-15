@@ -22,6 +22,10 @@ import {
   type CreateTemplateInput,
 } from '@/app/actions/newsletter/create-template'
 import { listTemplates } from '@/app/actions/newsletter/list-templates'
+import {
+  NEWSLETTER_SECTION_TYPES,
+  type NewsletterSectionType,
+} from '@/lib/kernel/newsletter/section-types'
 import { deleteTemplate } from '@/app/actions/newsletter/delete-template'
 import { submitTemplateForApproval } from '@/app/actions/newsletter/approve-template'
 
@@ -58,7 +62,10 @@ export function TemplateBuilder() {
     brandColors: { primary: '#000000', secondary: '#FFFFFF', accent: '#0066CC' },
     logoUrl: '',
     sections: [] as Array<{
-      sectionType: 'real_estate_tip' | 'market_update' | 'local_news' | 'agent_feature' | 'property_highlight'
+      // Canonical newsletter section taxonomy — see
+      // lib/kernel/newsletter/section-types.ts for the full list + display
+      // labels. Legacy keys (real_estate_tip, agent_feature) are aliased.
+      sectionType: NewsletterSectionType
       sectionName: string
       aiPrompt?: string
       sectionOrder: number
@@ -268,13 +275,10 @@ export function TemplateBuilder() {
                 <div>
                   <Label>Include Sections * (minimum 2)</Label>
                   <div className="space-y-3 mt-3">
-                    {[
-                      { type: 'real_estate_tip', label: 'Real Estate Tip' },
-                      { type: 'market_update', label: 'Market Update' },
-                      { type: 'local_news', label: 'Local News' },
-                      { type: 'agent_feature', label: 'Agent Feature' },
-                      { type: 'property_highlight', label: 'Property Highlight' },
-                    ].map(section => (
+                    {Object.values(NEWSLETTER_SECTION_TYPES)
+                      .filter(def => def.key !== 'custom')
+                      .map(def => ({ type: def.key, label: def.label }))
+                      .map(section => (
                       <div key={section.type} className="flex items-center gap-2">
                         <input
                           type="checkbox"
@@ -287,7 +291,7 @@ export function TemplateBuilder() {
                                 sections: [
                                   ...formData.sections,
                                   {
-                                    sectionType: section.type as any,
+                                    sectionType: section.type,
                                     sectionName: section.label,
                                     sectionOrder: formData.sections.length + 1,
                                     isDynamic: true,

@@ -3,8 +3,10 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { createClient }        from "@/lib/supabase/server"
 import { emitLifecycleTransition } from "@/lib/buyer-lifecycle/lifecycle-logger"
+import { gatewayChat } from "@/lib/ai/gateway-chat"
 import { KernelEvent }         from "@/lib/kernel/events"
 import { isValidUUID }         from "@/lib/validations"
+import { resolveAgentId }      from "@/lib/kernel/agent-identity"
 
 // ─── startOfferDraft ─────────────────────────────────────────────────────────
 // Emits lifecycle_event for buyer.offer.draft_started on page mount.
@@ -65,7 +67,6 @@ export interface OfferFormData {
   property_address_ai_filled?: boolean
   offer_price:                 number
   earnest_money:               number
-  earnest_money_amount:        number
   down_payment_amount?:        number
   down_payment_percent?:       number
   financing_type:              string
@@ -87,6 +88,9 @@ export interface OfferFormData {
   form_provider_ref?:          string
   esign_provider?:             string
   strategy_recommendation_id?: string | null
+  // In-app form selections (when form_source === "in_app")
+  in_app_selected_form_ids?:   string[]
+  in_app_form_field_values?:   Record<string, unknown>
 }
 
 // ─── LISTING SEARCH ───────────────────────────────────────────────────────────
@@ -172,15 +176,27 @@ export async function resolveFormSource(buyerId: string, brokerageId: string): P
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
 export interface StrategyRecommendation {
-  strategy: string
-  confidence: number
-  reasoning: string
+  id?: string
+  strategy?: string
+  confidence?: number
+  reasoning?: string
   suggestedPrice?: number
   competitivenessScore?: number
   escalationClause?: boolean
   daysToClose?: number
   contingencies?: string[]
-  generatedAt: string
+  generatedAt?: string
+  recommended_price?: number
+  recommended_earnest?: number
+  recommended_contingencies?: any
+  strategy_type?: string
+  ai_narrative?: string
+  success_probability?: number
+  risk_factors?: any[]
+  comparable_context?: string
+  template_id?: string | null
+  created_at?: string
+  status?: string
 }
 export async function getOrGenerateStrategyRecommendation(
   contactId: string,
@@ -267,21 +283,13 @@ Return ONLY valid JSON: { "recommended_price": number, "recommended_earnest": nu
 
   let parsed: any
   try {
-    const aiRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key":         process.env.ANTHROPIC_API_KEY ?? "",
-        "anthropic-version": "2023-06-01",
-        "content-type":      "application/json",
-      },
-      body: JSON.stringify({
-        model:      "claude-opus-4-5",
-        max_tokens: 1024,
-        messages:   [{ role: "user", content: prompt }],
-      }),
+    const aiRes = await gatewayChat({
+      model: "anthropic/claude-opus-4-5",
+      maxTokens: 1024,
+      temperature: 0.2,
+      messages: [{ role: "user", content: prompt }],
     })
-    const raw  = await aiRes.json()
-    const text = raw?.content?.[0]?.text ?? ""
+    const text = aiRes.content ?? ""
     const match = text.match(/\{[\s\S]*\}/)
     parsed = match ? JSON.parse(match[0]) : null
   } catch {
@@ -367,44 +375,50 @@ export async function createOffer(
 
   const supabase = createServiceClient()
 
-  // Resolve listing_id — required by NOT NULL constraint on offers.listing_id
-  let resolvedListingId = form.listing_id
-  if (!resolvedListingId) {
-    // Create a synthetic listing row for external properties
-    const { data: syntheticListing, error: lErr } = await supabase
-      .from("listings")
-      .insert({
-        address:       form.property_address,
-        city:          form.property_city ?? "",
-        state:         form.property_state ?? "",
-        zip:           form.property_zip ?? "",
-        brokerage_id:  brokerageId,
-        agent_id:      agentUserId,
-        list_price:    form.offer_price,
-        status:        "external",
-        lifecycle_stage: "LEAD",
-      })
-      .select("id")
-      .single()
+  // offers.agent_id / listings.agent_id are FKs to agents.id (NOT users.id).
+  // agentUserId is the session user id — resolve it to the agents.id. Null is
+  // acceptable (e.g. broker/admin without an agent profile); never fall back to
+  // the user id, which would write a wrong/invalid FK value.
+  const agentId = await resolveAgentId(supabase, agentUserId)
 
-    if (lErr || !syntheticListing) {
-      return { success: false, error: "Could not resolve listing for offer" }
+  // ── Financial verification gate (System J3.1 — buyer cannot make offers
+  //    until verified or explicitly bypassed by the agent). Previously this
+  //    gate was UI-only — the panel toggled `buyer_financial_profiles.verified`
+  //    but no backend caller ever checked it, so any client could POST and
+  //    create an offer for an unverified buyer. Enforce here at the API
+  //    boundary.
+  const { data: finProfile } = await supabase
+    .from("buyer_financial_profiles")
+    .select("verified")
+    .eq("contact_id", contactId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (!finProfile?.verified) {
+    return {
+      success: false,
+      error: "Buyer is not financially verified. Complete the verification gate (proof of funds for cash, or pre-approval for financed) before submitting an offer.",
     }
-    resolvedListingId = syntheticListing.id
   }
+
+  // listing_id is nullable on offers. It points to a seller-owned `listings`
+  // row ONLY when the buyer is offering on one of our own listings. For
+  // external/IDX/off-platform properties (the common buyer case) it stays NULL
+  // — the property is identified by `property_address`. We never fabricate a
+  // synthetic seller listing for a buyer's external target; listings belong to
+  // sellers and the two domains stay separate.
+  const resolvedListingId = form.listing_id ?? null
 
   const { data: offer, error: offerError } = await supabase
     .from("offers")
     .insert({
       contact_id:                  contactId,
       brokerage_id:                brokerageId,
-      agent_id:                    agentUserId,
+      agent_id:                    agentId,
       listing_id:                  resolvedListingId,
       property_address:            form.property_address,
       property_address_ai_filled:  form.property_address_ai_filled ?? false,
       offer_price:                 form.offer_price,
       earnest_money:               form.earnest_money,
-      earnest_money_amount:        form.earnest_money_amount,
       down_payment_amount:         form.down_payment_amount ?? null,
       down_payment_percent:        form.down_payment_percent ?? null,
       financing_type:              form.financing_type,
@@ -422,6 +436,14 @@ export async function createOffer(
       escalation_clause:           form.escalation_clause,
       escalation_cap:              form.escalation_cap ?? null,
       buyer_notes:                 form.buyer_notes ?? null,
+      // metadata stores in-app form selections separately so buyer_notes
+      // remains human-readable plain text and is never corrupted with JSON.
+      metadata:                    form.in_app_selected_form_ids?.length
+        ? {
+            selected_form_ids: form.in_app_selected_form_ids,
+            form_field_values: form.in_app_form_field_values ?? {},
+          }
+        : null,
       form_source:                 form.form_source,
       form_provider_ref:           form.form_provider_ref ?? null,
       esign_provider:              form.esign_provider ?? null,

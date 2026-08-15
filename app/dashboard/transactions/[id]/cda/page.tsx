@@ -20,14 +20,14 @@ export default async function CDAPage({ params }: PageProps) {
   // Get user profile with brokerage
   const { data: profile } = await supabase
     .from("users")
-    .select("id, role, brokerage_id")
+    .select("id, user_type, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
 
   if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   const brokerageId = profile.brokerage_id
-  const userRole = profile.role ?? "agent"
+  const userType = profile.user_type ?? "agent"
 
   // Fetch transaction with ownership/brokerage check
   const { data: transaction, error: txnError } = await supabase
@@ -56,7 +56,7 @@ export default async function CDAPage({ params }: PageProps) {
 
   // Auth: owning agent OR broker/admin/TC in same brokerage
   const isOwningAgent = transaction.agent_id === user.id
-  const hasAdminAccess = ["broker", "admin", "tc", "compliance_officer"].includes(userRole)
+  const hasAdminAccess = ["broker", "admin", "tc", "compliance_officer"].includes(userType)
   if (!isOwningAgent && !hasAdminAccess) {
     redirect("/dashboard")
   }
@@ -113,7 +113,7 @@ export default async function CDAPage({ params }: PageProps) {
     <CDAWorkflowClient
       transaction={transaction}
       brokerageId={brokerageId}
-      userRole={userRole}
+      userType={userType}
       userId={user.id}
       cda={cda}
       agent={agent}

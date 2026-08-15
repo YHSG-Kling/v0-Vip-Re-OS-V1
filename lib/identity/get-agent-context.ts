@@ -4,6 +4,11 @@ import { createClient } from "@/lib/supabase/server"
 
 export interface AgentContext {
   userId: string
+  /**
+   * agents.id — the row PK in the agents table.
+   * contacts.agent_id → agents.id (FK corrected in migration 114).
+   * Use agentId for all contacts, transactions, listings, showings, offers, tasks, etc.
+   */
   agentId: string | null
   brokerageId: string | null
   /** Source priority: users.user_type > user_role_assignments.role > auth metadata > 'agent' */

@@ -4,12 +4,35 @@
 // SYSTEM: L11-S02 — Brand Setup Wizard Server Actions
 // VIP Real Estate AI OS — Layer 11
 // ============================================================
+//
+// Brand setup is brokerage-wide config. Previously any signed-in agent
+// in a brokerage could mutate colors, voice profile, templates, and
+// publish brand changes for the entire brokerage. All save* + publish
+// + uploadLogo paths now require admin / broker / broker_owner role.
 
 import { createClient } from "@/lib/supabase/server"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { KernelEvent } from "@/lib/kernel/events"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
+
+const BROKERAGE_ADMIN_ROLES = ["admin", "broker", "broker_owner", "superadmin", "super_admin"]
+
+async function requireBrandAdmin(): Promise<
+  | { ok: true; userId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user }, error: authError } = await supabase.auth.getUser()
+  if (authError || !user) return { ok: false, error: "Unauthorized" }
+  const { data: profile } = await supabase
+    .from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
+  if (!profile?.brokerage_id) return { ok: false, error: "Brokerage not found" }
+  if (!BROKERAGE_ADMIN_ROLES.includes(profile.user_type ?? "")) {
+    return { ok: false, error: "Forbidden: brokerage admin only" }
+  }
+  return { ok: true, userId: user.id, brokerageId: profile.brokerage_id }
+}
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -178,26 +201,11 @@ export async function saveBrandColors(
   data: SaveColorsData
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const auth = await requireBrandAdmin()
+    if (!auth.ok) return { success: false, error: auth.error }
+    const brokerageId = auth.brokerageId
+
     const supabase = await createClient()
-
-    // Verify session
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { success: false, error: "Unauthorized" }
-    }
-
-    // Get user's brokerage
-    const { data: userData } = await supabase
-      .from("users")
-      .select("brokerage_id")
-      .eq("id", user.id)
-      .single()
-
-    if (!userData?.brokerage_id) {
-      return { success: false, error: "Brokerage not found" }
-    }
-
-    const brokerageId = userData.brokerage_id
 
     // Upsert global_settings
     const { error: settingsError } = await supabase
@@ -248,9 +256,10 @@ export async function saveBrandTypography(
   data: SaveTypographyData
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const adminAuth = await requireBrandAdmin()
+    if (!adminAuth.ok) return { success: false, error: adminAuth.error }
     const supabase = await createClient()
 
-    // Verify session
     const { data: { user }, error: authError } = await supabase.auth.getUser()
     if (authError || !user) {
       return { success: false, error: "Unauthorized" }
@@ -316,6 +325,8 @@ export async function saveBrandVoice(
   data: SaveVoiceData
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const adminAuth = await requireBrandAdmin()
+    if (!adminAuth.ok) return { success: false, error: adminAuth.error }
     const supabase = await createClient()
 
     // Verify session
@@ -406,9 +417,10 @@ export async function saveTemplate(
   data: SaveTemplateData
 ): Promise<{ success: boolean; templateId?: string; error?: string }> {
   try {
+    const adminAuth = await requireBrandAdmin()
+    if (!adminAuth.ok) return { success: false, error: adminAuth.error }
     const supabase = await createClient()
 
-    // Verify session
     const { data: { user }, error: authError } = await supabase.auth.getUser()
     if (authError || !user) {
       return { success: false, error: "Unauthorized" }
@@ -487,26 +499,17 @@ export async function saveTemplate(
 // ─── PUBLISH BRAND ────────────────────────────────────────────────────────────
 
 export async function publishBrand(
-  brokerageId: string
+  _brokerageId?: string  // ignored — derived from session admin
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const adminAuth = await requireBrandAdmin()
+    if (!adminAuth.ok) return { success: false, error: adminAuth.error }
+    const brokerageId = adminAuth.brokerageId
     const supabase = await createClient()
 
-    // Verify session
     const { data: { user }, error: authError } = await supabase.auth.getUser()
     if (authError || !user) {
       return { success: false, error: "Unauthorized" }
-    }
-
-    // Verify user belongs to brokerage
-    const { data: userData } = await supabase
-      .from("users")
-      .select("brokerage_id")
-      .eq("id", user.id)
-      .single()
-
-    if (!userData || userData.brokerage_id !== brokerageId) {
-      return { success: false, error: "Unauthorized: Brokerage mismatch" }
     }
 
     // Verify requirements are met
@@ -596,9 +599,11 @@ export async function uploadLogo(
   formData: FormData
 ): Promise<{ success: boolean; logoUrl?: string; error?: string }> {
   try {
+    const adminAuth = await requireBrandAdmin()
+    if (!adminAuth.ok) return { success: false, error: adminAuth.error }
     const supabase = await createClient()
 
-    // Verify session
+    // Verify session (legacy — already verified by requireBrandAdmin)
     const { data: { user }, error: authError } = await supabase.auth.getUser()
     if (authError || !user) {
       return { success: false, error: "Unauthorized" }

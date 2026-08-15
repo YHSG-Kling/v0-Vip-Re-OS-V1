@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { computeDaysOnMarket } from "@/lib/listings/compute-dom"
 
 // Get education resources for a contact based on their persona
 export async function getEducationResources(params: {
@@ -22,34 +23,33 @@ export async function getEducationResources(params: {
       brokerageId = contact?.brokerage_id
     }
 
-    // Get contact's completed lessons from contact_education_progress
+    // Post-1043: completion lives on learning_assignments keyed by module_id.
     const { data: progress } = await supabase
-      .from("contact_education_progress")
-      .select("lesson_key, completed_at")
+      .from("learning_assignments")
+      .select("module_id")
       .eq("contact_id", params.contactId)
-      .not("completed_at", "is", null)
+      .eq("status", "completed")
 
-    const completedKeys = new Set((progress || []).map(p => p.lesson_key))
+    const completedIds = new Set(((progress as Array<{ module_id: string }> | null) ?? []).map(p => p.module_id))
 
-    // Get education resources filtered by persona type
+    // Catalog comes from learning_modules (canonical store). Persona filter
+    // hits audience_personas; brokerage scope is enforced.
     let query = supabase
-      .from("education_resources")
-      .select("*")
-      .eq("is_active", true)
-      .order("sort_order", { ascending: true })
-
+      .from("learning_modules")
+      .select("id, title, summary, body, channels, audience_personas, cover_image_url, estimated_minutes, display_priority, created_at")
+      .eq("status", "published")
+      .order("display_priority", { ascending: false })
+    if (brokerageId) query = query.eq("brokerage_id", brokerageId)
     if (params.personaType) {
-      query = query.contains("persona_types", [params.personaType])
+      query = query.contains("audience_personas", [params.personaType])
     }
 
     const { data: resources, error } = await query
-
     if (error) throw error
 
-    // Mark completed resources based on lesson_key matches
-    const mappedResources = (resources || []).map(r => ({
+    const mappedResources = ((resources as Array<{ id: string }> | null) ?? []).map(r => ({
       ...r,
-      completed: completedKeys.has(r.lesson_key || r.id),
+      completed: completedIds.has(r.id),
     }))
 
     return { success: true, resources: mappedResources }
@@ -101,7 +101,14 @@ export async function getRecommendedProperties(params: {
 
     if (error) throw error
 
-    return { success: true, properties: listings || [] }
+    // DOM is computed from go_live_date — the column does not exist on
+    // listings. Materialize it before returning so client UIs can read
+    // `days_on_market` directly.
+    const properties = (listings || []).map((l: any) => ({
+      ...l,
+      days_on_market: computeDaysOnMarket(l.go_live_date),
+    }))
+    return { success: true, properties }
   } catch (error) {
     console.error("[getRecommendedProperties] Error:", error)
     return { success: false, error: "Failed to fetch recommended properties", properties: [] }
@@ -109,7 +116,8 @@ export async function getRecommendedProperties(params: {
 }
 
 // Mark education resource as completed
-// Schema: contact_education_progress uses lesson_key (not resource_id) with contact_id, brokerage_id, completed_at
+// Post-1043: completion lives on learning_assignments(contact_id, module_id).
+// `resourceId` is now a learning_modules.id (uuid).
 export async function markResourceCompleted(params: {
   contactId: string
   resourceId: string
@@ -117,9 +125,8 @@ export async function markResourceCompleted(params: {
   completionData?: Record<string, unknown>
 }) {
   const supabase = await createClient()
-  
+
   try {
-    // Get brokerage_id if not provided
     let brokerageId = params.brokerageId
     if (!brokerageId) {
       const { data: contact } = await supabase
@@ -131,13 +138,16 @@ export async function markResourceCompleted(params: {
     }
 
     const { error } = await supabase
-      .from("contact_education_progress")
+      .from("learning_assignments")
       .upsert({
-        contact_id: params.contactId,
-        brokerage_id: brokerageId,
-        lesson_key: params.resourceId,
-        completed_at: new Date().toISOString(),
-      }, { onConflict: "contact_id,lesson_key" })
+        brokerage_id:   brokerageId,
+        module_id:      params.resourceId,
+        contact_id:     params.contactId,
+        signal_source:  "self:portal_complete",
+        priority_score: 50,
+        status:         "completed",
+        completed_at:   new Date().toISOString(),
+      }, { onConflict: "contact_id,module_id" })
 
     if (error) throw error
 

@@ -62,7 +62,7 @@ async function resolveCallerContext() {
 
   return {
     userId:      user.id,
-    agentId:     agentRow.data?.id ?? user.id,   // agents.id — falls back to user.id for broker/admin
+    agentId:     agentRow.data?.id ?? null,   // agents.id (NOT users.id); null for broker/admin without an agent profile
     brokerageId,
     userType:    userRow.data?.user_type ?? "agent",
   }
@@ -88,6 +88,10 @@ export async function createListingWithSellerContact(params: {
   bathrooms?: number
   sqft?: number
   propertyType?: string
+  /** Form IDs selected during the listing initiation flow */
+  selectedFormIds?: string[]
+  /** Field values keyed by form name then field name */
+  formFieldValues?: Record<string, Record<string, string>>
 }) {
   const ctx = await resolveCallerContext()
   if ("error" in ctx) return { success: false, error: ctx.error }
@@ -120,12 +124,38 @@ export async function createListingWithSellerContact(params: {
   })
   if (!listingResult.success) return { success: false, error: listingResult.error }
 
+  const newListingId = (listingResult.listing as any).id as string
+
+  // Step 3: Persist form field data collected during the initiation flow (non-fatal)
+  if (params.selectedFormIds?.length && params.formFieldValues) {
+    try {
+      const { saveFormDraft } = await import("@/lib/kernel/forms")
+      for (const formId of params.selectedFormIds) {
+        const fields = params.formFieldValues[formId]
+        if (fields && Object.keys(fields).length > 0) {
+          await saveFormDraft({
+            brokerage_id: ctx.brokerageId,
+            agent_id:     ctx.agentId,
+            form_name:    formId,
+            context_type: "listing",
+            context_id:   newListingId,
+            field_values: fields,
+          }).catch((err: unknown) => {
+            console.error("[createListingWithSellerContact] Form draft save failed (non-fatal):", err)
+          })
+        }
+      }
+    } catch (err) {
+      console.error("[createListingWithSellerContact] Form draft import failed (non-fatal):", err)
+    }
+  }
+
   revalidatePath("/dashboard/listings")
 
   return {
     success:  true,
     listing:  listingResult.listing,
-    listingId: (listingResult.listing as any).id as string,
+    listingId: newListingId,
     sellerCreated: sellerResult.created,
   }
 }
@@ -182,6 +212,54 @@ export async function launchListingAction(params: {
     revalidatePath(`/dashboard/listings/${params.listingId}`)
     revalidatePath(`/dashboard/listings/${params.listingId}/lifecycle`)
     revalidatePath("/dashboard/listings")
+
+    // Auto-generate QR code for listing inquiry — non-fatal
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const svc = createServiceClient()
+      const { data: listing } = await svc
+        .from("listings")
+        .select("id, address, brokerage_id, agent_id")
+        .eq("id", params.listingId)
+        .maybeSingle()
+
+      if (listing) {
+        const baseUrl = process.env.NEXT_PUBLIC_APP_URL
+        if (!baseUrl) {
+          // Base URL not configured — skip QR generation but continue action
+        } else {
+        const targetUrl = `${baseUrl}/listings/${listing.id}`
+        // qr_codes.slug is globally unique — suffix with base36 timestamp.
+        const slug = `listing-${listing.id.slice(0, 8)}-${Date.now().toString(36)}`
+        const { data: existing } = await svc
+          .from("qr_codes")
+          .select("id")
+          .eq("listing_id", params.listingId)
+          .eq("purpose", "listing")
+          .maybeSingle()
+
+        if (!existing) {
+          await svc.from("qr_codes").insert({
+            brokerage_id: listing.brokerage_id,
+            agent_id:     listing.agent_id,
+            listing_id:   params.listingId,
+            label:        `Listing — ${listing.address}`,
+            slug,
+            target_url:   targetUrl,
+            // qr_codes.purpose CHECK only allows: listing, open_house, event,
+            // business_card, general. 'listing_inquiry' was invalid and the
+            // insert would fail the constraint.
+            purpose:      "listing",
+            scan_count:   0,
+            lead_count:   0,
+            is_active:    true,
+          })
+        }
+        } // end else (baseUrl exists)
+      }
+    } catch {
+      // Non-fatal — QR generation is a best-effort enhancement
+    }
   }
 
   return result
@@ -316,4 +394,58 @@ export async function loadListingWorkspaceAction(listingId: string) {
   const ctx = await resolveCallerContext()
   if ("error" in ctx) return { success: false, error: ctx.error }
   return loadListingWorkspace({ listingId, userId: ctx.userId })
+}
+
+// ─── Action: updateListingStatus (migrated from listings.ts) ─────────────────
+
+export async function updateListingStatus(listingId: string, status: string) {
+  const supabase = await createClient()
+  try {
+    // Auth + ownership check — was previously open IDOR
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return { success: false, error: "Unauthorized" }
+    const { data: callerRow } = await supabase
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", user.id)
+      .maybeSingle()
+    if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
+
+    const { data: listingRow } = await supabase
+      .from("listings")
+      .select("brokerage_id")
+      .eq("id", listingId)
+      .maybeSingle()
+    if (!listingRow) return { success: false, error: "Listing not found" }
+    if (listingRow.brokerage_id !== callerRow.brokerage_id) {
+      return { success: false, error: "Forbidden" }
+    }
+
+    const { data, error } = await supabase
+      .from("listings")
+      .update({
+        status,
+        // current_stage was renamed to lifecycle_stage (migration 1014) and the
+        // CHECK requires the uppercase enum (CLOSED / LISTING_CANCELLED), so the
+        // old { current_stage: "closed" | "cancelled" } update threw on both the
+        // column and the value.
+        lifecycle_stage:
+          status === "sold" ? "CLOSED" : status === "withdrawn" ? "LISTING_CANCELLED" : undefined,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", listingId)
+      .eq("brokerage_id", callerRow.brokerage_id)
+      .select()
+      .single()
+
+    if (error) throw error
+
+    revalidatePath("/dashboard/listings")
+    revalidatePath(`/dashboard/listings/${listingId}`)
+    revalidatePath(`/dashboard/listings/${listingId}/lifecycle`)
+    return { success: true, listing: data }
+  } catch (error) {
+    console.error("updateListingStatus error:", error)
+    return { success: false, error: "Failed to update listing status" }
+  }
 }

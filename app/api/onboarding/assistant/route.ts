@@ -1,32 +1,39 @@
-import { streamText, convertToModelMessages, type Message } from 'ai'
+import { streamText, convertToModelMessages } from 'ai'
+import type { UIMessage } from 'ai'
 import { createClient } from '@/lib/supabase/server'
+import { requireAuth } from '@/lib/kernel/api-auth'
 import { KernelEvent } from '@/lib/kernel/events'
 import { searchKB } from '@/lib/intelligence/kb-search'
 
 export async function POST(request: Request) {
+  // Auth guard — brokerageId and agentId always from session, never from body
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
+
+  const brokerageId = auth.brokerageId
+  // For lifecycle events we need the agents.id; fall back to users.id if no agent row
+  const agentId = auth.agentId ?? auth.userId
+
   try {
     const body = await request.json()
-    const { messages, brokerageId, agentId } = body as {
-      messages: Message[]
-      brokerageId: string
-      agentId: string
-    }
-
-    const supabase = await createClient()
+    const { messages } = body as { messages: UIMessage[] }
 
     // Extract the user's latest query for KB search
     const userMessages = messages.filter((m) => m.role === 'user')
     const latestQuery = userMessages.length > 0
-      ? String(userMessages[userMessages.length - 1].content)
+      ? userMessages[userMessages.length - 1].parts
+          .filter((p: any) => p.type === 'text')
+          .map((p: any) => p.text)
+          .join(' ')
       : ''
 
-    // Knowledge base search using vector similarity (L12-P03 upgrade)
+    // Knowledge base search using vector similarity
     const kbResults = await searchKB(latestQuery, brokerageId, 5)
-    const uniqueResults = kbResults
 
     // Build context string from KB results (max 2000 chars)
     let kbContext = ''
-    for (const topic of uniqueResults) {
+    for (const topic of kbResults) {
       const entry = `## ${topic.title}\n${topic.content}\n\n`
       if ((kbContext + entry).length <= 2000) {
         kbContext += entry
@@ -41,17 +48,14 @@ export async function POST(request: Request) {
       entity_type: 'agent',
       entity_id: agentId,
       event: KernelEvent.SETUP_ASSISTANT_QUERY_MADE,
-      actor_user_id: agentId,
-      },
+      actor_user_id: auth.userId,
     })
 
-    // Build system prompt
     const systemPrompt = `You are a helpful setup assistant for a real estate platform called VIP Real Estate OS. Answer questions about platform setup, onboarding, and features. Use the provided knowledge base context. If you don't know, say so and escalate. Keep answers under 150 words.
 
 Context:
 ${kbContext || 'No specific documentation found for this query.'}`
 
-    // Stream response using anthropic/claude-sonnet-4-20250514
     const result = streamText({
       model: 'anthropic/claude-sonnet-4-20250514',
       system: systemPrompt,
@@ -59,8 +63,6 @@ ${kbContext || 'No specific documentation found for this query.'}`
       temperature: 0.7,
       maxOutputTokens: 400,
       onFinish: async ({ text: aiResponse }) => {
-        // aiResponse is the final streamed text
-
         // INSERT onboarding_ai_chats
         await supabase.from('onboarding_ai_chats').insert({
           brokerage_id: brokerageId,
@@ -69,21 +71,19 @@ ${kbContext || 'No specific documentation found for this query.'}`
           ai_response: aiResponse,
         })
 
-        // Check if escalation needed
-        const noKBResults = uniqueResults.length === 0
+        const noKBResults = kbResults.length === 0
         const uncertainResponse =
           aiResponse.toLowerCase().includes("i don't know") ||
           aiResponse.toLowerCase().includes("i'm not sure") ||
           aiResponse.toLowerCase().includes('not certain')
 
         if (noKBResults || uncertainResponse) {
-          // Fire SETUP_ASSISTANT_ESCALATED kernel event
           await supabase.from('lifecycle_events').insert({
             brokerage_id: brokerageId,
             entity_type: 'agent',
             entity_id: agentId,
-            event_type: KernelEvent.SETUP_ASSISTANT_ESCALATED,
-            actor_user_id: agentId,
+            event: KernelEvent.SETUP_ASSISTANT_ESCALATED,
+            actor_user_id: auth.userId,
             metadata: {
               query: latestQuery,
               reason: noKBResults ? 'no_kb_results' : 'uncertain_response',
@@ -91,7 +91,6 @@ ${kbContext || 'No specific documentation found for this query.'}`
             },
           })
 
-          // INSERT smart_assistant_suggestions for admin review
           await supabase.from('smart_assistant_suggestions').insert({
             agent_id: agentId,
             title: 'Setup question needs admin review',
@@ -106,7 +105,7 @@ ${kbContext || 'No specific documentation found for this query.'}`
 
     return result.toUIMessageStreamResponse()
   } catch (error) {
-    console.error('[v0] Assistant API error:', error)
+    console.error('[onboarding/assistant] API error:', error)
     return new Response(
       JSON.stringify({ error: 'Failed to process assistant request' }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }

@@ -72,12 +72,12 @@ export default async function TeamHeatmapPage({ searchParams }: PageProps) {
   const supabase = await createClient()
   const { data: user } = await supabase
     .from("users")
-    .select("role")
+    .select("user_type")
     .eq("id", (await supabase.auth.getUser()).data.user?.id)
     .single()
 
-  const userRole = user?.role || "agent"
-  const isPrivileged = ["broker", "admin", "team_lead"].includes(userRole)
+  const userRole = user?.user_type || "agent"
+  const isPrivileged = ["broker", "broker_owner", "admin", "team_lead", "superadmin"].includes(userRole)
 
   // Parse filters from URL
   const filters: HeatmapFilters = {

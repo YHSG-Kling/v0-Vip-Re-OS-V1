@@ -61,7 +61,7 @@ interface CDAWorkflowClientProps {
     updated_at: string
   }
   brokerageId: string
-  userRole: string
+  userType: string
   userId: string
   cda: {
     id: string
@@ -113,7 +113,7 @@ interface CDAWorkflowClientProps {
 export function CDAWorkflowClient({
   transaction,
   brokerageId,
-  userRole,
+  userType,
   userId,
   cda,
   agent,
@@ -143,7 +143,7 @@ export function CDAWorkflowClient({
       .from("commission_distributions")
       .select("id, distribution_type, calculation_type, calculation_value, calculated_amount, source_of_funds, cap_applied, status, paid_at")
       .eq("transaction_id", transaction.id)
-      .then(({ data }) => {
+      .then(({ data }: { data: any }) => {
         if (data) setDistributions(data)
       })
   }, [transaction.id])
@@ -153,8 +153,8 @@ export function CDAWorkflowClient({
   const [showApproveDialog, setShowApproveDialog] = useState(false)
   const [notes, setNotes] = useState("")
 
-  const isAgent = userRole === "agent" || transaction.agent_id === userId
-  const isCompliance = ["broker", "admin", "compliance_officer"].includes(userRole)
+  const isAgent = userType === "agent" || transaction.agent_id === userId
+  const isCompliance = ["broker", "admin", "compliance_officer"].includes(userType)
 
   // Check if there are blocking compliance failures
   // Normalized status values: pending, pass, fail, waived, needs_review
@@ -208,7 +208,7 @@ export function CDAWorkflowClient({
         await approveCDA({
           cdaId: cda.id,
           approverId: userId,
-          approverRole: userRole,
+          approverRole: userType,
         })
         setShowApproveDialog(false)
         router.refresh()

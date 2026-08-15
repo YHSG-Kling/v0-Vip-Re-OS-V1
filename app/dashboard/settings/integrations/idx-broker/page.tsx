@@ -64,11 +64,11 @@ export default function IDXBrokerSettingsPage() {
       // Get role + brokerage_id from users table
       const { data: profile } = await supabase
         .from("users")
-        .select("role, brokerage_id")
+        .select("user_type, brokerage_id")
         .eq("id", user.id)
         .maybeSingle()
 
-      setRole(profile?.role ?? null)
+      setRole(profile?.user_type ?? null)
       setBrokerageId(profile?.brokerage_id ?? null)
 
       if (!profile?.brokerage_id) return
@@ -127,7 +127,7 @@ export default function IDXBrokerSettingsPage() {
       .eq("brokerage_id", bid)
       .gte("created_at", monthStart.toISOString())
 
-    const monthSent = (monthRows ?? []).reduce((s, r) => s + (r.properties_sent ?? 0), 0)
+    const monthSent = (monthRows ?? []).reduce((s: number, r: any) => s + (r.properties_sent ?? 0), 0)
 
     // 7-day rows
     const sevenDaysAgo = new Date(); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)

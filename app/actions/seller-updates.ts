@@ -3,9 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent } from "@/lib/kernel/events"
-import Anthropic from "@anthropic-ai/sdk"
-
-const anthropic = new Anthropic()
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 
 interface GenerateDraftParams {
   listingId: string
@@ -111,16 +109,16 @@ export async function generateSellerUpdateDraft({ listingId, agentId }: Generate
   if (transaction) {
     const { data: milestonesData } = await supabase
       .from("transaction_milestones")
-      .select("milestone_name, status, milestone_date, completed_at")
+      .select("milestone_name, status, target_date, completed_at")
       .eq("transaction_id", transaction.id)
-      .order("milestone_date", { ascending: true })
+      .order("target_date", { ascending: true })
 
     milestones = milestonesData || []
   }
 
   // Build context for AI
   const sellerName = listing.contacts
-    ? `${listing.contacts.first_name} ${listing.contacts.last_name}`
+    ? `${(listing.contacts as any[])[0]?.first_name ?? ""} ${(listing.contacts as any[])[0]?.last_name ?? ""}`.trim() || "Seller"
     : "Seller"
 
   const showingCount = showings?.length || 0
@@ -152,31 +150,26 @@ ${feedbackSummary.length > 0
 
 ${milestones.length > 0 ? `
 Transaction Milestones:
-${milestones.map(m => `- ${m.milestone_name}: ${m.status} (${m.milestone_date})`).join("\n")}
+${milestones.map(m => `- ${m.milestone_name}: ${m.status} (${m.target_date})`).join("\n")}
 ` : ""}
 `
 
-  // Call Claude to generate draft
-  const message = await anthropic.messages.create({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 500,
-    system: `You are a real estate agent writing a weekly update to your seller client. 
+  // Call AI to generate draft
+  const { text: draftText } = await generateText({
+    model: "openai/gpt-4o-mini",
+    prompt: `You are a real estate agent writing a weekly update to your seller client.
 Be warm, professional, and specific. Max 200 words.
 Focus on:
 1. Activity summary (showings, interest level)
 2. Feedback highlights (without being negative)
 3. Market positioning
 4. Next steps or recommendations
-Do NOT include subject lines or greetings like "Dear" - start directly with the update content.`,
-    messages: [
-      {
-        role: "user",
-        content: `Generate a weekly seller update email based on this context:\n\n${contextPrompt}`,
-      },
-    ],
-  })
+Do NOT include subject lines or greetings like "Dear" - start directly with the update content.
 
-  const draftText = message.content[0].type === "text" ? message.content[0].text : ""
+Generate a weekly seller update email based on this context:
+
+${contextPrompt}`,
+  })
 
   return {
     draft: draftText,

@@ -9,7 +9,12 @@ import { getPersonaMessagingGuidelines } from "@/lib/buyer-search/persona-infere
 import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
 import { OfferStatusCard } from "@/app/components/portal/OfferStatusCard"
 import { MilestoneProgressBar } from "@/app/components/portal/MilestoneProgressBar"
+import { PortalLiveFeed } from "@/app/components/portal/PortalLiveFeed"
+import { NegotiationMirrorPanel } from "@/app/components/negotiation/negotiation-mirror-panel"
+import { MilestoneEducationPanel } from "@/app/components/portal/milestone-education-panel"
+import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
 import { FinancialMeaningCard } from "@/app/components/shared/FinancialMeaningCard"
+import { BuyerFinancialUploadCard } from "@/app/components/portal/BuyerFinancialUploadCard"
 import { Badge } from "@/app/components/ui/badge"
 import { Button } from "@/app/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
@@ -31,6 +36,7 @@ import {
 } from "lucide-react"
 import SellerHome from "./seller-home"
 import LifetimeHome from "./lifetime-home"
+import { RecentUpdatesFeed } from "./components/RecentUpdatesFeed"
 
 export default async function PortalHomePage({
   params,
@@ -71,11 +77,13 @@ export default async function PortalHomePage({
     ? getPersonaMessagingGuidelines(contact.contact_persona as any)
     : getPersonaMessagingGuidelines('first_time_buyer')
 
-  // Get active transaction for this buyer
+  // Get active transaction for this buyer.
+  // Schema: transactions has `contract_date` (not under_contract_date) and
+  // `purchase_price` (list_price lives on listings, not on transactions).
   const { data: transactions } = await supabase
     .from("transactions")
-    .select("id, property_address, status, close_date, under_contract_date, list_price, purchase_price")
-    .or(`buyer_contact_id.eq.${contactId}`)
+    .select("id, property_address, status, stage, close_date, contract_date, purchase_price")
+    .or(`buyer_contact_id.eq.${contactId},contact_id.eq.${contactId}`)
     .not("status", "in", "(cancelled)")
     .order("created_at", { ascending: false })
     .limit(1)
@@ -96,14 +104,17 @@ export default async function PortalHomePage({
     educationResult,
     vendorAssignmentsResult,
     financialProfileResult,
+    recentUpdatesResult,
   ] = await Promise.all([
-    // Milestones from transaction
+    // Milestones from transaction. Schema column is completed_at (NOT
+    // completed_date — that variant doesn't exist; previous query silently
+    // returned undefined for every milestone's completion date).
     activeTransaction
       ? supabase
           .from("transaction_milestones")
-          .select("id, milestone_name, milestone_type, milestone_date, completed_date, status")
+          .select("id, milestone_name, milestone_type, target_date, completed_at, status, is_client_visible")
           .eq("transaction_id", activeTransaction.id)
-          .order("milestone_date", { ascending: true, nullsFirst: false })
+          .order("target_date", { ascending: true, nullsFirst: false })
       : Promise.resolve({ data: [] }),
     // Deal team members
     activeTransaction
@@ -114,24 +125,27 @@ export default async function PortalHomePage({
       : Promise.resolve({ data: [] }),
     // Primary agent - resolved outside Promise.all via kernel identity function
     Promise.resolve({ data: null }),
-    // Offers
+    // Offers. Schema: offers.offer_price (NOT offer_amount — that variant
+    // doesn't exist; previous query silently returned undefined for every
+    // offer's price). listings.property_address also doesn't exist; the
+    // canonical address column is `address`.
     supabase
       .from("offers")
-      .select("id, listing_id, transaction_id, offer_amount, status, created_at, listing:listings(address, property_address)")
+      .select("id, listing_id, transaction_id, offer_price, status, created_at, listing:listings(address)")
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
       .limit(10),
     // Showings - use scheduled_at column
     supabase
       .from("showings")
-      .select("id, listing_id, scheduled_at, status, listing:listings(address, property_address)")
+      .select("id, listing_id, scheduled_at, status, listing:listings(address)")
       .eq("contact_id", contactId)
       .order("scheduled_at", { ascending: true })
       .limit(5),
-    // Property preferences
+    // Property preferences — schema uses inferred_* (AI-derived from buyer signals)
     supabase
       .from("property_preferences")
-      .select("id, min_price, max_price, min_beds, min_baths, zip_codes")
+      .select("id, inferred_min_price, inferred_max_price, inferred_beds_min, inferred_baths_min, inferred_zip_codes")
       .eq("contact_id", contactId)
       .maybeSingle(),
     // Property alerts
@@ -140,12 +154,13 @@ export default async function PortalHomePage({
       .select("id, alert_name, is_active")
       .eq("contact_id", contactId)
       .eq("is_active", true),
-    // Saved properties
+    // Saved properties — canonical table is `saved_properties` (NOT
+    // `property_interests`, which holds search criteria not saved listings).
     supabase
-      .from("property_interests")
-      .select("id, listing_id, interest_level, saved_at, listing:listings(id, address, property_address, list_price, bedrooms, bathrooms, primary_photo_url)")
+      .from("saved_properties")
+      .select("id, listing_id, saved_at, notes, list_price, bedrooms, bathrooms, primary_photo_url, property_address, city, state")
       .eq("contact_id", contactId)
-      .in("interest_level", ["saved", "favorited"])
+      .eq("dismissed", false)
       .order("saved_at", { ascending: false })
       .limit(4),
     // Messages
@@ -155,7 +170,7 @@ export default async function PortalHomePage({
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
       .limit(3),
-    // Education - resolved outside Promise.all via contact_education_progress
+    // Education - resolved outside Promise.all via learning_assignments
     Promise.resolve({ data: [] }),
     // Vendor assignments
     activeTransaction
@@ -171,6 +186,15 @@ export default async function PortalHomePage({
       .select("pre_approval_amount, down_payment_percent, finance_type, is_cash_buyer")
       .eq("contact_id", contactId)
       .maybeSingle(),
+    // Recent transparency updates — kernel fan-out writes here when
+    // milestones fire (LISTING_UNDER_CONTRACT, OFFER_ACCEPTED, etc.)
+    supabase
+      .from("transparency_updates")
+      .select("id, title, plain_language_summary, message, next_step, next_step_date, responsible_party, responsible_party_name, update_type, is_visible_to_client, created_at, transaction_id")
+      .eq("contact_id", contactId)
+      .eq("is_visible_to_client", true)
+      .order("created_at", { ascending: false })
+      .limit(20),
   ])
 
   // Resolve agent via kernel identity function (fixes broken contact.agent_id → agents.id lookup)
@@ -178,16 +202,18 @@ export default async function PortalHomePage({
     ? await resolveContactOwnerAgent(supabase, contact.agent_id)
     : null
 
-  // Resolve education progress via contact_education_progress table
+  // Post-1043: completion is on learning_assignments (status='completed').
+  // The variable name "completedLessonKeys" is kept for downstream stability
+  // but the values are now learning_modules.id (uuids).
   let completedLessonKeys: string[] = []
   try {
-    const { data: completedLessons } = await supabase
-      .from("contact_education_progress")
-      .select("lesson_key, completed_at")
+    const { data: completedAssignments } = await supabase
+      .from("learning_assignments")
+      .select("module_id")
       .eq("contact_id", contactId)
-      .not("completed_at", "is", null)
+      .eq("status", "completed")
 
-    completedLessonKeys = completedLessons?.map(l => l.lesson_key) ?? []
+    completedLessonKeys = (completedAssignments as Array<{ module_id: string }> | null)?.map(a => a.module_id) ?? []
   } catch {
     completedLessonKeys = []
   }
@@ -208,6 +234,7 @@ export default async function PortalHomePage({
   const hasCompletedLessons = completedLessonKeys.length > 0
   const vendorAssignments = vendorAssignmentsResult.data ?? []
   const financialProfile = financialProfileResult.data ?? null
+  const recentUpdates = (recentUpdatesResult as any).data ?? []
 
   // Computed values
   const contactName = contact.first_name || contact.name || "there"
@@ -216,8 +243,8 @@ export default async function PortalHomePage({
 
   // Calculate days under contract if applicable
   let daysUnderContract: number | null = null
-  if (activeTransaction?.under_contract_date) {
-    const contractDate = new Date(activeTransaction.under_contract_date)
+  if (activeTransaction?.contract_date) {
+    const contractDate = new Date(activeTransaction.contract_date)
     const today = new Date()
     daysUnderContract = Math.floor((today.getTime() - contractDate.getTime()) / (1000 * 60 * 60 * 24))
   }
@@ -310,6 +337,16 @@ export default async function PortalHomePage({
 
       <div className="max-w-2xl mx-auto px-4 -mt-4 pb-12 space-y-5">
 
+        {/* Recent updates feed — populated by kernel event fan-out (offer
+            accepted, listing under contract, milestone completed, etc.).
+            Hidden when there's nothing client-visible yet so the home
+            doesn't show an empty state on day one. */}
+        <RecentUpdatesFeed
+          contactId={contactId}
+          updates={recentUpdates}
+          hideWhenEmpty
+        />
+
         {/* What's Next For You — prominent action panel */}
         <div className="rounded-xl border bg-slate-50 p-5">
           <h2 className="font-semibold text-base mb-1 text-foreground">{"What's Next For You"}</h2>
@@ -370,6 +407,18 @@ export default async function PortalHomePage({
           </div>
         )}
 
+        {/* Sprint 8 — Negotiation mirror: when an open negotiation strategy
+            exists for this contact, show the AI's plain-language explanation
+            of what's happening (same data the agent is looking at). Hides
+            on empty. */}
+        <NegotiationMirrorPanel contactId={contactId} />
+
+        {/* Milestone-gated education (Sprint 7 + migration 1049). Surfaces
+            authored learning_modules whose gated_until_milestone matches
+            the contact's current milestone (or any earlier one). Locked
+            previews show what unlocks next. Hides on empty. */}
+        <MilestoneEducationPanel contactId={contactId} />
+
         {/* What This Means — persona-aware */}
         <Card className="shadow-lg border-0">
           <CardContent className="p-5 space-y-4">
@@ -388,10 +437,14 @@ export default async function PortalHomePage({
               <p className="text-sm text-muted-foreground leading-relaxed">{stageCtx.whatNext}</p>
               <Badge variant="outline" className="text-xs">Responsible: {stageCtx.responsible}</Badge>
             </div>
+            {/* Live event stream — every translated kernel event for this
+                 contact. Surfaces on every persona's portal automatically. */}
+            <PortalLiveFeed contactId={contactId} limit={10} compact hideWhenEmpty />
+
             {activeTransaction && milestones.length > 0 && (
               <div className="border-t pt-3">
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Milestone Progress</p>
-                <MilestoneProgressBar milestones={milestones} currentStage={contact.buyer_stage || ''} />
+                <MilestoneProgressBar milestones={milestones} contactId={contactId} />
                 {activeTransaction.close_date && (
                   <p className="text-xs text-muted-foreground mt-2 flex items-center gap-1">
                     <Calendar className="h-3.5 w-3.5" />
@@ -414,6 +467,10 @@ export default async function PortalHomePage({
             teamHref={`/portal/${contactId}/team`}
           />
         )}
+
+        {/* Buyer self-serve financial upload — pre-approval / POF / lender connect.
+            Auto-renders for buyer view; auth-gated to the contact's own portal user. */}
+        <BuyerFinancialUploadCard contactId={contactId} />
 
         {/* Immediate needs */}
         {(upcomingShowings.length > 0 || offers.filter((o:any) => ['pending','countered'].includes(o.status)).length > 0) && (
@@ -486,16 +543,16 @@ export default async function PortalHomePage({
                 <Link key={p.id} href={`/portal/${contactId}/properties/${p.listing_id}`}>
                   <Card className="hover:shadow-md transition-all cursor-pointer">
                     <CardContent className="p-3 flex items-center gap-3">
-                      {p.listing?.primary_photo_url ? (
-                        <img src={p.listing.primary_photo_url} alt="" className="w-12 h-12 rounded object-cover shrink-0" />
+                      {p.primary_photo_url ? (
+                        <img src={p.primary_photo_url} alt="" className="w-12 h-12 rounded object-cover shrink-0" />
                       ) : (
                         <div className="w-12 h-12 rounded bg-muted flex items-center justify-center shrink-0">
                           <Home className="h-5 w-5 text-muted-foreground" />
                         </div>
                       )}
                       <div className="min-w-0">
-                        <p className="text-sm font-medium truncate">{p.listing?.address || p.listing?.property_address}</p>
-                        {p.listing?.list_price && <p className="text-xs text-muted-foreground">${(p.listing.list_price/1000).toFixed(0)}K{p.listing?.bedrooms ? ` - ${p.listing.bedrooms} bed` : ''}</p>}
+                        <p className="text-sm font-medium truncate">{p.property_address}</p>
+                        {p.list_price && <p className="text-xs text-muted-foreground">${(p.list_price/1000).toFixed(0)}K{p.bedrooms ? ` - ${p.bedrooms} bed` : ''}</p>}
                       </div>
                       <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0 ml-auto" />
                     </CardContent>
@@ -555,8 +612,23 @@ export default async function PortalHomePage({
           </Card>
         )}
 
+        {/* Buyer Toolkit — persona+stage-filtered marketplace preview.
+             Surfaces lender / inspector / home-warranty / movers / etc.
+             tagged for the buyer's persona + current deal stage. */}
+        <ContactVendorToolkitCard contactId={contactId} portalView="buyer" />
+
         {/* My Team */}
-        <DealTeamCard contactId={contactId} agentId={contact.agent_id} />
+        <DealTeamCard
+          primaryAgent={primaryAgent ? {
+            id: primaryAgent.id,
+            first_name: primaryAgent.full_name?.split(" ")[0] ?? null,
+            last_name: primaryAgent.full_name?.split(" ").slice(1).join(" ") ?? null,
+            phone: primaryAgent.phone_mobile,
+            email: primaryAgent.email,
+            profile_photo_url: primaryAgent.profile_image_url,
+          } : null}
+          teamMembers={dealTeamMembers as any[]}
+        />
 
         {/* Property alerts */}
         {alerts.length > 0 && (

@@ -12,6 +12,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { determinePortalView } from '@/lib/kernel/portal'
+import { requireContactAccess } from '@/lib/portal/require-contact-access'
 import {
   PortalViewOutput,
   PortalResponse,
@@ -33,6 +34,16 @@ export async function GET(
       return NextResponse.json(
         createPortalErrorResponse(PORTAL_ERRORS.INVALID_INPUT),
         { status: 400 }
+      )
+    }
+
+    // Authorize: caller must be the contact themselves or staff in the same
+    // brokerage. Previously this route trusted the URL contactId with no check.
+    const access = await requireContactAccess(contactId)
+    if (!access.ok) {
+      return NextResponse.json(
+        createPortalErrorResponse(PORTAL_ERRORS.UNAUTHORIZED),
+        { status: access.error === 'Unauthorized' ? 401 : 403 }
       )
     }
 

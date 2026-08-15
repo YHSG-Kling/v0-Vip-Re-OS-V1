@@ -38,15 +38,17 @@ interface ResponseSuggestion {
 }
 
 interface ResponseQualityPanelProps {
-  metrics: ResponseQualityMetric[]
-  objectionOpportunities: ObjectionOpportunity[]
-  suggestions: ResponseSuggestion[]
+  metrics?: ResponseQualityMetric[]
+  objectionOpportunities?: ObjectionOpportunity[]
+  suggestions?: ResponseSuggestion[]
+  agentId?: string
+  brokerageId?: string
 }
 
 export function ResponseQualityPanel({
-  metrics,
-  objectionOpportunities,
-  suggestions,
+  metrics = [],
+  objectionOpportunities = [],
+  suggestions = [],
 }: ResponseQualityPanelProps) {
   return (
     <Card>
@@ -118,7 +120,7 @@ export function ResponseQualityPanel({
                   </div>
                   {opp.example_contacts.length > 0 && (
                     <Button variant="ghost" size="sm" asChild>
-                      <Link href={`/contacts/${opp.example_contacts[0]}`}>
+                      <Link href={`/crm/contacts/${opp.example_contacts[0]}`}>
                         Example
                       </Link>
                     </Button>

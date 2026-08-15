@@ -28,6 +28,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 
 // ─── INPUT / OUTPUT CONTRACTS ─────────────────────────────────────────────────
 
@@ -55,6 +56,9 @@ export interface CreateContactParams {
   last_name: string
   email?: string | null
   phone?: string | null
+  city?: string | null
+  state?: string | null
+  zip_code?: string | null
   contact_type?: "buyer" | "seller" | "both" | "investor" | "vendor" | "lender"
   status?: string
   contact_persona?: string
@@ -294,6 +298,9 @@ export async function createOrUpdateContactFromDirectIntake(
       email:                   email_normalized,
       phone:                   params.phone ?? null,
       phone_digits:            phone_digits,
+      city:                    params.city ?? null,
+      state:                   params.state ?? null,
+      zip_code:                params.zip_code ?? null,
       contact_type:            params.contact_type ?? "buyer",
       status:                  params.status ?? "new",
       contact_persona:         params.contact_persona ?? null,
@@ -323,13 +330,20 @@ export async function createOrUpdateContactFromDirectIntake(
 
   const contactId = data.id as string
 
-  // ── 3. Lifecycle event ──────────────────────────────────────────────────
-  await supabase.from("lifecycle_events").insert({
-    entity_type: "contact",
-    entity_id:   contactId,
-    event_type:  KernelEvent.CONTACT_CREATED,
-    brokerage_id: params.brokerage_id,
-    created_at:  now,
+  // ── 3. Emit CONTACT_CREATED through the canonical kernel emitter — INSERT into
+  //       lifecycle_events + reactor fan-out (notifications + sequences + portal cards
+  //       + per-side Managed Agent spawn) in one call. A bare lifecycle_events INSERT
+  //       silently suppressed every downstream channel — most importantly the Buyer
+  //       Concierge / Listing Concierge spawn that should kick the MOMENT a buyer/
+  //       seller-type contact is created. Catches the silent-suppression pattern audit.
+  await emitKernelEvent({
+    event:       KernelEvent.CONTACT_CREATED,
+    brokerageId: params.brokerage_id,
+    entityType:  "contact",
+    entityId:    contactId,
+    contactId,
+    agentUserId: (params as { user_id?: string }).user_id,
+    metadata:    { source: params.source ?? null },
   })
 
   // ── 4. Create first activity (intake note) ──────────────────────────────
@@ -465,12 +479,27 @@ export async function convertLeadToContact(params: {
     return { success: false, error: "Lead not found" }
   }
 
+  // Map lead_type → a VALID contacts.contact_type (CHECK: buyer|seller|both|
+  // investor|vendor|lender). A raw cast of lead_type (e.g. "motivated_seller")
+  // would violate the CHECK. Derive persona from motivation_type.
+  const lt = (lead.lead_type ?? "").toLowerCase()
+  const contactType: "buyer" | "seller" | "both" | "investor" =
+    lt.includes("seller") ? "seller" : lt === "investor" ? "investor" : lt === "both" ? "both" : "buyer"
+  const mt = (lead.motivation_type ?? "").toLowerCase()
+  const contactPersona =
+    mt === "probate" ? "probate"
+    : mt === "divorce" ? "divorce"
+    : (mt === "foreclosure" || mt === "pre_foreclosure") ? "motivated_seller"
+    : mt === "fsbo" ? "fsbo"
+    : undefined
+
   const result = await createOrUpdateContactFromDirectIntake({
     first_name:    lead.first_name ?? "Unknown",
     last_name:     lead.last_name ?? "",
     email:         lead.email ?? null,
     phone:         lead.phone ?? null,
-    contact_type:  (lead.lead_type as "buyer" | "seller" | "both" | "investor") ?? "buyer",
+    contact_type:  contactType,
+    contact_persona: contactPersona,
     tcpa_consent:  params.tcpaConsent,
     agent_id:      params.agentId,
     brokerage_id:  params.brokerageId,
@@ -506,6 +535,14 @@ export async function convertLeadToContact(params: {
     created_at:   now,
     metadata:     { contact_id: result.contactId },
   })
+
+  // A newly-created converted lead was qualified + consented, so AI-ISA keeps
+  // engaging the contact until an agent toggles it off (merged from the retired
+  // serviceConvertLeadToContact). Skip on a dedup-merge so we never silently
+  // re-enable ISA on an existing contact an agent had toggled off.
+  if (!result.isDuplicate) {
+    await supabase.from("contacts").update({ ai_isa_enabled: true }).eq("id", result.contactId)
+  }
 
   return result
 }

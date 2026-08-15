@@ -43,6 +43,7 @@ interface AiReplyCoachPanelProps {
   sessionId: string
   contactId: string
   agentId: string
+  brokerageId: string
   incomingMessage: string
   channel: "email" | "sms" | "chat"
   contactName: string
@@ -55,6 +56,7 @@ export function AiReplyCoachPanel({
   sessionId,
   contactId,
   agentId,
+  brokerageId,
   incomingMessage,
   channel,
   contactName,
@@ -92,6 +94,7 @@ export function AiReplyCoachPanel({
         incomingMessage,
         contactId,
         agentId,
+        brokerageId,
         channel,
         tone: "professional",
         includeNextSteps: true,

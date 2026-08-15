@@ -21,4 +21,10 @@ export interface Lead {
   created_at: string
   enriched_data?: any
   agent_id: string
+  lead_stage?: string | null
+  is_active?: boolean
+  reengagement_status?: string | null
+  lifecycle_state?: string | null
+  assigned_agent_id?: string | null
+  [key: string]: any
 }

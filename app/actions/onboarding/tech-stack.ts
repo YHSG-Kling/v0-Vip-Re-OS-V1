@@ -154,20 +154,24 @@ export async function saveCredentials(
       }
     }
 
-    // UPSERT platform_credentials
-    // Store credentials as config JSONB (encrypted at rest by Supabase)
-    const { error: credError } = await supabase
+    // Owner-keyed update-or-insert (unique key is (owner_type, owner_id, platform)).
+    // Store credentials as config JSONB (encrypted at rest by Supabase).
+    const credRow = {
+      brokerage_id: brokerageId,
+      owner_type: "brokerage",
+      owner_id: brokerageId,
+      platform: provider,
+      config: credentials, // Stored encrypted
+      is_active: true,
+      test_status: "pending",
+      updated_at: new Date().toISOString(),
+    }
+    const { data: existingCred } = await supabase
       .from("platform_credentials")
-      .upsert({
-        brokerage_id: brokerageId,
-        platform: provider,
-        config: credentials, // Stored encrypted
-        is_active: true,
-        test_status: "pending",
-        updated_at: new Date().toISOString(),
-      }, {
-        onConflict: "brokerage_id,platform",
-      })
+      .select("id").eq("owner_type", "brokerage").eq("owner_id", brokerageId).eq("platform", provider).maybeSingle()
+    const { error: credError } = existingCred
+      ? await supabase.from("platform_credentials").update(credRow).eq("id", existingCred.id)
+      : await supabase.from("platform_credentials").insert(credRow)
 
     if (credError) {
       console.error("[L11-TechStack] Failed to save credentials:", credError)

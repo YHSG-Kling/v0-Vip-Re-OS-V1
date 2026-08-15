@@ -9,7 +9,7 @@
 //   - NO direct DB writes for financial data outside this file
 //   - Every mutation emits a KernelEvent via lifecycle_events
 //   - business_expenses has NO brokerage_id column — filter by agent_id only
-//   - agent_commissions.status transitions: calculated → approved → paid
+//   - agent_commissions.status transitions: pending → approved → paid
 //   - agent_cap_tracking is source of truth for cap state (not agents.cap_progress)
 //   - All functions are pure async — no global state, no module-level DB calls
 //
@@ -20,7 +20,7 @@
 //   4. loadCommissionQueue — pending + approved commissions for workflow
 //   5. loadCommissionDistributions — commission splits by recipient
 //   6. recalculateCommissionState — trigger cap recalc + audit trail
-//   7. markCommissionApproved — status: calculated → approved
+//   7. markCommissionApproved — status: pending → approved
 //   8. markCommissionPaid — status: approved → paid
 //   9. createExpenseRecord — new business expense
 //   10. exportFinancialReport — CSV/PDF export with audit trail
@@ -33,11 +33,13 @@ import { processKernelEvent } from "./notification-engine"
 
 // ─── CONSTANTS & ENUMS ────────────────────────────────────────────────────────
 
+// Mirrors the agent_commissions_status_check DB constraint:
+// status ∈ (pending, approved, paid, disputed).
 const COMMISSION_STATUS_TRANSITIONS: Record<string, string[]> = {
-  calculated: ["approved", "cancelled"],
-  approved:   ["paid", "cancelled"],
+  pending:    ["approved", "disputed"],
+  approved:   ["paid", "disputed"],
   paid:       [],                      // terminal
-  cancelled:  [],                      // terminal
+  disputed:   [],                      // terminal
 }
 
 const VALID_EXPENSE_CATEGORIES = [
@@ -55,7 +57,7 @@ type ExpenseCategory = typeof VALID_EXPENSE_CATEGORIES[number]
 
 export interface FinancialActorContext {
   userId:      string
-  agentId:     string
+  agentId:     string | null
   brokerageId: string
   userType:    "agent" | "team_lead" | "broker" | "admin" | "superadmin"
 }
@@ -112,7 +114,7 @@ export interface AgentFinancialDashboardSummary {
   earningsHistory: any[]
 }
 export interface FinancialWorkspace {
-  agentId:      string
+  agentId:      string | null
   brokerageId:  string
   userType:     string
   accessLevel:  "personal" | "team" | "brokerage" | "system"
@@ -231,7 +233,7 @@ export interface LoadBrokerageFinancialSummaryInput {
 export interface LoadCommissionQueueInput {
   ctx:         FinancialActorContext
   brokerageId: string
-  statusFilter?: ("calculated" | "approved" | "paid")[]
+  statusFilter?: ("pending" | "approved" | "paid")[]
 }
 
 export interface LoadCommissionDistributionsInput {
@@ -300,23 +302,47 @@ export async function loadFinancialWorkspace(
   const supabase = createServiceClient()
 
   try {
-    // Verify user exists and has the claimed agentId
-    const { data: agent } = await supabase
-      .from("agents")
-      .select("id, user_id, brokerage_id")
-      .eq("id", ctx.agentId)
-      .eq("user_id", ctx.userId)
-      .maybeSingle()
-
-    if (!agent) {
-      return { success: false, error: "Agent identity verification failed" }
-    }
-
-    // Determine access level based on userType
+    // Determine access level first — broker/admin users may not have an agents row
     let accessLevel: "personal" | "team" | "brokerage" | "system" = "personal"
     if (ctx.userType === "team_lead") accessLevel = "team"
     if (ctx.userType === "broker" || ctx.userType === "admin") accessLevel = "brokerage"
     if (ctx.userType === "superadmin") accessLevel = "system"
+
+    if (ctx.agentId) {
+      // Agent path: verify identity via agents table
+      const { data: agent } = await supabase
+        .from("agents")
+        .select("id, user_id, brokerage_id")
+        .eq("id", ctx.agentId)
+        .eq("user_id", ctx.userId)
+        .maybeSingle()
+
+      if (!agent) {
+        return { success: false, error: "Agent identity verification failed" }
+      }
+    } else {
+      // Broker/admin path: no agents row — verify they own or belong to the brokerage
+      const { data: brokerage } = await supabase
+        .from("brokerages")
+        .select("id")
+        .eq("id", ctx.brokerageId)
+        .eq("owner_id", ctx.userId)
+        .maybeSingle()
+
+      if (!brokerage) {
+        // Also accept admin users with a matching agents row linked to the brokerage
+        const { data: adminAgent } = await supabase
+          .from("agents")
+          .select("id")
+          .eq("user_id", ctx.userId)
+          .eq("brokerage_id", ctx.brokerageId)
+          .maybeSingle()
+
+        if (!adminAgent) {
+          return { success: false, error: "Brokerage identity verification failed" }
+        }
+      }
+    }
 
     return {
       success: true,
@@ -419,9 +445,9 @@ export async function loadBrokerageFinancialSummary(
       .from("agent_commissions")
       .select("status")
       .eq("brokerage_id", brokerageId)
-      .in("status", ["calculated", "approved"])
+      .in("status", ["pending", "approved"])
 
-    const pendingCommissions = commissions?.filter((c) => c.status === "calculated").length ?? 0
+    const pendingCommissions = commissions?.filter((c) => c.status === "pending").length ?? 0
     const approvedCommissions = commissions?.filter((c) => c.status === "approved").length ?? 0
 
     return {
@@ -463,7 +489,7 @@ export async function loadCommissionQueue(
     if (statusFilter && statusFilter.length > 0) {
       query = query.in("status", statusFilter)
     } else {
-      query = query.in("status", ["calculated", "approved"])
+      query = query.in("status", ["pending", "approved"])
     }
 
     const { data: commissions } = await query.order("close_date", { ascending: false })
@@ -554,7 +580,7 @@ export async function recalculateCommissionState(
       if (isCapped !== record.is_capped) {
         await supabase
           .from("agent_cap_tracking")
-          .update({ is_capped: isCapped, updated_at: new Date().toISOString() })
+          .update({ is_capped: isCapped })
           .eq("id", record.id)
         if (isCapped) capped++
       }
@@ -585,7 +611,7 @@ export async function recalculateCommissionState(
 }
 
 /**
- * markCommissionApproved — Transition status: calculated → approved
+ * markCommissionApproved — Transition status: pending → approved
  */
 export async function markCommissionApproved(
   input: MarkCommissionApprovedInput
@@ -818,10 +844,13 @@ export async function createCommissionRecord(
   const supabase = createServiceClient()
 
   try {
-    const { data: agentProfile } = await supabase
-      .from("agents")
-      .select("cap_amount, cap_current")
-      .eq("user_id", agentId)
+    // Cap state is owned by agent_cap_tracking (cap_amount, cap_paid_to_date) —
+    // the agents table has no cap_current. agentId is agents.id (getAgentContext).
+    const { data: capRow } = await supabase
+      .from("agent_cap_tracking")
+      .select("id, cap_amount, cap_paid_to_date")
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle()
 
     const agentSplit = splitPercentage
@@ -854,8 +883,8 @@ export async function createCommissionRecord(
     const agentNetBase = agentGross - additionalFeesTotal
 
     let cappedAmount = 0
-    if (agentProfile?.cap_amount && agentProfile?.cap_current) {
-      const remainingToCap = agentProfile.cap_amount - agentProfile.cap_current
+    if (capRow?.cap_amount && capRow?.cap_paid_to_date != null) {
+      const remainingToCap = capRow.cap_amount - capRow.cap_paid_to_date
       if (remainingToCap <= 0) {
         cappedAmount = brokerageShare
       }
@@ -863,21 +892,21 @@ export async function createCommissionRecord(
 
     const agentNet = agentNetBase + cappedAmount
 
+    // Canonical commission table for this module is agent_commissions (the
+    // queue/approve/pay/summary commands all read it). Columns: agent_split_percent,
+    // agent_commission (agent net), brokerage_commission, status ∈ pending→approved→paid.
     const { data: commission, error } = await supabase
-      .from("commissions")
+      // agent_commission and brokerage_commission are GENERATED columns
+      // (computed from gross_commission + agent_split_percent) — never inserted.
+      .from("agent_commissions")
       .insert({
+        brokerage_id: ctx.brokerageId,
         agent_id: agentId,
         transaction_id: transactionId,
         gross_commission: grossCommission,
-        agent_split_percentage: agentSplit,
-        brokerage_share: brokerageShare,
-        agent_gross: agentGross,
-        fees_total: additionalFeesTotal,
-        fee_breakdown: feeBreakdown,
-        capped_amount: cappedAmount,
-        agent_net: agentNet,
+        agent_split_percent: agentSplit,
+        close_date: new Date().toISOString(),
         status: "pending",
-        created_at: new Date().toISOString(),
       })
       .select("id")
       .maybeSingle()
@@ -886,21 +915,19 @@ export async function createCommissionRecord(
       return { success: false, error: error?.message || "Failed to create commission record" }
     }
 
-    if (agentProfile && !cappedAmount) {
+    if (capRow && !cappedAmount) {
       await supabase
-        .from("agents")
-        .update({
-          cap_current: (agentProfile.cap_current || 0) + brokerageShare,
-        })
-        .eq("user_id", agentId)
+        .from("agent_cap_tracking")
+        .update({ cap_paid_to_date: (capRow.cap_paid_to_date || 0) + brokerageShare })
+        .eq("id", capRow.id)
     }
 
     await processKernelEvent({
-      event: KernelEvent.COMMISSION_UPDATED,
+      event: KernelEvent.COMMISSION_PAID,
       brokerageId: ctx.brokerageId,
       entityType: "commission",
       entityId: commission.id,
-    }).catch(() => {})
+    })
 
     return {
       success: true,
@@ -1069,7 +1096,6 @@ export async function loadAgentFinancialDashboardSummary(
       expensesResult,
       pendingResult,
       splitsResult,
-      bonusesResult,
       trendResult,
       profileResult,
       agentResult,
@@ -1085,15 +1111,10 @@ export async function loadAgentFinancialDashboardSummary(
         .from("agent_commissions")
         .select("*")
         .eq("agent_id", input.agentId)
-        .in("status", ["calculated", "approved"]),
+        .in("status", ["pending", "approved"]),
 
       service
         .from("commission_distributions")
-        .select("*")
-        .eq("agent_id", input.agentId),
-
-      service
-        .from("bonus_credits")
         .select("*")
         .eq("agent_id", input.agentId),
 
@@ -1133,7 +1154,6 @@ export async function loadAgentFinancialDashboardSummary(
     if (expensesResult.error) return { success: false, error: expensesResult.error.message }
     if (pendingResult.error) return { success: false, error: pendingResult.error.message }
     if (splitsResult.error) return { success: false, error: splitsResult.error.message }
-    if (bonusesResult.error) return { success: false, error: bonusesResult.error.message }
     if (trendResult.error) return { success: false, error: trendResult.error.message }
     if (profileResult.error) return { success: false, error: profileResult.error.message }
     if (agentResult.error) return { success: false, error: agentResult.error.message }
@@ -1155,7 +1175,7 @@ export async function loadAgentFinancialDashboardSummary(
         expenses: expensesResult.data ?? [],
         pendingCommissions: pendingResult.data ?? [],
         teamSplits: splitsResult.data ?? [],
-        bonusCredits: bonusesResult.data ?? [],
+        bonusCredits: [],
         monthlyTrendData: trendResult.data ?? [],
         ytdTransactionCount: base.data.ytdTransactionCount,
         commissionProfile: profileResult.data ?? null,

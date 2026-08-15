@@ -4,17 +4,21 @@ import { useEffect, useState, useCallback } from "react"
 import { createClient } from "@/lib/supabase/client"
 // Actions
 import { getAgentStats } from "@/app/actions/agents"
-import { getTodaysBriefing, generateBriefing, getUpcomingShowings, getActiveTransactions } from "@/app/actions/briefing-actions"
-import { getUpcomingAnniversaries } from "@/app/actions/past-clients"
+import { generateDailyGameplan } from "@/app/actions/copilot"
+import { getTodaysBriefing, generateBriefing, getUpcomingShowings, getActiveTransactions, getUserTypeBrief } from "@/app/actions/briefing-actions"
+import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
+import BudgetWarningBanner from "@/app/components/shell/budget-warning-banner"
+import type { UserTypeBrief } from "@/lib/intelligence/user-type-briefs"
+import { getUpcomingAnniversaries } from "@/app/actions/lifetime-customers"
 import { getCommissionRecords, getExpenses } from "@/app/actions/ai-financial-management"
 import { getHotLeads } from "@/app/actions/ai-auto-response"
 import { getMotivatedSellers } from "@/app/actions/lead-intelligence"
-import { getMarketAlerts } from "@/app/actions/ai-market-intelligence"
 import { getRecentLifeChanges } from "@/app/actions/contact-enrichment"
 import { initiateWhisperBridge, triggerVapiVoiceBot } from "@/app/actions/voice-call-bridge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import Link from "next/link"
+import ReactMarkdown from "react-markdown"
 // Components
 import { AgentCommandStrip } from "./components/agent-command-strip"
 import { AgentOperatingRadar } from "./components/agent-operating-radar"
@@ -23,13 +27,37 @@ import { AgentNextBestActions } from "./components/agent-next-best-actions"
 import { AgentDealIntelligence } from "./components/agent-deal-intelligence"
 import { AgentLifetimeCustomersPanel } from "./components/agent-lifetime-customers-panel"
 import { AgentSuperpowersPanel } from "./components/agent-superpowers-panel"
+import { WeeklyPlanWidget } from "./components/weekly-plan-widget"
+import { LicenseComplianceWidget } from "./components/license-compliance-widget"
 import { AgentFinancialIntelligence } from "./components/agent-financial-intelligence"
 import { AgentSystemReadiness } from "./components/agent-system-readiness"
-import { AgentStaleContactsPanel } from "./components/agent-stale-contacts-panel"
 import { ThisWeekPreview } from "@/app/dashboard/calendar/components/os"
 import { NewlyConvertedContactsPanel } from "./components/conversion"
 import { VoiceAssistantPanel } from "@/app/components/ai-copilot"
+import { PredictiveListingCard } from "./components/predictive-listing-card"
+import { getTopPredictiveSellers, listQueuedAutoTouches, type PredictiveSellerRow } from "@/app/actions/predictive-listing"
+import { DealRiskWidget } from "./components/deal-risk-widget"
+import { getAgentAtRiskTransactions, type AgentDealRisk } from "@/app/actions/deal-risk-agent"
+import { ListingRiskWidget } from "./components/listing-risk-widget"
+import { getAgentAtRiskListings, type AgentListingRisk } from "@/app/actions/listing-risk-agent"
+import { ListingApptPrepWidget } from "./components/listing-appt-prep-widget"
+import { getAgentUpcomingListingApptPreps, type ListingApptPrepRow } from "@/app/actions/listing-appointment-copilot"
+import { RevenueProtectionHero } from "./components/revenue-protection-hero"
+import { getAgentRevenueProtection, type AgentRevenueProtection } from "@/app/actions/revenue-protection"
+import { IncomeForecastCard } from "./components/income-forecast-card"
+import { getAgentIncomeForecast, type AgentIncomeForecast } from "@/app/actions/lifetime-npv"
+import { OpenActionsCard } from "./components/open-actions-card"
+import { AgentActionQueueCard } from "./components/agent-action-queue-card"
 import { ApprovalsBanner } from "@/components/ApprovalsBanner"
+import { MarketInsightWidget } from "@/app/components/dashboard/market-insight-widget"
+import { SmarterWidget } from "@/app/components/dashboard/smarter-widget/smarter-widget"
+import { SphereResonanceCard } from "@/app/components/heartbeat/sphere-resonance-card"
+import { WealthAdvisorCard } from "@/app/components/heartbeat/wealth-advisor-card"
+import { SmartQueue } from "@/app/components/heartbeat/smart-queue"
+import AgentInsightsWidget from "@/app/dashboard/agent/components/agent-insights-widget"
+import PresentationReadyBanner from "@/app/dashboard/agent/components/presentation-ready-banner"
+import { LearnThisWeekCard } from "@/app/components/learning/learn-this-week-card"
+import { NegotiationCoPilotCard } from "@/app/components/negotiation/negotiation-copilot-card"
 
 export default function AgentDashboard() {
   const [loading, setLoading] = useState(true)
@@ -46,6 +74,8 @@ export default function AgentDashboard() {
     upcomingShowings: 0
   })
   const [briefing, setBriefing] = useState<any>(null)
+  const [userTypeBrief, setUserTypeBrief] = useState<UserTypeBrief | null>(null)
+  const [briefRefreshing, setBriefRefreshing] = useState(false)
   const [showings, setShowings] = useState<any[]>([])
   const [transactions, setTransactions] = useState<any[]>([])
   const [anniversaries, setAnniversaries] = useState<any[]>([])
@@ -53,12 +83,28 @@ export default function AgentDashboard() {
   const [commissions, setCommissions] = useState<any[]>([])
   const [monthlyExpenses, setMonthlyExpenses] = useState<any[]>([])
   const [hotLeads, setHotLeads] = useState<any[]>([])
+  const [predictedSellers, setPredictedSellers] = useState<PredictiveSellerRow[]>([])
+  const [queuedAutoTouches, setQueuedAutoTouches] = useState<Array<{
+    id: string
+    contactId: string
+    contactName: string
+    channel: string | null
+    scheduledSendAt: string | null
+    triggeringPlsScore: number | null
+    triggeringSignals: Array<{ key: string; label: string }> | null
+  }>>([])
+  const [userId, setUserId] = useState("")
+  const [atRiskTxns, setAtRiskTxns] = useState<AgentDealRisk[]>([])
+  const [atRiskListings, setAtRiskListings] = useState<AgentListingRisk[]>([])
+  const [upcomingListingPreps, setUpcomingListingPreps] = useState<ListingApptPrepRow[]>([])
+  const [revenueProtection, setRevenueProtection] = useState<AgentRevenueProtection | null>(null)
+  const [incomeForecast, setIncomeForecast] = useState<AgentIncomeForecast | null>(null)
   const [actionPlans, setActionPlans] = useState<any[]>([])
   const [refreshing, setRefreshing] = useState(false)
   const [callingId, setCallingId] = useState<string | null>(null)
   const [motivatedSellers, setMotivatedSellers] = useState<any[]>([])
-  const [marketAlerts, setMarketAlerts] = useState<any[]>([])
-  const [marketSnapshot, setMarketSnapshot] = useState<{ overallTrend: string; keyMetric: string; comparedToLastMonth: string } | null>(null)
+  const [gameplan, setGameplan] = useState<any>(null)
+  const [gameplanLoading, setGameplanLoading] = useState(false)
 
   useEffect(() => {
     const loadData = async () => {
@@ -93,6 +139,61 @@ export default function AgentDashboard() {
         if (agentRow) {
           setAgentId(agentRow.id)
           setBrokerageId(agentRow.brokerage_id)
+          setUserId(user.id)
+
+          // Predictive Listing Score — top 5 likely sellers + queued auto-touches
+          getTopPredictiveSellers({
+            agentId: agentRow.id,
+            brokerageId: agentRow.brokerage_id,
+            limit: 5,
+          })
+            .then(setPredictedSellers)
+            .catch(() => setPredictedSellers([]))
+
+          listQueuedAutoTouches({
+            agentId: agentRow.id,
+            brokerageId: agentRow.brokerage_id,
+          })
+            .then(setQueuedAutoTouches)
+            .catch(() => setQueuedAutoTouches([]))
+
+          // Deal Risk Radar — at-risk + critical transactions for this agent
+          getAgentAtRiskTransactions({
+            agentId: agentRow.id,
+            brokerageId: agentRow.brokerage_id,
+            limit: 5,
+          })
+            .then(setAtRiskTxns)
+            .catch(() => setAtRiskTxns([]))
+
+          // Listing Risk Radar — at-risk + critical active listings for this agent
+          getAgentAtRiskListings({
+            agentId: agentRow.id,
+            brokerageId: agentRow.brokerage_id,
+            limit: 5,
+          })
+            .then(setAtRiskListings)
+            .catch(() => setAtRiskListings([]))
+
+          // Listing Appointment Co-Pilot — upcoming preps (running or completed in last 7d)
+          // `agentId` here is the auth user id, since workflow_runs.agent_user_id
+          // is the users(id) reference (not agents.id).
+          getAgentUpcomingListingApptPreps({
+            agentId: user.id,
+            limit: 5,
+          })
+            .then(setUpcomingListingPreps)
+            .catch(() => setUpcomingListingPreps([]))
+
+          // Revenue Protection Score — latest quarterly snapshot for this agent
+          getAgentRevenueProtection({ agentId: user.id })
+            .then((r) => setRevenueProtection(r.data ?? null))
+            .catch(() => setRevenueProtection(null))
+
+          // Income Forecast — latest 30/60/90 projection + sphere referral expected
+          getAgentIncomeForecast({ agentId: user.id })
+            .then((r) => setIncomeForecast(r.data ?? null))
+            .catch(() => setIncomeForecast(null))
         }
 
         // 4. Calculate month start
@@ -122,10 +223,8 @@ export default function AgentDashboard() {
           getExpenses({ startDate: monthStart }),
           getHotLeads(10),
           getRecentLifeChanges(agentRow?.id, 7).catch(() => []),
-          agentRow?.id
-            ? getMarketAlerts({ agentId: agentRow.id }).catch(() => null)
-            : Promise.resolve(null),
           getMotivatedSellers({ min_score: 60 }).catch(() => null),
+          getUserTypeBrief({ userType: "agent" }),
         ])
 
         // 7. Unpack results
@@ -160,7 +259,8 @@ export default function AgentDashboard() {
         }
 
         if (results[4].status === 'fulfilled' && results[4].value) {
-          setAnniversaries(results[4].value || [])
+          const annivResult = results[4].value as any
+          setAnniversaries(annivResult.success ? (annivResult.anniversaries ?? []) : [])
         }
 
         if (results[5].status === 'fulfilled' && results[5].value) {
@@ -168,7 +268,8 @@ export default function AgentDashboard() {
         }
 
         if (results[6].status === 'fulfilled' && results[6].value) {
-          setMonthlyExpenses(results[6].value.expenses || [])
+          const expResult = results[6].value as any
+          setMonthlyExpenses(expResult.success && expResult.expenses ? expResult.expenses : [])
         }
 
         if (results[7].status === 'fulfilled' && results[7].value) {
@@ -180,16 +281,15 @@ export default function AgentDashboard() {
         }
 
         if (results[9].status === 'fulfilled' && results[9].value) {
-          const alertsResult = results[9].value as any
-          if (alertsResult?.success) {
-            setMarketAlerts(alertsResult.alerts || [])
-            setMarketSnapshot(alertsResult.snapshot || null)
-          }
+          const sellersResult = results[9].value as any
+          setMotivatedSellers(sellersResult?.sellers ?? [])
         }
 
+        // UserTypeBrief — feeds TodaysFocusCard with the play-aloud button.
+        // Parallel to the legacy DailyBriefing loaded above.
         if (results[10].status === 'fulfilled' && results[10].value) {
-          const sellersResult = results[10].value as any
-          setMotivatedSellers(sellersResult?.sellers ?? [])
+          const briefResult = results[10].value as { brief?: UserTypeBrief | null }
+          setUserTypeBrief(briefResult.brief ?? null)
         }
 
       } catch (error) {
@@ -200,6 +300,23 @@ export default function AgentDashboard() {
     }
 
     loadData()
+
+    // Load gameplan independently — doesn't block main render
+    const loadGameplan = async () => {
+      const supabase = createClient()
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+      setGameplanLoading(true)
+      try {
+        const result = await generateDailyGameplan(user.id)
+        setGameplan(result)
+      } catch {
+        // non-critical — don't surface error
+      } finally {
+        setGameplanLoading(false)
+      }
+    }
+    loadGameplan()
   }, [])
 
   const handleRefreshBriefing = useCallback(async () => {
@@ -213,6 +330,18 @@ export default function AgentDashboard() {
       console.error("[v0] Error refreshing briefing:", error)
     }
     setRefreshing(false)
+  }, [])
+
+  // Refresh the UserTypeBrief that drives TodaysFocusCard (play-aloud).
+  const handleRefreshUserTypeBrief = useCallback(async () => {
+    setBriefRefreshing(true)
+    try {
+      const result = await getUserTypeBrief({ userType: "agent" })
+      if (result.brief) setUserTypeBrief(result.brief)
+    } catch (error) {
+      console.error("[v0] Error refreshing user-type brief:", error)
+    }
+    setBriefRefreshing(false)
   }, [])
 
   const handleWhisperBridge = useCallback(async (contactId: string, context: string) => {
@@ -248,6 +377,19 @@ export default function AgentDashboard() {
 
         <ApprovalsBanner />
 
+        {/* Usage warning — generic, superadmin-gated (no vendor names / amounts) */}
+        <BudgetWarningBanner />
+
+        {/* Today's Focus — the "voice-read brief" card. Tap the speaker icon
+            to hear the 3 priorities read aloud in the agent's cloned voice. */}
+        {userTypeBrief && (
+          <TodaysFocusCard
+            brief={userTypeBrief}
+            onRefresh={handleRefreshUserTypeBrief}
+            refreshing={briefRefreshing}
+          />
+        )}
+
         <AgentCommandStrip
           agentName={agentName}
           briefing={briefing}
@@ -258,6 +400,140 @@ export default function AgentDashboard() {
 
         <AgentOperatingRadar stats={stats} loading={loading} />
 
+        {/* Weekly Plan widget — sits above the gameplan to set the week context */}
+        {agentId && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <WeeklyPlanWidget agentId={agentId} />
+            <LicenseComplianceWidget agentId={agentId} />
+          </div>
+        )}
+
+        {/* Today's Gameplan */}
+        {(gameplan || gameplanLoading) && (
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm flex items-center gap-2">
+                Today&apos;s Gameplan
+                {gameplanLoading && (
+                  <span className="text-xs text-muted-foreground font-normal">Generating…</span>
+                )}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {gameplanLoading ? (
+                <div className="h-16 flex items-center justify-center text-sm text-muted-foreground">
+                  Building your daily action plan…
+                </div>
+              ) : gameplan && (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {gameplan.people_to_call?.length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Call Today</p>
+                      <ul className="space-y-1">
+                        {gameplan.people_to_call.slice(0, 5).map((p: any, i: number) => (
+                          <li key={i} className="text-sm text-foreground flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
+                            {p.name ?? p.contact_name ?? "Contact"}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {gameplan.deals_to_protect?.length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Protect Deals</p>
+                      <ul className="space-y-1">
+                        {gameplan.deals_to_protect.slice(0, 5).map((d: any, i: number) => (
+                          <li key={i} className="text-sm text-foreground flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+                            {d.milestone_name?.replace(/_/g, " ") ?? d.description ?? "Milestone"}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {gameplan.content_to_post?.length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Post Today</p>
+                      <ul className="space-y-1">
+                        {gameplan.content_to_post.slice(0, 3).map((c: any, i: number) => (
+                          <li key={i} className="text-sm text-foreground flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
+                            {c.title ?? "Content"}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {gameplan.ai_summary && (
+                    <div className="md:col-span-3 pt-2 border-t text-xs text-muted-foreground [&_strong]:font-semibold [&_strong]:text-foreground [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5 [&_li]:my-0.5 [&_p]:my-1">
+                      <ReactMarkdown>{gameplan.ai_summary}</ReactMarkdown>
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {brokerageId && userId && (predictedSellers.length > 0 || queuedAutoTouches.length > 0) && (
+          <PredictiveListingCard
+            brokerageId={brokerageId}
+            userId={userId}
+            predictedSellers={predictedSellers}
+            queuedAutoTouches={queuedAutoTouches}
+          />
+        )}
+
+        {brokerageId && userId && (
+          <RevenueProtectionHero
+            data={revenueProtection}
+            brokerageId={brokerageId}
+            agentUserId={userId}
+          />
+        )}
+
+        {/* Agent OS Action Queue — Sprint 6. THE morning starting point.
+            Composes deal-health, listing-health, NPV-due, and portal-event
+            actions into one priority-ranked list. Hidden when zero items. */}
+        <AgentActionQueueCard />
+
+        <OpenActionsCard />
+
+        {/* Sprint 8 — Negotiation Co-Pilot: persisted strategy recs per
+            open offer with the customer-mirror panel inline. Hides on empty. */}
+        <NegotiationCoPilotCard />
+
+        {/* Sprint 7 — Knowledge & Growth Router: surfaces the top
+            learning modules picked by the actor's gap_tags + tenure.
+            Hides on empty. */}
+        {userId && <LearnThisWeekCard actorKind="agent" actorId={userId} />}
+
+        {brokerageId && userId && (
+          <IncomeForecastCard
+            data={incomeForecast}
+            brokerageId={brokerageId}
+            agentUserId={userId}
+          />
+        )}
+
+        {atRiskTxns.length > 0 && <DealRiskWidget atRisk={atRiskTxns} />}
+
+        {atRiskListings.length > 0 && <ListingRiskWidget atRisk={atRiskListings} />}
+
+        {upcomingListingPreps.length > 0 && <ListingApptPrepWidget preps={upcomingListingPreps} />}
+
+        {/* Smart Queue — single segmented list (🔥 Hot · ⚠ At-risk · 🆕 New ·
+            💎 Likely seller). Aggregates lead_score_history +
+            sphere_engagement_scores + contacts.last_contacted_at +
+            predictive_listing_scores. Promoted to top of contact area so
+            agents see one consolidated view first. */}
+        <SmartQueue />
+
+        {/* Hot Leads quick-call panel — kept alongside SmartQueue because it
+            has unique whisper-bridge + VAPI bot actions (one-tap call) that
+            SmartQueue's draft_followup doesn't. Future: fold these actions
+            into SmartQueue rows and retire this panel. */}
         {(hotLeads.length > 0 || loading) && (
           <AgentHotLeadsPanel
             hotLeads={hotLeads}
@@ -269,16 +545,33 @@ export default function AgentDashboard() {
           />
         )}
 
-        {/* Conversion Workspace - Qualified Handoffs */}
+        {/* Conversion Workspace — Qualified Handoffs.
+            Distinct concept from SmartQueue's "new" segment: this surfaces
+            lead→contact CONVERSION coaching (urgency_level, qualification
+            reason, next_action, ai_summary) — not just "created recently". */}
         {agentId && brokerageId && (
           <NewlyConvertedContactsPanel agentId={agentId} brokerageId={brokerageId} />
         )}
+
+        {/* Smarter-this-week digest — surfaces the AI improvement loop */}
+        <SmarterWidget />
+
+        {/* Predictive surfaces — Sphere Resonance + Wealth Advisor */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <SphereResonanceCard />
+          <WealthAdvisorCard />
+        </div>
+
+        {/* Listing presentations prepared by the daily cron — auto-hides when none */}
+        <PresentationReadyBanner />
+
+        {/* AI Coaching Insights — auto-hides when agent has fewer than 5 deals */}
+        <AgentInsightsWidget />
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
             <AgentNextBestActions
               briefingActions={briefing?.top_priority_actions || []}
-              hotLeads={briefing?.hot_leads || []}
               dealsAtRisk={briefing?.deals_at_risk || []}
               upcomingShowings={showings}
               actionPlans={actionPlans}
@@ -297,53 +590,8 @@ export default function AgentDashboard() {
               hotLeadName={briefing?.hot_leads?.[0]?.name}
             />
 
-            {/* Market Pulse */}
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm flex items-center justify-between">
-                  <span>Market Pulse</span>
-                  <Link
-                    href="/dashboard/market-insights"
-                    className="text-xs text-primary font-normal underline underline-offset-2 hover:no-underline"
-                  >
-                    View all
-                  </Link>
-                </CardTitle>
-                {marketSnapshot && (
-                  <p className="text-xs text-muted-foreground">{marketSnapshot.overallTrend}</p>
-                )}
-              </CardHeader>
-              <CardContent className="space-y-2">
-                {marketAlerts.length === 0 && !loading ? (
-                  <p className="text-xs text-muted-foreground py-2">
-                    No market alerts for your area — market is stable
-                  </p>
-                ) : (
-                  marketAlerts.slice(0, 5).map((alert: any, i: number) => (
-                    <div key={i} className="flex items-start gap-2 text-sm">
-                      <Badge
-                        variant="outline"
-                        className={`shrink-0 text-[10px] capitalize ${
-                          alert.priority === "high"
-                            ? "border-red-200 text-red-700 bg-red-50"
-                            : alert.priority === "medium"
-                              ? "border-amber-200 text-amber-700 bg-amber-50"
-                              : "border-slate-200 text-slate-600 bg-slate-50"
-                        }`}
-                      >
-                        {alert.type?.replace(/_/g, " ")}
-                      </Badge>
-                      <div className="min-w-0 flex-1">
-                        <p className="text-xs font-medium leading-tight truncate">{alert.title}</p>
-                        {alert.area && (
-                          <p className="text-[10px] text-muted-foreground truncate">{alert.area}</p>
-                        )}
-                      </div>
-                    </div>
-                  ))
-                )}
-              </CardContent>
-            </Card>
+            {/* Market Pulse — AI-generated from agent's pipeline data */}
+            <MarketInsightWidget />
 
             <AgentFinancialIntelligence
               commissions={commissions}
@@ -392,10 +640,11 @@ export default function AgentDashboard() {
             )}
             <AgentSystemReadiness />
 
-            {/* Contacts Needing Touch */}
-            {agentId && brokerageId && (
-              <AgentStaleContactsPanel agentId={agentId} brokerageId={brokerageId} />
-            )}
+            {/* AgentStaleContactsPanel removed — superseded by SmartQueue's
+                at_risk segment which now includes the same
+                contacts.last_contacted_at >= 21d signal as a fallback when
+                sphere_engagement_scores is sparse. Component file kept for
+                back-compat in case any other surface mounts it. */}
 
             {/* My Source Performance */}
             <Card className="hover:shadow-md transition-shadow">

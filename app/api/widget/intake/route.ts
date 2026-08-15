@@ -183,7 +183,7 @@ export async function POST(req: NextRequest) {
         consent_type: 'tcpa',
         consented: true,
         consent_source: 'widget',
-        consent_text: tcpa_consent_text ?? null,
+        consent_text: tcpa_consent_text ?? 'TCPA consent captured via website intake widget.',
         ip_address: ip_address ?? null,
         user_agent: user_agent ?? null,
       })
@@ -207,7 +207,7 @@ export async function POST(req: NextRequest) {
       brokerage_id,
       status: 'pending',
       trigger_type: 'widget_intake',
-      enrichment_type: 'contact_basic',
+      enrichment_type: 'skip_trace',
       enrichments_needed: ['email_verify', 'phone_verify', 'social_lookup'],
       retry_count: 0,
       max_retries: 3,

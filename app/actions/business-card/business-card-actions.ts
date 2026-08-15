@@ -1,23 +1,56 @@
 "use server"
 
+import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { captureContact } from "@/lib/contact-pipeline/contact-capture"
+import { gatewayChat } from "@/lib/ai/gateway-chat"
 import { processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
+
+// Was trusting caller-supplied agentId + brokerageId. Caller could
+// upload business cards attributed to any agent in any brokerage
+// (creating fraudulent contacts + burning Claude Vision API budget).
+// Now: identity resolved from session, agent_id verified to belong to
+// caller's brokerage.
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string; agentId: string | null }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  const { data: a } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("user_id", user.id)
+    .maybeSingle()
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id, agentId: a?.id ?? null }
+}
 
 export async function uploadBusinessCard(params: {
   imageBase64: string
   mimeType: "image/jpeg" | "image/png" | "image/webp"
-  agentId: string
-  brokerageId: string
+  agentId?: string  // ignored — derived from session
+  brokerageId?: string  // ignored — derived from session
 }): Promise<{ scanId: string; contactId: string | null; viable: boolean }> {
+  const auth = await requireCaller()
+  if (!auth.ok) throw new Error(auth.error)
+  const brokerageId = auth.brokerageId
+  const agentId = auth.agentId ?? auth.userId
+
   const supabase = createServiceClient()
   const scanId = crypto.randomUUID()
   const now = new Date().toISOString()
 
   // 1) Upload image to Supabase storage
   const buffer = Buffer.from(params.imageBase64, "base64")
-  const path = `${params.brokerageId}/${scanId}.jpg`
+  const path = `${brokerageId}/${scanId}.jpg`
   await supabase.storage
     .from("business-cards")
     .upload(path, buffer, { contentType: params.mimeType, upsert: true })
@@ -25,45 +58,27 @@ export async function uploadBusinessCard(params: {
   const raw_image_url = pub.publicUrl
 
   // 2) Call Claude Vision — JSON extraction only
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": process.env.ANTHROPIC_API_KEY!,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 300,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "image",
-              source: {
-                type: "base64",
-                media_type: params.mimeType,
-                data: params.imageBase64,
-              },
-            },
-            {
-              type: "text",
-              text: "Return ONLY a JSON object with keys: first_name,last_name,email,phone,company,title,address,website. No other text.",
-            },
-          ],
-        },
-      ],
-    }),
+  // Claude Vision OCR via the Vercel AI Gateway (image passed as a data URL).
+  const response = await gatewayChat({
+    model: "anthropic/claude-sonnet-4-20250514",
+    maxTokens: 300,
+    temperature: 0,
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: `data:${params.mimeType};base64,${params.imageBase64}` } },
+          { type: "text", text: "Return ONLY a JSON object with keys: first_name,last_name,email,phone,company,title,address,website. No other text." },
+        ],
+      },
+    ],
   })
-
-  const aiData = await response.json() as {
-    content?: Array<{ text?: string }>
-  }
 
   let extracted: Record<string, string> = {}
   try {
-    extracted = JSON.parse(aiData.content?.[0]?.text ?? "{}") as Record<string, string>
+    const text = response.content ?? "{}"
+    const match = text.match(/\{[\s\S]*\}/)
+    extracted = JSON.parse(match ? match[0] : "{}") as Record<string, string>
   } catch {
     extracted = {}
   }
@@ -83,8 +98,8 @@ export async function uploadBusinessCard(params: {
     .from("business_card_scans")
     .insert({
       id: scanId,
-      brokerage_id: params.brokerageId,
-      agent_id: params.agentId,
+      brokerage_id: brokerageId,
+      agent_id: agentId,
       raw_image_url,
       extracted_data: extracted,
       confidence_score,
@@ -96,7 +111,7 @@ export async function uploadBusinessCard(params: {
     .single()
 
   await supabase.from("lifecycle_events").insert({
-    brokerage_id: params.brokerageId,
+    brokerage_id: brokerageId,
     entity_type: "business_card",
     entity_id: scan!.id,
     event_type: KernelEvent.BUSINESS_CARD_UPLOADED,
@@ -108,13 +123,13 @@ export async function uploadBusinessCard(params: {
     const { data: agentRow } = await supabase
       .from("agents")
       .select("user_id")
-      .eq("id", params.agentId)
+      .eq("id", agentId)
       .single()
 
     if (agentRow?.user_id) {
       await supabase.from("notifications").insert({
         user_id: agentRow.user_id,
-        brokerage_id: params.brokerageId,
+        brokerage_id: brokerageId,
         type: "business_card_scan",
         title: "Business card scan could not extract contact info",
         body: "Missing name or contact method. Try a clearer photo.",
@@ -129,10 +144,12 @@ export async function uploadBusinessCard(params: {
     return { scanId: scan!.id, contactId: null, viable: false }
   }
 
-  // 6) Viable → captureContact (tcpa_consent=false always for business cards)
+  // 6) Viable → captureContact (tcpa_consent=false always for business cards).
+  // Owner agent resolves via brokerage assignment rules — the scanner doesn't
+  // own the contact just because they scanned it.
   const { contactId } = await captureContact({
-    brokerageId: params.brokerageId,
-    agentUserId: null,
+    brokerageId: brokerageId,
+    ownerAgentId: null,
     source: "business_card",
     first_name: extracted.first_name ?? null,
     last_name: extracted.last_name ?? null,
@@ -149,7 +166,7 @@ export async function uploadBusinessCard(params: {
     .eq("id", scan!.id)
 
   await supabase.from("lifecycle_events").insert({
-    brokerage_id: params.brokerageId,
+    brokerage_id: brokerageId,
     entity_type: "contact",
     entity_id: contactId,
     event_type: KernelEvent.BUSINESS_CARD_APPROVED,
@@ -158,7 +175,7 @@ export async function uploadBusinessCard(params: {
 
   await processKernelEvent({
     event: KernelEvent.BUSINESS_CARD_APPROVED,
-    brokerageId: params.brokerageId,
+    brokerageId: brokerageId,
     entityType: "contact",
     entityId: contactId,
   })
@@ -167,8 +184,8 @@ export async function uploadBusinessCard(params: {
 }
 
 export async function getRecentScans(params: {
-  agentId: string
-  brokerageId: string
+  agentId?: string  // ignored — derived from session
+  brokerageId?: string  // ignored — derived from session
   limit?: number
 }): Promise<{
   id: string
@@ -179,15 +196,27 @@ export async function getRecentScans(params: {
   contact_id: string | null
   raw_image_url: string
 }[]> {
+  const auth = await requireCaller()
+  if (!auth.ok) return []
+
   const supabase = createServiceClient()
 
-  const { data, error } = await supabase
+  // Scope to caller's session — only their own scans within their brokerage
+  let query = supabase
     .from("business_card_scans")
     .select("id, created_at, extracted_data, confidence_score, review_status, contact_id, raw_image_url")
-    .eq("agent_id", params.agentId)
-    .eq("brokerage_id", params.brokerageId)
+    .eq("brokerage_id", auth.brokerageId)
     .order("created_at", { ascending: false })
     .limit(params.limit ?? 20)
+
+  if (auth.agentId) {
+    query = query.eq("agent_id", auth.agentId)
+  } else {
+    // Non-agent users (admin/broker) without an agents row see all scans in
+    // their brokerage. Still tenant-scoped via .eq("brokerage_id", ...).
+  }
+
+  const { data, error } = await query
 
   if (error) throw new Error(`Failed to load scans: ${error.message}`)
 

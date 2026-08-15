@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateText } from "ai"
-import { openai } from "@ai-sdk/openai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { NextRequest, NextResponse } from "next/server"
 
 const NOTE_TYPE_TITLE: Record<string, string> = {
@@ -78,7 +78,7 @@ Rules:
 
     try {
       const { text } = await generateText({
-        model: openai("gpt-4o-mini"),
+        model: resolveModel("openai/gpt-4o-mini"),
         system: systemPrompt,
         prompt: `Raw note: "${rawText}"\n\nConversation context:\n${conversationContext}`,
         maxOutputTokens: 512,

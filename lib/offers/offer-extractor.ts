@@ -2,12 +2,12 @@ import { generateAIResponse } from "@/lib/ai"
 import { createClient } from "@/lib/supabase/server"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 // ── Extracted offer shape matching exact offers table columns ─────────────────
 export interface ExtractedOfferData {
   offer_price: number | null
   earnest_money: number | null
-  earnest_money_amount: number | null
   closing_date: string | null
   financing_type: string | null
   down_payment_amount: number | null
@@ -42,11 +42,13 @@ export async function extractOfferFromPdf(params: {
     .eq("id", offerId)
 
   try {
-    // Fetch the PDF as base64 for vision-capable model
-    const pdfResp = await fetch(pdfUrl)
-    if (!pdfResp.ok) throw new Error(`PDF fetch failed: ${pdfResp.status}`)
-    const pdfBuffer = await pdfResp.arrayBuffer()
-    const base64Pdf = Buffer.from(pdfBuffer).toString("base64")
+    // Fetch the PDF as base64 for vision-capable model (gateway url-override download)
+    const pdfResp = await callConnector<Buffer>({
+      connector: "asset-download", baseUrl: "", path: "", url: pdfUrl,
+      method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 60_000,
+    })
+    if (!pdfResp.ok || !pdfResp.data) throw new Error(`PDF fetch failed: ${pdfResp.status}`)
+    const base64Pdf = pdfResp.data.toString("base64")
 
     const response = await generateAIResponse({
       prompt: `You are a real estate document parser. Extract ONLY the following fields from this offer document.
@@ -56,7 +58,6 @@ Required JSON schema:
 {
   "offer_price": number or null,
   "earnest_money": number or null,
-  "earnest_money_amount": number or null,
   "closing_date": "YYYY-MM-DD" or null,
   "financing_type": "conventional" | "fha" | "va" | "cash" | "usda" | "other" or null,
   "down_payment_amount": number or null,
@@ -109,7 +110,6 @@ Required JSON schema:
         // Write individual columns from live schema
         offer_price: extracted.offer_price,
         earnest_money: extracted.earnest_money,
-        earnest_money_amount: extracted.earnest_money_amount,
         closing_date: extracted.closing_date,
         financing_type: extracted.financing_type,
         down_payment_amount: extracted.down_payment_amount,

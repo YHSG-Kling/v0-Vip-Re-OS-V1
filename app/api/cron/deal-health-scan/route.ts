@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from "next/server"
+import {
+NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { calculateDealHealth } from "@/lib/deal-health/health-scorer"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -8,6 +9,7 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 export const dynamic = "force-dynamic"
 
@@ -25,11 +27,9 @@ export const dynamic = "force-dynamic"
  */
 
 export async function GET(request: NextRequest) {
-  // Verify CRON_SECRET
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const contextResult = await createCronRunContextAction({
     cron_name: "deal-health-scan",
@@ -66,7 +66,7 @@ export async function GET(request: NextRequest) {
     // Process each transaction
     for (const tx of transactions) {
       try {
-        const result = await calculateDealHealth(tx.id, tx.brokerage_id)
+        const result = await calculateDealHealth({ transactionId: tx.id, brokerageId: tx.brokerage_id })
 
         // Log DEAL_HEALTH_SCORE_UPDATED event
         await supabase.from("lifecycle_events").insert({
@@ -155,7 +155,7 @@ export async function GET(request: NextRequest) {
     })
   } catch (error) {
     console.error("[deal-health-scan] Error:", error)
-    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
+    await recordCronFailureAction({ context_id: contextId, error: error as Error | string, stage: "main-processing" })
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Internal server error", context_id: contextId },
       { status: 500 }
@@ -188,7 +188,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Calculate health score
-    const result = await calculateDealHealth(tx.id, tx.brokerage_id)
+    const result = await calculateDealHealth({ transactionId: tx.id, brokerageId: tx.brokerage_id })
 
     // Log DEAL_HEALTH_SCORE_UPDATED event
     await supabase.from("lifecycle_events").insert({

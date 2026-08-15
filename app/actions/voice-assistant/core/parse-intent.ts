@@ -7,6 +7,7 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { resolveEntities } from './resolve-entities'
+import { gatewayChat } from "@/lib/ai/gateway-chat"
 
 export interface ParsedIntent {
   intent_type: 'query' | 'execute'
@@ -131,30 +132,21 @@ Return format:
 }`
 
   try {
-    // Call LLM (replace with actual API call)
-    const response = await fetch(`${process.env.AI_GATEWAY_URL || 'https://gateway.ai.cloudflare.com'}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.AI_GATEWAY_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: 'openai/gpt-4o-mini',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
-        ],
-        temperature: 0.2,
-        max_tokens: 500
-      })
+    const response = await gatewayChat({
+      model: 'openai/gpt-4o-mini',
+      temperature: 0.2,
+      maxTokens: 500,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
     })
 
     if (!response.ok) {
       throw new Error('LLM API call failed')
     }
 
-    const data = await response.json()
-    const content = data.choices[0]?.message?.content
+    const content = response.content
 
     if (!content) {
       throw new Error('No response from LLM')

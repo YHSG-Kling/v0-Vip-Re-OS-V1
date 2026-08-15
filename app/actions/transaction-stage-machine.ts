@@ -1,10 +1,40 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { TransactionOrchestrator } from "@/lib/transactions/transaction-orchestrator"
 import { TransactionStage, TRANSACTION_STAGES } from "@/lib/transactions/transaction-stages"
 import { calculateDealHealth } from "@/lib/deal-health/health-scorer"
+import { requireOverrideActor, PortalAuthError } from "@/lib/kernel/portal-auth"
 import { revalidatePath } from "next/cache"
+
+// Helper: resolve session user + caller brokerage; verifies the
+// caller-supplied brokerageId matches the session brokerage. The
+// orchestrator uses brokerageId to find/update the transaction, so
+// without this check a caller could advance/lose/inspect any
+// brokerage's transactions by passing its id.
+async function requireCallerForBrokerage(
+  claimedBrokerageId: string,
+): Promise<
+  | { ok: true; userId: string; brokerageId: string; userRole: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Not authenticated" }
+  const { data: profile } = await supabase
+    .from("users").select("brokerage_id, user_type, role").eq("id", user.id).maybeSingle()
+  if (!profile?.brokerage_id) return { ok: false, error: "Not authenticated" }
+  if (profile.brokerage_id !== claimedBrokerageId) {
+    return { ok: false, error: "Cannot act on transactions outside your brokerage" }
+  }
+  return {
+    ok: true,
+    userId: user.id,
+    brokerageId: profile.brokerage_id,
+    userRole: profile.role ?? profile.user_type ?? "agent",
+  }
+}
 
 // ─── THIN WRAPPERS AROUND TransactionOrchestrator ─────────────────────────────
 
@@ -17,25 +47,14 @@ export async function checkStageAdvancement(params: {
   brokerageId: string
   targetStage: TransactionStage
 }): Promise<{ allowed: boolean; blockers: string[] }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) {
-    return { allowed: false, blockers: ["Not authenticated"] }
-  }
-
-  // Get user's role in brokerage
-  const { data: profile } = await supabase
-    .from("users")
-    .select("user_type, role")
-    .eq("id", user.id)
-    .maybeSingle()
+  const auth = await requireCallerForBrokerage(params.brokerageId)
+  if (!auth.ok) return { allowed: false, blockers: [auth.error] }
 
   const orchestrator = new TransactionOrchestrator({
     transactionId: params.transactionId,
-    brokerageId:   params.brokerageId,
-    userId:        user.id,
-    userRole:      profile?.role ?? "agent",
+    brokerageId:   auth.brokerageId,
+    userId:        auth.userId,
+    userRole:      auth.userRole,
   })
 
   return orchestrator.checkAdvancement(params.targetStage)
@@ -44,32 +63,102 @@ export async function checkStageAdvancement(params: {
 /**
  * Advance a transaction to the target stage.
  * Validates permissions and blockers before advancing.
+ *
+ * If `overrideReason` is provided, the action bypasses blocker checks but
+ * requires a broker / admin / superadmin / compliance role and writes a
+ * full audit trail (lifecycle_events row with override metadata). Use only
+ * when the agent is unblocked by external context the system can't verify
+ * (e.g. lender confirmed CTC by phone before uploading the doc).
  */
 export async function advanceTransactionStage(params: {
   transactionId: string
   brokerageId: string
   targetStage: TransactionStage
   reason?: string
+  /** Manual override — requires elevated role + min 10-char reason */
+  overrideReason?: string
 }): Promise<{ success: boolean; newStage?: TransactionStage; blockers?: string[]; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  // ── Override path ──────────────────────────────────────────────────────────
+  // Authorize the override, then force the transition + audit. We skip
+  // canAdvanceStage entirely; the override is the explicit human decision.
+  if (params.overrideReason) {
+    let overrideCtx
+    try {
+      overrideCtx = await requireOverrideActor(params.overrideReason)
+    } catch (err) {
+      if (err instanceof PortalAuthError) return { success: false, error: err.message }
+      throw err
+    }
+    if (overrideCtx.brokerageId !== params.brokerageId) {
+      return { success: false, error: "Cannot override transaction outside your brokerage" }
+    }
 
-  if (!user) {
-    return { success: false, error: "Not authenticated" }
+    const svc = createServiceClient()
+
+    // Get current stage for audit metadata
+    const { data: current } = await svc
+      .from("transactions")
+      .select("stage")
+      .eq("id", params.transactionId)
+      .eq("brokerage_id", params.brokerageId)
+      .maybeSingle()
+    if (!current) return { success: false, error: "Transaction not found in your brokerage" }
+
+    // Force the transition
+    const { error: updateErr } = await svc
+      .from("transactions")
+      .update({
+        stage: params.targetStage,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", params.transactionId)
+      .eq("brokerage_id", params.brokerageId)
+    if (updateErr) return { success: false, error: updateErr.message }
+
+    // Audit trail — explicit override event with reason + actor role in metadata
+    await svc.from("lifecycle_events").insert({
+      brokerage_id:  params.brokerageId,
+      entity_type:   "transaction",
+      entity_id:     params.transactionId,
+      event_type:    "transaction.stage_overridden",
+      actor_user_id: overrideCtx.userId,
+      metadata: {
+        from_stage:           current.stage,
+        to_stage:             params.targetStage,
+        override_reason:      overrideCtx.reason,
+        override_actor:       overrideCtx.userId,
+        override_user_type:   overrideCtx.userType,
+        original_reason:      params.reason ?? null,
+      },
+      created_at: new Date().toISOString(),
+    })
+
+    revalidatePath(`/dashboard/transactions/${params.transactionId}`)
+    revalidatePath(`/dashboard/coordinator`)
+    revalidatePath(`/dashboard/transactions`)
+
+    calculateDealHealth({
+      transactionId: params.transactionId,
+      brokerageId:   params.brokerageId,
+    }).catch((error) => {
+      console.error("[transaction-stage-machine] calculateDealHealth failed:", error)
+    })
+
+    return { success: true, newStage: params.targetStage }
   }
 
-  // Get user's role in brokerage
-  const { data: profile } = await supabase
-    .from("users")
-    .select("user_type, role")
-    .eq("id", user.id)
-    .maybeSingle()
+  // ── Standard path ──────────────────────────────────────────────────────────
+  // Verify the caller actually belongs to params.brokerageId — without
+  // this the orchestrator would happily look up + advance a transaction
+  // in another tenant.
+  const auth = await requireCallerForBrokerage(params.brokerageId)
+  if (!auth.ok) return { success: false, error: auth.error }
 
   const orchestrator = new TransactionOrchestrator({
     transactionId: params.transactionId,
-    brokerageId:   params.brokerageId,
-    userId:        user.id,
-    userRole:      profile?.role ?? "agent",
+    brokerageId:   auth.brokerageId,
+    userId:        auth.userId,
+    userRole:      auth.userRole,
   })
 
   const result = await orchestrator.advanceToStage(params.targetStage, params.reason)
@@ -79,11 +168,10 @@ export async function advanceTransactionStage(params: {
     revalidatePath(`/dashboard/coordinator`)
     revalidatePath(`/dashboard/transactions`)
 
-    // Non-blocking: trigger deal health score recalculation
     calculateDealHealth({
       transactionId: params.transactionId,
       brokerageId:   params.brokerageId,
-    }).catch(error => {
+    }).catch((error) => {
       console.error("[transaction-stage-machine] calculateDealHealth failed:", error)
     })
   }
@@ -101,25 +189,14 @@ export async function markTransactionLost(params: {
   category: string
   earnestMoneyOutcome: "returned" | "forfeited"
 }): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) {
-    return { success: false, error: "Not authenticated" }
-  }
-
-  // Get user's role
-  const { data: profile } = await supabase
-    .from("users")
-    .select("user_type, role")
-    .eq("id", user.id)
-    .maybeSingle()
+  const auth = await requireCallerForBrokerage(params.brokerageId)
+  if (!auth.ok) return { success: false, error: auth.error }
 
   const orchestrator = new TransactionOrchestrator({
     transactionId: params.transactionId,
-    brokerageId:   params.brokerageId,
-    userId:        user.id,
-    userRole:      profile?.role ?? "agent",
+    brokerageId:   auth.brokerageId,
+    userId:        auth.userId,
+    userRole:      auth.userRole,
   })
 
   // First advance to LOST stage
@@ -129,8 +206,9 @@ export async function markTransactionLost(params: {
     return { success: false, error: result.error }
   }
 
-  // Record the lost reason details
-  const { error: updateError } = await supabase
+  // Record the lost reason details — scoped by brokerage
+  const svc = createServiceClient()
+  const { error: updateError } = await svc
     .from("transactions")
     .update({
       lost_reason:           params.lostReason,
@@ -139,7 +217,7 @@ export async function markTransactionLost(params: {
       lost_at:               new Date().toISOString(),
     })
     .eq("id", params.transactionId)
-    .eq("brokerage_id", params.brokerageId)
+    .eq("brokerage_id", auth.brokerageId)
 
   if (updateError) {
     return { success: false, error: updateError.message }
@@ -163,22 +241,14 @@ export async function getTransactionStageInfo(params: {
   allowedNextStages: TransactionStage[]
   status: string | null
 } | null> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) return null
-
-  const { data: profile } = await supabase
-    .from("users")
-    .select("user_type, role")
-    .eq("id", user.id)
-    .maybeSingle()
+  const auth = await requireCallerForBrokerage(params.brokerageId)
+  if (!auth.ok) return null
 
   const orchestrator = new TransactionOrchestrator({
     transactionId: params.transactionId,
-    brokerageId:   params.brokerageId,
-    userId:        user.id,
-    userRole:      profile?.role ?? "agent",
+    brokerageId:   auth.brokerageId,
+    userId:        auth.userId,
+    userRole:      auth.userRole,
   })
 
   const current = await orchestrator.getCurrentStage()

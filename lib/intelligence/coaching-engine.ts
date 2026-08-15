@@ -2,6 +2,7 @@ import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 
 export type BuyerPersona =
   | "first_time"
@@ -207,17 +208,20 @@ Generate actionable coaching focused on improving conversion and client service.
     console.error("[v0] Failed to insert performance report:", insertError.message)
   }
 
-  // Log kernel event
-  await supabase.from("lifecycle_events").insert({
-    event_type: KernelEvent.COACHING_REPORT_GENERATED,
-    entity_type: "agent",
-    entity_id: agentId,
-    brokerage_id: brokerageId,
-    payload: {
-      report_type: "weekly",
+  // Emit through the canonical kernel emitter — INSERT + reactor fan-out (staff notifications +
+  // sequences + portal) in one call. A bare lifecycle_events insert silently dropped agent
+  // notifications for coaching reports.
+  await emitKernelEvent({
+    event:       KernelEvent.COACHING_REPORT_GENERATED,
+    brokerageId,
+    entityType:  "agent",
+    entityId:    agentId,
+    agentUserId: agentId,
+    metadata: {
+      report_type:   "weekly",
       overall_score: report.overall_score,
-      period_start: periodStart,
-      period_end: periodEnd,
+      period_start:  periodStart,
+      period_end:    periodEnd,
     },
   })
 

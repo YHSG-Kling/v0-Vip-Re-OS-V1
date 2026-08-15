@@ -116,10 +116,10 @@ export default async function ClientTransactionPage() {
 
   const { data: milestones } = await supabase
     .from("transaction_milestones")
-    .select("id, milestone_name, status, milestone_date, completed_at")
+    .select("id, milestone_name, status, target_date, completed_at")
     .eq("transaction_id", transaction.id)
     .in("milestone_name", clientVisibleMilestones)
-    .order("milestone_date", { ascending: true })
+    .order("target_date", { ascending: true })
 
   // ── Pending approvals — activities table, columns that exist ─────────────
   const { data: pendingActivities } = await supabase

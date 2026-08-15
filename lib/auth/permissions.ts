@@ -3,8 +3,34 @@
 import { createServerClient } from "@supabase/ssr"
 import { cookies } from "next/headers"
 
-// Type definitions
-export type Role = "BrokerOwner" | "ManagingBroker" | "Agent" | "tc" | "compliance_officer"
+// Canonical user_type values — must match users.user_type in the DB
+export type Role =
+  | "agent"
+  | "broker"
+  | "admin"
+  | "tc"
+  | "isa"
+  | "team_lead"
+  | "compliance_officer"
+  | "vendor"
+  | "lender"
+  | "superadmin"
+  | "contact"
+  | "system"
+
+// Static capability sets per role (replaces role_capabilities DB table)
+const ROLE_CAPABILITIES: Record<string, string[]> = {
+  superadmin: ["*"],
+  broker: ["contacts:read", "contacts:write", "listings:read", "listings:write", "transactions:read", "transactions:write", "agents:read", "agents:write", "reports:read", "billing:read", "billing:write", "admin:read", "admin:write"],
+  admin: ["contacts:read", "contacts:write", "listings:read", "listings:write", "transactions:read", "transactions:write", "agents:read", "reports:read", "admin:read"],
+  team_lead: ["contacts:read", "contacts:write", "listings:read", "listings:write", "transactions:read", "agents:read", "reports:read"],
+  agent: ["contacts:read", "contacts:write", "listings:read", "listings:write", "transactions:read"],
+  tc: ["transactions:read", "transactions:write", "listings:read", "contacts:read"],
+  compliance_officer: ["transactions:read", "listings:read", "contacts:read", "compliance:read", "compliance:write"],
+  isa: ["contacts:read", "contacts:write"],
+  vendor: ["listings:read"],
+  lender: ["contacts:read"],
+}
 
 export interface UserWithRole {
   id: string
@@ -27,10 +53,10 @@ export interface BrokerageContext {
  * Creates a Supabase server client for server-side operations
  * ✅ FIXED: Wrapped cookies() call to handle static generation context
  */
-function getSupabaseServerClient() {
+async function getSupabaseServerClient() {
   let cookieStore
   try {
-    cookieStore = cookies()
+    cookieStore = await cookies()
   } catch (error) {
     // If cookies() fails (e.g., during static generation), return a minimal client
     // This allows pages to generate statically without auth context
@@ -39,7 +65,7 @@ function getSupabaseServerClient() {
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
       {
         cookies: {
-          get(name: string) {
+          get(_name: string) {
             return undefined
           },
         },
@@ -61,7 +87,7 @@ function getSupabaseServerClient() {
  * @returns UserWithRole object or null if not found
  */
 export async function getCurrentUserContext(): Promise<UserWithRole | null> {
-  const supabase = getSupabaseServerClient()
+  const supabase = await getSupabaseServerClient()
 
   const {
     data: { user },
@@ -73,53 +99,62 @@ export async function getCurrentUserContext(): Promise<UserWithRole | null> {
     return null
   }
 
-  // Get user's brokerage and role information
-  const { data: userBrokerageRole, error: roleError } = await supabase
-    .from("user_brokerage_roles")
-    .select(`
-      brokerage_id,
-      role_id,
-      is_primary,
-      brokerages (
-        id,
-        name,
-        code
-      ),
-      roles (
-        id,
-        name,
-        role_capabilities (
-          capability
-        )
-      )
-    `)
-    .eq("user_id", user.id)
-    .eq("is_primary", true)
-    .single()
+  // Canonical resolution: users table is the primary source of truth for
+  // brokerage_id and user_type; user_role_assignments is the RBAC join table.
+  const [usersResult, roleResult] = await Promise.all([
+    supabase
+      .from("users")
+      .select("brokerage_id, user_type")
+      .eq("id", user.id)
+      .maybeSingle(),
+    supabase
+      .from("user_role_assignments")
+      .select("id, role, brokerage_id, brokerages(id, name, code)")
+      .eq("user_id", user.id)
+      .maybeSingle(),
+  ])
 
-  if (roleError || !userBrokerageRole) {
-    console.error("[Auth] Error fetching user role:", roleError)
-    return null
+  // Derive brokerage_id and user_type from canonical sources
+  const brokerageId: string =
+    (usersResult.data?.brokerage_id ?? roleResult.data?.brokerage_id) ?? ""
+
+  const rawUserType: string =
+    usersResult.data?.user_type ??
+    (user.user_metadata?.user_type as string | undefined) ??
+    "agent"
+
+  const roleName: Role = rawUserType as Role
+  const capabilities: string[] = ROLE_CAPABILITIES[rawUserType] ?? ROLE_CAPABILITIES.agent
+
+  // Brokerage name from user_role_assignments join (optional enrichment)
+  const brokRecord = roleResult.data
+    ? (Array.isArray(roleResult.data.brokerages)
+        ? roleResult.data.brokerages[0]
+        : roleResult.data.brokerages)
+    : null
+
+  if (!brokerageId) {
+    console.warn("[Auth] No brokerage_id found for user:", user.id)
   }
-
-  const brokerage = Array.isArray(userBrokerageRole.brokerages)
-    ? userBrokerageRole.brokerages[0]
-    : userBrokerageRole.brokerages
-
-  const role = Array.isArray(userBrokerageRole.roles) ? userBrokerageRole.roles[0] : userBrokerageRole.roles
-
-  const capabilities = role?.role_capabilities?.map((rc: any) => rc.capability) || []
 
   return {
     id: user.id,
     email: user.email!,
-    brokerageId: userBrokerageRole.brokerage_id,
-    brokerageName: brokerage?.name || "",
-    roleId: userBrokerageRole.role_id,
-    roleName: role?.name as Role,
+    brokerageId,
+    brokerageName: (brokRecord as any)?.name ?? "",
+    roleId: roleResult.data?.id ?? rawUserType,
+    roleName,
     capabilities,
-    isPrimary: userBrokerageRole.is_primary,
+    isPrimary: true,
   }
+}
+
+/**
+ * Alias for getCurrentUserContext — provides UserWithRole shape for permission checks.
+ * Used by hasCapability, hasRole, isAdmin, requireRole, etc.
+ */
+export async function getCurrentUserWithRole(): Promise<UserWithRole | null> {
+  return getCurrentUserContext()
 }
 
 /**
@@ -127,7 +162,7 @@ export async function getCurrentUserContext(): Promise<UserWithRole | null> {
  * @returns Array of BrokerageContext objects
  */
 export async function getUserBrokerages(): Promise<BrokerageContext[]> {
-  const supabase = getSupabaseServerClient()
+  const supabase = await getSupabaseServerClient()
 
   const {
     data: { user },
@@ -139,28 +174,30 @@ export async function getUserBrokerages(): Promise<BrokerageContext[]> {
   }
 
   const { data: userBrokerages, error } = await supabase
-    .from("user_brokerage_roles")
-    .select(`
-      brokerages (
-        id,
-        name,
-        code
-      )
-    `)
+    .from("user_role_assignments")
+    .select("brokerages(id, name, code)")
     .eq("user_id", user.id)
 
   if (error || !userBrokerages) {
-    return []
+    // Fallback to users table for single brokerage
+    const { data: userData } = await supabase
+      .from("users")
+      .select("brokerage_id, brokerages(id, name, code)")
+      .eq("id", user.id)
+      .maybeSingle()
+    if (!userData?.brokerage_id) return []
+    const b = Array.isArray((userData as any).brokerages)
+      ? (userData as any).brokerages[0]
+      : (userData as any).brokerages
+    return b ? [{ id: b.id, name: b.name ?? "", code: b.code ?? "" }] : []
   }
 
-  return userBrokerages.map((ub: any) => {
-    const brokerage = Array.isArray(ub.brokerages) ? ub.brokerages[0] : ub.brokerages
-    return {
-      id: brokerage.id,
-      name: brokerage.name,
-      code: brokerage.code,
-    }
-  })
+  return userBrokerages
+    .map((ub: any) => {
+      const brokerage = Array.isArray(ub.brokerages) ? ub.brokerages[0] : ub.brokerages
+      return brokerage ? { id: brokerage.id, name: brokerage.name ?? "", code: brokerage.code ?? "" } : null
+    })
+    .filter((b): b is BrokerageContext => !!b)
 }
 
 /**
@@ -194,7 +231,7 @@ export async function hasRole(roleName: Role): Promise<boolean> {
 }
 
 /**
- * Check if the current user is an admin (BrokerOwner or ManagingBroker)
+ * Check if the current user is an admin (broker, admin, or superadmin)
  * @returns true if user is an admin, false otherwise
  */
 export async function isAdmin(): Promise<boolean> {
@@ -204,7 +241,7 @@ export async function isAdmin(): Promise<boolean> {
     return false
   }
 
-  return ["BrokerOwner", "ManagingBroker"].includes(user.roleName)
+  return ["broker", "admin", "superadmin"].includes(user.roleName)
 }
 
 /**
@@ -247,7 +284,7 @@ export async function assertAdmin(): Promise<void> {
 
   if (!admin) {
     const user = await getCurrentUserWithRole()
-    throw new Error(`Access denied. User ${user?.email || "unknown"} must be a BrokerOwner or ManagingBroker`)
+    throw new Error(`Access denied. User ${user?.email || "unknown"} must have role: broker, admin, or superadmin`)
   }
 }
 

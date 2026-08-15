@@ -37,7 +37,7 @@ export async function applyRevenueShare(
   const revenueShareDistributions: DistributionRecord[] = []
   
   // CRITICAL FIX: Use rolling balance for correct multi-level calculation
-  let runningAgentCents = context.agentFinalCents
+  let runningAgentCents = context.agentFinalNetCents
 
   for (const rel of relationships) {
     // Calculate sponsor's share from CURRENT rolling balance
@@ -73,7 +73,7 @@ export async function applyRevenueShare(
 
   return {
     ...context,
-    agentFinalCents,
+    agentFinalNetCents: agentFinalCents,
     revenueShareDistributions
   }
 }

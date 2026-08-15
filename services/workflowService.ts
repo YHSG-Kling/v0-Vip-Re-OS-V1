@@ -40,7 +40,7 @@ export const workflowService = {
 
   // Communication
   async sendMessage(contactName: string, channel: string, text: string) {
-    return sendMessage(contactName, channel, text)
+    return sendMessage(contactName, text, channel, "system")
   },
 
   // Listings
@@ -49,17 +49,17 @@ export const workflowService = {
   },
 
   async triggerCMAPackage(
-    leadId: string | null,
+    _leadId: string | null,
     address: string,
-    beds: string,
-    baths: string,
-    sqft: string,
-    upgrades: any[],
+    _beds: string,
+    _baths: string,
+    _sqft: string,
+    _upgrades: any[],
   ) {
-    return triggerCMAPackage(leadId, address, beds, baths, sqft, upgrades)
+    return triggerCMAPackage(address, "system")
   },
 
-  async triggerPropertyEnrichment(leadId: string | null, propertyAddress: string) {
+  async triggerPropertyEnrichment(_leadId: string | null, _propertyAddress: string) {
     // Simplified property enrichment using AI
     return {
       success: true,
@@ -75,12 +75,12 @@ export const workflowService = {
   },
 
   // Transactions
-  async grantPortalAccess(email: string, role: string, dealId: string, name: string) {
-    return grantPortalAccess(email, role, dealId, name)
+  async grantPortalAccess(email: string, role: string, _dealId: string, _name: string) {
+    return grantPortalAccess(email, role, "system")
   },
 
-  async triggerComplianceChecklist(dealId: string, details: any) {
-    return triggerComplianceChecklist(dealId, details)
+  async triggerComplianceChecklist(dealId: string, _details: any) {
+    return triggerComplianceChecklist(dealId, "system")
   },
 
   async triggerAuditArchival(dealId: string) {
@@ -94,17 +94,17 @@ export const workflowService = {
   },
 
   async logNegotiationDecision(roundId: string, decision: string) {
-    await logUserActivity("system", "negotiation", `Negotiation decision: ${decision}`, { roundId })
+    await logUserActivity("system", "negotiation", { roundId, decision })
     return { success: true }
   },
 
   // Content & Marketing
-  async generateScriptContent(topic: string, tone: string, duration: number) {
-    return generateScriptContent(topic, tone, duration)
+  async generateScriptContent(topic: string, tone: string, _duration: number) {
+    return generateScriptContent(topic, { tone }, "system")
   },
 
   async sendNewsletterCampaign(campaignId: string) {
-    return sendNewsletterCampaign(campaignId)
+    return sendNewsletterCampaign(campaignId, "system")
   },
 
   async sendDirectMailCampaign(campaignId: string) {
@@ -118,8 +118,8 @@ export const workflowService = {
   },
 
   // Utility
-  async retryFailedWorkflow(errorId: string, workflowId: string, contextJson: string) {
-    return retryFailedWorkflow(errorId, workflowId, contextJson)
+  async retryFailedWorkflow(_errorId: string, workflowId: string, _contextJson: string) {
+    return retryFailedWorkflow(workflowId, "system")
   },
 
   async triggerWorkflow(workflowId: string, data: any) {
@@ -230,7 +230,7 @@ export const workflowService = {
   async approveAndSendTour(id: string) {
     return { success: true }
   },
-  confirmAndRetrainAI(id: string) {
+  async confirmAndRetrainAI(id: string) {
     return { success: true }
   },
   async triggerWeeklyAIReview() {

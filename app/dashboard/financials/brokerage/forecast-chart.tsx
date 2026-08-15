@@ -77,10 +77,10 @@ export function ForecastChart({ data }: ForecastChartProps) {
             axisLine={false}
           />
           <Tooltip
-            formatter={(value: number, name: string) => [
+            formatter={((value: number, name: string) => [
               formatTooltipCurrency(value),
               name === "projected" ? "Projected" : "Actual",
-            ]}
+            ]) as any}
             contentStyle={{
               backgroundColor: "hsl(var(--background))",
               border: "1px solid hsl(var(--border))",

@@ -3,10 +3,10 @@
 import type React from "react"
 import { useState, useRef, useEffect } from "react"
 import { Mic, Map, Globe, X, Send, Bot, Loader2, Sparkles, Zap, ArrowRight, Copy } from "lucide-react"
-import { generateAIText } from "@/lib/ai"
-import { executeWorkflow } from "../../app/actions/workflows"
+import { generateAIText } from "@/app/actions/ai-generate"
+import { executeWorkflow } from "@/app/actions/workflows"
 import { useAuth } from "@/lib/auth/client"
-import { UserRole } from "../../types"
+import { UserRole } from "@/types"
 
 interface Message {
   role: "user" | "model"
@@ -22,7 +22,7 @@ interface Message {
 
 // ... existing code for createBlob and decode functions ...
 
-function createBlob(data: Float32Array): Blob {
+function createBlob(data: Float32Array): any {
   const l = data.length
   const int16 = new Int16Array(l)
   for (let i = 0; i < l; i++) {
@@ -51,7 +51,7 @@ function decode(base64: string) {
   return bytes
 }
 
-const SmartEngineAssistant: React.FC = () => {
+export const SmartEngineAssistant: React.FC = () => {
   const { role } = useAuth()
   const [isOpen, setIsOpen] = useState(false)
   const [mode, setMode] = useState<"chat" | "live">("chat")
@@ -195,7 +195,7 @@ Answer their questions while keeping the focus on their needs and perspective.`
       }
 
       const sources: { title: string; uri: string }[] = []
-      const chunks = result.candidates?.[0]?.groundingMetadata?.groundingChunks
+      const chunks = (result as any).candidates?.[0]?.groundingMetadata?.groundingChunks
       if (chunks) {
         chunks.forEach((chunk: any) => {
           if (chunk.web) sources.push({ title: chunk.web.title, uri: chunk.web.uri })
@@ -431,3 +431,4 @@ Answer their questions while keeping the focus on their needs and perspective.`
 }
 
 export default SmartEngineAssistant
+

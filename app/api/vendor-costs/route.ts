@@ -1,36 +1,50 @@
 import { NextRequest, NextResponse } from "next/server"
+import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireAuth } from "@/lib/kernel/api-auth"
+import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
+import { checkVendorBudget, getBrokerageBudgetWarningEnabled } from "@/lib/vendor-governance/budget-gate"
+import { redactBudgetForActor } from "@/lib/vendor-governance/budget-visibility"
 
 export async function GET(request: NextRequest) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
+
+  // PRIVACY: brokerage/subscriber users NEVER see vendor names or dollar amounts.
+  // They get only a coarse status level + a (superadmin-toggled) "approaching limit"
+  // warning. Full vendor-spend detail is platform-staff only (superadmin/support).
+  if (!isPlatformStaff(auth.userType)) {
+    const [budget, warningEnabled] = await Promise.all([
+      checkVendorBudget({ brokerageId: auth.brokerageId }),
+      getBrokerageBudgetWarningEnabled(),
+    ])
+    return NextResponse.json(
+      redactBudgetForActor(budget, { isPlatformStaff: false, showBrokerageWarning: warningEnabled }),
+    )
+  }
+
   try {
     const searchParams = request.nextUrl.searchParams
-    const brokerage_id = searchParams.get("brokerage_id")
     const vendor_name = searchParams.get("vendor_name")
     const start_date = searchParams.get("start_date")
     const end_date = searchParams.get("end_date")
+    // Platform staff may inspect any brokerage; default to their own.
+    const targetBrokerageId = searchParams.get("brokerage_id") ?? auth.brokerageId
 
-    if (!brokerage_id) {
-      return NextResponse.json(
-        { error: "Missing brokerage_id parameter" },
-        { status: 400 }
-      )
-    }
+    const svc = createServiceClient()
 
-    const supabase = createServiceClient()
-
-    let query = supabase
+    let query = svc
       .from("vendor_usage_tracking")
       .select("*")
-      .eq("brokerage_id", brokerage_id)
+      .eq("brokerage_id", targetBrokerageId)
 
     if (vendor_name) {
       query = query.eq("vendor_name", vendor_name)
     }
-
     if (start_date) {
       query = query.gte("created_at", start_date)
     }
-
     if (end_date) {
       query = query.lte("created_at", end_date)
     }
@@ -38,11 +52,10 @@ export async function GET(request: NextRequest) {
     const { data, error } = await query.order("created_at", { ascending: false })
 
     if (error) {
-      console.error("[v0] Error fetching vendor costs:", error)
+      console.error("[vendor-costs] Error fetching vendor costs:", error)
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
-    // Calculate totals
     const totals = data.reduce(
       (acc, record) => {
         const vendor = record.vendor_name
@@ -58,16 +71,9 @@ export async function GET(request: NextRequest) {
       { byVendor: {} as Record<string, any>, grand_total: 0 }
     )
 
-    return NextResponse.json({
-      data,
-      summary: totals,
-      count: data.length,
-    })
+    return NextResponse.json({ data, summary: totals, count: data.length })
   } catch (error) {
-    console.error("[v0] Unexpected error in vendor costs API:", error)
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    )
+    console.error("[vendor-costs] Unexpected error:", error)
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }

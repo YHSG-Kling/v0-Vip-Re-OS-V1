@@ -29,12 +29,12 @@ export default async function AdminBillingPage() {
 
   const { data: profile } = await supabase
     .from("users")
-    .select("id, role")
+    .select("id, user_type, platform_role")
     .eq("id", user.id)
     .maybeSingle()
 
   // Role gate: superadmin only
-  if (profile?.role !== "superadmin") {
+  if (profile?.user_type !== "superadmin" && profile?.platform_role !== "superadmin") {
     redirect("/dashboard")
   }
 
@@ -85,8 +85,8 @@ export default async function AdminBillingPage() {
   // Calculate MRR
   const totalMrr = brokerages.reduce((sum, b) => {
     const sub = b.subscriptions?.[0]
-    if (sub?.status === "active" && sub.subscription_tiers?.monthly_price_cents) {
-      return sum + sub.subscription_tiers.monthly_price_cents
+    if (sub?.status === "active" && (sub.subscription_tiers as any)?.[0]?.monthly_price_cents) {
+      return sum + (sub.subscription_tiers as any)[0].monthly_price_cents
     }
     return sum
   }, 0)

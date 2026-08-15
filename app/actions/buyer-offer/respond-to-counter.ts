@@ -1,5 +1,6 @@
 "use server"
 
+import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { checkCompliancePassed, syncOfferStatus } from "@/lib/buyer-offer"
@@ -7,36 +8,53 @@ import { checkCompliancePassed, syncOfferStatus } from "@/lib/buyer-offer"
 interface RespondToCounterParams {
   offerId: string
   response: "accept" | "reject" | "counter_back"
-  userId: string
+  userId?: string  // ignored — derived from session
   counterTerms?: Record<string, any>
   rejectionReason?: string
 }
 
 export async function respondToCounter(params: RespondToCounterParams) {
-  const { offerId, response, userId, counterTerms, rejectionReason } = params
+  const { offerId, response, counterTerms, rejectionReason } = params
 
-  if (!isValidUUID(offerId) || !isValidUUID(userId)) {
-    return { success: false, error: "Invalid IDs" }
+  if (!isValidUUID(offerId)) {
+    return { success: false, error: "Invalid offer ID" }
   }
+
+  // Auth gate — same pattern as handle-offer-response. Counter accept
+  // is a legally binding contract step; the previous code trusted
+  // caller-supplied userId for audit and pulled the offer with no
+  // brokerage scope.
+  const authClient = await createClient()
+  const { data: { user } } = await authClient.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized" }
+  const { data: callerRow } = await authClient
+    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
+  const userId = user.id
+  const brokerageIdC = callerRow.brokerage_id
 
   const supabase = createServiceClient()
 
-  // Get offer
+  // Get offer scoped to caller's brokerage
   const { data: offer, error: offerError } = await supabase
     .from("offers")
-    .select("id, contact_id, listing_id, transaction_id")
+    .select("id, contact_id, listing_id, transaction_id, brokerage_id")
     .eq("id", offerId)
     .single()
 
   if (offerError || !offer) {
     return { success: false, error: "Offer not found" }
   }
+  if (offer.brokerage_id !== brokerageIdC) {
+    return { success: false, error: "Forbidden" }
+  }
 
-  // Count counter rounds (max 5)
+  // Count counter rounds (max 5) — scoped by brokerage
   const { data: counterEvents } = await supabase
     .from("activities")
     .select("id")
     .eq("contact_id", offer.contact_id)
+    .eq("brokerage_id", brokerageIdC)
     .in("activity_type", ["buyer.offer.counter.received", "buyer.offer.counter.submitted"])
 
   if (counterEvents && counterEvents.length >= 5 && response === "counter_back") {
@@ -45,10 +63,6 @@ export async function respondToCounter(params: RespondToCounterParams) {
       error: "Maximum counter rounds (5) exceeded"
     }
   }
-
-  // Resolve brokerage_id once
-  const { data: agentRowC } = await supabase.from("users").select("brokerage_id").eq("id", userId).maybeSingle()
-  const brokerageIdC = agentRowC?.brokerage_id ?? null
 
   // COMPLIANCE GATE: Must pass before accepting counter
   if (response === "accept") {

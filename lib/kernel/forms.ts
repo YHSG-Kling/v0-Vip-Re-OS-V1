@@ -127,13 +127,13 @@ export interface BuyerPropertyInterest {
 
 export async function resolveTransactionFormsProvider(input: {
   brokerage_id: string
-}): Promise<KernelFormsResult<{ provider_name: string; is_configured: boolean }>> {
+}): Promise<KernelFormsResult<{ provider_name: string; is_configured: boolean; access_token: string | null; account_id: string | null }>> {
   try {
     const supabase = createServiceClient()
 
     const { data: credential } = await supabase
       .from("platform_credentials")
-      .select("platform, account_id, is_active")
+      .select("platform, account_id, access_token, is_active")
       .eq("brokerage_id", input.brokerage_id)
       .in("platform", ["dotloop", "skyslope", "formsimplicity", "brokermint", "authentisign", "docusign"])
       .eq("is_active", true)
@@ -141,12 +141,17 @@ export async function resolveTransactionFormsProvider(input: {
       .limit(1)
       .maybeSingle()
 
-    const provider_name = credential?.platform ?? "dotloop"
+    const provider_name = credential?.platform ?? "not_configured"
     const is_configured = !!credential?.account_id
 
     return {
       success: true,
-      data: { provider_name, is_configured },
+      data: {
+        provider_name,
+        is_configured,
+        access_token: credential?.access_token ?? null,
+        account_id: credential?.account_id ?? null,
+      },
     }
   } catch (error: any) {
     return { success: false, error: error.message }
@@ -169,40 +174,47 @@ export async function loadAvailableTransactionForms(input: {
   try {
     const supabase = createServiceClient()
 
-    // Try state_required_forms table
-    const stateFilter = input.state ? input.state.toUpperCase() : null
-    const contextTypeMap: Record<FormContextType, string[]> = {
-      listing: ["listing_agreement", "disclosure", "seller", "listing"],
-      offer:   ["purchase_contract", "addendum", "buyer", "offer"],
-      transaction: ["inspection", "title", "lender", "closing", "amendment"],
+    // Source: brokerage_forms table — the canonical home for reusable form templates.
+    // client_documents is reserved for contact-owned signed documents ONLY.
+    // form_category maps to context_type:
+    //   listing     → 'listing', 'disclosure', 'listing_agreement'
+    //   offer       → 'offer', 'purchase_contract', 'addendum'
+    //   transaction → 'transaction', 'closing', 'title', 'inspection'
+    const contextCategories: Record<FormContextType, string[]> = {
+      listing:     ["listing", "listing_agreement", "disclosure", "seller_disclosure"],
+      offer:       ["offer", "purchase_contract", "addendum", "buyer_form"],
+      transaction: ["transaction", "inspection", "title", "closing", "amendment"],
     }
-    const relevantCategories = contextTypeMap[input.context_type]
 
     let query = supabase
-      .from("state_required_forms")
-      .select("id, form_name, category, form_type, is_required, description, state")
-      .in("category", relevantCategories)
+      .from("brokerage_forms")
+      .select("id, form_name, form_category, form_type, is_required, document_url, state")
+      .eq("brokerage_id", input.brokerage_id)
+      .eq("is_active", true)
+      .in("form_category", contextCategories[input.context_type])
       .order("is_required", { ascending: false })
       .order("form_name")
+      .limit(50)
 
-    if (stateFilter) {
-      query = query.or(`state.eq.${stateFilter},state.is.null`)
+    // Filter by state if provided — also include forms with no state (apply everywhere)
+    if (input.state) {
+      query = query.or(`state.eq.${input.state.toUpperCase()},state.is.null`)
     }
 
-    const { data: stateForms, error: stateErr } = await query.limit(50)
+    const { data: brokerageForms } = await query
 
-    if (!stateErr && stateForms && stateForms.length > 0) {
+    if (brokerageForms && brokerageForms.length > 0) {
       return {
         success: true,
         data: {
-          forms: stateForms.map((f: any) => ({
-            id: f.id,
-            name: f.form_name,
-            category: f.category,
-            form_type: f.form_type ?? f.category,
+          forms: brokerageForms.map((f: any) => ({
+            id:          f.id,
+            name:        f.form_name,
+            category:    f.form_category,
+            form_type:   f.form_type ?? f.form_category,
             is_required: f.is_required ?? false,
-            description: f.description,
-            state: f.state,
+            description: f.document_url ? "Brokerage library form" : undefined,
+            state:       f.state ?? undefined,
           })),
         },
       }
@@ -548,10 +560,16 @@ export async function launchEsignEnvelope(input: {
       return { success: false, error: "Already sent for signature" }
     }
 
-    // Resolve provider
+    // Resolve provider with credentials from platform_credentials
     const providerResult = await resolveTransactionFormsProvider({ brokerage_id: input.brokerage_id })
-    const providerName   = providerResult.data?.provider_name ?? "dotloop"
-    const provider       = getTransactionProviderByName(providerName)
+    if (!providerResult.success || !providerResult.data?.is_configured) {
+      return { success: false, error: "No transaction provider configured for this brokerage. Go to Settings > Integrations." }
+    }
+    const { provider_name: providerName, access_token, account_id } = providerResult.data
+    const injectedCredentials = access_token && account_id
+      ? { apiKey: access_token, profileId: account_id }
+      : undefined
+    const provider = getTransactionProviderByName(providerName, injectedCredentials)
 
     // Delegate to provider (transport only)
     const sendResult = await provider.sendForSignature({
@@ -590,7 +608,6 @@ export async function launchEsignEnvelope(input: {
         },
         created_at: new Date().toISOString(),
       })
-      .catch(() => {}) // Non-blocking
 
     return { success: true, data: { envelope_launched: true } }
   } catch (error: any) {
@@ -756,7 +773,6 @@ export async function recordBuyerPropertyAction(input: {
           },
           created_at: new Date().toISOString(),
         })
-        .catch(() => {})
     }
 
     return { success: true, data: { interest_id: upserted.id } }

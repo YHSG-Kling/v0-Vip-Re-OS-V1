@@ -406,10 +406,10 @@ export function AIQualityDashboardClient({
                       unit="%"
                     />
                     <Tooltip
-                      formatter={(value: number, name: string) => {
+                      formatter={((value: number, name: string) => {
                         if (name === "approval_rate") return [`${value}%`, "Approval Rate"]
                         return [value, name]
-                      }}
+                      }) as any}
                       labelFormatter={(value) =>
                         new Date(value).toLocaleDateString("en-US", {
                           month: "short",

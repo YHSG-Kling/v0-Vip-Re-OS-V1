@@ -42,7 +42,9 @@ export default async function AgentFinancialsPage() {
     redirect("/login")
   }
 
-  const { agentId, brokerageId } = context
+  const { agentId: agentIdRaw, brokerageId: brokerageIdRaw } = context
+  const agentId = agentIdRaw!
+  const brokerageId = brokerageIdRaw!
   const currentYear = new Date().getFullYear()
 
   // Load agent financial summary via kernel command (replaces 16 individual DB queries)
@@ -55,25 +57,32 @@ const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
     redirect("/login")
   }
 
-  const summary = financialSummaryResult.data
+  const summary = financialSummaryResult.data!
 
   // Fetch accounting sync status in parallel (not in kernel scope yet)
-  const syncStatus = await getProviderConnectionStatus(brokerageId).catch(() => null)
+  const syncStatus = await getProviderConnectionStatus(brokerageId!).catch(() => null)
 
   // Extract data from kernel result
-  const mtdEarnings = summary.mtdEarnings
-  const ytdEarnings = summary.ytdEarnings
-  const businessExpenses = summary.expenses
-  const pendingCommissions = summary.pendingCommissions
-  const teamSplits = summary.teamSplits
-  const bonusCredits = summary.bonusCredits
-  const monthlyTrend = summary.monthlyTrendData
-  const ytdTransactionCount = summary.ytdTransactionCount
-  const commissionProfile = summary.commissionProfile
-  const capTracking = summary.capTracking
-  const agentData = summary.agentData
-  const pipelineTransactions = summary.pipelineTransactions
-  const earningsHistory = summary.earningsHistory
+  const mtdEarnings = summary.mtdEarnings ?? 0
+  const ytdEarnings = summary.ytdEarnings ?? 0
+  const businessExpenses = summary.expenses ?? []
+  const pendingCommissions = summary.pendingCommissions ?? []
+  const teamSplits = summary.teamSplits ?? []
+  const bonusCredits = summary.bonusCredits ?? []
+  const monthlyTrend = summary.monthlyTrendData ?? []
+  const ytdTransactionCount = summary.ytdTransactionCount ?? 0
+  const commissionProfile = summary.commissionProfile ?? null
+  const capTrackingRaw = summary.capTracking ?? null
+  const capTracking = capTrackingRaw ? {
+    cap_amount: capTrackingRaw.capAmount,
+    cap_paid_to_date: capTrackingRaw.capPaidToDate,
+    is_capped: capTrackingRaw.capIsCapped,
+    anniversary_start: capTrackingRaw.anniversaryStart,
+    anniversary_end: capTrackingRaw.anniversaryEnd,
+  } : null
+  const agentData = summary.agentData ?? null
+  const pipelineTransactions = summary.pipelineTransactions ?? []
+  const earningsHistory = summary.earningsHistory ?? []
 
   // Additional derived data
   const currentBilling = null
@@ -244,7 +253,7 @@ const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
         ytdExpenses={totalExpensesYTD}
         ytdTransactionCount={ytdTransactionCount}
         expenses={formattedExpenses}
-        syncStatus={syncStatus}
+        syncStatus={syncStatus as any}
         currentBilling={currentBilling ?? null}
         existingBudget={existingBudget ?? null}
         pipelineTransactions={(pipelineTransactions as any[]) ?? []}
@@ -275,8 +284,8 @@ const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
       <CapProgressBar
         capAmount={capTracking?.cap_amount ?? agentData?.cap_amount ?? null}
         capProgress={capTracking?.cap_paid_to_date ?? agentData?.cap_progress ?? 0}
-        capProgressPct={ytdEarnings?.cap_progress_pct || 0}
-        bonusCredits={bonusCredits}
+        capProgressPct={capTrackingRaw?.capProgressPct || 0}
+        bonusCredits={bonusCredits.reduce((sum: number, b: any) => sum + (b.amount || b.credit_amount || 0), 0)}
         isCapped={capTracking?.is_capped ?? false}
         anniversaryStart={capTracking?.anniversary_start ?? undefined}
         anniversaryEnd={capTracking?.anniversary_end ?? undefined}

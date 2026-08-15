@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { generateObject } from "ai"
+import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -95,6 +95,66 @@ export async function createAppointment(params: {
 
     revalidatePath("/dashboard")
     revalidatePath("/calendar")
+
+    // Auto-trigger listing appointment prep workflow chain for consultation appointments.
+    // The chain runs CMA → presentation → chapter videos → drip in sequence.
+    if (params.type === "listing_consultation" && params.contactId && data?.id) {
+      try {
+        // Resolve agent user_id from agents.id (chain context expects auth user_id)
+        const { data: agentRow } = await supabase
+          .from("agents")
+          .select("user_id")
+          .eq("id", params.agentId)
+          .maybeSingle()
+
+        // Enrich property data from location string via Perplexity address lookup.
+        // If location is empty or lookup fails, the chain still runs but the CMA
+        // step will fail and surface that to the agent.
+        let propertyData: Record<string, any> = { address: params.location ?? null }
+        if (params.location) {
+          try {
+            const { lookupAddressAction } = await import("@/app/actions/address-lookup")
+            // Best-effort split: "123 Main St, Tampa, FL 33601"
+            const parts = params.location.split(",").map((s) => s.trim())
+            const lookup = await lookupAddressAction({
+              address: parts[0] ?? params.location,
+              city: parts[1] ?? "",
+              state: (parts[2] ?? "").split(/\s+/)[0] ?? "",
+              zip: (parts[2] ?? "").split(/\s+/)[1],
+            })
+            propertyData = {
+              address: parts[0] ?? params.location,
+              city: parts[1] ?? null,
+              state: (parts[2] ?? "").split(/\s+/)[0] ?? null,
+              zip: (parts[2] ?? "").split(/\s+/)[1] ?? null,
+              bedrooms: lookup.beds ?? null,
+              bathrooms: lookup.baths ?? null,
+              sqft: lookup.sqft ?? null,
+              propertyType: lookup.propertyType ?? "single_family",
+            }
+          } catch {
+            // Non-fatal — chain CMA step will report missing data
+          }
+        }
+
+        const { triggerChainsForEvent } = await import("@/app/actions/workflow-orchestrator")
+        await triggerChainsForEvent({
+          eventType: "listing.appointment_set",
+          brokerageId: params.brokerageId,
+          contactId: params.contactId,
+          agentUserId: agentRow?.user_id ?? null,
+          metadata: {
+            appointment_id: data.id,
+            appointment_date: params.startTime,
+            property_data: propertyData,
+          },
+        })
+      } catch (err) {
+        // Non-critical: appointment is scheduled even if chain trigger fails.
+        // The error is logged for follow-up.
+        console.error("[createAppointment] listing-appt-prep chain trigger failed:", err)
+      }
+    }
 
     return { success: true, appointment: data }
   } catch (error) {
@@ -416,15 +476,16 @@ Create a balanced follow-up schedule that:
     })
 
     // Create follow-up appointments
+    const { data: tpBrok } = await supabase.from("agents").select("brokerage_id").eq("id", params.agentId).maybeSingle()
     for (const followUp of followUpPlan.scheduledFollowUps) {
       await supabase.from("scheduled_touchpoints").insert({
         contact_id: followUp.contactId,
         agent_id: params.agentId,
+        brokerage_id: tpBrok?.brokerage_id,
         touchpoint_type: followUp.channel,
         scheduled_date: `${followUp.suggestedDate}T${followUp.suggestedTime}`,
-        purpose: followUp.purpose,
-        talking_points: followUp.talkingPoints,
-        priority: followUp.priority,
+        message_template: [followUp.purpose, followUp.talkingPoints, followUp.priority]
+          .filter(Boolean).join(" | "),
         ai_generated: true,
         status: "scheduled",
       })
@@ -597,12 +658,11 @@ export async function prepareMeetingBrief(params: {
       return { success: false, error: "Appointment not found" }
     }
 
-    // Get additional context
     const { data: interactions } = await supabase
-      .from("interactions")
-      .select("*")
+      .from("activities")
+      .select("id, activity_type, title, notes, outcome, channel, status, created_at")
       .eq("contact_id", appointment.contact_id)
-      .order("interaction_date", { ascending: false })
+      .order("created_at", { ascending: false })
       .limit(10)
 
     const { data: transactions } = await supabase
@@ -649,7 +709,7 @@ Contact Type: ${appointment.contacts?.contact_type}
 Stage: ${appointment.contacts?.stage}
 
 Recent Interactions:
-${interactions?.map((i: any) => `- ${i.interaction_date}: ${i.interaction_type} - ${i.notes?.substring(0, 100)}`).join('\n') || 'None'}
+${interactions?.map((i: any) => `- ${i.created_at}: ${i.activity_type} - ${i.notes?.substring(0, 100)}`).join('\n') || 'None'}
 
 Transaction History:
 ${transactions?.map((t: any) => `- ${t.property_address}: ${t.status}`).join('\n') || 'None'}
@@ -677,7 +737,7 @@ Create a brief including:
       agent_id: params.agentId,
       brief_content: meetingBrief,
       generated_at: new Date().toISOString(),
-    })
+    }, { onConflict: "appointment_id,agent_id" })
 
     return { success: true, meetingBrief }
   } catch (error) {
@@ -791,7 +851,7 @@ Create a balanced weekly plan that:
       week_start: params.weekStartDate,
       plan_content: weeklyPlan,
       generated_at: new Date().toISOString(),
-    })
+    }, { onConflict: "agent_id,week_start" })
 
     return { success: true, weeklyPlan }
   } catch (error) {

@@ -73,34 +73,38 @@ interface AgentProgressData {
 
 export async function getAgentProgress(
   agentId?: string,
-  brokerageId?: string
+  _brokerageId?: string  // ignored — derived from session user's brokerage
 ): Promise<{ success: boolean; data?: AgentProgressData; error?: string }> {
   const supabase = await createClient()
 
-  // Get current user if not specified
+  // Require auth — caller-supplied brokerageId previously let any
+  // signed-in user view any agent's onboarding progress + completion.
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user && !agentId) {
-    return { success: false, error: 'Not authenticated' }
-  }
+  if (!user) return { success: false, error: 'Not authenticated' }
+  const { data: callerProfile } = await supabase
+    .from('users').select('brokerage_id, user_type').eq('id', user.id).maybeSingle()
+  if (!callerProfile?.brokerage_id) return { success: false, error: 'No brokerage found' }
 
-  // Resolve agent ID properly - never use user.id as agentId fallback
-  const targetAgentId = agentId || (user ? await resolveAgentId(supabase, user.id) : null)
+  const isAdmin = ['admin','broker','broker_owner','superadmin','super_admin']
+    .includes(callerProfile.user_type ?? '')
+
+  // Resolve target agent: default to self. If caller specifies someone
+  // else, must be admin AND in same brokerage.
+  let targetAgentId = agentId
   if (!targetAgentId) {
-    return { success: false, error: 'Agent profile not found' }
+    targetAgentId = await resolveAgentId(supabase, user.id) ?? undefined
+  } else if (targetAgentId !== user.id) {
+    if (!isAdmin) return { success: false, error: 'Forbidden' }
+    const { data: tgt } = await supabase
+      .from('users').select('brokerage_id').eq('id', targetAgentId).maybeSingle()
+    if (!tgt || tgt.brokerage_id !== callerProfile.brokerage_id) {
+      return { success: false, error: 'Forbidden' }
+    }
   }
 
-  // Get user's brokerage
-  const { data: userData } = await supabase
-    .from('users')
-    .select('brokerage_id')
-    .eq('id', targetAgentId)
-    .single()
+  if (!targetAgentId) return { success: false, error: 'Agent profile not found' }
 
-  if (!userData?.brokerage_id && !brokerageId) {
-    return { success: false, error: 'No brokerage found' }
-  }
-
-  const targetBrokerageId = brokerageId || userData!.brokerage_id
+  const targetBrokerageId = callerProfile.brokerage_id
 
   // Get agent_onboarding record
   const { data: onboarding } = await supabase
@@ -589,7 +593,7 @@ interface AgentOnboardingStatus {
 }
 
 export async function getAdminOnboardingOverview(
-  brokerageId?: string
+  _brokerageId?: string  // ignored — always scoped to session brokerage (superadmin can use the superadmin/ APIs to cross-tenant)
 ): Promise<{
   success: boolean
   data?: {
@@ -618,11 +622,13 @@ export async function getAdminOnboardingOverview(
     return { success: false, error: 'No brokerage found' }
   }
 
-  if (!['admin', 'broker'].includes(userData.user_type || '')) {
+  if (!['admin', 'broker', 'broker_owner', 'superadmin', 'super_admin'].includes(userData.user_type || '')) {
     return { success: false, error: 'Unauthorized' }
   }
 
-  const targetBrokerageId = brokerageId || userData.brokerage_id
+  // Always use session brokerage. Caller-supplied brokerageId previously
+  // let admins from brokerage A query brokerage B's onboarding data.
+  const targetBrokerageId = userData.brokerage_id
 
   // Get all agent onboarding records
   const { data: onboardings } = await supabase
@@ -746,8 +752,16 @@ export async function sendOnboardingReminder(
     .eq('id', user.id)
     .single()
 
-  if (!['admin', 'broker'].includes(userData?.user_type || '')) {
+  if (!['admin', 'broker', 'broker_owner', 'superadmin', 'super_admin'].includes(userData?.user_type || '')) {
     return { success: false, error: 'Unauthorized' }
+  }
+
+  // Verify the agent is in the caller's brokerage — previously any
+  // admin could send "reminder" notifications to any user across tenants.
+  const { data: targetUser } = await supabase
+    .from('users').select('brokerage_id').eq('id', agentId).maybeSingle()
+  if (!targetUser || targetUser.brokerage_id !== userData!.brokerage_id) {
+    return { success: false, error: 'Forbidden: agent not in your brokerage' }
   }
 
   // Create notification for the agent

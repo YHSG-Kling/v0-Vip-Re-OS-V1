@@ -10,6 +10,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { KernelEvent } from "@/lib/kernel/events"
+import type { EntityType } from "@/lib/kernel/types"
 import { generateText } from "ai"
 import { gateway } from "@ai-sdk/gateway"
 
@@ -145,7 +146,7 @@ Be conservative — if you cannot clearly read or verify information, mark it as
     const { text } = await generateText({
       model: gateway("anthropic/claude-sonnet-4"),
       prompt,
-      maxTokens: 1000,
+      maxOutputTokens: 1000,
     })
 
     // Parse AI response
@@ -225,7 +226,7 @@ async function handleVerificationSuccess(
   // Transition lifecycle
   await transitionLifecycle({
     brokerageId: params.brokerageId,
-    entityType: "agent_onboarding_machine",
+    entityType: "agent_onboarding_machine" as EntityType,
     entityId: params.onboardingId,
     fromState: "license_submitted",
     toState: "license_verified",

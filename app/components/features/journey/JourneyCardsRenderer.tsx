@@ -19,9 +19,9 @@ import {
   Sparkles,
   ArrowRight,
 } from "lucide-react"
-import { supabaseService } from "../services/supabaseService"
-import { executeWorkflow } from "../app/actions/workflows"
-import type { JourneyState, JourneyBlueprint, JourneyStage } from "../types"
+import { supabaseService } from "@/services/supabaseService"
+import { executeWorkflow } from "@/app/actions/workflows"
+import type { JourneyState, JourneyBlueprint, JourneyStage } from "@/types"
 import { toast } from "sonner"
 
 interface JourneyCardsRendererProps {
@@ -62,7 +62,7 @@ export const JourneyCardsRenderer: React.FC<JourneyCardsRendererProps> = ({ user
       const contact = leads?.find((l) => l.id === userId)
 
       const transactions = await supabaseService.getTransactions()
-      const transaction = transactions?.find((t) => t.clientName.includes(contact?.name || ""))
+      const transaction = transactions?.find((t) => t.clientName.includes(contact ? `${contact.first_name} ${contact.last_name}` : ""))
 
       const listings = await supabaseService.getListings()
       const listing = listings?.find((l) => l.sellerEmail === contact?.email)

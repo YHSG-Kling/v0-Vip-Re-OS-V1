@@ -58,7 +58,7 @@ const SEO_CHECKLIST: ChecklistItem[] = [
     name: "excerpt_present",
     points: 10,
     check: (data) => {
-      return data.excerpt && data.excerpt.trim().length > 0
+      return !!(data.excerpt && data.excerpt.trim().length > 0)
     },
     issue: "No excerpt/meta description provided",
     recommendation: "Add a compelling excerpt that summarizes the post in 150-160 characters",

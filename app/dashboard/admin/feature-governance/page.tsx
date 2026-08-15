@@ -59,7 +59,7 @@ export default async function FeatureGovernancePage() {
   return (
     <FeatureGovernanceClient
       flags={flags.data ?? []}
-      overrides={overrides.data ?? []}
+      overrides={(overrides.data ?? []) as any}
       usageMap={usageMap}
       brokerageId={brokerageId}
       isSuperadmin={isSuperadmin}

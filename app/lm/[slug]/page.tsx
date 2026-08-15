@@ -54,7 +54,7 @@ export default async function LeadMagnetLandingPage({ params }: PageProps) {
     notFound()
   }
 
-  const fields = (form.fields as Array<{ name: string; label: string; type: string; required: boolean }>) ?? []
+  const fields = (form.fields as any[]) ?? []
   const magnetType = detectMagnetType(fields)
 
   return (

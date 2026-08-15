@@ -33,7 +33,7 @@ export default async function TransactionPipelinePage() {
         id,
         milestone_name,
         status,
-        milestone_date,
+        target_date,
         completed_at
       )
     `)

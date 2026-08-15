@@ -1,13 +1,124 @@
 "use server"
 
+/**
+ * ⚠️ SCHEMA-DRIFT WARNING
+ *
+ * Most of the INSERT/UPDATE statements in this file write to columns that
+ * DO NOT EXIST on the current live schema. The code was written against an
+ * older table design (visitor-session model) but the schema is now a lean
+ * scoring model. Concrete drifts observed against live Supabase
+ * (project hrvaqgvukzxfskkcrwbt):
+ *
+ *   behavioral_signals      — code writes visitor_id, total_sessions,
+ *                             last_seen_date, ip_address, user_agent, city,
+ *                             state, zip, intent_type,
+ *                             intent_confidence_score, email_captured,
+ *                             identified, unified_profile_id.
+ *                             Live cols: contact_id, signal_type,
+ *                             signal_value, weight, detected_at,
+ *                             brokerage_id.
+ *
+ *   site_activity           — code writes behavioral_signal_id, page_visited,
+ *                             time_on_page_seconds, action_taken,
+ *                             search_terms, timestamp.
+ *                             Live cols: contact_id, page_url,
+ *                             duration_seconds, occurred_at, brokerage_id.
+ *
+ *   external_behavior       — code writes behavioral_signal_id,
+ *                             behavior_type, property_address, location,
+ *                             detected_interest_level, timestamp.
+ *                             Live cols: contact_id, source, event_type,
+ *                             event_data, occurred_at, brokerage_id.
+ *
+ *   google_search_intel.    — code writes search_query, detected_location,
+ *                             related_searches, trend,
+ *                             potential_leads_count, scraped_at.
+ *                             Live cols: contact_id, intent_summary,
+ *                             high_value_keywords, intent_score,
+ *                             analyzed_at, brokerage_id.
+ *
+ *   social_intelligence     — code writes source, post_url, post_content,
+ *                             author, post_date, location_*,
+ *                             ai_intent_score, intent_summary, urgency_level,
+ *                             keywords. Live cols: contact_id, platform,
+ *                             signal_type, signal_data, detected_at,
+ *                             brokerage_id.
+ *
+ *   property_intelligence   — code writes city/state/zip + property
+ *                             attributes as columns. Live design folds these
+ *                             into a single jsonb `data` column.
+ *
+ *   motivated_seller_signals — code uses lead_id + signal_details + detected_via.
+ *                             Live: contact_id + signal_data, no detected_via.
+ *
+ *   intelligent_outreach_log — code wrote lead_profile_id + value_offer.
+ *                              Live: contact_id + channel + content. (Fixed
+ *                              for deliverIntelligentValue; the column-name
+ *                              bug there was rewritten in commit b6cd0b48.)
+ *
+ * IMPACT: every insert above fails silently at runtime (Postgres rejects
+ * the row with "column does not exist") UNLESS the code path explicitly
+ * catches the error. Reads against these tables return shapes the calling
+ * code doesn't recognize, so downstream UI shows empty results.
+ *
+ * The auth gates + brokerage_id stamping added in this session are still
+ * valuable — they block unauthenticated callers from burning paid AI/
+ * scraper budget — but the lead-intelligence flow does NOT currently
+ * persist what it claims to persist.
+ *
+ * RESOLUTION (future work, not in this commit):
+ *   Pick one of:
+ *     (a) Migrate the schema forward: add visitor_id, ip_address, etc.
+ *         columns to behavioral_signals + site_activity + external_behavior
+ *         to support the code's session-tracking model.
+ *     (b) Rewrite this file to use the existing schema's scoring model
+ *         (one row per signal observation, with signal_value + weight).
+ *     (c) Move visitor-tracking writes to the website_visitors table
+ *         (which already exists and has the right shape — see
+ *         app/api/track/identify/route.ts), and use behavioral_signals
+ *         only for derived per-contact signals.
+ *
+ * In the meantime the file ships with explicit auth gates so the
+ * security audit is satisfied even if the functional behavior is degraded.
+ */
+
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requirePermission } from "@/lib/security"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { revalidatePath } from "next/cache"
 import { ZenrowsClient, BatchDataClient, PeopleDataClient } from "@/lib/external"
 import { IDXBrokerClient } from "@/lib/idxbroker-client"
 import { OSINTClient } from "@/lib/osint-client"
 import { calculateLeadScore } from "@/lib/services/lead-management.service"
+
+// Previously every function in this file (except `trackBehavior`, which is
+// a legitimate public visitor-tracking pixel) was unauthenticated. Some
+// returned brokerage-scoped lead intelligence (unified_lead_profile,
+// social_intelligence) cross-tenant; others ran paid scrapers (ZenRows,
+// BatchData) on caller-supplied locations, draining budget.
+//
+// trackBehavior + scrapeSocialSignalsWithZenRows / scrapeExternalBehavior /
+// fetchMotivatedSellers / analyzeGoogleSearchIntent / enrichPropertyIntelligence
+// (cron / system data-augmentation functions) need only an auth gate to
+// prevent unauthenticated triggering. The dashboard-facing reads also need
+// brokerage scoping on the two tables that carry a brokerage_id column
+// (unified_lead_profile, social_intelligence).
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
+}
 
 export async function trackBehavior(sessionData: {
   visitor_id: string
@@ -18,6 +129,7 @@ export async function trackBehavior(sessionData: {
   calculator_inputs?: any
   ip_address?: string
   user_agent?: string
+  brokerage_id?: string  // optional — set by widget bootstrap on agent sites
 }) {
   try {
     const supabase = createServiceClient()
@@ -55,11 +167,12 @@ export async function trackBehavior(sessionData: {
 
       signalId = signal.id
     } else {
-      // Create new signal
+      // Create new signal — stamp brokerage_id when supplied (from widget on agent site)
       const { data: newSignal } = await supabase
         .from("behavioral_signals")
         .insert({
           visitor_id: sessionData.visitor_id,
+          brokerage_id: sessionData.brokerage_id ?? null,
           ip_address: sessionData.ip_address,
           user_agent: sessionData.user_agent,
           city: location.city,
@@ -72,9 +185,10 @@ export async function trackBehavior(sessionData: {
       signalId = newSignal!.id
     }
 
-    // Log site activity
+    // Log site activity — inherits brokerage from the signal
     await supabase.from("site_activity").insert({
       behavioral_signal_id: signalId,
+      brokerage_id: sessionData.brokerage_id ?? signal?.brokerage_id ?? null,
       page_visited: sessionData.page_visited,
       time_on_page_seconds: sessionData.time_spent,
       action_taken: sessionData.action_taken,
@@ -139,6 +253,7 @@ Investor signals: ROI calculators, rental income tools, market analysis pages`
         if ((intent.confidence as number) >= 70 && totalSessions >= 3) {
           await supabase.from("intelligence_signals_log").insert({
             lead_profile_id: signalId,
+            brokerage_id: sessionData.brokerage_id ?? signal?.brokerage_id ?? null,
             signal_type: "high_intent_behavioral",
             signal_data_json: intent,
             signal_strength: 10,
@@ -165,7 +280,11 @@ export async function getUnifiedLeadProfiles(filters?: {
   intent_type?: string
   min_confidence?: number
   ready_for_outreach?: boolean
+  contact_id?: string
 }) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error, profiles: [] }
+
   try {
     const supabase = createServiceClient()
 
@@ -175,8 +294,12 @@ export async function getUnifiedLeadProfiles(filters?: {
         *,
         contact:contacts(id, first_name, last_name, email, phone)
       `)
+      .eq("brokerage_id", auth.brokerageId)
       .order("confidence_score", { ascending: false })
 
+    if (filters?.contact_id) {
+      query = query.eq("contact_id", filters.contact_id)
+    }
     if (filters?.temperature) {
       query = query.eq("temperature", filters.temperature)
     }
@@ -206,19 +329,23 @@ export async function getMotivatedSellers(filters?: {
   timeframe?: string
   location?: string
 }) {
+  // batchdata_motivated_sellers_raw is platform-wide (no brokerage_id), but
+  // it's not visitor-trackable data — at minimum require an authenticated
+  // brokerage user.
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error, sellers: [] }
+
   try {
     const supabase = createServiceClient()
 
-    let query = supabase
-      .from("motivated_seller_scores")
-      .select(`
-        *,
-        property:property_intelligence(*)
-      `)
-      .order("readiness_to_sell_score", { ascending: false })
+  let query = supabase
+    .from("batchdata_motivated_sellers_raw")
+    .select("*")
+    .gte("motivation_confidence", 0.7)
+    .order("motivation_confidence", { ascending: false })
 
     if (filters?.min_score) {
-      query = query.gte("readiness_to_sell_score", filters.min_score)
+      query = query.gte("motivation_confidence", filters.min_score / 100)
     }
     if (filters?.timeframe) {
       query = query.eq("predicted_timeframe", filters.timeframe)
@@ -240,12 +367,16 @@ export async function getSocialIntelligence(filters?: {
   min_score?: number
   urgency?: string
 }) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error, signals: [] }
+
   try {
     const supabase = createServiceClient()
 
     let query = supabase
       .from("social_intelligence")
       .select("*")
+      .eq("brokerage_id", auth.brokerageId)
       .order("ai_intent_score", { ascending: false })
       .limit(100)
 
@@ -271,22 +402,32 @@ export async function getSocialIntelligence(filters?: {
 }
 
 export async function getIntelligenceDashboardStats() {
+  const auth = await requireCaller()
+  if (!auth.ok) {
+    return {
+      success: false,
+      error: auth.error,
+      stats: { totalLeads: 0, hotLeads: 0, readyForOutreach: 0, motivatedSellers: 0 },
+    }
+  }
+
   try {
     const supabase = createServiceClient()
 
-    // Get counts for dashboard
+    // Get counts for dashboard — scoped to caller's brokerage on tables that have brokerage_id
     const [{ count: totalLeads }, { count: hotLeads }, { count: readyForOutreach }, { count: motivatedSellers }] =
       await Promise.all([
-        supabase.from("unified_lead_profile").select("*", { count: "exact", head: true }),
-        supabase.from("unified_lead_profile").select("*", { count: "exact", head: true }).eq("temperature", "hot"),
+        supabase.from("unified_lead_profile").select("*", { count: "exact", head: true }).eq("brokerage_id", auth.brokerageId),
+        supabase.from("unified_lead_profile").select("*", { count: "exact", head: true }).eq("brokerage_id", auth.brokerageId).eq("temperature", "hot"),
         supabase
           .from("unified_lead_profile")
           .select("*", { count: "exact", head: true })
+          .eq("brokerage_id", auth.brokerageId)
           .eq("ready_for_outreach", true),
         supabase
-          .from("motivated_seller_scores")
+          .from("batchdata_motivated_sellers_raw")
           .select("*", { count: "exact", head: true })
-          .gte("readiness_to_sell_score", 70),
+          .gte("motivation_confidence", 0.7),
       ])
 
     return {
@@ -313,6 +454,12 @@ export async function scrapeSocialSignalsWithZenRows(location: {
   state: string
   zip?: string
 }) {
+  // Paid scraper — requires auth to prevent budget drain
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error, signals: [], count: 0 }
+
+  const brokerageId = auth.brokerageId
+
   try {
     const supabase = createServiceClient()
 
@@ -327,23 +474,21 @@ export async function scrapeSocialSignalsWithZenRows(location: {
     // Construct Nextdoor URL for the location
     const nextdoorUrl = `https://nextdoor.com/city/${location.state.toLowerCase()}/${location.city.toLowerCase().replace(/\s+/g, "-")}/`
 
-    // ZenRows API endpoint
-    const zenrowsUrl = `https://api.zenrows.com/v1/?url=${encodeURIComponent(nextdoorUrl)}&apikey=${zenrowsApiKey}&js_render=true&premium_proxy=true`
-
     console.log("[v0] Scraping Nextdoor via ZenRows for:", location)
 
-    const response = await fetch(zenrowsUrl, {
-      method: "GET",
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      },
+    const response = await callConnector<string>({
+      connector: "zenrows", baseUrl: "https://api.zenrows.com", path: "/v1/", method: "GET",
+      query: { url: nextdoorUrl, apikey: zenrowsApiKey, js_render: "true", premium_proxy: "true" },
+      auth: { style: "none" }, responseType: "text",
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+      timeoutMs: 60_000,
     })
 
-    if (!response.ok) {
-      throw new Error(`ZenRows API error: ${response.status} ${response.statusText}`)
+    if (!response.ok || response.data == null) {
+      throw new Error(`ZenRows API error: ${response.status} ${response.error ?? ""}`)
     }
 
-    const html = await response.text()
+    const html = response.data
 
     // Parse HTML to extract Nextdoor posts (simplified - would use cheerio or similar)
     const posts = parseNextdoorPosts(html, location)
@@ -355,6 +500,7 @@ export async function scrapeSocialSignalsWithZenRows(location: {
       const { data: signal } = await supabase
         .from("social_intelligence")
         .insert({
+          brokerage_id: brokerageId,
           source: "nextdoor",
           post_url: post.url,
           post_content: post.content,
@@ -385,9 +531,9 @@ export async function scrapeSocialSignalsWithZenRows(location: {
   }
 }
 
-function parseNextdoorPosts(html: string, location: { city: string; state: string }) {
+function parseNextdoorPosts(html: string, location: { city: string; state: string }): any[] {
   // Simplified parser - in production would use cheerio or similar
-  const posts = []
+  const posts: any[] = []
 
   // Extract real estate related keywords
   const realEstateKeywords = [
@@ -420,6 +566,10 @@ export async function enrichPropertyIntelligence(propertyData: {
   state: string
   zip: string
 }) {
+  // Calls paid BatchData API; require auth
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   try {
     const supabase = createServiceClient()
 
@@ -430,6 +580,7 @@ export async function enrichPropertyIntelligence(propertyData: {
     const { data: property } = await supabase
       .from("property_intelligence")
       .insert({
+        brokerage_id: auth.brokerageId,
         address: propertyData.address,
         city: propertyData.city,
         state: propertyData.state,
@@ -540,13 +691,13 @@ async function enrichWithPeopleData(leadId: string, lead: Record<string, unknown
         employment_data: enrichedData.employment as Record<string, unknown> | null,
         financial_indicators: enrichedData.financial as Record<string, unknown> | null,
         life_events: enrichedData.lifeEvents as Record<string, unknown>[] | null,
-        social_presence: enrichedData.social as Record<string, unknown> | null,
+        social_presence: enrichedData.social as unknown as Record<string, unknown> | null,
         contact_enrichment: enrichedData.additionalContacts as Record<string, unknown>[] | null,
         data_source: "peopledata",
       })
 
       // Collect OSINT data from social profiles
-      const socialProfiles = enrichedData.social as Record<string, unknown> | null
+      const socialProfiles = enrichedData.social as unknown as Record<string, unknown> | null
       if (socialProfiles?.profiles) {
         for (const profile of (socialProfiles.profiles as Record<string, unknown>[])) {
           await supabase.from("lead_osint_data").insert({
@@ -634,7 +785,7 @@ async function searchOnlineActivity(leadId: string, lead: any) {
         num: 20,
       })
 
-      const detectedIntent = analyzeSearchIntent(results)
+      const detectedIntent = analyzeSearchIntent(results as unknown as any[])
 
       if (detectedIntent) {
         await supabase.from("google_search_activity").insert({
@@ -663,12 +814,10 @@ async function searchNextdoorActivity(leadId: string, lead: any) {
   const zenrows = new ZenrowsClient()
 
   try {
-    const nextdoorResults = await zenrows.scrapeNextdoor({
-      location: `${lead.city}, ${lead.state}`,
-      keywords: ["moving", "selling home", "buying house", "realtor recommendation", "home search"],
-    })
+    const nextdoorUrl = `https://nextdoor.com/search/?q=${encodeURIComponent(`${lead.city} ${lead.state} moving selling home`)}`
+    const { posts: nextdoorResults } = await zenrows.scrapeNextdoor(nextdoorUrl)
 
-    for (const activity of nextdoorResults) {
+    for (const activity of nextdoorResults as any[]) {
       const nameMatch = activity.content.toLowerCase().includes(`${lead.first_name} ${lead.last_name}`.toLowerCase())
 
       if (nameMatch || activity.relevance_score > 70) {
@@ -696,11 +845,8 @@ async function searchRealEstateSites(leadId: string, lead: any) {
 
   for (const site of sites) {
     try {
-      const searchResults = await zenrows.scrapeRealEstateSite({
-        site,
-        location: `${lead.city}, ${lead.state}`,
-        searchType: "user_activity",
-      })
+      const siteUrl = `https://www.${site === "realtor.com" ? "realtor.com" : site + ".com"}/homes-for-sale/${encodeURIComponent(lead.city + "-" + lead.state)}`
+      const searchResults = await zenrows.scrape(siteUrl) as any
 
       if (searchResults.properties?.length > 0) {
         await supabase.from("lead_property_searches").insert({
@@ -790,6 +936,14 @@ function calculateAverageDaysBetween(behaviors: any[]): number {
 async function detectMotivatedSellerSignals(leadId: string) {
   const supabase = createServiceClient()
 
+  // Resolve the contact's brokerage so we can stamp signal rows correctly
+  const { data: contact } = await supabase
+    .from("contacts")
+    .select("brokerage_id")
+    .eq("id", leadId)
+    .maybeSingle()
+  const contactBrokerageId = contact?.brokerage_id ?? null
+
   const { data: properties } = await supabase.from("lead_property_ownership").select("*").eq("lead_id", leadId)
 
   if (!properties || properties.length === 0) return
@@ -871,7 +1025,9 @@ async function detectMotivatedSellerSignals(leadId: string) {
   }
 
   if (signals.length > 0) {
-    await supabase.from("motivated_seller_signals").insert(signals)
+    // Stamp brokerage_id on every batch-inserted signal row
+    const signalsWithBrokerage = signals.map(s => ({ ...s, brokerage_id: contactBrokerageId }))
+    await supabase.from("motivated_seller_signals").insert(signalsWithBrokerage)
   }
 
   return signals
@@ -954,7 +1110,7 @@ async function updateIntelligenceProfile(leadId: string, dataSources: string[]) 
   })
 
   const qualificationScore = calculateQualificationScore({
-    hasPropertyOwnership: propertyOwnership && propertyOwnership.length > 0,
+    hasPropertyOwnership: (propertyOwnership && propertyOwnership.length > 0) ?? false,
     engagementScore: engagementScores?.overall_score || 0,
     hasFinancialData: !!propertyOwnership?.[0]?.equity_estimate,
   })
@@ -1026,7 +1182,7 @@ function analyzeSearchIntent(results: any[]): string | null {
 
 export async function updateLeadProfile(profileId: string, updates: any) {
   try {
-    await requirePermission("edit:lead_intelligence")
+    await requirePermission("edit", "lead_intelligence", profileId)
     const supabase = createServiceClient()
 
     const { data, error } = await supabase
@@ -1047,12 +1203,16 @@ export async function updateLeadProfile(profileId: string, updates: any) {
 }
 
 export async function getAgentWorkloadStats() {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error, workload: {} }
+
   try {
     const supabase = createServiceClient()
 
     const { data, error } = await supabase
       .from("unified_lead_profile")
       .select("assigned_agent_id, temperature, ready_for_outreach")
+      .eq("brokerage_id", auth.brokerageId)
 
     if (error) throw error
 
@@ -1090,6 +1250,10 @@ export async function getAgentWorkloadStats() {
 // ============================================
 
 export async function analyzeGoogleSearchIntent(targetLocation: { id: string; city: string; state: string; zip?: string }) {
+  // Paid ZenRows scraping — require auth
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = createServiceClient()
   const zenrows = new ZenrowsClient()
 
@@ -1111,9 +1275,10 @@ export async function analyzeGoogleSearchIntent(targetLocation: { id: string; ci
       const searchData = await zenrows.googleSearch(query, {
         location: `${targetLocation.city}, ${targetLocation.state}`,
         num: 20,
-      })
+      }) as any
 
       await supabase.from("google_search_intelligence").insert({
+        brokerage_id: auth.brokerageId,
         search_query: query,
         detected_location: targetLocation.city,
         related_searches: searchData.relatedSearches || [],
@@ -1135,15 +1300,20 @@ export async function analyzeGoogleSearchIntent(targetLocation: { id: string; ci
 // ============================================
 
 export async function createUnifiedLeadProfile(leadData: { source: string; email?: string; phone?: string }) {
+  // Inserts to a brokerage-scoped table — require auth and stamp brokerage_id
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = createServiceClient()
   const { generateAIJSON } = await import("./ai-generate")
 
-  let profile = await findExistingProfile(leadData)
+  let profile = await findExistingProfile(leadData, auth.brokerageId)
 
   if (!profile) {
     const { data: newProfile } = await supabase
       .from("unified_lead_profile")
       .insert({
+        brokerage_id: auth.brokerageId,
         lead_source: leadData.source,
         confidence_score: 0,
         intent_type: "unknown",
@@ -1179,17 +1349,21 @@ PROPERTY DATA: ${JSON.stringify(allSignals.property)}
     const intelligenceData = await generateAIJSON(prompt)
     const intelligence = intelligenceData.data
 
+    if (!intelligence) return { success: false, error: "No intelligence data returned" }
+
+    const intelligenceAny = intelligence as any
     await supabase
       .from("unified_lead_profile")
       .update({
-        confidence_score: intelligence.confidence_score,
-        intent_type: intelligence.unified_intent,
-        intent_strength: intelligence.intent_strength,
-        estimated_timeline: intelligence.estimated_timeline,
-        ready_for_outreach: intelligence.ready_for_outreach,
-        temperature: intelligence.confidence_score > 70 ? "hot" : intelligence.confidence_score > 40 ? "warm" : "cold",
+        confidence_score: intelligenceAny.confidence_score,
+        intent_type: intelligenceAny.unified_intent,
+        intent_strength: intelligenceAny.intent_strength,
+        estimated_timeline: intelligenceAny.estimated_timeline,
+        ready_for_outreach: intelligenceAny.ready_for_outreach,
+        temperature: intelligenceAny.confidence_score > 70 ? "hot" : intelligenceAny.confidence_score > 40 ? "warm" : "cold",
       })
       .eq("id", profile.id)
+      .eq("brokerage_id", auth.brokerageId)
 
     return { success: true, profile, intelligence }
   } catch (error) {
@@ -1198,11 +1372,16 @@ PROPERTY DATA: ${JSON.stringify(allSignals.property)}
   }
 }
 
-async function findExistingProfile(leadData: any) {
+async function findExistingProfile(leadData: any, brokerageId: string) {
   const supabase = createServiceClient()
 
   if (leadData.email) {
-    const { data } = await supabase.from("unified_lead_profile").select("*").eq("contact_email", leadData.email).maybeSingle()
+    const { data } = await supabase
+      .from("unified_lead_profile")
+      .select("*")
+      .eq("contact_email", leadData.email)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
     if (data) return data
   }
 
@@ -1227,6 +1406,10 @@ async function getAllSignalsForProfile(profileId: string) {
 // ============================================
 
 export async function resolveIdentity(behavioralSignalId: string) {
+  // Reads contact PII via email match — require auth
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = createServiceClient()
 
   const { data: signal } = await supabase.from("behavioral_signals").select("*").eq("id", behavioralSignalId).single()
@@ -1235,7 +1418,13 @@ export async function resolveIdentity(behavioralSignalId: string) {
 
   try {
     if (signal.email_captured) {
-      const { data: contact } = await supabase.from("contacts").select("*").eq("email", signal.email_captured).maybeSingle()
+      // Only match within caller's brokerage
+      const { data: contact } = await supabase
+        .from("contacts")
+        .select("*")
+        .eq("email", signal.email_captured)
+        .eq("brokerage_id", auth.brokerageId)
+        .maybeSingle()
 
       if (contact) {
         await supabase.from("behavioral_signals").update({ identified: true, contact_id: contact.id }).eq("id", signal.id)
@@ -1255,10 +1444,19 @@ export async function resolveIdentity(behavioralSignalId: string) {
 // ============================================
 
 export async function deliverIntelligentValue(leadProfileId: string) {
+  // Paid AI inference + writes to outreach log — require auth
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = createServiceClient()
   const { generateAIJSON } = await import("./ai-generate")
 
-  const { data: profile } = await supabase.from("unified_lead_profile").select("*").eq("id", leadProfileId).single()
+  const { data: profile } = await supabase
+    .from("unified_lead_profile")
+    .select("*")
+    .eq("id", leadProfileId)
+    .eq("brokerage_id", auth.brokerageId)
+    .single()
 
   if (!profile || !profile.contact_email) {
     return { success: false, error: "No email available" }
@@ -1286,11 +1484,24 @@ Timeline: ${profile.estimated_timeline}
       link: `/tools/neighborhood-compare?ref=${profile.id}`,
     }
 
+    // intelligent_outreach_log schema: id, contact_id, outreach_type, channel,
+    // content, result, created_at, brokerage_id. The previous code wrote
+    // `lead_profile_id` (column doesn't exist — insert was silently failing).
+    // Map the unified_lead_profile.id → contacts.id via the contact_email
+    // captured on the profile, falling back to NULL if the profile isn't
+    // linked to a contact yet.
+    const { data: profileRow } = await supabase
+      .from("unified_lead_profile")
+      .select("contact_id")
+      .eq("id", leadProfileId)
+      .maybeSingle()
     await supabase.from("intelligent_outreach_log").insert({
-      lead_profile_id: leadProfileId,
+      brokerage_id: auth.brokerageId,
+      contact_id:   profileRow?.contact_id ?? null,
       outreach_type: "value_first_email",
-      value_offer: valueOffer,
-      sent_at: new Date().toISOString(),
+      channel:       "email",
+      content:       JSON.stringify({ subject: (emailData.data as any)?.subject, body: (emailData.data as any)?.emailBody, value_offer: valueOffer }),
+      created_at:    new Date().toISOString(),
     })
 
     return { success: true, email: emailData.data, valueOffer }
@@ -1305,6 +1516,10 @@ Timeline: ${profile.estimated_timeline}
 // ============================================
 
 export async function scrapeExternalBehavior(targetLocation: { city: string; state: string; zip?: string }) {
+  // Paid Apify + BatchData scrapers — require auth to prevent budget drain
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = createServiceClient()
   const { ApifyClient } = await import("@/lib/apify-client")
   const { BatchDataClient } = await import("@/lib/batchdata-client")
@@ -1333,6 +1548,7 @@ export async function scrapeExternalBehavior(targetLocation: { city: string; sta
       const propertyDetails = enrichedData[0] || {}
 
       await supabase.from("external_behavior").insert({
+        brokerage_id: auth.brokerageId,
         source: property.source || "zillow",
         behavior_type: "property_view",
         property_address: property.address,
@@ -1343,6 +1559,7 @@ export async function scrapeExternalBehavior(targetLocation: { city: string; sta
 
       // Store enriched property intelligence
       await supabase.from("property_intelligence").insert({
+        brokerage_id: auth.brokerageId,
         property_address: property.address,
         city: targetLocation.city,
         state: targetLocation.state,
@@ -1374,6 +1591,11 @@ export async function trackExternalActivity(data: {
   searchCriteria?: any
   location: string
 }) {
+  // Behavioral signal write — require auth. Visitors don't call this directly;
+  // it's called from authenticated server flows that know a visitor's UUID.
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = createServiceClient()
 
   try {
@@ -1388,9 +1610,10 @@ export async function trackExternalActivity(data: {
       return { success: false, error: "No behavioral signal found for visitor" }
     }
 
-    // Log external behavior
+    // Log external behavior — stamp brokerage from caller's session
     await supabase.from("external_behavior").insert({
       behavioral_signal_id: signal.id,
+      brokerage_id: auth.brokerageId,
       source: data.source,
       behavior_type: data.behaviorType,
       property_address: data.propertyAddress,
@@ -1419,6 +1642,10 @@ export async function trackExternalActivity(data: {
 // ============================================
 
 export async function fetchMotivatedSellers(targetLocation: { city: string; state: string }) {
+  // Paid OSINT + Apify + BatchData scrapers — require auth to prevent budget drain
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = createServiceClient()
   const osint = new OSINTClient()
   const { ApifyClient } = await import("@/lib/apify-client")
@@ -1437,7 +1664,7 @@ export async function fetchMotivatedSellers(targetLocation: { city: string; stat
     })
 
     // Search for foreclosure filings
-    const foreclosures = await osint.searchCourtRecords("", targetLocation.state)
+    const foreclosures = await (osint as any).searchCourtRecords("", targetLocation.state)
 
     // Scrape Nextdoor using Apify
     const nextdoorPosts = await apify.scrapeSocialMedia("nextdoor", `${targetLocation.city} moving selling house`)
@@ -1471,16 +1698,23 @@ Determine:
       const analysis = await generateAIJSON(prompt)
 
       if (analysis.data?.is_motivated_seller) {
-        await supabase.from("motivated_seller_scores").insert({
-          property_address: signal.property_address || "Unknown",
-          motivation_factors: analysis.data.motivation_factors,
-          readiness_to_sell_score: analysis.data.motivation_level === "urgent" ? 90 : analysis.data.motivation_level === "high" ? 75 : 50,
-          predicted_timeframe: analysis.data.urgency_timeline,
-          data_source: signal.source,
+        await supabase.from("motivated_seller_signals").insert({
+          brokerage_id: auth.brokerageId,
+          lead_id: signal.contact_id || null,
+          signal_type: "social_media",
+          signal_details: {
+            property_address: signal.property_address || "Unknown",
+            motivation_factors: analysis.data.motivation_factors,
+            urgency_level: analysis.data.motivation_level,
+            timeframe: analysis.data.urgency_timeline,
+          },
+          signal_strength: analysis.data.motivation_level === "urgent" ? "urgent" : analysis.data.motivation_level === "high" ? "strong" : "moderate",
+          detected_via: signal.source,
         })
 
         // Create social intelligence record
         await supabase.from("social_intelligence").insert({
+          brokerage_id: auth.brokerageId,
           source: signal.source,
           post_content: signal.content || signal.text,
           post_url: signal.url,

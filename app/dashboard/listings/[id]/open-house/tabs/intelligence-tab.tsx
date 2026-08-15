@@ -630,7 +630,7 @@ function FollowupProcessorCard({
       if (res.success) {
         toast({
           title: "Follow-ups ready",
-          description: `${res.processed ?? 0} follow-up message${(res.processed ?? 0) !== 1 ? "s" : ""} prepared`,
+          description: `${(res as any).processed ?? 0} follow-up message${((res as any).processed ?? 0) !== 1 ? "s" : ""} prepared`,
         })
       } else {
         toast({

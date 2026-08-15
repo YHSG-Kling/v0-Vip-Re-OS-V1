@@ -24,6 +24,7 @@ export type EntityType =
   | "business_card"
   | "territory"
   | "contact"
+  | "agent_onboarding_machine"
 
 // ── Lead Lifecycle States (Layer 2, Track A) ──────────────────────────────
 export type LeadLifecycleStage =
@@ -88,9 +89,13 @@ export type MessageType =
   | "direct_mail"
 
 // ─── PROVIDER TYPE ────────────────────────────────────────────────────────────
-// Note: 'direct_mail' and 'video' are system-only — not in ProviderType
+// Authoritative union of every resolvable provider type. Mirrors the tiers in
+// lib/kernel/providers.ts. PER-TENANT types cascade (user→team→brokerage→
+// superadmin→default); PLATFORM types are system-only (superadmin override or
+// system default — no per-tenant overrides).
 
 export type ProviderType =
+  // Per-tenant (BYO via cascade)
   | "email"
   | "sms"
   | "social"
@@ -99,7 +104,18 @@ export type ProviderType =
   | "payment"
   | "esign"
   | "transaction"
+  | "crm"
+  | "accounting"
+  | "idx"
+  // Platform (system-only)
   | "ai"
+  | "video"
+  | "avatar"
+  | "voice_clone"
+  | "ai_voice"
+  | "direct_mail"
+  | "scraper"
+  | "enrichment"
 
 // ─── ACTOR ROLE ───────────────────────────────────────────────────────────────
 
@@ -159,8 +175,10 @@ export interface KernelContact {
   persona?: Persona
 
   // State & Lifecycle
+  // buyer_stage lives on the contact (buyers have no listing entity). The seller
+  // journey is tracked on the listing (listings.lifecycle_stage) — contacts has
+  // no seller_stage column, so it's intentionally not modeled here.
   buyer_stage?: BuyerStage
-  seller_stage?: SellerStage
   lifecycle_state?: string
   status?: string
 
@@ -231,7 +249,7 @@ export interface TransitionLifecycleParams {
   entityId: string
   fromState: string         // State values vary per entity (BuyerStage, SellerStage, etc.)
   toState: string
-  actorUserId: string
+  actorUserId: string | null  // null for system/webhook/cron transitions (no user session)
   actorRole?: ActorRole     // Optional — system-triggered transitions may not have a role
   eventType: string         // e.g. 'buyer.financial_verification_submitted'
   metadata?: Record<string, any>
@@ -244,7 +262,8 @@ export interface EvaluateOutboundParams {
   persona: Persona          // STRICT: Persona union
   messageType: MessageType  // STRICT: MessageType union (includes direct_mail as special case)
   content: string
-  contact: KernelContact    // STRICT: full KernelContact shape, not any
+  /** Specific contact being messaged. Omit for broadcast campaigns — DNC/TCPA gates are skipped. */
+  contact?: KernelContact
 }
 
 // ─── RESULT TYPES ─────────────────────────────────────────────────────────────
@@ -255,6 +274,10 @@ export interface ComplianceResult {
   correctedContent?: string
   violations: string[]
   blockedReason?: string
+  /** compliance_events.id of the row this evaluation just logged. Lets
+   *  callers stamp the audit id on dependent rows (e.g. preset.compliance_event_id)
+   *  without a follow-up race-prone re-query. */
+  complianceEventId?: string
 }
 
 /** Feature access check result */
@@ -314,4 +337,66 @@ export interface PortalMilestone {
   description: string
   date: string
   metadata: Record<string, any>
+}
+
+// ─── DATABASE ROW TYPES ───────────────────────────────────────────────────────
+
+export interface NotificationRuleRow {
+  id: string
+  brokerage_id: string
+  trigger_event: string
+  channel: 'email' | 'sms' | 'in_app' | 'push'
+  template_key?: string | null
+  recipient_role?: string | null
+  delay_minutes?: number | null
+  is_active: boolean
+  created_at: string
+  updated_at?: string | null
+}
+
+export interface GlobalSettingsRow {
+  id: string
+  brokerage_id?: string | null
+  setting_key: string
+  setting_value: string | null
+  is_encrypted?: boolean
+  created_at: string
+  updated_at?: string | null
+}
+
+export interface AutomationErrorRow {
+  id: string
+  brokerage_id?: string | null
+  workflow_id?: string | null
+  error_type: string
+  error_message: string
+  stack_trace?: string | null
+  entity_type?: string | null
+  entity_id?: string | null
+  retry_count: number
+  resolved: boolean
+  created_at: string
+}
+
+export interface CalendarSyncLogRow {
+  id: string
+  brokerage_id?: string | null
+  user_id: string
+  provider: string
+  sync_type: 'push' | 'pull' | 'full'
+  status: 'success' | 'error' | 'partial'
+  records_synced?: number | null
+  error_message?: string | null
+  synced_at: string
+}
+
+export interface OnboardingStepRow {
+  id: string
+  user_id: string
+  brokerage_id?: string | null
+  step_key: string
+  status: 'pending' | 'in_progress' | 'completed' | 'skipped'
+  completed_at?: string | null
+  metadata?: Record<string, any> | null
+  created_at: string
 }

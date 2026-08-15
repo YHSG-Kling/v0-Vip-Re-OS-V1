@@ -98,18 +98,41 @@ export async function createTransaction(transactionData: {
   client_email?: string
   client_phone?: string
   agent_id?: string
+  brokerage_id?: string
+  contact_id?: string
   close_date?: string
   notes?: string
   commissionPercentage?: number
 }) {
   const supabase = await createClient()
 
+  // Map the UI/legacy input contract onto live schema columns. The old code
+  // spread the input directly, which wrote columns that don't exist
+  // (transaction_type, contract_price, client_email, listing_price, notes),
+  // used an invalid status ("new"), and omitted the NOT NULL deal_name — so the
+  // insert always failed. deal_type CHECK is {buyer,seller,dual}.
+  const DEAL_TYPE_MAP: Record<string, "buyer" | "seller" | "dual"> = {
+    purchase: "buyer",
+    sale: "seller",
+    lease: "dual",
+    dual: "dual",
+  }
   const { data, error } = await supabase
     .from("transactions")
     .insert({
-      ...transactionData,
-      property_zip: normalizeZip(transactionData.property_zip),
-      status: transactionData.status || "new",
+      brokerage_id:          transactionData.brokerage_id ?? null,
+      agent_id:              transactionData.agent_id ?? null,
+      contact_id:            transactionData.contact_id ?? null,  // primary client (hangs off a contact)
+      deal_name:             transactionData.property_address, // NOT NULL
+      deal_type:             DEAL_TYPE_MAP[transactionData.transaction_type] ?? "dual",
+      status:                transactionData.status || "active",
+      property_address:      transactionData.property_address,
+      property_city:         transactionData.property_city ?? null,
+      property_state:        transactionData.property_state ?? null,
+      property_zip:          normalizeZip(transactionData.property_zip),
+      purchase_price:        transactionData.contract_price ?? transactionData.listing_price ?? null,
+      close_date:            transactionData.close_date ?? null,
+      client_name:           transactionData.client_name ?? null,
       commission_percentage: transactionData.commissionPercentage ?? null,
     })
     .select()
@@ -138,7 +161,7 @@ export async function createTransaction(transactionData: {
           entityId:    data.id,
           fromState:   "active",
           toState:     "commission_overridden",
-          actorUserId: userData.user?.id,
+          actorUserId: userData.user?.id ?? '',
           actorRole:   "broker",
           eventType:   "commission.overridden",
           metadata:    { commission_percentage: transactionData.commissionPercentage, resolved_from: "deal_override" },
@@ -617,6 +640,38 @@ export async function completeInspection(inspectionId: string, reportUrl?: strin
 
   if (data?.transactions?.id) {
     await addTimelineEntry(data.transactions.id, "inspection_completed", `${data.inspection_type} inspection completed`)
+
+    // Fan-out to buyer + seller + lender + title portals — the event was
+    // previously only logged to the timeline. Use MILESTONE_COMPLETED with
+    // milestone_name='inspection_completed' since the enum doesn't have a
+    // dedicated INSPECTION_COMPLETED event yet.
+    try {
+      const supabaseSvc = await createClient()
+      const { data: { user } } = await supabaseSvc.auth.getUser()
+      const { data: tx } = await supabaseSvc
+        .from("transactions")
+        .select("brokerage_id")
+        .eq("id", data.transactions.id)
+        .maybeSingle()
+      if (tx?.brokerage_id && user?.id) {
+        const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+        const { KernelEvent } = await import("@/lib/kernel/events")
+        await emitTransactionEvent({
+          event:        KernelEvent.MILESTONE_COMPLETED,
+          brokerageId:  tx.brokerage_id,
+          entityId:     data.transactions.id,
+          actorUserId:  user.id,
+          metadata: {
+            milestone_name:    "inspection_completed",
+            inspection_type:   data.inspection_type,
+            report_received:   !!reportUrl,
+            issues_found:      issuesFound ?? null,
+          },
+        })
+      }
+    } catch (err) {
+      console.error("[completeInspection] fan-out failed (non-blocking)", err)
+    }
   }
   revalidatePath("/transactions")
   return { success: true, data }
@@ -772,16 +827,19 @@ export async function getTransactionTimeline(transactionId: string) {
 export async function addDeadline(deadlineData: {
   transaction_id: string
   deadline_type: string
-  description: string
-  due_date: string
-  reminder_days_before?: number
-  assigned_to?: string
-  notes?: string
+  notes: string
+  deadline_date: string
 }) {
   const supabase = await createClient()
   const { data, error } = await supabase
     .from("transaction_deadlines")
-    .insert({ ...deadlineData, status: "pending" })
+    .insert({
+      transaction_id: deadlineData.transaction_id,
+      deadline_type: deadlineData.deadline_type,
+      notes: deadlineData.notes,
+      deadline_date: deadlineData.deadline_date,
+      status: "pending",
+    })
     .select()
     .single()
 
@@ -793,7 +851,7 @@ export async function addDeadline(deadlineData: {
   await addTimelineEntry(
     deadlineData.transaction_id,
     "deadline_added",
-    `Deadline "${deadlineData.description}" added for ${deadlineData.due_date}`,
+    `Deadline "${deadlineData.notes}" added for ${deadlineData.deadline_date}`,
   )
   revalidatePath("/transactions")
   return { success: true, data }
@@ -801,7 +859,7 @@ export async function addDeadline(deadlineData: {
 
 export async function updateDeadline(
   deadlineId: string,
-  updates: Partial<{ status: string; due_date: string; description: string; completed_at: string; notes: string }>,
+  updates: Partial<{ status: string; deadline_date: string; notes: string; completed_at: string }>,
 ) {
   const supabase = await createClient()
   const { data, error } = await supabase
@@ -834,7 +892,7 @@ export async function completeDeadline(deadlineId: string) {
   }
 
   if (data?.transactions?.id) {
-    await addTimelineEntry(data.transactions.id, "deadline_completed", `Deadline "${data.description}" completed`)
+    await addTimelineEntry(data.transactions.id, "deadline_completed", `Deadline "${data.notes}" completed`)
   }
   revalidatePath("/transactions")
   return { success: true, data }
@@ -849,8 +907,8 @@ export async function getUpcomingDeadlines(agentId?: string, days = 7) {
     .from("transaction_deadlines")
     .select("*, transactions(*)")
     .eq("status", "pending")
-    .lte("due_date", futureDate.toISOString())
-    .order("due_date", { ascending: true })
+    .lte("deadline_date", futureDate.toISOString())
+    .order("deadline_date", { ascending: true })
 
   if (agentId) query = query.eq("transactions.agent_id", agentId)
 
@@ -1033,23 +1091,24 @@ export async function calculateCommissions(transactionId: string) {
     }
 
     writes.push(
-      supabase
-        .from("agent_earnings")
-        .upsert(
-          {
-            agent_id: transaction.agent_id,
-            brokerage_id: transaction.brokerage_id,
-            period_type: "ytd",
-            period_label: `${new Date().getFullYear()}`,
-            gross_commission: grossCommission,
-            agent_net: agentNet,
-            brokerage_net: brokerageFee,
-            total_fees: transactionFee,
-            transaction_count: 1,
-          },
-          { onConflict: "agent_id,period_type,period_label" },
-        )
-        .catch(() => {}),
+      Promise.resolve(
+        supabase
+          .from("agent_earnings")
+          .upsert(
+            {
+              agent_id: transaction.agent_id,
+              brokerage_id: transaction.brokerage_id,
+              period_type: "ytd",
+              period_label: `${new Date().getFullYear()}`,
+              gross_commission: grossCommission,
+              agent_net: agentNet,
+              brokerage_net: brokerageFee,
+              total_fees: transactionFee,
+              transaction_count: 1,
+            },
+            { onConflict: "agent_id,period_type,period_label" },
+          )
+      )
     )
 
     await Promise.all(writes)
@@ -1125,9 +1184,9 @@ export async function respondToRepairRequest(
   const supabase = await createClient()
   const updates: Record<string, unknown> = {
     status: response === "counter" ? "countered" : response,
-    response_notes: notes,
+    response_note: notes,
+    ...(response === "counter" && counterOffer !== undefined ? { repair_credit_amount: counterOffer } : {}),
   }
-  if (counterOffer !== undefined) updates.counter_offer = counterOffer
 
   const { data, error } = await supabase
     .from("transaction_repair_negotiations")
@@ -1249,78 +1308,6 @@ export async function getPendingDocuments(transactionId?: string, limit = 20) {
       priority: doc.priority || "medium",
     })) || []
   )
-}
-
-// ============================================
-// TRANSPARENT TRANSACTION MANAGEMENT
-// ============================================
-
-export async function createTransparentTransaction(data: {
-  property_address: string
-  transaction_type: "buyer_side" | "seller_side" | "dual"
-  primary_client_id: string
-  agent_id: string
-  purchase_price?: number
-  financing_type?: string
-  close_date?: string
-}) {
-  const supabase = await createClient()
-
-  const { data: transaction, error } = await supabase
-    .from("transactions")
-    .insert({
-      property_address: data.property_address,
-      transaction_type: data.transaction_type,
-      primary_client_id: data.primary_client_id,
-      agent_id: data.agent_id,
-      contract_price: data.purchase_price,
-      financing_type: data.financing_type,
-      close_date: data.close_date,
-      current_stage: "offer",
-      transparency_score: 100,
-      health_score: 100,
-      health_status: "healthy",
-      status: "new",
-    })
-    .select()
-    .single()
-
-  if (error || !transaction) {
-    return { success: false, error: error?.message }
-  }
-
-  const welcomePrompt = `Create a warm welcome message for a ${data.transaction_type === "buyer_side" ? "buyer" : "seller"}:
-
-Property: ${data.property_address}
-
-Include:
-1. Congratulations
-2. Clear next steps (3-4 steps)
-3. Timeline expectations
-4. Communication plan
-5. Their role vs our role
-6. One immediate action
-7. Reassurance
-
-Tone: Professional, warm, confident, educational
-Length: 3-4 paragraphs`
-
-    const welcome = JSON.parse(await runPipelineSimple(welcomePrompt, { feature: "transaction_welcome" }))
-
-  await supabase.from("client_friendly_updates").insert({
-    transaction_id: transaction.id,
-    update_text: welcome.data?.message || "Welcome to your transaction journey!",
-    update_type: "educational",
-    ai_generated: true,
-    tone: "reassuring",
-    sent_via: "portal",
-  })
-
-  await generateClientTimeline(transaction.id, data.transaction_type, data.financing_type || "conventional")
-  await generateSmartChecklist(transaction.id, "offer")
-
-  revalidatePath("/transactions")
-  return { success: true, transaction, welcomeMessage: welcome.data?.message }
 }
 
 export async function generateClientTimeline(transactionId: string, transactionType: string, financingType: string) {
@@ -1615,61 +1602,71 @@ Return:
 // EDUCATIONAL CONTENT DELIVERY
 // ============================================
 
+/**
+ * Deliver stage-appropriate education to the contact tied to this transaction.
+ *
+ * Post-1042: instead of writing to the dropped `educational_moments` table,
+ * this resolves a published `learning_modules` row tagged with the matching
+ * stage_tag and creates a `learning_assignments` row for the buyer/seller
+ * contact. The customer portal feed surfaces it from there.
+ */
 export async function deliverEducationalContent(transactionId: string, stage: string) {
   const supabase = await createClient()
+
   const { data: transaction } = await supabase
     .from("transactions")
-    .select("*, contacts(*)")
+    .select("id, brokerage_id, buyer_contact_id, seller_contact_id, contact_id")
     .eq("id", transactionId)
     .maybeSingle()
-
   if (!transaction) throw new Error("Transaction not found")
 
-  const educationalContent: Record<string, any> = {
-    offer: {
-      title: "What Happens After Your Offer is Accepted",
-      topics: ["Understanding earnest money", "Inspection period explained", "Timeline from offer to close", "Your responsibilities vs ours"],
-      videoUrl: "/education/offer-accepted.mp4",
-    },
-    inspection: {
-      title: "Home Inspection: What to Expect",
-      topics: ["What inspectors look for", "Red flags vs normal wear", "How to negotiate repairs", "When to walk away"],
-      videoUrl: "/education/inspection-guide.mp4",
-    },
-    appraisal: {
-      title: "Understanding the Appraisal Process",
-      topics: ["What appraisers consider", "What if appraisal comes in low?", "Appraisal vs market value", "Timeline expectations"],
-      videoUrl: "/education/appraisal-explained.mp4",
-    },
-    clear_to_close: {
-      title: "Final Steps Before Closing",
-      topics: ["Final walkthrough checklist", "What to bring to closing", "Wire fraud prevention", "Closing day process"],
-      videoUrl: "/education/closing-prep.mp4",
-    },
-  }
+  const contactId =
+    (transaction.buyer_contact_id as string | null) ??
+    (transaction.seller_contact_id as string | null) ??
+    (transaction.contact_id as string | null)
+  if (!contactId)            return { success: false, message: "No contact tied to transaction" }
+  if (!transaction.brokerage_id) return { success: false, message: "No brokerage on transaction" }
 
-  const content = educationalContent[stage]
-  if (!content) return { success: false, message: "No educational content for this stage" }
+  // Map the legacy stage string to learning_modules.stage_tags vocabulary.
+  const stageTags: Record<string, string[]> = {
+    offer:           ["offer_accepted", "offer_submitted"],
+    inspection:      ["inspection_scheduled", "inspection_period"],
+    appraisal:       ["appraisal_ordered", "appraisal", "appraisal_completed"],
+    clear_to_close:  ["clear_to_close_received", "closing_prep"],
+  }
+  const tags = stageTags[stage] ?? [stage]
+
+  const { data: candidates } = await supabase
+    .from("learning_modules")
+    .select("id, title")
+    .eq("brokerage_id", transaction.brokerage_id)
+    .eq("status", "published")
+    .overlaps("stage_tags", tags)
+    .order("display_priority", { ascending: false })
+    .limit(1)
+
+  const moduleRow = (candidates ?? [])[0] as { id: string; title: string } | undefined
+  if (!moduleRow) return { success: false, message: `No learning module published for stage ${stage}` }
 
   const { data: existing } = await supabase
-    .from("educational_moments")
+    .from("learning_assignments")
     .select("id")
-    .eq("transaction_id", transactionId)
-    .eq("content_title", content.title)
+    .eq("contact_id", contactId)
+    .eq("module_id", moduleRow.id)
     .maybeSingle()
-
   if (existing) return { success: false, message: "Content already delivered" }
 
-  await supabase.from("educational_moments").insert({
-    transaction_id: transactionId,
-    current_stage: stage,
-    educational_content_type: "video",
-    content_title: content.title,
-    content_url: content.videoUrl,
-    delivered: true,
+  await supabase.from("learning_assignments").insert({
+    brokerage_id:    transaction.brokerage_id,
+    module_id:       moduleRow.id,
+    contact_id:      contactId,
+    signal_source:   `stage:${stage}`,
+    signal_metadata: { transaction_id: transactionId, stage },
+    priority_score:  70,
+    status:          "open",
   })
 
-  return { success: true, content, message: `Educational content delivered for ${stage} stage` }
+  return { success: true, content: moduleRow, message: `Educational content delivered for ${stage} stage` }
 }
 
 // ============================================
@@ -1876,7 +1873,15 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
   }
   
   const persona = transaction.contacts?.contact_persona || (transaction.deal_type === "seller" ? "seller" : "buyer")
-  
+
+  // The contact whose portal feed we're reading. Post-1042, learning
+  // assignments are keyed off contact_id, so resolve it once up front.
+  const portalContactId: string | null =
+    (transaction.buyer_contact_id as string | null) ??
+    (transaction.seller_contact_id as string | null) ??
+    (transaction.contact_id as string | null) ??
+    null
+
   // Fetch all client-visible data in parallel from real tables
   const [
     milestones,
@@ -1893,9 +1898,9 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
     // Client-visible milestones
     supabase
       .from("transaction_milestones")
-      .select("id, milestone_name, milestone_date, status, completed_at, notes")
+      .select("id, milestone_name, target_date, status, completed_at, notes")
       .eq("transaction_id", transactionId)
-      .order("milestone_date", { ascending: true })
+      .order("target_date", { ascending: true })
       .then(r => r.data || []),
     // Client-friendly updates
     supabase
@@ -1913,14 +1918,19 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
       .order("created_at", { ascending: false })
       .limit(10)
       .then(r => r.data || []),
-    // Educational moments
-    supabase
-      .from("educational_moments")
-      .select("id, content_title, content_body, content_type, stage_context, delivered_at, read_at")
-      .eq("transaction_id", transactionId)
-      .order("delivered_at", { ascending: false })
-      .limit(5)
-      .then(r => r.data || []),
+    // Educational moments — post-1042, sourced from learning_assignments
+    // joined with learning_modules. transaction_id is recorded in
+    // signal_metadata when deliverEducationalContent() seeds the assignment.
+    portalContactId
+      ? supabase
+          .from("learning_assignments")
+          .select("id, signal_metadata, status, viewed_at, completed_at, created_at, module:module_id(title, body, channels)")
+          .eq("contact_id", portalContactId)
+          .contains("signal_metadata", { transaction_id: transactionId })
+          .order("created_at", { ascending: false })
+          .limit(5)
+          .then(r => r.data || [])
+      : Promise.resolve([]),
     // Timeline transparency (delays)
     supabase
       .from("timeline_transparency")
@@ -2030,7 +2040,7 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
     timeline: milestones.map((m: any) => ({
       id: m.id,
       name: m.milestone_name,
-      date: m.milestone_date,
+      date: m.target_date,
       status: m.status,
       icon: getMilestoneIcon(m.milestone_name),
       description: m.notes || getDefaultMilestoneDescription(m.milestone_name),
@@ -2054,13 +2064,18 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
       email: p.email,
       phone: p.phone,
     })),
-    educationalContent: educationalMoments.length > 0 
-      ? {
-          title: educationalMoments[0].content_title,
-          content: educationalMoments[0].content_body,
-          type: educationalMoments[0].content_type,
-          isRead: !!educationalMoments[0].read_at,
-        }
+    educationalContent: educationalMoments.length > 0
+      ? (() => {
+          // Supabase join returns module as an array; pick the first row.
+          const first  = educationalMoments[0] as { module?: Array<{ title?: string; body?: string | null; channels?: string[] | null }> | { title?: string; body?: string | null; channels?: string[] | null } | null; viewed_at?: string | null }
+          const mod    = Array.isArray(first.module) ? first.module[0] : first.module
+          return {
+            title:  mod?.title ?? "",
+            content: mod?.body ?? "",
+            type:   (mod?.channels ?? [])[0] ?? "article",
+            isRead: !!first.viewed_at,
+          }
+        })()
       : getPersonaEducation(persona, transaction.stage || transaction.status),
     personaTools: getPersonaSpecificTools(persona),
     contactAgent: {
@@ -2112,19 +2127,23 @@ export async function loadAgentDashboard() {
     .eq("user_id", user.id)
     .maybeSingle()
 
-  const agentId = agent?.id || user.id
+  // agent_id is agents.id, not users.id. For non-agent users there is no agent
+  // row → return empty rather than filtering by a users.id (which never matches).
+  const agentId = agent?.id ?? null
   const brokerageId = agent?.profiles?.brokerage_id
   if (!brokerageId) throw new Error("Agent brokerage not found")
 
-  const { data: transactions } = await supabase
-    .from("transactions")
-    .select(`*, contacts!transactions_contact_id_fkey(*), listings(*)`)
-    .eq("agent_id", agentId)
-    .order("created_at", { ascending: false })
+  const { data: transactions } = agentId
+    ? await supabase
+        .from("transactions")
+        .select(`*, contacts!transactions_contact_id_fkey(*), listings(*)`)
+        .eq("agent_id", agentId)
+        .order("created_at", { ascending: false })
+    : { data: [] as any[] }
 
   const pipeline = await calculatePipeline(transactions || [], brokerageId)
   const atRiskDeals = identifyAtRiskDeals(transactions || [])
-  const upcomingMilestones = await getUpcomingMilestones(agentId)
+  const upcomingMilestones = agentId ? await getUpcomingMilestones(agentId) : []
 
   return { agentId, pipeline, atRiskDeals, upcomingMilestones, transactions: transactions || [] }
 }
@@ -2135,14 +2154,17 @@ export async function getAgentTransactionKanban() {
   if (!user) throw new Error("Not authenticated")
 
   const { data: agent } = await supabase.from("agents").select("*").eq("user_id", user.id).maybeSingle()
-  const agentId = agent?.id || user.id
+  // agent_id is agents.id; non-agent users have no agent row → empty board.
+  const agentId = agent?.id ?? null
 
-  const { data: transactions } = await supabase
-    .from("transactions")
-    .select(`*, contacts!transactions_contact_id_fkey(*), listings(*)`)
-    .eq("agent_id", agentId)
-    .neq("status", "closed")
-    .order("created_at", { ascending: false })
+  const { data: transactions } = agentId
+    ? await supabase
+        .from("transactions")
+        .select(`*, contacts!transactions_contact_id_fkey(*), listings(*)`)
+        .eq("agent_id", agentId)
+        .neq("status", "closed")
+        .order("created_at", { ascending: false })
+    : { data: [] as any[] }
 
   return {
     lead: { title: "Leads", deals: transactions?.filter((t) => t.status === "lead" || !t.status) || [], color: "gray" },
@@ -2159,20 +2181,24 @@ export async function getAgentTransactionKanban() {
 export async function updateTransactionStage(transactionId: string, targetStage: string, reason?: string) {
   // Kernel OS: requireWriteContext — resolves userId, brokerageId, userType via canonical chain
   const { requireWriteContext } = await import("@/lib/kernel")
-  const ctx = await requireWriteContext().catch(() => null)
-  if (!ctx) return { success: false, error: "Not authenticated" }
+  try {
+    const ctx = await requireWriteContext()
+    if (!ctx) return { success: false, error: "Not authenticated" }
 
-  const { TransactionOrchestrator } = await import("@/lib/transactions/transaction-orchestrator")
-  const orchestrator = new TransactionOrchestrator({
-    transactionId,
-    brokerageId: ctx.brokerageId,
-    userId: ctx.userId,
-    userRole: ctx.userType, // userType is already canonical — never use .role
-  })
+    const { TransactionOrchestrator } = await import("@/lib/transactions/transaction-orchestrator")
+    const orchestrator = new TransactionOrchestrator({
+      transactionId,
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      userRole: ctx.userType, // userType is already canonical — never use .role
+    })
 
-  const result = await orchestrator.advanceToStage(targetStage as any, reason)
-  if (result.success) revalidatePath("/transactions")
-  return result
+    const result = await orchestrator.advanceToStage(targetStage as any, reason)
+    if (result.success) revalidatePath("/transactions")
+    return result
+  } catch (err) {
+    return { success: false, error: "Not authenticated" }
+  }
 }
 
 export async function getClientTasks(transactionId: string) {
@@ -2382,7 +2408,7 @@ async function getUpcomingMilestones(agentId: string) {
   return milestones
     .filter(m => transactionMap.has(m.transaction_id))
     .map(m => {
-      const transaction = transactionMap.get(m.transaction_id)
+      const transaction = transactionMap.get(m.transaction_id)!
       return {
         ...m,
         transactions: {

@@ -74,11 +74,14 @@ import {
   deleteSequenceStep,
   reorderSequenceSteps,
   updateCampaignSequence,
-  type CampaignSequence,
-  type SequenceStep,
-  type SequenceEnrollment,
 } from "@/app/actions/campaign-sequences"
+import type {
+  CampaignSequence,
+  SequenceStep,
+  SequenceEnrollment,
+} from "@/lib/campaigns/sequence-constants"
 import { ContextualAiAssistBar } from "@/app/components/ai-copilot/contextual-ai-assist-bar"
+import { WORKFLOW_TRIGGERS } from "@/lib/workflow/triggers"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -131,19 +134,9 @@ const PERSONALIZATION_TOKENS = [
   "{{brokerage_name}}",
 ]
 
-const TRIGGER_EVENTS = [
-  { value: "contact_created",     label: "Contact Created" },
-  { value: "lead_captured",       label: "Lead Captured" },
-  { value: "lead_scored",         label: "Lead Scored" },
-  { value: "ghost_lead_detected", label: "Ghost Lead Detected" },
-  { value: "reengagement_started",label: "Re-engagement Started" },
-  { value: "deal_closed",         label: "Deal Closed" },
-  { value: "lifetime_customer",   label: "Lifetime Customer" },
-  { value: "tour_scheduled",      label: "Tour Scheduled" },
-  { value: "offer_submitted",     label: "Offer Submitted" },
-  { value: "contract_signed",     label: "Contract Signed" },
-  { value: "isa_qualified_lead",  label: "ISA Qualified Lead" },
-]
+// Canonical trigger catalog (KernelEvent-derived WORKFLOW_TRIGGERS) — single source of truth shared
+// with the sequences list + workflow builder, so a trigger offered here always matches an emitted event.
+const TRIGGER_EVENTS = WORKFLOW_TRIGGERS.map(t => ({ value: t.value, label: t.label }))
 
 const CHANNEL_ICONS: Record<string, React.ElementType> = {
   email:       Mail,
@@ -683,7 +676,7 @@ export default function SequenceBuilderClient({
                       cx="50%"
                       cy="50%"
                       outerRadius={90}
-                      label={({ name, percent }) => `${name} ${Math.round(percent * 100)}%`}
+                      label={((props: any) => `${props.name} ${Math.round((props.percent ?? 0) * 100)}%`) as any}
                     >
                       {analyticsData.piData.map((_, i) => (
                         <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />

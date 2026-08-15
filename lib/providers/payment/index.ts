@@ -6,8 +6,31 @@
 
 // ─── STRIPE ────────────────────────────────────────────────────────────────────
 
+import { callConnector, type GatewayResponse } from "@/lib/agentic-os/connector-gateway"
+
+const STRIPE_BASE = "https://api.stripe.com"
+
 function getStripeKey(): string | null {
   return process.env.STRIPE_SECRET_KEY || null
+}
+
+/** Single egress choke point — every Stripe API call leaves through the connector-gateway. Stripe
+ *  is form-urlencoded (gateway "form" bodyType); a connected-account call sets the Stripe-Account
+ *  header. Stripe is a PLATFORM connector (one STRIPE_SECRET_KEY). */
+function stripeReq<T = any>(
+  secretKey: string,
+  path: string,
+  opts: { method?: "GET" | "POST"; form?: Record<string, string>; stripeAccount?: string } = {},
+): Promise<GatewayResponse<T>> {
+  return callConnector<T>({
+    connector: "stripe",
+    baseUrl: STRIPE_BASE,
+    path,
+    method: opts.method ?? (opts.form ? "POST" : "GET"),
+    auth: { style: "bearer", token: secretKey },
+    ...(opts.form ? { body: opts.form, bodyType: "form" as const } : {}),
+    ...(opts.stripeAccount ? { headers: { "Stripe-Account": opts.stripeAccount } } : {}),
+  })
 }
 
 export interface CreateTransferParams {
@@ -36,31 +59,16 @@ export async function createTransfer(params: CreateTransferParams): Promise<Crea
     }
   }
 
-  const response = await fetch("https://api.stripe.com/v1/transfers", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${secretKey}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
+  const res = await stripeReq<{ id: string; amount: number }>(secretKey, "v1/transfers", {
+    form: {
       amount: Math.round(params.amount * 100).toString(),
       currency: "usd",
       destination: params.destinationAccountId,
       description: params.description || "Commission transfer",
-    }),
+    },
   })
-
-  const data = await response.json()
-
-  if (!response.ok) {
-    throw new Error(data.error?.message || "Stripe API error")
-  }
-
-  return {
-    success: true,
-    transferId: data.id,
-    amount: data.amount / 100,
-  }
+  if (!res.ok || !res.data) throw new Error(res.error || "Stripe API error")
+  return { success: true, transferId: res.data.id, amount: res.data.amount / 100 }
 }
 
 export interface CreatePaymentIntentParams {
@@ -91,38 +99,18 @@ export async function createPaymentIntent(
     }
   }
 
-  const body = new URLSearchParams({
+  const form: Record<string, string> = {
     amount: Math.round(params.amount * 100).toString(),
     currency: params.currency || "usd",
-  })
-
-  if (params.description) body.append("description", params.description)
+  }
+  if (params.description) form.description = params.description
   if (params.metadata) {
-    for (const [key, value] of Object.entries(params.metadata)) {
-      body.append(`metadata[${key}]`, value)
-    }
+    for (const [key, value] of Object.entries(params.metadata)) form[`metadata[${key}]`] = value
   }
 
-  const response = await fetch("https://api.stripe.com/v1/payment_intents", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${secretKey}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body,
-  })
-
-  const data = await response.json()
-
-  if (!response.ok) {
-    throw new Error(data.error?.message || "Stripe PaymentIntent error")
-  }
-
-  return {
-    success: true,
-    clientSecret: data.client_secret,
-    paymentIntentId: data.id,
-  }
+  const res = await stripeReq<{ client_secret: string; id: string }>(secretKey, "v1/payment_intents", { form })
+  if (!res.ok || !res.data) throw new Error(res.error || "Stripe PaymentIntent error")
+  return { success: true, clientSecret: res.data.client_secret, paymentIntentId: res.data.id }
 }
 
 export interface CreateConnectedAccountResult {
@@ -144,44 +132,141 @@ export async function createConnectedAccount(email: string): Promise<CreateConne
     }
   }
 
-  const accountResponse = await fetch("https://api.stripe.com/v1/accounts", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${secretKey}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      type: "express",
-      email,
-      "capabilities[transfers][requested]": "true",
-    }),
+  const accountRes = await stripeReq<{ id: string }>(secretKey, "v1/accounts", {
+    form: { type: "express", email, "capabilities[transfers][requested]": "true" },
   })
+  if (!accountRes.ok || !accountRes.data) throw new Error(accountRes.error || "Stripe account creation error")
+  const account = accountRes.data
 
-  const account = await accountResponse.json()
-
-  if (!accountResponse.ok) {
-    throw new Error(account.error?.message || "Stripe account creation error")
-  }
-
-  const linkResponse = await fetch("https://api.stripe.com/v1/account_links", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${secretKey}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
+  const linkRes = await stripeReq<{ url: string }>(secretKey, "v1/account_links", {
+    form: {
       account: account.id,
       refresh_url: `${process.env.NEXT_PUBLIC_APP_URL}/settings/payments`,
       return_url: `${process.env.NEXT_PUBLIC_APP_URL}/settings/payments?success=true`,
       type: "account_onboarding",
-    }),
+    },
   })
+  // The account exists even if the onboarding link failed — surface the link error so the caller
+  // doesn't dead-end with an undefined onboardingUrl and a misleading success:true.
+  if (!linkRes.ok || !linkRes.data?.url) {
+    return { success: false, accountId: account.id, error: linkRes.error || "Stripe account_links error" }
+  }
 
-  const link = await linkResponse.json()
+  return { success: true, accountId: account.id, onboardingUrl: linkRes.data.url }
+}
 
+/** Create a fresh Account Link to (re)onboard an EXISTING Connect account. Used when the owner
+ *  already has a stripe account_id and needs to resume/refresh onboarding. */
+export async function createAccountLink(
+  accountId: string,
+  returnPath = "/settings/payments",
+): Promise<{ success: boolean; onboardingUrl?: string; error?: string }> {
+  const secretKey = getStripeKey()
+  if (!secretKey) return { success: false, error: "Stripe not configured." }
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
+  const res = await stripeReq<{ url: string }>(secretKey, "v1/account_links", {
+    form: {
+      account: accountId,
+      refresh_url: `${appUrl}${returnPath}?stripe=refresh`,
+      return_url: `${appUrl}${returnPath}?stripe=complete`,
+      type: "account_onboarding",
+    },
+  })
+  if (!res.ok || !res.data?.url) return { success: false, error: res.error || "Stripe account_links error" }
+  return { success: true, onboardingUrl: res.data.url }
+}
+
+// ─── Account health / balance / payouts ─────────────────────────────────────────
+
+export interface StripeAccountStatus {
+  success: boolean
+  accountId?: string
+  chargesEnabled?: boolean
+  payoutsEnabled?: boolean
+  detailsSubmitted?: boolean
+  /** Requirements still owed before the account is fully enabled. */
+  currentlyDue?: string[]
+  error?: string
+}
+
+/** Liveness + auth + onboarding-state probe. With no accountId, reads the platform account
+ *  (GET /v1/account); with one, reads that connected account. Used by the connector probe. */
+export async function getStripeAccountStatus(accountId?: string): Promise<StripeAccountStatus> {
+  const secretKey = getStripeKey()
+  if (!secretKey) return { success: false, error: "Stripe not configured." }
+
+  const path = accountId ? `v1/accounts/${encodeURIComponent(accountId)}` : "v1/account"
+  const res = await stripeReq<any>(secretKey, path)
+  if (!res.ok || !res.data) {
+    return { success: false, error: res.error || `Stripe account error (${res.status ?? "—"})` }
+  }
+  const data = res.data
   return {
     success: true,
-    accountId: account.id,
-    onboardingUrl: link.url,
+    accountId: data.id,
+    chargesEnabled: !!data.charges_enabled,
+    payoutsEnabled: !!data.payouts_enabled,
+    detailsSubmitted: !!data.details_submitted,
+    currentlyDue: data.requirements?.currently_due ?? [],
   }
+}
+
+export interface StripeBalanceResult {
+  success: boolean
+  /** Available balance in major units (e.g. dollars), summed per currency. */
+  available?: Record<string, number>
+  pending?: Record<string, number>
+  error?: string
+}
+
+export async function getStripeBalance(): Promise<StripeBalanceResult> {
+  const secretKey = getStripeKey()
+  if (!secretKey) return { success: false, error: "Stripe not configured." }
+
+  const res = await stripeReq<{ available: Array<{ amount: number; currency: string }>; pending: Array<{ amount: number; currency: string }> }>(secretKey, "v1/balance")
+  if (!res.ok || !res.data) {
+    return { success: false, error: res.error || `Stripe balance error (${res.status ?? "—"})` }
+  }
+  const data = res.data
+  const sum = (rows: Array<{ amount: number; currency: string }> = []) =>
+    rows.reduce<Record<string, number>>((acc, r) => {
+      acc[r.currency] = (acc[r.currency] ?? 0) + r.amount / 100
+      return acc
+    }, {})
+  return { success: true, available: sum(data.available), pending: sum(data.pending) }
+}
+
+export interface CreatePayoutParams {
+  amount: number
+  currency?: string
+  /** Connected account to pay out FROM (Stripe-Account header), when applicable. */
+  stripeAccountId?: string
+  description?: string
+}
+
+export interface CreatePayoutResult {
+  success: boolean
+  payoutId?: string
+  amount?: number
+  error?: string
+}
+
+export async function createPayout(params: CreatePayoutParams): Promise<CreatePayoutResult> {
+  const secretKey = getStripeKey()
+  if (!secretKey) return { success: false, error: "Stripe not configured." }
+
+  const form: Record<string, string> = {
+    amount: Math.round(params.amount * 100).toString(),
+    currency: params.currency || "usd",
+  }
+  if (params.description) form.description = params.description
+
+  const res = await stripeReq<{ id: string; amount: number }>(secretKey, "v1/payouts", {
+    form,
+    stripeAccount: params.stripeAccountId,
+  })
+  if (!res.ok || !res.data) {
+    return { success: false, error: res.error || `Stripe payout error (${res.status ?? "—"})` }
+  }
+  return { success: true, payoutId: res.data.id, amount: res.data.amount / 100 }
 }

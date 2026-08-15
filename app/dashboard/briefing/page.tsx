@@ -21,6 +21,9 @@ import {
   DollarSign,
   TrendingUp,
   Sparkles,
+  Users,
+  UserX,
+  Target,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
@@ -30,12 +33,16 @@ import {
   getAgentName,
   getUpcomingShowings,
   getActiveTransactions,
+  getPipelineSummary,
+  getBuyerMatchCount,
+  getChurnRiskContacts,
 } from "@/app/actions/briefing-actions"
 import { generateContactInsights } from "@/app/actions/ai-insights"
 import type { ContactInsight } from "@/app/actions/ai-insights"
 import type { DailyBriefing, PriorityAction, HotLead, DealAtRisk } from "@/lib/intelligence/daily-briefing-generator"
 import { createClient } from "@/lib/supabase/client"
 import Link from "next/link"
+import { MarketInsightWidget } from "@/app/components/dashboard/market-insight-widget"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -58,6 +65,19 @@ interface Transaction {
   health_score: number | null
   contact: { id: string; first_name: string; last_name: string } | null
   deal_health: { transaction_id: string; overall_score: number; risk_level: string } | null
+}
+
+interface PipelineSummaryData {
+  activeCount: number
+  approachingClose: { id: string; property_address: string; close_date: string } | null
+}
+
+interface ChurnRiskContact {
+  id: string
+  first_name: string | null
+  last_name: string | null
+  last_contact_date: string | null
+  lead_stage: string | null
 }
 
 // ─── Priority Colors ──────────────────────────────────────────────────────────
@@ -227,6 +247,11 @@ export default function BriefingPage() {
   const [regenerating, setRegenerating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [priorityContacts, setPriorityContacts] = useState<ContactInsight[]>([])
+  // New enhancement state
+  const [pipelineSummary, setPipelineSummary] = useState<PipelineSummaryData | null>(null)
+  const [buyerMatchCount, setBuyerMatchCount] = useState<number>(0)
+  const [churnRiskContacts, setChurnRiskContacts] = useState<ChurnRiskContact[]>([])
+  const [churnRiskTotal, setChurnRiskTotal] = useState<number>(0)
 
   // Get greeting based on time of day
   const getGreeting = () => {
@@ -261,20 +286,38 @@ export default function BriefingPage() {
     setError(null)
 
     try {
-      const [nameResult, briefingResult, showingsResult, transactionsResult] = await Promise.all([
+      const [
+        nameResult,
+        briefingResult,
+        showingsResult,
+        transactionsResult,
+        pipelineResult,
+        buyerMatchResult,
+        churnResult,
+      ] = await Promise.all([
         getAgentName(),
         getTodaysBriefing(),
         getUpcomingShowings(),
         getActiveTransactions(),
+        getPipelineSummary().catch(() => ({ activeCount: 0, approachingClose: null })),
+        getBuyerMatchCount().catch(() => ({ matchCount: 0 })),
+        getChurnRiskContacts().catch(() => ({ contacts: [], totalCount: 0 })),
       ])
 
       setAgentName(nameResult.name)
       setShowings(showingsResult.showings as Showing[])
       setTransactions(transactionsResult.transactions as Transaction[])
+      setPipelineSummary({
+        activeCount: pipelineResult.activeCount,
+        approachingClose: pipelineResult.approachingClose,
+      })
+      setBuyerMatchCount(buyerMatchResult.matchCount)
+      setChurnRiskContacts(churnResult.contacts as ChurnRiskContact[])
+      setChurnRiskTotal(churnResult.totalCount)
 
       // Load AI priority contacts non-blocking — resolve user from session
       const supabase = createClient()
-      supabase.auth.getSession().then(({ data: { session } }) => {
+      supabase.auth.getSession().then(({ data: { session } }: { data: { session: any } }) => {
         if (session?.user?.id) {
           generateContactInsights(session.user.id, "agent")
             .then((insights) => setPriorityContacts(insights.slice(0, 3)))
@@ -523,7 +566,7 @@ export default function BriefingPage() {
                               {tx.close_date && (
                                 <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
                                   <Clock className="h-3 w-3" />
-                                  Close: {new Date(tx.close_date).toLocaleDateString()}
+                                  Close: {(() => { const [y, m, d] = tx.close_date.split("T")[0].split("-"); return new Date(Number(y), Number(m) - 1, Number(d)).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) })()}
                                 </p>
                               )}
                               {tx.purchase_price && (
@@ -550,8 +593,121 @@ export default function BriefingPage() {
           )}
         </div>
 
-        {/* RIGHT COLUMN - Hot Leads + Footer */}
+        {/* RIGHT COLUMN - Pipeline Summary + Buyer Matches + Churn Risk + Hot Leads + Market Pulse */}
         <div className="space-y-6">
+          {/* PIPELINE SUMMARY */}
+          {!loading && pipelineSummary !== null && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <Target className="h-4 w-4 text-primary" />
+                  Pipeline Summary
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Active transactions</span>
+                  <Badge variant="secondary" className="font-semibold">
+                    {pipelineSummary.activeCount}
+                  </Badge>
+                </div>
+                {pipelineSummary.approachingClose ? (
+                  <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200/70">
+                    <p className="text-xs font-semibold text-emerald-700 mb-0.5">Approaching Close</p>
+                    <p className="text-sm font-medium text-emerald-800 leading-snug">
+                      {pipelineSummary.approachingClose.property_address}
+                    </p>
+                    <p className="text-xs text-emerald-600 mt-0.5 flex items-center gap-1">
+                      <Clock className="h-3 w-3" />
+                      Close: {new Date(`${pipelineSummary.approachingClose.close_date}T00:00:00`).toLocaleDateString()}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">No closings in the next 14 days</p>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {/* BUYER MATCHES */}
+          {!loading && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <Users className="h-4 w-4 text-primary" />
+                  Buyer Matches
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {buyerMatchCount > 0 ? (
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm text-muted-foreground">
+                      Buyers with active criteria
+                    </p>
+                    <Badge className="bg-blue-100 text-blue-700 border-blue-200 font-semibold">
+                      {buyerMatchCount}
+                    </Badge>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    No active buyers with search criteria on file
+                  </p>
+                )}
+                <Button variant="ghost" size="sm" className="w-full mt-3 text-xs h-7" asChild>
+                  <Link href="/crm?contact_type=buyer">View Buyers <ArrowRight className="h-3 w-3 ml-1" /></Link>
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* CHURN RISK */}
+          {!loading && churnRiskTotal > 0 && (
+            <Card className="border-amber-200/60">
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center gap-2 text-sm text-amber-700">
+                  <UserX className="h-4 w-4" />
+                  Churn Risk
+                  <Badge variant="outline" className="ml-auto border-amber-200 text-amber-700 bg-amber-50 text-xs">
+                    {churnRiskTotal} contacts
+                  </Badge>
+                </CardTitle>
+                <CardDescription className="text-xs">
+                  Not contacted in 30+ days
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {churnRiskContacts.slice(0, 5).map((contact) => (
+                  <div
+                    key={contact.id}
+                    className="flex items-center justify-between gap-2 py-1 border-b last:border-0"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">
+                        {[contact.first_name, contact.last_name].filter(Boolean).join(" ") || "Unknown"}
+                      </p>
+                      <p className="text-xs text-muted-foreground capitalize">
+                        {contact.lead_stage || "contact"} &middot;{" "}
+                        {contact.last_contact_date
+                          ? `Last: ${new Date(contact.last_contact_date.split("T")[0] + "T00:00:00").toLocaleDateString()}`
+                          : "Never contacted"}
+                      </p>
+                    </div>
+                    <Button size="sm" variant="outline" className="shrink-0 text-xs h-7" asChild>
+                      <Link href={`/crm?contact=${contact.id}`}>Touch</Link>
+                    </Button>
+                  </div>
+                ))}
+                {churnRiskTotal > 5 && (
+                  <Button variant="ghost" size="sm" className="w-full text-xs h-7" asChild>
+                    <Link href="/crm/contacts?filter=churn-risk">
+                      +{churnRiskTotal - 5} more
+                    </Link>
+                  </Button>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
           {/* HOT LEADS */}
           {loading ? (
             <LeadsSkeleton />
@@ -622,6 +778,45 @@ export default function BriefingPage() {
             </Card>
           )}
 
+          {/* LISTINGS AT RISK */}
+          {briefing?.listings_at_risk && briefing.listings_at_risk.length > 0 && (
+            <Card className="border-amber-500/60">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-amber-700">
+                  <AlertTriangle className="h-5 w-5" />
+                  Listings at Risk
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {briefing.listings_at_risk.map((listing, idx) => (
+                    <a
+                      key={idx}
+                      href={`/dashboard/listings/${listing.listing_id}/lifecycle`}
+                      className="block p-3 rounded-lg bg-amber-50 border border-amber-200 hover:bg-amber-100 transition"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="font-medium text-sm flex items-center gap-2">
+                          <MapPin className="h-4 w-4" />
+                          {listing.address}
+                        </p>
+                        <span className={
+                          "text-[10px] uppercase px-1.5 py-0.5 rounded-full font-medium whitespace-nowrap " +
+                          (listing.risk_level === "critical"
+                            ? "bg-red-500 text-white"
+                            : "bg-amber-500 text-white")
+                        }>
+                          {listing.risk_level.replace("_", " ")} · {listing.score}/100
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">{listing.reason}</p>
+                    </a>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           {/* TOP 3 CONTACTS TO WORK TODAY */}
           {priorityContacts.length > 0 && (
             <Card>
@@ -656,6 +851,9 @@ export default function BriefingPage() {
               </CardContent>
             </Card>
           )}
+
+          {/* MARKET PULSE WIDGET */}
+          <MarketInsightWidget />
 
           {/* FOOTER */}
           <Card>

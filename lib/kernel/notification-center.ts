@@ -16,6 +16,11 @@ interface NotificationRow {
   created_at: string
   channel: string | null
   priority: string | null
+  /** Optional — populated when the notification is tied to a specific entity
+   *  (transaction, listing_presentation, document, contact, listing, offer).
+   *  Used by the notifications page to deep-link to the related view. */
+  entity_type: string | null
+  entity_id:   string | null
 }
 
 // ── listNotifications ─────────────────────────────────────────────────────────
@@ -31,7 +36,7 @@ export async function listNotifications(params: {
 
   let query = supabase
     .from("notifications")
-    .select("id, title, body, type, is_read, created_at, channel, priority")
+    .select("id, title, body, type, is_read, created_at, channel, priority, entity_type, entity_id")
     .eq("user_id", userId)
     .order("created_at", { ascending: false })
     .range(offset, offset + limit - 1)

@@ -1,5 +1,6 @@
 "use server";
 
+import { createClient } from "@/lib/supabase/server";
 import { createServiceClient } from "@/lib/supabase/service";
 import { isValidUUID } from "@/lib/validations";
 import { getOfferLifecycleState } from "./track-offer-lifecycle";
@@ -24,7 +25,7 @@ import { createTransactionFromOffer } from "@/lib/transactions";
  */
 export async function convertOfferToTransaction(
   offerId: string,
-  userId: string,
+  _userId: string,  // ignored — derived from session
   closingDate: string,
   contractDate: string,
   contractTerms?: {
@@ -33,15 +34,26 @@ export async function convertOfferToTransaction(
     appraisalDeadline?: string
     financingDeadline?: string
   }
-): Promise<{ 
-  success: boolean; 
-  transaction_id?: string; 
-  error?: string 
+): Promise<{
+  success: boolean;
+  transaction_id?: string;
+  error?: string
 }> {
   try {
-    if (!isValidUUID(offerId) || !isValidUUID(userId)) {
-      return { success: false, error: "Invalid IDs" };
+    if (!isValidUUID(offerId)) {
+      return { success: false, error: "Invalid offer ID" };
     }
+
+    // Auth gate — previously trusted caller-supplied userId
+    const authClient = await createClient();
+    const { data: { user: authUser } } = await authClient.auth.getUser();
+    if (!authUser) return { success: false, error: "Unauthorized" };
+    const { data: callerRow } = await authClient
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", authUser.id)
+      .maybeSingle();
+    if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" };
 
     // 1. Verify compliance gate passed
     try {
@@ -84,6 +96,11 @@ export async function convertOfferToTransaction(
     const brokerageId = offer.brokerage_id;
     if (!brokerageId) {
       return { success: false, error: "Brokerage ID not found for offer" };
+    }
+
+    // Verify offer belongs to caller's brokerage
+    if (brokerageId !== callerRow.brokerage_id) {
+      return { success: false, error: "Forbidden" };
     }
 
     // 5. Get compliance passed timestamp

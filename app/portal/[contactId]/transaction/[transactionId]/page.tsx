@@ -169,7 +169,7 @@ export default function TransactionDashboard() {
       .eq("is_visible_to_client", true)
       .order("created_at", { ascending: false })
       .limit(5)
-      .then(({ data: rows }) => {
+      .then(({ data: rows }: { data: Array<{ id: string; message: string | null; update_type: string | null; created_at: string }> | null }) => {
         if (rows) setTransparencyUpdates(rows)
       })
   }, [transactionId])
@@ -288,7 +288,7 @@ export default function TransactionDashboard() {
                       <div className="flex items-start justify-between">
                         <div className="flex-1">
                           <h4 className="font-semibold">{action.task}</h4>
-                          <p className="text-sm text-muted-foreground mt-1">Due: {new Date(action.due_date).toLocaleDateString()}</p>
+                          <p className="text-sm text-muted-foreground mt-1">Due: {action.due_date ? new Date(action.due_date).toLocaleDateString() : "TBD"}</p>
                           {action.help_url && (
                             <a href={action.help_url} className="text-blue-600 dark:text-blue-400 text-sm mt-2 inline-flex items-center hover:underline">
                               <HelpCircle className="w-4 h-4 mr-1" />

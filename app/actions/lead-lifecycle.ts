@@ -3,6 +3,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { createPortalInviteForContact } from './portal-invites'
 import { syncContactToCRM } from '@/lib/crm/sync'
+import { convertLeadToContact as kernelConvertLeadToContact } from '@/lib/kernel'
 
 export async function listUnassignedLeads(params: {
   brokerageId: string
@@ -54,6 +55,7 @@ export async function listUnassignedLeads(params: {
   return {
     success: true,
     leads: leads || [],
+    total: leads?.length || 0,
     count: leads?.length || 0
   }
 }
@@ -133,39 +135,24 @@ export async function convertLeadToContact(params: {
     throw new Error('Lead must be assigned before conversion')
   }
 
-  const { data: contact, error: createError } = await supabase
-    .from('contacts')
-    .insert({
-      brokerage_id: brokerageId,
-      agent_id: agentId,
-      first_name: lead.first_name,
-      last_name: lead.last_name,
-      email: lead.email,
-      phone: lead.phone,
-      phone_secondary: lead.phone_secondary,
-      contact_type: lead.lead_type === 'motivated_seller' ? 'seller' : 'buyer',
-      contact_persona: determineContactPersona(lead),
-      source: lead.source,
-      created_at: new Date().toISOString()
-    })
-    .select('id')
-    .single()
-
-  if (createError || !contact) {
-    throw new Error(`Failed to create contact: ${createError?.message}`)
+  // Core conversion via the single canonical kernel command: dedup +
+  // contact creation (valid contact_type/persona) + leads.contact_id link +
+  // lifecycle_state='assigned' + CONTACT_LEAD_CONVERTED event. The prior inline
+  // insert here skipped the link/state/event and had no dedup (drift).
+  const result = await kernelConvertLeadToContact({
+    leadId,
+    brokerageId,
+    agentId,                       // agents.id
+    tcpaConsent: true,             // manual agent-initiated conversion asserts consent
+    consentSource: 'manual_lead_conversion',
+  })
+  if (!result.success || !result.contactId) {
+    throw new Error(result.error ?? 'Failed to convert lead to contact')
   }
+  const contact = { id: result.contactId }
 
-  const { error: updateError } = await supabase
-    .from('leads')
-    .update({
-      is_active: false,
-      updated_at: new Date().toISOString()
-    })
-    .eq('id', leadId)
-
-  if (updateError) {
-    throw new Error(`Failed to update lead: ${updateError.message}`)
-  }
+  // Also flip is_active off (the kernel sets lifecycle_state='assigned'/contact_id).
+  await supabase.from('leads').update({ is_active: false, updated_at: new Date().toISOString() }).eq('id', leadId)
 
   // Non-blocking CRM sync — do not fail the conversion if CRM is not configured
   void syncContactToCRM({
@@ -209,11 +196,3 @@ export async function convertLeadToContact(params: {
   }
 }
 
-function determineContactPersona(lead: any): string {
-  if (lead.motivation_type === 'probate') return 'probate'
-  if (lead.motivation_type === 'divorce') return 'divorce'
-  if (lead.motivation_type === 'foreclosure' || lead.motivation_type === 'pre_foreclosure') return 'motivated_seller'
-  if (lead.motivation_type === 'fsbo') return 'fsbo'
-  
-  return 'other'
-}

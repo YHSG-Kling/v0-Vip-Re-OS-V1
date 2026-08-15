@@ -102,10 +102,10 @@ export default async function SettingsControlOSPage() {
   const userStats = {
     totalUsers: users.length,
     activeUsers: users.length, // All fetched users are active (no deleted_at filter)
-    adminCount: users.filter((u) => u.role === "admin").length,
-    brokerCount: users.filter((u) => u.role === "broker").length,
-    agentCount: users.filter((u) => u.role === "agent" || u.user_type === "agent").length,
-    coordinatorCount: users.filter((u) => u.role === "coordinator" || u.user_type === "coordinator").length,
+    adminCount: users.filter((u) => u.user_type === "admin").length,
+    brokerCount: users.filter((u) => u.user_type === "broker").length,
+    agentCount: users.filter((u) => u.user_type === "agent").length,
+    coordinatorCount: users.filter((u) => u.user_type === "coordinator" || u.user_type === "tc").length,
   }
 
   // Calculate setup completeness
@@ -183,6 +183,7 @@ export default async function SettingsControlOSPage() {
           isa_auto_respond_ghost_threshold_days: (globalSettings?.additional_settings as any)?.isa_auto_respond_ghost_threshold_days ?? 14,
           isa_require_admin_approval_before_send: (globalSettings?.additional_settings as any)?.isa_require_admin_approval_before_send ?? true,
           isa_auto_respond_hours: (globalSettings?.additional_settings as any)?.isa_auto_respond_hours ?? "8-20",
+          isa_voice_provider: (globalSettings?.additional_settings as any)?.isa_voice_provider ?? "elevenlabs",
         },
         existing: (globalSettings?.additional_settings as Record<string, unknown>) ?? {},
       }}

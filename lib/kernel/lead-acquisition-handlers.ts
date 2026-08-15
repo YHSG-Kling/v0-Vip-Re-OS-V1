@@ -77,7 +77,7 @@ export async function handleLeadCaptured(params: {
     status: 'pending',
     enrichment_type: 'skip_trace',
     trigger_type: 'lead_captured',
-    created_at: new Date().toISOString(),
+    queued_at: new Date().toISOString(),
   })
 
   const targetAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
@@ -96,6 +96,13 @@ export async function handleLeadCaptured(params: {
     entityType: 'lead',
     entityId: leadId,
   })
+
+  // Wave 38 CORRECTION: lead-stage FB audience push REMOVED. Per Meta's
+  // Custom Audiences policy, recipients must be consented; leads on this
+  // platform are explicitly unconsented (lifecycle_state='unconsented' at
+  // capture time). The audience push happens in handleLeadAssigned (where
+  // the lead has converted to a CONTACT with tcpa_consent verified before
+  // staging).
 }
 
 // ─── HANDLER 2: handleLeadScored ─────────────────────────────────────────────
@@ -311,14 +318,50 @@ export async function handleLeadAssigned(params: {
   }
   const agentUserId: string = agentRow.user_id
 
-  const { data: lead, error: leadError } = await supabase
+  const { data: leadData, error: leadError } = await supabase
     .from('leads')
-    .select('first_name, last_name, email, phone, source')
+    .select(
+      'first_name, last_name, email, phone, source, source_family, source_channel, ' +
+        'source_subtype, motivation_type, motivation_confidence, persona, lead_type, ' +
+        'property_zip_code, budget_min, budget_max, timeline, urgency_level, ' +
+        'lender_status, equity_estimate, qualification_summary, isa_handoff_brief, ' +
+        'lead_score, tcpa_consent, tcpa_consent_at, tcpa_consent_text, tcpa_consent_source'
+    )
     .eq('id', leadId)
     .single()
 
-  if (leadError || !lead) {
+  if (leadError || !leadData) {
     throw new Error(`handleLeadAssigned: lead not found: ${leadId}`)
+  }
+
+  // Cast — newer columns aren't in the generated Supabase types yet
+  const lead = leadData as unknown as {
+    first_name: string | null
+    last_name: string | null
+    email: string | null
+    phone: string | null
+    source: string | null
+    source_family: string | null
+    source_channel: string | null
+    source_subtype: string | null
+    motivation_type: string | null
+    motivation_confidence: number | null
+    persona: string | null
+    lead_type: string | null
+    property_zip_code: string | null
+    budget_min: number | null
+    budget_max: number | null
+    timeline: string | null
+    urgency_level: string | null
+    lender_status: string | null
+    equity_estimate: number | null
+    qualification_summary: string | null
+    isa_handoff_brief: Record<string, unknown> | null
+    lead_score: number | null
+    tcpa_consent: boolean | null
+    tcpa_consent_at: string | null
+    tcpa_consent_text: string | null
+    tcpa_consent_source: string | null
   }
 
   await supabase
@@ -356,8 +399,45 @@ export async function handleLeadAssigned(params: {
     created_at: new Date().toISOString(),
   })
 
-  // Auto-create contact
-  const tcpaConsent = ['web_form', 'qr_scan'].includes(lead.source ?? '')
+  // Auto-create contact.
+  //
+  // Carry forward contact_type from the lead's motivation/lead_type. The ISA
+  // qualified the lead by intent; that intent IS the contact type going
+  // forward. Mapping:
+  //   buyer_motivated  → contact_type = 'buyer'
+  //   seller_motivated → contact_type = 'seller'
+  //   investor_*       → contact_type = 'investor'
+  //   both             → contact_type = 'buyer' (primary), persona='both'
+  //   else             → null (agent fills it in CRM)
+  const motivationToContactType = (m: string | null): string | null => {
+    if (!m) return null
+    const lower = m.toLowerCase()
+    if (lower.includes('investor')) return 'investor'
+    if (lower.includes('seller')) return 'seller'
+    if (lower.includes('both')) return 'buyer'
+    if (lower.includes('buyer')) return 'buyer'
+    return null
+  }
+
+  const contactType =
+    motivationToContactType(lead.motivation_type) ??
+    motivationToContactType(lead.lead_type) ??
+    null
+
+  const contactPersona =
+    (lead.motivation_type ?? '').toLowerCase().includes('both')
+      ? 'both'
+      : lead.persona ?? null
+
+  // TCPA consent flows from the lead. Form/QR submissions explicitly captured
+  // consent; ISA qualification path also persists consent via
+  // handleConsentReceived upstream. Either way, the lead row carries the
+  // authoritative consent flags.
+  const tcpaConsent =
+    lead.tcpa_consent === true ||
+    ['web_form', 'qr_scan'].includes(lead.source ?? '')
+  const tcpaConsentAt = lead.tcpa_consent_at ?? new Date().toISOString()
+
   const { data: contact, error: contactError } = await supabase
     .from('contacts')
     .insert({
@@ -368,8 +448,31 @@ export async function handleLeadAssigned(params: {
       email: lead.email,
       phone: lead.phone,
       source: lead.source,
+      source_family: lead.source_family,
+      source_channel: lead.source_channel,
+      source_subtype: lead.source_subtype,
+      contact_type: contactType,
+      contact_persona: contactPersona,
+      zip_code: lead.property_zip_code,
+      // Carry forward ALL ISA-captured qualification data so the agent
+      // sees the full picture the moment the contact arrives in their CRM.
+      budget_min: lead.budget_min,
+      budget_max: lead.budget_max,
+      motivation_type: lead.motivation_type,
+      motivation_confidence: lead.motivation_confidence,
+      timeline: lead.timeline,
+      urgency_level: lead.urgency_level,
+      lender_status: lead.lender_status,
+      equity_estimate: lead.equity_estimate,
+      qualification_summary: lead.qualification_summary,
+      isa_handoff_brief: lead.isa_handoff_brief,
+      isa_handoff_at: lead.isa_handoff_brief ? new Date().toISOString() : null,
+      isa_qualification_score: lead.lead_score,
       tcpa_consent: tcpaConsent,
-      tcpa_consent_date: tcpaConsent ? new Date().toISOString() : null,
+      tcpa_consent_date: tcpaConsent ? tcpaConsentAt : null,
+      tcpa_consent_at: tcpaConsent ? tcpaConsentAt : null,
+      tcpa_consent_source: lead.tcpa_consent_source ?? null,
+      tcpa_consent_text: lead.tcpa_consent_text ?? null,
       isa_reengage_allowed: true,
       dnc_status: false,
       created_at: new Date().toISOString(),
@@ -412,6 +515,54 @@ export async function handleLeadAssigned(params: {
     entityType: 'lead',
     entityId: leadId,
   })
+
+  // Wave 38 — promote audience membership to the AGENT's FB
+  // retargeting audience too (brokerage row stays). Non-blocking.
+  try {
+    const { onLeadConvertedForAudience } = await import('@/lib/audiences/audience-sync')
+    void onLeadConvertedForAudience({
+      contactId:   contact.id,
+      leadId,
+      brokerageId,
+      agentUserId,
+    }).catch((e) => {
+      console.error('[lead-acquisition] FB audience promote failed:', e)
+    })
+  } catch { /* best-effort */ }
+
+  // ── Post-conversion side-effects ──────────────────────────────────────
+  // 1. Queue scoring + enrichment so the new contact has fresh data.
+  // 2. Send portal invite for buyer/seller/investor contact types so they
+  //    can self-serve from minute one. Cooperating-agent contacts and
+  //    contacts without a real-estate intent skip the portal.
+  try {
+    const { queueContactEnrichmentAndScore } = await import(
+      '@/lib/contact-pipeline/contact-capture'
+    )
+    await queueContactEnrichmentAndScore({
+      brokerageId,
+      contactId: contact.id,
+    })
+  } catch {
+    // best effort — failure should not unwind the assignment
+  }
+
+  if (contactType === 'buyer' || contactType === 'seller' || contactType === 'investor') {
+    try {
+      // System path (server-only, not a client action): createPortalInviteForContact required a
+      // logged-in session and silently failed here in the background assignment context.
+      // createSystemPortalInvite authorizes via the assigned agent's user id; the core
+      // compliance-gates the email on opt-out / unsubscribe.
+      const { createSystemPortalInvite } = await import('@/lib/portal/portal-invite-core')
+      await createSystemPortalInvite({
+        contactId:   contact.id,
+        agentUserId: agentUserId,
+        sendMagicLink: true,
+      })
+    } catch {
+      // best effort — agent can re-send invite from CRM if it failed
+    }
+  }
 }
 
 // ─── HANDLER 7: handleLeadConvertedToContact (manual path) ───────────────────

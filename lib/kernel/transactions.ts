@@ -53,6 +53,42 @@ export interface AcceptOfferConditionallyResult {
   holdReason?:    string
 }
 
+// Database row types (snake_case)
+export interface DbTransaction {
+  id: string
+  brokerage_id: string
+  listing_id: string
+  buyer_contact_id: string
+  seller_contact_id?: string
+  listing_agent_id: string
+  buyer_agent_id?: string
+  purchase_price: number
+  status: string
+  closing_date?: string
+  contract_date: string
+  compliance_passed_at?: string
+  created_at: string
+  updated_at: string
+}
+
+// Application types (camelCase) - what kernel returns
+export interface KernelTransaction {
+  id: string
+  brokerageId: string
+  listingId: string
+  buyerContactId: string
+  sellerContactId?: string
+  listingAgentId: string
+  buyerAgentId?: string
+  purchasePrice: number
+  status: string
+  closingDate?: string
+  contractDate: string
+  compliancePassedAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
 export interface CreateTransactionInput {
   offerId:            string
   brokerageId:        string
@@ -82,33 +118,83 @@ export interface SeedMilestonesInput {
   }
 }
 
-// ─── HELPER: emit lifecycle_events + kernel notification ──────────────────────
+// ─── MAPPING: snake_case → camelCase ──────────────────────────────────────────
 
-async function emitTransactionEvent(params: {
+function mapDbToKernelTransaction(db: DbTransaction): KernelTransaction {
+  return {
+    id: db.id,
+    brokerageId: db.brokerage_id,
+    listingId: db.listing_id,
+    buyerContactId: db.buyer_contact_id,
+    sellerContactId: db.seller_contact_id,
+    listingAgentId: db.listing_agent_id,
+    buyerAgentId: db.buyer_agent_id,
+    purchasePrice: db.purchase_price,
+    status: db.status,
+    closingDate: db.closing_date,
+    contractDate: db.contract_date,
+    compliancePassedAt: db.compliance_passed_at,
+    createdAt: db.created_at,
+    updatedAt: db.updated_at,
+  }
+}
+
+// ─── HELPER: emit lifecycle_events + kernel notification ──────────────────────
+//
+// EXPORTED so action files outside this module (lender-portal-actions,
+// transaction-inspections, multi-persona, etc.) can fire the canonical
+// transaction-stage event without re-implementing contact-context resolution.
+// Same contract as before — inserts lifecycle_events row + calls
+// fanOutKernelEvent with buyer/seller/listing context auto-resolved.
+
+export async function emitTransactionEvent(params: {
   event:       KernelEvent
   brokerageId: string
   entityId:    string
   actorUserId: string
   metadata?:   Record<string, unknown>
+  /** Optional override — defaults to 'transaction'. Pass 'offer' for events
+   *  where entityId is an offer id (so we resolve buyer/seller contacts
+   *  from the offer + listing rather than the transaction). */
+  entityType?: "transaction" | "offer" | "listing"
 }): Promise<void> {
   const supabase = createServiceClient()
   const { event, brokerageId, entityId, actorUserId, metadata } = params
+  const entityType = params.entityType ?? "transaction"
 
   await supabase.from("lifecycle_events").insert({
     brokerage_id:  brokerageId,
-    entity_type:   "transaction",
+    entity_type:   entityType,
     entity_id:     entityId,
     event_type:    event,
     actor_user_id: actorUserId,
     metadata:      metadata ?? {},
-  }).catch(() => {})
+  })
 
-  await processKernelEvent({
+  // ── Enrich the event with contact + transaction + listing context (shared resolver — the SAME
+  //    logic the kernel reactor uses for bare processKernelEvent callers, so there's one resolution
+  //    path, no drift) so fanOutKernelEvent can fire portal updates + sequence enrollment for both
+  //    buyer and seller without each call site re-resolving.
+  const { resolveEventContacts } = await import("./resolve-event-contacts")
+  const { contactId, buyerContactId, sellerContactId, listingId, transactionId } =
+    await resolveEventContacts(supabase, entityType, entityId)
+
+  // Single canonical fan-out (replaces direct processKernelEvent call) —
+  // notifications + sequence auto-enroll + portal update happen here.
+  const { fanOutKernelEvent } = await import("./event-fanout")
+  await fanOutKernelEvent({
     event,
     brokerageId,
-    entityType: "transaction",
+    entityType,
     entityId,
-  }).catch(() => {})
+    contactId,
+    buyerContactId,
+    sellerContactId,
+    transactionId,
+    listingId,
+    agentUserId: actorUserId,
+    metadata,
+  })
 }
 
 // ─── 1. EVALUATE OFFER COMPLIANCE ────────────────────────────────────────────
@@ -192,7 +278,7 @@ export async function acceptOfferConditionally(
       is_blocking:    true,
       checked_at:     new Date().toISOString(),
       created_at:     new Date().toISOString(),
-    }).catch(() => {})
+    })
 
     return {
       success: true,   // not a system error — a business hold
@@ -214,7 +300,6 @@ export async function acceptOfferConditionally(
       status:           "accepted",
       responded_at:     new Date().toISOString(),
       is_winning_offer: true,
-      winning_offer:    true,
       updated_at:       new Date().toISOString(),
     })
     .eq("id", offerId)
@@ -226,7 +311,6 @@ export async function acceptOfferConditionally(
     .from("offers")
     .update({
       is_winning_offer: false,
-      winning_offer:    false,
       updated_at:       new Date().toISOString(),
     })
     .eq("listing_id", listingId)
@@ -235,7 +319,7 @@ export async function acceptOfferConditionally(
   // Step 3: Create transaction
   const { data: offerRow } = await supabase
     .from("offers")
-    .select("contact_id, offer_price, closing_date, inspection_period_days, financing_contingency_days, appraisal_contingency_days, earnest_money, earnest_money_amount")
+    .select("contact_id, offer_price, closing_date, inspection_period_days, financing_contingency_days, appraisal_contingency_days, earnest_money")
     .eq("id", offerId)
     .maybeSingle()
 
@@ -255,14 +339,14 @@ export async function acceptOfferConditionally(
     inspectionPeriodDays:    (offerRow as any).inspection_period_days ?? undefined,
     financingContingencyDays: (offerRow as any).financing_contingency_days ?? undefined,
     appraisalContingencyDays: (offerRow as any).appraisal_contingency_days ?? undefined,
-    earnestMoney:       (offerRow as any).earnest_money ?? (offerRow as any).earnest_money_amount ?? undefined,
+    earnestMoney:       (offerRow as any).earnest_money ?? undefined,
   })
 
   if (!txResult.success) {
     // Hard rollback — revert offer status so it is not stranded
     await supabase
       .from("offers")
-      .update({ status: "submitted", responded_at: null, is_winning_offer: false, winning_offer: false, updated_at: new Date().toISOString() })
+      .update({ status: "submitted", responded_at: null, is_winning_offer: false, updated_at: new Date().toISOString() })
       .eq("id", offerId)
     return { success: false, error: `Transaction creation failed — acceptance rolled back: ${txResult.error}` }
   }
@@ -339,7 +423,7 @@ export async function createTransactionFromCompliantAcceptedOffer(
       is_blocking:    false,
       checked_at:     new Date().toISOString(),
       created_at:     new Date().toISOString(),
-    }).catch(() => {})
+    })
 
     return { success: true, data: { transactionId: result.transactionId } }
   } catch (err) {
@@ -445,34 +529,6 @@ export async function linkOfferToTransaction(params: {
 
   if (error) return { success: false, error: error.message }
   return { success: true, data: { linked: true } }
-}
-
-// ─── 6. EMIT OFFER ACCEPTED EVENT ────────────────────────────────────────────
-/**
- * Emits OFFER_ACCEPTED lifecycle event + kernel notification.
- * Called after offer status is written to 'accepted'.
- */
-export async function emitOfferAcceptedEvent(params: {
-  offerId:      string
-  listingId:    string
-  brokerageId:  string
-  agentId:      string
-  offerPrice:   number
-}): Promise<KernelTxResult<void>> {
-  const { offerId, listingId, brokerageId, agentId, offerPrice } = params
-
-  try {
-    await emitTransactionEvent({
-      event:       KernelEvent.OFFER_ACCEPTED,
-      brokerageId,
-      entityId:    offerId,
-      actorUserId: agentId,
-      metadata:    { listing_id: listingId, offer_price: offerPrice },
-    })
-    return { success: true }
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) }
-  }
 }
 
 // ─── 7. EMIT TRANSACTION INITIATED EVENT ─────────────────────────────────────
@@ -622,7 +678,7 @@ export async function createManualTransaction(
         purchase_price:   input.purchasePrice ?? null,
         contact_id:       input.contactId     ?? null,
         close_date:       input.closeDate     ?? null,
-        deal_name:        input.dealName      ?? null,
+        deal_name:        input.dealName?.trim() || input.propertyAddress.trim(),
         commission_percentage: input.commissionPct ?? null,
         status:           "active",
         stage:            "UNDER_CONTRACT",
@@ -653,7 +709,7 @@ export async function createManualTransaction(
 // ─── loadTransactionWorkspace ─────────────────────────────────────────────────
 
 export async function loadTransactionWorkspace(transactionId: string): Promise<KernelTxResult<{
-  transaction: Record<string, unknown>
+  transaction: KernelTransaction
   milestones:  unknown[]
   documents:   unknown[]
   participants: unknown[]
@@ -664,7 +720,7 @@ export async function loadTransactionWorkspace(transactionId: string): Promise<K
     const supabase = await createServiceClient()
     const [txResult, msResult, docResult, ptResult, clResult, commResult] = await Promise.all([
       supabase.from("transactions").select("*").eq("id", transactionId).maybeSingle(),
-      supabase.from("transaction_milestones").select("*").eq("transaction_id", transactionId).order("milestone_date", { ascending: true, nullsFirst: false }),
+      supabase.from("transaction_milestones").select("*").eq("transaction_id", transactionId).order("target_date", { ascending: true, nullsFirst: false }),
       supabase.from("transaction_documents").select("*").eq("transaction_id", transactionId),
       supabase.from("transaction_participants").select("*").eq("transaction_id", transactionId),
       supabase.from("transaction_compliance_log").select("*").eq("transaction_id", transactionId).order("created_at", { ascending: false }),
@@ -674,7 +730,7 @@ export async function loadTransactionWorkspace(transactionId: string): Promise<K
     return {
       success: true,
       data: {
-        transaction:    txResult.data as Record<string, unknown>,
+        transaction:    mapDbToKernelTransaction(txResult.data as DbTransaction),
         milestones:     msResult.data  ?? [],
         documents:      docResult.data ?? [],
         participants:   ptResult.data  ?? [],
@@ -923,6 +979,15 @@ export async function closeTransactionCommand(params: {
   try {
     const supabase = await createServiceClient()
     const today = new Date().toISOString().slice(0, 10)
+    const nowIso = new Date().toISOString()
+
+    // Capture related entities BEFORE the close so we can propagate state
+    const { data: txBefore } = await supabase
+      .from("transactions")
+      .select("listing_id, buyer_contact_id, seller_contact_id, contact_id")
+      .eq("id", params.transactionId)
+      .eq("brokerage_id", params.brokerageId)
+      .maybeSingle()
 
     const { error } = await supabase
       .from("transactions")
@@ -930,14 +995,52 @@ export async function closeTransactionCommand(params: {
         status:     "closed",
         stage:      "CLOSED",
         close_date: today,
-        updated_at: new Date().toISOString(),
+        updated_at: nowIso,
       })
       .eq("id", params.transactionId)
       .eq("brokerage_id", params.brokerageId)
 
     if (error) return { success: false, error: error.message }
 
-    // Timeline + lifecycle_event
+    // Timeline + lifecycle_event + per-contact activity rows
+    // (activity rows are what the CRM contact Activity tab reads — the
+    // transaction_timeline rows alone never surface there.)
+    const activityWrites: any[] = []
+    if (txBefore?.buyer_contact_id) {
+      activityWrites.push(
+        supabase.from("activities").insert({
+          brokerage_id:   params.brokerageId,
+          agent_id:       params.agentId,
+          contact_id:     txBefore.buyer_contact_id,
+          transaction_id: params.transactionId,
+          activity_type:  "transaction_closed",
+          title:          "Transaction Closed",
+          description:    params.reason ? `Transaction closed: ${params.reason}` : "Transaction closed — congratulations!",
+          status:         "completed",
+          priority:       "high",
+          entity_type:    "transaction",
+          created_at:     nowIso,
+        })
+      )
+    }
+    if (txBefore?.seller_contact_id && txBefore.seller_contact_id !== txBefore.buyer_contact_id) {
+      activityWrites.push(
+        supabase.from("activities").insert({
+          brokerage_id:   params.brokerageId,
+          agent_id:       params.agentId,
+          contact_id:     txBefore.seller_contact_id,
+          transaction_id: params.transactionId,
+          activity_type:  "transaction_closed",
+          title:          "Transaction Closed",
+          description:    params.reason ? `Transaction closed: ${params.reason}` : "Transaction closed — congratulations!",
+          status:         "completed",
+          priority:       "high",
+          entity_type:    "transaction",
+          created_at:     nowIso,
+        })
+      )
+    }
+
     await Promise.all([
       supabase.from("transaction_timeline").insert({
         transaction_id: params.transactionId,
@@ -945,17 +1048,177 @@ export async function closeTransactionCommand(params: {
         activity_type:  "transaction_closed",
         description:    params.reason ? `Transaction closed: ${params.reason}` : "Transaction closed",
         performed_by:   params.agentId,
-        created_at:     new Date().toISOString(),
+        created_at:     nowIso,
       }),
       supabase.from("lifecycle_events").insert({
-        brokerage_id: params.brokerageId,
-        entity_type:  "transaction",
-        entity_id:    params.transactionId,
-        event_type:   "TRANSACTION_CLOSED",
+        brokerage_id:  params.brokerageId,
+        entity_type:   "transaction",
+        entity_id:     params.transactionId,
+        event_type:    KernelEvent.TRANSACTION_CLOSED,
         actor_user_id: params.agentId,
-        created_at:   new Date().toISOString(),
+        created_at:    nowIso,
       }),
+      ...activityWrites,
     ])
+
+    // Kernel fan-out — fires staff notifications, auto-enrolls both
+    // contacts (buyer + seller) into any campaign_sequence with
+    // trigger_event='transaction_closed' (e.g. the seeded "Lifetime
+    // onboard" drip), and writes transparency_updates per contact so
+    // the seller AND buyer portals show "Closed!" + "Welcome to your
+    // lifetime portal" cards immediately.
+    try {
+      const { fanOutKernelEvent } = await import("./event-fanout")
+      await fanOutKernelEvent({
+        event:           KernelEvent.TRANSACTION_CLOSED,
+        brokerageId:     params.brokerageId,
+        entityType:      "transaction",
+        entityId:        params.transactionId,
+        transactionId:   params.transactionId,
+        listingId:       txBefore?.listing_id ?? undefined,
+        buyerContactId:  txBefore?.buyer_contact_id ?? undefined,
+        sellerContactId: txBefore?.seller_contact_id ?? undefined,
+        agentUserId:     params.agentId,
+        metadata:        { reason: params.reason ?? null, close_date: today },
+      })
+    } catch (e) {
+      console.error("[closeTransactionCommand] fanOutKernelEvent failed", e)
+    }
+
+    // ── Propagate close to related entities ────────────────────────────────
+    // 1. Listing → CLOSED on its lifecycle stage machine + status='closed'
+    //    (closes the loop: prior to this fix the listing stayed UNDER_CONTRACT
+    //     forever even after the transaction closed)
+    if (txBefore?.listing_id) {
+      try {
+        const { transitionLifecycle } = await import("@/lib/kernel/lifecycle")
+        await transitionLifecycle({
+          brokerageId: params.brokerageId,
+          entityType:  "listing_stage_machine",
+          entityId:    txBefore.listing_id,
+          fromState:   "UNDER_CONTRACT",
+          toState:     "CLOSED",
+          actorUserId: params.agentId,
+          eventType:   "TRANSACTION_CLOSED",
+          metadata:    { transaction_id: params.transactionId },
+        })
+      } catch {}
+      await supabase
+        .from("listings")
+        .update({ status: "sold", updated_at: nowIso })
+        .eq("id", txBefore.listing_id)
+        .then(() => null, () => null)
+    }
+
+    // 2. Buyer + seller contacts → lifetime_customer
+    //    (Lifetime Customers retention surface depends on this conversion;
+    //     prior to this fix only the listing-close path converted the seller,
+    //     and the transaction-close path converted neither party.)
+    const lifetimeContactIds: string[] = []
+    if (txBefore?.buyer_contact_id)  lifetimeContactIds.push(txBefore.buyer_contact_id)
+    if (txBefore?.seller_contact_id) lifetimeContactIds.push(txBefore.seller_contact_id)
+    if (lifetimeContactIds.length > 0) {
+      await supabase
+        .from("contacts")
+        .update({ contact_type: "lifetime_customer", updated_at: nowIso })
+        .in("id", lifetimeContactIds)
+        .eq("brokerage_id", params.brokerageId)
+        .then(() => null, () => null)
+    }
+
+    // 3. Commission records — recalculate + upsert transaction_commissions rows.
+    //    Prior to this fix, a transaction could close with zero commission
+    //    records, which meant the agent had no payable to track.
+    try {
+      await recalculateCommissionStateCommand({
+        transactionId: params.transactionId,
+        brokerageId:   params.brokerageId,
+        agentId:       params.agentId,
+      })
+    } catch {}
+
+    // 4. Lifetime-customer touchpoint schedule — both buyer and seller now
+    //    enter the post-close nurture sequence (3-day, 30-day, 6-month,
+    //    1-year anniversary, 18-month referral ask). Previously this
+    //    function was defined but never called from anywhere — orphaned.
+    //    Resolve agents.id from agent user once so we can attribute the
+    //    touchpoints correctly.
+    try {
+      const { data: agentRow } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("user_id", params.agentId)
+        .maybeSingle()
+      const agentId = agentRow?.id ?? null
+      if (agentId && lifetimeContactIds.length > 0) {
+        const closeDate = new Date(today)
+        const schedule = [
+          { type: "post_close_3_day",     daysAfter: 3,        channel: "video" },
+          { type: "post_close_30_day",    daysAfter: 30,       channel: "sms"   },
+          { type: "post_close_6_month",   daysAfter: 180,      channel: "email" },
+          { type: "home_anniversary",     daysAfter: 365,      channel: "video" },
+          { type: "referral_request",     daysAfter: 18 * 30,  channel: "sms"   },
+        ]
+        const rows = lifetimeContactIds.flatMap(contactId =>
+          schedule.map(s => {
+            const d = new Date(closeDate)
+            d.setDate(d.getDate() + s.daysAfter)
+            return {
+              brokerage_id:           params.brokerageId,
+              contact_id:             contactId,
+              agent_id:               agentId,
+              touchpoint_type:        s.type,
+              channel:                s.channel,
+              scheduled_date:         d.toISOString().split("T")[0],
+              status:                 "scheduled",
+              related_transaction_id: params.transactionId,
+            }
+          })
+        )
+        await supabase.from("lifetime_customer_touchpoints").insert(rows)
+          .then(() => null, () => null)
+      }
+    } catch {}
+
+    // 5. Closing-gift task for the agent — surfaces in their inbox as a
+    //    high-priority next-action so they don't forget to send a gift.
+    //    Recommendation engine (aiRecommendGift) runs when the agent opens
+    //    the task; we just need to plant the prompt here.
+    try {
+      for (const contactId of lifetimeContactIds) {
+        await supabase.from("activities").insert({
+          brokerage_id:   params.brokerageId,
+          agent_id:       params.agentId,
+          contact_id:     contactId,
+          transaction_id: params.transactionId,
+          activity_type:  "closing_gift_due",
+          title:          "Send closing gift",
+          description:    "Pick a gift from the marketplace or generate an AI recommendation. Suggested timing: within 7 days of close.",
+          status:         "pending",
+          priority:       "high",
+          entity_type:    "contact",
+          scheduled_at:   new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+          created_at:     nowIso,
+        }).then(() => null, () => null)
+      }
+    } catch {}
+
+    // Schedule review request post-close (J8.1). review_requests is contact-keyed
+    // (no transaction_id/send_after columns); link via the deal's contact.
+    try {
+      const reviewContactId = txBefore?.buyer_contact_id ?? txBefore?.contact_id ?? null
+      if (reviewContactId) {
+        await supabase.from("review_requests").insert({
+          brokerage_id: params.brokerageId,
+          agent_id:     params.agentId,
+          contact_id:   reviewContactId,
+          status:       "scheduled",
+          created_at:   nowIso,
+        }).then(() => null, () => null)
+      }
+    } catch {
+      // Non-critical — close success is not dependent on review scheduling
+    }
 
     return { success: true }
   } catch (e: any) {

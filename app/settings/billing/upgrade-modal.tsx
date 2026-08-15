@@ -59,7 +59,7 @@ export function UpgradeModal({
       selectedTierId,
       isAnnual ? "annual" : "monthly"
     )
-    return clientSecret
+    return clientSecret ?? ""
   }, [brokerageId, selectedTierId, isAnnual])
 
   const handleCloseCheckout = () => {

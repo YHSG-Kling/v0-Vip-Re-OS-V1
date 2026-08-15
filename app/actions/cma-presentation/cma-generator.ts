@@ -42,28 +42,40 @@ export interface CMAResult {
 /**
  * MANDATORY CMA DISCLAIMER (REQUIRED IN EVERY CMA)
  */
-export const CMA_DISCLAIMER = `This Comparative Market Analysis (CMA) is provided for informational purposes only and is not an appraisal. An appraisal can only be performed by a licensed appraiser.`
+// CMA_DISCLAIMER moved to @/lib/cma/disclaimer (const exports illegal in "use server")
+import { CMA_DISCLAIMER } from "@/lib/cma/disclaimer"
 
 /**
- * Generate CMA for seller
+ * Generate CMA for seller (presentation-flow variant).
+ *
+ * Now delegates the actual valuation to the canonical `generateAICMA` in
+ * `@/app/actions/ai-cma`. This function only handles the seller-presentation
+ * choreography:
+ *   1. Load listing + contact (for context)
+ *   2. Emit `seller.cma.started` activity
+ *   3. Call `generateAICMA` with the listing's property data — that fn writes
+ *      to `cma_reports` and runs the canonical comp + AI valuation pipeline
+ *   4. Emit `seller.cma.completed` (or `seller.cma.failed`) activity referencing
+ *      the resulting cma_reports.id
+ *
+ * No more parallel comp-fetching, no more parallel quality scoring, no more
+ * dual writes. One canonical CMA generator (generateAICMA) feeds both direct
+ * agent CMAs AND the seller presentation pipeline.
  */
 export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult> {
   try {
-    // Validation
-    if (!isValidUUID(input.listingId)) {
-      return { success: false, error: "Invalid listing ID" }
-    }
-    if (!isValidUUID(input.contactId)) {
-      return { success: false, error: "Invalid contact ID" }
-    }
-    if (!isValidUUID(input.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
-    }
+    if (!isValidUUID(input.listingId)) return { success: false, error: "Invalid listing ID" }
+    if (!isValidUUID(input.contactId)) return { success: false, error: "Invalid contact ID" }
+    if (!isValidUUID(input.agentId)) return { success: false, error: "Invalid agent ID" }
 
     const supabase = await createClient()
 
     // Resolve brokerage_id from agent
-    const { data: agentCMA } = await supabase.from("users").select("brokerage_id").eq("id", input.agentId).maybeSingle()
+    const { data: agentCMA } = await supabase
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", input.agentId)
+      .maybeSingle()
 
     // Emit start event
     await supabase.from("activities").insert({
@@ -73,12 +85,16 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
       activity_type: "seller.cma.started",
       title: "CMA generation started",
       description: `CMA started for listing ${input.listingId}`,
-      notes: JSON.stringify({ radius_miles: input.radiusMiles || 2.0, max_age_days: input.maxAgeDays || 90, min_comparables: input.minComparables || 5 }),
+      notes: JSON.stringify({
+        radius_miles: input.radiusMiles || 2.0,
+        max_age_days: input.maxAgeDays || 90,
+        min_comparables: input.minComparables || 5,
+      }),
       status: "pending",
       entity_type: "contact",
     })
 
-    // Get listing data
+    // Load listing for property data
     const { data: listing, error: listingError } = await supabase
       .from("listings")
       .select("*")
@@ -90,275 +106,81 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
       return { success: false, error: "Listing not found" }
     }
 
-    // Get contact data for personalization
-    const { data: contact } = await supabase
-      .from("contacts")
-      .select("*")
-      .eq("id", input.contactId)
-      .single()
-
-    // Fetch comparables (simulated - in production this would call MLS/IDX API)
-    const comparables = await fetchComparables({
-      address: listing.address || input.targetAddress || "",
-      city: listing.city || "",
-      state: listing.state || "",
-      zip: listing.zip || "",
-      propertyType: input.propertyType || listing.property_type || "Single Family",
+    // ── Delegate to canonical AI CMA generator ──────────────────────────
+    // generateAICMA owns the comp fetch, AI valuation, and write to
+    // cma_reports. Map listing fields → CMAParams shape.
+    const { generateAICMA } = await import("@/app/actions/ai-cma")
+    const aiResult = await generateAICMA({
+      agentId: input.agentId,
+      propertyAddress: input.targetAddress || listing.address || "",
+      propertyCity: listing.city || "",
+      propertyState: listing.state || "",
+      propertyZip: listing.zip || "",
+      propertyType: (input.propertyType ?? listing.property_type ?? "single_family") as
+        | "single_family" | "condo" | "townhouse" | "multi_family" | "land",
       bedrooms: input.bedrooms || listing.bedrooms || 0,
       bathrooms: input.bathrooms || listing.bathrooms || 0,
       squareFeet: input.squareFeet || listing.square_feet || 0,
-      radiusMiles: input.radiusMiles || 2.0,
-      maxAgeDays: input.maxAgeDays || 90,
-      minComparables: input.minComparables || 5
-    })
+      lotSize: listing.lot_size,
+      yearBuilt: listing.year_built,
+      features: listing.features,
+      condition: listing.condition,
+      listingType: "seller",
+      contactId: input.contactId,
+      listingId: input.listingId,
+    } as Parameters<typeof generateAICMA>[0])
 
-    // Quality check
-    if (comparables.length < (input.minComparables || 5)) {
-      const warnings = [`Only found ${comparables.length} comparables, minimum ${input.minComparables || 5} recommended`]
-      await emitCMAFailed(
-        input.listingId,
-        input.contactId,
-        input.agentId,
-        `Insufficient comparables: ${comparables.length}`
-      )
-      return { 
-        success: false, 
-        error: "Insufficient comparables found",
-        warnings,
-        comparableCount: comparables.length
-      }
+    // Type guard — generateAICMA returns { success, cmaReportId? } or { success: false, error }
+    const aiOk = (aiResult as { success: boolean }).success
+    if (!aiOk) {
+      const err = (aiResult as { error?: string }).error ?? "AI CMA generation failed"
+      await emitCMAFailed(input.listingId, input.contactId, input.agentId, err)
+      return { success: false, error: err }
     }
 
-    // Calculate quality metrics
-    const oldestComparableMonths = Math.max(
-      ...comparables.map(c => 
-        Math.floor((Date.now() - new Date(c.soldDate).getTime()) / (1000 * 60 * 60 * 24 * 30))
-      )
-    )
-    
-    const maxRadiusMiles = Math.max(...comparables.map(c => c.distanceMiles))
+    const cmaReportId =
+      (aiResult as { cmaReportId?: string; reportId?: string }).cmaReportId ??
+      (aiResult as { reportId?: string }).reportId ??
+      crypto.randomUUID()
+    const comparableCount =
+      (aiResult as { comparableCount?: number }).comparableCount ?? 0
+    const qualityScore =
+      (aiResult as { qualityScore?: number }).qualityScore ?? 70
 
-    // Generate CMA content with seller personalization
-    const cmaContent = generateCMAContent({
-      listing,
-      contact,
-      comparables,
-      disclaimer: CMA_DISCLAIMER
-    })
-
-    // Calculate quality score
-    const qualityScore = calculateQualityScore({
-      comparableCount: comparables.length,
-      oldestComparableMonths,
-      maxRadiusMiles,
-      minComparables: input.minComparables || 5
-    })
-
-    // Store CMA (using activities as temporary storage per constraints)
-    const cmaId = crypto.randomUUID()
-
-    // Emit completion event with quality metadata
+    // Emit completion event referencing the cma_reports row
     await supabase.from("activities").insert({
       brokerage_id: agentCMA?.brokerage_id ?? null,
       agent_id: input.agentId,
       contact_id: input.contactId,
       activity_type: "seller.cma.completed",
       title: "CMA generation completed",
-      description: `CMA completed: ${comparables.length} comparables, quality score ${qualityScore}`,
-      notes: JSON.stringify({ cma_id: cmaId, comparable_count: comparables.length, oldest_comparable_months: oldestComparableMonths, max_radius_miles: maxRadiusMiles, quality_score: qualityScore, disclaimer_included: true }),
+      description: `CMA completed: ${comparableCount} comparables, quality score ${qualityScore}`,
+      notes: JSON.stringify({
+        cma_report_id: cmaReportId,
+        comparable_count: comparableCount,
+        quality_score: qualityScore,
+        disclaimer_included: true,
+      }),
       status: "completed",
       entity_type: "contact",
     })
 
     return {
       success: true,
-      cmaId,
+      cmaId: cmaReportId,
       qualityScore,
-      comparableCount: comparables.length,
-      warnings: []
+      comparableCount,
+      warnings: [],
     }
   } catch (error: any) {
     console.error("[System 5.3] CMA generation error:", error)
     return {
       success: false,
-      error: error.message || "Failed to generate CMA"
+      error: error.message || "Failed to generate CMA",
     }
   }
 }
 
-/**
- * Fetch comparable properties — priority chain:
- *   1. BatchData /comparable-sales (real MLS comps via API key)
- *   2. HouseCanary /property/sales_history (if BatchData unconfigured)
- *   3. Empty array — amber banner in UI instructs agent to review manually
- */
-async function fetchComparables(params: {
-  address: string
-  city: string
-  state: string
-  zip: string
-  propertyType: string
-  bedrooms: number
-  bathrooms: number
-  squareFeet: number
-  radiusMiles: number
-  maxAgeDays: number
-  minComparables: number
-}) {
-  const { fetchComparableSales } = await import("@/lib/external/batchdata-client")
-  const { fetchHouseCanaryComps } = await import("@/lib/external/housecanary-client")
-
-  // ── 1. BatchData ─────────────────────────────────────────────────────────
-  const bdComps = await fetchComparableSales({
-    address: params.address,
-    city: params.city,
-    state: params.state,
-    zip: params.zip,
-    bedrooms: params.bedrooms,
-    bathrooms: params.bathrooms,
-    squareFeet: params.squareFeet,
-    radiusMiles: params.radiusMiles,
-    maxAgeDays: params.maxAgeDays,
-    limit: params.minComparables,
-  })
-
-  if (bdComps.length > 0) {
-    return bdComps.map((c) => ({
-      address: c.address,
-      city: c.city,
-      state: c.state,
-      zip: c.zip,
-      bedrooms: c.bedrooms,
-      bathrooms: c.bathrooms,
-      squareFeet: c.square_feet,
-      soldPrice: c.sale_price,
-      listPrice: c.list_price,
-      soldDate: c.sale_date,
-      daysOnMarket: c.days_on_market,
-      pricePerSqFt: c.price_per_sqft,
-      distanceMiles: c.distance_miles,
-      yearBuilt: c.year_built,
-      source: "BatchData",
-    }))
-  }
-
-  // ── 2. HouseCanary ───────────────────────────────────────────────────────
-  const hcComps = await fetchHouseCanaryComps({
-    address: params.address,
-    zipCode: params.zip,
-    bedrooms: params.bedrooms,
-    squareFeet: params.squareFeet,
-    maxAgeDays: params.maxAgeDays,
-    limit: params.minComparables,
-  })
-
-  if (hcComps.length > 0) {
-    return hcComps.map((c) => ({
-      address: c.address,
-      city: c.city || params.city,
-      state: c.state || params.state,
-      zip: c.zip,
-      bedrooms: c.bedrooms,
-      bathrooms: c.bathrooms,
-      squareFeet: c.square_feet,
-      soldPrice: c.sale_price,
-      listPrice: c.list_price,
-      soldDate: c.sale_date,
-      daysOnMarket: c.days_on_market,
-      pricePerSqFt: c.price_per_sqft,
-      distanceMiles: c.distance_miles,
-      yearBuilt: c.year_built,
-      source: "HouseCanary",
-    }))
-  }
-
-  // ── 3. No API configured — return empty, amber banner shows in UI ────────
-  return []
-}
-
-/**
- * Generate seller-personalized CMA content
- */
-function generateCMAContent(params: {
-  listing: any
-  contact: any
-  comparables: any[]
-  disclaimer: string
-}) {
-  const { listing, contact, comparables, disclaimer } = params
-  
-  const avgPrice = comparables.reduce((sum, c) => sum + c.soldPrice, 0) / comparables.length
-  const pricePerSqFt = avgPrice / (listing.square_feet || 1)
-  
-  const contactName = contact?.first_name ? `${contact.first_name} ${contact.last_name || ''}`.trim() : "Valued Client"
-  
-  return `
-# Comparative Market Analysis
-## Prepared for ${contactName}
-### Property: ${listing.address}, ${listing.city}, ${listing.state} ${listing.zip}
-
----
-
-## Market Analysis Summary
-
-Based on ${comparables.length} comparable properties sold within the last 90 days in your area:
-
-**Average Sold Price:** $${Math.round(avgPrice).toLocaleString()}
-**Price Per Square Foot:** $${Math.round(pricePerSqFt)}
-**Recommended List Price Range:** $${Math.round(avgPrice * 0.95).toLocaleString()} - $${Math.round(avgPrice * 1.05).toLocaleString()}
-
-## Comparable Properties
-
-${comparables.map((c, i) => `
-### Comparable ${i + 1}
-- **Address:** ${c.address}, ${c.city}, ${c.state}
-- **Sold Price:** $${c.soldPrice.toLocaleString()}
-- **Sold Date:** ${new Date(c.soldDate).toLocaleDateString()}
-- **Bedrooms:** ${c.bedrooms} | **Bathrooms:** ${c.bathrooms}
-- **Square Feet:** ${Math.round(c.squareFeet).toLocaleString()}
-- **Distance:** ${c.distanceMiles.toFixed(2)} miles
-`).join('\n')}
-
----
-
-## Important Disclaimer
-
-${disclaimer}
-
----
-
-*This CMA was prepared by your real estate professional to help you make an informed decision about listing your property. Market conditions may change, and this analysis reflects data as of ${new Date().toLocaleDateString()}.*
-`.trim()
-}
-
-/**
- * Calculate CMA quality score (0-100)
- */
-function calculateQualityScore(params: {
-  comparableCount: number
-  oldestComparableMonths: number
-  maxRadiusMiles: number
-  minComparables: number
-}) {
-  let score = 100
-  
-  // Penalize if below minimum comparables
-  if (params.comparableCount < params.minComparables) {
-    score -= (params.minComparables - params.comparableCount) * 10
-  }
-  
-  // Penalize if comparables are too old (> 6 months)
-  if (params.oldestComparableMonths > 6) {
-    score -= (params.oldestComparableMonths - 6) * 5
-  }
-  
-  // Penalize if radius is too wide (> 2 miles)
-  if (params.maxRadiusMiles > 2.0) {
-    score -= (params.maxRadiusMiles - 2.0) * 10
-  }
-  
-  return Math.max(0, Math.min(100, score))
-}
 
 /**
  * Emit CMA failed event

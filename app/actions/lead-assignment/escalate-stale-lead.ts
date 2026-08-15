@@ -1,5 +1,6 @@
 "use server"
 
+import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { detectStaleLeads } from "@/lib/lead-assignment"
 
@@ -9,14 +10,36 @@ export interface EscalationResult {
   message: string
 }
 
+const ESCALATE_ROLES = ["broker", "broker_owner", "broker_admin", "admin", "super_admin", "superadmin"]
+
 /**
- * Escalates stale leads to admins/brokers
+ * Escalates stale leads to admins/brokers.
  * - Detects stale leads automatically
  * - Logs escalation event
  * - Alerts admins/brokers (informational only, no auto-assignment)
  * - Prevents duplicate escalations within 7 days
+ *
+ * Previously trusted a caller-supplied brokerageId with no auth — any
+ * signed-in user could force-escalate another brokerage's leads.
+ * Now: admin role required; brokerage derived from session.
  */
-export async function escalateStaleLeads(brokerageId: string): Promise<EscalationResult> {
+export async function escalateStaleLeads(_brokerageId?: string): Promise<EscalationResult> {
+  const authClient = await createClient()
+  const { data: { user } } = await authClient.auth.getUser()
+  if (!user) return { success: false, escalatedCount: 0, message: "Unauthorized" }
+  const { data: callerRow } = await authClient
+    .from("users")
+    .select("brokerage_id, user_type")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) {
+    return { success: false, escalatedCount: 0, message: "Unauthorized" }
+  }
+  if (!ESCALATE_ROLES.includes(callerRow.user_type ?? "")) {
+    return { success: false, escalatedCount: 0, message: "Only brokers and admins can escalate stale leads" }
+  }
+  const brokerageId = callerRow.brokerage_id
+
   const supabase = createServiceClient()
 
   try {

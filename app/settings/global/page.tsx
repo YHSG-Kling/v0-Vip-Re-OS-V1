@@ -1,7 +1,14 @@
 "use client"
 
 import React, { useEffect, useState } from "react"
-import { fetchGlobalSettings, updateSettings } from "@/app/actions/settings/global-settings-actions"
+import {
+  fetchGlobalSettings,
+  updateSettings,
+  fetchWidgetScope,
+  updateWidgetScope,
+  fetchWidgetAgentsAndTeams,
+  type WidgetScope,
+} from "@/app/actions/settings/global-settings-actions"
 import type { GlobalSettingsRow } from "@/lib/kernel"
 import { SettingsCard } from "@/app/components/settings/SettingsCard"
 
@@ -31,11 +38,34 @@ export default function GlobalSettingsPage() {
   const [error, setError] = useState("")
   const [success, setSuccess] = useState("")
 
+  // Widget scope config
+  const [widgetScope, setWidgetScope] = useState<WidgetScope>({
+    owner_type: "brokerage",
+    owner_id: "",
+    display_name: "",
+  })
+  const [widgetAgents, setWidgetAgents] = useState<Array<{ id: string; name: string }>>([])
+  const [widgetTeams, setWidgetTeams] = useState<Array<{ id: string; name: string }>>([])
+  const [widgetSaving, setWidgetSaving] = useState(false)
+  const [widgetSuccess, setWidgetSuccess] = useState("")
+  const [widgetError, setWidgetError] = useState("")
+
   useEffect(() => {
     const load = async () => {
       try {
-        const data = await fetchGlobalSettings()
+        const [data, scope, { agents, teams }] = await Promise.all([
+          fetchGlobalSettings(),
+          fetchWidgetScope(),
+          fetchWidgetAgentsAndTeams(),
+        ])
         setSettings(data)
+        if (scope) setWidgetScope(scope)
+        else {
+          // Default owner_id to brokerage_id once available
+          setWidgetScope((prev) => ({ ...prev, owner_id: (data as any).brokerage_id ?? "" }))
+        }
+        setWidgetAgents(agents)
+        setWidgetTeams(teams)
       } catch {
         setError("Failed to load settings")
       } finally {
@@ -75,6 +105,24 @@ export default function GlobalSettingsPage() {
       setError("Failed to save settings")
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleWidgetSave = async () => {
+    if (!widgetScope.owner_id || !widgetScope.display_name) {
+      setWidgetError("Owner ID and Display Name are required.")
+      return
+    }
+    setWidgetSaving(true)
+    setWidgetError("")
+    setWidgetSuccess("")
+    try {
+      await updateWidgetScope(widgetScope)
+      setWidgetSuccess("Widget settings saved.")
+    } catch {
+      setWidgetError("Failed to save widget settings.")
+    } finally {
+      setWidgetSaving(false)
     }
   }
 
@@ -219,6 +267,121 @@ export default function GlobalSettingsPage() {
         >
           {saving ? "Saving..." : "Save Settings"}
         </button>
+      </div>
+
+      <hr className="my-6 border-gray-200" />
+
+      <div className="space-y-4">
+        <h3 className="text-sm font-semibold text-gray-800">Chat Widget Setup</h3>
+        <p className="text-xs text-gray-500">Configure who the embedded website chat widget represents and generate the embed code.</p>
+
+        {widgetError && (
+          <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded-lg text-xs">{widgetError}</div>
+        )}
+        {widgetSuccess && (
+          <div className="bg-green-50 border border-green-200 text-green-700 px-3 py-2 rounded-lg text-xs">{widgetSuccess}</div>
+        )}
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Who does this chat represent?</label>
+          <div className="space-y-1">
+            {(["brokerage", "team", "agent"] as const).map((t) => (
+              <label key={t} className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="widget_owner_type"
+                  value={t}
+                  checked={widgetScope.owner_type === t}
+                  onChange={() => {
+                    const firstMatch = t === "agent"
+                      ? widgetAgents[0]?.id ?? ""
+                      : t === "team"
+                      ? widgetTeams[0]?.id ?? ""
+                      : (settings as any)?.brokerage_id ?? ""
+                    setWidgetScope((prev) => ({ ...prev, owner_type: t, owner_id: firstMatch }))
+                  }}
+                  className="w-4 h-4"
+                />
+                <span className="text-sm text-gray-700 capitalize">{t === "brokerage" ? "Our Brokerage" : t === "team" ? "A Team" : "A Specific Agent"}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {widgetScope.owner_type === "agent" && (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Agent</label>
+            <select
+              value={widgetScope.owner_id}
+              onChange={(e) => {
+                const agent = widgetAgents.find((a) => a.id === e.target.value)
+                setWidgetScope((prev) => ({ ...prev, owner_id: e.target.value, display_name: agent?.name ?? prev.display_name }))
+              }}
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+            >
+              <option value="">Select an agent…</option>
+              {widgetAgents.map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {widgetScope.owner_type === "team" && (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Team</label>
+            <select
+              value={widgetScope.owner_id}
+              onChange={(e) => {
+                const team = widgetTeams.find((t) => t.id === e.target.value)
+                setWidgetScope((prev) => ({ ...prev, owner_id: e.target.value, display_name: team?.name ?? prev.display_name }))
+              }}
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+            >
+              <option value="">Select a team…</option>
+              {widgetTeams.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Display Name</label>
+          <input
+            type="text"
+            value={widgetScope.display_name}
+            onChange={(e) => setWidgetScope((prev) => ({ ...prev, display_name: e.target.value }))}
+            placeholder="e.g. Keller Williams Austin or Sarah Miller"
+            className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+          />
+        </div>
+
+        <button
+          onClick={handleWidgetSave}
+          disabled={widgetSaving}
+          className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white text-sm font-medium py-2 px-4 rounded-lg"
+        >
+          {widgetSaving ? "Saving..." : "Save Widget Settings"}
+        </button>
+
+        {widgetScope.owner_id && widgetScope.display_name && (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Embed Code</label>
+            <pre className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs text-gray-700 overflow-x-auto whitespace-pre-wrap break-all">
+{`<script>
+  (function(w,d,s,o){
+    var j=d.createElement(s);j.async=true;
+    j.src='${typeof window !== "undefined" ? window.location.origin : ""}/widget/loader.js';
+    j.setAttribute('data-scope','${widgetScope.owner_type}');
+    j.setAttribute('data-id','${widgetScope.owner_id}');
+    j.setAttribute('data-brokerage','${(settings as any)?.brokerage_id ?? ""}');
+    d.head.appendChild(j);
+  })(window,document,'script');
+</script>`}
+            </pre>
+          </div>
+        )}
       </div>
     </SettingsCard>
   )

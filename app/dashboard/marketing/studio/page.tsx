@@ -10,7 +10,26 @@ export const metadata = {
   description: "Unified marketing command center for campaigns, assets, and content scheduling",
 }
 
-export default async function MarketingStudioPage() {
+const VALID_TABS = [
+  "ad-os", "overview", "campaigns", "assets", "calendar",
+  "newsletters", "registry", "qr", "mail", "blog", "video",
+  "podcast", "omnichannel",
+] as const
+
+function normalizeTab(raw: string | string[] | undefined): string {
+  const candidate = Array.isArray(raw) ? raw[0] : raw
+  if (typeof candidate === "string" && (VALID_TABS as readonly string[]).includes(candidate)) {
+    return candidate
+  }
+  return "overview"
+}
+
+export default async function MarketingStudioPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ tab?: string | string[] }>
+}) {
+  const params = await searchParams
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
@@ -27,6 +46,7 @@ export default async function MarketingStudioPage() {
         userId={user.id}
         brokerageId={userRow?.brokerage_id ?? ""}
         userRole={userRow?.user_type ?? "agent"}
+        initialTab={normalizeTab(params.tab)}
       />
     </Suspense>
   )

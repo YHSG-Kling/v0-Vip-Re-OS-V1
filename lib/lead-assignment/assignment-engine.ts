@@ -1,5 +1,6 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { handleLeadAssigned } from "@/lib/kernel/lead-acquisition-handlers"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -22,11 +23,14 @@ interface LeadRow {
   id: string
   brokerage_id: string
   lifecycle_state: string
+  lead_stage: string | null
   lead_score: number | null
   property_zip_code: string | null
   source: string | null
   urgency_level: string | null
   agent_id: string | null
+  motivation_type: string | null
+  persona: string | null
 }
 
 // ─── CONDITION EVALUATOR ──────────────────────────────────────────────────────
@@ -56,6 +60,16 @@ function evaluateRuleConditions(
       case "urgency_levels": {
         const levels = value as string[]
         if (!lead.urgency_level || !levels.includes(lead.urgency_level)) return false
+        break
+      }
+      case "motivation_types": {
+        const motivations = value as string[]
+        if (!lead.motivation_type || !motivations.includes(lead.motivation_type)) return false
+        break
+      }
+      case "contact_personas": {
+        const personas = value as string[]
+        if (!lead.persona || !personas.includes(lead.persona)) return false
         break
       }
       default:
@@ -116,23 +130,35 @@ export async function evaluateAndAssignLead(params: {
   const supabase = createServiceClient()
 
   // Step 1: Fetch lead
-  const { data: lead, error: leadError } = await supabase
+  const { data: leadData, error: leadError } = await supabase
     .from("leads")
     .select(
-      "id, brokerage_id, lifecycle_state, lead_score, property_zip_code, source, urgency_level, agent_id"
+      "id, brokerage_id, lifecycle_state, lead_stage, lead_score, property_zip_code, " +
+        "source, urgency_level, agent_id, motivation_type, persona"
     )
     .eq("id", leadId)
     .single()
 
-  if (leadError || !lead) {
+  if (leadError || !leadData) {
     return { assigned: false, reason: `Lead not found: ${leadError?.message ?? "no data"}` }
   }
 
-  // Step 2: Only assign consented leads
-  if ((lead as LeadRow).lifecycle_state !== "consented") {
+  // Step 2: Engine 2 fires only on QUALIFIED leads.
+  // The ISA must have completed qualification (lead_stage = 'qualified') AND
+  // the contact must have given explicit consent (lifecycle_state = 'consented'
+  // or beyond). This replaces the prior consent-only gate which fired too early.
+  const typedLead0 = leadData as unknown as LeadRow
+  const isQualified = typedLead0.lead_stage === "qualified"
+  const isConsented =
+    typedLead0.lifecycle_state === "consented" ||
+    typedLead0.lifecycle_state === "qualified" ||
+    typedLead0.lifecycle_state === "assigned"
+
+  if (!isQualified || !isConsented) {
     return {
       assigned: false,
-      reason: `lifecycle_state is '${(lead as LeadRow).lifecycle_state}', expected 'consented'`,
+      reason: `Engine 2 requires lead_stage='qualified' AND lifecycle_state in (consented|qualified|assigned). ` +
+        `Got lead_stage='${typedLead0.lead_stage}', lifecycle_state='${typedLead0.lifecycle_state}'.`,
     }
   }
 
@@ -148,7 +174,7 @@ export async function evaluateAndAssignLead(params: {
     return { assigned: false, reason: `Failed to load rules: ${rulesError.message}` }
   }
 
-  const typedLead = lead as LeadRow
+  const typedLead = typedLead0
   let matchedAgentId: string | null = null
   let matchedRuleId: string | null = null
   let matchedMethod = "load_balance"
@@ -194,15 +220,7 @@ export async function evaluateAndAssignLead(params: {
 
   // Step 7: Increment times_triggered on the matched rule
   if (matchedRuleId) {
-    await supabase.rpc("increment_rule_triggered", { rule_id: matchedRuleId }).catch(() => {
-      // Non-fatal: fall back to manual increment
-      supabase
-        .from("assignment_rules")
-        .update({ times_triggered: supabase.raw("times_triggered + 1") as unknown as number })
-        .eq("id", matchedRuleId)
-        .then(() => undefined)
-        .catch(() => undefined)
-    })
+    await supabase.rpc("increment_rule_triggered", { rule_id: matchedRuleId })
   }
 
   // Step 8: Return result
@@ -247,14 +265,16 @@ export async function claimLead(params: {
     return { success: false, reason: `Claim update failed: ${updateError.message}` }
   }
 
-  // Step 4: Insert lifecycle event
-  await supabase.from("lifecycle_events").insert({
-    entity_type: "lead",
-    entity_id: leadId,
-    event_type: KernelEvent.LEAD_CLAIMED,
-    brokerage_id: brokerageId,
-    actor_user_id: agentUserId,
-    created_at: new Date().toISOString(),
+  // Step 4: Emit LEAD_CLAIMED through the canonical emitter (insert + reactor fan-out).
+  // Bare lifecycle_events inserts silently skipped staff notifications / sequence enrollment /
+  // portal updates downstream of a claim — emit() restores all three channels.
+  await emitKernelEvent({
+    event:       KernelEvent.LEAD_CLAIMED,
+    brokerageId,
+    entityType:  "lead",
+    entityId:    leadId,
+    agentUserId,
+    metadata:    { claimed_by: agentUserId },
   })
 
   // Step 5: Return success

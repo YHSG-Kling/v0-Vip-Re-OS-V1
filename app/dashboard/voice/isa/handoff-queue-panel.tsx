@@ -135,7 +135,7 @@ export function HandoffQueuePanel({ queue: initialQueue, brokerageId, agentId }:
     }
 
     // 5. Navigate to the contact detail page
-    router.push(`/contacts/${contactId}`)
+    router.push(`/crm/contacts/${contactId}`)
   }
 
   return (

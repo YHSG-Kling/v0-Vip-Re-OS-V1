@@ -186,13 +186,9 @@ function logActivity(
   supabase
     .from('activities')
     .insert({
-      user_id: userId,
+      agent_user_id: userId,
       activity_type: activityType,
       metadata,
       created_at: new Date().toISOString(),
-    })
-    .then(() => {})
-    .catch((err) => {
-      console.error('[RBAC] Error logging activity:', err)
     })
 }

@@ -102,7 +102,7 @@ export function KnowledgeBaseClient({
     refreshInterval: 30000,
   })
 
-  const filteredArticles = (articles || []).filter((article) => {
+  const filteredArticles = (articles || []).filter((article: any) => {
     if (selectedCategory === 'all') return true
     return article.topic_category === selectedCategory
   })
@@ -255,7 +255,7 @@ export function KnowledgeBaseClient({
 
     setIsSearching(true)
     try {
-      const { searchKB } = await import('@/lib/intelligence/kb-search')
+      const { searchKB } = await import('@/app/actions/kb-search')
       const results = await searchKB(searchQuery, brokerageId, 3)
       setSearchResults(results)
     } catch (error) {
@@ -388,7 +388,7 @@ export function KnowledgeBaseClient({
           </Card>
         ) : (
           <div className="space-y-3">
-            {filteredArticles.map((article) => {
+            {filteredArticles.map((article: any) => {
               const status = getEmbeddingStatus(article)
               const StatusIcon = status.icon
 

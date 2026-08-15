@@ -1,0 +1,11 @@
+-- m097 — Platform-owned raw leads.
+--
+-- Raw scraped leads are owned by the platform until they pass the promotion
+-- gate; brokerages must not see them before that (already enforced by RLS:
+-- only is_platform_admin() and is_ai_isa_system() can read raw_scraped_leads).
+-- Scraping records the active-subscriber territory via market_id but leaves
+-- brokerage_id NULL; processRawRecord resolves the owning brokerage from
+-- market.brokerage_id at promotion. The existing RLS policies already anticipate
+-- the NULL case (is_ai_isa_system() AND (brokerage_id IS NULL OR ...)); this
+-- aligns the column constraint with that intent.
+ALTER TABLE public.raw_scraped_leads ALTER COLUMN brokerage_id DROP NOT NULL;

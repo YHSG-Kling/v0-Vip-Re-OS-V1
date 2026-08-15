@@ -438,21 +438,8 @@ export async function captureFormSubmission(
     return { success: false, error: subError?.message ?? "Failed to record submission" }
   }
 
-  // Increment submission count on form
-  await supabase.rpc("increment_submission_count" as any, { form_id: input.formId }).maybeSingle()
-  // Fallback: direct update if RPC not available
-  const { data: currentForm } = await supabase
-    .from("lead_capture_forms")
-    .select("submission_count")
-    .eq("id", input.formId)
-    .maybeSingle()
-
-  if (currentForm) {
-    await supabase
-      .from("lead_capture_forms")
-      .update({ submission_count: (currentForm.submission_count ?? 0) + 1 })
-      .eq("id", input.formId)
-  }
+  // Increment submission count on form (atomic — avoids read-modify-write races)
+  await supabase.rpc("increment_form_submission_count", { form_id_input: input.formId })
 
   // If it was a home valuation, create a valuation_request record
   if (data.property_address && contactId) {
@@ -482,6 +469,76 @@ export async function captureFormSubmission(
     brokerage_id: input.brokerageId,
     metadata: { formId: input.formId, contactId, source: input.source },
   })
+
+  // Notify agent — non-fatal
+  if (form.agent_id) {
+    try {
+      const { data: agentRow } = await supabase
+        .from("agents")
+        .select("user_id, display_name")
+        .eq("id", form.agent_id)
+        .maybeSingle()
+
+      if (agentRow?.user_id) {
+        const submitterName = [data.first_name, data.last_name].filter(Boolean).join(" ") || data.email || "Someone"
+        await supabase.from("notifications").insert({
+          user_id:     agentRow.user_id,
+          brokerage_id: input.brokerageId,
+          type:        "lead_magnet_submission",
+          title:       "New Lead Magnet Submission",
+          body:        `${submitterName} just submitted your lead capture form.`,
+          entity_type: "form_submission",
+          entity_id:   submission.id,
+          is_read:     false,
+          priority:    "high",
+          channel:     "in_app",
+          created_at:  submittedAt,
+        })
+      }
+    } catch {
+      // Non-fatal — submission already recorded
+    }
+  }
+
+  // Auto-enroll contact in a follow-up sequence — non-fatal
+  if (contactId && form.agent_id) {
+    try {
+      const { data: followUpSeq } = await supabase
+        .from("campaign_sequences")
+        .select("id")
+        .eq("brokerage_id", input.brokerageId)
+        .eq("sequence_type", "lead_magnet")
+        .eq("status", "active")
+        .limit(1)
+        .maybeSingle()
+
+      if (followUpSeq) {
+        // Check for an existing active enrollment to avoid duplicates
+        const { data: existingEnrollment } = await supabase
+          .from("sequence_enrollments")
+          .select("id")
+          .eq("sequence_id", followUpSeq.id)
+          .eq("contact_id", contactId)
+          .eq("status", "active")
+          .limit(1)
+          .maybeSingle()
+
+        if (!existingEnrollment) {
+          await supabase.from("sequence_enrollments").insert({
+            sequence_id:  followUpSeq.id,
+            contact_id:   contactId,
+            brokerage_id: input.brokerageId,
+            enrolled_at:  submittedAt,
+            status:       "active",
+            current_step: 0,
+            next_step_at: new Date().toISOString(),
+          })
+        }
+      }
+    } catch {
+      // Non-fatal — sequence enrollment is optional
+    }
+  }
 
   return {
     success: true,

@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
-import Anthropic from "@anthropic-ai/sdk"
+import { gatewayChatJSON } from "@/lib/ai/gateway-chat"
 import { createPortalInviteForContact } from "./portal-invites"
 
 // ============================================================================
@@ -105,7 +105,6 @@ export async function convertValuationRequestToContact(params: {
         last_name: lastName,
         email,
         phone,
-        phone_digits: phoneDigits,
         contact_type: "seller",
         source: "home_value",
         agent_id: params.agentId,
@@ -232,7 +231,7 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
       .from("contacts")
       .select("id")
       .eq("brokerage_id", resolvedBrokerageId)
-      .or(`email.eq.${email},phone_digits.eq.${normalizedPhone}`)
+      .or(`email.eq.${email},phone.eq.${phone}`)
       .maybeSingle()
 
     let contactId: string
@@ -250,7 +249,6 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
           email,
           // Only store phone if TCPA consent given; otherwise omit to prevent calling
           phone: tcpaConsent ? phone : null,
-          phone_digits: tcpaConsent ? normalizedPhone : null,
           preferred_channel: tcpaConsent ? "phone" : "email",
           contact_type: "seller",
           source: "home_value_tool",
@@ -280,17 +278,19 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
           .select("user_id")
           .eq("id", resolvedAgentId)
           .maybeSingle()
-          .then(({ data: agentRow }) => {
-            if (agentRow?.user_id) {
-              createPortalInviteForContact({
-                contactId: newContact.id,
-                brokerageId: resolvedBrokerageId!,
-                invitedByUserId: agentRow.user_id,
-                sendMagicLink: true,
-              }).catch(() => {})
-            }
-          })
-          .catch(() => {})
+          .then(
+            ({ data: agentRow }) => {
+              if (agentRow?.user_id) {
+                createPortalInviteForContact({
+                  contactId: newContact.id,
+                  brokerageId: resolvedBrokerageId!,
+                  invitedByUserId: agentRow.user_id,
+                  sendMagicLink: true,
+                }).then(() => {}, () => {})
+              }
+            },
+            (err) => console.error("[home-value] background task failed:", err)
+          )
       }
     } else {
       contactId = existingContact.id
@@ -351,7 +351,7 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
         entity_type: "contact",
         status: "pending",
         priority: qualificationData?.sellTimeline === "immediately" ? "high" : "medium",
-      }).catch(() => {})
+      }).then(() => {}, () => {})
     }
 
     // Step 5: Generate AI estimate using Claude
@@ -568,8 +568,9 @@ async function generateAIValuation(propertyData: {
   yearBuilt: number
   condition: string
 }): Promise<AIValuationResponse> {
-  const anthropic = new Anthropic()
-
+  // Routed through the Vercel AI Gateway (single egress, single key rotation, healer-observable).
+  // Direct @anthropic-ai/sdk calls bypassed the gateway entirely — no cost metering, no rate-limit
+  // pool, no automatic model-deprecation healing.
   const prompt = `Property: ${propertyData.propertyAddress}, ${propertyData.city}, ${propertyData.state} ${propertyData.zipCode}
 Beds: ${propertyData.bedrooms}, Baths: ${propertyData.bathrooms}, Sq Ft: ${propertyData.squareFeet}
 Year Built: ${propertyData.yearBuilt}, Condition: ${propertyData.condition}
@@ -600,31 +601,16 @@ Return ONLY valid JSON with this exact structure:
 Provide exactly 3 comparable sales. Be conservative with estimates. The narrative should be professional and informative.`
 
   try {
-    const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 2000,
+    const result = await gatewayChatJSON<AIValuationResponse>({
+      model:     "anthropic/claude-sonnet-4-20250514",
+      maxTokens: 2000,
       messages: [
-        {
-          role: "user",
-          content: prompt,
-        },
+        { role: "system", content: "You are a real estate market analyst. Generate conservative property valuation estimates. Respond with ONLY valid JSON, no markdown formatting." },
+        { role: "user",   content: prompt },
       ],
-      system: "You are a real estate market analyst. Generate conservative property valuation estimates. Respond with ONLY valid JSON, no markdown formatting.",
     })
-
-    const textContent = response.content.find((c) => c.type === "text")
-    if (!textContent || textContent.type !== "text") {
-      throw new Error("No text response from AI")
-    }
-
-    // Parse JSON from response
-    const jsonMatch = textContent.text.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) {
-      throw new Error("No JSON found in response")
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]) as AIValuationResponse
-    return parsed
+    if (!result.ok || !result.data) throw new Error(result.error ?? "No JSON valuation from AI")
+    return result.data
   } catch (error) {
     console.error("Error generating AI valuation:", error)
     // Return fallback estimate based on typical price per sqft

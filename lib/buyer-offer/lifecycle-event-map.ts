@@ -88,7 +88,7 @@ export async function deriveOfferState(
   if (latestEvent === OFFER_LIFECYCLE_EVENTS.ACCEPTED_FINAL) return "ACCEPTED"
 
   // Check if submitted (pending seller response)
-  const submitted = events.find(e => 
+  const submitted = events.find((e: { activity_type: string; created_at: string }) =>
     e.activity_type === OFFER_LIFECYCLE_EVENTS.SUBMITTED_TO_SELLER
   )
   if (submitted) return "PENDING"

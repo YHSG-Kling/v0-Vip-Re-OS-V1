@@ -258,7 +258,7 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
   function handleAcceptHandoff(record: any) {
     if (record.contact_id) {
       toast.success('Opening assigned contact')
-      router.push(`/crm?contactId=${record.contact_id}`)
+      router.push(`/crm?contact=${record.contact_id}`)
       return
     }
 
@@ -270,7 +270,7 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
       })
       if (result.success && result.contactId) {
         toast.success('Handoff accepted — contact created')
-        router.push(`/crm?contactId=${result.contactId}`)
+        router.push(`/crm?contact=${result.contactId}`)
       } else {
         toast.error(result.error ?? 'Failed to accept handoff')
       }
@@ -647,7 +647,7 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
 
                         {/* Primary: open full CRM record */}
                         <Button size="sm" variant="default" className="w-full justify-start" asChild>
-                          <Link href={`/crm?contactId=${item.contact_id ?? ''}&leadId=${item.contact_id ? '' : item.id}`}>
+                          <Link href={`/crm?contact=${item.contact_id ?? ''}&leadId=${item.contact_id ? '' : item.id}`}>
                             Open Record
                           </Link>
                         </Button>
@@ -733,7 +733,7 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
 
                         {/* View Call History — shortcut to CRM calls tab */}
                         <Button size="sm" variant="ghost" className="w-full justify-start text-muted-foreground" asChild>
-                          <Link href={`/crm?contactId=${item.contact_id ?? ''}&leadId=${item.contact_id ? '' : item.id}&tab=calls`}>
+                          <Link href={`/crm?contact=${item.contact_id ?? ''}&leadId=${item.contact_id ? '' : item.id}&tab=calls`}>
                             <Phone className="h-3.5 w-3.5 mr-1.5" />
                             View Call History
                           </Link>

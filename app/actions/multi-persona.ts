@@ -5,18 +5,45 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
 
+// Multi-persona file covers brokerage admin, TC, lender, vendor, compliance,
+// team, agent, and client surfaces. Every dashboard read in this file used
+// to accept the persona-id (coordinatorId / lenderId / brokerageId / etc.)
+// as a parameter with no auth check — a signed-in user could enumerate
+// any persona's dashboard by guessing the id. Adding requireCaller() helper
+// + ownership-verification across all dashboard reads. Mutations will be
+// gated in subsequent commits as we audit each persona's write paths.
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string; userType: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id, user_type")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id, userType: u.user_type ?? "agent" }
+}
+
 // ============================================
 // BROKERAGE ADMIN FUNCTIONS
 // ============================================
 
-export async function getBrokerageDashboard(brokerageId: string) {
+export async function getBrokerageDashboard(_brokerageId?: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return null
+
   const supabase = await createClient()
+  const brokerageId = auth.brokerageId
 
   const [
     { data: brokerage },
     { data: agents },
     { data: activeTransactions },
-    // compliance_reviews table does not exist — use compliance_events (allowed=false)
+    // compliance_checks: pending reviews where allowed=false
     { data: pendingReviews },
     { data: recentCommissions },
   ] = await Promise.all([
@@ -27,9 +54,9 @@ export async function getBrokerageDashboard(brokerageId: string) {
       .select("*")
       .eq("brokerage_id", brokerageId)
       .not("status", "in", "(closed,lost)"),
-    // compliance_events: allowed=false means a violation was detected
+    // compliance_checks: allowed=false means a violation was detected
     supabase
-      .from("compliance_events")
+      .from("compliance_checks")
       .select("*")
       .eq("brokerage_id", brokerageId)
       .eq("allowed", false)
@@ -94,13 +121,20 @@ export async function assignTransactionCoordinator(data: {
 }
 
 export async function getCoordinatorDashboard_v2(coordinatorId: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { coordinator: null, transactions: [], deadlines: [], incompleteMilestones: [] }
+
   const supabase = await createClient()
 
+  // Verify the coordinator belongs to caller's brokerage
   const { data: coordinator } = await supabase
     .from("transaction_coordinators")
     .select("*")
     .eq("id", coordinatorId)
+    .eq("brokerage_id", auth.brokerageId)
     .single()
+
+  if (!coordinator) return { coordinator: null, transactions: [], deadlines: [], incompleteMilestones: [] }
 
   const { data: transactions } = await supabase
     .from("transactions")
@@ -109,6 +143,7 @@ export async function getCoordinatorDashboard_v2(coordinatorId: string) {
       transaction_milestones(*)
     `)
     .eq("coordinator_id", coordinatorId)
+    .eq("brokerage_id", auth.brokerageId)
     .not("status", "in", "(closed,lost)")
     .order("close_date")
 
@@ -128,7 +163,7 @@ export async function getCoordinatorDashboard_v2(coordinatorId: string) {
     .select("*, transactions(property_address)")
     .in("transaction_id", transactionIds)
     .in("status", ["pending", "in_progress"])
-    .order("milestone_date")
+    .order("target_date")
 
   return { coordinator, transactions, deadlines, incompleteMilestones }
 }
@@ -302,6 +337,9 @@ export async function rateVendor(data: {
 // ============================================
 
 export async function getLenderDashboard_v2(lenderId: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { lender: null, loans: [] }
+
   const supabase = await createClient()
 
   // lender_portal_users: id, user_id, transaction_id, brokerage_id, lender_company,
@@ -310,15 +348,19 @@ export async function getLenderDashboard_v2(lenderId: string) {
     .from("lender_portal_users")
     .select("*")
     .eq("id", lenderId)
+    .eq("brokerage_id", auth.brokerageId)
     .single()
+
+  if (!lenderUser) return { lender: null, loans: [] }
 
   const { data: loans } = await supabase
     .from("transaction_lenders")
     .select(`
       *,
-      transactions(*)
+      transactions!inner(*)
     `)
-    .eq("loan_officer_email", lenderUser?.email ?? "")
+    .eq("loan_officer_email", lenderUser.email ?? "")
+    .eq("transactions.brokerage_id", auth.brokerageId)
     .order("created_at", { ascending: false })
 
   return { lender: lenderUser, loans }
@@ -436,25 +478,28 @@ export async function getVendorBookings(vendorId: string) {
 // COMPLIANCE OFFICER FUNCTIONS
 // ============================================
 
-export async function getComplianceOfficerDashboard(officerId: string) {
+export async function getComplianceOfficerDashboard(_officerId?: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { pendingReviews: [], recentViolations: [] }
+
   const supabase = await createClient()
 
-  // compliance_reviews does not exist — use compliance_events (violations) and
-  // compliance_flags (flagged messages/content)
+  // compliance_reviews does not exist — use compliance_checks (violations) and
+  // compliance_flags (flagged messages/content). Scope to caller's brokerage.
   const [{ data: pendingReviews }, { data: recentViolations }] =
     await Promise.all([
-      // compliance_events where allowed=false = blocked outbound attempts
       supabase
-        .from("compliance_events")
+        .from("compliance_checks")
         .select("*")
         .eq("allowed", false)
+        .eq("brokerage_id", auth.brokerageId)
         .order("created_at", { ascending: false })
         .limit(20),
-      // compliance_flags for content violations
       supabase
         .from("compliance_flags")
         .select("*")
         .eq("status", "flagged")
+        .eq("brokerage_id", auth.brokerageId)
         .order("detected_at", { ascending: false })
         .limit(20),
     ])
@@ -513,22 +558,18 @@ export async function createWorkflowAutomation(data: {
 }) {
   const supabase = await createClient()
 
-  // workflow_automations does not exist — use workflow_executions as a log
-  // and store config in context jsonb
   const { data: workflow, error } = await supabase
-    .from("workflow_executions")
+    .from("workflow_automations")
     .insert({
       brokerage_id: data.brokerageId,
       workflow_name: data.workflowName,
-      status: "pending",
-      context: {
-        workflow_type: data.workflowType,
-        trigger_event: data.triggerEvent,
-        trigger_conditions: data.triggerConditions,
-        actions: data.actions,
-        assigned_to_role: data.assignedToRole,
-        created_by: data.createdBy,
-      },
+      workflow_type: data.workflowType,
+      trigger_event: data.triggerEvent,
+      trigger_conditions: data.triggerConditions,
+      actions: data.actions,
+      assigned_to_role: data.assignedToRole,
+      created_by: data.createdBy,
+      is_active: true,
     })
     .select()
     .single()
@@ -665,12 +706,16 @@ export async function createTeam(data: {
 }
 
 export async function getTeamDashboard(teamId: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) throw new Error(auth.error)
+
   const supabase = await createClient()
 
   const { data: team } = await supabase
     .from("teams")
     .select("*")
     .eq("id", teamId)
+    .eq("brokerage_id", auth.brokerageId)
     .single()
 
   if (!team) throw new Error("Team not found")
@@ -942,15 +987,19 @@ export async function getClientJourneyPreferences(
 // ============================================
 
 export async function forecastBrokerageRevenue(
-  brokerageId: string,
+  _brokerageId?: string,
   months: number = 3
 ) {
-  const supabase = await createClient()
+  // Financial forecast — was leaking historical GCI + pipeline value
+  // across tenants. Always scope to caller's session brokerage.
+  const auth = await requireCaller()
+  if (!auth.ok) {
+    return { conservative: 0, likely: 0, optimistic: 0, pipelineValue: 0, historicalAverage: 0 }
+  }
 
-  // brokerage_performance does not exist — use brokerage_earnings
-  // brokerage_earnings: id, brokerage_id, period_type, period_label,
-  // gross_commission_income, agent_splits_paid, brokerage_net,
-  // transaction_count, active_agent_count, computed_at
+  const supabase = await createClient()
+  const brokerageId = auth.brokerageId
+
   const { data: historical } = await supabase
     .from("brokerage_earnings")
     .select("*")
@@ -959,8 +1008,6 @@ export async function forecastBrokerageRevenue(
     .order("computed_at", { ascending: false })
     .limit(12)
 
-  // transactions.transaction_status -> use status; contract_price -> purchase_price;
-  // commission_rate -> commission_percentage; closing_date -> close_date
   const { data: pipeline } = await supabase
     .from("transactions")
     .select("purchase_price, close_date, status, commission_percentage")
@@ -996,13 +1043,16 @@ export async function forecastBrokerageRevenue(
 // LICENSE EXPIRATION TRACKING
 // ============================================
 
-export async function trackLicenseExpirations(brokerageId: string) {
+export async function trackLicenseExpirations(_brokerageId?: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { expiringLicenses: [], expiredLicenses: [], totalAgents: 0 }
+
   const supabase = await createClient()
 
   const { data: agents } = await supabase
     .from("agents")
     .select("*, agent_licenses(*)")
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", auth.brokerageId)
 
   const sixtyDaysFromNow = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000)
 
@@ -1108,12 +1158,16 @@ export async function trackReferral(data: {
 }
 
 export async function getReferralPartnerStats(partnerId: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { totalReferrals: 0, convertedReferrals: 0, totalCommission: 0, conversionRate: 0 }
+
   const supabase = await createClient()
 
   const { data: referrals } = await supabase
     .from("referrals")
     .select("*")
     .eq("partner_id", partnerId)
+    .eq("brokerage_id", auth.brokerageId)
 
   const totalReferrals = referrals?.length || 0
   const convertedReferrals =
@@ -1132,18 +1186,35 @@ export async function getReferralPartnerStats(partnerId: string) {
 // TRANSACTION COORDINATOR ANALYTICS
 // ============================================
 
-export async function predictDeadlineRisks(coordinatorId: string) {
+export async function predictDeadlineRisks(
+  coordinatorId: string,
+  scopedTransactionIds?: string[]
+) {
   const supabase = await createClient()
 
-  const { data: transactions } = await supabase
+  // When the caller already has the canonical list of transaction IDs (e.g.
+  // fetched via transaction_assignments), restrict the query to that set so
+  // the risk results stay in sync with what the dashboard displays.
+  let query = supabase
     .from("transactions")
     .select(`
       *,
       transaction_milestones(*),
       transaction_deadlines(*)
     `)
-    .eq("coordinator_id", coordinatorId)
     .not("status", "in", "(closed,lost)")
+
+  if (scopedTransactionIds !== undefined) {
+    // Explicit scope provided — use it; empty array means no transactions in scope
+    if (scopedTransactionIds.length === 0) {
+      return { atRiskTransactions: [], atRiskCount: 0 }
+    }
+    query = query.in("id", scopedTransactionIds)
+  } else {
+    query = query.eq("coordinator_id", coordinatorId)
+  }
+
+  const { data: transactions } = await query
 
   const atRisk = transactions?.filter((t) => {
     const daysToClosing = t.close_date
@@ -1421,13 +1492,19 @@ export async function bulkUpdateMilestones(
 }
 
 export async function getCoordinatorDashboard(coordinatorId: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { coordinator: null, transactions: [], deadlines: [], incompleteMilestones: [] }
+
   const supabase = await createClient()
 
   const { data: coordinator } = await supabase
     .from("transaction_coordinators")
     .select("*")
     .eq("id", coordinatorId)
+    .eq("brokerage_id", auth.brokerageId)
     .single()
+
+  if (!coordinator) return { coordinator: null, transactions: [], deadlines: [], incompleteMilestones: [] }
 
   const { data: transactions } = await supabase
     .from("transactions")
@@ -1436,6 +1513,7 @@ export async function getCoordinatorDashboard(coordinatorId: string) {
       transaction_milestones(*)
     `)
     .eq("coordinator_id", coordinatorId)
+    .eq("brokerage_id", auth.brokerageId)
     .not("status", "in", "(closed,lost)")
     .order("close_date")
 
@@ -1455,36 +1533,42 @@ export async function getCoordinatorDashboard(coordinatorId: string) {
     .select("*, transactions(property_address)")
     .in("transaction_id", transactionIds)
     .in("status", ["pending", "in_progress"])
-    .order("milestone_date")
+    .order("target_date")
 
   return { coordinator, transactions, deadlines, incompleteMilestones }
 }
 
 export async function getLenderDashboard(lenderId: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { lender: null, loans: [] }
+
   const supabase = await createClient()
 
   const { data: lenderUser } = await supabase
     .from("lender_portal_users")
     .select("*")
     .eq("id", lenderId)
+    .eq("brokerage_id", auth.brokerageId)
     .single()
+
+  if (!lenderUser) return { lender: null, loans: [] }
 
   const { data: loans } = await supabase
     .from("transaction_lenders")
     .select(`
       *,
-      transactions(*)
+      transactions!inner(*)
     `)
-    .eq("loan_officer_email", lenderUser?.email ?? "")
+    .eq("loan_officer_email", lenderUser.email ?? "")
+    .eq("transactions.brokerage_id", auth.brokerageId)
     .order("created_at", { ascending: false })
 
   return { lender: lenderUser, loans }
 }
 
 /**
- * Submit vendor invoice
- * vendor_invoices table does not exist in schema.
- * Stores invoice data as a note on the vendor_bookings record instead.
+ * Submit vendor invoice — creates a proper record in vendor_invoices table
+ * and marks it submitted. Supersedes the old vendor_bookings.notes workaround.
  */
 export async function submitVendorInvoice(params: {
   bookingId: string
@@ -1497,27 +1581,42 @@ export async function submitVendorInvoice(params: {
   try {
     const supabase = createServiceClient()
 
-    // Store invoice details on the booking record (cost + notes)
-    const invoiceData = {
-      invoice_number: params.invoiceNumber,
-      invoice_date: params.invoiceDate,
-      due_date: params.dueDate,
-      notes: params.notes,
-    }
-
-    const { data, error } = await supabase
+    // Resolve vendor_id and brokerage_id from the booking
+    const { data: booking } = await supabase
       .from("vendor_bookings")
-      .update({
-        cost: params.amount,
-        notes: JSON.stringify(invoiceData),
-      })
+      .select("vendor_id, brokerage_id, listing_id")
       .eq("id", params.bookingId)
+      .single()
+
+    const { data: invoice, error } = await supabase
+      .from("vendor_invoices")
+      .insert({
+        vendor_id: booking?.vendor_id ?? null,
+        brokerage_id: booking?.brokerage_id ?? null,
+        booking_id: params.bookingId,
+        listing_id: booking?.listing_id ?? null,
+        billed_to: "brokerage",
+        invoice_number: params.invoiceNumber,
+        invoice_date: params.invoiceDate,
+        due_date: params.dueDate,
+        line_items: [{ description: "Services rendered", quantity: 1, unitPrice: params.amount, amount: params.amount }],
+        subtotal: params.amount,
+        total_amount: params.amount,
+        status: "submitted",
+        notes: params.notes ?? null,
+      })
       .select("id")
       .single()
 
     if (error) throw error
 
-    return { success: true, invoiceId: data.id }
+    // Also update the booking cost for backwards-compatible UIs
+    await supabase
+      .from("vendor_bookings")
+      .update({ cost: params.amount })
+      .eq("id", params.bookingId)
+
+    return { success: true, invoiceId: invoice.id }
   } catch (error) {
     console.error("[Multi-persona] Submit invoice error:", error)
     return { success: false, error: String(error) }

@@ -28,6 +28,17 @@ export default async function SeoKeywordsPage() {
     redirect("/dashboard/onboarding")
   }
 
+  // Fetch brokerage city/state for default territory
+  const { data: brokerage } = await supabase
+    .from("brokerages")
+    .select("city, state")
+    .eq("id", userData.brokerage_id)
+    .maybeSingle()
+
+  const defaultTerritory = brokerage?.city && brokerage?.state
+    ? `${brokerage.city}, ${brokerage.state}`
+    : undefined
+
   // Fetch SEO keywords
   const { data: keywords } = await supabase
     .from("seo_keywords")
@@ -42,6 +53,7 @@ export default async function SeoKeywordsPage() {
       userId={user.id}
       brokerageId={userData.brokerage_id}
       initialKeywords={keywords || []}
+      defaultTerritory={defaultTerritory}
     />
   )
 }

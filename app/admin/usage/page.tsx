@@ -203,17 +203,41 @@ export default async function UsageMeteringDashboard() {
     teamUsageMap.get(teamId)!.cost += t.allocated_cost_cents || 0
   })
 
-  // Feature usage aggregation
+  // AI Tool Usage aggregation by tool, model, and brokerage
   const aiToolSummary = new Map<string, { count: number; cost: number; tokens: number }>()
+  const aiModelSummary = new Map<string, { count: number; cost: number; tokens: number }>()
+  const aiBrokerageSummary = new Map<string, { count: number; cost: number; tokens: number; brokerage_id: string }>()
+  
   aiToolUsage.forEach((t: any) => {
+    // By tool name
     const tool = t.tool_name || "unknown"
     if (!aiToolSummary.has(tool)) {
       aiToolSummary.set(tool, { count: 0, cost: 0, tokens: 0 })
     }
-    const entry = aiToolSummary.get(tool)!
-    entry.count++
-    entry.cost += t.cost_cents || 0
-    entry.tokens += t.tokens_used || 0
+    const toolEntry = aiToolSummary.get(tool)!
+    toolEntry.count++
+    toolEntry.cost += t.cost_cents || 0
+    toolEntry.tokens += t.tokens_used || 0
+    
+    // By model used (AI Gateway tracking)
+    const model = t.model_used || "unknown"
+    if (!aiModelSummary.has(model)) {
+      aiModelSummary.set(model, { count: 0, cost: 0, tokens: 0 })
+    }
+    const modelEntry = aiModelSummary.get(model)!
+    modelEntry.count++
+    modelEntry.cost += t.cost_cents || 0
+    modelEntry.tokens += t.tokens_used || 0
+    
+    // By brokerage
+    const brokId = t.brokerage_id || "unknown"
+    if (!aiBrokerageSummary.has(brokId)) {
+      aiBrokerageSummary.set(brokId, { count: 0, cost: 0, tokens: 0, brokerage_id: brokId })
+    }
+    const brokEntry = aiBrokerageSummary.get(brokId)!
+    brokEntry.count++
+    brokEntry.cost += t.cost_cents || 0
+    brokEntry.tokens += t.tokens_used || 0
   })
 
   // Check threshold alerts
@@ -373,9 +397,10 @@ export default async function UsageMeteringDashboard() {
           <Tabs defaultValue="by-type" className="space-y-4">
             <TabsList>
               <TabsTrigger value="by-type">By Type</TabsTrigger>
-              <TabsTrigger value="by-agent">By Agent</TabsTrigger>
-              <TabsTrigger value="by-team">By Team</TabsTrigger>
+              <TabsTrigger value="by-agent">Agents</TabsTrigger>
+              <TabsTrigger value="by-team">Teams</TabsTrigger>
               <TabsTrigger value="by-feature">By Feature</TabsTrigger>
+              <TabsTrigger value="by-brokerage">By Brokerage</TabsTrigger>
             </TabsList>
 
             <TabsContent value="by-type">
@@ -453,6 +478,41 @@ export default async function UsageMeteringDashboard() {
 
             <TabsContent value="by-feature">
               <div className="grid md:grid-cols-2 gap-6">
+                {/* AI Gateway Model Usage */}
+                <div>
+                  <h4 className="font-medium mb-3">AI Gateway - By Model</h4>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Model</TableHead>
+                        <TableHead className="text-right">Calls</TableHead>
+                        <TableHead className="text-right">Tokens</TableHead>
+                        <TableHead className="text-right">Cost</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {Array.from(aiModelSummary.entries())
+                        .sort((a, b) => b[1].cost - a[1].cost)
+                        .slice(0, 10)
+                        .map(([model, data]) => (
+                          <TableRow key={model}>
+                            <TableCell className="font-medium text-xs">{model}</TableCell>
+                            <TableCell className="text-right">{data.count.toLocaleString()}</TableCell>
+                            <TableCell className="text-right">{(data.tokens / 1000).toFixed(1)}K</TableCell>
+                            <TableCell className="text-right">{formatCurrency(data.cost)}</TableCell>
+                          </TableRow>
+                        ))}
+                      {aiModelSummary.size === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={4} className="text-center text-muted-foreground py-8">
+                            No AI Gateway usage this period
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+                
                 {/* AI Tool Usage */}
                 <div>
                   <h4 className="font-medium mb-3">AI Tool Usage</h4>
@@ -478,36 +538,105 @@ export default async function UsageMeteringDashboard() {
                     </TableBody>
                   </Table>
                 </div>
-
-                {/* Feature Usage Tracking */}
-                <div>
-                  <h4 className="font-medium mb-3">Feature Usage</h4>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Feature</TableHead>
-                        <TableHead className="text-right">Usage</TableHead>
-                        <TableHead className="text-right">Status</TableHead>
+              </div>
+              
+              <div className="mt-6 p-4 bg-muted/50 rounded-lg border">
+                <h4 className="font-medium mb-2 text-sm">AI Gateway Tracking</h4>
+                <p className="text-xs text-muted-foreground">
+                  All AI generation calls are automatically tracked through the Vercel AI Gateway. 
+                  Costs are calculated based on token usage and model pricing. Model breakdowns show which AI models are being used most frequently across your organization.
+                </p>
+              </div>
+              {/* Feature Usage Tracking */}
+              <div className="mt-6">
+                <h4 className="font-medium mb-3">Feature Usage</h4>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Feature</TableHead>
+                      <TableHead className="text-right">Usage</TableHead>
+                      <TableHead className="text-right">Status</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {featureUsage.slice(0, 10).map((f: any) => (
+                      <TableRow key={f.feature_key}>
+                        <TableCell className="font-medium">{f.feature_key}</TableCell>
+                        <TableCell className="text-right">
+                          {f.usage_count?.toLocaleString()} / {f.limit_amount?.toLocaleString() || "∞"}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {f.exceeded ? (
+                            <Badge variant="destructive">Exceeded</Badge>
+                          ) : (
+                            <Badge variant="secondary">OK</Badge>
+                          )}
+                        </TableCell>
                       </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {featureUsage.slice(0, 10).map((f: any) => (
-                        <TableRow key={f.feature_key}>
-                          <TableCell className="font-medium">{f.feature_key}</TableCell>
-                          <TableCell className="text-right">
-                            {f.usage_count?.toLocaleString()} / {f.limit_amount?.toLocaleString() || "∞"}
+                    ))}
+                    {featureUsage.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={3} className="text-center text-muted-foreground py-8">
+                          No feature usage data available
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="by-brokerage">
+              <div className="space-y-4">
+                <h4 className="font-medium">AI Gateway Usage by Brokerage</h4>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Brokerage ID</TableHead>
+                      <TableHead className="text-right">AI Calls</TableHead>
+                      <TableHead className="text-right">Total Tokens</TableHead>
+                      <TableHead className="text-right">Cost</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {Array.from(aiBrokerageSummary.values())
+                      .sort((a, b) => b.cost - a.cost)
+                      .map((brok) => (
+                        <TableRow key={brok.brokerage_id}>
+                          <TableCell className="font-mono text-xs">
+                            {brok.brokerage_id.slice(0, 8)}...
                           </TableCell>
                           <TableCell className="text-right">
-                            {f.exceeded ? (
-                              <Badge variant="destructive">Exceeded</Badge>
-                            ) : (
-                              <Badge variant="secondary">OK</Badge>
-                            )}
+                            {brok.count.toLocaleString()}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {(brok.tokens / 1000).toFixed(1)}K
+                          </TableCell>
+                          <TableCell className="text-right font-semibold">
+                            {formatCurrency(brok.cost)}
                           </TableCell>
                         </TableRow>
                       ))}
-                    </TableBody>
-                  </Table>
+                    {aiBrokerageSummary.size === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={4} className="text-center text-muted-foreground py-8">
+                          No AI usage data available for this period
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+                
+                <div className="p-4 bg-blue-50 dark:bg-blue-950 rounded-lg border border-blue-200 dark:border-blue-800">
+                  <h4 className="font-medium text-sm mb-2 flex items-center gap-2">
+                    <TrendingUp className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                    Brokerage AI Usage Insights
+                  </h4>
+                  <p className="text-xs text-muted-foreground">
+                    This breakdown shows AI Gateway usage across all brokerages using the platform. 
+                    Each brokerage's AI costs are tracked separately for accurate billing and usage monitoring. 
+                    Token counts include both input and output tokens from all AI models (GPT-4, Claude, etc.).
+                  </p>
                 </div>
               </div>
             </TabsContent>

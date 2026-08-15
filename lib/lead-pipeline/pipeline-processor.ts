@@ -3,6 +3,9 @@
 import { createClient } from '@/lib/supabase/server'
 import { calculateFuzzyMatch } from './fuzzy-matcher'
 import { skipTraceWithPeopleData } from '@/lib/external'
+import { mergeEnrichment, shouldGapFill, enrichViaPerplexity, type BaseEnrichment } from './perplexity-enrichment'
+import { KernelEvent } from '@/lib/kernel/events'
+import { emitKernelEvent } from '@/lib/kernel/emit'
 import {
   calculateSourceScore,
   getSourceSemantics,
@@ -28,6 +31,7 @@ type ProcessingStatus =
   | 'insufficient_contact_data'
   | 'insufficient_identity'
   | 'insufficient_identity_for_promotion'
+  | 'unassigned_no_market'
   | 'promoted'
   | 'error'
 
@@ -84,7 +88,7 @@ async function setStatus(
     .eq('id', rawRecordId)
 }
 
-export async function processRawRecord(rawRecordId: string, brokerageId: string): Promise<PipelineResult> {
+export async function processRawRecord(rawRecordId: string, brokerageId?: string | null): Promise<PipelineResult> {
   const supabase = await createClient()
 
   // ── STEP 3: Read from raw_scraped_leads (not batchdata_motivated_sellers_raw) ──
@@ -117,14 +121,18 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
 
   // ── Territory gate — block before enrichment spend ────────────────────────
   // Load the market this record was scraped for and check city/state/zip match.
+  // Raw records are platform-owned (brokerage_id NULL) until promotion; the
+  // owning brokerage is resolved here from the scraped market's territory.
+  let marketBrokerageId: string | null = null
   if (rec.market_id) {
     const { data: market } = await supabase
       .from('lead_scraping_markets')
-      .select('city, state, zip_codes')
+      .select('city, state, zip_codes, brokerage_id')
       .eq('id', rec.market_id)
       .single()
 
     if (market) {
+      marketBrokerageId = (market as { brokerage_id?: string | null }).brokerage_id ?? null
       const recordGeo = {
         city:  rec.normalized_preview?.city  ?? (rec.raw_data?.city  as string | null) ?? null,
         state: rec.normalized_preview?.state ?? (rec.raw_data?.state as string | null) ?? null,
@@ -151,6 +159,22 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
           stage:   'territory_gate',
         }
       }
+    }
+  }
+
+  // ── Resolve the owning brokerage ──────────────────────────────────────────
+  // Prefer an explicit brokerageId (manual broker-triggered scrapes) and fall
+  // back to the brokerage that owns the scraped market (scheduled platform
+  // scraping leaves raw_scraped_leads.brokerage_id NULL). Without either, the
+  // record cannot be promoted to a tenant-scoped lead.
+  const effectiveBrokerageId = brokerageId ?? marketBrokerageId
+  if (!effectiveBrokerageId) {
+    await setStatus(supabase, rawRecordId, 'unassigned_no_market')
+    return {
+      success: false,
+      action: 'skipped',
+      reason: 'Cannot resolve owning brokerage (no brokerageId passed and no market territory)',
+      stage: 'brokerage_resolution',
     }
   }
 
@@ -194,7 +218,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
   await setStatus(supabase, rawRecordId, 'queued_for_enrichment')
 
   const preEnrichLookup = { first_name: firstName, last_name: lastName, email, phone }
-  const preEnrichDuplicate = await findBestMatch(preEnrichLookup, 'pre_enrichment', supabase)
+  const preEnrichDuplicate = await findBestMatch(preEnrichLookup, 'pre_enrichment', effectiveBrokerageId, supabase)
 
   if (preEnrichDuplicate) {
     await setStatus(supabase, rawRecordId, 'duplicate_pre_enrich')
@@ -221,10 +245,10 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
   // ── Enrichment ──────────────────────────────────────────────────────────────
   await setStatus(supabase, rawRecordId, 'enriching')
 
-  const enriched = await enrichWithPeopleData({ first_name: firstName, last_name: lastName, email, phone })
+  const enriched = await enrichWithPeopleData({ first_name: firstName, last_name: lastName, email, phone, city, state, brokerageId: effectiveBrokerageId })
 
   // ── Post-enrichment deduplication ───────────────────────────────────────────
-  const postEnrichDuplicate = await findBestMatch(enriched, 'post_enrichment', supabase)
+  const postEnrichDuplicate = await findBestMatch(enriched, 'post_enrichment', effectiveBrokerageId, supabase)
 
   if (postEnrichDuplicate) {
     const oldConfidence = postEnrichDuplicate.enrichment_confidence ?? 0
@@ -233,15 +257,20 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
     if (newConfidence > oldConfidence * 1.1) {
       const targetTable = postEnrichDuplicate.type === 'lead' ? 'leads' : 'contacts'
 
+      // enrichment_status exists only on leads; contacts tracks confidence only.
+      const mergeUpdate: Record<string, unknown> = {
+        email:                 enriched.email || postEnrichDuplicate.email,
+        phone:                 enriched.phone || postEnrichDuplicate.phone,
+        enrichment_confidence: newConfidence,
+        updated_at:            new Date().toISOString(),
+      }
+      if (targetTable === 'leads') {
+        mergeUpdate.enrichment_status = 'completed'
+      }
+
       await supabase
         .from(targetTable)
-        .update({
-          email:                enriched.email  || postEnrichDuplicate.email,
-          phone:                enriched.phone  || postEnrichDuplicate.phone,
-          enrichment_status:    'completed',
-          enrichment_confidence: newConfidence,
-          updated_at:           new Date().toISOString(),
-        })
+        .update(mergeUpdate)
         .eq('id', postEnrichDuplicate.id)
 
       await setStatus(supabase, rawRecordId, 'duplicate_post_enrich')
@@ -291,32 +320,48 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
     }
   }
 
-  // ── STEP 4B: Promotion identity gate ────────────────────────────────────────
-  // A record may remain raw without promotion if it has no email after enrichment.
-  if (!enriched.email) {
+  // ── STEP 4B: Promotion identity gate (CANONICAL — shared with lead-promoter) ─
+  // Business rule: promote to an unconsented lead only when full name + (email OR phone) +
+  // mailing_address_verified all hold. Single source of truth in canonical-lead-eligibility so the
+  // two historical paths can never drift apart.
+  const { evaluateCanonicalLeadEligibility } =
+    await import("@/lib/lead-pipeline/canonical-lead-eligibility")
+  const rawAddrVerified = (rawRecord as any)?.mailing_address_verified
+                        ?? (rawRecord.raw_data as any)?.mailing_address_verified
+                        ?? false
+  const promoEligibility = evaluateCanonicalLeadEligibility({
+    first_name:               enriched.first_name ?? firstName,
+    last_name:                enriched.last_name  ?? lastName,
+    email:                    enriched.email,
+    phone:                    enriched.phone ?? phone,
+    mailing_address_verified: (enriched as any).mailing_address_verified ?? rawAddrVerified,
+  })
+  if (!promoEligibility.eligible) {
     await setStatus(supabase, rawRecordId, 'insufficient_identity_for_promotion')
     await logDeduplication({
       raw_record_id:             rawRecordId,
       stage:                     'promotion_identity_gate',
       match_score:               0,
-      match_details:             {},
+      match_details:             { failing: promoEligibility.failing },
       action_taken:              'skipped',
-      skip_reason:               'No email after enrichment — cannot promote for AI ISA',
+      skip_reason:               promoEligibility.reason,
       new_enrichment_confidence: enriched.enrichmentConfidence,
     }, supabase)
     return {
       success: false,
       action: 'skipped',
-      reason: 'No email after enrichment — record remains raw without promotion',
+      reason: `${promoEligibility.reason} — record remains raw without promotion`,
       stage: 'promotion_identity_gate',
     }
   }
+  const promoFirst = (enriched.first_name ?? firstName ?? '').trim()
+  const promoLast  = (enriched.last_name  ?? lastName  ?? '').trim()
 
   // ── STEP 5: Promote to leads with Kernel OS ownership fields ────────────────
   const { data: newLead, error: createError } = await supabase
     .from('leads')
     .insert({
-      brokerage_id:          brokerageId,
+      brokerage_id:          effectiveBrokerageId,
       first_name:            enriched.first_name  ?? firstName,
       last_name:             enriched.last_name   ?? lastName,
       email:                 enriched.email,
@@ -341,6 +386,15 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
       lifecycle_state:       'unconsented',
       ai_isa_owner:          true,
       minimum_viable_for_isa: !!(enriched.email),
+      // Canonical eligibility just passed, so the address is verified on this row. email_verified
+      // propagates whatever the enrichment determined (PeopleData / verification step); when false
+      // the ISA email channel is blocked until a verification step lifts it.
+      mailing_address_verified: true,
+      // Propagate the actual address (not just the flag) so the AI-ISA direct_mail channel has
+      // something to send to — the resolver requires `lead.mailing_address && verified`.
+      mailing_address:       (enriched as any).mailing_address       ?? (rec.raw_data as any)?.mailing_address       ?? null,
+      mailing_address_source:(enriched as any).mailing_address_source?? (rec.raw_data as any)?.mailing_address_source?? null,
+      email_verified:        (enriched as any).email_verified        ?? (rec as any).email_verified                  ?? (rec.raw_data as any)?.email_verified ?? false,
       raw_record_id:         rawRecordId,
     })
     .select()
@@ -372,6 +426,17 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
     new_enrichment_confidence: enriched.enrichmentConfidence,
   }, supabase)
 
+  // Emit RAW_RECORD_PROMOTED through the canonical kernel emitter (does INSERT + reactor fan-out
+  // in one call: notifications + sequences + portal). Non-blocking: emit() is never-throws and
+  // the audit signal here must not break the lead-creation primary write.
+  void emitKernelEvent({
+    event:       KernelEvent.RAW_RECORD_PROMOTED,
+    brokerageId: effectiveBrokerageId,
+    entityType:  'raw_scraped_lead',
+    entityId:    rawRecordId,
+    metadata:    { lead_id: newLead.id, source: rec.source },
+  })
+
   return {
     success: true,
     action: 'created',
@@ -388,6 +453,9 @@ async function enrichWithPeopleData(fields: {
   last_name:  string | null
   email:      string | null
   phone:      string | null
+  city?:      string | null
+  state?:     string | null
+  brokerageId?: string | null
 }): Promise<any> {
   const enrichmentResult = await skipTraceWithPeopleData({
     name:  [fields.first_name, fields.last_name].filter(Boolean).join(' ') || undefined,
@@ -395,26 +463,52 @@ async function enrichWithPeopleData(fields: {
     email: fields.email   || undefined,
   }).catch(() => ({ data: null }))
 
-  if (!enrichmentResult.data) {
-    return {
-      first_name: fields.first_name,
-      last_name:  fields.last_name,
-      email:      fields.email,
-      phone:      fields.phone,
-      enrichmentConfidence: 0.3,
-    }
+  const data = enrichmentResult.data
+  let base: BaseEnrichment & {
+    phone_secondary?: string | null
+    peopleDataResult?: unknown
+    email_verified?: boolean
+    mailing_address?: string | null
+    mailing_address_verified?: boolean
+    mailing_address_source?: string | null
+  } = data
+    ? {
+        first_name:               data.firstName   || fields.first_name,
+        last_name:                data.lastName    || fields.last_name,
+        email:                    data.emails?.[0] || fields.email,
+        phone:                    data.phones?.[0] || fields.phone,
+        phone_secondary:          data.phones?.[1] || null,
+        enrichmentConfidence:     data.enrichmentConfidence ?? 0.5,
+        // Surface PDL verification + structured mailing so the canonical eligibility gate +
+        // AI-ISA channel resolver downstream actually have signal (previously these were dropped).
+        email_verified:           (data as any).emailVerified === true,
+        mailing_address:          (data as any).streetAddress ?? data.address ?? null,
+        mailing_address_verified: (data as any).mailingAddressVerified === true,
+        mailing_address_source:   (data as any).mailingAddressVerified ? 'enrichment' : null,
+        peopleDataResult:         data,
+      }
+    : {
+        first_name: fields.first_name,
+        last_name:  fields.last_name,
+        email:      fields.email,
+        phone:      fields.phone,
+        enrichmentConfidence: 0.3,
+      }
+
+  // Cost-gated Perplexity gap-fill: only when skip-trace left a full-name lead
+  // without an email (high-value, identity-promising). No spend otherwise.
+  if (shouldGapFill(base) && base.first_name && base.last_name) {
+    const findings = await enrichViaPerplexity({
+      firstName: base.first_name,
+      lastName:  base.last_name,
+      city:      fields.city,
+      state:     fields.state,
+      brokerageId: fields.brokerageId ?? undefined,
+    })
+    base = { ...base, ...mergeEnrichment(base, findings) }
   }
 
-  const data = enrichmentResult.data
-  return {
-    first_name:           data.firstName   || fields.first_name,
-    last_name:            data.lastName    || fields.last_name,
-    email:                data.emails?.[0] || fields.email,
-    phone:                data.phones?.[0] || fields.phone,
-    phone_secondary:      data.phones?.[1] || null,
-    enrichmentConfidence: data.enrichmentConfidence ?? 0.5,
-    peopleDataResult:     data,
-  }
+  return base
 }
 
 // ─── Deduplication matching ───────────────────────────────────────────────────
@@ -422,17 +516,23 @@ async function enrichWithPeopleData(fields: {
 async function findBestMatch(
   record: { first_name?: string | null; last_name?: string | null; email?: string | null; phone?: string | null },
   _stage: string,
+  brokerageId: string,
   supabase: Awaited<ReturnType<typeof createClient>>,
 ): Promise<{ id: string; type: 'lead' | 'contact'; score: number; details: any; enrichment_confidence: number | null; email?: string; phone?: string } | null> {
 
+  // Dedup must never reach across tenants: a brokerage's incoming lead can only
+  // match its own existing leads/contacts. Without this filter a fuzzy match
+  // could merge one brokerage's record into another's (PII cross-tenant leak).
   const { data: leads } = await supabase
     .from('leads')
     .select('id, first_name, last_name, email, phone, enrichment_confidence')
+    .eq('brokerage_id', brokerageId)
     .eq('is_active', true)
 
   const { data: contacts } = await supabase
     .from('contacts')
     .select('id, first_name, last_name, email, phone')
+    .eq('brokerage_id', brokerageId)
     .is('deleted_at', null)
 
   const allRecords = [

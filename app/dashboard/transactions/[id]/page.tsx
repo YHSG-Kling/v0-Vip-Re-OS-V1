@@ -17,17 +17,24 @@ export default async function TransactionDetailPage({ params }: PageProps) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
-  // Get user profile with brokerage
+  // Get user profile with brokerage. Canonical: users.user_type (kernel
+  // identity layer never reads .role outside the kernel).
   const { data: profile } = await supabase
     .from("users")
-    .select("id, role, brokerage_id")
+    .select("id, user_type, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
 
   if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   const brokerageId = profile.brokerage_id
-  const userRole = profile.role ?? "agent"
+  const userType = profile.user_type ?? "agent"
+
+  const { data: brokerageInfo } = await supabase
+    .from("brokerages")
+    .select("name, logo_url")
+    .eq("id", brokerageId)
+    .maybeSingle()
 
   // Fetch transaction with ownership/brokerage check
   // Uses actual Supabase transactions table columns
@@ -66,7 +73,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
 
   // Auth: owning agent OR broker/admin/TC in same brokerage
   const isOwningAgent = transaction.agent_id === user.id
-  const hasAdminAccess = ["broker", "admin", "tc"].includes(userRole)
+  const hasAdminAccess = ["broker", "admin", "tc"].includes(userType)
   if (!isOwningAgent && !hasAdminAccess) {
     redirect("/dashboard")
   }
@@ -181,7 +188,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       .from("transaction_milestones")
       .select("*")
       .eq("transaction_id", id)
-      .order("milestone_date", { ascending: true, nullsFirst: false }),
+      .order("target_date", { ascending: true, nullsFirst: false }),
 
     // transaction_deadlines
     supabase
@@ -213,12 +220,15 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       .limit(1)
       .maybeSingle(),
 
-    // proactive_interventions
+    // proactive_interventions — load full rows so the detail page can
+    // surface the actual recommendations inline (not just the count).
     supabase
       .from("proactive_interventions")
-      .select("id")
+      .select("id, issue_detected, severity, ai_recommendation, client_impacted, created_at")
       .eq("transaction_id", id)
-      .eq("resolved", false),
+      .eq("resolved", false)
+      .order("created_at", { ascending: false })
+      .limit(10),
 
     // transaction_tasks
     supabase
@@ -292,6 +302,15 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       .eq("transaction_id", id),
   ])
 
+  // 7-point score history for the inline trend sparkline. Separate query so
+  // the destructure above stays positional. Cheap (<= 7 rows).
+  const { data: healthScoreHistory } = await supabase
+    .from("deal_health_scores")
+    .select("overall_score, risk_level, scored_at")
+    .eq("transaction_id", id)
+    .order("scored_at", { ascending: false })
+    .limit(7)
+
   // vendor_bookings with joined vendor name — includes contact_id and listing_id
   const { data: vendorBookings } = await supabase
     .from("vendor_bookings")
@@ -323,7 +342,9 @@ export default async function TransactionDetailPage({ params }: PageProps) {
     <TransactionDetailClient
       transaction={transaction}
       brokerageId={brokerageId}
-      userRole={userRole}
+      brokerageName={brokerageInfo?.name ?? undefined}
+      brokerageLogoUrl={brokerageInfo?.logo_url ?? undefined}
+      userType={userType}
       userId={user.id}
       milestones={milestones ?? []}
       deadlines={deadlines ?? []}
@@ -332,7 +353,8 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       documents={documents ?? []}
       documentCountsByStatus={documentCountsByStatus}
       healthScore={healthScore}
-      unresolvedInterventionsCount={(interventions ?? []).length}
+      unresolvedInterventions={interventions ?? []}
+      healthScoreHistory={healthScoreHistory ?? []}
       tasks={tasks ?? []}
       timeline={timeline ?? []}
       titleEscrow={titleEscrow}
@@ -355,7 +377,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       availableTCs={availableTCs ?? []}
       currentLenderId={currentLenderId}
       availableLenders={availableLenders ?? []}
-      vendorBookings={vendorBookings ?? []}
+      vendorBookings={(vendorBookings ?? []) as any}
     />
   )
 }

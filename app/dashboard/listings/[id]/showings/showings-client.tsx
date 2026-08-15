@@ -5,12 +5,17 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { AlertCircle, RefreshCw, CalendarCheck, BarChart2 } from "lucide-react"
-import ShowingRequestsPanel from "./components/showing-requests-panel"
-import ConfirmedShowingsList from "./components/confirmed-showings-list"
-import FeedbackSummaryPanel from "./components/feedback-summary-panel"
-import ShowingTimeBanner from "./components/showingtime-banner"
+import { AlertCircle, RefreshCw, CalendarCheck, BarChart2, Plus, Loader2 } from "lucide-react"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
+import ShowingRequestsPanel from "@/app/components/dashboard/listings/showings/showing-requests-panel"
+import ConfirmedShowingsList from "@/app/components/dashboard/listings/showings/confirmed-showings-list"
+import FeedbackSummaryPanel from "@/app/components/dashboard/listings/showings/feedback-summary-panel"
+import ShowingTimeBanner from "@/app/components/dashboard/listings/showings/showingtime-banner"
 import { syncShowingTimeShowings } from "@/app/actions/seller-showings"
+import { createShowing } from "@/app/actions/showings"
+import { toast } from "sonner"
 
 interface Props {
   listing: {
@@ -44,8 +49,39 @@ export default function ShowingsClient({
   const [requests, setRequests] = useState(initialRequests)
   const [showings, setShowings] = useState(initialShowings)
   const [isSyncing, startSync] = useTransition()
+  const [scheduleOpen, setScheduleOpen] = useState(false)
+  const [contactId, setContactId] = useState("")
+  const [scheduleDate, setScheduleDate] = useState("")
+  const [scheduleTime, setScheduleTime] = useState("")
+  const [isScheduling, startSchedule] = useTransition()
 
   const fullAddress = [listing.address, listing.city, listing.state].filter(Boolean).join(", ")
+
+  function handleScheduleShowing() {
+    if (!contactId || !scheduleDate || !scheduleTime) {
+      toast.error("Please fill in all fields")
+      return
+    }
+    startSchedule(async () => {
+      const result = await createShowing({
+        contactId,
+        propertyId: listing.id,
+        propertyAddress: fullAddress,
+        scheduledDate: scheduleDate,
+        scheduledTime: scheduleTime,
+        agentId: agentUserId,
+      })
+      if (result.success) {
+        toast.success("Showing scheduled")
+        setScheduleOpen(false)
+        setContactId("")
+        setScheduleDate("")
+        setScheduleTime("")
+      } else {
+        toast.error(result.error ?? "Failed to schedule showing")
+      }
+    })
+  }
 
   function handleSync() {
     if (!mode.credentialId) return
@@ -61,24 +97,79 @@ export default function ShowingsClient({
 
   return (
     <div className="flex flex-col gap-6 p-6">
+      {/* Schedule Showing Dialog */}
+      <Dialog open={scheduleOpen} onOpenChange={setScheduleOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Schedule Showing</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="contact-id">Buyer Contact ID</Label>
+              <Input
+                id="contact-id"
+                placeholder="Contact UUID..."
+                value={contactId}
+                onChange={e => setContactId(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="sched-date">Date</Label>
+              <Input
+                id="sched-date"
+                type="date"
+                value={scheduleDate}
+                onChange={e => setScheduleDate(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="sched-time">Time</Label>
+              <Input
+                id="sched-time"
+                type="time"
+                value={scheduleTime}
+                onChange={e => setScheduleTime(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setScheduleOpen(false)}>Cancel</Button>
+            <Button onClick={handleScheduleShowing} disabled={isScheduling}>
+              {isScheduling ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <CalendarCheck className="h-4 w-4 mr-1.5" />}
+              Confirm Showing
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Header */}
       <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-foreground">Showings</h1>
           <p className="text-sm text-muted-foreground">{fullAddress}</p>
         </div>
-        {mode.mode === "showingtime" && (
+        <div className="flex gap-2">
           <Button
-            variant="outline"
             size="sm"
-            onClick={handleSync}
-            disabled={isSyncing}
+            onClick={() => setScheduleOpen(true)}
             className="gap-2"
           >
-            <RefreshCw className={`h-4 w-4 ${isSyncing ? "animate-spin" : ""}`} />
-            Sync from ShowingTime
+            <Plus className="h-4 w-4" />
+            Schedule Showing
           </Button>
-        )}
+          {mode.mode === "showingtime" && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleSync}
+              disabled={isSyncing}
+              className="gap-2"
+            >
+              <RefreshCw className={`h-4 w-4 ${isSyncing ? "animate-spin" : ""}`} />
+              Sync from ShowingTime
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* ShowingTime / Manual mode banner */}

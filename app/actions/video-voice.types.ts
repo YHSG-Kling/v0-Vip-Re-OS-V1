@@ -22,6 +22,7 @@ export interface VoiceProfile {
   is_default: boolean
   created_at: string
   updated_at: string
+  voice_clone_training?: Array<{ sample_manifest: SampleManifest | null }>
 }
 
 export interface SamplePhrase {
@@ -34,12 +35,13 @@ export interface SamplePhrase {
 }
 
 export interface SampleManifest {
-  total_samples: number
-  samples: Array<{
+  total_samples?: number
+  samples?: Array<{
     phrase: string
     url: string
     duration_seconds: number
   }>
+  phrases?: SamplePhrase[]
 }
 
 export interface VoiceTrainingJob {

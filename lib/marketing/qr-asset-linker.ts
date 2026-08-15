@@ -29,6 +29,20 @@ export type QrPlacementType =
   | "website"
   | "other"
 
+/** Wave 36 — canonical semantic of where a QR scan lands. target_url is
+ *  the runtime URL; this enum is what analytics aggregates over. The
+ *  CHECK constraint on qr_codes.destination_type (m148) is the source
+ *  of truth for the allowed values. */
+export type QrDestinationType =
+  | "landing_page"
+  | "video_avatar_tour"
+  | "cma_form"
+  | "listing_detail"
+  | "book_meeting"
+  | "podcast_episode"
+  | "anniversary_video"
+  | "other"
+
 export interface QrLinkParams {
   marketingAssetId: string
   qrCodeId: string
@@ -131,16 +145,12 @@ export async function linkQrToAsset(
   // Emit kernel event
   await processKernelEvent({
     event: KernelEvent.QR_ATTACHED_TO_ASSET,
-    brokerageId,
+    brokerageId: brokerageId ?? "",
     entityType: "marketing_asset",
     entityId: params.marketingAssetId,
-    metadata: {
-      qr_code_id: params.qrCodeId,
-      placement_type: params.placementType,
-    },
   }).catch((err) => console.error("[QrAssetLinker] Kernel event failed:", err))
 
-  return { success: true, linkId: link.id }
+  return { success: true, linkId: link.id ?? "" }
 }
 
 // ─── UNLINK QR FROM ASSET ─────────────────────────────────────────────────────
@@ -311,6 +321,7 @@ export async function getQrCodePerformance(
  */
 export async function listAvailableQrCodes(filters?: {
   purpose?: string
+  destinationType?: QrDestinationType
   listingId?: string
   search?: string
 }): Promise<{
@@ -321,6 +332,7 @@ export async function listAvailableQrCodes(filters?: {
     slug: string
     targetUrl: string
     purpose: string
+    destinationType: QrDestinationType | null
     scanCount: number
     leadCount: number
     linkedAssetCount: number
@@ -338,6 +350,7 @@ export async function listAvailableQrCodes(filters?: {
       slug,
       target_url,
       purpose,
+      destination_type,
       scan_count,
       lead_count,
       asset_links:marketing_asset_qr_links(count)
@@ -348,6 +361,9 @@ export async function listAvailableQrCodes(filters?: {
 
   if (filters?.purpose) {
     query = query.eq("purpose", filters.purpose)
+  }
+  if (filters?.destinationType) {
+    query = query.eq("destination_type", filters.destinationType)
   }
   if (filters?.listingId) {
     query = query.eq("listing_id", filters.listingId)
@@ -369,6 +385,7 @@ export async function listAvailableQrCodes(filters?: {
     slug: qr.slug ?? "",
     targetUrl: qr.target_url ?? "",
     purpose: qr.purpose ?? "general",
+    destinationType: (qr.destination_type ?? null) as QrDestinationType | null,
     scanCount: qr.scan_count ?? 0,
     leadCount: qr.lead_count ?? 0,
     linkedAssetCount: (qr.asset_links as any)?.[0]?.count ?? 0,

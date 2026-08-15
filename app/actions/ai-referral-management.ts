@@ -2,12 +2,13 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { generateObject } from "ai"
+import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
+import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 
 // ============================================
 // AI REFERRAL MANAGEMENT
@@ -36,7 +37,7 @@ export async function identifyReferralOpportunities(agentId: string) {
         referrals(*)
       `)
       .eq("agent_id", agentId)
-      .in("stage", ["closed", "past_client", "sphere"])
+      .in("stage", ["closed", LIFETIME_CUSTOMER_TYPE, "sphere"])
       .order("last_interaction_date", { ascending: false })
       .limit(100)
 

@@ -1,1 +1,1 @@
-export { default as DescriptionApprovalCard } from './description-approval-card'
+export { DescriptionApprovalCard } from './description-approval-card'

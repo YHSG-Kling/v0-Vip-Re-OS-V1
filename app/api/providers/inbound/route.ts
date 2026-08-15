@@ -162,7 +162,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             brokerageId: inbound.brokerageId,
           }),
         })
-        .catch(() => {})
+        .then(() => {}, () => {})
     }
   }
 

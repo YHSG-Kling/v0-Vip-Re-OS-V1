@@ -19,6 +19,8 @@ import { FeatureEntitlementList } from "@/app/components/features/admin/feature-
  * - Cost tracking
  */
 
+export const dynamic = "force-dynamic"
+
 export default async function BillingAdminPage({
   searchParams,
 }: {

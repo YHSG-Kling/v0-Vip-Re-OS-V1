@@ -55,7 +55,11 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
   const adminUserType = "admin"
 
   try {
-    // Step 1: Create brokerage — only insert columns that exist in schema
+    // Step 1: Create brokerage — set plan_tier so fair-use enforcement
+    // (lib/ai/fair-use.ts via brokerages.plan_tier → plan_limits) immediately
+    // applies the correct monthly AI token ceiling. Without this the new
+    // brokerage falls back to NULL → solo_agent default, which silently
+    // under-caps team / brokerage / multi_location tiers.
     const { data: brokerage, error: bErr } = await service
       .from("brokerages")
       .insert({
@@ -64,6 +68,9 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
         phone: params.brokeragePhone || null,
         city: params.brokerageCity || null,
         state: params.brokerageState || null,
+        plan_tier: params.tierName,
+        signup_source: "superadmin",
+        onboarding_status: "pending",
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
@@ -227,6 +234,24 @@ export async function retrySubscriberInvite(params: {
   adminEmail: string
   brokerageId: string
 }): Promise<{ success: boolean; error?: string }> {
+  // Superadmin-only — previously this was wide open and let any client
+  // send Supabase invite emails to any address attached to any brokerage_id.
+  const supabase = await createClient()
+  const { data: { user: callerUser } } = await supabase.auth.getUser()
+  if (!callerUser) return { success: false, error: "Unauthenticated" }
+
+  const { data: callerProfile } = await supabase
+    .from("users")
+    .select("user_type, role, platform_role")
+    .eq("id", callerUser.id)
+    .single()
+
+  const callerType =
+    callerProfile?.platform_role ?? callerProfile?.user_type ?? callerProfile?.role
+  if (callerType !== "superadmin") {
+    return { success: false, error: "Forbidden: superadmin only" }
+  }
+
   const service = createServiceClient()
   try {
     await service.auth.admin.inviteUserByEmail(params.adminEmail, {

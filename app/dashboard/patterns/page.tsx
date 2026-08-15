@@ -33,7 +33,7 @@ export default async function PatternsPage() {
     <PatternsDashboardClient
       initialPatterns={patterns}
       initialAccuracyStats={accuracyStats}
-      brokerageId={brokerageId}
+      brokerageId={brokerageId ?? ""}
     />
   )
 }

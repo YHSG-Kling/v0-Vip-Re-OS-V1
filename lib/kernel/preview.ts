@@ -117,7 +117,7 @@ export async function renderCapabilityPreview(
   let featureAccess: FeatureAccessCheck | null = null
   if (featureKey) {
     try {
-      featureAccess = await canAccessFeature(featureKey, context.brokerageId, context.userType)
+      featureAccess = await canAccessFeature(context.userId, featureKey)
       if (!featureAccess.allowed) {
         return {
           rbac,

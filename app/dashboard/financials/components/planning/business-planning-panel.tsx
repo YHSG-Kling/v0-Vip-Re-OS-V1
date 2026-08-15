@@ -38,14 +38,14 @@ export function BusinessPlanningPanel({
   const handleGeneratePlan = async () => {
     setGenerating(true)
     try {
-      const result = await generateSmartResponse({
+      const result = await (generateSmartResponse as any)({
         agentId,
         context: `Business planning for real estate agent. YTD GCI: $${ytdGCI.toLocaleString()}, ${ytdTransactionCount} deals closed, expenses: $${ytdExpenses.toLocaleString()}, annual target: $${annualTarget.toLocaleString()}.`,
         prompt: `Create a 90-day business plan for a real estate agent with these metrics: YTD GCI $${ytdGCI.toLocaleString()}, ${ytdTransactionCount} deals closed, expenses $${ytdExpenses.toLocaleString()}. Annual target: $${annualTarget.toLocaleString()}. Include: lead generation plan, marketing actions, relationship touchpoints, financial discipline steps. Be specific and actionable.`,
         responseType: "plan",
       })
-      if (result.response) {
-        setAiPlan(result.response)
+      if ((result as any).draft) {
+        setAiPlan((result as any).draft)
       }
     } catch (error) {
       console.error("Error generating business plan:", error)

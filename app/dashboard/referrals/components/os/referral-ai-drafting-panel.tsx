@@ -32,7 +32,7 @@ export function ReferralAiDraftingPanel({
 }: ReferralAiDraftingPanelProps) {
   const [isPending, startTransition] = useTransition()
   const [context, setContext] = useState<string>("")
-  const [relationshipType, setRelationshipType] = useState<string>("past-client")
+  const [relationshipType, setRelationshipType] = useState<string>("lifetime-customer")
   const [draft, setDraft] = useState<string>("")
   const [brandVoice, setBrandVoice] = useState<any>(null)
   const [complianceResult, setComplianceResult] = useState<{
@@ -60,11 +60,11 @@ export function ReferralAiDraftingPanel({
         touchpointType: "referral_ask",
       })
 
-      if (touchpointResult.success && touchpointResult.message) {
-        setDraft(touchpointResult.message)
+      if (touchpointResult.success && (touchpointResult as any).data?.message) {
+        setDraft((touchpointResult as any).data?.message ?? "")
 
         // Check compliance
-        const compliance = await checkThemFirstCompliance(touchpointResult.message)
+        const compliance = await checkThemFirstCompliance((touchpointResult as any).data?.message ?? "")
         setComplianceResult(compliance)
       }
     })
@@ -114,7 +114,7 @@ export function ReferralAiDraftingPanel({
             <SelectContent>
               <SelectItem value="friend">Friend</SelectItem>
               <SelectItem value="family">Family</SelectItem>
-              <SelectItem value="past-client">Past Client</SelectItem>
+              <SelectItem value="lifetime-customer">Lifetime Customer</SelectItem>
               <SelectItem value="colleague">Colleague</SelectItem>
             </SelectContent>
           </Select>

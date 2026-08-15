@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Mail, Video, FileText, Phone, MessageSquare, PlayCircle, PauseCircle, TestTube } from "lucide-react"
@@ -8,11 +9,13 @@ import { toggleCampaignStatus, sendCampaignTestTouch } from "@/app/actions/ai-is
 import type { ISACampaignRow } from "@/app/actions/ai-isa"
 
 const TYPE_BADGE: Record<string, string> = {
-  FSBO:           "bg-orange-100 text-orange-800 border-orange-300",
-  BUYER_MATCH:    "bg-blue-100 text-blue-800 border-blue-300",
-  DIVORCE:        "bg-red-100 text-red-800 border-red-300",
-  FORECLOSURE:    "bg-purple-100 text-purple-800 border-purple-300",
-  GHOST_RECOVERY: "bg-yellow-100 text-yellow-800 border-yellow-300",
+  fsbo:           "bg-orange-100 text-orange-800 border-orange-300",
+  buyer_match:    "bg-blue-100 text-blue-800 border-blue-300",
+  divorce:        "bg-red-100 text-red-800 border-red-300",
+  foreclosure:    "bg-purple-100 text-purple-800 border-purple-300",
+  ghost_recovery: "bg-yellow-100 text-yellow-800 border-yellow-300",
+  social_intent:  "bg-pink-100 text-pink-800 border-pink-300",
+  search_intent:  "bg-teal-100 text-teal-800 border-teal-300",
 }
 
 const CHANNEL_ICON: Record<string, React.ReactNode> = {
@@ -29,6 +32,7 @@ interface Props {
 }
 
 export function CampaignCard({ campaign, onStatusChange }: Props) {
+  const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [testLoading, setTestLoading] = useState(false)
   const [testResult, setTestResult] = useState<string | null>(null)
@@ -79,10 +83,17 @@ export function CampaignCard({ campaign, onStatusChange }: Props) {
         </span>
       </div>
 
-      {/* Channel icons */}
+      {/* Channel icons — clickable to open campaign settings for that channel */}
       <div className="flex items-center gap-2">
         {(campaign.channels ?? []).map((ch) => (
-          <span key={ch} title={ch}>{CHANNEL_ICON[ch] ?? null}</span>
+          <button
+            key={ch}
+            title={`Configure ${ch} channel`}
+            className="p-1 rounded hover:bg-accent transition-colors cursor-pointer"
+            onClick={() => router.push(`/dashboard/isa/campaigns/${campaign.id}?channel=${ch}`)}
+          >
+            {CHANNEL_ICON[ch] ?? null}
+          </button>
         ))}
       </div>
 

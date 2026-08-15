@@ -45,14 +45,15 @@ export function SmartNoteComposer({
     setAction("draft")
     try {
       const result = await generateSmartResponse({
+        incomingMessage: `Draft an activity note for contact ${contactName}. Include relevant context about recent interactions.`,
         contactId,
         agentId,
-        messageType: "activity_note",
-        context: `Draft an activity note for contact ${contactName}. Include relevant context about recent interactions.`,
-        brandVoice: brandVoice?.tone || "professional",
+        brokerageId: "",
+        channel: "chat",
+        tone: brandVoice?.tone || "professional",
       })
-      if (result.success && result.message) {
-        setNote(result.message)
+      if (result.success && 'draft' in result && result.draft) {
+        setNote(result.draft)
       }
     } catch (err) {
       console.error("Draft generation failed:", err)
@@ -66,8 +67,8 @@ export function SmartNoteComposer({
     setLoading(true)
     setAction("summarize")
     try {
-      const result = await generateCommunicationSummary(contactId, agentId)
-      if (result.success && result.summary) {
+      const result = await generateCommunicationSummary({ contactId, agentId })
+      if (result.success && 'summary' in result && result.summary) {
         setNote(result.summary)
       }
     } catch (err) {
@@ -84,14 +85,15 @@ export function SmartNoteComposer({
     setAction("improve")
     try {
       const result = await generateSmartResponse({
+        incomingMessage: `Improve and polish this note while keeping the same meaning: "${note}"`,
         contactId,
         agentId,
-        messageType: "activity_note",
-        context: `Improve and polish this note while keeping the same meaning: "${note}"`,
-        brandVoice: brandVoice?.tone || "professional",
+        brokerageId: "",
+        channel: "chat",
+        tone: brandVoice?.tone || "professional",
       })
-      if (result.success && result.message) {
-        setNote(result.message)
+      if (result.success && 'draft' in result && result.draft) {
+        setNote(result.draft)
       }
     } catch (err) {
       console.error("Note improvement failed:", err)

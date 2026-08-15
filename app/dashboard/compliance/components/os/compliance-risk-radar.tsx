@@ -110,7 +110,7 @@ export function ComplianceRiskRadar({
             return (
               <div
                 key={signal.label}
-                className={`flex items-center gap-3 rounded-lg p-3 ${severityStyles[signal.severity]}`}
+                className={`flex items-center gap-3 rounded-lg p-3 ${(severityStyles as Record<string, string>)[signal.severity]}`}
               >
                 <Icon className="h-5 w-5" />
                 <div>

@@ -1,6 +1,18 @@
 // lib/social/publisher.ts
 // Platform publishing library for Layer 9.2 Social Media Automation
 // Supports: facebook, instagram, linkedin, twitter, tiktok, youtube, pinterest
+//
+// All social API egress routes through the single connector-gateway (the /ecc:api-connector-builder
+// "one egress path" rule). YouTube is the lone exception: its resumable upload needs the init
+// response's Location header + a binary PUT to that returned URL, neither of which the gateway
+// (parsed body, no header access) can express — so it stays on raw fetch, documented inline.
+
+import { callConnector, type GatewayAuth } from "@/lib/agentic-os/connector-gateway"
+
+/** One social POST through the gateway. Returns the gateway result; callers map the provider shape. */
+function socialPost(connector: string, baseUrl: string, path: string, body: unknown, auth: GatewayAuth, headers?: Record<string, string>) {
+  return callConnector<any>({ connector, baseUrl, path, method: "POST", auth, body, headers })
+}
 
 export interface PublishParams {
   content: string
@@ -41,6 +53,8 @@ export async function publishToSocialPlatform(
         return await publishToYouTube(params)
       case "pinterest":
         return await publishToPinterest(params)
+      case "google_business":
+        return await publishToGoogleBusiness(params)
       default:
         return {
           success: false,
@@ -65,44 +79,19 @@ async function publishToFacebook(params: PublishParams): Promise<PublishResult> 
     : params.content
 
   if (hasMedia) {
-    // Photo/video post
-    const response = await fetch(
-      `https://graph.facebook.com/v18.0/${params.accountId}/photos`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          url: params.mediaUrls![0],
-          caption: content,
-          access_token: params.accessToken,
-        }),
-      }
-    )
-
-    const data = await response.json()
-    if (!response.ok) {
-      throw new Error(data.error?.message || "Facebook API error")
-    }
-    return { success: true, externalPostId: data.id, platform: "facebook" }
+    // Photo/video post — Graph takes access_token as a query param (gateway "query" auth).
+    const res = await socialPost("facebook", "https://graph.facebook.com", `v18.0/${params.accountId}/photos`,
+      { url: params.mediaUrls![0], caption: content },
+      { style: "query", name: "access_token", value: params.accessToken })
+    if (!res.ok) throw new Error(res.error || "Facebook API error")
+    return { success: true, externalPostId: res.data?.id, platform: "facebook" }
   } else {
     // Text post
-    const response = await fetch(
-      `https://graph.facebook.com/v18.0/${params.accountId}/feed`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: content,
-          access_token: params.accessToken,
-        }),
-      }
-    )
-
-    const data = await response.json()
-    if (!response.ok) {
-      throw new Error(data.error?.message || "Facebook API error")
-    }
-    return { success: true, externalPostId: data.id, platform: "facebook" }
+    const res = await socialPost("facebook", "https://graph.facebook.com", `v18.0/${params.accountId}/feed`,
+      { message: content },
+      { style: "query", name: "access_token", value: params.accessToken })
+    if (!res.ok) throw new Error(res.error || "Facebook API error")
+    return { success: true, externalPostId: res.data?.id, platform: "facebook" }
   }
 }
 
@@ -115,43 +104,18 @@ async function publishToInstagram(params: PublishParams): Promise<PublishResult>
     ? `${params.content}\n\n${params.hashtags.map((h) => `#${h}`).join(" ")}`
     : params.content
 
-  // Step 1: Create media container
-  const containerResponse = await fetch(
-    `https://graph.facebook.com/v18.0/${params.accountId}/media`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        image_url: params.mediaUrls[0],
-        caption,
-        access_token: params.accessToken,
-      }),
-    }
-  )
+  const igAuth: GatewayAuth = { style: "query", name: "access_token", value: params.accessToken }
 
-  const containerData = await containerResponse.json()
-  if (!containerResponse.ok) {
-    throw new Error(containerData.error?.message || "Instagram container error")
-  }
+  // Step 1: Create media container
+  const containerRes = await socialPost("instagram", "https://graph.facebook.com", `v18.0/${params.accountId}/media`,
+    { image_url: params.mediaUrls[0], caption }, igAuth)
+  if (!containerRes.ok) throw new Error(containerRes.error || "Instagram container error")
 
   // Step 2: Publish container
-  const publishResponse = await fetch(
-    `https://graph.facebook.com/v18.0/${params.accountId}/media_publish`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        creation_id: containerData.id,
-        access_token: params.accessToken,
-      }),
-    }
-  )
-
-  const publishData = await publishResponse.json()
-  if (!publishResponse.ok) {
-    throw new Error(publishData.error?.message || "Instagram publish error")
-  }
-  return { success: true, externalPostId: publishData.id, platform: "instagram" }
+  const publishRes = await socialPost("instagram", "https://graph.facebook.com", `v18.0/${params.accountId}/media_publish`,
+    { creation_id: containerRes.data?.id }, igAuth)
+  if (!publishRes.ok) throw new Error(publishRes.error || "Instagram publish error")
+  return { success: true, externalPostId: publishRes.data?.id, platform: "instagram" }
 }
 
 async function publishToLinkedIn(params: PublishParams): Promise<PublishResult> {
@@ -180,21 +144,11 @@ async function publishToLinkedIn(params: PublishParams): Promise<PublishResult> 
     ]
   }
 
-  const response = await fetch("https://api.linkedin.com/v2/ugcPosts", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${params.accessToken}`,
-      "Content-Type": "application/json",
-      "X-Restli-Protocol-Version": "2.0.0",
-    },
-    body: JSON.stringify(shareData),
-  })
-
-  const data = await response.json()
-  if (!response.ok) {
-    throw new Error(data.message || "LinkedIn API error")
-  }
-  return { success: true, externalPostId: data.id, platform: "linkedin" }
+  const res = await socialPost("linkedin", "https://api.linkedin.com", "v2/ugcPosts", shareData,
+    { style: "bearer", token: params.accessToken },
+    { "X-Restli-Protocol-Version": "2.0.0" })
+  if (!res.ok) throw new Error(res.error || "LinkedIn API error")
+  return { success: true, externalPostId: res.data?.id, platform: "linkedin" }
 }
 
 async function publishToTwitter(params: PublishParams): Promise<PublishResult> {
@@ -210,20 +164,10 @@ async function publishToTwitter(params: PublishParams): Promise<PublishResult> {
   // Note: Twitter requires uploading media first via media/upload endpoint
   // This is a simplified version - media_ids would need to be obtained separately
 
-  const response = await fetch("https://api.twitter.com/2/tweets", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${params.accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(tweetData),
-  })
-
-  const data = await response.json()
-  if (!response.ok) {
-    throw new Error(data.detail || data.title || "Twitter API error")
-  }
-  return { success: true, externalPostId: data.data?.id, platform: "twitter" }
+  const res = await socialPost("twitter", "https://api.twitter.com", "2/tweets", tweetData,
+    { style: "bearer", token: params.accessToken })
+  if (!res.ok) throw new Error(res.error || "Twitter API error")
+  return { success: true, externalPostId: res.data?.data?.id, platform: "twitter" }
 }
 
 async function publishToTikTok(params: PublishParams): Promise<PublishResult> {
@@ -233,35 +177,21 @@ async function publishToTikTok(params: PublishParams): Promise<PublishResult> {
 
   // TikTok requires video content
   // This uses the TikTok Content Posting API
-  const response = await fetch(
-    "https://open.tiktokapis.com/v2/post/publish/video/init/",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${params.accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        post_info: {
-          title: params.content.substring(0, 150),
-          privacy_level: "PUBLIC_TO_EVERYONE",
-          disable_duet: false,
-          disable_comment: false,
-          disable_stitch: false,
-        },
-        source_info: {
-          source: "PULL_FROM_URL",
-          video_url: params.mediaUrls[0],
-        },
-      }),
-    }
-  )
-
-  const data = await response.json()
-  if (!response.ok || data.error?.code) {
-    throw new Error(data.error?.message || "TikTok API error")
-  }
-  return { success: true, externalPostId: data.data?.publish_id, platform: "tiktok" }
+  const res = await socialPost("tiktok", "https://open.tiktokapis.com", "v2/post/publish/video/init/", {
+    post_info: {
+      title: params.content.substring(0, 150),
+      privacy_level: "PUBLIC_TO_EVERYONE",
+      disable_duet: false,
+      disable_comment: false,
+      disable_stitch: false,
+    },
+    source_info: { source: "PULL_FROM_URL", video_url: params.mediaUrls[0] },
+  }, { style: "bearer", token: params.accessToken })
+  // TikTok returns 200 with error.code on business errors — but code "ok" means SUCCESS, so only
+  // treat a non-"ok" code as a failure.
+  const tkCode = res.data?.error?.code
+  if (!res.ok || (tkCode && tkCode !== "ok")) throw new Error(res.data?.error?.message || res.error || "TikTok API error")
+  return { success: true, externalPostId: res.data?.data?.publish_id, platform: "tiktok" }
 }
 
 async function publishToYouTube(params: PublishParams): Promise<PublishResult> {
@@ -269,50 +199,65 @@ async function publishToYouTube(params: PublishParams): Promise<PublishResult> {
     throw new Error("YouTube requires video media")
   }
 
-  // YouTube requires OAuth 2.0 and video upload via resumable upload
-  // This is a simplified placeholder - real implementation needs multi-step upload
+  // YouTube uses a resumable upload: the init call returns the upload URL in the Location response
+  // HEADER, then video bytes are PUT to that URL. Now fully on the gateway — the init reads
+  // res.headers.location, and the byte PUT uses the gateway's absolute-url override.
   const description = params.hashtags?.length
     ? `${params.content}\n\n${params.hashtags.map((h) => `#${h}`).join(" ")}`
     : params.content
 
   // Initialize upload
-  const initResponse = await fetch(
-    "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${params.accessToken}`,
-        "Content-Type": "application/json",
-        "X-Upload-Content-Type": "video/*",
+  const initResponse = await callConnector<{ error?: { message?: string } }>({
+    connector: "youtube",
+    baseUrl: "https://www.googleapis.com",
+    path: "/upload/youtube/v3/videos",
+    method: "POST",
+    query: { uploadType: "resumable", part: "snippet,status" },
+    auth: { style: "bearer", token: params.accessToken },
+    headers: { "X-Upload-Content-Type": "video/*" },
+    body: {
+      snippet: {
+        title: params.content.substring(0, 100),
+        description,
+        tags: params.hashtags || [],
+        categoryId: "22", // People & Blogs
       },
-      body: JSON.stringify({
-        snippet: {
-          title: params.content.substring(0, 100),
-          description,
-          tags: params.hashtags || [],
-          categoryId: "22", // People & Blogs
-        },
-        status: {
-          privacyStatus: "public",
-          selfDeclaredMadeForKids: false,
-        },
-      }),
-    }
-  )
+      status: {
+        privacyStatus: "public",
+        selfDeclaredMadeForKids: false,
+      },
+    },
+  })
 
   if (!initResponse.ok) {
-    const error = await initResponse.json()
-    throw new Error(error.error?.message || "YouTube API error")
+    throw new Error(initResponse.error || "YouTube API error")
   }
 
-  // In production, you would continue with the resumable upload
-  // For now, return success with the upload location
-  const uploadUrl = initResponse.headers.get("Location")
-  return {
-    success: true,
-    externalPostId: uploadUrl || "pending",
-    platform: "youtube",
+  const uploadUrl = initResponse.headers["location"]
+  if (!uploadUrl) throw new Error("YouTube did not return an upload URL")
+
+  // Fetch the source video bytes through the gateway (absolute-url download).
+  const videoResponse = await callConnector<Buffer>({
+    connector: "asset-download", baseUrl: "", path: "", url: params.mediaUrls![0],
+    method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 60_000,
+  })
+  if (!videoResponse.ok || !videoResponse.data) throw new Error("Could not fetch video for YouTube upload")
+  const videoBuffer = videoResponse.data
+
+  // PUT the bytes to the vendor-provided resumable URL (absolute-url override).
+  const uploadResponse = await callConnector<{ id?: string }>({
+    connector: "youtube", baseUrl: "", path: "", url: uploadUrl, method: "PUT",
+    auth: { style: "none" },
+    headers: { "Content-Type": "video/*", "Content-Length": String(videoBuffer.byteLength) },
+    body: videoBuffer, bodyType: "binary",
+    timeoutMs: 120_000,
+  })
+
+  if (!uploadResponse.ok) {
+    throw new Error(uploadResponse.error || "YouTube upload failed")
   }
+
+  return { success: true, externalPostId: uploadResponse.data?.id, platform: "youtube" }
 }
 
 async function publishToPinterest(params: PublishParams): Promise<PublishResult> {
@@ -325,28 +270,35 @@ async function publishToPinterest(params: PublishParams): Promise<PublishResult>
     : params.content
 
   // Pinterest Pins API
-  const response = await fetch("https://api.pinterest.com/v5/pins", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${params.accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      board_id: params.accountId, // Pinterest uses board_id for posting
-      media_source: {
-        source_type: "image_url",
-        url: params.mediaUrls[0],
-      },
-      description,
-      title: params.content.substring(0, 100),
-    }),
-  })
+  const res = await socialPost("pinterest", "https://api.pinterest.com", "v5/pins", {
+    board_id: params.accountId, // Pinterest uses board_id for posting
+    media_source: { source_type: "image_url", url: params.mediaUrls[0] },
+    description,
+    title: params.content.substring(0, 100),
+  }, { style: "bearer", token: params.accessToken })
+  if (!res.ok) throw new Error(res.error || "Pinterest API error")
+  return { success: true, externalPostId: res.data?.id, platform: "pinterest" }
+}
 
-  const data = await response.json()
-  if (!response.ok) {
-    throw new Error(data.message || "Pinterest API error")
+async function publishToGoogleBusiness(params: PublishParams): Promise<PublishResult> {
+  // accountId stored as "accounts/{id}/locations/{id}" after OAuth
+  const locationName = params.accountId
+
+  const body: Record<string, any> = {
+    languageCode: "en-US",
+    summary: params.content.substring(0, 1500), // GMB max 1500 chars
+    callToAction: { actionType: "LEARN_MORE" },
   }
-  return { success: true, externalPostId: data.id, platform: "pinterest" }
+
+  if (params.mediaUrls && params.mediaUrls.length > 0) {
+    body.media = [{ mediaFormat: "PHOTO", sourceUrl: params.mediaUrls[0] }]
+  }
+
+  const res = await socialPost("google_business", "https://mybusiness.googleapis.com", `v4/${locationName}/localPosts`,
+    body, { style: "bearer", token: params.accessToken })
+  if (!res.ok) throw new Error(res.error || "Google Business API error")
+  // data.name = "accounts/123/locations/456/localPosts/789"
+  return { success: true, externalPostId: res.data?.name, platform: "google_business" }
 }
 
 /**
@@ -368,6 +320,7 @@ export function validateContentForPlatform(
     tiktok: { maxLength: 2200, requiresMedia: true, mediaTypes: ["video"] },
     youtube: { maxLength: 5000, requiresMedia: true, mediaTypes: ["video"] },
     pinterest: { maxLength: 500, requiresMedia: true, mediaTypes: ["image"] },
+    google_business: { maxLength: 1500, requiresMedia: false },
   }
 
   const req = platformRequirements[platform.toLowerCase()]

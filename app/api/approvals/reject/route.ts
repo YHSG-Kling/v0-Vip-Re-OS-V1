@@ -1,59 +1,46 @@
 import { createClient } from "@/lib/supabase/server"
+import { requireAuth } from "@/lib/kernel/api-auth"
 import { NextResponse } from "next/server"
+import { cascadeReject } from "@/lib/kernel/approval-queue-aggregator"
 
+/**
+ * Reject endpoint — cascades to the right source table based on the
+ * prefixed id. Same routing as /approve; flips approval_status to
+ * 'rejected' on the source row (or publish_status='rejected' for blog).
+ */
 export async function POST(request: Request) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
+
   try {
-    const supabase = await createClient()
-
-    // Check authentication
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
-
-    // Parse request body
     const body = await request.json()
-    const { id, agent_id, reason } = body
+    const { id, reason } = body
 
-    if (!id || !agent_id) {
-      return NextResponse.json({ error: "Missing required fields: id, agent_id" }, { status: 400 })
+    if (!id || typeof id !== "string") {
+      return NextResponse.json({ error: "Missing required field: id" }, { status: 400 })
     }
 
-    // Verify the approval item belongs to the agent
-    const { data: existingItem, error: fetchError } = await supabase
-      .from("approval_items")
-      .select("*")
-      .eq("id", id)
-      .eq("agent_id", agent_id)
-      .single()
+    const agentScopeId =
+      auth.userType === "agent" && auth.agentId ? auth.agentId : null
 
-    if (fetchError || !existingItem) {
-      return NextResponse.json({ error: "Approval item not found" }, { status: 404 })
+    const result = await cascadeReject(id, {
+      brokerageId: auth.brokerageId,
+      agentScopeId,
+      reviewerUserId: auth.userId,
+      notes: reason,
+    })
+
+    if (!result.success) {
+      return NextResponse.json(
+        { error: result.error ?? "Failed to reject item" },
+        { status: 400 },
+      )
     }
 
-    // Update approval item
-    const { error: updateError } = await supabase
-      .from("approval_items")
-      .update({
-        status: "rejected",
-        approved_by: user.id,
-        approved_at: new Date().toISOString(),
-        notes: reason || null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", id)
-
-    if (updateError) {
-      console.error("[v0] Error rejecting item:", updateError)
-      return NextResponse.json({ error: "Failed to reject item" }, { status: 500 })
-    }
-
-    return NextResponse.json({ success: true })
+    return NextResponse.json({ success: true, type: result.type, target_id: result.targetId })
   } catch (error) {
-    console.error("[v0] Unexpected error in reject endpoint:", error)
+    console.error("[Approvals Reject] Unexpected error:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }

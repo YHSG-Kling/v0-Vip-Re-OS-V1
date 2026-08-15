@@ -32,19 +32,21 @@ interface ShowRateIssue {
 }
 
 interface AppointmentCoachingPanelProps {
-  metrics: AppointmentMetric[]
-  showRateIssues: ShowRateIssue[]
-  overallShowRate: number
-  appointmentsSet: number
-  appointmentsKept: number
+  metrics?: AppointmentMetric[]
+  showRateIssues?: ShowRateIssue[]
+  overallShowRate?: number
+  appointmentsSet?: number
+  appointmentsKept?: number
+  agentId?: string
+  brokerageId?: string
 }
 
 export function AppointmentCoachingPanel({
-  metrics,
-  showRateIssues,
-  overallShowRate,
-  appointmentsSet,
-  appointmentsKept,
+  metrics = [],
+  showRateIssues = [],
+  overallShowRate = 0,
+  appointmentsSet = 0,
+  appointmentsKept = 0,
 }: AppointmentCoachingPanelProps) {
   const showRateColor =
     overallShowRate >= 80 ? "text-green-600" : overallShowRate >= 60 ? "text-amber-600" : "text-red-600"
@@ -144,7 +146,7 @@ export function AppointmentCoachingPanel({
                 <div className="space-y-1">
                   <div className="flex items-center gap-2">
                     <Link
-                      href={`/contacts/${issue.contact_id}`}
+                      href={`/crm/contacts/${issue.contact_id}`}
                       className="text-sm font-medium hover:underline"
                     >
                       {issue.contact_name}
@@ -160,7 +162,7 @@ export function AppointmentCoachingPanel({
                   </div>
                 </div>
                 <Button variant="outline" size="sm" asChild>
-                  <Link href={`/contacts/${issue.contact_id}`}>
+                  <Link href={`/crm/contacts/${issue.contact_id}`}>
                     <UserCheck className="mr-1 h-4 w-4" />
                     Confirm
                   </Link>

@@ -3,7 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Sparkles, Phone, MessageSquare, Mail, Home, FileText } from "lucide-react"
+import { Sparkles, Phone, MessageSquare, Mail, Home, FileText, FilePlus } from "lucide-react"
 import Link from "next/link"
 
 interface SuggestedAction {
@@ -21,6 +21,7 @@ interface NextBestActionPanelProps {
   onSendMessage: (channel: string) => void
   onLogActivity: () => void
   onOpenPortal: () => void
+  onCreateOffer?: () => void
 }
 
 export function NextBestActionPanel({
@@ -31,6 +32,7 @@ export function NextBestActionPanel({
   onSendMessage,
   onLogActivity,
   onOpenPortal,
+  onCreateOffer,
 }: NextBestActionPanelProps) {
   const topAction = suggestedActions[0]
   const remainingActions = suggestedActions.slice(1, 3)
@@ -91,6 +93,12 @@ export function NextBestActionPanel({
             <FileText className="h-4 w-4 mr-1" />
             Log Activity
           </Button>
+          {onCreateOffer && (
+            <Button variant="outline" size="sm" onClick={onCreateOffer}>
+              <FilePlus className="h-4 w-4 mr-1" />
+              Create Offer
+            </Button>
+          )}
         </div>
 
         {/* Remaining suggestions */}

@@ -1,55 +1,56 @@
 import { redirect } from "next/navigation"
-import { getListingMedia, getSocialPosts, getVideoProjects, getVideoTemplates, getSocialAccounts } from "@/app/actions/listing-media"
-import { MediaManagerClient } from "./media-manager-client"
 import { getAgentContext } from "@/lib/identity"
-import { toCanonicalRoleOrDefault } from "@/lib/security"
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
+import { AutomationsClient } from "./automations-client"
 
-interface PageProps {
-  params: Promise<{ id: string }>
-}
+export const metadata = { title: "Workflow Automations | Admin" }
 
-export default async function ListingMediaPage({ params }: PageProps) {
-  const { id: listingId } = await params
-
-  // Kernel OS: getAgentContext — canonical identity resolution
+export default async function AutomationsPage() {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) redirect("/login")
   if (!ctx.brokerageId) redirect("/dashboard")
 
-  // toCanonicalRoleOrDefault handles legacy DB values (TC → tc etc.)
-  const userRole = toCanonicalRoleOrDefault(ctx.userType, "agent")
+  // Gate: admin/broker only
+  const allowedRoles = ["admin", "broker", "superadmin"]
+  if (!allowedRoles.includes(ctx.userType)) redirect("/dashboard")
 
-  const supabase = await createClient()
+  const service = createServiceClient()
 
-  const { data: listing } = await supabase
-    .from("listings")
-    .select("id, address, lifecycle_stage, status")
-    .eq("id", listingId)
-    .eq("brokerage_id", ctx.brokerageId)
-    .single()
-  if (!listing) redirect("/dashboard/listings")
+  const [automationsResult, errorsResult] = await Promise.all([
+    service
+      .from("workflow_automations")
+      .select("*")
+      .eq("brokerage_id", ctx.brokerageId)
+      .order("created_at", { ascending: false }),
+    service
+      .from("workflow_executions")
+      .select("id, workflow_name, error_message, status, started_at")
+      .eq("brokerage_id", ctx.brokerageId)
+      .eq("status", "failed")
+      .order("started_at", { ascending: false })
+      .limit(50),
+  ])
 
-  const [mediaResult, videosResult, socialResult, templatesResult, accountsResult] =
-    await Promise.all([
-      getListingMedia(listingId),
-      getVideoProjects(listingId),
-      getSocialPosts(listingId),
-      getVideoTemplates(),
-      getSocialAccounts(ctx.brokerageId),
-    ])
+  const automations = automationsResult.data ?? []
+
+  // Map workflow_executions failed rows to the AutomationError shape
+  const recentErrors = (errorsResult.data ?? []).map((e) => ({
+    id: e.id,
+    workflow_name: e.workflow_name ?? "Unknown workflow",
+    error_message: e.error_message ?? "Unknown error",
+    severity: "high" as const,
+    status: "open",
+    context_json: undefined,
+    created_at: e.started_at ?? new Date().toISOString(),
+    resolved_at: null,
+  }))
 
   return (
-    <MediaManagerClient
-      listingId={listingId}
-      listing={listing}
+    <AutomationsClient
+      automations={automations}
+      recentErrors={recentErrors}
       brokerageId={ctx.brokerageId}
-      userRole={userRole}
-      initialMedia={mediaResult.data ?? []}
-      initialVideos={videosResult.data ?? []}
-      initialPosts={socialResult.data ?? []}
-      videoTemplates={templatesResult.data ?? []}
-      socialAccounts={accountsResult.data ?? []}
+      currentUserId={ctx.userId}
     />
   )
 }

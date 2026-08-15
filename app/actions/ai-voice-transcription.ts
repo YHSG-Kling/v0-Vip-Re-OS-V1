@@ -1,9 +1,11 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateObject } from "ai"
+import { generateObject } from "@/lib/ai/generate"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
+import { openai } from "@ai-sdk/openai"
 import { z } from "zod"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
@@ -171,22 +173,17 @@ Extract:
       })
     }
 
-    // Log interaction
-    await supabase.from("interactions").insert({
-      contact_id: params.contactId,
-      agent_id: params.agentId,
-      interaction_type: "call",
-      interaction_date: new Date().toISOString(),
-      notes: analysis.summary,
-      outcome: analysis.sentiment === "very_positive" || analysis.sentiment === "positive" ? "positive" : "neutral",
-      metadata: {
-        call_analysis_id: savedAnalysis?.id,
-        duration: params.callDuration,
-        action_items_count: analysis.actionItems.length,
-      },
+    await supabase.from("activities").insert({
+      contact_id:    params.contactId,
+      agent_id:      params.agentId,
+      activity_type: "call",
+      title:         "Call completed",
+      notes:         analysis.summary,
+      outcome:       "completed",
+      status:        "completed",
     })
 
-    revalidatePath(`/contacts/${params.contactId}`)
+    revalidatePath(`/crm/contacts/${params.contactId}`)
 
     return {
       success: true,
@@ -316,41 +313,70 @@ Provide:
   }
 }
 
-// Transcribe audio (mock - would integrate with actual transcription service)
+// Transcribe audio using the Vercel AI SDK (OpenAI Whisper) and persist
+// the result into call_transcriptions.
+//
+// Schema notes: call_transcriptions is keyed by voice_call_id + brokerage_id
+// (both NOT NULL). It carries full_text, speaker_turns (jsonb), word_count,
+// language and transcribed_at — there is no separate "processing/completed"
+// status column. We therefore fetch the audio, transcribe synchronously, and
+// insert a single row when we have the final text. Failures don't write a row.
 export async function transcribeAudio(params: {
+  voiceCallId: string
   audioUrl: string
-  contactId: string
-  agentId: string
-  callType: "inbound" | "outbound"
+  language?: string
 }) {
-  // In production, this would call a transcription API like Deepgram, AssemblyAI, or Whisper
-  // For now, we'll simulate the process
-  
   const supabase = await createClient()
 
   try {
-    // Create pending transcription record
-    const { data: transcription } = await supabase
+    // Look up the parent voice_calls row to recover brokerage_id.
+    const { data: voiceCall, error: lookupErr } = await supabase
+      .from("voice_calls")
+      .select("id, brokerage_id")
+      .eq("id", params.voiceCallId)
+      .maybeSingle()
+
+    if (lookupErr || !voiceCall) {
+      return { success: false, error: "voice_call not found" }
+    }
+
+    const audioResponse = await callConnector<Buffer>({
+      connector: "asset-download", baseUrl: "", path: "", url: params.audioUrl,
+      method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 60_000,
+    })
+    if (!audioResponse.ok || !audioResponse.data) {
+      return { success: false, error: "Could not fetch audio file from URL" }
+    }
+
+    const { experimental_transcribe } = await import("ai")
+    const result = await experimental_transcribe({
+      model: openai.transcription("whisper-1"),
+      audio: new Uint8Array(audioResponse.data),
+    })
+    const transcriptText = result.text
+
+    const { data: transcription, error: insertErr } = await supabase
       .from("call_transcriptions")
       .insert({
-        audio_url: params.audioUrl,
-        contact_id: params.contactId,
-        agent_id: params.agentId,
-        call_type: params.callType,
-        status: "processing",
-        created_at: new Date().toISOString(),
+        voice_call_id: voiceCall.id,
+        brokerage_id: voiceCall.brokerage_id,
+        full_text: transcriptText,
+        speaker_turns: [],
+        word_count: transcriptText.split(/\s+/).filter(Boolean).length,
+        language: params.language ?? null,
+        transcribed_at: new Date().toISOString(),
       })
-      .select()
+      .select("id")
       .single()
 
-    // In production: Call transcription API here
-    // const transcript = await deepgram.transcribe(params.audioUrl)
+    if (insertErr || !transcription) {
+      return { success: false, error: insertErr?.message ?? "Failed to persist transcription" }
+    }
 
     return {
       success: true,
-      transcriptionId: transcription?.id,
-      status: "processing",
-      message: "Transcription started. You will be notified when complete.",
+      transcriptionId: transcription.id,
+      transcript: transcriptText,
     }
   } catch (error) {
     return handleError(error, "transcribeAudio")

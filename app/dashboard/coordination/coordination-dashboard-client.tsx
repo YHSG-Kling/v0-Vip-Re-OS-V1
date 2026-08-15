@@ -160,7 +160,7 @@ export function CoordinationDashboardClient({
   }
   
   const getAgentIcon = (agentType: AgentType) => {
-    const config = AGENT_REGISTRY[agentType]
+    const config = (AGENT_REGISTRY as Record<string, { name: string } | undefined>)[agentType as string]
     if (!config) return <Bot className="h-4 w-4" />
     
     switch (agentType) {
@@ -297,7 +297,7 @@ export function CoordinationDashboardClient({
                           <div className="flex items-center gap-2">
                             {getAgentIcon(session.agent_type)}
                             <span className="font-medium capitalize">
-                              {AGENT_REGISTRY[session.agent_type]?.name || session.agent_type}
+                              {(AGENT_REGISTRY as Record<string, { name: string } | undefined>)[session.agent_type as string]?.name || session.agent_type}
                             </span>
                             {session.human_override && (
                               <Badge variant="outline" className="text-orange-600 border-orange-300">
@@ -477,7 +477,7 @@ export function CoordinationDashboardClient({
                           <div className="flex items-center gap-2">
                             {getAgentIcon(type as AgentType)}
                             <span className="font-medium">
-                              {AGENT_REGISTRY[type as AgentType]?.name || type}
+                              {(AGENT_REGISTRY as Record<string, { name: string } | undefined>)[type as string]?.name || type}
                             </span>
                           </div>
                         </TableCell>

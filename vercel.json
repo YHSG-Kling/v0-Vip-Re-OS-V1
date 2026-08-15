@@ -1,13 +1,39 @@
 {
   "buildCommand": "pnpm install --no-frozen-lockfile && next build",
   "installCommand": "pnpm install --no-frozen-lockfile",
+  "functions": {
+    "app/api/cron/poll-did-videos/route.ts": {
+      "memory": 3008,
+      "maxDuration": 300,
+      "includeFiles": "node_modules/ffmpeg-static/**"
+    },
+    "app/api/internal/remotion/render-just-listed/route.ts": {
+      "memory": 3008,
+      "maxDuration": 300,
+      "includeFiles": "node_modules/@sparticuz/chromium-min/**"
+    },
+    "app/api/cron/listing-promo-hybrid-composite/route.ts": {
+      "memory": 3008,
+      "maxDuration": 300,
+      "includeFiles": "node_modules/ffmpeg-static/**"
+    },
+    "app/api/internal/remotion/render-newsletter-video/route.ts": {
+      "memory": 3008,
+      "maxDuration": 300,
+      "includeFiles": "node_modules/@sparticuz/chromium-min/**"
+    }
+  },
   "crons": [
+    {
+      "path": "/api/cron/connector-health",
+      "schedule": "0 */12 * * *"
+    },
     {
       "path": "/api/cron/dotloop-sync",
       "schedule": "0 */6 * * *"
     },
     {
-      "path": "/api/cron/past-client-touchpoints",
+      "path": "/api/cron/lifetime-customer-touchpoints",
       "schedule": "0 9 * * *"
     },
     {
@@ -19,16 +45,36 @@
       "schedule": "*/15 * * * *"
     },
     {
+      "path": "/api/cron/campaign-sequence-steps",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/cron/lead-scraping",
-      "schedule": "0 */6 * * *"
+      "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/cron/connector-auto-applier",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/actor-health",
+      "schedule": "0 6 * * *"
     },
     {
       "path": "/api/cron/contact-enrichment",
-      "schedule": "0 */6 * * *"
+      "schedule": "0 6 * * *"
     },
     {
       "path": "/api/cron/poll-heygen-videos",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/poll-did-videos",
+      "schedule": "*/2 * * * *"
+    },
+    {
+      "path": "/api/cron/poll-did-avatars",
+      "schedule": "*/3 * * * *"
     },
     {
       "path": "/api/cron/onboarding-reminders",
@@ -45,6 +91,30 @@
     {
       "path": "/api/cron/ghost-detection",
       "schedule": "0 10 * * *"
+    },
+    {
+      "path": "/api/cron/long-term-nurture",
+      "schedule": "0 11 * * 1"
+    },
+    {
+      "path": "/api/cron/predictive-listing-scoring",
+      "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/predictive-listing-execute",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/refresh-market-rates",
+      "schedule": "30 6 * * *"
+    },
+    {
+      "path": "/api/cron/wealth-opportunity-scan",
+      "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/cron/sphere-resonance",
+      "schedule": "30 7 * * *"
     },
     {
       "path": "/api/cron/territory-metrics",
@@ -157,6 +227,162 @@
     {
       "path": "/api/cron/stale-contact-monitor",
       "schedule": "0 11 * * *"
+    },
+    {
+      "path": "/api/cron/annual-home-value-reports",
+      "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/cron/quarterly-home-value-reports",
+      "schedule": "30 7 * * *"
+    },
+    {
+      "path": "/api/cron/closing-orchestration",
+      "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/cron/showing-prep",
+      "schedule": "15 * * * *"
+    },
+    {
+      "path": "/api/cron/gbp-auto-posts",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/weekly-income-digest",
+      "schedule": "0 13 * * 1"
+    },
+    {
+      "path": "/api/cron/sphere-weekly",
+      "schedule": "0 22 * * 0"
+    },
+    {
+      "path": "/api/cron/campaign-orchestrator-weekly",
+      "schedule": "0 7 * * 1"
+    },
+    {
+      "path": "/api/cron/publish-newsletters",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/health-check",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/cron/em-receipt-watcher",
+      "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/cron/weekly-coaching",
+      "schedule": "0 7 * * 1"
+    },
+    {
+      "path": "/api/cron/tenant-safety-scan",
+      "schedule": "0 4 * * *"
+    },
+    {
+      "path": "/api/cron/revenue-protection-rollup",
+      "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/lifetime-npv-forecast-rollup",
+      "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/cron/portal-stream-projector",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/intro-video-email-backfill",
+      "schedule": "*/2 * * * *"
+    },
+    {
+      "path": "/api/cron/listing-promo-social-publish",
+      "schedule": "*/2 * * * *"
+    },
+    {
+      "path": "/api/cron/marketing-agent-weekly",
+      "schedule": "0 9 * * 1"
+    },
+    {
+      "path": "/api/cron/marketing-agent-weekly-measure",
+      "schedule": "30 22 * * 0"
+    },
+    {
+      "path": "/api/cron/open-house-reminder",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/blog-cadence-tick",
+      "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/cron/listing-promo-render",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/listing-promo-hybrid-composite",
+      "schedule": "*/2 * * * *"
+    },
+    {
+      "path": "/api/cron/newsletter-video-render",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/podcast-weekly-auto",
+      "schedule": "0 10 * * 3"
+    },
+    {
+      "path": "/api/cron/content-intel-reddit",
+      "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/content-intel-exa",
+      "schedule": "30 6,14 * * *"
+    },
+    {
+      "path": "/api/cron/content-intel-rss",
+      "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/cron/content-intel-apify",
+      "schedule": "30 7 * * *"
+    },
+    {
+      "path": "/api/cron/content-performance-aggregator",
+      "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/cron/farm-mail-weekly",
+      "schedule": "0 8 * * 4"
+    },
+    {
+      "path": "/api/cron/competitor-ads-exa",
+      "schedule": "0 11 * * *"
+    },
+    {
+      "path": "/api/cron/variant-outcomes-aggregator",
+      "schedule": "30 8 * * *"
+    },
+    {
+      "path": "/api/cron/voice-distiller-weekly",
+      "schedule": "0 9 * * 5"
+    },
+    {
+      "path": "/api/cron/asset-manager-weekly",
+      "schedule": "0 7 * * 1"
+    },
+    {
+      "path": "/api/cron/audience-sync-runner",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/cron/bundle-attribution-rollup",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/letter-audio-renderer",
+      "schedule": "*/15 * * * *"
     }
   ]
 }

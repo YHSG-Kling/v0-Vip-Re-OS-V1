@@ -141,11 +141,11 @@ export async function scheduleISAAppointment(params: {
   }
 
   // ── Step 6: processKernelEvent ───────────────────────────────────────────────
-  await processKernelEvent(KernelEvent.ISA_APPOINTMENT_SCHEDULED, {
+  await processKernelEvent({
+    event: KernelEvent.ISA_APPOINTMENT_SCHEDULED,
     brokerageId: params.brokerageId,
     entityType,
     entityId,
-    calendarEventId: calendarEvent.id,
   })
 
   // ── Step 7: Return calendar_events.id ───────────────────────────────────────

@@ -22,7 +22,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import {
   generatePersonalizedEmail,
   logEmailActivity,
-  generateHeyGenVideo,
+  generateAvatarVideo,
   embedVideoInEmail,
   shouldTriggerDirectMail,
   triggerDirectMailCampaign,
@@ -254,25 +254,29 @@ async function dispatchContactChannel(
       firstName: contact.first_name || 'there',
       lastName: contact.last_name || '',
       email: contact.email,
-      motivation_type: contact.buyer_stage ?? null,
-      property_interest: null,
-      budget_min: null,
-      budget_max: null,
-      timeline: null,
-      lead_score: null,
+      motivation_type: contact.buyer_stage ?? undefined,
+      property_interest: undefined,
+      budget_min: undefined,
+      budget_max: undefined,
+      timeline: undefined,
+      lead_score: undefined,
       brandVoiceBlock: brandVoice.systemBlock,
     }
 
     const { subject, body, fromName } = await generatePersonalizedEmail(emailCtx)
 
-    const videoResult = await generateHeyGenVideo({
+    const videoResult = await generateAvatarVideo({
       leadId: contact.id,
       firstName: contact.first_name || 'there',
-      motivation_type: contact.buyer_stage ?? null,
-      property_interest: null,
-      timeline: null,
+      brokerageId,
+      recipientEmail: contact.email ?? '',
+      motivation_type: contact.buyer_stage ?? undefined,
+      property_interest: undefined,
+      timeline: undefined,
     })
-    const finalBody = await embedVideoInEmail(body, videoResult.videoUrl)
+    // HeyGen rendering is async — videoId is a provider message ID, not a playable URL.
+    // Pass null so the graceful placeholder is shown; a follow-up can embed the URL once rendering completes.
+    const finalBody = await embedVideoInEmail(body, null)
 
     // Final compliance pass on generated content
     const finalCompliance = await evaluateOutbound({
@@ -307,10 +311,11 @@ async function dispatchContactChannel(
       bodySnippet: finalBody.substring(0, 500),
     })
 
-    // Write to unified inbox messages table
+    // Write to unified inbox messages table — stamped with brokerage
     await supabase.from('messages').insert({
       contact_id: contact.id,
       agent_id: contact.agent_id ?? null,
+      brokerage_id: brokerageId,
       type: 'email',
       direction: 'outbound',
       subject,
@@ -363,10 +368,11 @@ async function dispatchContactChannel(
     if (shouldSendMail && !contact.direct_mail_opt_out) {
       await triggerDirectMailCampaign({
         leadId: contact.id,
+        brokerageId,
         firstName: contact.first_name || '',
         lastName: contact.last_name || '',
-        motivation_type: contact.buyer_stage ?? null,
-        property_interest: null,
+        motivation_type: contact.buyer_stage ?? undefined,
+        property_interest: undefined,
       })
     }
 
@@ -384,7 +390,7 @@ async function dispatchContactChannel(
     await dispatchSms({
       brokerageId,
       to: contact.phone,
-      body: smsBody,
+      message: smsBody,
       agentId: contact.agent_id ?? undefined,
       metadata: { source: 'ai_isa_contact', reason },
     })
@@ -432,10 +438,11 @@ async function dispatchContactChannel(
 
     await triggerDirectMailCampaign({
       leadId: contact.id,
+      brokerageId,
       firstName: contact.first_name || '',
       lastName: contact.last_name || '',
-      motivation_type: contact.buyer_stage ?? null,
-      property_interest: null,
+      motivation_type: contact.buyer_stage ?? undefined,
+      property_interest: undefined,
     })
 
     await logISAOutreach({

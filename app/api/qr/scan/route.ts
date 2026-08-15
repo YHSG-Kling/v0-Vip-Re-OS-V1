@@ -21,7 +21,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // ── Step 1: Fetch QR code ──────────────────────────────────────────────────
     const { data: qr, error: qrError } = await supabase
       .from('qr_codes')
-      .select('id, brokerage_id, agent_user_id, scan_count')
+      .select('id, brokerage_id, agent_id, scan_count, purpose, destination_type')
       .eq('slug', slug)
       .eq('is_active', true)
       .single()
@@ -34,10 +34,22 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const userAgent = req.headers.get('user-agent') ?? null
     const referrer = req.headers.get('referer') ?? null
 
+    // ── Step 1b: Attribute scan to direct mail campaign if applicable ─────────
+    let campaignId: string | null = null
+    if (qr.purpose === 'campaign') {
+      const { data: dm } = await supabase
+        .from('direct_mail_campaigns')
+        .select('id')
+        .eq('qr_code_id', qr.id)
+        .maybeSingle()
+      campaignId = dm?.id ?? null
+    }
+
     // ── Step 2: Insert qr_scan_events (audit row only) ────────────────────────
     await supabase.from('qr_scan_events').insert({
       qr_code_id: qr.id,
       brokerage_id: qr.brokerage_id,
+      campaign_id: campaignId,
       ip_address: ip,
       user_agent: userAgent,
       referrer,
@@ -50,14 +62,39 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       .update({ scan_count: (qr.scan_count ?? 0) + 1 })
       .eq('id', qr.id)
 
-    // ── Step 4: Emit lifecycle event ──────────────────────────────────────────
+    // ── Step 4: Emit lifecycle event + fan out ────────────────────────────────
+    // fanOutKernelEvent fires processKernelEvent (staff alerts) + auto-enrolls
+    // any campaign_sequence that listens on qr_scan_received. Scan is still
+    // anonymous (no contact_id) so portal-update fan-out is a no-op here —
+    // when the agent connects the scan to a contact via landing-page intake,
+    // the contact-creation event will auto-enroll the right sequence.
+    // Wave 36 — include destination_type in the event metadata so any
+    // downstream listener (analytics aggregator, marketing-agent
+    // snapshot) can bucket scans by their semantic destination without
+    // joining back to qr_codes.
+    const eventMeta = {
+      slug,
+      campaign_id:      campaignId,
+      destination_type: qr.destination_type ?? null,
+      purpose:          qr.purpose ?? null,
+    }
     await supabase.from('lifecycle_events').insert({
       brokerage_id: qr.brokerage_id,
       entity_type: 'qr_scan',
       entity_id: qr.id,
       event_type: KernelEvent.QR_SCAN_RECEIVED,
-      metadata: { slug },
+      metadata: eventMeta,
     })
+    try {
+      const { fanOutKernelEvent } = await import('@/lib/kernel/event-fanout')
+      await fanOutKernelEvent({
+        event:       KernelEvent.QR_SCAN_RECEIVED,
+        brokerageId: qr.brokerage_id,
+        entityType:  'qr_scan',
+        entityId:    qr.id,
+        metadata:    eventMeta,
+      })
+    } catch { /* non-blocking */ }
 
     // ── Step 5: Redirect to landing page ─────────────────────────────────────
     // No contact created. No consent. Scan is audit trail only.

@@ -5,6 +5,7 @@
  */
 
 import { createServiceClient } from "./supabase/service"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 /**
  * Queue a contact for background enrichment via the database.
@@ -15,10 +16,11 @@ async function queueContactEnrichment(contactId: string, metadata: Record<string
     const supabase = createServiceClient()
     await supabase.from('lead_enrichment_queue').insert({
       contact_id: contactId,
-      source: metadata.source ?? 'ghl_sync',
-      metadata: JSON.stringify(metadata),
+      trigger_type: metadata.source ?? 'ghl_sync',
+      enrichment_type: 'skip_trace',
+      enrichment_results: metadata,
       status: 'pending',
-      created_at: new Date().toISOString(),
+      queued_at: new Date().toISOString(),
     })
   } catch (err) {
     console.error('[GHL] Failed to queue enrichment:', err)
@@ -52,66 +54,27 @@ export class GHLIntegration {
     this.apiKey = apiKey || process.env.GHL_API_KEY || ""
   }
 
-  async syncContactFromGHL(ghlContactData: any): Promise<{ success: boolean; contactId?: string; error?: string }> {
-    try {
-      const supabase = createServiceClient()
+  /** All egress through the connector-gateway with bearer auth. */
+  private async request<T = any>(
+    path: string,
+    method: "GET" | "POST" | "PUT",
+    body?: unknown,
+  ): Promise<{ ok: boolean; data: T | null; error: string | null }> {
+    const res = await callConnector<T>({
+      connector: "ghl",
+      baseUrl: this.baseUrl,
+      path,
+      method,
+      auth: { style: "bearer", token: this.apiKey },
+      ...(body !== undefined ? { body } : {}),
+    })
+    return { ok: res.ok, data: res.data, error: res.error }
+  }
 
-      // Check if contact already exists by GHL ID
-      const { data: existingContact } = await supabase
-        .from("contacts")
-        .select("id, enriched_at")
-        .eq("ghl_contact_id", ghlContactData.id)
-        .single()
-
-      if (existingContact) {
-        // Update existing contact
-        await supabase
-          .from("contacts")
-          .update({
-            first_name: ghlContactData.firstName,
-            last_name: ghlContactData.lastName,
-            email: ghlContactData.email,
-            phone: ghlContactData.phone,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", existingContact.id)
-
-        // Queue for enrichment if not already enriched
-        if (!existingContact.enriched_at) {
-          queueContactEnrichment(existingContact.id, { source: "ghl_sync" })
-        }
-
-        return { success: true, contactId: existingContact.id }
-      }
-
-      // Create new contact
-      const { data: newContact, error } = await supabase
-        .from("contacts")
-        .insert({
-          first_name: ghlContactData.firstName,
-          last_name: ghlContactData.lastName,
-          email: ghlContactData.email,
-          phone: ghlContactData.phone,
-          ghl_contact_id: ghlContactData.id,
-          source: "ghl_sync",
-          status: "active",
-          stage: "New Lead",
-        })
-        .select()
-        .single()
-
-      if (error || !newContact) {
-        return { success: false, error: error?.message || "Failed to create contact" }
-      }
-
-      // Queue new contact for background enrichment
-      queueContactEnrichment(newContact.id, { source: "ghl_sync" })
-
-      return { success: true, contactId: newContact.id }
-    } catch (error) {
-      console.error("[GHL] Sync from GHL error:", error)
-      return { success: false, error: String(error) }
-    }
+  // DISABLED: GHL is SYNC-OUT ONLY. The app pushes contact/detail updates OUT to GoHighLevel
+  // and never ingests contacts from a CRM (no CRM syncs into the app — product decision).
+  async syncContactFromGHL(_ghlContactData: any): Promise<{ success: boolean; contactId?: string; error?: string }> {
+    return { success: false, error: "Inbound CRM sync is disabled — GHL is sync-out only" }
   }
 
   /**
@@ -146,41 +109,27 @@ export class GHLIntegration {
       // Check if contact exists in GHL
       if (contact.ghl_contact_id) {
         // Update existing contact
-        const response = await fetch(`${this.baseUrl}/contacts/${contact.ghl_contact_id}`, {
-          method: "PUT",
-          headers: {
-            Authorization: `Bearer ${this.apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(ghlContact),
-        })
+        const response = await this.request(`/crm/contacts/${contact.ghl_contact_id}`, "PUT", ghlContact)
 
         if (!response.ok) {
-          throw new Error(`GHL API error: ${response.statusText}`)
+          throw new Error(`GHL API error: ${response.error ?? "request failed"}`)
         }
 
         return { success: true, ghlContactId: contact.ghl_contact_id }
       } else {
         // Create new contact
-        const response = await fetch(`${this.baseUrl}/contacts`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${this.apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(ghlContact),
-        })
+        const response = await this.request<{ contact?: { id?: string } }>("/crm/contacts", "POST", ghlContact)
 
         if (!response.ok) {
-          throw new Error(`GHL API error: ${response.statusText}`)
+          throw new Error(`GHL API error: ${response.error ?? "request failed"}`)
         }
 
-        const result = await response.json()
+        const result = response.data ?? {}
 
         // Save GHL contact ID back to Supabase
-        await supabase.from("contacts").update({ ghl_contact_id: result.contact.id }).eq("id", contactId)
+        await supabase.from("contacts").update({ ghl_contact_id: result.contact?.id }).eq("id", contactId)
 
-        return { success: true, ghlContactId: result.contact.id }
+        return { success: true, ghlContactId: result.contact?.id }
       }
     } catch (error) {
       console.error("[v0] GHL sync error:", error)
@@ -223,24 +172,17 @@ export class GHLIntegration {
 
       // Send message to GHL
       const ghlMessage: GHLConversation = {
-        contactId: contact.ghl_contact_id,
+        contactId: contact?.ghl_contact_id ?? "",
         locationId: process.env.GHL_LOCATION_ID || "",
         type: "SMS", // Can be configured based on channel
         message: message.message,
         direction: message.sender_type === "agent" ? "outbound" : "inbound",
       }
 
-      const response = await fetch(`${this.baseUrl}/conversations/messages`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(ghlMessage),
-      })
+      const response = await this.request("/conversations/messages", "POST", ghlMessage)
 
       if (!response.ok) {
-        throw new Error(`GHL API error: ${response.statusText}`)
+        throw new Error(`GHL API error: ${response.error ?? "request failed"}`)
       }
 
       // Mark message as synced
@@ -257,62 +199,22 @@ export class GHLIntegration {
    * Webhook handler for incoming GHL messages
    */
   async handleIncomingMessage(webhookData: any): Promise<{ success: boolean; error?: string }> {
-    try {
-      const supabase = createServiceClient()
-
-      // Find contact by GHL ID
-      const { data: contact } = await supabase
-        .from("contacts")
-        .select("id")
-        .eq("ghl_contact_id", webhookData.contactId)
-        .single()
-
-      if (!contact) {
-        return { success: false, error: "Contact not found" }
-      }
-
-      // Find or create chat session
-      let sessionId: string
-
-      const { data: existingSession } = await supabase
-        .from("conversations")
-        .select("id")
-        .eq("contact_id", contact.id)
-        .eq("status", "active")
-        .single()
-
-      if (existingSession) {
-        sessionId = existingSession.id
-      } else {
-        const { data: newSession } = await supabase
-          .from("conversations")
-          .insert({
-            contact_id: contact.id,
-            agent_id: webhookData.agentId || null,
-            channel: "ghl",
-            status: "active",
-          })
-          .select()
-          .single()
-
-        sessionId = newSession.id
-      }
-
-      // Create message in database
-      await supabase.from("messages").insert({
-        session_id: sessionId,
-        sender_type: "contact",
-        message: webhookData.message,
-        channel: "ghl",
-        ghl_synced: true,
-        ghl_message_id: webhookData.messageId,
-      })
-
-      return { success: true }
-    } catch (error) {
-      console.error("[v0] GHL webhook error:", error)
-      return { success: false, error: String(error) }
-    }
+    // GHL is configured as ONE-WAY sync OUT for contact data — it is not an
+    // inbound message channel. Inbound conversations flow through email, sms,
+    // ai_social_dm, and portal channels only. Accepting GHL inbound webhooks
+    // here would duplicate the existing inbound channels and create
+    // cross-channel attribution drift. The previous implementation also
+    // wrote to conversations.channel and messages.session_id/sender_type/
+    // message/channel/ghl_synced/ghl_message_id — none of which exist on the
+    // live schema — so every call was a silent failure anyway.
+    //
+    // No-op: acknowledge receipt so GHL stops retrying the webhook, but do
+    // not persist anything. Log for observability.
+    console.warn(
+      "[ghl-integration] handleIncomingMessage no-op — GHL is one-way OUT only",
+      { contactId: webhookData?.contactId, messageId: webhookData?.messageId },
+    )
+    return { success: true }
   }
 
   /**
@@ -357,39 +259,42 @@ export class GHLIntegration {
       }
 
       // Send email via GHL
-      const response = await fetch(`${this.baseUrl}/conversations/messages`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          type: "Email",
-          contactId: ghlContactId,
-          subject: data.subject,
-          message: data.body,
-          emailFrom: data.fromEmail || process.env.GHL_DEFAULT_EMAIL,
-        }),
+      const response = await this.request<{ messageId?: string }>("/conversations/messages", "POST", {
+        type: "Email",
+        contactId: ghlContactId,
+        subject: data.subject,
+        message: data.body,
+        emailFrom: data.fromEmail || process.env.GHL_DEFAULT_EMAIL,
       })
 
       if (!response.ok) {
-        throw new Error(`GHL API error: ${response.statusText}`)
+        throw new Error(`GHL API error: ${response.error ?? "request failed"}`)
       }
 
-      const result = await response.json()
+      const result = response.data ?? {}
 
-      // Log the communication with compliance metadata
+      // Log the communication with compliance metadata.
+      // Live schema columns: brokerage_id, agent_id, user_id, contact_id,
+      // lead_id, communication_type, lead_temperature, was_approved_content,
+      // channel, subject, body_snippet, compliance_passed, sent_at, created_at.
+      // brokerage_id is required for tenant isolation — resolve from the contact.
+      const { data: contactRow } = await supabase
+        .from("contacts")
+        .select("brokerage_id")
+        .eq("id", data.contactId)
+        .maybeSingle()
       await supabase.from("communication_audit_log").insert({
+        brokerage_id: contactRow?.brokerage_id ?? null,
         user_id: data.complianceMetadata.userId,
         agent_id: data.complianceMetadata.agentId,
         contact_id: data.contactId,
         communication_type: "email",
-        content_id: data.complianceMetadata.contentId,
         was_approved_content: !!data.complianceMetadata.approvalId,
-        content_snapshot: data.body,
-        compliance_check_passed: true,
-        sent_via: "ghl",
-        ghl_message_id: result.messageId,
+        channel: "email",
+        subject: data.subject,
+        body_snippet: data.body?.slice(0, 500) ?? null,
+        compliance_passed: true,
+        sent_at: new Date().toISOString(),
       })
 
       return { success: true, messageId: result.messageId }
@@ -409,16 +314,9 @@ export class GHLIntegration {
     compliancePassed: boolean
   }): Promise<{ success: boolean; error?: string }> {
     try {
-      await fetch(`${this.baseUrl}/contacts/${data.ghlContactId}/notes`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          body: `[Compliance ${data.compliancePassed ? "PASSED" : "FAILED"}] ${data.communicationType}: ${data.message.slice(0, 200)}...`,
-          userId: "system",
-        }),
+      await this.request(`/crm/contacts/${data.ghlContactId}/notes`, "POST", {
+        body: `[Compliance ${data.compliancePassed ? "PASSED" : "FAILED"}] ${data.communicationType}: ${data.message.slice(0, 200)}...`,
+        userId: "system",
       })
 
       return { success: true }

@@ -23,9 +23,9 @@ import {
   ShieldCheck,
   Activity,
 } from "lucide-react"
-import { generateAIJSON } from "@/lib/ai"
-import { executeWorkflow } from "../../app/actions/workflows"
-import { supabaseService } from "../../services/supabaseService"
+import { generateAIJSON } from "@/app/actions/ai-generate"
+import { executeWorkflow } from "@/app/actions/workflows"
+import { supabaseService } from "@/services/supabaseService"
 import { toast } from "sonner"
 
 interface CommandBarProps {
@@ -154,9 +154,9 @@ Return JSON with this structure:
   "parameters": { "name": "optional", "address": "optional", "actionType": "optional", "date": "optional" }
 }`
 
-      const response = await generateAIJSON(prompt)
+      const response = await generateAIJSON<AIResult>(prompt)
 
-      const result = JSON.parse(response.text || "{}") as AIResult
+      const result = (response.data ?? {} as AIResult)
       setAiResponse(result)
 
       // Execute Logic based on intent
@@ -170,7 +170,7 @@ Return JSON with this structure:
       } else if (result.intent === "SEARCH" || result.intent === "QUERY") {
         if (result.target === "lead" || activeQuery.toLowerCase().includes("lead")) {
           const leads = await supabaseService.getLeads()
-          const match = leads?.find((l) => l.name.toLowerCase().includes(result.parameters?.name?.toLowerCase() || ""))
+          const match = leads?.find((l) => (`${l.first_name} ${l.last_name}`).toLowerCase().includes(result.parameters?.name?.toLowerCase() || ""))
           if (match) setFetchedData({ type: "lead", data: match })
         } else if (result.target === "transaction" || activeQuery.toLowerCase().includes("deal")) {
           const transactions = await supabaseService.getTransactions()

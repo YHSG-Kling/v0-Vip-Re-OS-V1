@@ -100,6 +100,15 @@ interface StateRequirement {
   timeline_days: number | null
 }
 
+interface PendingSignature {
+  id: string
+  contract_type: string | null
+  provider_name: string | null
+  document_url: string | null
+  sent_at: string | null
+  esign_status: string
+}
+
 interface DocumentsClientProps {
   contactId: string
   clientDocs: ClientDocument[]
@@ -108,6 +117,7 @@ interface DocumentsClientProps {
   checklist: DocumentChecklist[]
   classifications: DocumentClassification[]
   stateRequirements: StateRequirement[]
+  pendingSignatures?: PendingSignature[]
 }
 
 // ─── HELPER FUNCTIONS ────────────────────────────────────────────────────────
@@ -193,6 +203,7 @@ export function DocumentsClient({
   checklist,
   classifications,
   stateRequirements,
+  pendingSignatures = [],
 }: DocumentsClientProps) {
   const [isPending, startTransition] = useTransition()
   const [analyzingDocId, setAnalyzingDocId] = useState<string | null>(null)
@@ -312,19 +323,48 @@ export function DocumentsClient({
         </Card>
       </div>
 
-      {/* Action Required — docs pending buyer/seller signature */}
-      {txDocs.filter(d => d.status === "pending_signature").length > 0 && (
+      {/* Action Required — docs pending buyer/seller signature (txDocs + contract_signatures) */}
+      {(txDocs.filter(d => d.status === "pending_signature").length > 0 || pendingSignatures.length > 0) && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 space-y-3">
           <div className="flex items-center gap-2">
             <AlertCircle className="h-5 w-5 text-amber-600 shrink-0" />
             <div>
               <p className="font-semibold text-sm text-amber-900">Action Required — Signature Needed</p>
               <p className="text-xs text-amber-700">
-                {txDocs.filter(d => d.status === "pending_signature").length} document(s) are waiting for your signature.
+                {txDocs.filter(d => d.status === "pending_signature").length + pendingSignatures.length} document(s) are waiting for your signature.
               </p>
             </div>
           </div>
           <div className="space-y-2">
+            {/* E-sign envelopes from contract_signatures */}
+            {pendingSignatures.map(sig => (
+              <div key={sig.id} className="flex items-center justify-between bg-white rounded-md border border-amber-200 px-3 py-2">
+                <div>
+                  <p className="text-sm font-medium capitalize">
+                    {(sig.contract_type ?? "Document").replace(/_/g, " ")}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {sig.provider_name ? `via ${sig.provider_name.charAt(0).toUpperCase() + sig.provider_name.slice(1)}` : "E-sign"}
+                    {sig.sent_at && (
+                      <> &middot; sent {formatDistanceToNow(new Date(sig.sent_at), { addSuffix: true })}</>
+                    )}
+                  </p>
+                </div>
+                {sig.document_url ? (
+                  <a href={sig.document_url} target="_blank" rel="noreferrer">
+                    <Button size="sm" className="text-xs bg-amber-600 hover:bg-amber-700 text-white">
+                      <Send className="h-3.5 w-3.5 mr-1.5" />
+                      Sign Now
+                    </Button>
+                  </a>
+                ) : (
+                  <Badge variant="secondary" className="text-xs bg-amber-100 text-amber-700 border-amber-200">
+                    Link pending
+                  </Badge>
+                )}
+              </div>
+            ))}
+            {/* txDocs pending signature */}
             {txDocs
               .filter(d => d.status === "pending_signature")
               .map(d => (
@@ -906,6 +946,7 @@ export function DocumentsClient({
             ))}
           </TabsContent>
         )}
+
       </Tabs>
     </div>
   )

@@ -29,8 +29,8 @@ export default async function MarketUpdatesPage({
   const supabase = await createClient()
 
   // Verify lifetime portal access
-  const portalView = await determinePortalView(supabase, contactId)
-  if (portalView !== "lifetime") {
+  const portalView = await determinePortalView(supabase, { contactId })
+  if (portalView.view !== "lifetime") {
     redirect(`/portal/${contactId}`)
   }
 

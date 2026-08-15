@@ -5,16 +5,20 @@
 // Tests provider connections without logging raw credentials
 // Each provider has a specific test function
 
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
+
 export interface TestResult {
   pass: boolean
   detail: string
 }
 
-export type ProviderName = 
+export type ProviderName =
   | "twilio"
   | "sendgrid"
   | "docusign"
   | "dotloop"
+  | "skyslope"
+  | "brokermint"
   | "heygen"
   | "gohighlevel"
   | "google_calendar"
@@ -67,6 +71,10 @@ export async function testIntegration(
         return await testRealtorCom(credentials)
       case "opcity":
         return await testOpcity(credentials)
+      case "skyslope":
+        return await testSkySlope(credentials)
+      case "brokermint":
+        return await testBrokermint(credentials)
       default:
         return { pass: false, detail: `Unknown provider: ${provider}` }
     }
@@ -86,23 +94,22 @@ async function testTwilio(credentials: Record<string, string>): Promise<TestResu
     return { pass: false, detail: "Account SID and Auth Token are required" }
   }
   
-  const auth = Buffer.from(`${account_sid}:${auth_token}`).toString("base64")
-  
-  const response = await fetch(
-    `https://api.twilio.com/2010-04-01/Accounts/${account_sid}/IncomingPhoneNumbers.json?PageSize=1`,
-    {
-      headers: { Authorization: `Basic ${auth}` },
-    }
-  )
-  
+  const response = await callConnector({
+    connector: "twilio",
+    baseUrl: "https://api.twilio.com",
+    path: `/2010-04-01/Accounts/${account_sid}/IncomingPhoneNumbers.json`,
+    method: "GET",
+    query: { PageSize: "1" },
+    auth: { style: "basic", username: account_sid, password: auth_token },
+  })
+
   if (!response.ok) {
-    const error = await response.json().catch(() => ({}))
-    return { 
-      pass: false, 
-      detail: error.message || `Twilio API returned ${response.status}` 
+    return {
+      pass: false,
+      detail: response.error || `Twilio API returned ${response.status}`
     }
   }
-  
+
   return { pass: true, detail: "Twilio credentials verified - phone numbers accessible" }
 }
 
@@ -113,17 +120,18 @@ async function testSendGrid(credentials: Record<string, string>): Promise<TestRe
     return { pass: false, detail: "API Key is required" }
   }
   
-  const response = await fetch("https://api.sendgrid.com/v3/user/profile", {
-    headers: { Authorization: `Bearer ${api_key}` },
+  const response = await callConnector({
+    connector: "sendgrid", baseUrl: "https://api.sendgrid.com", path: "/v3/user/profile", method: "GET",
+    auth: { style: "bearer", token: api_key },
   })
-  
+
   if (!response.ok) {
-    return { 
-      pass: false, 
-      detail: `SendGrid API returned ${response.status} - verify API key` 
+    return {
+      pass: false,
+      detail: `SendGrid API returned ${response.status} - verify API key`
     }
   }
-  
+
   return { pass: true, detail: "SendGrid credentials verified - account accessible" }
 }
 
@@ -136,18 +144,19 @@ async function testDocuSign(credentials: Record<string, string>): Promise<TestRe
   
   // If we have an access token, verify it
   if (access_token) {
-    const baseUrl = environment === "sandbox" 
-      ? "https://demo.docusign.net/restapi" 
+    const baseUrl = environment === "sandbox"
+      ? "https://demo.docusign.net/restapi"
       : "https://na3.docusign.net/restapi"
-    
-    const response = await fetch(`${baseUrl}/v2.1/accounts/${account_id}`, {
-      headers: { Authorization: `Bearer ${access_token}` },
+
+    const response = await callConnector({
+      connector: "docusign", baseUrl, path: `/v2.1/accounts/${account_id}`, method: "GET",
+      auth: { style: "bearer", token: access_token },
     })
-    
+
     if (!response.ok) {
-      return { 
-        pass: false, 
-        detail: "DocuSign access token invalid or expired" 
+      return {
+        pass: false,
+        detail: "DocuSign access token invalid or expired"
       }
     }
     
@@ -168,17 +177,16 @@ async function testDotLoop(credentials: Record<string, string>): Promise<TestRes
     return { pass: false, detail: "Access Token is required" }
   }
   
-  const response = await fetch("https://api-gateway.dotloop.com/public/v2/profile", {
-    headers: { 
-      Authorization: `Bearer ${access_token}`,
-      ...(partner_key && { "X-Partner-Key": partner_key }),
-    },
+  const response = await callConnector({
+    connector: "dotloop", baseUrl: "https://api-gateway.dotloop.com", path: "/public/v2/profile", method: "GET",
+    auth: { style: "bearer", token: access_token },
+    headers: { ...(partner_key && { "X-Partner-Key": partner_key }) },
   })
-  
+
   if (!response.ok) {
-    return { 
-      pass: false, 
-      detail: `DotLoop API returned ${response.status} - verify access token` 
+    return {
+      pass: false,
+      detail: `DotLoop API returned ${response.status} - verify access token`
     }
   }
   
@@ -192,14 +200,15 @@ async function testHeyGen(credentials: Record<string, string>): Promise<TestResu
     return { pass: false, detail: "API Key is required" }
   }
   
-  const response = await fetch("https://api.heygen.com/v1/avatars", {
-    headers: { "X-Api-Key": api_key },
+  const response = await callConnector({
+    connector: "heygen", baseUrl: "https://api.heygen.com", path: "/v1/avatars", method: "GET",
+    auth: { style: "header", name: "X-Api-Key", value: api_key },
   })
-  
+
   if (!response.ok) {
-    return { 
-      pass: false, 
-      detail: `HeyGen API returned ${response.status} - verify API key` 
+    return {
+      pass: false,
+      detail: `HeyGen API returned ${response.status} - verify API key`
     }
   }
   
@@ -213,14 +222,12 @@ async function testGoHighLevel(credentials: Record<string, string>): Promise<Tes
     return { pass: false, detail: "Agency API Key is required" }
   }
   
-  const url = location_id 
-    ? `https://rest.gohighlevel.com/v1/locations/${location_id}`
-    : "https://rest.gohighlevel.com/v1/locations"
-  
-  const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${agency_api_key}` },
+  const response = await callConnector({
+    connector: "ghl", baseUrl: "https://rest.gohighlevel.com",
+    path: location_id ? `/v1/locations/${location_id}` : "/v1/locations", method: "GET",
+    auth: { style: "bearer", token: agency_api_key },
   })
-  
+
   if (!response.ok) {
     return { 
       pass: false, 
@@ -239,11 +246,12 @@ async function testGoogleCalendar(credentials: Record<string, string>): Promise<
   }
   
   if (access_token) {
-    const response = await fetch(
-      "https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=1",
-      { headers: { Authorization: `Bearer ${access_token}` } }
-    )
-    
+    const response = await callConnector({
+      connector: "google_calendar", baseUrl: "https://www.googleapis.com",
+      path: "/calendar/v3/users/me/calendarList", method: "GET", query: { maxResults: "1" },
+      auth: { style: "bearer", token: access_token },
+    })
+
     if (!response.ok) {
       if (response.status === 401) {
         return { pass: false, detail: "Google token expired - reconnection required" }
@@ -265,11 +273,12 @@ async function testOutlookCalendar(credentials: Record<string, string>): Promise
   }
   
   if (access_token) {
-    const response = await fetch(
-      "https://graph.microsoft.com/v1.0/me/calendars?$top=1",
-      { headers: { Authorization: `Bearer ${access_token}` } }
-    )
-    
+    const response = await callConnector({
+      connector: "outlook_calendar", baseUrl: "https://graph.microsoft.com",
+      path: "/v1.0/me/calendars", method: "GET", query: { "$top": "1" },
+      auth: { style: "bearer", token: access_token },
+    })
+
     if (!response.ok) {
       if (response.status === 401) {
         return { pass: false, detail: "Microsoft token expired - reconnection required" }
@@ -294,16 +303,12 @@ async function testQuickBooks(credentials: Record<string, string>): Promise<Test
     return { pass: true, detail: "QuickBooks OAuth configured - connection required" }
   }
   
-  const response = await fetch(
-    `https://quickbooks.api.intuit.com/v3/company/${realm_id}/companyinfo/${realm_id}`,
-    {
-      headers: { 
-        Authorization: `Bearer ${access_token}`,
-        Accept: "application/json",
-      },
-    }
-  )
-  
+  const response = await callConnector({
+    connector: "quickbooks", baseUrl: "https://quickbooks.api.intuit.com",
+    path: `/v3/company/${realm_id}/companyinfo/${realm_id}`, method: "GET",
+    auth: { style: "bearer", token: access_token },
+  })
+
   if (!response.ok) {
     return { pass: false, detail: `QuickBooks API returned ${response.status}` }
   }
@@ -322,10 +327,11 @@ async function testXero(credentials: Record<string, string>): Promise<TestResult
     return { pass: true, detail: "Xero OAuth configured - connection required" }
   }
   
-  const response = await fetch("https://api.xero.com/connections", {
-    headers: { Authorization: `Bearer ${access_token}` },
+  const response = await callConnector({
+    connector: "xero", baseUrl: "https://api.xero.com", path: "/connections", method: "GET",
+    auth: { style: "bearer", token: access_token },
   })
-  
+
   if (!response.ok) {
     return { pass: false, detail: `Xero API returned ${response.status}` }
   }
@@ -340,13 +346,12 @@ async function testIdxBroker(credentials: Record<string, string>): Promise<TestR
     return { pass: false, detail: "API Key is required" }
   }
   
-  const response = await fetch("https://api.idxbroker.com/partners/accounttype", {
-    headers: { 
-      accesskey: api_key,
-      ...(partner_key && { partnerkey: partner_key }),
-    },
+  const response = await callConnector({
+    connector: "idxbroker", baseUrl: "https://api.idxbroker.com", path: "/partners/accounttype", method: "GET",
+    auth: { style: "header", name: "accesskey", value: api_key },
+    headers: { ...(partner_key && { partnerkey: partner_key }) },
   })
-  
+
   if (!response.ok) {
     return { pass: false, detail: `IDX Broker API returned ${response.status}` }
   }
@@ -363,12 +368,11 @@ async function testLob(credentials: Record<string, string>): Promise<TestResult>
     return { pass: false, detail: `${environment || "test"} API Key is required` }
   }
   
-  const auth = Buffer.from(`${apiKey}:`).toString("base64")
-  
-  const response = await fetch("https://api.lob.com/v1/accounts", {
-    headers: { Authorization: `Basic ${auth}` },
+  const response = await callConnector({
+    connector: "lob", baseUrl: "https://api.lob.com", path: "/v1/accounts", method: "GET",
+    auth: { style: "basic", username: apiKey, password: "" },
   })
-  
+
   if (!response.ok) {
     return { pass: false, detail: `Lob API returned ${response.status}` }
   }
@@ -409,14 +413,43 @@ async function testRealtorCom(credentials: Record<string, string>): Promise<Test
 
 async function testOpcity(credentials: Record<string, string>): Promise<TestResult> {
   const { username, password } = credentials
-  
+
   if (!username || !password) {
     return { pass: false, detail: "Username and Password are required" }
   }
-  
-  // Opcity doesn't have a public API health check
-  // Validate credentials exist and assume valid
+
   return { pass: true, detail: "Opcity credentials saved - will verify on first sync" }
+}
+
+async function testSkySlope(credentials: Record<string, string>): Promise<TestResult> {
+  const { api_key } = credentials
+  if (!api_key) return { pass: false, detail: "API Key is required" }
+  // SkySlope REST API health check
+  const response = await callConnector({
+    connector: "skyslope", baseUrl: "https://api.skyslope.com", path: "/v3/transactions", method: "GET",
+    query: { pageSize: "1" }, auth: { style: "bearer", token: api_key },
+  })
+  if (response.status === 401) return { pass: false, detail: "Invalid SkySlope API Key" }
+  if (!response.ok && response.status !== 403) {
+    return { pass: false, detail: `SkySlope API returned ${response.status}` }
+  }
+  return { pass: true, detail: "SkySlope credentials verified - transaction platform accessible" }
+}
+
+async function testBrokermint(credentials: Record<string, string>): Promise<TestResult> {
+  const { api_key, office_id } = credentials
+  if (!api_key) return { pass: false, detail: "API Key is required" }
+  // Brokermint API health check
+  const response = await callConnector({
+    connector: "brokermint", baseUrl: "https://brokermint.com",
+    path: office_id ? `/api/v1/offices/${office_id}` : "/api/v1/offices", method: "GET",
+    auth: { style: "bearer", token: api_key },
+  })
+  if (response.status === 401) return { pass: false, detail: "Invalid Brokermint API Key" }
+  if (!response.ok && response.status !== 403) {
+    return { pass: false, detail: `Brokermint API returned ${response.status}` }
+  }
+  return { pass: true, detail: "Brokermint credentials verified - office accessible" }
 }
 
 // ─── PROVIDER METADATA ────────────────────────────────────────────────────────
@@ -475,11 +508,31 @@ export const PROVIDER_METADATA: Record<ProviderName, {
     oauthProvider: "docusign",
   },
   dotloop: {
+    // Real estate transaction-and-forms platform with built-in e-sign. Counts
+    // as both transaction-management and e-sign — primary type is esign so
+    // it satisfies the required e-sign category in the progress calc.
     displayName: "DotLoop",
     providerType: "esign",
     credentialFields: [
       { key: "access_token", label: "Access Token", type: "password", required: true },
       { key: "partner_key", label: "Partner Key", type: "text", required: false },
+    ],
+  },
+  skyslope: {
+    // Transaction-and-forms platform with built-in DigiSign e-sign.
+    displayName: "SkySlope",
+    providerType: "esign",
+    credentialFields: [
+      { key: "api_key", label: "API Key", type: "password", required: true },
+    ],
+  },
+  brokermint: {
+    // Pure transaction-management + commission tracking (no built-in e-sign).
+    displayName: "Brokermint",
+    providerType: "transaction",
+    credentialFields: [
+      { key: "api_key", label: "API Key", type: "password", required: true },
+      { key: "office_id", label: "Office ID", type: "text", required: false },
     ],
   },
   heygen: {
@@ -586,29 +639,41 @@ export const PROVIDER_METADATA: Record<ProviderName, {
 // ─── PROVIDER GROUPS ──────────────────────────────────────────────────────────
 
 export const PROVIDER_GROUPS = {
+  // Required = the minimum tech a brokerage needs to operate on the platform.
+  // E-sign covers DocuSign, Dotloop, and SkySlope (the latter two also serve
+  // as transaction-form platforms, so connecting one of them satisfies both
+  // the required e-sign category and the recommended transaction category).
   required: {
     label: "Required",
-    description: "Must connect to advance in onboarding",
-    providers: ["twilio", "sendgrid", "docusign", "dotloop"] as ProviderName[],
+    description: "Connect one provider per category to advance in onboarding",
+    providers: ["twilio", "sendgrid", "docusign", "dotloop", "skyslope"] as ProviderName[],
     requirements: {
-      sms: 1,      // At least 1 SMS provider
-      email: 1,    // At least 1 email provider
-      esign: 1,    // At least 1 e-sign provider (DocuSign OR DotLoop)
+      sms: 1,
+      email: 1,
+      esign: 1,
     },
   },
+  // Recommended = transaction-form platform (so the form wizard can pull
+  // state contracts/disclosures), calendar, CRM. Dotloop and SkySlope are
+  // listed here too for the transaction-management UX even though their
+  // primary type is e-sign — connecting them counts toward both.
   recommended: {
     label: "Recommended",
-    description: "Enhance your AI capabilities",
-    providers: ["heygen", "gohighlevel", "google_calendar", "outlook_calendar"] as ProviderName[],
+    description: "Transaction-form platform, CRM, calendar — strongly recommended for the AI workflow",
+    providers: ["dotloop", "skyslope", "brokermint", "gohighlevel", "google_calendar", "outlook_calendar"] as ProviderName[],
     requirements: {
-      video: 0,    // Optional
-      crm: 0,      // Optional
-      calendar: 0, // Optional (Google OR Outlook)
+      transaction: 0,
+      crm: 0,
+      calendar: 0,
     },
   },
+  // Optional = accounting, MLS/IDX, lead portals, direct mail.
+  // Video generation (D-ID + HeyGen) and voice cloning (ElevenLabs) run on
+  // platform-managed infrastructure — subscribers configure their personal
+  // avatar/voice in Twin Studio, not by entering API keys here.
   optional: {
     label: "Optional",
-    description: "Additional integrations",
+    description: "Connect any that apply to your business",
     providers: ["quickbooks", "xero", "idx_broker", "lob", "zillow", "realtor_com", "opcity"] as ProviderName[],
     requirements: {},
   },

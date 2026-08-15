@@ -1,13 +1,13 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { Card, CardContent, CardHeader, CardTitle } from "./ui/card"
-import { Badge } from "./ui/badge"
-import { Button } from "./ui/button"
-import { ApprovalsBanner } from "./ApprovalsBanner"
-import ApprovalCounter from "./ApprovalCounter"
-import DailyGameplan from "./dashboard/DailyGameplan"
-import { KPICards } from "./dashboard/KPICards"
+import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
+import { Badge } from "@/app/components/ui/badge"
+import { Button } from "@/app/components/ui/button"
+import { ApprovalsBanner } from "@/app/components/ApprovalsBanner"
+import ApprovalCounter from "@/app/components/ApprovalCounter"
+import DailyGameplan from "@/app/components/features/dashboard/cards/DailyGameplan"
+import { KPICards } from "@/app/components/features/dashboard/cards/KPICards"
 import { ThisWeekPreview } from "@/app/dashboard/calendar/components/os"
 import {
   TrendingUp,
@@ -24,7 +24,7 @@ import {
   ArrowRight,
   Sparkles,
 } from "lucide-react"
-import type { UserContext } from "../types"
+import type { UserContext } from "@/types"
 
 interface AgentDashboardProps {
   userContext?: UserContext | null
@@ -287,12 +287,12 @@ export default function AgentDashboard({ userContext, onNavigate }: AgentDashboa
         </div>
 
         {/* Daily Gameplan - AI Suggestions */}
-        {userContext?.id && <DailyGameplan agentId={userContext.id} />}
+        {userContext?.userId && <DailyGameplan agentId={userContext.userId} />}
 
         {/* This Week Preview - Calendar OS Integration */}
-        {userContext?.id && (
+        {userContext?.userId && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <ThisWeekPreview agentId={userContext.id} />
+            <ThisWeekPreview agentId={userContext.userId} />
           </div>
         )}
 

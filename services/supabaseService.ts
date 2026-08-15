@@ -51,11 +51,15 @@ export const supabaseService = {
   // CONTACTS
   // =====================================================
 
-  async getContacts(agentId?: string): Promise<Contact[]> {
+  async getContacts(agentId?: string, brokerageId?: string): Promise<Contact[]> {
     try {
-      console.log("[v0] [Supabase Service] getContacts called with agentId:", agentId)
       const supabase = getSupabaseAdmin()
       let query = supabase.from("contacts").select("*").is("deleted_at", null)
+
+      // Always scope to brokerage when provided — enforces RLS at the query level
+      if (brokerageId) {
+        query = query.eq("brokerage_id", brokerageId)
+      }
 
       if (agentId) {
         query = query.eq("agent_id", agentId)
@@ -72,12 +76,6 @@ export const supabaseService = {
         throw error
       }
 
-      if (!data || data.length === 0) {
-        // Production: return empty array, components handle empty states
-        return []
-      }
-
-      console.log("[v0] [Supabase Service] getContacts returned:", data?.length || 0, "contacts")
       return (data || []) as Contact[]
     } catch (error) {
       console.error("[Supabase Service] Error fetching contacts:", error)
@@ -86,8 +84,7 @@ export const supabaseService = {
   },
 
   async getAllContacts(): Promise<Contact[]> {
-    console.log("[v0] [Supabase Service] getAllContacts called - fetching all contacts")
-    return this.getContacts() // Call getContacts without agentId to get all contacts
+    return this.getContacts()
   },
 
   async getContactById(id: string): Promise<Contact | null> {
@@ -112,10 +109,10 @@ export const supabaseService = {
 
       // Normalize status and persona using AI mapping
       if (contactData.status) {
-        contactData.status = await aiMappingService.normalizeStatus(contactData.status)
+        contactData.status = await aiMappingService.mapStatus(contactData.status)
       }
-      if (contactData.persona) {
-        contactData.persona = await aiMappingService.normalizePersona(contactData.persona)
+      if (contactData.contact_persona) {
+        contactData.contact_persona = await aiMappingService.mapPersona(contactData.contact_persona)
       }
 
       const { data, error } = await supabase.from("contacts").insert(contactData).select().single()
@@ -175,19 +172,23 @@ export const supabaseService = {
     }
   },
 
-  async getLeads(agentId?: string) {
-    console.log("[v0] [Supabase Service] getLeads called, delegating to getContacts")
-    return this.getContacts(agentId)
+  async getLeads(agentId?: string, brokerageId?: string) {
+    return this.getContacts(agentId, brokerageId)
   },
 
   // =====================================================
   // TRANSACTIONS (DEALS)
   // =====================================================
 
-  async getTransactions(agentId?: string) {
+  async getTransactions(agentId?: string, brokerageId?: string) {
     try {
       const supabase = getSupabaseAdmin()
       let query = supabase.from("transactions").select("*").is("deleted_at", null)
+
+      // Always scope to brokerage when provided — enforces RLS at the query level
+      if (brokerageId) {
+        query = query.eq("brokerage_id", brokerageId)
+      }
 
       if (agentId) {
         query = query.eq("agent_id", agentId)
@@ -850,18 +851,6 @@ export const supabaseService = {
     } catch (error) {
       console.error("[Supabase Service] Error fetching newsletter campaigns:", error)
       return []
-    }
-  },
-
-  async createNewsletterCampaign(campaign: any) {
-    try {
-      const supabase = getSupabaseAdmin()
-      const { data, error } = await supabase.from("newsletter_campaigns").insert(campaign).select().single()
-      if (error) throw error
-      return data
-    } catch (error) {
-      console.error("[Supabase Service] Error creating newsletter campaign:", error)
-      return null
     }
   },
 
@@ -1595,7 +1584,7 @@ export const supabaseService = {
     try {
       // Extract all unique statuses and personas for batch mapping
       const statuses = contacts.map((c) => c.status).filter(Boolean) as string[]
-      const personas = contacts.map((c) => c.persona).filter(Boolean) as string[]
+      const personas = contacts.map((c) => (c as any).persona).filter(Boolean) as string[]
 
       // Batch map using AI
       console.log(`[Supabase Service] Batch mapping ${statuses.length} statuses and ${personas.length} personas...`)
@@ -1611,7 +1600,7 @@ export const supabaseService = {
       const normalizedContacts = contacts.map((contact) => ({
         ...contact,
         status: contact.status ? statusMap.get(contact.status) || contact.status : "new",
-        persona: contact.persona || "first_time_buyer",
+        persona: (contact as any).persona || "first_time_buyer",
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       }))

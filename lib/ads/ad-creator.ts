@@ -11,6 +11,12 @@ import { evaluateOutbound } from "@/lib/kernel/compliance"
 import type { KernelContact } from "@/lib/kernel/types"
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
+import type {
+  TargetingConfig,
+  CreateAdCampaignParams,
+  GenerateAdCreativeParams,
+  AdCreativeVariation,
+} from "@/lib/ads/ad-creator-types"
 
 // ─── INTERNAL: BROADCAST AD CONTACT ──────────────────────────────────────────
 // Ads are public-facing creative — not outbound to a specific contact.
@@ -32,50 +38,8 @@ function broadcastAdContact(brokerageId: string): KernelContact {
   } as unknown as KernelContact
 }
 
-// ─── TYPES ────────────────────────────────────────────────────────────────────
-
-export interface TargetingConfig {
-  age_min: number
-  age_max: number
-  locations: Array<{ city: string; state: string; radius_miles: number }>
-  interests: string[]
-  custom_audience_ids: string[]
-  lookalike_source_audience_id: string | null
-  income_percentile: "top_25" | "top_50" | "any"
-  homeowner_status: "renter" | "owner" | "any"
-}
-
-export interface CreateAdCampaignParams {
-  brokerageId: string
-  agentUserId: string
-  marketingCampaignId?: string
-  campaignName: string
-  platform: "facebook" | "instagram" | "google" | "linkedin" | "tiktok"
-  objective: "awareness" | "traffic" | "leads" | "conversions"
-  dailyBudget?: number
-  lifetimeBudget?: number
-  startDate?: string
-  endDate?: string
-  targetingConfig: TargetingConfig
-}
-
-export interface GenerateAdCreativeParams {
-  adCampaignId: string
-  context: {
-    listingAddress?: string
-    listingPrice?: number
-    agentName?: string
-    brokerageId: string
-  }
-}
-
-export interface AdCreativeVariation {
-  variationName: string
-  headline: string
-  primaryText: string
-  description: string
-  callToAction: string
-}
+// Types now live in @/lib/ads/ad-creator-types so this file can be a
+// clean "use server" module (Next 16 rejects type exports in such files).
 
 // ─── createAdCampaign ─────────────────────────────────────────────────────────
 
@@ -211,7 +175,7 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
     const { text } = await generateText({
       model: resolveModel("anthropic/claude-sonnet-4-20250514" as Parameters<typeof resolveModel>[0]),
       prompt,
-      maxTokens: 1500,
+      maxOutputTokens: 1500,
     })
 
     // Parse JSON from response

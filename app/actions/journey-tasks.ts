@@ -35,7 +35,7 @@ export async function completeTask(data: {
           .from("transaction_milestones")
           .update({
             status: "completed",
-            completed_date: new Date().toISOString(),
+            completed_at: new Date().toISOString(),
             notes: data.notes,
           })
           .eq("id", existing.id)
@@ -45,7 +45,7 @@ export async function completeTask(data: {
           transaction_id: data.transactionId,
           milestone_name: data.taskName,
           status: "completed",
-          completed_date: new Date().toISOString(),
+          completed_at: new Date().toISOString(),
           notes: data.notes,
         })
       }
@@ -56,7 +56,7 @@ export async function completeTask(data: {
       await supabase.from("client_portal_activity").insert({
         contact_id: data.contactId,
         activity_type: "task_completed",
-        activity_data: {
+        metadata: {
           task_id: data.taskId,
           task_name: data.taskName,
           form_data: data.formData,
@@ -154,7 +154,7 @@ export async function submitTaskForm(data: {
       await supabase.from("client_portal_activity").insert({
         contact_id: data.contactId,
         activity_type: "task_form_submitted",
-        activity_data: {
+        metadata: {
           task_id: data.taskId,
           task_name: data.taskName,
           task_type: data.taskType,
@@ -183,7 +183,7 @@ export async function getTaskCompletions(contactId: string) {
       .from("transaction_milestones")
       .select("*")
       .eq("transaction_id", contactId) // note: may need join via transactions table
-      .order("completed_date", { ascending: false })
+      .order("completed_at", { ascending: false })
 
     return milestones || []
   } catch (error) {
@@ -221,14 +221,21 @@ export async function handleTaskCompletedEvent(payload: any) {
   
   // Notify agent of task completion
   try {
-    await supabase.from("agent_notifications").insert({
-      contact_id: payload.contact_id,
-      notification_type: "task_completed",
-      title: `Client completed: ${payload.task_name}`,
-      message: `${payload.task_name} completed in the ${payload.stage_name} stage.`,
-      priority: "normal",
-      read: false,
-    })
+    const { data: contact } = await supabase
+      .from("contacts")
+      .select("agent_id, brokerage_id")
+      .eq("id", payload.contact_id)
+      .maybeSingle()
+    if (contact?.agent_id) {
+      await supabase.from("agent_notifications").insert({
+        agent_id: contact.agent_id,
+        brokerage_id: contact.brokerage_id,
+        type: "task_completed",
+        title: `Client completed: ${payload.task_name}`,
+        body: `${payload.task_name} completed in the ${payload.stage_name} stage.`,
+        data: { contact_id: payload.contact_id, task_name: payload.task_name, stage_name: payload.stage_name },
+      })
+    }
   } catch { /* non-critical */ }
   
   return { success: true }
@@ -273,10 +280,10 @@ export async function handleAllTasksCompletedEvent(payload: any) {
 }
 
 // Pre-populate form data based on task type
-export async function getTaskFormFields(taskType: string): {
+export async function getTaskFormFields(taskType: string): Promise<{
   fields: { name: string; label: string; type: string; required: boolean; options?: string[] }[]
   description: string
-} {
+}> {
   switch (taskType) {
     case "pre_approval":
       return {

@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { requireAuth } from "@/lib/kernel/api-auth"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
@@ -82,20 +83,22 @@ async function writeLifecycleEvent(
 }
 
 export async function POST(request: NextRequest) {
+  // Auth guard — brokerage_id and user_id always from session
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
+
   try {
-    const supabase = await createClient()
     const body = await request.json()
 
     const {
-      // Required fields
+      // Required fields (brokerage_id and user_id intentionally NOT taken from body)
       script,
       avatar_id,
       voice_id,
       video_project_id,
-      brokerage_id,
       // Optional configuration
       background,
-      user_id,
       script_id,
       branding_preset_id,
       quality_preset = "1080p",
@@ -103,10 +106,14 @@ export async function POST(request: NextRequest) {
       aspect_ratio = "16:9",
     } = body
 
+    // Always use session-resolved values — never trust body-supplied IDs
+    const brokerage_id = auth.brokerageId
+    const user_id = auth.userId
+
     // ─── VALIDATION ───────────────────────────────────────────────────────────
-    if (!script || !avatar_id || !voice_id || !video_project_id || !brokerage_id) {
+    if (!script || !avatar_id || !voice_id || !video_project_id) {
       return NextResponse.json(
-        { error: "Missing required fields: script, avatar_id, voice_id, video_project_id, brokerage_id" },
+        { error: "Missing required fields: script, avatar_id, voice_id, video_project_id" },
         { status: 400 }
       )
     }
@@ -192,6 +199,22 @@ export async function POST(request: NextRequest) {
       })
     }
 
+    // Vendor budget gate — auto-pause when the brokerage is over its monthly
+    // platform-vendor spend ceiling (closes the metering→cap governance loop).
+    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
+    const { estimatePlatformVendorCost: estCost } = await import("@/lib/vendor-governance/meter-vendor")
+    const budget = await checkVendorBudget({ brokerageId: brokerage_id, addCost: estCost("heygen", 1) })
+    if (!budget.allowed) {
+      await supabase
+        .from("ai_video_projects")
+        .update({ status: "blocked", error_message: `Vendor budget exceeded ($${budget.spent}/$${budget.budget})` })
+        .eq("id", video_project_id)
+      return NextResponse.json(
+        { success: false, error: "Monthly vendor budget reached — video generation paused.", budgetExceeded: true, spent: budget.spent, budget: budget.budget },
+        { status: 402 },
+      )
+    }
+
     // ─── PREPARE VIDEO DIMENSIONS ─────────────────────────────────────────────
     const dimensions = {
       landscape: { width: 1920, height: 1080 },
@@ -263,6 +286,19 @@ export async function POST(request: NextRequest) {
     }
 
     const heygenVideoId = heygenData.data?.video_id
+
+    // Unified vendor-spend ledger — HeyGen bills per submitted avatar video.
+    {
+      const { meterVendorSpend, estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
+      void meterVendorSpend({
+        vendorName: "heygen",
+        usageType: "video_render",
+        cost: estimatePlatformVendorCost("heygen", 1),
+        brokerageId: brokerage_id,
+        systemSource: "video_generation",
+        metadata: { video_project_id, heygen_video_id: heygenVideoId },
+      })
+    }
 
     // ─── UPDATE AI_VIDEO_PROJECTS ─────────────────────────────────────────────
     await supabase

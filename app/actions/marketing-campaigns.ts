@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { generateTextRouted } from "@/lib/ai/models"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -47,7 +48,8 @@ export interface CampaignWithROI extends MarketingCampaign {
 // ─── List Campaigns ───────────────────────────────────────────────────────────
 
 export async function listMarketingCampaigns(params: {
-  brokerageId: string
+  /** ignored — derived from session */
+  brokerageId?: string | undefined
   agentUserId?: string
   status?: string
   campaignType?: string
@@ -55,16 +57,18 @@ export async function listMarketingCampaigns(params: {
   offset?: number
 }): Promise<{ success: boolean; campaigns: CampaignWithROI[]; total: number; error?: string }> {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, campaigns: [], total: 0, error: "Unauthorized" }
+    }
+    const brokerageId = ctx.brokerageId
+
     const supabase = await createClient()
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) return { success: false, campaigns: [], total: 0, error: "Unauthorized" }
 
     let query = supabase
       .from("marketing_campaigns")
       .select("*", { count: "exact" })
-      .eq("brokerage_id", params.brokerageId)
+      .eq("brokerage_id", brokerageId)
       .order("created_at", { ascending: false })
 
     if (params.agentUserId) {
@@ -140,16 +144,19 @@ export async function getMarketingCampaign(campaignId: string): Promise<{
   error?: string
 }> {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const brokerageId = ctx.brokerageId
+
     const supabase = await createClient()
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) return { success: false, error: "Unauthorized" }
 
     const { data: campaign, error } = await supabase
       .from("marketing_campaigns")
       .select("*")
       .eq("id", campaignId)
+      .eq("brokerage_id", brokerageId)
       .maybeSingle()
 
     if (error || !campaign) return { success: false, error: "Campaign not found" }
@@ -238,7 +245,8 @@ export async function getMarketingCampaign(campaignId: string): Promise<{
 // ─── Create Campaign ──────────────────────────────────────────────────────────
 
 export async function createMarketingCampaign(params: {
-  brokerageId: string
+  /** ignored — derived from session */
+  brokerageId?: string | undefined
   campaignName: string
   campaignType: string
   budgetTotal?: number
@@ -249,16 +257,18 @@ export async function createMarketingCampaign(params: {
   visibilityScope?: string
 }): Promise<{ success: boolean; campaignId?: string; error?: string }> {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const brokerageId = ctx.brokerageId
+
     const supabase = await createClient()
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) return { success: false, error: "Unauthorized" }
 
     const { data: campaign, error } = await supabase
       .from("marketing_campaigns")
       .insert({
-        brokerage_id: params.brokerageId,
+        brokerage_id: brokerageId,
         campaign_name: params.campaignName,
         campaign_type: params.campaignType,
         status: "draft",
@@ -268,8 +278,8 @@ export async function createMarketingCampaign(params: {
         scheduled_start_at: params.scheduledStartAt ?? null,
         scheduled_end_at: params.scheduledEndAt ?? null,
         listing_id: params.listingId ?? null,
-        agent_user_id: user.id,
-        created_by: user.id,
+        agent_user_id: ctx.userId,
+        created_by: ctx.userId,
         visibility_scope: params.visibilityScope ?? "brokerage",
       })
       .select("id")
@@ -283,7 +293,7 @@ export async function createMarketingCampaign(params: {
     // Emit kernel event
     processKernelEvent({
       event: KernelEvent.MARKETING_CAMPAIGN_CREATED,
-      brokerageId: params.brokerageId,
+      brokerageId,
       entityType: "marketing_campaign",
       entityId: campaign.id,
     }).catch((e) => console.error("[kernel] MARKETING_CAMPAIGN_CREATED:", e))
@@ -313,11 +323,22 @@ export async function updateMarketingCampaign(
   }
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const brokerageId = ctx.brokerageId
+
     const supabase = await createClient()
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) return { success: false, error: "Unauthorized" }
+
+    // Verify ownership before mutating
+    const { data: existing } = await supabase
+      .from("marketing_campaigns")
+      .select("id")
+      .eq("id", campaignId)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (!existing) return { success: false, error: "Campaign not found" }
 
     const updatePayload: Record<string, unknown> = {
       updated_at: new Date().toISOString(),
@@ -336,6 +357,7 @@ export async function updateMarketingCampaign(
       .from("marketing_campaigns")
       .update(updatePayload)
       .eq("id", campaignId)
+      .eq("brokerage_id", brokerageId)
 
     if (error) throw error
 
@@ -351,16 +373,19 @@ export async function updateMarketingCampaign(
 
 export async function launchMarketingCampaign(
   campaignId: string,
-  brokerageId: string
+  /** ignored — derived from session */
+  _brokerageId?: string | undefined
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    const supabase = await createClient()
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) return { success: false, error: "Unauthorized" }
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const brokerageId = ctx.brokerageId
 
-    // Verify campaign exists and is in a launchable state
+    const supabase = await createClient()
+
+    // Verify campaign exists in this brokerage and is in a launchable state
     const { data: campaign, error: fetchError } = await supabase
       .from("marketing_campaigns")
       .select("id, status, brokerage_id")
@@ -381,6 +406,7 @@ export async function launchMarketingCampaign(
         updated_at: new Date().toISOString(),
       })
       .eq("id", campaignId)
+      .eq("brokerage_id", brokerageId)
 
     if (error) throw error
 
@@ -403,10 +429,26 @@ export async function launchMarketingCampaign(
 
 export async function pauseMarketingCampaign(
   campaignId: string,
-  brokerageId: string
+  /** ignored — derived from session */
+  _brokerageId?: string | undefined
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const brokerageId = ctx.brokerageId
+
     const supabase = await createClient()
+
+    // Verify campaign belongs to caller's brokerage before mutating
+    const { data: existing } = await supabase
+      .from("marketing_campaigns")
+      .select("id")
+      .eq("id", campaignId)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (!existing) return { success: false, error: "Campaign not found" }
 
     const { error } = await supabase
       .from("marketing_campaigns")
@@ -435,10 +477,26 @@ export async function pauseMarketingCampaign(
 
 export async function endMarketingCampaign(
   campaignId: string,
-  brokerageId: string
+  /** ignored — derived from session */
+  _brokerageId?: string | undefined
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const brokerageId = ctx.brokerageId
+
     const supabase = await createClient()
+
+    // Verify campaign belongs to caller's brokerage before mutating
+    const { data: existing } = await supabase
+      .from("marketing_campaigns")
+      .select("id")
+      .eq("id", campaignId)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (!existing) return { success: false, error: "Campaign not found" }
 
     const { error } = await supabase
       .from("marketing_campaigns")
@@ -471,9 +529,16 @@ export async function endMarketingCampaign(
 
 export async function deleteMarketingCampaign(
   campaignId: string,
-  brokerageId: string
+  /** ignored — derived from session */
+  _brokerageId?: string | undefined
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const brokerageId = ctx.brokerageId
+
     const supabase = await createClient()
 
     const { data: existing } = await supabase
@@ -483,7 +548,9 @@ export async function deleteMarketingCampaign(
       .eq("brokerage_id", brokerageId)
       .maybeSingle()
 
-    if (existing?.status === "active") {
+    if (!existing) return { success: false, error: "Campaign not found" }
+
+    if (existing.status === "active") {
       return { success: false, error: "Cannot delete an active campaign. Pause it first." }
     }
 
@@ -506,7 +573,8 @@ export async function deleteMarketingCampaign(
 // ─── AI Campaign Name & Audience Suggestions ─────────────────────────────────
 
 export async function aiSuggestCampaign(params: {
-  brokerageId: string
+  /** ignored — derived from session */
+  brokerageId?: string | undefined
   campaignType: string
   context?: string
 }): Promise<{
@@ -515,16 +583,16 @@ export async function aiSuggestCampaign(params: {
   error?: string
 }> {
   try {
-    const supabase = await createClient()
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) return { success: false, error: "Unauthorized" }
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const brokerageId = ctx.brokerageId
 
     const { text } = await generateTextRouted({
       feature: "campaign_naming",
-      brokerageId: params.brokerageId,
-      userId: user.id,
+      brokerageId,
+      userId: ctx.userId,
       system: `You are a real estate marketing expert. Generate campaign name and audience suggestions.
 Return a JSON array of 3 objects with keys: name, audience, description.
 Campaign type: ${params.campaignType}
@@ -558,18 +626,19 @@ Return ONLY the JSON array, no markdown fences.`,
 // ─── AI Copy Generation ───────────────────────────────────────────────────────
 
 export async function aiGenerateCampaignCopy(params: {
-  brokerageId: string
+  /** ignored — derived from session */
+  brokerageId?: string | undefined
   campaignName: string
   campaignType: string
   targetAudience?: string
   channel: "email" | "social" | "ads" | "direct_mail"
 }): Promise<{ success: boolean; copy?: string; subject?: string; error?: string }> {
   try {
-    const supabase = await createClient()
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) return { success: false, error: "Unauthorized" }
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const brokerageId = ctx.brokerageId
 
     const featureMap: Record<string, string> = {
       email: "email_generation",
@@ -580,8 +649,8 @@ export async function aiGenerateCampaignCopy(params: {
 
     const { text } = await generateTextRouted({
       feature: featureMap[params.channel] ?? "email_generation",
-      brokerageId: params.brokerageId,
-      userId: user.id,
+      brokerageId,
+      userId: ctx.userId,
       system: `You are a real estate marketing copywriter. Write compelling, compliant marketing copy.
 Campaign: "${params.campaignName}"
 Type: ${params.campaignType}
@@ -611,7 +680,8 @@ Return ONLY the JSON, no markdown fences.`,
 // ─── Add Task to Campaign ─────────────────────────────────────────────────────
 
 export async function addCampaignTask(params: {
-  brokerageId: string
+  /** ignored — derived from session */
+  brokerageId?: string | undefined
   campaignId: string
   title: string
   description?: string
@@ -619,12 +689,27 @@ export async function addCampaignTask(params: {
   dueAt?: string
 }): Promise<{ success: boolean; taskId?: string; error?: string }> {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const brokerageId = ctx.brokerageId
+
     const supabase = await createClient()
+
+    // Verify campaign belongs to this brokerage before attaching a task
+    const { data: parent } = await supabase
+      .from("marketing_campaigns")
+      .select("id")
+      .eq("id", params.campaignId)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (!parent) return { success: false, error: "Campaign not found" }
 
     const { data: task, error } = await supabase
       .from("marketing_campaign_tasks")
       .insert({
-        brokerage_id: params.brokerageId,
+        brokerage_id: brokerageId,
         campaign_id: params.campaignId,
         title: params.title,
         description: params.description ?? null,
@@ -652,12 +737,28 @@ export async function updateCampaignTaskStatus(
   status: "pending" | "in_progress" | "done"
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const brokerageId = ctx.brokerageId
+
     const supabase = await createClient()
+
+    // Verify task belongs to caller's brokerage
+    const { data: existing } = await supabase
+      .from("marketing_campaign_tasks")
+      .select("id")
+      .eq("id", taskId)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (!existing) return { success: false, error: "Task not found" }
 
     const { error } = await supabase
       .from("marketing_campaign_tasks")
       .update({ status, updated_at: new Date().toISOString() })
       .eq("id", taskId)
+      .eq("brokerage_id", brokerageId)
 
     if (error) throw error
 
@@ -671,7 +772,10 @@ export async function updateCampaignTaskStatus(
 
 // ─── Get Campaign Performance Summary ────────────────────────────────────────
 
-export async function getCampaignPerformanceSummary(brokerageId: string): Promise<{
+export async function getCampaignPerformanceSummary(
+  /** ignored — derived from session */
+  _brokerageId?: string | undefined
+): Promise<{
   success: boolean
   summary?: {
     total_campaigns: number
@@ -685,6 +789,12 @@ export async function getCampaignPerformanceSummary(brokerageId: string): Promis
   error?: string
 }> {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const brokerageId = ctx.brokerageId
+
     const supabase = await createClient()
 
     const [

@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server"
+import {
+NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { aggregateMetrics } from "@/lib/territory/metrics-aggregator"
 import {
@@ -7,15 +8,15 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
+import { verifyCronAuth } from "@/lib/cron-auth"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
 export async function GET(request: Request) {
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Cron auth — see lib/cron-auth.ts
+  const unauth = verifyCronAuth(request)
+  if (unauth) return unauth
 
   const contextResult = await createCronRunContextAction({
     cron_name: "territory-metrics",
@@ -86,7 +87,7 @@ export async function GET(request: Request) {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error"
     console.error("[TerritoryMetrics] Cron failed:", error)
-    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
+    await recordCronFailureAction({ context_id: contextId, error: error as Error | string, stage: "main-processing" })
     return NextResponse.json({ ok: false, error: errorMessage, context_id: contextId }, { status: 500 })
   }
 }

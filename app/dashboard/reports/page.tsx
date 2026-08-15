@@ -16,27 +16,32 @@ export default async function ReportsPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
-  const { agentId, brokerageId, role } = await getAgentContext()
+  const agentCtx = await getAgentContext()
+  if (!agentCtx.isAuthenticated) redirect("/login")
 
   const today      = new Date()
   const ytdStart   = `${today.getFullYear()}-01-01`
   const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split("T")[0]
 
-  // Resolve agents.id from user.id (needed for kernel actor context)
-  const { data: agentRow } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("user_id", user.id)
-    .maybeSingle()
+  // Ensure agentId is resolved — fallback to agents table lookup
+  let resolvedAgentId = agentCtx.agentId ?? ""
+  if (!resolvedAgentId) {
+    const { data: agentRow } = await supabase
+      .from("agents")
+      .select("id")
+      .eq("user_id", user.id)
+      .maybeSingle()
+    resolvedAgentId = agentRow?.id ?? user.id
+  }
 
   const ctx = {
     userId:      user.id,
-    agentId:     agentRow?.id ?? agentId,
-    brokerageId: brokerageId ?? "",
-    userType:    role ?? "agent",
+    agentId:     resolvedAgentId,
+    brokerageId: agentCtx.brokerageId ?? "",
+    userType:    agentCtx.role ?? "agent",
   }
 
-  // Prefetch all three report types in parallel — gives client zero loading flash
+  // Prefetch all four report types in parallel — gives client zero loading flash
   const [campaignResult, financialResult, reputationResult, sourceResult] =
     await Promise.all([
       generateCampaignROIReport({ ctx }),
@@ -47,9 +52,9 @@ export default async function ReportsPage() {
 
   return (
     <ReportsClient
-      agentId={agentId}
-      brokerageId={brokerageId}
-      role={role || "agent"}
+      agentId={resolvedAgentId}
+      brokerageId={agentCtx.brokerageId ?? ""}
+      role={agentCtx.role || "agent"}
       userId={user.id}
       monthStart={monthStart}
       initialCampaignData={campaignResult.data ?? null}

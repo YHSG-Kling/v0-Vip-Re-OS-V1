@@ -1,9 +1,14 @@
 // ─── CONVERSATION HANDLING ────────────────────────────────────────────────────
+// Inbound email orchestration lives in app/actions/ai-isa/handle-inbound-email.ts.
+// This module re-exports only the helpers that flow uses.
 export {
-  handleInboundEmailReply,
   shouldStopAutoResponding,
+  haltEngagementForNegativeReply,
+  detectNegativeIntent,
 } from './conversation-handler'
-export type { InboundEmailContext } from './conversation-handler'
+
+export { buildISATools } from './tools'
+export type { ISAToolContext } from './tools'
 
 // ─── EMAIL GENERATION ─────────────────────────────────────────────────────────
 export {
@@ -14,7 +19,7 @@ export type { LeadEmailContext } from './email-generator'
 
 // ─── VIDEO GENERATION ─────────────────────────────────────────────────────────
 export {
-  generateHeyGenVideo,
+  generateAvatarVideo,
   embedVideoInEmail,
 } from './video-generator'
 export type { VideoGenerationContext } from './video-generator'

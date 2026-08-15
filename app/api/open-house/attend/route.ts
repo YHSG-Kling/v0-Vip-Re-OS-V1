@@ -44,16 +44,18 @@ export async function POST(req: NextRequest) {
 
     const supabase = createServiceClient()
 
-    // Load event to get listing + brokerage + agent context
+    // Load event to get listing + brokerage + agent context. Address pulled
+    // for the personalized instant-greeting message at the end of this flow.
     const { data: event, error: eventErr } = await supabase
       .from("open_house_events")
-      .select("id, listing_id, brokerage_id, agent_id, qr_code_id")
+      .select("id, listing_id, brokerage_id, agent_id, qr_code_id, listings(address)")
       .eq("id", eventId)
       .single()
 
     if (eventErr || !event) {
       return NextResponse.json({ error: "Event not found" }, { status: 404 })
     }
+    const listingAddress = ((event as { listings?: { address?: string } | null }).listings ?? null)?.address ?? null
 
     // 1. Upsert contact by email (Layer 2 dedup pattern)
     const { data: existingContact } = await supabase
@@ -162,7 +164,7 @@ export async function POST(req: NextRequest) {
         .then(async () => {
           // Fallback if RPC not available
         })
-        .catch(async () => {
+        .then(() => {}, async () => {
           const { data: qr } = await supabase
             .from("qr_codes")
             .select("scan_count, lead_count")
@@ -204,7 +206,37 @@ export async function POST(req: NextRequest) {
       entityId: event.listing_id,
     }).catch(() => {})
 
-    return NextResponse.json({ success: true, attendeeId: attendee.id })
+    // 7. Open House Concierge Mobile — fire personalized 90-second auto-text
+    // (or email when no phone). evaluateOutbound runs internally; failures
+    // are logged but do NOT block the successful check-in response.
+    let greetingResult: { sent: boolean; channel?: "sms" | "email"; reason?: string } = { sent: false }
+    try {
+      const { sendInstantOpenHouseGreeting } = await import("@/lib/open-house/instant-greeting")
+      const r = await sendInstantOpenHouseGreeting({
+        attendeeId:     attendee.id,
+        contactId,
+        eventId,
+        brokerageId:    event.brokerage_id,
+        agentId:        event.agent_id,
+        firstName,
+        phone:          phone ?? null,
+        email,
+        listingAddress,
+      })
+      if (r.success) {
+        greetingResult = { sent: true, channel: r.channel }
+      } else {
+        greetingResult = { sent: false, reason: r.reason ?? r.error }
+      }
+    } catch (err) {
+      console.error("[open-house/attend] instant greeting threw:", err)
+    }
+
+    return NextResponse.json({
+      success: true,
+      attendeeId: attendee.id,
+      instantGreeting: greetingResult,
+    })
   } catch (err) {
     console.error("[open-house/attend]", err)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })

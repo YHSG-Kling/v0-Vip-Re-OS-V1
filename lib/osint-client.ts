@@ -2,6 +2,91 @@
 // Searches public records, court records, social profiles, property records
 
 import { ZenrowsClient } from "./zenrows-client"
+import * as cheerio from "cheerio"
+
+/** A single distressed-seller court/public-records filing discovered by territory. */
+export interface CourtFiling {
+  firstName: string | null
+  lastName: string | null
+  recordType: string
+  county: string | null
+  caseNumber: string | null
+  date: string | null
+}
+
+/** Court/public-record filing types that signal a motivated SELLER. */
+export const DISTRESS_RECORD_TYPES = [
+  "divorce",
+  "probate",
+  "estate",
+  "foreclosure",
+  "pre_foreclosure",
+  "tax_lien",
+  "eviction",
+  "bankruptcy",
+  "building_permit", // major remodel/addition → equity built, often pre-sale
+  "code_violation",  // distressed owner, deferred maintenance
+  "obituary",        // probate-adjacent estate sale (decedent's property)
+] as const
+
+/**
+ * Public-record filing types that signal a BUYER. Marriage licenses → new
+ * household formation (first-home buyers); new-mover / relocation records →
+ * inbound buyers. OSINT captures both sides of online + public-records behavior.
+ */
+export const BUYER_RECORD_TYPES = [
+  "marriage",
+  "new_mover",
+  "relocation",
+] as const
+
+/** Buyer vs seller classification for a record type. */
+export function recordTypeIntent(recordType: string): "buyer" | "seller" {
+  return (BUYER_RECORD_TYPES as readonly string[]).includes(recordType) ? "buyer" : "seller"
+}
+
+export const ALL_RECORD_TYPES = [...DISTRESS_RECORD_TYPES, ...BUYER_RECORD_TYPES] as const
+
+/**
+ * Pure parser: extract individual filing rows (party name + type + county/date)
+ * from a court-records search results page. Defensive across common result-row
+ * structures; returns only rows with at least a party name. No network.
+ */
+export function parseTerritoryCourtRecords(html: string, recordType: string): CourtFiling[] {
+  const $ = cheerio.load(html)
+  const filings: CourtFiling[] = []
+
+  $('.result, .case-result, [class*="case-row"], [class*="record-row"], li.result-row, tr.case').each((_, el) => {
+    const block = $(el)
+    const name = block
+      .find('.case-name, .party-name, [class*="name"], h3, h4, a')
+      .first()
+      .text()
+      .trim()
+    if (!name || name.length < 3) return
+
+    const county = block.find('.county, [class*="county"], .court').first().text().trim() || null
+    const caseNumber = block.find('.case-number, [class*="case-no"], [class*="docket"]').first().text().trim() || null
+    const date = block.find('.date, [class*="filed"], time').first().text().trim() || null
+
+    // "Last, First" or "First Last"
+    let firstName: string | null = null
+    let lastName: string | null = null
+    if (name.includes(",")) {
+      const [ln, fn] = name.split(",").map((s) => s.trim())
+      lastName = ln || null
+      firstName = (fn ?? "").split(/\s+/)[0] || null
+    } else {
+      const parts = name.split(/\s+/).filter(Boolean)
+      firstName = parts[0] ?? null
+      lastName = parts.length > 1 ? parts[parts.length - 1] : null
+    }
+
+    filings.push({ firstName, lastName, recordType, county, caseNumber, date })
+  })
+
+  return filings
+}
 
 export class OSINTClient {
   private zenrows: ZenrowsClient
@@ -20,7 +105,7 @@ export class OSINTClient {
   }): Promise<{
     social_profiles: Array<{ platform: string; url: string; username?: string }>
     public_records: Array<{ type: string; source: string; data: any }>
-    court_records: Array<{ type: string; date: string; county?: string; case_number?: string }>
+    court_records: Array<{ type: string; date?: string; county?: string; case_number?: string }>
     property_records: Array<{ address: string; ownership_type: string; acquired_date?: string }>
     life_events: Array<{ event: string; date?: string; source: string }>
     confidence_score: number
@@ -28,7 +113,7 @@ export class OSINTClient {
     const results = {
       social_profiles: [] as Array<{ platform: string; url: string; username?: string }>,
       public_records: [] as Array<{ type: string; source: string; data: any }>,
-      court_records: [] as Array<{ type: string; date: string; county?: string; case_number?: string }>,
+      court_records: [] as Array<{ type: string; date?: string; county?: string; case_number?: string }>,
       property_records: [] as Array<{ address: string; ownership_type: string; acquired_date?: string }>,
       life_events: [] as Array<{ event: string; date?: string; source: string }>,
       confidence_score: 0,
@@ -134,8 +219,8 @@ export class OSINTClient {
   private async searchCourtRecords(
     name: string,
     state?: string,
-  ): Promise<Array<{ type: string; date: string; county?: string; case_number?: string }>> {
-    const courtRecords: Array<{ type: string; date: string; county?: string; case_number?: string }> = []
+  ): Promise<Array<{ type: string; date?: string; county?: string; case_number?: string }>> {
+    const courtRecords: Array<{ type: string; date?: string; county?: string; case_number?: string }> = []
 
     if (!state) return courtRecords
 
@@ -239,17 +324,17 @@ export class OSINTClient {
 
   private parseCourtRecordsHtml(
     html: string,
-  ): Array<{ type: string; date: string; county?: string; case_number?: string }> {
-    const records: Array<{ type: string; date: string; county?: string; case_number?: string }> = []
+  ): Array<{ type: string; date?: string; county?: string; case_number?: string }> {
+    const records: Array<{ type: string; date?: string; county?: string; case_number?: string }> = []
 
-    // Look for common court record types
+    // Look for common court record types. We do NOT have a real date extracted
+    // from the page, so we leave `date` undefined rather than stamping today's
+    // date — a fabricated "today" would make a stale or unknown court event look
+    // current and pollute recency-based motivation scoring downstream.
     const courtTypes = ["divorce", "bankruptcy", "foreclosure", "eviction", "lien", "judgment"]
     for (const type of courtTypes) {
       if (html.toLowerCase().includes(type)) {
-        records.push({
-          type,
-          date: new Date().toISOString().split("T")[0], // Would extract actual date from HTML
-        })
+        records.push({ type })
       }
     }
 
@@ -261,5 +346,39 @@ export class OSINTClient {
   } {
     // Simplified parsing - real implementation would use cheerio
     return { properties: [] }
+  }
+
+  /**
+   * Territory-based distressed-seller discovery (auto sourcing, not enrichment).
+   * Scrapes a public court-records aggregator for RECENT filings of each distress
+   * type in a county/state and returns the parties as motivated-seller filings.
+   * Used by lib/lead-pipeline/osint-sourcer.ts to feed raw_recruit/lead pipelines.
+   */
+  async searchCourtRecordsByTerritory(params: {
+    county?: string | null
+    state: string
+    recordTypes?: readonly string[]
+    limitPerType?: number
+  }): Promise<{ filings: CourtFiling[]; cost: number }> {
+    const types = params.recordTypes ?? ALL_RECORD_TYPES
+    const filings: CourtFiling[] = []
+    let cost = 0
+
+    for (const recordType of types) {
+      const q = `${recordType.replace(/_/g, " ")} ${params.county ?? ""}`.trim()
+      const searchUrl = `https://www.judyrecords.com/?q=${encodeURIComponent(q)}&state=${encodeURIComponent(params.state)}`
+      try {
+        const result = await this.zenrows.scrape(searchUrl, { js_render: true })
+        cost += result.cost ?? 0
+        if (result.success && result.html) {
+          const rows = parseTerritoryCourtRecords(result.html, recordType)
+          filings.push(...rows.slice(0, params.limitPerType ?? 25))
+        }
+      } catch (error) {
+        console.error(`[OSINT] Territory court search failed for ${recordType}:`, error)
+      }
+    }
+
+    return { filings, cost }
   }
 }

@@ -84,8 +84,8 @@ export default async function NeighborhoodReportPage({
     notFound()
   }
 
-  // listings.zip is the correct column name (confirmed from schema)
-  const zip = listing.zip
+  // getNeighborhoodReport returns zip_code; alias to zip for local use
+  const zip = listing.zip_code
 
   const [marketData, marketInsight, homeValueEstimate, propertyHistory] = await Promise.all([
     // Area market snapshot from market_data table (MLS-sourced, zip-level)
@@ -187,8 +187,8 @@ export default async function NeighborhoodReportPage({
         {report ? (
           <NeighborhoodReportContent
             report={report}
-            listing={listing}
-            priceHistory={priceHistory}
+            listing={{ ...listing, zip: listing.zip_code }}
+            priceHistory={priceHistory as any}
             dataSources={dataSources}
             listingId={listingId}
             marketData={marketData}
@@ -198,7 +198,7 @@ export default async function NeighborhoodReportPage({
             neighborhoodAI={neighborhoodAI}
           />
         ) : (
-          <EmptyState listingId={listingId} listing={listing} />
+          <EmptyState listingId={listingId} listing={{ ...listing, zip: listing.zip_code }} />
         )}
       </div>
     </div>
@@ -375,7 +375,7 @@ function NeighborhoodReportContent({
         <CardContent>
           {priceHistory.length > 1 ? (
             <div className="h-64">
-              <PriceHistoryChart data={priceHistory} />
+              <PriceHistoryChart data={priceHistory as any} />
             </div>
           ) : (
             <p className="text-sm text-muted-foreground">No historical price data available</p>
@@ -961,26 +961,66 @@ function EmptyState({
     redirect(`/dashboard/listings/${listingId}/neighborhood-report`)
   }
 
+  const REPORT_SECTIONS = [
+    { icon: GraduationCap, label: "Schools & Education", desc: "Ratings, district info, nearby schools" },
+    { icon: Shield,        label: "Safety & Crime Index", desc: "Neighborhood safety scores by category" },
+    { icon: TrendingUp,    label: "Market Trends",        desc: "Price history, DOM, absorption rate" },
+    { icon: Bus,           label: "Transit & Walkability", desc: "Walk score, transit score, bike score" },
+    { icon: Utensils,      label: "Amenities & Lifestyle", desc: "Dining, shopping, parks, entertainment" },
+    { icon: Home,          label: "Demographics",         desc: "Population, income, household composition" },
+  ]
+
   return (
-    <Card>
-      <CardContent className="flex flex-col items-center justify-center py-16 text-center">
-        <AlertCircle className="h-12 w-12 text-muted-foreground mb-4" />
-        <h2 className="text-xl font-semibold mb-2">Neighborhood report not yet generated</h2>
-        <p className="text-muted-foreground mb-6 max-w-md">
-          Generate a comprehensive neighborhood report for {listing.address}, {listing.city},{" "}
-          {listing.state} {listing.zip}
+    <div className="space-y-6">
+      {/* Header card */}
+      <Card className="border-2 border-dashed">
+        <CardContent className="pt-8 pb-6 text-center space-y-4">
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
+            <MapPin className="h-8 w-8 text-primary" />
+          </div>
+          <div className="space-y-1">
+            <h2 className="text-xl font-bold tracking-tight">Neighborhood Intelligence Report</h2>
+            <p className="text-sm text-muted-foreground max-w-md mx-auto">
+              Generate a comprehensive market and lifestyle analysis for{" "}
+              <span className="font-medium text-foreground">
+                {listing.address}, {listing.city}, {listing.state} {listing.zip}
+              </span>
+            </p>
+          </div>
+          <form action={handleGenerate}>
+            <Button type="submit" size="lg" className="gap-2 px-8">
+              <Sparkles className="h-4 w-4" />
+              Generate AI Report
+            </Button>
+          </form>
+          <p className="text-xs text-muted-foreground">
+            Analysis takes 15–30 seconds. AI-powered data aggregation across multiple sources.
+          </p>
+        </CardContent>
+      </Card>
+
+      {/* Preview of what will be included */}
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-3">
+          Report will include
         </p>
-        <form action={handleGenerate}>
-          <Button type="submit" size="lg" className="gap-2">
-            <RefreshCw className="h-4 w-4" />
-            Generate Report
-          </Button>
-        </form>
-        <p className="text-xs text-muted-foreground mt-4">
-          Report generation may take a moment. Check back shortly.
-        </p>
-      </CardContent>
-    </Card>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {REPORT_SECTIONS.map(({ icon: Icon, label, desc }) => (
+            <Card key={label} className="bg-muted/30">
+              <CardContent className="pt-4 pb-4 flex items-start gap-3">
+                <div className="p-2 rounded-lg bg-background border shrink-0">
+                  <Icon className="h-4 w-4 text-muted-foreground" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-medium leading-tight">{label}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5 leading-tight">{desc}</p>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </div>
+    </div>
   )
 }
 

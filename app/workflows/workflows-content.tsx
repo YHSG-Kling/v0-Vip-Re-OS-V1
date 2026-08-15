@@ -57,7 +57,7 @@ export function WorkflowsContent() {
       total: statsResult.total || 0,
       running: statsResult.running || 0,
       failed: statsResult.failed || 0,
-      paused: statsResult.paused || 0,
+      paused: (statsResult as any).paused || 0,
       succeeded_today: statsResult.completed || 0,
       succeeded_month: statsResult.total || 0,
     })

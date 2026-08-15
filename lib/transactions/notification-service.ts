@@ -2,14 +2,24 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchSms } from "@/lib/providers/dispatch"
 
 interface NotificationParams {
-  transactionId: string
-  brokerageId: string
-  recipientIds: string[]
-  eventType: string
-  title: string
-  message: string
-  priority?: "low" | "medium" | "high" | "urgent"
-  metadata?: Record<string, any>
+  /**
+   * Target entity. Either transactionId is set (legacy convenience for the
+   * transaction-stage / milestone notification callers), or entityType +
+   * entityId are set for entities that aren't transactions (e.g. compliance
+   * flags raised against an offer before it converts).
+   */
+  transactionId?: string
+  entityType?:    "transaction" | "offer" | "listing" | "document" | "contact"
+  entityId?:      string
+  brokerageId:    string
+  recipientIds:   string[]
+  eventType:      string
+  title:          string
+  message:        string
+  priority?:      "low" | "medium" | "high" | "urgent" | "critical"
+  metadata?:      Record<string, any>
+  /** Caller can pin a channel set; defaults to all channels the brokerage allows. */
+  channels?:      Array<"in_app" | "email" | "sms" | "push">
 }
 
 type NotificationChannel = "in_app" | "email" | "sms" | "push"
@@ -111,17 +121,32 @@ export class NotificationService {
   }
 
   private async sendInAppNotification(params: NotificationParams): Promise<void> {
+    // Resolve the entity link. Legacy callers pass transactionId; newer
+    // callers (compliance flag, scanner) pass entityType + entityId for
+    // non-transaction entities (offers, documents, listings).
+    const entityType = params.entityType ?? (params.transactionId ? "transaction" : null)
+    const entityId   = params.entityId   ?? params.transactionId ?? null
+
+    // Live schema columns (no transaction_id / notification_type / message /
+    // read / metadata — those were on an older version of this table).
+    // notifications.priority CHECK allows: low | medium | high | critical.
+    // Legacy callers pass "urgent" — map that to "critical" to match the
+    // live constraint. Anything else passes through.
+    const priorityValue =
+      params.priority === "urgent" ? "critical" : (params.priority ?? "medium")
+
     const notifications = params.recipientIds.map(userId => ({
-      user_id: userId,
+      user_id:      userId,
       brokerage_id: params.brokerageId,
-      transaction_id: params.transactionId,
-      notification_type: params.eventType,
-      title: params.title,
-      message: params.message,
-      priority: params.priority || "medium",
-      read: false,
-      metadata: params.metadata,
-      created_at: new Date().toISOString()
+      type:         params.eventType,
+      title:        params.title,
+      body:         params.message,
+      entity_type:  entityType,
+      entity_id:    entityId,
+      priority:     priorityValue,
+      channel:      "in_app",
+      is_read:      false,
+      created_at:   new Date().toISOString(),
     }))
 
     await this.supabase.from("notifications").insert(notifications)

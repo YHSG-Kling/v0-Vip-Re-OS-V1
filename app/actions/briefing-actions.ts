@@ -6,11 +6,15 @@ import {
   markBriefingOpened,
   type DailyBriefing,
 } from "@/lib/intelligence/daily-briefing-generator"
+import {
+  generateUserTypeBrief,
+  type UserTypeBrief,
+} from "@/lib/intelligence/user-type-briefs"
 import { createClient } from "@/lib/supabase/server"
 
 // Helper to validate UUID is not null/undefined/"null"/"undefined"
 function isValidUUID(id: any): id is string {
-  return typeof id === "string" && id && id !== "null" && id !== "undefined"
+  return typeof id === "string" && Boolean(id) && id !== "null" && id !== "undefined"
 }
 
 // ─── Get Today's Briefing ─────────────────────────────────────────────────────
@@ -64,12 +68,41 @@ export async function generateBriefing(
     
     const { agentId, brokerageId } = context
 
+    if (!brokerageId || !isValidUUID(brokerageId)) return { briefing: null, error: "Missing brokerage context" }
+
     const briefing = await generateDailyBriefing(agentId, brokerageId, forceRegenerate)
 
     return { briefing }
   } catch (err) {
     console.error("[BriefingActions] generateBriefing failed:", err)
     return { briefing: null, error: err instanceof Error ? err.message : "Unknown error" }
+  }
+}
+
+// ─── Get UserTypeBrief (TodaysFocusCard data) ────────────────────────────────
+// Returns the role-aware brief shape consumed by <TodaysFocusCard>. Used by
+// the agent dashboard (client component) which can't call generateUserTypeBrief
+// directly. Other staff dashboards (broker, TC, compliance, lender, vendor)
+// are server components and call generateUserTypeBrief inline.
+
+export async function getUserTypeBrief(input?: {
+  userType?: "agent" | "broker" | "TC" | "compliance" | "lender" | "vendor" | "superadmin"
+}): Promise<{ brief: UserTypeBrief | null; error?: string }> {
+  try {
+    const context = await getAgentContext()
+    if (!context?.userId || !isValidUUID(context.userId)) {
+      return { brief: null, error: "Not authenticated" }
+    }
+    const userType = input?.userType ?? "agent"
+    const brief = await generateUserTypeBrief({
+      userType,
+      userId: context.userId,
+      brokerageId: context.brokerageId ?? null,
+    })
+    return { brief }
+  } catch (err) {
+    console.error("[BriefingActions] getUserTypeBrief failed:", err)
+    return { brief: null, error: err instanceof Error ? err.message : "Unknown error" }
   }
 }
 
@@ -279,5 +312,170 @@ export async function getActiveTransactions(): Promise<{
   } catch (err) {
     console.error("[BriefingActions] getActiveTransactions failed:", err)
     return { transactions: [], error: err instanceof Error ? err.message : "Unknown error" }
+  }
+}
+
+// ─── Get Pipeline Summary ──────────────────────────────────────────────────────
+
+export async function getPipelineSummary(): Promise<{
+  activeCount: number
+  approachingClose: { id: string; property_address: string; close_date: string } | null
+  error?: string
+}> {
+  try {
+    const context = await getAgentContext()
+    if (!context?.agentId || !isValidUUID(context.agentId)) {
+      return { activeCount: 0, approachingClose: null, error: "Agent context not available" }
+    }
+
+    const { agentId } = context
+    const supabase = await createClient()
+
+    // Use a count query for accurate total — never capped by .limit()
+    const { count: totalActive, error: countError } = await supabase
+      .from("transactions")
+      .select("*", { count: "exact", head: true })
+      .eq("agent_id", agentId)
+      .not("stage", "in", '("closed","cancelled")')
+
+    if (countError) {
+      return { activeCount: 0, approachingClose: null, error: countError.message }
+    }
+
+    // Separately fetch the soonest-closing transaction within 14 days (limit 1)
+    const twoWeeksOut = new Date()
+    twoWeeksOut.setDate(twoWeeksOut.getDate() + 14)
+    const today = new Date().toISOString().split("T")[0]
+
+    const { data: nearestData, error: nearestError } = await supabase
+      .from("transactions")
+      .select("id, property_address, close_date, stage")
+      .eq("agent_id", agentId)
+      .not("stage", "in", '("closed","cancelled")')
+      .not("close_date", "is", null)
+      .gte("close_date", today)
+      .lte("close_date", twoWeeksOut.toISOString().split("T")[0])
+      .order("close_date", { ascending: true })
+      .limit(1)
+
+    if (nearestError) {
+      return { activeCount: totalActive ?? 0, approachingClose: null, error: nearestError.message }
+    }
+
+    const approaching = nearestData?.[0] ?? null
+
+    return {
+      activeCount: totalActive ?? 0,
+      approachingClose: approaching
+        ? {
+            id: approaching.id,
+            property_address: approaching.property_address || "Unknown address",
+            close_date: approaching.close_date,
+          }
+        : null,
+    }
+  } catch (err) {
+    console.error("[BriefingActions] getPipelineSummary failed:", err)
+    return {
+      activeCount: 0,
+      approachingClose: null,
+      error: err instanceof Error ? err.message : "Unknown error",
+    }
+  }
+}
+
+// ─── Get Buyer Matches ─────────────────────────────────────────────────────────
+
+export async function getBuyerMatchCount(): Promise<{
+  matchCount: number
+  error?: string
+}> {
+  try {
+    const context = await getAgentContext()
+    if (!context?.agentId || !isValidUUID(context.agentId)) {
+      return { matchCount: 0, error: "Agent context not available" }
+    }
+
+    const { agentId } = context
+    const supabase = await createClient()
+
+    // Count buyer contacts who have an active search criteria and an active listing to match
+    // We approximate this by counting contacts tagged as buyer with active/hot status
+    // who have a min_price / max_price set (search criteria)
+    const { count, error } = await supabase
+      .from("contacts")
+      .select("id", { count: "exact", head: true })
+      .eq("agent_id", agentId)
+      .in("lead_type", ["buyer", "Buyer"])
+      .in("status", ["active", "hot", "nurture"])
+      .or("min_price.not.is.null,max_price.not.is.null")
+
+    if (error) {
+      return { matchCount: 0, error: error.message }
+    }
+
+    return { matchCount: count ?? 0 }
+  } catch (err) {
+    console.error("[BriefingActions] getBuyerMatchCount failed:", err)
+    return {
+      matchCount: 0,
+      error: err instanceof Error ? err.message : "Unknown error",
+    }
+  }
+}
+
+// ─── Get Churn Risk Contacts ───────────────────────────────────────────────────
+
+export async function getChurnRiskContacts(): Promise<{
+  contacts: Array<{
+    id: string
+    first_name: string | null
+    last_name: string | null
+    last_contacted_at: string | null
+    status: string | null
+  }>
+  totalCount: number
+  error?: string
+}> {
+  try {
+    const context = await getAgentContext()
+    if (!context?.agentId || !isValidUUID(context.agentId)) {
+      return { contacts: [], totalCount: 0, error: "Agent context not available" }
+    }
+
+    const { agentId } = context
+    const supabase = await createClient()
+
+    // Contacts not touched in 30+ days that are still in active pipeline stages
+    const thirtyDaysAgo = new Date()
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
+    const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split("T")[0]
+
+    const { data, count, error } = await supabase
+      .from("contacts")
+      .select("id, first_name, last_name, last_contacted_at, status", {
+        count: "exact",
+      })
+      .eq("agent_id", agentId)
+      .in("status", ["new", "nurture", "active", "qualified"])
+      .or(`last_contacted_at.is.null,last_contacted_at.lte.${thirtyDaysAgoStr}`)
+      .order("last_contacted_at", { ascending: true, nullsFirst: true })
+      .limit(5)
+
+    if (error) {
+      return { contacts: [], totalCount: 0, error: error.message }
+    }
+
+    return {
+      contacts: data || [],
+      totalCount: count ?? 0,
+    }
+  } catch (err) {
+    console.error("[BriefingActions] getChurnRiskContacts failed:", err)
+    return {
+      contacts: [],
+      totalCount: 0,
+      error: err instanceof Error ? err.message : "Unknown error",
+    }
   }
 }

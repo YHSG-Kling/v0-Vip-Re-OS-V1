@@ -4,11 +4,28 @@ import { createClient } from "@/lib/supabase/server"
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createClient()
+
+    // Auth gate — anyone could previously probe this endpoint, enumerating
+    // agent_ids and forcing real DB queries (which RLS would mostly block but
+    // burns server time + leaks existence info via timing/errors).
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+
     const { searchParams } = new URL(request.url)
     const agentId = searchParams.get("agent_id")
 
     if (!agentId) {
       return NextResponse.json({ error: "agent_id is required" }, { status: 400 })
+    }
+
+    // The caller may only request recommendations for an agent they ARE.
+    const { data: callerAgent } = await supabase
+      .from("agents")
+      .select("id")
+      .eq("user_id", user.id)
+      .maybeSingle()
+    if (!callerAgent?.id || callerAgent.id !== agentId) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }
 
     const recommendations: any[] = []
@@ -160,25 +177,10 @@ export async function GET(request: NextRequest) {
     // Sort by priority score
     recommendations.sort((a, b) => b.priority_score - a.priority_score)
 
-    // Save recommendations to database
-    for (const rec of recommendations.slice(0, 10)) {
-      await supabase.from("video_recommendations").upsert(
-        {
-          agent_id: agentId,
-          recommendation_type: rec.type,
-          video_type_suggested: rec.video_type,
-          target_client_id: rec.target_client_id,
-          target_property_id: rec.target_property_id,
-          reason: rec.reason,
-          priority_score: rec.priority_score,
-          expires_at: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-        },
-        {
-          onConflict: "agent_id,target_client_id,video_type_suggested",
-          ignoreDuplicates: true,
-        },
-      )
-    }
+    // Note: there's no persisted video_recommendations table in the live
+    // schema (verified via information_schema). Recommendations are computed
+    // on demand and returned to the caller; the previous .upsert() to a
+    // non-existent table was a silent no-op (removed).
 
     return NextResponse.json({
       success: true,

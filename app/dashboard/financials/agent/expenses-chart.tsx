@@ -47,7 +47,7 @@ export function ExpensesDonutChart({ data }: ExpensesDonutChartProps) {
             outerRadius={80}
             paddingAngle={2}
             dataKey="value"
-            label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+            label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}
             labelLine={false}
           >
             {chartData.map((entry, index) => (
@@ -55,7 +55,10 @@ export function ExpensesDonutChart({ data }: ExpensesDonutChartProps) {
             ))}
           </Pie>
           <Tooltip
-            formatter={(value: number) => formatCurrency(value)}
+            formatter={(value: number | undefined) => {
+              const v = value ?? 0
+              return formatCurrency(v)
+            }}
             contentStyle={{
               backgroundColor: "hsl(var(--card))",
               border: "1px solid hsl(var(--border))",

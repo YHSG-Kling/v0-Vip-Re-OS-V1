@@ -77,8 +77,7 @@ export async function scheduleListingAppointment(params: {
 
   await processKernelEvent({
     event:      KernelEvent.LISTING_STAGE_CHANGED,
-    brokerageId: brokearageId,
-    agent_id: userId,
+    brokerageId: brokerageId,
     entityType: "listing_stage_machine",
     entityId:   listingId,
   }).catch(() => {})

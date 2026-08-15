@@ -52,7 +52,7 @@ export async function rollbackOffer(params: RollbackOfferParams) {
   await supabase.from("activities").insert([
     {
       activity_type: eventType,
-      user_id: userId,
+      agent_user_id: userId,
       metadata: {
         offer_id: offerId,
         reason,
@@ -61,7 +61,7 @@ export async function rollbackOffer(params: RollbackOfferParams) {
     },
     {
       activity_type: "buyer.offer.rollback",
-      user_id: userId,
+      agent_user_id: userId,
       metadata: {
         offer_id: offerId,
         rollback_action: action,

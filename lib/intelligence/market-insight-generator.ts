@@ -1,6 +1,6 @@
 /**
  * Market Insight Generator
- * 4-tier data provider waterfall: HouseCanary → BatchData → OSINT/ZenRows → CMA aggregate
+ * 4-tier data provider waterfall: RentCast → BatchData → OSINT/ZenRows → CMA aggregate
  * Generates AI-powered market analysis for agents
  */
 
@@ -9,15 +9,14 @@ import { resolveModel } from '@/lib/ai/resolve-model'
 import { z } from 'zod'
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
-import {
-  fetchHouseCanaryMarketStats,
-  fetchHouseCanaryForecast,
-  type HouseCanaryMarketStats,
-} from '@/lib/external/housecanary-client'
-import {
-  fetchBatchDataMarketStats,
-  type BatchDataMarketStats,
-} from '@/lib/external/batchdata-client'
+import { emitKernelEvent } from '@/lib/kernel/emit'
+import { getRentcastMarketStats } from '@/lib/property/rentcast'
+
+// Minimal shape for the free OSINT (ZenRows/Zillow) market-stats fallback.
+interface ScrapedMarketStats {
+  median_sale_price?: number
+  avg_days_on_market?: number
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -90,7 +89,7 @@ type MarketInsight = z.infer<typeof MarketInsightSchema>
 async function scrapeZillowNeighborhoodData(
   city: string,
   state: string
-): Promise<Partial<BatchDataMarketStats>> {
+): Promise<ScrapedMarketStats> {
   if (!process.env.ZENROWS_API_KEY) return {}
 
   try {
@@ -103,7 +102,7 @@ async function scrapeZillowNeighborhoodData(
 
     // Parse Zillow neighborhood stats from HTML using string matching
     const html = result.html
-    let stats: Partial<BatchDataMarketStats> = {}
+    let stats: ScrapedMarketStats = {}
 
     // Look for median price patterns
     if (html.includes('Median listing price')) {
@@ -142,46 +141,26 @@ export async function refreshMarketData(
   const supabase = createServiceClient()
   let stats: any = null
   let source = 'none'
-  let forecast: { forecast_6mo_pct: number } | null = null
 
-  // TIER 1: HouseCanary (highest accuracy)
-  if (process.env.HOUSECANARY_API_KEY && zipCode) {
-    const hcStats = await fetchHouseCanaryMarketStats(zipCode)
-    if (hcStats) {
+  // TIER 1: RentCast (chosen property-data provider) — zip-level market stats.
+  if (zipCode) {
+    const rcStats = await getRentcastMarketStats({ brokerageId, zipCode })
+    if (rcStats) {
       stats = {
-        active_listings: hcStats.total_active_listings,
-        new_listings_30d: Math.round(hcStats.total_active_listings * 0.15), // estimate
-        sold_listings_30d: hcStats.total_sold_30d,
-        median_sale_price: hcStats.median_sale_price,
-        avg_days_on_market: hcStats.avg_days_on_market,
-        list_to_sale_ratio: hcStats.list_to_sale_ratio,
-        months_of_inventory: hcStats.months_of_inventory,
-        price_trend_pct_1yr: hcStats.price_trend_yoy_pct,
+        active_listings: rcStats.active_listings,
+        new_listings_30d: rcStats.new_listings_30d,
+        sold_listings_30d: 0, // RentCast /markets does not expose sold counts
+        median_sale_price: rcStats.median_sale_price,
+        avg_days_on_market: rcStats.avg_days_on_market,
+        list_to_sale_ratio: 0,
+        months_of_inventory: 0,
+        price_trend_pct_1yr: rcStats.price_trend_yoy_pct,
       }
-      source = 'housecanary'
-      forecast = await fetchHouseCanaryForecast(zipCode)
+      source = 'rentcast'
     }
   }
 
-  // TIER 2: BatchData (fallback)
-  if (!stats && process.env.BATCHDATA_API_KEY && city && state) {
-    const bdStats = await fetchBatchDataMarketStats(city, state, zipCode)
-    if (bdStats) {
-      stats = {
-        active_listings: bdStats.active_listings,
-        new_listings_30d: Math.round(bdStats.active_listings * 0.1),
-        sold_listings_30d: bdStats.sold_last_30d,
-        median_sale_price: bdStats.median_sale_price,
-        avg_days_on_market: bdStats.avg_days_on_market,
-        list_to_sale_ratio: bdStats.list_to_sale_ratio,
-        months_of_inventory: bdStats.months_supply,
-        price_trend_pct_1yr: 0,
-      }
-      source = 'batchdata'
-    }
-  }
-
-  // TIER 3: OSINT/ZenRows (free scraping fallback)
+  // TIER 2: OSINT/ZenRows (free scraping fallback)
   if (!stats && process.env.ZENROWS_API_KEY && city && state) {
     const osintStats = await scrapeZillowNeighborhoodData(city, state)
     if (Object.keys(osintStats).length > 0) {
@@ -297,13 +276,14 @@ export async function refreshMarketData(
     console.error('[MarketTrends] Upsert error:', mtError.message)
   }
 
-  // Emit kernel event
-  await supabase.from('lifecycle_events').insert({
-    brokerage_id: brokerageId,
-    event_type: KernelEvent.MARKET_DATA_REFRESHED,
-    entity_type: 'market_data',
-    entity_id: marketArea,
-    event_data: { source_tier: source, market_area: marketArea },
+  // Emit through the canonical kernel emitter — INSERT + reactor fan-out (notifications + sequences
+  // + portal) in one call. Bare lifecycle_events INSERTs silently skipped all three downstream.
+  await emitKernelEvent({
+    event:       KernelEvent.MARKET_DATA_REFRESHED,
+    brokerageId,
+    entityType:  'market_data',
+    entityId:    marketArea,
+    metadata:    { source_tier: source, market_area: marketArea },
   })
 
   return { source, success: true }
@@ -413,7 +393,7 @@ export async function generateMarketInsight(
   const { object: insight } = await generateObject({
     model: resolveModel('anthropic/claude-sonnet-4-20250514'),
     schema: MarketInsightSchema,
-    maxTokens: 600,
+    maxOutputTokens: 600,
     system:
       'You are a real estate market analyst. Generate a concise market insight report for an agent. Be specific and actionable.',
     prompt: `Generate a market insight for ${req.marketArea}.
@@ -467,14 +447,14 @@ Avg CMA Value: $${cmaReports.length > 0 ? Math.round(cmaReports.reduce((s, r) =>
     throw new Error('Failed to save market insight')
   }
 
-  // STEP 6: Emit kernel event
-  await supabase.from('lifecycle_events').insert({
-    brokerage_id: req.brokerageId,
-    agent_id: req.agentId || null,
-    event_type: KernelEvent.MARKET_INSIGHT_GENERATED,
-    entity_type: 'market_insights',
-    entity_id: inserted.id,
-    event_data: { market_area: req.marketArea, headline: insight.headline },
+  // STEP 6: Emit through the canonical kernel emitter — INSERT + reactor fan-out.
+  await emitKernelEvent({
+    event:       KernelEvent.MARKET_INSIGHT_GENERATED,
+    brokerageId: req.brokerageId,
+    entityType:  'market_insights',
+    entityId:    inserted.id,
+    agentUserId: req.agentId || undefined,
+    metadata:    { market_area: req.marketArea, headline: insight.headline },
   })
 
   return { insightId: inserted.id, cached: false }

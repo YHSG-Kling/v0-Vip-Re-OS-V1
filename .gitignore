@@ -2,6 +2,7 @@
 
 # dependencies
 /node_modules
+/agent-worker/node_modules
 /.pnp
 .pnp.js
 .yarn/install-state.gz
@@ -40,6 +41,9 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzd
 # vercel
 .vercel
 
+# supabase CLI temp/cache
+supabase/.temp/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
@@ -53,3 +57,8 @@ next-env.d.ts
 
 # OS
 Thumbs.db
+.claude/worktrees/
+/test-results/
+/playwright-report/
+/blob-report/
+/e2e/.auth/

@@ -11,24 +11,39 @@ import {
   getRecentFeedback,
   getOfferSummary,
 } from "@/lib/portal/resolve-seller-context"
-import { getMarketPosition, getSellerVendors } from "@/app/actions/portal-seller"
+import {
+  getMarketPosition,
+  getSellerVendors,
+  getShowingInsights,
+} from "@/app/actions/portal-seller"
+import { SellerPortalViewTracker } from "./components/seller-mode/SellerPortalViewTracker"
+import { RecentUpdatesFeed } from "./components/RecentUpdatesFeed"
+import { ShareMyHomeCard } from "./components/seller-mode/ShareMyHomeCard"
 import { ListingStatsCard } from "@/app/components/portal/ListingStatsCard"
 import { ShowingActivityStrip, ShowingFeedbackCard } from "@/app/components/portal/ShowingsFeedCard"
 import { SellerOfferCard } from "@/app/components/portal/SellerOfferCard"
 import { MarketPositionCard } from "@/app/components/portal/MarketPositionCard"
 import { MilestoneProgressBar } from "@/app/components/portal/MilestoneProgressBar"
 import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
+import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
+import { NegotiationMirrorPanel } from "@/app/components/negotiation/negotiation-mirror-panel"
+import { MilestoneEducationPanel } from "@/app/components/portal/milestone-education-panel"
 import { Badge } from "@/app/components/ui/badge"
 import { Button } from "@/app/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import {
-  MessageSquare,
+  AlertTriangle,
+  ArrowRight,
+  BarChart3,
   BookOpen,
   Briefcase,
-  ArrowRight,
-  FileText,
+  Clock,
   Eye,
-  BarChart3,
+  FileText,
+  MessageSquare,
+  Minus,
+  ThumbsDown,
+  ThumbsUp,
 } from "lucide-react"
 
 // ─── SELLER STAGE MEANING ─────────────────────────────────────────────────────
@@ -89,6 +104,13 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
   // Get base seller context
   const context = await resolveSellerContext(supabase, contactId)
 
+  // Fetch richer insight data — only when a listing exists, errors silently swallowed
+  let showingInsights: Awaited<ReturnType<typeof getShowingInsights>> | null = null
+
+  if (context.listing) {
+    showingInsights = await getShowingInsights(contactId).catch(() => null)
+  }
+
   // Parallel data fetches
   const [
     showingStats,
@@ -101,6 +123,7 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
     agentResult,
     messagesResult,
     educationResult,
+    recentUpdatesResult,
   ] = await Promise.all([
     // Showing stats
     context.listing
@@ -122,9 +145,9 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
     context.transactionId
       ? supabase
           .from("transaction_milestones")
-          .select("id, milestone_name, milestone_type, milestone_date, completed_date, status")
+          .select("id, milestone_name, milestone_type, target_date, completed_at, status, is_client_visible")
           .eq("transaction_id", context.transactionId)
-          .order("milestone_date", { ascending: true, nullsFirst: false })
+          .order("target_date", { ascending: true, nullsFirst: false })
       : Promise.resolve({ data: [] }),
     // Deal team members
     context.transactionId
@@ -148,11 +171,21 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
       .limit(3),
-    // Education - completed lessons from contact_education_progress
+    // Post-1043: completed customer modules from learning_assignments.
     supabase
-      .from("contact_education_progress")
-      .select("lesson_key, completed_at")
-      .eq("contact_id", contactId),
+      .from("learning_assignments")
+      .select("module_id, completed_at")
+      .eq("contact_id", contactId)
+      .eq("status", "completed"),
+    // Recent transparency updates — kernel fan-out writes here when
+    // listing milestones fire (LISTING_PUBLISHED, OFFER_ACCEPTED, etc.)
+    supabase
+      .from("transparency_updates")
+      .select("id, title, plain_language_summary, message, next_step, next_step_date, responsible_party, responsible_party_name, update_type, is_visible_to_client, created_at, transaction_id")
+      .eq("contact_id", contactId)
+      .eq("is_visible_to_client", true)
+      .order("created_at", { ascending: false })
+      .limit(20),
   ])
 
   // Filter milestones to client-visible only
@@ -163,12 +196,24 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
   const dealTeamMembers = dealTeamResult.data ?? []
   const primaryAgent = agentResult.data
   const messages = messagesResult.data ?? []
-  const completedLessonKeys = educationResult.data?.map((p: any) => p.lesson_key) ?? []
+  const completedLessonKeys = educationResult.data?.map((p: any) => p.module_id) ?? []
+  const recentUpdates = (recentUpdatesResult as any).data ?? []
   const hasCompletedLessons = completedLessonKeys.length > 0
   const vendorAssignments = vendorData.assignments ?? []
 
   // Computed values
   const unreadMessageCount = messages.filter((m: any) => m.direction === "inbound" && !m.read_at).length
+
+  // Derived values — use already-fetched context (DOM is pre-computed from
+  // go_live_date by resolveSellerContext; this is just the read).
+  const daysOnMarket: number | null = context.listing?.dom ?? null
+  const dashboardOfferCount: number = offerSummary?.total ?? 0
+
+  // Derived values from getShowingInsights
+  const sentimentBreakdown = showingInsights?.sentimentBreakdown ?? null
+  const totalSentimentCount = sentimentBreakdown
+    ? sentimentBreakdown.positive + sentimentBreakdown.neutral + sentimentBreakdown.negative
+    : 0
 
   // Derive seller stage meaning from listing status
   const listingStatus = context.listing?.status ?? "pre_listing"
@@ -181,6 +226,24 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
 
   return (
     <div className="space-y-6">
+      {/* Analytics: fires once on the client after mount — never during SSR/prefetch */}
+      <SellerPortalViewTracker contactId={contactId} page="seller_home" />
+
+      {/* Sprint 8 — Negotiation mirror: when a strategy exists for an
+          offer on this seller's listing, the customer-mirror panel
+          renders here. Hides on empty. */}
+      <NegotiationMirrorPanel contactId={contactId} />
+
+      {/* Milestone-gated education for sellers. Lessons unlock as the
+          listing moves through stages (listing_live → first_showing →
+          offer_received → under_contract → closing_prep). Hides on empty. */}
+      <MilestoneEducationPanel contactId={contactId} />
+
+      {/* 0. WHAT'S NEW — kernel fan-out feeds milestones from listing
+           transitions (LISTING_PUBLISHED, OFFER_ACCEPTED, OPEN_HOUSE_SCHEDULED).
+           Hidden when nothing client-visible yet. */}
+      <RecentUpdatesFeed contactId={contactId} updates={recentUpdates} hideWhenEmpty />
+
       {/* 1. LISTING STATUS BANNER */}
       <ListingStatsCard
         listing={context.listing}
@@ -213,6 +276,36 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
           </div>
         </CardContent>
       </Card>
+
+      {/* DAYS ON MARKET + OFFER COUNT STATS */}
+      {context.listing && (daysOnMarket !== null || dashboardOfferCount > 0) && (
+        <div className="grid grid-cols-2 gap-4">
+          {daysOnMarket !== null && (
+            <Card>
+              <CardContent className="py-4 text-center">
+                <div className="flex items-center justify-center gap-2 mb-1">
+                  <Clock className="h-4 w-4 text-muted-foreground" />
+                </div>
+                <p className="text-2xl font-semibold">{daysOnMarket}</p>
+                <p className="text-xs text-muted-foreground">Days on Market</p>
+              </CardContent>
+            </Card>
+          )}
+          {dashboardOfferCount > 0 && (
+            <Card>
+              <CardContent className="py-4 text-center">
+                <div className="flex items-center justify-center gap-2 mb-1">
+                  <FileText className="h-4 w-4 text-muted-foreground" />
+                </div>
+                <p className="text-2xl font-semibold">{dashboardOfferCount}</p>
+                <p className="text-xs text-muted-foreground">
+                  {dashboardOfferCount === 1 ? "Offer" : "Offers"} Received
+                </p>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      )}
 
       {/* Agent Next Actions — transparency for seller */}
       {milestones.filter((m: any) => m.status === 'pending').length > 0 && (
@@ -247,6 +340,82 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
           avgRating={showingStats.avgRating}
           contactId={contactId}
         />
+      )}
+
+      {/* SHOWING INTELLIGENCE — from getShowingInsights */}
+      {context.listing && showingInsights && totalSentimentCount > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <BarChart3 className="h-4 w-4" />
+              Showing Intelligence
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {/* Sentiment breakdown */}
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                Buyer Feedback Sentiment
+              </p>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="p-2 rounded-lg bg-green-50 border border-green-100">
+                  <ThumbsUp className="h-4 w-4 text-green-600 mx-auto mb-1" />
+                  <p className="text-lg font-semibold text-green-700">
+                    {sentimentBreakdown!.positive}
+                  </p>
+                  <p className="text-xs text-green-600">Positive</p>
+                </div>
+                <div className="p-2 rounded-lg bg-amber-50 border border-amber-100">
+                  <Minus className="h-4 w-4 text-amber-600 mx-auto mb-1" />
+                  <p className="text-lg font-semibold text-amber-700">
+                    {sentimentBreakdown!.neutral}
+                  </p>
+                  <p className="text-xs text-amber-600">Neutral</p>
+                </div>
+                <div className="p-2 rounded-lg bg-red-50 border border-red-100">
+                  <ThumbsDown className="h-4 w-4 text-red-600 mx-auto mb-1" />
+                  <p className="text-lg font-semibold text-red-700">
+                    {sentimentBreakdown!.negative}
+                  </p>
+                  <p className="text-xs text-red-600">Needs Attention</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Weekly trend mini-chart */}
+            {showingInsights.weeklyStats.length > 0 && (
+              <div>
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                  Weekly Showing Activity
+                </p>
+                <div className="flex items-end gap-1 h-10">
+                  {showingInsights.weeklyStats.map((wk, i) => {
+                    const maxCount = Math.max(...showingInsights.weeklyStats.map((w) => w.count), 1)
+                    const heightPct = wk.count === 0 ? 4 : Math.max(10, (wk.count / maxCount) * 100)
+                    return (
+                      <div
+                        key={i}
+                        className="flex-1 bg-emerald-200 rounded-sm"
+                        style={{ height: `${heightPct}%` }}
+                        title={`${wk.week}: ${wk.count} showing${wk.count !== 1 ? "s" : ""}`}
+                      />
+                    )
+                  })}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">Last 8 weeks</p>
+              </div>
+            )}
+
+            <div className="flex justify-end">
+              <Button variant="ghost" size="sm" asChild>
+                <Link href={`/portal/${contactId}/insights`}>
+                  Full Insights
+                  <ArrowRight className="h-4 w-4 ml-1" />
+                </Link>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {/* Main Content Grid */}
@@ -359,13 +528,19 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
           </CardContent>
         </Card>
 
-        {/* 10. VENDORS PREVIEW */}
+        {/* 10a. PRE-LISTING TOOLKIT — persona+stage-filtered marketplace
+                  preview surfaces stagers, photographers, cleaners, and
+                  prep pros the agent has curated for sellers. */}
+        <ContactVendorToolkitCard contactId={contactId} portalView="seller" />
+
+        {/* 10b. ACTIVE VENDOR ASSIGNMENTS — pros already engaged on this
+                  listing/transaction (assignment-status focused). */}
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <CardTitle className="text-base flex items-center gap-2">
                 <Briefcase className="h-4 w-4" />
-                Vendors
+                Active Vendor Team
               </CardTitle>
               <Button variant="ghost" size="sm" asChild>
                 <Link href={`/portal/${contactId}/vendors`}>
@@ -428,6 +603,14 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
           </div>
         </CardContent>
       </Card>
+
+      {/* 12. SHARE MY HOME — social posts about this listing pushed by agent */}
+      {context.listing?.id && (
+        <ShareMyHomeCard
+          listingId={context.listing.id}
+          listingAddress={context.listing.address ?? "your home"}
+        />
+      )}
     </div>
   )
 }

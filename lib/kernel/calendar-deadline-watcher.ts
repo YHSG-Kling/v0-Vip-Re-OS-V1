@@ -22,6 +22,13 @@ const CALENDAR_TYPE_TO_KERNEL_EVENT: Record<CalendarEventType, KernelEvent> = {
   [CalendarEventType.WALKTHROUGH]:         KernelEvent.WALKTHROUGH_DUE,
   [CalendarEventType.CLOSING]:             KernelEvent.CLOSING_SCHEDULED,
   [CalendarEventType.TASK_DUE]:            KernelEvent.TASK_DUE,
+  isa_outreach_email:                      KernelEvent.ISA_OUTREACH_SENT,
+  isa_followup_email:                      KernelEvent.ISA_OUTREACH_SENT,
+  isa_direct_mail:                         KernelEvent.ISA_OUTREACH_SENT,
+  isa_video_send:                          KernelEvent.ISA_OUTREACH_SENT,
+  [CalendarEventType.ISA_APPOINTMENT]:     KernelEvent.ISA_APPOINTMENT_SCHEDULED,
+  [CalendarEventType.LISTING_APPOINTMENT]: KernelEvent.LISTING_STAGE_CHANGED,
+  [CalendarEventType.OPEN_HOUSE]:          KernelEvent.OPEN_HOUSE_SCHEDULED,
 }
 
 // ─── SHAPE OF A CALENDAR_EVENTS ROW ──────────────────────────────────────────
@@ -86,7 +93,6 @@ export async function checkUpcomingDeadlines(): Promise<void> {
         brokerageId: calEvent.brokerage_id,
         entityType:  calEvent.entity_type,
         entityId:    calEvent.entity_id,
-        metadata:    { calendarEventId: calEvent.id },
       })
 
       notifiedIds.push(calEvent.id)

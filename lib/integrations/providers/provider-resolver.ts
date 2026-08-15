@@ -1,24 +1,52 @@
 /**
  * Provider Resolver
- * 
- * Registry-based resolver for transaction providers.
- * Defaults to Dotloop if provider unknown or not configured.
+ *
+ * Registry-based resolver for transaction / e-sign providers. Each provider
+ * has a factory that constructs a real ITransactionProvider with whatever
+ * credentials the caller has resolved from platform_credentials.
+ *
+ * Adding a new provider = drop a class in /providers, add a row here.
  */
 
-import type { ITransactionProvider, TransactionProvider } from "./transaction-provider.interface"
-import { DotloopProvider } from "./dotloop-provider"
+import type { ITransactionProvider } from "./transaction-provider.interface"
+import { DotloopProvider }        from "./dotloop-provider"
+import { DocusignProvider }       from "./docusign-provider"
+import { SkyslopeProvider }       from "./skyslope-provider"
+import { AuthentisignProvider }   from "./authentisign-provider"
+import { BrokermintProvider }     from "./brokermint-provider"
+import { FormSimplicityProvider } from "./formsimplicity-provider"
 import { getTransactionProvider as getProviderName } from "@/lib/brokerage"
+import { getCatalogEntry, getImplementedProviders, type ProviderName } from "./catalog"
+
+/** Clear, catalog-aware error for a name that has no instantiable provider class. */
+function unresolvableProviderError(providerName: string): Error {
+  const entry = getCatalogEntry(providerName)
+  if (entry && !entry.implemented) {
+    const available = getImplementedProviders().map((p) => p.label).join(", ")
+    return new Error(`${entry.label} is not yet available. Choose one of: ${available}.`)
+  }
+  return new Error(`Unknown transaction provider: ${providerName}. Contact support.`)
+}
 
 // ── Provider registry ────────────────────────────────────────────────────────
-// Add new providers here. Factory returns an instance; throw means not-yet-implemented.
+// Every provider supported by resolveESignProviderForActor MUST appear here.
+// Brokerages choose one in Settings → Integrations; we instantiate from
+// platform_credentials at dispatch time.
 
-export type ProviderName = "dotloop" | "skyslope" | "formsimplicity" | "brokermint"
+// ProviderName is the unified catalog type (6 providers). The registry only
+// contains entries for providers with a working class; resolution throws a
+// catalog-aware error for any known-but-unregistered name.
+export type { ProviderName }
 
-const PROVIDER_REGISTRY: Record<ProviderName, () => ITransactionProvider> = {
-  dotloop:         () => new DotloopProvider(),
-  skyslope:        () => { throw new Error("SkySlope provider not yet implemented") },
-  formsimplicity:  () => { throw new Error("FormSimplicity provider not yet implemented") },
-  brokermint:      () => { throw new Error("BrokerMint provider not yet implemented") },
+type ProviderCredentials = { apiKey: string; profileId: string; baseUri?: string }
+
+const PROVIDER_REGISTRY: Partial<Record<ProviderName, (creds?: ProviderCredentials) => ITransactionProvider>> = {
+  dotloop:        (creds) => new DotloopProvider(creds),
+  docusign:       (creds) => new DocusignProvider(creds as ProviderCredentials),
+  skyslope:       (creds) => new SkyslopeProvider(creds as ProviderCredentials),
+  authentisign:   (creds) => new AuthentisignProvider(creds as ProviderCredentials),
+  brokermint:     (creds) => new BrokermintProvider(creds as ProviderCredentials),
+  formsimplicity: (creds) => new FormSimplicityProvider(creds as ProviderCredentials),
 }
 
 /**
@@ -27,39 +55,37 @@ const PROVIDER_REGISTRY: Record<ProviderName, () => ITransactionProvider> = {
  */
 export async function getTransactionProvider(
   brokerageId: string
-): Promise<TransactionProvider> {
+): Promise<ITransactionProvider> {
   const providerName = await getProviderName(brokerageId)
-  
-  switch (providerName) {
-    case "dotloop":
-      return new DotloopProvider()
-    case "skyslope":
-      throw new Error("SkySlope provider not yet implemented")
-    case "formsimplicity":
-      throw new Error("FormSimplicity provider not yet implemented")
-    case "brokermint":
-      throw new Error("BrokerMint provider not yet implemented")
-    default:
-      throw new Error(`Unknown transaction provider: ${providerName}`)
+  const normalized   = String(providerName ?? "").toLowerCase() as ProviderName
+  const factory      = PROVIDER_REGISTRY[normalized]
+  if (!factory) {
+    throw unresolvableProviderError(String(providerName ?? ""))
   }
+  return factory()
 }
 
 /**
  * Get transaction provider by name string.
  * Used by submitForSignature where the platform name comes from platform_credentials,
- * not from a brokerage settings lookup. Defaults to Dotloop if provider not found.
+ * not from a brokerage settings lookup. Throws if provider is not configured.
  */
-export function getTransactionProviderByName(providerName?: string): ITransactionProvider {
-  const normalizedName = (providerName?.toLowerCase() || "dotloop") as ProviderName
+export function getTransactionProviderByName(
+  providerName?: string,
+  credentials?: ProviderCredentials
+): ITransactionProvider {
+  if (!providerName || providerName === "not_configured") {
+    throw new Error("No transaction provider configured. Set up a provider in Settings > Integrations.")
+  }
 
+  const normalizedName = providerName.toLowerCase() as ProviderName
   const factory = PROVIDER_REGISTRY[normalizedName]
 
   if (!factory) {
-    console.warn(`[v0] Unknown provider: ${providerName}, defaulting to Dotloop`)
-    return new DotloopProvider()
+    throw unresolvableProviderError(providerName)
   }
 
-  return factory()
+  return factory(credentials)
 }
 
 /**

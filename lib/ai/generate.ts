@@ -4,10 +4,26 @@
  * app/actions/ai-generate.ts re-exports from here for Server Action consumers.
  */
 
-import { generateObject } from "ai"
+import { generateText, Output } from "ai"
+import { createGateway } from "@ai-sdk/gateway"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { runPipelineSimple } from "@/lib/ai/pipeline"
 import { z } from "zod"
+
+/**
+ * Wraps a resolved model string into a LanguageModel instance via the Vercel
+ * AI Gateway. Requires AI_GATEWAY_API_KEY to be set in the environment.
+ * Throws a clear error if the key is missing so callers get an actionable message.
+ */
+function resolveGatewayModel(modelStr: string) {
+  const apiKey = process.env.AI_GATEWAY_API_KEY
+  if (!apiKey) {
+    throw new Error(
+      `AI_GATEWAY_API_KEY is not configured. Cannot call model: ${modelStr}`
+    )
+  }
+  return createGateway({ apiKey })(modelStr)
+}
 
 // ─── JSON GENERATION ─────────────────────────────────────────────────────────
 
@@ -91,7 +107,49 @@ If they ask a question, answer it from THEIR perspective, focusing on what they 
   return generateAIText(prompt)
 }
 
+// ─── generateObject COMPATIBILITY SHIM ───────────────────────────────────────
+// AI SDK 6 deprecates generateObject — this shim keeps existing action files
+// working without touching each one. All action files should import generateObject
+// from "@/lib/ai/generate" instead of "ai".
+//
+// Usage (same API as the old SDK):
+//   import { generateObject } from "@/lib/ai/generate"
+//   const { object } = await generateObject({ model, schema, prompt })
+
+export async function generateObject<T extends z.ZodType>({
+  model,
+  schema,
+  prompt,
+  temperature,
+  system,
+}: {
+  model: string | any
+  schema: T
+  prompt?: string
+  temperature?: number
+  system?: string
+}): Promise<{ object: z.infer<T> }> {
+  // If model is already a resolved provider instance (any non-string truthy value),
+  // use it directly. If it's a string, resolve it via the Vercel AI Gateway.
+  const resolvedModel =
+    typeof model === "string"
+      ? resolveGatewayModel(resolveModel(model as Parameters<typeof resolveModel>[0]) as string)
+      : model
+
+  const promptParts = [system, prompt].filter(Boolean).join("\n\n")
+
+  const { experimental_output } = await generateText({
+    model: resolvedModel,
+    prompt: promptParts,
+    temperature: temperature ?? 0.5,
+    experimental_output: Output.object({ schema }),
+  })
+
+  return { object: experimental_output as z.infer<T> }
+}
+
 // ─── STRUCTURED OBJECT GENERATION ────────────────────────────────────────────
+// Note: generateObject is deprecated in AI SDK 6 — use generateText + Output.object()
 
 export async function generateAIObject<T extends z.ZodType>(
   prompt: string,
@@ -102,13 +160,13 @@ export async function generateAIObject<T extends z.ZodType>(
   }
 ): Promise<{ success: boolean; object?: z.infer<T>; error?: string }> {
   try {
-    const { object } = await generateObject({
-      model: resolveModel((options?.model ?? "openai/gpt-4o") as Parameters<typeof resolveModel>[0]),
+    const { experimental_output: object } = await generateText({
+      model: resolveGatewayModel(resolveModel((options?.model ?? "openai/gpt-4o") as Parameters<typeof resolveModel>[0]) as string),
       prompt,
-      schema,
       temperature: options?.temperature ?? 0.7,
+      experimental_output: Output.object({ schema }),
     })
-    return { success: true, object }
+    return { success: true, object: object as z.infer<T> | undefined }
   } catch (error: any) {
     console.error("[AI generate] generateAIObject error:", error)
     return { success: false, error: error.message ?? "Failed to generate AI object" }

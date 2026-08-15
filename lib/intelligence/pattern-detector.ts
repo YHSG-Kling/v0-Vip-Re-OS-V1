@@ -4,6 +4,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
+import { computeDaysOnMarketOrZero } from "@/lib/listings/compute-dom"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 export interface BehavioralPattern {
@@ -251,35 +253,36 @@ export async function scanEntityForPatterns(
         suggested_action: pattern.recommended_action,
       })
 
-      // Emit BEHAVIORAL_PATTERN_DETECTED
-      await supabase.from("lifecycle_events").insert({
-        event_type: KernelEvent.BEHAVIORAL_PATTERN_DETECTED,
-        agent_id: resolvedAgentId,
-        brokerage_id: brokerageId,
-        entity_type: entityType,
-        entity_id: entityId,
-        payload: {
-          pattern_id: pattern.id,
+      // emitKernelEvent does INSERT + reactor fan-out (notifications + sequences + portal) in one
+      // call. Bare lifecycle_events inserts dropped agent notifications for new pattern detections.
+      await emitKernelEvent({
+        event:       KernelEvent.BEHAVIORAL_PATTERN_DETECTED,
+        brokerageId,
+        entityType,
+        entityId,
+        agentUserId: resolvedAgentId,
+        metadata: {
+          pattern_id:   pattern.id,
           pattern_slug: pattern.pattern_slug,
           pattern_name: pattern.pattern_name,
-          confidence: evaluation.confidence,
+          confidence:   evaluation.confidence,
           detection_id: detection.id,
         },
       })
 
       // Emit PREDICTION_CREATED
       if (prediction) {
-        await supabase.from("lifecycle_events").insert({
-          event_type: KernelEvent.PREDICTION_CREATED,
-          agent_id: resolvedAgentId,
-          brokerage_id: brokerageId,
-          entity_type: entityType,
-          entity_id: entityId,
-          payload: {
-            prediction_id: prediction.id,
-            detection_id: detection.id,
+        await emitKernelEvent({
+          event:       KernelEvent.PREDICTION_CREATED,
+          brokerageId,
+          entityType,
+          entityId,
+          agentUserId: resolvedAgentId,
+          metadata: {
+            prediction_id:    prediction.id,
+            detection_id:     detection.id,
             prediction_label: pattern.pattern_name,
-            probability: evaluation.confidence,
+            probability:      evaluation.confidence,
           },
         })
       }
@@ -392,11 +395,12 @@ async function fetchEntitySignals(
       lastSignalDate: logs[0]?.created_at || null,
     }
   } else {
-    // Listing (seller) signals
+    // Listing (seller) signals. DOM is computed from go_live_date; the
+    // `days_on_market` column does not exist on listings.
     const [listingResult, showingsResult, offersResult] = await Promise.all([
       supabase
         .from("listings")
-        .select("days_on_market, status, listing_price, lifecycle_stage, created_at")
+        .select("go_live_date, status, listing_price, lifecycle_stage, created_at")
         .eq("id", entityId)
         .single(),
 
@@ -416,11 +420,9 @@ async function fetchEntitySignals(
     const showings = showingsResult.data || []
     const offers = offersResult.data || []
 
-    // Calculate days on market if not stored
-    const dom = listing?.days_on_market || 
-      (listing?.created_at 
-        ? Math.floor((now.getTime() - new Date(listing.created_at).getTime()) / (1000 * 60 * 60 * 24))
-        : 0)
+    // DOM strictly from go_live_date (the public-active date). Pre-MLS
+    // window between listing.created_at and go_live_date doesn't count.
+    const dom = computeDaysOnMarketOrZero(listing?.go_live_date)
 
     return {
       daysOnMarket: dom,
@@ -519,7 +521,7 @@ async function evaluatePattern(
       }
       if (
         daysSinceShowing !== null &&
-        daysSinceShowing >= (rules.days_no_showing || 14)
+        (daysSinceShowing ?? 0) >= (rules.days_no_showing || 14)
       ) {
         matchCount++
         triggerSignals.days_since_showing = daysSinceShowing
@@ -609,7 +611,7 @@ Entity type: ${entityType}
 Entity signals: ${JSON.stringify(signals, null, 2)}
 
 Does this pattern match? Evaluate and return JSON.`,
-      maxTokens: 200,
+      maxOutputTokens: 200,
     })
 
     // Parse AI response
@@ -657,13 +659,13 @@ export async function recordPredictionOutcome(
     context: { prediction_id: predictionId },
   })
 
-  // Emit outcome event
-  await supabase.from("lifecycle_events").insert({
-    event_type: KernelEvent.PREDICTION_OUTCOME_RECORDED,
-    agent_id: agentId,
-    brokerage_id: brokerageId,
-    entity_type: "prediction",
-    entity_id: predictionId,
-    payload: { outcome },
+  // Emit outcome event through the canonical emitter — INSERT + reactor fan-out.
+  await emitKernelEvent({
+    event:       KernelEvent.PREDICTION_OUTCOME_RECORDED,
+    brokerageId,
+    entityType:  "prediction",
+    entityId:    predictionId,
+    agentUserId: agentId,
+    metadata:    { outcome },
   })
 }

@@ -159,7 +159,7 @@ export async function checkStageDurationLimit(
     return {
       exceeded: false,
       currentStage: null,
-      daysInStage: 0,
+      daysinStage: 0,
       maxDurationDays: null,
       escalationRequired: false,
       escalationRoles: [],
@@ -173,7 +173,7 @@ export async function checkStageDurationLimit(
     return {
       exceeded: false,
       currentStage,
-      daysInStage: 0,
+      daysinStage: 0,
       maxDurationDays: null,
       escalationRequired: false,
       escalationRoles: [],
@@ -188,7 +188,7 @@ export async function checkStageDurationLimit(
     return {
       exceeded: false,
       currentStage,
-      daysInStage: 0,
+      daysinStage: 0,
       maxDurationDays: limitConfig.maxDurationDays,
       escalationRequired: limitConfig.escalationRequired,
       escalationRoles: limitConfig.escalationRoles,
@@ -198,14 +198,14 @@ export async function checkStageDurationLimit(
   // Calculate days in current stage
   const enteredAt = new Date(currentStageEntry.timestamp)
   const now = new Date()
-  const daysInStage = Math.floor((now.getTime() - enteredAt.getTime()) / (1000 * 60 * 60 * 24))
+  const daysinStage = Math.floor((now.getTime() - enteredAt.getTime()) / (1000 * 60 * 60 * 24))
   
-  const exceeded = daysInStage > limitConfig.maxDurationDays
+  const exceeded = daysinStage > limitConfig.maxDurationDays
   
   return {
     exceeded,
     currentStage,
-    daysInStage,
+    daysinStage,
     maxDurationDays: limitConfig.maxDurationDays,
     escalationRequired: exceeded && limitConfig.escalationRequired,
     escalationRoles: limitConfig.escalationRoles,
@@ -288,7 +288,7 @@ export async function checkAllListingDurationLimits(
       violations.push({
         listingId: listing.id,
         currentStage: check.currentStage,
-        daysInStage: check.daysInStage,
+        daysInStage: check.daysinStage,
         maxDurationDays: check.maxDurationDays!,
         escalationRequired: check.escalationRequired,
       })

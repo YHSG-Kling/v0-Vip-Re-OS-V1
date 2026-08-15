@@ -12,6 +12,7 @@ import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { KernelEvent }         from "@/lib/kernel/events"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { BuyerState } from "./lifecycle-definitions"
+import type { ActorRole } from "@/lib/kernel/types"
 
 export interface LifecycleTransitionEvent {
   contactId: string
@@ -70,10 +71,10 @@ export async function emitLifecycleTransition(
       brokerageId,
       entityType:  "buyer_lifecycle",
       entityId:    contactId,
-      fromState:   fromState ?? null,   // null = unknown prior state; never fake with toState
+      fromState:   fromState ?? "",   // empty string = unknown prior state; never fake with toState
       toState,
       actorUserId: userId,
-      actorRole:   authorityRole,
+      actorRole:   authorityRole as ActorRole,
       eventType:   resolveBuyerKernelEvent(toState),
       metadata: {
         triggered_by:    triggeredBy,
@@ -116,9 +117,10 @@ export async function getLifecycleHistory(
   const { limit = 100, startDate, endDate } = options || {}
   const supabase = createServiceClient()
   
+  // lifecycle_events stores from_state and to_state inside the metadata jsonb column
   let query = supabase
     .from("lifecycle_events")
-    .select("id, created_at, actor_user_id, metadata, from_state, to_state, event_type")
+    .select("id, created_at, actor_user_id, metadata, event_type")
     .eq("entity_type", "buyer_lifecycle")
     .eq("entity_id", contactId)
     .order("created_at", { ascending: false })
@@ -147,8 +149,8 @@ export async function getLifecycleHistory(
     const metadata = (event.metadata as Record<string, unknown>) || {}
     return {
       id:            event.id,
-      fromState:     (event.from_state as BuyerState) ?? (metadata.from_state as BuyerState) ?? null,
-      toState:       (event.to_state   as BuyerState) ?? (metadata.to_state   as BuyerState),
+      fromState:     (metadata.from_state as BuyerState) ?? null,
+      toState:       (metadata.to_state   as BuyerState),
       occurredAt:    new Date(event.created_at),
       triggeredBy:   (metadata.triggered_by   as string) || "unknown",
       authorityRole: (metadata.authority_role as string) || "unknown",

@@ -68,23 +68,23 @@ export function OnboardingOperationsPanel({ brokerageId }: OnboardingOperationsP
 
       if (onboarding && onboarding.length > 0) {
         // Fetch agent names
-        const agentIds = onboarding.map((o) => o.agent_id).filter(Boolean)
+        const agentIds = onboarding.map((o: any) => o.agent_id).filter(Boolean)
         const { data: agents } = await supabase
           .from("agents")
           .select("id, user_id")
           .in("id", agentIds)
 
-        const userIds = (agents || []).map((a) => a.user_id).filter(Boolean)
+        const userIds = (agents || []).map((a: any) => a.user_id).filter(Boolean)
         const { data: users } = await supabase
           .from("users")
           .select("id, first_name, last_name")
           .in("id", userIds)
 
-        const userMap = new Map((users || []).map((u) => [u.id, `${u.first_name || ""} ${u.last_name || ""}`.trim()]))
-        const agentUserMap = new Map((agents || []).map((a) => [a.id, a.user_id]))
+        const userMap = new Map((users || []).map((u: any) => [u.id, `${u.first_name || ""} ${u.last_name || ""}`.trim()]))
+        const agentUserMap = new Map((agents || []).map((a: any) => [a.id, a.user_id]))
 
         setRecords(
-          onboarding.map((o) => ({
+          onboarding.map((o: any) => ({
             ...o,
             agentName: userMap.get(agentUserMap.get(o.agent_id) || "") || "Unknown Agent",
           }))
