@@ -226,30 +226,64 @@ export async function calculateTrustCapital(agentId: string, periodDays: number 
   const endDate = new Date()
   const startDate = new Date(endDate.getTime() - periodDays * 86400000)
 
-  // Get value metrics
-  const { data: valueMetrics } = await supabase
+  // Get value metrics. `error` is destructured for the same reason as the
+  // relationship read below: three of the four trust-score components
+  // (value_given, recipients_helped, consistency) come out of this one query, so a
+  // refusal that arrives as `null` would be scored as "this agent delivered nothing".
+  const { data: valueMetrics, error: valueMetricsError } = await supabase
     .from("value_delivered_daily")
     .select("*")
     .eq("agent_id", agentId)
     .gte("date", startDate.toISOString().split("T")[0])
     .lte("date", endDate.toISOString().split("T")[0])
 
+  if (valueMetricsError) {
+    throw new Error(
+      `calculateTrustCapital: the value-delivered read was refused (${valueMetricsError.message}). This is a refusal, not an agent who gave nothing — no trust score is computed.`,
+    )
+  }
+
   const totalValueGiven =
     valueMetrics?.reduce((sum, m) => sum + (parseFloat(m.total_value_delivered_dollars as any) || 0), 0) || 0
 
-  // Get relationship metrics
-  const { data: transactions } = await supabase
+  // Get relationship metrics.
+  //
+  // The `contacts(*)` embed this replaces made the read fail on every call.
+  // `transactions` carries THREE foreign keys to `contacts`
+  // (transactions_contact_id_fkey, transactions_buyer_contact_id_fkey,
+  // transactions_seller_contact_id_fkey), so PostgREST could not resolve a bare
+  // `contacts(...)` and refused the WHOLE request with PGRST201. With no `error`
+  // destructure that refusal arrived as `transactions = null`, which this function
+  // reads as "this agent has closed nothing" — `closed_deals: 0`, `referral_rate: 0`,
+  // and a trust score assembled from those zeros and returned as fact.
+  //
+  // The embed is REMOVED rather than disambiguated: only `transactions.length` is
+  // used below, nothing reads the contact, so there is no party it could mean.
+  const { data: transactions, error: closedDealsError } = await supabase
     .from("transactions")
-    .select("*, contacts(*)")
+    .select("id")
     .eq("agent_id", agentId)
     .eq("status", "closed")
 
-  const { data: referrals } = await supabase
+  const { data: referrals, error: referralsError } = await supabase
     .from("contacts")
-    .select("*")
+    .select("id")
     .eq("agent_id", agentId)
     .eq("source", "client_referral")
     .gte("created_at", startDate.toISOString())
+
+  // FAIL CLOSED. A trust score is a number an agent is shown and believes. Building
+  // one out of a refused read would publish "you have no closings and no referrals"
+  // as a finding. Throwing (rather than returning a shape) keeps the existing
+  // contract: every call site already wraps this in `.catch(...)`, and
+  // loadValueDrivenDashboard below already signals unresolvable inputs by throwing.
+  if (closedDealsError || referralsError) {
+    throw new Error(
+      `calculateTrustCapital: the relationship read was refused (${
+        closedDealsError?.message ?? referralsError?.message
+      }). This is a refusal, not an agent with no closings — no trust score is computed.`,
+    )
+  }
 
   // Calculate metrics
   const metrics = {
@@ -319,9 +353,27 @@ export async function trackLeadValueJourney(contactId: string) {
   // `.maybeSingle()` rather than `.single()`: `.single()` returns an error
   // (PGRST116) for the zero-row case, which the un-destructured `{ data }`
   // then flattened into the same `null` as a genuine read failure.
+  //
+  // AMBIGUOUS EMBED — keep the `!transactions_contact_id_fkey` hint.
+  // `transactions` carries THREE foreign keys to `contacts`
+  // (transactions_contact_id_fkey, transactions_buyer_contact_id_fkey,
+  // transactions_seller_contact_id_fkey), so the bare `transactions(*)` this
+  // replaces was unresolvable and PostgREST refused the ENTIRE request with
+  // PGRST201. The fail-closed guard below then returned null for every contact, so
+  // no lead_value_journey row has ever been written from this path.
+  //
+  // `contact_id` is the party WE represent on the deal (documented on the canonical
+  // writer, lib/transactions/offer-bridge.ts:302). This function answers "did this
+  // lead become OUR client, and what was that worth" — which is exactly the
+  // contact_id relationship. buyer_contact_id / seller_contact_id are side mirrors
+  // that are null on the opposite side, so either would score a real conversion as
+  // "never converted" for half the book.
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
-    .select("id, created_at, transactions(*)")
+    .select(`
+      id, created_at,
+      transactions!transactions_contact_id_fkey(status, purchase_price, close_date)
+    `)
     .eq("id", contactId)
     .eq("brokerage_id", ctx.brokerageId)
     .maybeSingle()
@@ -357,9 +409,13 @@ export async function trackLeadValueJourney(contactId: string) {
   const conversionValue = contact.transactions?.reduce((sum: number, t: any) => sum + (t.purchase_price || 0), 0)
 
   const firstInteraction = new Date(contact.created_at)
-  const conversionDate = contact.transactions?.[0]?.close_date
-    ? new Date(contact.transactions[0].close_date)
-    : null
+  // Embedded rows come back UNORDERED, so `[0]` was an arbitrary deal. The
+  // conversion moment is the EARLIEST close this contact has with us.
+  const firstCloseDate = (contact.transactions ?? [])
+    .map((t: any) => t.close_date)
+    .filter(Boolean)
+    .sort()[0] as string | undefined
+  const conversionDate = firstCloseDate ? new Date(firstCloseDate) : null
   const timeToConversion = conversionDate
     ? Math.ceil((conversionDate.getTime() - firstInteraction.getTime()) / (1000 * 60 * 60 * 24))
     : null
@@ -455,12 +511,31 @@ export async function loadValueDrivenDashboard(agentId: string, period: string =
     .gte("date", startDate.toISOString().split("T")[0])
     .order("date", { ascending: true })
 
-  // Get traditional metrics (transactions)
-  const { data: transactions } = await supabase
+  // Get traditional metrics (transactions).
+  //
+  // The `contacts(*)` embed this replaces refused the entire read. `transactions`
+  // carries THREE foreign keys to `contacts` (transactions_contact_id_fkey,
+  // transactions_buyer_contact_id_fkey, transactions_seller_contact_id_fkey), so a
+  // bare `contacts(...)` is PGRST201 for the WHOLE request. With no `error`
+  // destructure that landed as `transactions = null`, and this dashboard then
+  // reported monthly_gci $0, units_closed 0, active_leads 0 and conversion_rate "0"
+  // to an agent whose deals were all sitting in the table.
+  //
+  // Removed rather than disambiguated: nothing here reads the contact — only
+  // `status` and `purchase_price` are used — so there is no party it could mean.
+  const { data: transactions, error: transactionsError } = await supabase
     .from("transactions")
-    .select("*, contacts(*)")
+    .select("status, purchase_price")
     .eq("agent_id", agentId)
     .gte("created_at", startDate.toISOString())
+
+  // FAIL CLOSED. Every headline number below is derived from this read; publishing
+  // zeros for a refusal is the exact failure this dashboard shipped with.
+  if (transactionsError) {
+    throw new Error(
+      `loadValueDrivenDashboard: the transaction read was refused (${transactionsError.message}). This is a refusal, not an empty pipeline.`,
+    )
+  }
 
   // Calculate aggregated metrics
   const totalValueDelivered =

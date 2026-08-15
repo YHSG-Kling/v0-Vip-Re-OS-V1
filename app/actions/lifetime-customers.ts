@@ -372,24 +372,53 @@ export async function getAISuggestedTouchpoint(contactId: string) {
   const supabase = await createClient()
   const { agentId, brokerageId } = await getAgentContext()
 
-  // Get contact info and last touchpoint
+  // Get contact info and last touchpoint.
+  //
+  // AMBIGUOUS EMBED — the `!transactions_contact_id_fkey` hint is load-bearing.
+  // `transactions` carries THREE foreign keys to `contacts`
+  // (transactions_contact_id_fkey, transactions_buyer_contact_id_fkey,
+  // transactions_seller_contact_id_fkey), so the bare `transactions(...)` this
+  // replaces could not be resolved and PostgREST refused the ENTIRE request with
+  // PGRST201 — taking the engagement scores down with it. The guard below then
+  // answered "Contact not found" for every lifetime customer, so this surface has
+  // only ever emitted the final `newsletter` fallback suggestion.
+  //
+  // `contact_id` is the party WE represent on the deal (documented on the canonical
+  // writer, lib/transactions/offer-bridge.ts:302) and is the same FK the sibling
+  // sphere actions this file imports from already name
+  // (app/actions/ai-sphere-management.ts:46). A lifetime customer is a past client of
+  // ours whether they bought or sold, so buyer_contact_id would drop every seller-side
+  // client and seller_contact_id every buyer-side one — and the anniversary touchpoint
+  // is owed to both.
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
     .select(`
-      *,
+      first_name, last_name,
       client_engagement_scores(engagement_score:score, last_touchpoint_date:last_interaction),
-      transactions(actual_close_date:close_date, property_address)
+      transactions!transactions_contact_id_fkey(actual_close_date:close_date, property_address)
     `)
     .eq("id", contactId)
     .single()
 
-  if (contactError || !contact) {
+  // Fail CLOSED and distinguish the two cases — supabase-js resolves a refused read,
+  // and a refusal is not a missing contact.
+  if (contactError) {
+    return { success: false, error: `Could not read that contact: ${contactError.message}` }
+  }
+  if (!contact) {
     return { success: false, error: "Contact not found" }
   }
 
   const lastTouchpointDate = contact.client_engagement_scores?.[0]?.last_touchpoint_date
   const engagementScore = contact.client_engagement_scores?.[0]?.engagement_score || 50
-  const closeDate = contact.transactions?.[0]?.actual_close_date
+  // Embedded rows come back UNORDERED, so `[0]` was an arbitrary deal. The
+  // anniversary worth congratulating is the MOST RECENT close — the home they are
+  // living in now, not one they moved out of years ago.
+  const closeDate = (contact.transactions ?? [])
+    .map((t: any) => t.actual_close_date)
+    .filter(Boolean)
+    .sort()
+    .reverse()[0] as string | undefined
 
   // Calculate days since last contact
   const daysSinceContact = lastTouchpointDate

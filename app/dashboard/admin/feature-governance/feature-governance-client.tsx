@@ -65,7 +65,12 @@ interface AccessOverride {
   trial_ends_at: string | null
   notes: string | null
   created_at: string | null
-  users: { email: string } | null
+  created_by: string | null
+  // feature_access_overrides → users carries TWO FKs (user_id = the person GOVERNED,
+  // created_by = the admin who GRANTED). Each embed names its own constraint and is
+  // aliased, so the two never collapse into one `users` key.
+  grantee: { id: string; email: string } | null
+  granted_by: { id: string; email: string } | null
 }
 
 interface FeatureGovernanceClientProps {
@@ -242,7 +247,12 @@ export function FeatureGovernanceClient({
         notes: grantNotes || null,
         created_by: caller.id,
       })
-      .select("id, user_id, brokerage_id, team_id, feature_key, override_type, trial_ends_at, notes, created_at, users(email)")
+      // Same two-FK disambiguation as the server read (page.tsx) — the bare
+      // `users(email)` here was ambiguous too (PGRST201), so the insert SUCCEEDED but
+      // its returning select was refused: `inserted` came back null, the UI showed
+      // "Failed to grant trial access", and an admin re-granting produced duplicate
+      // override rows for a grant that had actually worked the first time.
+      .select("id, user_id, brokerage_id, team_id, feature_key, override_type, trial_ends_at, notes, created_at, created_by, grantee:users!feature_access_overrides_user_id_fkey(id, email), granted_by:users!feature_access_overrides_created_by_fkey(id, email)")
       .single()
 
     if (error || !inserted) {
@@ -433,6 +443,7 @@ export function FeatureGovernanceClient({
                 <TableHeader>
                   <TableRow>
                     <TableHead>User</TableHead>
+                    <TableHead>Granted By</TableHead>
                     <TableHead>Feature</TableHead>
                     <TableHead>Type</TableHead>
                     <TableHead>Trial Ends</TableHead>
@@ -443,8 +454,15 @@ export function FeatureGovernanceClient({
                 <TableBody>
                   {overrides.map((o) => (
                     <TableRow key={o.id}>
+                      {/* grantee = user_id (the person governed) */}
                       <TableCell className="text-sm">
-                        {o.users?.email ?? o.user_id ?? "—"}
+                        {o.grantee?.email ?? o.user_id ?? "—"}
+                      </TableCell>
+                      {/* granted_by = created_by (the admin who set it) — the audit
+                          half of the trail, previously unreachable because the
+                          ambiguous embed refused the entire read. */}
+                      <TableCell className="text-sm text-muted-foreground">
+                        {o.granted_by?.email ?? o.created_by ?? "—"}
                       </TableCell>
                       <TableCell>
                         <Badge variant="outline" className="text-xs font-mono">

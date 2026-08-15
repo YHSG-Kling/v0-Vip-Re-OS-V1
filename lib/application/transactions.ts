@@ -2411,14 +2411,28 @@ export async function getClientTasks(transactionId: string) {
 
 export async function autoProgressMilestone(transactionId: string, completedMilestone: string) {
   const supabase = await createClient()
-  const { data: transaction } = await supabase
+  // transactions → contacts carries THREE FKs (transactions_contact_id_fkey,
+  // transactions_buyer_contact_id_fkey, transactions_seller_contact_id_fkey), so the
+  // bare `contacts(*)` was ambiguous: PostgREST refused the WHOLE request (PGRST201)
+  // and supabase-js resolved it, so `transaction` was null and this function returned
+  // {success:false} every time — no milestone was ever auto-progressed, no educational
+  // content ever delivered. Named contact_id: the client on this deal, which is the
+  // party whose persona drives the next-stage content (same hint the rest of this file
+  // already uses at lines ~1990/2337/2361). Embed names the column read (#214).
+  const { data: transaction, error: transactionError } = await supabase
     .from("transactions")
-    .select("*, contacts(*)")
+    .select("*, contacts!transactions_contact_id_fkey(id, contact_persona)")
     .eq("id", transactionId)
     .single()
 
+  // Check the error — an unchecked read reports a refusal as an absence.
+  if (transactionError) {
+    console.error("Error loading transaction for milestone auto-progress:", transactionError)
+    return { success: false }
+  }
   if (!transaction) return { success: false }
 
+  // contacts.persona is a phantom; contact_persona is the real column.
   const persona = transaction.contacts?.contact_persona || "buyer"
 
   await supabase

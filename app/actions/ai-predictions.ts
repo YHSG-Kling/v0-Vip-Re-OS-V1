@@ -820,13 +820,27 @@ export async function toggleAutoPilot(planId: string, pause: boolean) {
 export async function predictDealCloseProbability(transactionId: string) {
   const supabase = await createClient()
 
-  // Gather comprehensive transaction data
+  // Gather comprehensive transaction data.
+  //
+  // The `contacts(*)` embed that used to sit in this list made the ENTIRE read
+  // fail. `transactions` carries THREE foreign keys to `contacts`
+  // (transactions_contact_id_fkey, transactions_buyer_contact_id_fkey,
+  // transactions_seller_contact_id_fkey); PostgREST cannot choose one for a bare
+  // `contacts(...)` embed and refuses the whole request with PGRST201. The error
+  // IS checked here, so every call to this function threw "Transaction not found"
+  // for transactions that exist — the close-probability rail has never once run.
+  //
+  // The embed is REMOVED rather than disambiguated because nothing below reads
+  // `transaction.contacts` — there is no party for it to mean. If a future change
+  // needs the client, add it back as
+  // `contacts!transactions_contact_id_fkey(first_name, last_name)` (contact_id is
+  // the party WE represent; see lib/transactions/offer-bridge.ts:302) — never as a
+  // bare `contacts(...)`, and never as `contacts(*)`.
   const { data: transaction, error } = await supabase
     .from("transactions")
     .select(
       `
       *,
-      contacts(*),
       transaction_milestones(*),
       transaction_lenders(*),
       transaction_inspections(*),
@@ -847,14 +861,26 @@ export async function predictDealCloseProbability(transactionId: string) {
   // from another id space and nothing is re-resolved per risk factor.
   const dealBrokerageId = (transaction.brokerage_id as string | null) ?? null
 
-  const daysToClosing = transaction.closing_date
-    ? Math.floor((new Date(transaction.closing_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+  // `transactions` has NO `closing_date` column — the canonical closing date is
+  // `close_date`, with `estimated_close_date` as the pre-contract estimate (verified
+  // against information_schema). Reading `closing_date` yielded undefined on every
+  // row, so "Days to Closing" was hardcoded 0 in the prompt for every deal.
+  const closeDateValue = transaction.close_date ?? transaction.estimated_close_date ?? null
+  const daysToClosing = closeDateValue
+    ? Math.floor((new Date(closeDateValue).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
     : 0
 
   // Calculate milestone progress
   const milestones = transaction.transaction_milestones || []
   const completedMilestones = milestones.filter((m: any) => m.status === "completed").length
   const overdueMilestones = milestones.filter((m: any) => m.status === "overdue").length
+
+  // `transactions` has no `progress_percentage` column and never has — the prompt
+  // read it and reported "Progress: 0%" on every deal, including deals that were
+  // fully milestone-complete. Derived from the milestones we already loaded, which
+  // is the only progress signal that actually exists on this row set.
+  const milestoneProgressPct =
+    milestones.length > 0 ? Math.round((completedMilestones / milestones.length) * 100) : 0
 
   // Get lender data
   const lender = transaction.transaction_lenders?.[0]
@@ -874,9 +900,9 @@ export async function predictDealCloseProbability(transactionId: string) {
   const prompt = `You are a real estate transaction AI. Predict if this deal will close successfully:
 
 Transaction: ${transaction.property_address || "Unknown Property"}
-Contract Price: $${transaction.sale_price?.toLocaleString() || transaction.contract_price?.toLocaleString() || "Unknown"}
+Contract Price: $${transaction.purchase_price?.toLocaleString() || "Unknown"}
 Days to Closing: ${daysToClosing}
-Progress: ${transaction.progress_percentage || 0}%
+Progress: ${milestoneProgressPct}%
 
 Milestones:
 - Completed: ${completedMilestones}/${milestones.length}
@@ -2207,12 +2233,24 @@ export async function aiNegotiationAdvisor(data: {
   // The error is destructured because this row is now the TENANT ANCHOR for the
   // insight written below, and supabase-js RESOLVES a refused read — a refusal
   // and "no such transaction" arrive identically if only `data` is read.
+  //
+  // The `contacts(*)` embed this list used to carry made every call fail.
+  // `transactions` has THREE foreign keys to `contacts` (transactions_contact_id_fkey,
+  // transactions_buyer_contact_id_fkey, transactions_seller_contact_id_fkey), so a
+  // bare `contacts(...)` embed is unresolvable and PostgREST refuses the WHOLE
+  // request with PGRST201. The guard above then threw "the transaction lookup was
+  // refused" on every negotiation, for transactions that exist.
+  //
+  // Removed rather than disambiguated: nothing here reads `transaction.contacts`,
+  // so there is no party it could mean. If the negotiation prompt ever needs our
+  // client by name, add `contacts!transactions_contact_id_fkey(first_name, last_name)`
+  // — contact_id is the side WE represent (lib/transactions/offer-bridge.ts:302) —
+  // and never a bare or starred `contacts(...)`.
   const { data: transaction, error: negotiationTxnError } = await supabase
     .from("transactions")
     .select(
       `
       *,
-      contacts(*),
       transaction_lenders(*),
       transaction_inspections(*)
     `,
@@ -2237,7 +2275,7 @@ export async function aiNegotiationAdvisor(data: {
 
 Scenario: ${data.scenario}
 Property: ${transaction.property_address || "Unknown"}
-List Price: $${data.listPrice?.toLocaleString() || transaction.contract_price?.toLocaleString()}
+List Price: $${data.listPrice?.toLocaleString() || transaction.purchase_price?.toLocaleString() || "Unknown"}
 ${data.currentOffer ? `Current Offer: $${data.currentOffer.toLocaleString()}` : ""}
 
 Financing: ${transaction.transaction_lenders?.[0]?.loan_type || "Unknown"}
@@ -3012,13 +3050,29 @@ export async function findHiddenOpportunities(agentId: string) {
   // The error is destructured because this row is the TENANT ANCHOR for every
   // insight below, and supabase-js RESOLVES a refused read — "refused" and "no
   // such agent" are byte-identical if only `data` is read.
+  //
+  // AMBIGUOUS EMBED — the `!transactions_agent_id_fkey` hint is load-bearing.
+  // `transactions` carries THREE foreign keys to `agents`
+  // (transactions_agent_id_fkey, transactions_buyer_agent_id_fkey,
+  // transactions_seller_agent_id_fkey), so the bare `transactions(*)` that used to
+  // be here was unresolvable and PostgREST refused the WHOLE request with PGRST201.
+  // The guard below then threw "the agent lookup was refused" on every call — this
+  // opportunity finder has never produced a result.
+  //
+  // `agent_id` is the agent OF RECORD on the deal — the one whose book this scan is
+  // about. buyer_agent_id / seller_agent_id are side-role slots that record which
+  // agent sat on which side of a co-brokered deal and are null on most rows (0 of 2
+  // populated live, against 2 of 2 for agent_id), so either would silently shrink
+  // this agent's history to nothing.
+  //
+  // Columns are named rather than starred so the schema guard can see drift here.
   const { data: agent, error: hiddenOppAgentError } = await supabase
     .from("agents")
     .select(
       `
-      *,
-      leads(*),
-      transactions(*)
+      id, brokerage_id,
+      leads(id),
+      transactions!transactions_agent_id_fkey(id, status, close_date, purchase_price, property_city, property_state)
     `,
     )
     .eq("id", agentId)
@@ -3038,12 +3092,33 @@ export async function findHiddenOpportunities(agentId: string) {
   // never read as a users.id or a contacts.id.
   const hiddenOppBrokerageId = (agent.brokerage_id as string | null) ?? null
 
-  const serviceAreas = agent.service_areas || []
+  // `agents` has NO `service_areas` column (verified against information_schema —
+  // the table has specializations / license_state, nothing geographic). The old
+  // `agent.service_areas || []` was undefined on every row, so the prompt shipped
+  // "Agent Service Areas: " — an empty string — and the model invented a territory.
+  // The agent's real market is where they have actually closed, which is exactly
+  // what the transactions embed above now carries.
+  const agentTransactions = (agent.transactions ?? []) as Array<{
+    status: string | null
+    close_date: string | null
+    purchase_price: number | null
+    property_city: string | null
+    property_state: string | null
+  }>
+  const serviceAreas = [
+    ...new Set(
+      agentTransactions
+        .map((t) => [t.property_city, t.property_state].filter(Boolean).join(", "))
+        .filter((s) => s.length > 0),
+    ),
+  ]
+  const closedDeals = agentTransactions.filter((t) => t.status === "closed")
 
   const prompt = `You are an AI opportunity finder. Scan database for hidden opportunities:
 
-Agent Service Areas: ${serviceAreas.join(", ")}
+Agent Markets (from closed deals): ${serviceAreas.length > 0 ? serviceAreas.join(", ") : "Unknown"}
 Contacts in Database: ${agent.leads?.length || 0}
+Deals on record: ${agentTransactions.length} (${closedDeals.length} closed)
 
 Find opportunities:
 1. Lifetime customers ready to move again (5-7 years, equity built)

@@ -428,7 +428,13 @@ export async function aiOptimizeShowingRoute(params: {
     // brokerages exposes city/state only).
     const { data: agent } = await supabase
       .from("users")
-      .select("brokerages(name, city, state)")
+      // AMBIGUOUS WITHOUT THE HINT. users↔brokerages is joined by TWO foreign
+      // keys — users.brokerage_id → brokerages, and brokerages.ai_isa_system_user_id
+      // → users (migration 043). PostgREST sees two candidate relationships,
+      // answers PGRST201 and rejects the WHOLE query. Naming the constraint says
+      // "the brokerage this user belongs to", not "brokerages that point at this
+      // user as their ISA system account". Do not simplify the hint away.
+      .select("brokerages!users_brokerage_id_fkey(name, city, state)")
       .eq("id", params.agentId)
       .single()
 

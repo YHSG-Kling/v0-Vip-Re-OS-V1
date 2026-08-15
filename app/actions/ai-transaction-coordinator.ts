@@ -140,7 +140,24 @@ export async function analyzeTransactionHealth(params: {
 
     const supabase = await createClient()
 
-    // Get comprehensive transaction data
+    // Get comprehensive transaction data.
+    //
+    // The `contacts(*)` embed that used to close this list made the read fail every
+    // time. `transactions` has THREE foreign keys to `contacts`
+    // (transactions_contact_id_fkey, transactions_buyer_contact_id_fkey,
+    // transactions_seller_contact_id_fkey), so PostgREST could not resolve a bare
+    // `contacts(...)` and refused the ENTIRE request with PGRST201 — which the guard
+    // below reported as "Transaction not found". Deal-health analysis has never run
+    // from this path.
+    //
+    // Removed rather than disambiguated: nothing in this function reads
+    // `transaction.contacts`, so there is no party for it to mean. If the health
+    // prompt ever needs our client, add
+    // `contacts!transactions_contact_id_fkey(first_name, last_name)` — contact_id is
+    // the side WE represent (lib/transactions/offer-bridge.ts:302).
+    //
+    // `listings(*)` is left as-is (unambiguous, one FK on transactions.listing_id)
+    // but it is also unread here; it belongs to the wildcard-embed sweep, defect #214.
     const { data: transaction, error } = await supabase
       .from("transactions")
       .select(`
@@ -149,13 +166,15 @@ export async function analyzeTransactionHealth(params: {
         transaction_participants(*),
         transaction_deadlines(*),
         transaction_documents(*),
-        listings(*),
-        contacts(*)
+        listings(*)
       `)
       .eq("id", params.transactionId)
       .single()
 
-    if (error || !transaction) {
+    if (error) {
+      return { success: false, error: `Could not read the transaction: ${error.message}` }
+    }
+    if (!transaction) {
       return { success: false, error: "Transaction not found" }
     }
 
@@ -450,13 +469,29 @@ export async function generateSmartTasks(params: {
 
     const supabase = await createClient()
 
+    // AMBIGUOUS EMBED — the `!transactions_contact_id_fkey` hint is load-bearing.
+    // `transactions` carries THREE foreign keys to `contacts`
+    // (transactions_contact_id_fkey, transactions_buyer_contact_id_fkey,
+    // transactions_seller_contact_id_fkey). Without naming one, PostgREST refuses the
+    // WHOLE request with PGRST201, txnError fires, and this action reports "Could not
+    // load the transaction" for a transaction that exists — so no smart task has ever
+    // been generated from this path.
+    //
+    // `contact_id` is the party WE represent on the deal (documented on the canonical
+    // writer, lib/transactions/offer-bridge.ts:302). The prompt line below is labelled
+    // "Buyer/Seller" precisely because it wants whichever side is ours — one name that
+    // is populated on every deal. buyer_contact_id is null on seller-side deals and
+    // seller_contact_id is null on buyer-side ones, so either would blank the name on
+    // half the book.
+    //
+    // Columns are named rather than `*` so the schema guard can see drift (defect #214).
     const { data: transaction, error: txnError } = await supabase
       .from("transactions")
       .select(`
         *,
         transaction_milestones(*),
         listings(*),
-        contacts(*)
+        contacts!transactions_contact_id_fkey(first_name, last_name)
       `)
       .eq("id", params.transactionId)
       .maybeSingle()
@@ -599,14 +634,30 @@ export async function draftTransactionCommunication(params: {
 
     const supabase = await createClient()
 
+    // The `contacts(*)` embed that used to sit here refused the entire read.
+    // `transactions` has THREE foreign keys to `contacts` (contact_id /
+    // buyer_contact_id / seller_contact_id), so PostgREST cannot resolve a bare
+    // `contacts(...)` and answers PGRST201 for the WHOLE request — txnError fired and
+    // no communication was ever drafted from this path.
+    //
+    // Removed rather than disambiguated: the recipient's name comes from
+    // `transaction_participants` (see `recipient` below), and nothing reads
+    // `transaction.contacts`.
+    //
+    // NOTE for anyone adding a fallback here: this action takes an explicit
+    // `recipientRole`, so the role-correct FK is the ROLE slot —
+    // `contacts!transactions_buyer_contact_id_fkey` for "buyer",
+    // `contacts!transactions_seller_contact_id_fkey` for "seller" — NOT contact_id.
+    // contact_id is whichever side we represent, which on a seller-side deal is the
+    // seller; addressing them as the buyer would put the wrong person's name on the
+    // letter. This is exactly the case where the most common FK is the wrong answer.
     const { data: transaction, error: txnError } = await supabase
       .from("transactions")
       .select(`
         *,
         transaction_participants(*),
         transaction_milestones(*),
-        listings(*),
-        contacts(*)
+        listings(*)
       `)
       .eq("id", params.transactionId)
       .maybeSingle()
@@ -992,11 +1043,22 @@ export async function generatePostClosingPlan(params: {
 
     const supabase = await createClient()
 
+    // AMBIGUOUS EMBED — keep the `!transactions_contact_id_fkey` hint.
+    // `transactions` has THREE foreign keys to `contacts`
+    // (transactions_contact_id_fkey, transactions_buyer_contact_id_fkey,
+    // transactions_seller_contact_id_fkey). A bare `contacts(...)` is PGRST201 on the
+    // WHOLE request, so txnError fired and no post-closing plan was ever produced.
+    //
+    // `contact_id` is not a guess here — it is FORCED by the rest of this function.
+    // The touchpoints written below go to `transaction.contact_id` (see `contactId`),
+    // so the client the plan is ADDRESSED to must be the same person the plan is
+    // DELIVERED to. Naming buyer_contact_id or seller_contact_id would put one name
+    // in the letter and schedule it to somebody else.
     const { data: transaction, error: txnError } = await supabase
       .from("transactions")
       .select(`
         *,
-        contacts(*),
+        contacts!transactions_contact_id_fkey(first_name, last_name),
         listings(*)
       `)
       .eq("id", params.transactionId)

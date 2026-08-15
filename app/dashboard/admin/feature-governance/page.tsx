@@ -52,10 +52,20 @@ export default async function FeatureGovernancePage() {
       .order("category")
       .order("display_name"),
 
+    // feature_access_overrides → users carries TWO FKs
+    // (feature_access_overrides_user_id_fkey = the person the override GOVERNS,
+    // feature_access_overrides_created_by_fkey = the admin who GRANTED it), so the
+    // bare `users(email)` was ambiguous and PostgREST refused the whole read
+    // (PGRST201). supabase-js resolves that, so `overrides.data` was null and the
+    // Overrides tab rendered its empty state — this governance surface reported "no
+    // overrides" while overrides were live.
+    // A governance list wants BOTH parties, so each gets its own aliased hint: the
+    // grantee is the row's subject, and the granter is the audit trail the client
+    // deliberately started recording (see the created_by comment in the client).
     supabase
       .from("feature_access_overrides")
       .select(
-        "id, user_id, brokerage_id, team_id, feature_key, override_type, trial_ends_at, notes, created_at, users(email)"
+        "id, user_id, brokerage_id, team_id, feature_key, override_type, trial_ends_at, notes, created_at, created_by, grantee:users!feature_access_overrides_user_id_fkey(id, email), granted_by:users!feature_access_overrides_created_by_fkey(id, email)"
       )
       .eq("brokerage_id", brokerageId),
 
@@ -65,6 +75,19 @@ export default async function FeatureGovernancePage() {
       .eq("brokerage_id", brokerageId)
       .gte("period_start", startOfMonth),
   ])
+
+  // Check the error on every read. supabase-js RESOLVES a failed query, so an
+  // unchecked read renders a refusal as an empty governance surface — indistinguishable
+  // from "nothing is configured", and precisely how the ambiguous embed above hid.
+  for (const [label, res] of [
+    ["feature_flags", flags],
+    ["feature_access_overrides", overrides],
+    ["feature_usage_tracking", usage],
+  ] as const) {
+    if (res.error) {
+      console.error(`[FeatureGovernance] ${label} read failed:`, res.error)
+    }
+  }
 
   // Build usageMap: feature_key -> count of distinct users this month
   const usageMap = (usage.data ?? []).reduce<Record<string, number>>((acc, u) => {

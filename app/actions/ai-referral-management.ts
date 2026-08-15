@@ -160,16 +160,38 @@ export async function generateReferralRequest(params: {
   try {
     const supabase = await createClient()
 
-    const { data: contact } = await supabase
+    // BOTH embeds here were ambiguous, so PostgREST refused the WHOLE request with
+    // PGRST201 and this action reported "Contact not found" for contacts that exist.
+    // Keep the `!constraint` hints — they are the only thing making this query legal.
+    //
+    //  · `transactions` has THREE FKs to `contacts` (contact_id / buyer_contact_id /
+    //    seller_contact_id). `contact_id` is the party WE represent on the deal
+    //    (documented on the canonical writer, lib/transactions/offer-bridge.ts:302),
+    //    which is what "Transaction History" means for a client we are asking for a
+    //    referral. The buyer/seller slots are side mirrors, null on the other side.
+    //  · `referrals` has TWO FKs to `contacts` (referrer_contact_id /
+    //    referred_contact_id). "Past Referrals" counts what this client HAS GIVEN
+    //    us, so the contact is the REFERRER — same ruling as
+    //    identifyReferralOpportunities above and getGiftAnalytics in
+    //    app/actions/ai-client-gifting.ts. referred_contact_id would count the times
+    //    somebody referred THEM, which is a different and mostly-empty number.
+    //
+    // Columns are named, never `*` inside an embed (defect #214).
+    const { data: contact, error: contactError } = await supabase
       .from("contacts")
       .select(`
-        *,
-        transactions(*),
-        referrals(*)
+        first_name, last_name, contact_type, last_contacted_at, brokerage_id,
+        transactions!transactions_contact_id_fkey(property_address),
+        referrals!referrals_referrer_contact_id_fkey(id)
       `)
       .eq("id", params.contactId)
       .single()
 
+    // Fail CLOSED — supabase-js resolves a refused read, so without this a hard
+    // refusal is indistinguishable from a missing contact.
+    if (contactError) {
+      return { success: false, error: `Could not read that contact: ${contactError.message}` }
+    }
     if (!contact) {
       return { success: false, error: "Contact not found" }
     }
@@ -235,18 +257,44 @@ export async function nurturePendingReferral(params: {
   try {
     const supabase = await createClient()
 
-    const { data: referral } = await supabase
+    // `referrals` has TWO FKs to `contacts` (referrals_referrer_contact_id_fkey and
+    // referrals_referred_contact_id_fkey), so the embed MUST be disambiguated.
+    //
+    // The old hint was `contacts!referring_contact_id`, and there is no
+    // `referring_contact_id` COLUMN on referrals at all — the column is
+    // `referrer_contact_id` (verified against information_schema). PostgREST cannot
+    // resolve a hint naming a column that does not exist, so it refused the whole
+    // request and this action answered "Referral not found" for every referral in
+    // the database. Naming the CONSTRAINT rather than a column removes the chance of
+    // that typo recurring.
+    //
+    // referrer_contact_id is the right side: "Referred By" is the person who GAVE us
+    // the referral. referred_contact_id is the new introduction — the subject of the
+    // nurture, not its source.
+    const { data: referral, error: referralError } = await supabase
       .from("referrals")
       .select(`
         *,
-        referring_contact:contacts!referring_contact_id(*)
+        referring_contact:contacts!referrals_referrer_contact_id_fkey(first_name, last_name)
       `)
       .eq("id", params.referralId)
       .single()
 
+    if (referralError) {
+      return { success: false, error: `Could not read that referral: ${referralError.message}` }
+    }
     if (!referral) {
       return { success: false, error: "Referral not found" }
     }
+
+    // SHAPE: referrals.referrer_contact_id -> contacts is MANY-TO-ONE, so this
+    // embed is an OBJECT at runtime. supabase-js widens a hinted embed to an
+    // array whichever way the relationship points, so this normalizes rather
+    // than asserting — an assertion would be a lie in whichever direction it
+    // turned out to be wrong.
+    const referrerEmbed = referral.referring_contact as unknown
+    const referrer = (Array.isArray(referrerEmbed) ? referrerEmbed[0] : referrerEmbed) as
+      { first_name?: string | null; last_name?: string | null } | null | undefined
 
     const { object: nurtureStrategy } = await generateObject({
       model: resolveModel("anthropic/claude-sonnet-4-20250514"),
@@ -274,11 +322,11 @@ export async function nurturePendingReferral(params: {
       }),
       prompt: `Create nurture strategy for this referral:
 
-Referral: ${referral.referred_name}
+Referral: ${referral.referral_name || 'Unnamed referral'}
 Status: ${referral.status}
-Referred By: ${referral.referring_contact?.first_name} ${referral.referring_contact?.last_name}
-Potential Value: $${referral.potential_value?.toLocaleString() || 'Unknown'}
-Source: ${referral.source}
+Referred By: ${referrer?.first_name} ${referrer?.last_name}
+Potential Value: $${referral.value_estimate?.toLocaleString() || 'Unknown'}
+Source: ${referral.referral_source || 'Unknown'}
 Days Since Referral: ${Math.floor((Date.now() - new Date(referral.created_at).getTime()) / (1000 * 60 * 60 * 24))}
 Notes: ${referral.notes || 'None'}
 
@@ -310,19 +358,64 @@ export async function recommendReferralReward(params: {
   try {
     const supabase = await createClient()
 
-    const { data: referral } = await supabase
+    // THREE separate defects lived in the select this replaces, any ONE of which
+    // killed the entire read (PostgREST refuses the whole request, and with `error`
+    // undestructured every caller saw "Referral not found"):
+    //
+    //  1. `contacts!referring_contact_id` named a COLUMN that does not exist.
+    //     referrals has `referrer_contact_id`, not `referring_contact_id`. Named by
+    //     CONSTRAINT now. referrals→contacts carries TWO FKs
+    //     (referrer_contact_id / referred_contact_id) so the hint is mandatory, and
+    //     the referrer is the party being rewarded — that is the whole point of this
+    //     function — so referrer_contact_id is the one we mean.
+    //  2. `transactions(*)` was embedded on `referrals`, and there is NO foreign key
+    //     between those two tables in either direction (checked against
+    //     pg_constraint). PostgREST cannot build that join at all. Removed.
+    //  3. The prompt read `referral.referring_contact.transactions` and
+    //     `referral.referring_contact.referrals` — NESTED under the contact — but the
+    //     select asked for `transactions` as a SIBLING of the contact. Even had (1)
+    //     and (2) not refused the query, both values would have been undefined. They
+    //     are now nested where the prompt actually looks for them.
+    //
+    // The nested embeds need their own hints for the same reason: transactions→contacts
+    // is 3 FKs and referrals→contacts is 2. `contact_id` is the deal the referrer was
+    // OUR client on (that is the relationship being thanked), and `referrer_contact_id`
+    // counts referrals this person has GIVEN.
+    const { data: referral, error: referralError } = await supabase
       .from("referrals")
       .select(`
-        *,
-        referring_contact:contacts!referring_contact_id(*),
-        transactions(*)
+        status, value_estimate,
+        referring_contact:contacts!referrals_referrer_contact_id_fkey(
+          first_name, last_name,
+          transactions!transactions_contact_id_fkey(purchase_price, close_date),
+          referrals!referrals_referrer_contact_id_fkey(id)
+        )
       `)
       .eq("id", params.referralId)
       .single()
 
+    if (referralError) {
+      return { success: false, error: `Could not read that referral: ${referralError.message}` }
+    }
     if (!referral) {
       return { success: false, error: "Referral not found" }
     }
+
+    // SHAPE: the top-level embed is MANY-TO-ONE (referrals.referrer_contact_id ->
+    // contacts), so it is an OBJECT at runtime even though supabase-js widens a
+    // hinted embed to an array. The two embeds NESTED inside it point the other
+    // way — contacts is the parent of both — so those genuinely ARE arrays, which
+    // is why the [0] and .length reads below are right.
+    const referrerEmbed = referral.referring_contact as unknown
+    const referrer = (Array.isArray(referrerEmbed) ? referrerEmbed[0] : referrerEmbed) as
+      | {
+          first_name?: string | null
+          last_name?: string | null
+          transactions?: Array<{ purchase_price?: number | null; close_date?: string | null }>
+          referrals?: Array<{ id: string }>
+        }
+      | null
+      | undefined
 
     const { object: rewardRecommendation } = await generateObject({
       model: resolveModel("anthropic/claude-sonnet-4-20250514"),
@@ -348,11 +441,11 @@ export async function recommendReferralReward(params: {
       }),
       prompt: `Recommend appropriate referral reward:
 
-Referrer: ${referral.referring_contact?.first_name} ${referral.referring_contact?.last_name}
-Referrer's Transaction Value: $${referral.referring_contact?.transactions?.[0]?.purchase_price?.toLocaleString() || 'Unknown'}
-Referral Value: $${referral.potential_value?.toLocaleString() || 'Unknown'}
+Referrer: ${referrer?.first_name} ${referrer?.last_name}
+Referrer's Transaction Value: $${referrer?.transactions?.[0]?.purchase_price?.toLocaleString() || 'Unknown'}
+Referral Value: $${referral.value_estimate?.toLocaleString() || 'Unknown'}
 Referral Status: ${referral.status}
-Previous Referrals From This Contact: ${referral.referring_contact?.referrals?.length || 0}
+Previous Referrals From This Contact: ${referrer?.referrals?.length || 0}
 
 Consider:
 1. Relationship depth
@@ -407,20 +500,39 @@ export async function analyzeReferralProgram(requestedAgentId?: string) {
 
     const supabase = await createClient()
 
-    const { data: referrals } = await supabase
+    // Same two defects as the sites above, in one select. referrals→contacts carries
+    // TWO foreign keys (referrals_referrer_contact_id_fkey /
+    // referrals_referred_contact_id_fkey) so the embed must be disambiguated, and the
+    // old `contacts!referring_contact_id` hint pointed at a column that does not exist
+    // on referrals (the real one is `referrer_contact_id`). Either fault alone makes
+    // PostgREST refuse the whole request, so this analytic has never seen a referral.
+    //
+    // The referrer is the right party: a referral PROGRAM is measured by who is
+    // sending business in. Named by constraint so the column typo cannot come back,
+    // and narrowed off `*` — the docblock above notes this endpoint was pulling every
+    // PII column on the contact, which it never needed.
+    const { data: referrals, error: referralsError } = await supabase
       .from("referrals")
       .select(`
-        *,
-        referring_contact:contacts!referring_contact_id(*)
+        status, referral_name, value_estimate,
+        referring_contact:contacts!referrals_referrer_contact_id_fkey(first_name, last_name)
       `)
       .eq("agent_id", agentId)
       .order("created_at", { ascending: false })
 
-    const { data: transactions } = await supabase
+    if (referralsError) {
+      return { success: false, error: `Could not read the referral book: ${referralsError.message}` }
+    }
+
+    const { data: transactions, error: referralTxError } = await supabase
       .from("transactions")
-      .select("*")
+      .select("purchase_price")
       .eq("agent_id", agentId)
       .eq("source", "referral")
+
+    if (referralTxError) {
+      return { success: false, error: `Could not read referral transactions: ${referralTxError.message}` }
+    }
 
     const { object: analysis } = await generateObject({
       model: resolveModel("anthropic/claude-sonnet-4-20250514"),
@@ -460,10 +572,10 @@ export async function analyzeReferralProgram(requestedAgentId?: string) {
       prompt: `Analyze referral program performance:
 
 Referrals: ${referrals?.length || 0} total
-${referrals?.map((r: any) => `- ${r.referred_name}: ${r.status}, Value: $${r.potential_value?.toLocaleString() || 'Unknown'}`).join('\n')}
+${referrals?.map((r: any) => `- ${r.referral_name || 'Unnamed referral'}: ${r.status}, Value: $${r.value_estimate?.toLocaleString() || 'Unknown'}`).join('\n')}
 
 Referral Transactions: ${transactions?.length || 0}
-Total Value: $${transactions?.reduce((sum: number, t: any) => sum + (t.purchase_price || 0), 0).toLocaleString()}
+Total Value: $${(transactions ?? []).reduce((sum: number, t: any) => sum + (t.purchase_price || 0), 0).toLocaleString()}
 
 Provide:
 1. Overall program health

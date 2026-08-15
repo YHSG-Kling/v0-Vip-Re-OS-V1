@@ -259,12 +259,21 @@ export async function generateAssistantSuggestions(
 async function getContactSuggestions(contactId: string) {
   const supabase = await createServerClient()
 
-  const { data: contact } = await supabase
+  // Both embeds are single-FK pairs (communications_contact_id_fkey,
+  // property_interactions_contact_id_fkey), so neither is ambiguous and neither needs
+  // a constraint hint. The error is still checked: supabase-js RESOLVES a failed
+  // query, so an unchecked read hands back an absence indistinguishable from a
+  // contact with nothing to suggest.
+  const { data: contact, error: contactError } = await supabase
     .from("contacts")
     .select("*, communications(*), property_interactions(*)")
     .eq("id", contactId)
     .single()
 
+  if (contactError) {
+    console.error("[assistant] contact suggestions read failed:", contactError)
+    return []
+  }
   if (!contact) return []
 
   const suggestions = []
@@ -303,8 +312,31 @@ async function getContactSuggestions(contactId: string) {
     })
   }
 
-  // Check for missing info
-  if (!contact.pre_approved && contact.stage === "searching") {
+  // Check for missing info.
+  //
+  // THIS BRANCH HAS NEVER RUN. Both operands were phantom columns, not renames:
+  // `contacts.stage` and `contacts.pre_approved` do not exist and never have. They
+  // are property reads off an already-fetched row, so they evaluated to `undefined`
+  // instead of throwing — `undefined === "searching"` is false, so the suggestion was
+  // silently unreachable for the entire life of the file.
+  //
+  // Repointed to the real columns, and to values those columns actually take:
+  //   • `contacts.buyer_stage` — NOT lifecycle_state. lifecycle_state is real but its
+  //     vocabulary is the lead-funnel one (raw, unconsented, consented, isa_qualifying,
+  //     assigned, appointment, representation, long_term_nurture); it has no
+  //     "searching" value, so pointing here would have left the branch just as dead.
+  //     buyer_stage carries BUYER_SEARCHING ("actively searching" —
+  //     lib/buyer-lifecycle/lifecycle-definitions.ts), which is the state this
+  //     pre-approval nudge is actually about.
+  //   • `contacts.lender_status` — vocabulary ["cash","needs_pre_approval",
+  //     "pre_approved","unknown"]. "Not pre-approved" is anything that is not already
+  //     pre_approved or paying cash, which also covers the null/unknown case the
+  //     suggestion's own copy ("Pre-approval status unknown") describes.
+  if (
+    contact.lender_status !== "pre_approved" &&
+    contact.lender_status !== "cash" &&
+    contact.buyer_stage === "BUYER_SEARCHING"
+  ) {
     suggestions.push({
       type: "reminder",
       priority: "medium",
@@ -322,7 +354,9 @@ async function getContactSuggestions(contactId: string) {
       model: "openai/gpt-4o-mini",
       prompt: `Based on this contact data, suggest ONE specific action the agent should take:
 - Name: ${contact.first_name} ${contact.last_name}
-- Stage: ${contact.stage}
+- Buyer Stage: ${contact.buyer_stage || "unknown"}
+- Lifecycle: ${contact.lifecycle_state || "unknown"}
+- Pre-approval: ${contact.lender_status || "unknown"}
 - Lead Score: ${contact.lead_score || "unknown"}
 - Timeline: ${contact.timeline || "unknown"}
 - Last Contact: ${daysSinceContact} days ago

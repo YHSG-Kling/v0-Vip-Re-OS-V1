@@ -223,9 +223,18 @@ Respond with ONLY the intent string, nothing else.`,
         spokenResponse = `You have ${tasks.length} upcoming task${tasks.length > 1 ? "s" : ""}. Next: ${tasks[0].title}.`
       }
     } else if (intent === "query_transactions") {
-      const { data: transactions } = await service
+      // transactions → contacts carries THREE FKs (transactions_contact_id_fkey,
+      // transactions_buyer_contact_id_fkey, transactions_seller_contact_id_fkey), so a
+      // bare `contacts(...)` is ambiguous: PostgREST refuses the ENTIRE request
+      // (PGRST201) and supabase-js resolves it, so `transactions` came back null and
+      // the assistant spoke "You have no active transactions right now" over a full
+      // pipeline — the worst failure mode for a voice UI. Named contact_id: this is the
+      // agent's own deal list ("your active deals"), and contact_id is the client on the
+      // deal regardless of which side they sit on; buyer_/seller_contact_id are the
+      // per-side links and would drop every deal where the agent's client is the other party.
+      const { data: transactions, error: transactionsError } = await service
         .from("transactions")
-        .select("id, deal_name, status, stage, close_date, purchase_price, contacts(first_name, last_name)")
+        .select("id, deal_name, status, stage, close_date, purchase_price, contacts!transactions_contact_id_fkey(id, first_name, last_name)")
         .eq("agent_id", voiceAgentId)
         .eq("brokerage_id", brokerageId)
         .not("status", "eq", "closed")
@@ -234,7 +243,10 @@ Respond with ONLY the intent string, nothing else.`,
 
       data = { transactions: transactions ?? [] }
 
-      if (!transactions?.length) {
+      if (transactionsError) {
+        // A resolved-but-failed read must not be spoken as "you have nothing".
+        spokenResponse = "I couldn't reach your deals just now — try me again in a moment."
+      } else if (!transactions?.length) {
         spokenResponse = "You have no active transactions right now."
       } else {
         spokenResponse = `You have ${transactions.length} active deal${transactions.length > 1 ? "s" : ""}. ${transactions.slice(0, 2).map((t) => `${t.deal_name ?? "Untitled"} in ${t.stage ?? "unknown stage"}`).join(". ")}.`

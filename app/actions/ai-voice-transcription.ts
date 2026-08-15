@@ -99,9 +99,29 @@ export async function analyzeCallTranscript(params: {
     // BEHAVIOUR CHANGE, flagged rather than slipped in: this action previously
     // returned an AI analysis built on a contact it could not read. It now
     // refuses.
+    // AMBIGUOUS EMBED — the `!transactions_contact_id_fkey` hint is load-bearing.
+    // `transactions` carries THREE foreign keys to `contacts`
+    // (transactions_contact_id_fkey, transactions_buyer_contact_id_fkey,
+    // transactions_seller_contact_id_fkey), so the bare `transactions(*)` this
+    // replaces was unresolvable and PostgREST refused the ENTIRE request with
+    // PGRST201. The fail-closed guard below then reported "Could not read contact …"
+    // on every call — the read never failed on permissions, it failed on grammar.
+    //
+    // `contact_id` is the party WE represent on the deal (documented on the canonical
+    // writer, lib/transactions/offer-bridge.ts:302). "Active Deals" in the prompt
+    // below means the deals this client is OURS on, whichever side they sat. The
+    // buyer/seller slots are side mirrors — null on the other side — so either would
+    // under-count a client who has both bought and sold with us.
+    //
+    // Columns are named, not `*` inside an embed (defect #214). `contacts.pipeline_stage`
+    // was also read below and does NOT exist on this table; the live lifecycle column
+    // is `lifecycle_state`.
     const { data: contact, error: contactError } = await supabase
       .from("contacts")
-      .select("*, transactions(*)")
+      .select(`
+        first_name, last_name, contact_type, lifecycle_state, brokerage_id,
+        transactions!transactions_contact_id_fkey(status)
+      `)
       .eq("id", params.contactId)
       .single()
 
@@ -126,7 +146,7 @@ CALL DETAILS:
 CLIENT INFO:
 - Name: ${contact?.first_name} ${contact?.last_name}
 - Type: ${contact?.contact_type || "Unknown"}
-- Stage: ${contact?.pipeline_stage || "Unknown"}
+- Stage: ${contact?.lifecycle_state || "Unknown"}
 - Active Deals: ${contact?.transactions?.filter((t: any) => t.status === "active").length || 0}
 
 TRANSCRIPT:

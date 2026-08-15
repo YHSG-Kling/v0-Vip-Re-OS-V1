@@ -106,15 +106,25 @@ export async function getTransactionDetails(transactionId: string, agentId: stri
 
     const supabase = await createClient()
 
+    // transactions → contacts carries THREE FKs (transactions_contact_id_fkey,
+    // transactions_buyer_contact_id_fkey, transactions_seller_contact_id_fkey), so the
+    // bare `contacts(*)` was ambiguous and PostgREST refused the ENTIRE request
+    // (PGRST201) — every caller of this function got a thrown/handled error or an
+    // empty transaction, never the detail record.
+    // Named contact_id: this is the deal's client record, the party the detail view
+    // means by "the client on this transaction"; buyer_/seller_contact_id are the
+    // per-side links and would blank out whenever the client sits on the other side.
+    // transactions → listings is a SINGLE FK (transactions_listing_id_fkey) and needs
+    // no hint. Embeds name the columns consumers read (no `*` in an embed, #214).
     const { data, error } = await supabase
       .from("transactions")
       .select(`
         *,
-        contacts(*),
-        listings(*),
-        transaction_milestones(*),
-        transaction_documents(*),
-        commission_distributions(*)
+        contacts!transactions_contact_id_fkey(id, first_name, last_name, email, phone),
+        listings(id, address, city, state, list_price, status),
+        transaction_milestones(id, milestone_name, status, target_date, completed_at),
+        transaction_documents(id, doc_label, doc_type, status, created_at),
+        commission_distributions(id, distribution_type, calculated_amount, agent_id, status)
       `)
       .eq("id", transactionId)
       .single()
@@ -153,9 +163,13 @@ export async function getAgentTransactions(agentId: string, filters?: {
 
     let query = supabase
       .from("transactions")
+      // Same three-FK ambiguity as getTransactionDetails above: without the hint
+      // PostgREST refused the whole list read (PGRST201) and supabase-js resolved it,
+      // so an agent's transaction list came back empty rather than erroring.
+      // contact_id = the client on the deal. transactions → listings is a single FK.
       .select(`
         *,
-        contacts(id, first_name, last_name, email),
+        contacts!transactions_contact_id_fkey(id, first_name, last_name, email),
         listings(id, address, city, list_price)
       `)
       .eq("agent_id", agentId)

@@ -67,11 +67,27 @@ export async function GET(request: Request) {
     // is definitionally past its closing date. Matching only `closed` meant the
     // clients furthest through the process — the ones whose money actually moved —
     // were the ones who never got an anniversary touch.
-    const { data: anniversaries } = await supabase
+    //
+    // AMBIGUOUS EMBED REMOVED (PGRST201). transactions → contacts carries THREE
+    // foreign keys (transactions_contact_id_fkey, transactions_buyer_contact_id_fkey,
+    // transactions_seller_contact_id_fkey), so a bare `contacts(*)` is ambiguous and
+    // PostgREST REFUSES THE WHOLE REQUEST — not just the embed. supabase-js resolves
+    // that refusal, so `data` came back null and this loop iterated ZERO rows: no
+    // anniversary touch has ever been sent from this cron. Nothing here ever read
+    // `txn.contacts` (the loop uses contact_id/agent_id/brokerage_id and hands the
+    // contact id to sendAnniversaryMessage, which loads the contact itself), so the
+    // embed was pure dead weight that broke the read. Dropped rather than hinted.
+    const { data: anniversaries, error: anniversariesError } = await supabase
       .from("transactions")
-      .select("id, contact_id, agent_id, brokerage_id, actual_close_date:close_date, contacts(*)")
+      .select("id, contact_id, agent_id, brokerage_id, actual_close_date:close_date")
       .in("status", ["closed", "funded"])
       .not("close_date", "is", null)
+
+    // supabase-js RESOLVES a failed query — an unchecked read reports a refusal as
+    // an absence, which is exactly how the ambiguity above stayed invisible.
+    if (anniversariesError) {
+      results.errors.push(`Anniversary read: ${anniversariesError.message}`)
+    }
 
     for (const txn of anniversaries || []) {
       const closeDate = new Date(txn.actual_close_date)
@@ -116,10 +132,14 @@ export async function GET(request: Request) {
     }
 
     // Check for birthdays
-    const { data: contacts } = await supabase
+    const { data: contacts, error: contactsError } = await supabase
       .from("contacts")
       .select("id, first_name, last_name, birthday, agent_id, brokerage_id")
       .not("birthday", "is", null)
+
+    if (contactsError) {
+      results.errors.push(`Birthday read: ${contactsError.message}`)
+    }
 
     for (const contact of contacts || []) {
       if (contact.birthday) {
@@ -145,11 +165,15 @@ export async function GET(request: Request) {
     const thirtyDaysAgo = new Date(today)
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
 
-    const { data: recentCloses } = await supabase
+    const { data: recentCloses, error: recentClosesError } = await supabase
       .from("transactions")
       .select("id, contact_id, agent_id, brokerage_id, actual_close_date:close_date")
       .eq("status", "closed")
       .in("close_date", [threeDaysAgo.toISOString().split("T")[0], thirtyDaysAgo.toISOString().split("T")[0]])
+
+    if (recentClosesError) {
+      results.errors.push(`Referral-window read: ${recentClosesError.message}`)
+    }
 
     for (const txn of recentCloses || []) {
       if (!(await lifetimeTouchAllowed((txn as any).brokerage_id ?? null, txn.contact_id, "sphere_referral_request"))) {

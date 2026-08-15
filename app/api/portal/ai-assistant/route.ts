@@ -15,19 +15,47 @@ export async function POST(request: Request) {
 
     const supabase = await createClient()
 
-    // Fetch contact context
-    const { data: contact } = await supabase
+    // Fetch contact context.
+    //
+    // TWO AMBIGUOUS PAIRS lived in this one select, and either alone made PostgREST
+    // refuse the WHOLE request (PGRST201) — not just the offending embed:
+    //   • contacts ↔ listings carries TWO FKs (listings_contact_id_fkey,
+    //     listings_seller_contact_id_fkey). Named seller_contact_id: a listing attached
+    //     to a portal client is the home THEY are selling, and seller_contact_id is the
+    //     column the listing rails actually write (listing-lifecycle-core.ts,
+    //     kernel-bridges.ts, present-to-seller.ts); legacy listings.contact_id is unset.
+    //   • contacts ↔ transactions carries THREE FKs (contact_id, buyer_contact_id,
+    //     seller_contact_id). Named contact_id — the client on the deal, matching how
+    //     every other portal page reads a client's deals (see the calendar page's
+    //     .eq("contact_id", contactId)); the side-specific links would hide a deal
+    //     whenever this client sits on the other side.
+    // Because supabase-js RESOLVES the refusal, `contact` was simply null and this
+    // route quietly fed the model an EMPTY context block on every single turn — the
+    // assistant answered every client as if it knew nothing about them.
+    //
+    // Embeds now name the columns this route reads (no `select("*")` inside an embed,
+    // defect #214). Doing so exposed three phantom reads below, fixed with them:
+    // offers.offer_amount → offer_price, showing_requests.confirmed_date →
+    // requested_date, and listings.property_address / listings.price, which do not
+    // exist at all (the real ones are address / list_price).
+    const { data: contact, error: contactError } = await supabase
       .from("contacts")
       .select(`
         *,
-        listings (*),
-        transactions (*, transaction_milestones (*)),
-        offers (*),
-        showing_requests (*),
-        saved_properties (*)
+        listings!listings_seller_contact_id_fkey (id, address, list_price, status),
+        transactions!transactions_contact_id_fkey (id, property_address, status, transaction_milestones (id, milestone_name, status)),
+        offers (id, offer_price, status),
+        showing_requests (id, status, requested_date),
+        saved_properties (id)
       `)
       .eq("id", contactId)
       .single()
+
+    if (contactError) {
+      // Check the error: an unchecked read reports a refusal as an absence, which is
+      // how the ambiguity above survived. The catch below returns the honest fallback.
+      throw contactError
+    }
 
     // Build context for AI
     const contextParts: string[] = []
@@ -56,15 +84,19 @@ export async function POST(request: Request) {
       if (contact.offers?.length > 0) {
         const activeOffer = contact.offers.find((o: any) => o.status !== "closed" && o.status !== "rejected")
         if (activeOffer) {
+          // offers.offer_amount does not exist; offer_price is the canonical column
+          // (same rename the seller portal already made).
           contextParts.push(
-            `Active Offer: $${activeOffer.offer_amount?.toLocaleString()} - Status: ${activeOffer.status}`,
+            `Active Offer: $${activeOffer.offer_price?.toLocaleString()} - Status: ${activeOffer.status}`,
           )
         }
       }
 
       if (contact.showing_requests?.length > 0) {
+        // showing_requests.confirmed_date does not exist — requested_date is the real
+        // column, so `new Date(undefined)` was NaN and this filter could never be true.
         const upcomingShowings = contact.showing_requests.filter(
-          (s: any) => s.status === "confirmed" && new Date(s.confirmed_date) > new Date(),
+          (s: any) => s.status === "confirmed" && new Date(s.requested_date) > new Date(),
         )
         if (upcomingShowings.length > 0) {
           contextParts.push(`Upcoming Showings: ${upcomingShowings.length}`)
@@ -77,10 +109,10 @@ export async function POST(request: Request) {
 
       if (contact.listings?.length > 0) {
         const listing = contact.listings[0]
-        contextParts.push(`Listing Address: ${listing.address || listing.property_address}`)
-        contextParts.push(
-          `Listing Price: $${listing.price?.toLocaleString() || listing.asking_price?.toLocaleString()}`,
-        )
+        // listings has no property_address / price / asking_price column — address and
+        // list_price are the real ones, so the old fallbacks were unreachable.
+        contextParts.push(`Listing Address: ${listing.address}`)
+        contextParts.push(`Listing Price: $${listing.list_price?.toLocaleString()}`)
         contextParts.push(`Listing Status: ${listing.status}`)
       }
     }

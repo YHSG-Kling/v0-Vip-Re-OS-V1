@@ -125,11 +125,23 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
           .lt("event_date", endISO),
 
         // 4. Transaction milestones with target_dates (inspection, appraisal, closing, deadline)
+        //
+        // transactions <-> contacts is joined by THREE foreign keys (contact_id,
+        // buyer_contact_id, seller_contact_id), and "!inner" is a JOIN TYPE, not a
+        // disambiguation hint — so the nested contacts embed was PGRST201 and the
+        // milestone lane of this calendar has always come back empty. The named
+        // constraint picks contact_id: the party the brokerage represents, which is
+        // the name a deadline reminder should carry. Do not simplify the hint away.
+        //
+        // The note lives ABOVE the statement on purpose. Inside the select it would
+        // be literal text sent to PostgREST, and between two chained calls it would
+        // end the contiguous chain the drift guard walks, quietly dropping this
+        // query from filter checking.
         supabase
           .from("transaction_milestones")
           .select(`
             id, milestone_type, milestone_name, title, target_date, status, transaction_id,
-            transactions!inner(id, property_address, status, agent_id, contact_id, contacts(first_name, last_name))
+            transactions!inner(id, property_address, status, agent_id, contact_id, contacts!transactions_contact_id_fkey(first_name, last_name))
           `)
           .eq("transactions.agent_id", agentId)
           .eq("status", "pending")

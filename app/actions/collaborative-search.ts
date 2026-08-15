@@ -220,13 +220,38 @@ export async function inviteFamilyMember(
   // Send email invitation with link containing invite_token
   const { sendCollaborativeSearchInvite } = await import("@/lib/services/communication.service")
   
-  // Get inviter name
-  const { data: search } = await supabase
+  // Get inviter name.
+  //
+  // AMBIGUOUS EMBED — the `!collaborative_searches_contact_id_fkey` hint is
+  // load-bearing. `collaborative_searches` has TWO foreign keys to `contacts`
+  // (collaborative_searches_contact_id_fkey on contact_id, and
+  // collaborative_searches_created_by_contact_id_fkey on created_by_contact_id), so
+  // the bare `contacts(...)` this replaces was unresolvable and PostgREST refused the
+  // whole request with PGRST201. With no `error` destructure that arrived as
+  // `search = null`, so EVERY invitation email in this system has gone out signed
+  // "A colleague" instead of the person who sent it.
+  //
+  // WHICH PARTY, and why the obvious-looking one is wrong: the old select asked for
+  // `created_by_contact_id` alongside, which reads as though the creator lives there.
+  // It does not. NOTHING in this repo ever writes `created_by_contact_id` — grep it;
+  // the only writer of a collaborative_searches row is createCollaborativeSearch
+  // above, which sets `contact_id` and then immediately enrols that same contact as
+  // the OWNER member. The column is dormant, so embedding through it would have
+  // resolved to null on every row and left the "A colleague" bug in place while
+  // looking fixed. `contact_id` is the contact who owns the search and is therefore
+  // the person doing the inviting.
+  const { data: search, error: searchError } = await supabase
     .from("collaborative_searches")
-    .select("created_by_contact_id, contacts(first_name, last_name)")
+    .select("contact_id, contacts!collaborative_searches_contact_id_fkey(first_name, last_name)")
     .eq("id", searchId)
     .single()
-  
+
+  // The invite row is already written at this point, so a failure here must not
+  // abort — but it must not be silently dressed up as "A colleague" either.
+  if (searchError) {
+    console.error("[collaborative-search] could not resolve the inviter's name:", searchError.message)
+  }
+
   const contactObj = (search?.contacts as any)
   const inviterName = contactObj?.first_name
     ? `${contactObj.first_name} ${contactObj.last_name}`

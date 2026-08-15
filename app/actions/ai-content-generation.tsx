@@ -3109,9 +3109,36 @@ export async function enhancedGenerateListingDescription(params: {
     let property: any = null
 
     if (params.transactionId && isValidUUID(params.transactionId)) {
+      // This read used to be `'*, listings(*), contacts(*)'` and it ALWAYS failed.
+      //
+      // `transactions` carries THREE foreign keys to `contacts`
+      // (transactions_contact_id_fkey, transactions_buyer_contact_id_fkey,
+      // transactions_seller_contact_id_fkey), so PostgREST could not resolve the bare
+      // `contacts(...)` embed and refused the WHOLE request with PGRST201. `property`
+      // was therefore always null and every transaction-anchored enhanced listing
+      // description died on "Property not found".
+      //
+      // The `contacts` embed is GONE rather than disambiguated: nothing downstream
+      // ever read it (the only consumer is `transaction?.listings`), so there is no
+      // party for it to mean. Re-adding it would require naming a constraint AND a
+      // real consumer — do not restore a bare `contacts(...)`.
+      //
+      // `listings` is unambiguous (one FK: transactions.listing_id), but its columns
+      // are now named instead of `*`: an embedded `*` hides column drift from the
+      // schema guard (defect #214). These are exactly the columns the downstream
+      // helpers read — getNeighborhoodData(city, zip), getComparableProperties
+      // (id, city, sqft), detectTargetBuyer (bedrooms, sqft, list_price) and
+      // generateSEOKeywords (city, bedrooms, property_type, lot_size, list_price).
       const { data: transaction, error: txError } = await supabase
         .from('transactions')
-        .select('*, listings(*), contacts(*)')
+        .select(`
+          id,
+          listings(
+            id, address, city, state, zip, status, mls_number, property_type,
+            list_price, bedrooms, bathrooms, sqft, year_built, lot_size, has_pool,
+            public_remarks
+          )
+        `)
         .eq('id', params.transactionId)
         .eq('agent_id', auth.actor.agentId)
         .maybeSingle()

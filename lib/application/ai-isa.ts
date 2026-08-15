@@ -118,7 +118,12 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
 
   const { data: agent } = await supabase
     .from("users")
-    .select("first_name, last_name, phone, brokerage_id, brokerage:brokerages(name)")
+    // users↔brokerages carries TWO foreign keys (users.brokerage_id, and
+    // brokerages.ai_isa_system_user_id from migration 043), so a bare embed is
+    // PGRST201 and this whole read died. Especially worth naming here: the second
+    // FK is the ISA SYSTEM USER link, and this is the ISA module — the wrong one
+    // is genuinely reachable, not just theoretically.
+    .select("first_name, last_name, phone, brokerage_id, brokerage:brokerages!users_brokerage_id_fkey(name)")
     .eq("id", loginId)
     .single()
 

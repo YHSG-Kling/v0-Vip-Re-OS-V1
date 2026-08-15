@@ -32,11 +32,24 @@ export async function aiRecommendGift(params: {
 
   try {
     // Get contact details and history
+    //
+    // AMBIGUOUS EMBED — DO NOT "SIMPLIFY" THE `!constraint` HINT AWAY.
+    // `transactions` carries THREE foreign keys to `contacts`
+    // (transactions_contact_id_fkey, transactions_buyer_contact_id_fkey,
+    // transactions_seller_contact_id_fkey), so a bare `transactions(...)` embed is
+    // ambiguous and PostgREST refuses the WHOLE request with PGRST201 — the read
+    // returns nothing and the gift recommendation is built on a $0 deal.
+    //
+    // `contact_id` is the right one here: the canonical writer documents it as
+    // "OUR client — the party we represent" (lib/transactions/offer-bridge.ts:302),
+    // and this surface is picking a gift for the agent's own client, whichever side
+    // of the deal they sat on. The buyer/seller slots are role mirrors that are null
+    // on the other side, so either would silently drop half the book.
     const { data: contact, error: contactErr } = await supabase
       .from("contacts")
       .select(`
         *,
-        transactions(purchase_price, close_date)
+        transactions!transactions_contact_id_fkey(purchase_price, close_date)
       `)
       .eq("id", params.contactId)
       .maybeSingle()
@@ -155,14 +168,27 @@ export async function aiPlanBulkGifting(params: {
 
   try {
     // Get all eligible contacts
-    const { data: contacts } = await supabase
+    //
+    // AMBIGUOUS EMBED — the `!constraint` hint is load-bearing. `transactions` has
+    // THREE FKs to `contacts` (contact_id / buyer_contact_id / seller_contact_id);
+    // without naming one, PostgREST rejects the request with PGRST201 and the whole
+    // sphere reads as empty. `contact_id` is the party this agent represents on the
+    // deal, which is exactly who a gifting round is aimed at.
+    const { data: contacts, error: contactsError } = await supabase
       .from("contacts")
       .select(`
         id, first_name, last_name, contact_type,
-        transactions(purchase_price, close_date)
+        transactions!transactions_contact_id_fkey(purchase_price, close_date)
       `)
       .eq("agent_id", ctx.agentId)
       .in("contact_type", [LIFETIME_CUSTOMER_TYPE, "sphere", "referral_partner"])
+
+    // Fail CLOSED. supabase-js RESOLVES a refused query, so without this a rejected
+    // read is indistinguishable from "this agent has nobody to gift" — and the
+    // action would cheerfully return an empty plan instead of an error.
+    if (contactsError) {
+      return { success: false, error: `Could not read the gifting sphere: ${contactsError.message}` }
+    }
 
     if (!contacts || contacts.length === 0) {
       return { success: true, data: { tiers: [], totalRecipients: 0 } }
@@ -317,9 +343,14 @@ export async function aiGenerateThankYouNote(params: {
   const supabase = await createClient()
 
   try {
+    // AMBIGUOUS EMBED — keep the `!constraint` hint. THREE FKs join `transactions`
+    // to `contacts`; a bare embed is PGRST201 and the note would render "Property:
+    // N/A" for every client. `contact_id` is our client on the deal — the person the
+    // thank-you note is addressed to — so it is the slot that always holds them,
+    // unlike buyer_contact_id / seller_contact_id which are side-specific.
     const { data: contact, error: contactErr } = await supabase
       .from("contacts")
-      .select(`*, transactions(property_address, close_date)`)
+      .select(`*, transactions!transactions_contact_id_fkey(property_address, close_date)`)
       .eq("id", params.contactId)
       .maybeSingle()
 

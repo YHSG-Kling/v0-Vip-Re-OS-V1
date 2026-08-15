@@ -697,7 +697,7 @@ ASSERTIONS.push({
     return { ok: offenders.length === 0, detail: offenders.join(", ") }
   },
   breaks: [
-    { file: F.coordinator, find: "    const scope = await scopeTransaction(params.transactionId)\n    if (!scope.ok) return { success: false, error: scope.error }\n\n    const supabase = await createClient()\n\n    const { data: transaction, error: txnError } = await supabase\n      .from(\"transactions\")\n      .select(`\n        *,\n        transaction_milestones(*),\n        listings(*),\n        contacts(*)\n      `)", replace: "    const scope = { ok: true, brokerageId: \"\", userId: \"\", agentId: \"\" } as any\n\n    const supabase = await createClient()\n\n    const { data: transaction, error: txnError } = await supabase\n      .from(\"transactions\")\n      .select(`\n        *,\n        transaction_milestones(*),\n        listings(*),\n        contacts(*)\n      `)" },
+    { file: F.coordinator, find: "    const scope = await scopeTransaction(params.transactionId)\n    if (!scope.ok) return { success: false, error: scope.error }\n\n    const supabase = await createClient()\n\n    const { data: transaction, error: txnError } = await supabase\n      .from(\"transactions\")\n      .select(\`\n        *,\n        transaction_deadlines(*),\n        transaction_milestones(*)\n      \`)", replace: "    const scope = { ok: true, brokerageId: \"\", userId: \"\", agentId: \"\" } as any\n\n    const supabase = await createClient()\n\n    const { data: transaction, error: txnError } = await supabase\n      .from(\"transactions\")\n      .select(\`\n        *,\n        transaction_deadlines(*),\n        transaction_milestones(*)\n      \`)" },
   ],
 })
 

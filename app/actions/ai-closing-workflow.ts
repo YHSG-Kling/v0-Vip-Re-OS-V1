@@ -35,20 +35,51 @@ export async function aiGenerateClosingChecklist(params: {
   const supabase = await createClient()
 
   try {
-    const { data: transaction } = await supabase
+    // AMBIGUOUS EMBED — the `!constraint` hint is load-bearing, DO NOT remove it.
+    // `transactions` has THREE foreign keys to `contacts` (transactions_contact_id_fkey,
+    // transactions_buyer_contact_id_fkey, transactions_seller_contact_id_fkey). With a
+    // bare `contacts(...)` embed PostgREST cannot pick one and refuses the ENTIRE
+    // request with PGRST201 — which means `transaction` came back null and this
+    // function reported "Transaction not found" for a transaction that plainly exists.
+    // Every closing checklist generated from this path was dead for that reason.
+    //
+    // `contact_id` is the party WE represent on the deal (documented on the canonical
+    // writer, lib/transactions/offer-bridge.ts:302). The checklist is the agent's own
+    // closing runbook, so the client it names is our client — not the counterparty in
+    // buyer_contact_id / seller_contact_id, either of which is null on the other side
+    // of a one-sided deal.
+    const { data: transaction, error: transactionError } = await supabase
       .from("transactions")
       .select(`
-        *,
-        contacts(first_name, last_name),
+        deal_type, purchase_price, contract_date, close_date,
+        contacts!transactions_contact_id_fkey(first_name, last_name),
         transaction_lenders(loan_type, lender_name, clear_to_close_date),
         transaction_title_escrow(title_company_name, closing_scheduled_date)
       `)
       .eq("id", params.transactionId)
       .single()
 
+    // A refused read RESOLVES in supabase-js. Without this the refusal above was
+    // reported as "Transaction not found" — an absence, not the hard error it was.
+    if (transactionError) {
+      return { success: false, error: `Could not read the transaction: ${transactionError.message}` }
+    }
     if (!transaction) {
       return { success: false, error: "Transaction not found" }
     }
+
+    // The client embed is now actually consumed. It was selected and never read,
+    // which is how the ambiguity survived unnoticed for so long.
+    //
+    // SHAPE: transactions.contact_id -> contacts is MANY-TO-ONE, so PostgREST
+    // returns an OBJECT here, not an array. supabase-js's inference widens a
+    // hinted embed to an array regardless of direction, so this normalizes both
+    // rather than asserting one — an assertion would be a lie in whichever
+    // direction it turned out to be wrong.
+    const clientEmbed = transaction.contacts as unknown
+    const client = (Array.isArray(clientEmbed) ? clientEmbed[0] : clientEmbed) as
+      { first_name: string | null; last_name: string | null } | null | undefined
+    const clientName = [client?.first_name, client?.last_name].filter(Boolean).join(" ") || "Unknown"
 
     const { object: checklist } = await generateObject({
       model: "openai/gpt-4o",
@@ -68,6 +99,7 @@ export async function aiGenerateClosingChecklist(params: {
       }),
       prompt: `Generate a complete closing checklist for this transaction:
 
+Client we represent: ${clientName}
 Deal type: ${transaction.deal_type}
 Purchase price: $${transaction.purchase_price?.toLocaleString() ?? "Unknown"}
 Contract date: ${transaction.contract_date}

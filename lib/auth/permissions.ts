@@ -182,7 +182,12 @@ export async function getUserBrokerages(): Promise<BrokerageContext[]> {
     // Fallback to users table for single brokerage
     const { data: userData } = await supabase
       .from("users")
-      .select("brokerage_id, brokerages(id, name, slug)")
+      // users↔brokerages is joined by TWO foreign keys (users.brokerage_id and
+      // brokerages.ai_isa_system_user_id), so the bare embed was PGRST201 — this
+      // FALLBACK, the one that runs when the role-assignment read fails, could
+      // never itself succeed. The two embeds above are off user_role_assignments,
+      // which has a single FK to brokerages and needs no hint.
+      .select("brokerage_id, brokerages!users_brokerage_id_fkey(id, name, slug)")
       .eq("id", user.id)
       .maybeSingle()
     if (!userData?.brokerage_id) return []

@@ -755,3 +755,144 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "workflow_webhook_events": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "zenrows_property_search_raw": { "brokerage_id": "brokerages", "lead_id": "leads" },
 }
+
+/**
+ * ── FK CARDINALITY PER TABLE PAIR ───────────────────────────────────────────────────
+ * GENERATED from the same live schema, by the same rule, in the same pass as the map above.
+ *
+ * WHY A SECOND STRUCTURE
+ * SCHEMA_FK_MAP answers "where does this FK column point?". It cannot answer "how many
+ * different ways can these two tables be joined?", and that is the question behind PostgREST's
+ * PGRST201:
+ *
+ *     "Could not embed because more than one relationship was found for 'contacts' and
+ *      'transactions'" — hint: use `!<constraint>` to disambiguate
+ *
+ * `transactions` carries THREE foreign keys to `contacts` (contact_id, buyer_contact_id,
+ * seller_contact_id). A `.from("contacts").select("transactions(id)")` names a relation that
+ * genuinely exists and columns that genuinely exist, and PostgREST still refuses the WHOLE
+ * request — the same silent-dead-read outcome as a phantom column, out of a schema that is
+ * entirely valid. Nothing in SCHEMA_FK_MAP or SCHEMA_SNAPSHOT can see it: both are keyed by
+ * a single table, and ambiguity is a property of the PAIR.
+ *
+ * THE KEY IS AN UNORDERED PAIR, and that is the whole point. PostgREST resolves an embed by
+ * collecting every relationship between the two tables REGARDLESS OF DIRECTION — the M2O side
+ * of each FK the parent holds AND the O2M side of each FK the target holds. So
+ * `contacts.select("transactions(…)")` and `transactions.select("contacts(…)")` are ambiguous
+ * for the same reason and by the same count. Sorting the two names and joining with "|" makes
+ * that symmetry structural instead of something every caller has to remember. `|` is safe as a
+ * separator: every relname in this schema matches /^[a-z0-9_]+$/.
+ *
+ * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
+ * overwhelming majority (1642 of 1698 pairs) — storing them would be 30× the bytes to encode
+ * "nothing to see here". An absent key therefore means "one FK or none", i.e. NOT ambiguous.
+ * A self-referential pair (a === b) is stored under "t|t" and is included: two self-FKs on one
+ * table are ambiguous exactly like two FKs between different tables (remotion_composition_renders
+ * is the live instance). One self-FK is a pair count of 1 and is correctly absent.
+ *
+ * SAFETY PROPERTY (the mirror of the map's, and the reason for the > 1 filter)
+ * A missing or stale entry can only cause a check to SKIP a pair, never to invent an ambiguity.
+ * Staleness costs coverage, not trust — the same bargain SCHEMA_FK_MAP makes.
+ *
+ * DELIBERATELY NOT COUNTED — each of these makes the number an UNDER-estimate, never an over-
+ * estimate, so the failure mode stays "missed detection" and never "false alarm":
+ *   • many-to-many relationships PostgREST infers THROUGH a junction table. Those add further
+ *     candidate relationships to a pair, so a pair recorded here as 1 can still be ambiguous.
+ *   • foreign keys crossing out of `public` (there are none in the guarded surface).
+ *
+ * MEASURED WHEN GENERATED: 1773 foreign-key constraints in `public`, every one single-column,
+ * and no two constraints sharing a (source table, source column, target table) triple — so a
+ * pair's count is exactly its number of distinct join paths. 1698 unordered table pairs carry
+ * at least one FK; 56 carry more than one and are listed below. 12 of the 1773 are self-
+ * referential. (This re-measurement also supersedes the "1792 foreign keys" figure in the
+ * header above: the committed SCHEMA_FK_MAP holds exactly 1773 entries, which agrees with the
+ * count here and not with that line.)
+ *
+ * REGENERATE alongside SCHEMA_FK_MAP, from the same `pg_constraint` scan:
+ *
+ *   WITH fk AS (
+ *     SELECT c.oid, src.relname AS src_table, a.attname AS src_col, tgt.relname AS tgt_table
+ *     FROM pg_constraint c
+ *     JOIN pg_class src ON src.oid = c.conrelid
+ *     JOIN pg_namespace sn ON sn.oid = src.relnamespace
+ *     JOIN pg_class tgt ON tgt.oid = c.confrelid
+ *     JOIN pg_namespace tn ON tn.oid = tgt.relnamespace
+ *     JOIN unnest(c.conkey) AS k(attnum) ON true
+ *     JOIN pg_attribute a ON a.attrelid = src.oid AND a.attnum = k.attnum
+ *     WHERE c.contype='f' AND sn.nspname='public' AND tn.nspname='public'
+ *   )
+ *   SELECT LEAST(src_table, tgt_table) AS a, GREATEST(src_table, tgt_table) AS b, count(*) AS n
+ *   FROM fk GROUP BY 1, 2 HAVING count(*) > 1 ORDER BY 1, 2;
+ *
+ * Last synced: 2026-08-15.
+ */
+
+/** `SCHEMA_FK_PAIR_CARDINALITY["a|b"] = n` for the SORTED pair (a <= b), n > 1 only.
+ *  Read it through fkPairCount() — the key encoding is this file's business, not its callers'. */
+export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
+  "ad_campaigns|users": 2,
+  "agent_mentor_relationships|agents": 2,
+  "agent_relationships|agents": 2,
+  "agents|commission_adjustments": 2,
+  "agents|embed_widgets": 2,
+  "agents|offers": 2,
+  "agents|referrals": 2,
+  "agents|tasks": 2,
+  "agents|transactions": 3,
+  "ai_generated_content|content_ab_tests": 3,
+  "ai_message_drafts|messages": 2,
+  "ai_quota_overrides|users": 2,
+  "ai_video_projects|marketing_campaigns": 2,
+  "ai_video_projects|training_videos": 2,
+  "ai_video_projects|users": 2,
+  "automation_errors|users": 4,
+  "blog_posts|users": 2,
+  "brokerages|leads": 2,
+  "brokerages|users": 2,
+  "buyer_broker_agreements|users": 2,
+  "buyer_financial_profiles|users": 2,
+  "client_documents|users": 2,
+  "closing_disclosure_agreement|users": 8,
+  "collaborative_searches|contacts": 2,
+  "contacts|listings": 2,
+  "contacts|referrals": 2,
+  "contacts|transactions": 3,
+  "contacts|users": 6,
+  "data_subject_requests|users": 3,
+  "fatigue_alerts|users": 2,
+  "feature_access_overrides|users": 2,
+  "learning_assignments|users": 2,
+  "learning_modules|users": 3,
+  "listing_media|users": 2,
+  "listing_presentations|users": 2,
+  "listings|open_houses": 2,
+  "marketing_assets|users": 2,
+  "marketing_campaigns|users": 2,
+  "newsletter_brokers_templates|users": 2,
+  "offers|strategy_recommendations": 2,
+  "offers|transactions": 2,
+  "platform_impersonation_sessions|users": 2,
+  "platform_staff_profiles|users": 2,
+  "portal_event_stream|users": 2,
+  "remotion_composition_renders|remotion_composition_renders": 2,
+  "remotion_composition_renders|video_assets": 3,
+  "repurpose_pipelines|users": 2,
+  "seo_keywords|users": 2,
+  "social_posts|users": 2,
+  "teams|users": 2,
+  "teams|vendors": 2,
+  "transaction_milestones|users": 2,
+  "user_invitations|users": 2,
+  "users|vendor_contact_assignments": 2,
+  "users|vendors": 2,
+  "users|video_scripts_library": 3,
+}
+
+/** How many distinct foreign keys join these two tables, in EITHER direction.
+ *  Returns 1 for any pair not in the table above — see the "only pairs above one are stored"
+ *  note: absent means "one FK or none", and both are unambiguous to PostgREST. Argument order
+ *  is irrelevant by construction. */
+export function fkPairCount(t1: string, t2: string): number {
+  const key = t1 <= t2 ? `${t1}|${t2}` : `${t2}|${t1}`
+  return SCHEMA_FK_PAIR_CARDINALITY[key] ?? 1
+}

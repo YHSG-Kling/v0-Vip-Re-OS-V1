@@ -6,10 +6,26 @@ export default async function CalendarPage({ params }: { params: Promise<{ conta
   const { contactId } = await params
   const supabase = await createClient()
 
-  // Fetch contact info
-  const { data: contact } = await supabase.from("contacts").select("*, listings(*)").eq("id", contactId).single()
+  // Fetch contact info.
+  //
+  // AMBIGUOUS EMBED REMOVED (PGRST201). contacts ↔ listings carries TWO FKs
+  // (listings_contact_id_fkey, listings_seller_contact_id_fkey), so the bare
+  // `listings(*)` was ambiguous and PostgREST refused the ENTIRE request — not just
+  // the embed. supabase-js resolves that refusal, so `contact` was null and this page
+  // rendered "Contact not found" for every client with a perfectly valid portal.
+  // Nothing consumes it: PortalCalendarDashboard takes `contact` only to pass it
+  // along and never reads `contact.listings`. So the embed is dropped rather than
+  // hinted — a calendar has no use for a listing, and the cheapest correct read is
+  // the one that doesn't join at all.
+  const { data: contact, error: contactError } = await supabase
+    .from("contacts")
+    .select("*")
+    .eq("id", contactId)
+    .single()
 
-  if (!contact) {
+  // Check the error — an unchecked read reports a refusal as an absence, which is why
+  // a broken query looked exactly like a missing contact.
+  if (contactError || !contact) {
     return <div>Contact not found</div>
   }
 
@@ -36,6 +52,15 @@ export default async function CalendarPage({ params }: { params: Promise<{ conta
       .in("status", ["pending_signature", "action_required"])
       .order("created_at", { ascending: false }),
   ])
+
+  // Check the error on every read; a resolved failure must not render as an empty day.
+  for (const [label, res] of [
+    ["showing_requests", showingsResult],
+    ["transactions", transactionsResult],
+    ["client_documents", documentsResult],
+  ] as const) {
+    if (res.error) console.error(`[PortalCalendar] ${label} read failed:`, res.error)
+  }
 
   const showings = showingsResult.data || []
   const transactions = transactionsResult.data || []

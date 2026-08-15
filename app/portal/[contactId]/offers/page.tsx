@@ -182,11 +182,29 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
 
   // BUYER VIEW: Show offers the buyer has submitted (using canonical offer_price)
   if (portalView.view === "buyer") {
-    const { data: buyerOffers } = await supabase
+    // offers → listings carries a SINGLE FK (offers_listing_id_fkey), so this embed is
+    // unambiguous and needs no hint — but the error still has to be checked, because
+    // supabase-js resolves a failure and an unchecked read shows a buyer "no offers".
+    const { data: buyerOffers, error: buyerOffersError } = await supabase
       .from("offers")
       .select("id, listing_id, transaction_id, offer_price, status, created_at, expiration_date:response_deadline, esign_status, esign_provider, esign_sent_at, esign_completed_at, buyer_signed_at, listing:listings(id, address, list_price)")
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
+
+    if (buyerOffersError) {
+      return (
+        <div className="space-y-6">
+          <h1 className="text-3xl font-bold">Your Offers</h1>
+          <Card>
+            <CardContent className="py-12 text-center">
+              <Clock className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+              <h3 className="text-lg font-semibold mb-2">We couldn&apos;t load your offers</h3>
+              <p className="text-muted-foreground">Please refresh in a moment, or contact your agent.</p>
+            </CardContent>
+          </Card>
+        </div>
+      )
+    }
 
     const offers = buyerOffers ?? []
     const acceptedOffer = offers.find((o) => o.status === "accepted")
@@ -301,11 +319,38 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
   let listing: any = null
   let offers: any[] = []
 
-  const { data: contactWithListings } = await supabase
+  // contacts ↔ listings carries TWO FKs (listings_contact_id_fkey,
+  // listings_seller_contact_id_fkey), so the bare `listings(*)` was ambiguous and
+  // PostgREST refused the ENTIRE request (PGRST201). supabase-js resolves that, so
+  // `contactWithListings` was null and every seller hit the "No listing found" card
+  // below — the whole seller offer surface was unreachable.
+  // Named seller_contact_id: this is the SELLER VIEW (see the branch above), the
+  // listing is the home this contact is selling, and seller_contact_id is the column
+  // the listing rails write (listing-lifecycle-core.ts, present-to-seller.ts,
+  // kernel-bridges.ts); legacy listings.contact_id is unset.
+  // Embed names the columns read below (no `*` inside an embed, #214).
+  const { data: contactWithListings, error: contactWithListingsError } = await supabase
     .from("contacts")
-    .select("*, listings(*)")
+    .select("*, listings!listings_seller_contact_id_fkey(id, address, city, state, list_price, status, brokerage_id)")
     .eq("id", contactId)
     .maybeSingle()
+
+  // Check the error: an unchecked read reports a refusal as an absence, so a broken
+  // query and a genuinely listing-less seller told the same story.
+  if (contactWithListingsError) {
+    return (
+      <div className="space-y-6">
+        <h2 className="text-3xl font-bold">Offers</h2>
+        <Card>
+          <CardContent className="py-12 text-center">
+            <Clock className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+            <h3 className="text-lg font-semibold mb-2">We couldn&apos;t load your listing</h3>
+            <p className="text-muted-foreground">Please refresh in a moment, or contact your agent.</p>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
 
   if (!contactWithListings?.listings || contactWithListings.listings.length === 0) {
     return (

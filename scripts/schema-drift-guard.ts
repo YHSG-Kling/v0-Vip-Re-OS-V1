@@ -27,7 +27,7 @@ import { readFileSync, readdirSync, statSync, writeFileSync, existsSync } from "
 import { runtimeRoots } from "./runtime-roots"
 import { join } from "node:path"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
-import { SCHEMA_FK_MAP } from "./schema-fk-map"
+import { SCHEMA_FK_MAP, SCHEMA_FK_PAIR_CARDINALITY, fkPairCount } from "./schema-fk-map"
 import { resolveTableManager } from "../lib/kernel/manager-registry"
 
 const BASELINE_PATH = join(process.cwd(), "scripts/schema-drift-baseline.json")
@@ -336,6 +336,14 @@ export interface EmbedNode {
   relation: string
   /** the `alias:` prefix, when present (never a table name) */
   alias: string | null
+  /** the `!hint` token as written, WITHOUT the `!`; null when the embed carries none.
+   *  This used to be MATCHED AND THROWN AWAY, on the reasoning that a hint never changes
+   *  which TABLE an embed targets — true, and precisely why discarding it was safe for the
+   *  column check and fatal for the ambiguity check below. A hint is the ONLY thing that
+   *  distinguishes a working `transactions!transactions_contact_id_fkey(…)` from a
+   *  PGRST201-dead bare `transactions(…)`; a census that cannot see it counts every
+   *  already-fixed embed as broken (it did: 61 reported, 32 real). */
+  hint: string | null
   /** the select list inside the parens */
   inner: string
 }
@@ -349,11 +357,23 @@ export function parseEmbedNodes(literal: string): EmbedNode[] {
     if (!part) continue
     // `...relation(…)` is PostgREST's spread embed — same target resolution.
     const body = part.startsWith("...") ? part.slice(3).trim() : part
-    const m = body.match(/^(?:([A-Za-z_]\w*)\s*:\s*)?([A-Za-z_]\w*)\s*(?:!\s*[A-Za-z_]\w*)?\s*\(([\s\S]*)\)$/)
+    const m = body.match(/^(?:([A-Za-z_]\w*)\s*:\s*)?([A-Za-z_]\w*)\s*(?:!\s*([A-Za-z_]\w*))?\s*\(([\s\S]*)\)$/)
     if (!m) continue
-    out.push({ alias: m[1] ?? null, relation: m[2], inner: m[3] })
+    out.push({ alias: m[1] ?? null, relation: m[2], hint: m[3] ?? null, inner: m[4] })
   }
   return out
+}
+
+/** PostgREST's JOIN-TYPE modifiers. They are spelled exactly like a disambiguation hint and
+ *  are not one: they choose INNER vs LEFT and say nothing about WHICH relationship to use.
+ *  `contacts.select("transactions!inner(id)")` is every bit as PGRST201-dead as the bare form.
+ *  Any OTHER `!token` — an FK constraint name, an FK column name, the target table name —
+ *  does pick a relationship, and is what PostgREST's own error message tells you to add. */
+export const EMBED_JOIN_MODIFIERS = new Set(["inner", "left"])
+
+/** Does this embed's `!hint` actually name a relationship (vs. only a join type)? */
+export function embedHintDisambiguates(hint: string | null): boolean {
+  return hint !== null && !EMBED_JOIN_MODIFIERS.has(hint.toLowerCase())
 }
 
 /** The table an embed points at, or null when it cannot be named with certainty.
@@ -361,12 +381,74 @@ export function parseEmbedNodes(literal: string): EmbedNode[] {
  *  paths cannot disagree — no FK column name in this schema collides with a table name
  *  (measured when scripts/schema-fk-map.ts was generated). */
 export function resolveEmbedTable(parent: string | null, relation: string): string | null {
+  return classifyEmbedRelation(parent, relation).table
+}
+
+/** HOW an embed named its target. `resolveEmbedTable` answers "which table"; the ambiguity
+ *  check below also needs "by which spelling", because the two spellings have opposite
+ *  PGRST201 fates:
+ *
+ *    "fk-column"  — `contacts:contact_id(…)` / `contact_id(…)`: the FK COLUMN *is* the choice
+ *                   of relationship. Such an embed can never be ambiguous, no matter how many
+ *                   other FKs join the pair, and must never be flagged.
+ *    "table-name" — `contacts(…)`: names the pair and nothing more. Ambiguous exactly when
+ *                   the pair carries more than one FK and no `!hint` narrows it.
+ *
+ *  Order matches resolveEmbedTable's original body, which this is the single source of truth
+ *  for: FK column first, table name second. They cannot disagree anyway — no FK column name in
+ *  this schema collides with a table name (measured when scripts/schema-fk-map.ts was generated). */
+export function classifyEmbedRelation(parent: string | null, relation: string): { table: string | null; route: "fk-column" | "table-name" | null } {
   if (parent) {
     const viaFk = SCHEMA_FK_MAP[parent]?.[relation]
-    if (viaFk) return viaFk
+    if (viaFk) return { table: viaFk, route: "fk-column" }
   }
-  if (Object.prototype.hasOwnProperty.call(SCHEMA_SNAPSHOT, relation)) return relation
-  return null
+  if (Object.prototype.hasOwnProperty.call(SCHEMA_SNAPSHOT, relation)) return { table: relation, route: "table-name" }
+  return { table: null, route: null }
+}
+
+/**
+ * ── PGRST201: THE THIRD WAY AN EMBED DIES ───────────────────────────────────────────
+ *
+ * The two checks above ask "does this relation exist?" and "does this column exist?". Both
+ * can answer YES and the request still fail in full:
+ *
+ *   PGRST201 — "Could not embed because more than one relationship was found for
+ *               'contacts' and 'transactions'"
+ *
+ * PostgREST refuses an embed when the parent and the target are joined by MORE THAN ONE
+ * foreign key and the query does not say which one. `transactions` holds THREE FKs to
+ * `contacts` (contact_id, buyer_contact_id, seller_contact_id) and three to `agents`. The
+ * relation is real, every column is real, the schema is entirely valid — and the read is as
+ * dead as if the table were a phantom. Same outcome as the two outages above, different cause.
+ *
+ * AN EMBED IS AMBIGUOUS WHEN ALL THREE HOLD:
+ *   1. it names its target by TABLE NAME. An embed naming an FK COLUMN (`contacts:contact_id(…)`,
+ *      `contact_id(…)`) has ALREADY chosen the relationship — never flagged, at any FK count.
+ *   2. it carries no disambiguating `!hint`. `!inner`/`!left` are join types, not hints
+ *      (see EMBED_JOIN_MODIFIERS); any other token names a relationship and settles it.
+ *   3. fkPairCount(parent, target) > 1.
+ *
+ * DIRECTION DOES NOT MATTER. PostgREST gathers relationships from BOTH sides of the pair, so
+ * `contacts.select("transactions(…)")` and `transactions.select("contacts(…)")` fail alike —
+ * which is exactly why the cardinality is keyed by an UNORDERED pair in schema-fk-map.ts.
+ *
+ * SKIPPED AND COUNTED, never guessed (the rule the whole file follows): an embed whose target
+ * cannot be named is already skipped above and never reaches here; an embed whose PARENT is
+ * unknown (a resolver call with no root table) is counted in `ambiguityUnknownParent` and left
+ * alone, because ambiguity is a property of a pair and half a pair proves nothing.
+ */
+
+export interface AmbiguousEmbed {
+  /** the table the query runs .from() */
+  parent: string
+  /** the table the embed resolves to */
+  target: string
+  /** the relation token as written */
+  relation: string
+  /** dotted path to the embed inside the select list */
+  path: string
+  /** how many FKs join parent↔target, in either direction */
+  fkCount: number
 }
 
 export interface EmbedResolution {
@@ -376,19 +458,44 @@ export interface EmbedResolution {
   unresolved: Array<{ relation: string; parent: string | null; path: string }>
   /** embeds whose target WAS named (at any depth) */
   resolvedCount: number
+  /** resolved embeds that name their target by TABLE NAME and carry no disambiguating hint —
+   *  the exact population the FK-pair cardinality was consulted for. The denominator of the
+   *  ambiguity check, published so the coverage number cannot round itself up. */
+  bareTableEmbeds: number
+  /** the sorted "a|b" pair key looked up for each of those, dupes included (the caller dedupes) */
+  pairsConsulted: string[]
+  /** bare table-name embeds whose PARENT was unknown — no pair, so no check. Skipped, counted. */
+  ambiguityUnknownParent: number
+  /** of the bare table-name embeds, those whose pair carries more than one FK → PGRST201 */
+  ambiguous: AmbiguousEmbed[]
 }
 
 /** Walk a select list to arbitrary depth, binding each embed's columns to ITS OWN table.
  *  A nested embed resolves against its immediate parent, never against the root. */
 export function resolveEmbeddedSelects(literal: string, rootTable: string | null = null): EmbedResolution {
-  const res: EmbedResolution = { refs: [], unresolved: [], resolvedCount: 0 }
+  const res: EmbedResolution = {
+    refs: [], unresolved: [], resolvedCount: 0,
+    bareTableEmbeds: 0, pairsConsulted: [], ambiguityUnknownParent: 0, ambiguous: [],
+  }
   const walk = (list: string, parent: string | null, path: string) => {
     for (const node of parseEmbedNodes(list)) {
       const label = node.alias ? `${node.alias}:${node.relation}` : node.relation
       const here = `${path}.${label}`
-      const target = resolveEmbedTable(parent, node.relation)
+      const { table: target, route } = classifyEmbedRelation(parent, node.relation)
       if (!target) { res.unresolved.push({ relation: node.relation, parent, path: here }); continue }
       res.resolvedCount++
+      // ── PGRST201 ambiguity (see the block above). Only a TABLE-NAME embed with no
+      // disambiguating hint is even a candidate; an FK-column embed has already picked its
+      // relationship and a hint has already named one.
+      if (route === "table-name" && !embedHintDisambiguates(node.hint)) {
+        if (!parent) res.ambiguityUnknownParent++
+        else {
+          res.bareTableEmbeds++
+          res.pairsConsulted.push(parent <= target ? `${parent}|${target}` : `${target}|${parent}`)
+          const fkCount = fkPairCount(parent, target)
+          if (fkCount > 1) res.ambiguous.push({ parent, target, relation: node.relation, path: here, fkCount })
+        }
+      }
       // The embed's OWN columns — parseSelectColumns strips its nested embeds, which is
       // exactly right here: those belong to the next table down and are walked below.
       for (const col of parseSelectColumns(node.inner)) res.refs.push({ table: target, column: col, path: here })
@@ -764,8 +871,10 @@ function testPure() {
         JSON.stringify(["id", "agent:agent_id(a, b, x:y(c, d))", "status"]))
     check("parseEmbedNodes: a plain column / rename / cast / json path is NOT an embed",
       parseEmbedNodes("id, price:list_price, created_at::date, meta->>'k'").length === 0)
+    // (projected onto the three original fields, so this assertion still says exactly what it
+    // said before EmbedNode grew a `hint` — the hint has its own checks further down.)
     check("parseEmbedNodes: reads alias, relation and inner list",
-      JSON.stringify(parseEmbedNodes("brokerage:brokerage_id!inner(name, city)")) ===
+      JSON.stringify(parseEmbedNodes("brokerage:brokerage_id!inner(name, city)").map(({ alias, relation, inner }) => ({ alias, relation, inner }))) ===
         JSON.stringify([{ alias: "brokerage", relation: "brokerage_id", inner: "name, city" }]))
     check("parseEmbedNodes: a spread embed (...rel(cols)) is still an embed",
       parseEmbedNodes("...brokerages(name)")[0]?.relation === "brokerages")
@@ -814,6 +923,111 @@ function testPure() {
       un.refs.length === 0 && un.unresolved.length === 1 && un.unresolved[0].relation === "whatever_id")
     check("resolveEmbeddedSelects: an unresolvable embed is NOT descended into (its parent is unknown)",
       un.resolvedCount === 0 && !un.unresolved.some((u) => u.relation === "other_id"))
+  }
+
+  // ── PGRST201 — the AMBIGUOUS EMBED ──────────────────────────────────────────────────
+  // The third way an embed dies, and the only one where the schema is entirely valid: two
+  // tables joined by more than one FK, an embed that names the target by table name, and no
+  // hint to choose between them. Both halves must hold or this check is worthless — the
+  // NEGATIVE CONTROLS prove the dead shapes are caught in every spelling and both directions,
+  // the SPECIFICITY CONTROLS prove the already-correct shapes are left alone. The second half
+  // matters more here than anywhere else in this file: 529 bare embeds is a big enough blast
+  // radius that one false positive class would get the whole guard switched off.
+  {
+    // ── the hint, CAPTURED rather than discarded ─────────────────────────────────────
+    check("parseEmbedNodes: an FK-constraint !hint is CAPTURED, not thrown away (the census bug: 61 reported vs 32 real)",
+      parseEmbedNodes("transactions!transactions_contact_id_fkey(id, status)")[0]?.hint === "transactions_contact_id_fkey")
+    check("parseEmbedNodes: an embed with no hint reports hint === null",
+      parseEmbedNodes("transactions(id)")[0]?.hint === null)
+    check("parseEmbedNodes: the hint never leaks into the relation or the inner list",
+      JSON.stringify(parseEmbedNodes("c:transactions!transactions_contact_id_fkey(id, status)")) ===
+        JSON.stringify([{ alias: "c", relation: "transactions", hint: "transactions_contact_id_fkey", inner: "id, status" }]))
+    check("embedHintDisambiguates: !inner and !left are JOIN TYPES, not disambiguation hints",
+      !embedHintDisambiguates("inner") && !embedHintDisambiguates("left") && !embedHintDisambiguates(null))
+    check("embedHintDisambiguates: an FK constraint name / FK column name DOES disambiguate",
+      embedHintDisambiguates("transactions_contact_id_fkey") && embedHintDisambiguates("buyer_contact_id"))
+
+    // ── the pair cardinality itself ──────────────────────────────────────────────────
+    check("fkPairCount: the live 3-FK pair is counted, and counted the SAME in both directions",
+      fkPairCount("contacts", "transactions") === 3 && fkPairCount("transactions", "contacts") === 3)
+    check("fkPairCount: a single-FK pair is 1 (absent from the table = one FK or none, never ambiguous)",
+      fkPairCount("listings", "brokerages") === 1 && fkPairCount("listings", "agents") === 1)
+    check("fkPairCount: a table with ONE self-FK is 1; the one table with TWO is 2 (document_folders vs remotion_composition_renders)",
+      fkPairCount("document_folders", "document_folders") === 1 &&
+      fkPairCount("remotion_composition_renders", "remotion_composition_renders") === 2)
+    check("classifyEmbedRelation: reports the ROUTE — FK column vs table name — without changing resolveEmbedTable",
+      classifyEmbedRelation("transactions", "contact_id").route === "fk-column" &&
+      classifyEmbedRelation("transactions", "contacts").route === "table-name" &&
+      classifyEmbedRelation("transactions", "nonsense_xyz").route === null &&
+      resolveEmbedTable("transactions", "contact_id") === "contacts")
+
+    const ambig = (literal: string, root: string) => resolveEmbeddedSelects(literal, root).ambiguous
+
+    // ── NEGATIVE CONTROLS — every one of these MUST be flagged ───────────────────────
+    check("NEGATIVE CONTROL: the live shape — bare transactions(…) off contacts (3 FKs: contact_id, buyer_contact_id, seller_contact_id)",
+      ambig("id, first_name, transactions(id, status)", "contacts").length === 1 &&
+      ambig("id, transactions(id)", "contacts")[0].fkCount === 3)
+    check("NEGATIVE CONTROL: DIRECTION DOES NOT MATTER — bare contacts(…) off transactions is the same 3-FK pair",
+      ambig("id, contacts(id, first_name)", "transactions").length === 1 &&
+      ambig("id, contacts(id)", "transactions")[0].fkCount === 3)
+    check("NEGATIVE CONTROL: !inner does NOT disambiguate — transactions!inner(…) off contacts still 400s",
+      ambig("id, transactions!inner(id)", "contacts").length === 1)
+    check("NEGATIVE CONTROL: an ALIAS does not disambiguate either — deals:transactions(…) off contacts",
+      ambig("id, deals:transactions(id)", "contacts").length === 1)
+    check("NEGATIVE CONTROL: a spread embed is checked too — ...transactions(…) off contacts",
+      ambig("id, ...transactions(status)", "contacts").length === 1)
+    check("NEGATIVE CONTROL: a NESTED bare embed is checked against ITS OWN parent (agents → transactions → contacts)",
+      ambig("id, transactions!transactions_agent_id_fkey(id, contacts(first_name))", "agents")
+        .map((a) => `${a.parent}->${a.target}:${a.fkCount}`).join() === "transactions->contacts:3")
+    check("NEGATIVE CONTROL: the OTHER live 3-FK pair — bare agents(…) off transactions",
+      ambig("id, agents(id)", "transactions")[0]?.fkCount === 3)
+    check("NEGATIVE CONTROL: a 2-FK pair is ambiguous too — bare contacts(…) off listings, and off referrals",
+      ambig("id, contacts(id)", "listings")[0]?.fkCount === 2 && ambig("id, contacts(id)", "referrals")[0]?.fkCount === 2)
+    check("NEGATIVE CONTROL: TWO self-FKs are ambiguous like any other pair (remotion_composition_renders)",
+      ambig("id, remotion_composition_renders(id)", "remotion_composition_renders").length === 1)
+
+    // ── SPECIFICITY CONTROLS — every one of these MUST stay green ────────────────────
+    check("SPECIFICITY: the DISAMBIGUATED form the repo already uses is left alone (transactions!transactions_contact_id_fkey(…) off contacts)",
+      ambig("id, transactions!transactions_contact_id_fkey(id, status)", "contacts").length === 0)
+    check("SPECIFICITY: an embed named by FK COLUMN has already chosen its relationship — never flagged",
+      ambig("id, contact_id(id, first_name)", "transactions").length === 0 &&
+      ambig("id, buyer_contact_id(id)", "transactions").length === 0)
+    check("SPECIFICITY: an ALIASED FK-column embed is not flagged either (buyer:buyer_contact_id(…))",
+      ambig("id, buyer:buyer_contact_id(id), seller:seller_contact_id(id)", "transactions").length === 0)
+    check("SPECIFICITY: a pair with exactly ONE FK is never flagged, however it is spelled",
+      ambig("id, brokerages(name), agents(id)", "listings").length === 0)
+    check("SPECIFICITY: a table with ONE self-FK embedding itself is fine (document_folders)",
+      ambig("id, document_folders(id, name)", "document_folders").length === 0)
+    check("SPECIFICITY: an UNRESOLVABLE embed is skipped here too — never flagged on a guessed pair",
+      ambig("id, mystery:whatever_id(a)", "contacts").length === 0)
+    check("SPECIFICITY: with NO parent table there is no pair — skipped and COUNTED, never flagged",
+      resolveEmbeddedSelects("transactions(id)").ambiguous.length === 0 &&
+      resolveEmbeddedSelects("transactions(id)").ambiguityUnknownParent === 1)
+    check("SPECIFICITY: the denominator counts only BARE TABLE-NAME embeds (hinted and FK-column embeds are not in it)",
+      resolveEmbeddedSelects("brokerages(name), agent_id(id), transactions!transactions_contact_id_fkey(id), listings(id)", "contacts").bareTableEmbeds === 2)
+    check("SPECIFICITY: the pair keys consulted are SORTED, so both directions consult ONE key",
+      resolveEmbeddedSelects("transactions(id)", "contacts").pairsConsulted[0] === "contacts|transactions" &&
+      resolveEmbeddedSelects("contacts(id)", "transactions").pairsConsulted[0] === "contacts|transactions")
+    check("SPECIFICITY: the ambiguity check adds NO column refs and changes NO existing resolution field",
+      JSON.stringify(resolveEmbeddedSelects("id, transactions(id, status)", "contacts").refs.map((x) => `${x.table}.${x.column}`)) ===
+        JSON.stringify(["transactions.id", "transactions.status"]))
+
+    // ── END-TO-END, through the real scanner ─────────────────────────────────────────
+    // A correct rule is not a correct CHECK: attribution to the .from() and the select-arg
+    // recovery both live in scanFile, and neither is exercised by the fixtures above.
+    const ambigScan = (src: string) => { const s = newStats(); scanFile("test.ts", src, s); return s }
+    const deadScan = ambigScan('await supabase.from("contacts").select("id, first_name, transactions(id, status)")')
+    check("SCAN: the bare-embed PGRST201 shape is reported against the right pair, with its FK count",
+      deadScan.embedAmbiguous.length === 1 && deadScan.embedAmbiguous[0].parent === "contacts" &&
+      deadScan.embedAmbiguous[0].target === "transactions" && deadScan.embedAmbiguous[0].fkCount === 3,
+      JSON.stringify(deadScan.embedAmbiguous))
+    check("SCAN: the disambiguated form (the shape app/actions/ai-sphere-management.ts already uses) reports NOTHING",
+      ambigScan('await supabase.from("contacts").select("id, transactions!transactions_contact_id_fkey(id, status)")').embedAmbiguous.length === 0)
+    check("SCAN: a single-FK embed reports nothing but is still COUNTED in the denominator",
+      (() => { const s = ambigScan('await supabase.from("listings").select("id, brokerages(name)")')
+               return s.embedAmbiguous.length === 0 && s.bareTableEmbeds === 1 && s.ambiguityPairsConsulted.size === 1 })())
+    check("SCAN: ambiguity findings never become a Violation, so they cannot reach ANY baseline file",
+      scanFile("test.ts", 'await supabase.from("contacts").select("id, transactions(id, status)")').length === 0)
   }
 
   // ── the .or() / .filter() FILTER DSL ────────────────────────────────────────────────
@@ -987,10 +1201,22 @@ interface ScanStats {
   dslUnattributed: number       // DSL-shaped call sites not on any guarded .from() chain
   dslSkipped: Array<{ file: string; kind: string; text: string; reason: string }>
   dslUnattributedSites: Array<{ file: string; text: string }>
+  /** ── PGRST201 embed-ambiguity coverage. Same honesty rule as the two blocks above: the
+   *  denominator (how many bare table-name embeds were actually put to the pair test, and how
+   *  many distinct pairs that consulted) is printed next to the finding count, and everything
+   *  that could NOT be tested is counted rather than assumed fine. Ambiguity findings are held
+   *  HERE and deliberately never turned into a `Violation`: the three baseline files are all at
+   *  zero, and a new check that can reach a baseline is a new check that can be absorbed into
+   *  one. This one structurally cannot. */
+  bareTableEmbeds: number
+  ambiguityPairsConsulted: Set<string>
+  ambiguityUnknownParent: number
+  embedAmbiguous: Array<AmbiguousEmbed & { file: string }>
 }
 const newStats = (): ScanStats => ({
   directColumns: 0, embedColumns: 0, embedsResolved: 0, embedsUnresolved: 0, embedTargetUnguarded: 0, unresolved: [],
   dslStrings: 0, dslTerms: 0, dslColumns: 0, dslTargetUnguarded: 0, dslUnattributed: 0, dslSkipped: [], dslUnattributedSites: [],
+  bareTableEmbeds: 0, ambiguityPairsConsulted: new Set(), ambiguityUnknownParent: 0, embedAmbiguous: [],
 })
 
 /** Violation ops produced by the filter-DSL check. They are kept OUT of both legacy baselines:
@@ -1021,6 +1247,12 @@ function scanFile(file: string, src: string, stats: ScanStats = newStats()): Vio
       stats.embedsResolved += emb.resolvedCount
       stats.embedsUnresolved += emb.unresolved.length
       for (const u of emb.unresolved) stats.unresolved.push({ file, relation: u.relation, parent: u.parent })
+      // PGRST201: a bare table-name embed across a pair joined by more than one FK. Not a
+      // column problem and not a phantom-relation problem — the whole request 400s anyway.
+      stats.bareTableEmbeds += emb.bareTableEmbeds
+      stats.ambiguityUnknownParent += emb.ambiguityUnknownParent
+      for (const p of emb.pairsConsulted) stats.ambiguityPairsConsulted.add(p)
+      for (const a of emb.ambiguous) stats.embedAmbiguous.push({ file, ...a })
       for (const e of emb.refs) {
         // Target is a real table we simply have no column list for — cannot check, do
         // not guess. Counted as unresolved so the coverage number stays honest.
@@ -1165,6 +1397,9 @@ function testScan() {
   console.log(`  · ${stats.directColumns} direct column refs + ${stats.embedColumns} embedded column refs checked`)
   console.log(`  · embeds: ${stats.embedsResolved} resolved to a table, ${stats.embedTargetUnguarded} embedded columns skipped (target table not column-guarded)`)
   console.log(`  · unresolved embeds: ${stats.embedsUnresolved} (skipped, never failed — set GUARD_EMBED_REPORT=1 to list them)`)
+  // ── PGRST201 ambiguity coverage, stated out loud (same rule as every other block here) ──
+  console.log(`  · embed ambiguity: ${stats.bareTableEmbeds} bare table-name embeds checked against ${stats.ambiguityPairsConsulted.size} distinct table pairs`)
+  console.log(`               (${Object.keys(SCHEMA_FK_PAIR_CARDINALITY).length} pairs in the schema carry >1 FK; ${stats.ambiguityUnknownParent} embeds skipped for an unknown parent table)`)
   // ── .or()/.filter() FILTER-DSL coverage, stated out loud (same rule as the embeds above) ──
   console.log(`  · filter DSL: ${stats.dslStrings} .or()/.filter() strings scanned (${stats.dslTerms} terms) — ${stats.dslColumns} column refs checked`)
   console.log(`  · filter DSL: ${stats.dslSkipped.length} terms/strings unparseable or unresolvable, ${stats.dslUnattributed} call sites not attributable to a guarded .from() chain`)
@@ -1245,6 +1480,33 @@ function testScan() {
     console.log(`  ⚠  ${embedBaseline.size} embedded-column violations remain. PostgREST rejects the WHOLE`)
     console.log("     query when an embed names a missing column, so each is a silent dead surface:")
     for (const k of [...embedBaseline].sort()) console.log(`       ${k.replace("::select(embed)", "")}`)
+  }
+
+  // ── PGRST201 embed-ambiguity check ───────────────────────────────────────────────────
+  // NO BASELINE, NO ALLOW-LIST, NO BURN-DOWN — on purpose, and it is the whole point. The
+  // embedded-column and filter-DSL checks are both held at a hard zero; a new check that ships
+  // with a tolerated list starts life already hollowed out, and "zero" stops meaning zero the
+  // day it is seeded. Every entry below is a request PostgREST rejects in full: fix the embed
+  // (add `!<fk_constraint>`, or name the FK column instead of the table), never the check.
+  check(`no AMBIGUOUS bare-table embed — PGRST201 (${stats.bareTableEmbeds} bare table-name embeds over ${stats.ambiguityPairsConsulted.size} pairs, no allow-list)`,
+    stats.embedAmbiguous.length === 0,
+    stats.embedAmbiguous.length === 0 ? undefined
+      : `${stats.embedAmbiguous.length} occurrences across ${new Set(stats.embedAmbiguous.map((a) => `${a.file}::${a.parent}|${a.target}`)).size} file/pair sites (full list below)`)
+  if (stats.embedAmbiguous.length > 0) {
+    // Never truncated, for the same reason the other two are not: a truncated list of dead
+    // reads is a list someone fixes the top of and then calls done.
+    console.log(`  ⚠  ${stats.embedAmbiguous.length} embeds name their target by TABLE NAME across a pair joined by MORE THAN ONE`)
+    console.log("     foreign key, with no !hint to choose one. PostgREST answers PGRST201 and rejects the")
+    console.log("     WHOLE request — the relation is real, the columns are real, and the read is still dead:")
+    const byFile = new Map<string, string[]>()
+    for (const a of stats.embedAmbiguous) {
+      if (!byFile.has(a.file)) byFile.set(a.file, [])
+      byFile.get(a.file)!.push(`.from("${a.parent}") ⟶ ${a.relation}(…)   [${a.fkCount} FKs join ${a.parent}↔${a.target}]`)
+    }
+    for (const [f, sites] of [...byFile.entries()].sort()) {
+      console.log(`       ${f}`)
+      for (const s of [...new Set(sites)].sort()) console.log(`         ✗ ${s}`)
+    }
   }
 
   // ── filter-DSL ratchet ───────────────────────────────────────────────────────────────
