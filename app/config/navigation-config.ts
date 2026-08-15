@@ -359,6 +359,18 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         children: [
           { id: 'general', label: 'General', href: '/dashboard/settings/general' },
           { id: 'branding', label: 'Branding', href: '/dashboard/settings/branding' },
+          // Owner's ruling: "command strip is fine but you should still be able to find
+          // it on navigation." The Prohibited Words panel shipped reachable only from the
+          // settings command strip (settings-command-strip.tsx → /compliance/settings).
+          // It is a SETTINGS surface, so it is filed with the other per-area settings
+          // pages rather than under the Compliance dashboard entry above (which points at
+          // the violations/monitoring surface, /dashboard/compliance — a different page).
+          // The destination is /compliance/settings and NOT /dashboard/settings: that page
+          // redirects any user_type outside broker/admin, and it is the whole-settings
+          // Control Center, not a compliance surface. One destination, one entry — the
+          // compliance_officer block's own Settings item already points here and is not
+          // duplicated.
+          { id: 'compliance-settings', label: 'Compliance & Prohibited Words', href: '/compliance/settings' },
           { id: 'team-mgmt', label: 'Team Management', href: '/dashboard/settings/teams' },
           { id: 'integrations', label: 'Integrations', href: '/dashboard/settings/integrations' },
           { id: 'isa-calling', label: 'ISA Calling', href: '/dashboard/settings/isa-calling' },
@@ -553,6 +565,13 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       // market/territory setup lives here, beside Brand, not in the platform ops group.
       { id: 'brand-markets', label: 'Markets', href: '/dashboard/admin/markets', icon: 'Map' },
       { id: 'tcpa-compliance', label: 'TCPA Compliance', href: '/dashboard/admin/compliance/tcpa', icon: 'Shield' },
+      // Owner's ruling: "command strip is fine but you should still be able to find it on
+      // navigation." Same entry as the broker's (see the Brokerage Settings group there);
+      // this sidebar has no settings group — its settings-shaped pages sit at the top
+      // level beside the compliance items (cf. 'required-documents' below) — so it is
+      // filed with the other compliance entries. Destination /compliance/settings, the one
+      // surface every role that may write a phrase can reach.
+      { id: 'compliance-settings', label: 'Compliance & Prohibited Words', href: '/compliance/settings', icon: 'ShieldAlert' },
       // Orphan-route sweep: per-state required-document settings were unreachable from any nav.
       { id: 'required-documents', label: 'Required Documents', href: '/dashboard/settings/required-documents', icon: 'FileCheck' },
       // Feature Governance is PLATFORM-owned (enrollment flags aren't tenant-editable) —

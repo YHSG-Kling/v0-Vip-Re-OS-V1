@@ -55,9 +55,22 @@ export type BrokerageComplianceIdentity = {
   brokerageLogoUrl: string | null
   brokeragePrimaryColor: string | null
   /**
-   * `brokerages` carries city/state, NOT a street `address` column — verified
-   * against the live schema. Anything asking for `brokerages.address` is asking
-   * for a column that does not exist.
+   * SUPERSEDED BY m456. This comment used to read: "`brokerages` carries
+   * city/state, NOT a street `address` column — verified against the live
+   * schema." That was true when written and is FALSE now — m456 added
+   * `address`, `address_line2` and `zip` after the owner ruled the brokerage
+   * needs a complete address including the street.
+   *
+   * Left as a correction rather than deleted, because the original note is why
+   * `lib/kernel/listings.ts` selecting `brokerages.address` looked like a bug in
+   * the caller when it was really a missing column: the schema moved and the
+   * comment did not. A stale "verified" is worse than no comment — it is an
+   * assertion of fact with a date nobody can see.
+   *
+   * This resolver deliberately still selects only city/state: it answers the
+   * Fair Housing disclosure question ("does this copy name the brokerage and a
+   * licence"), which no street line participates in. The address has its own
+   * consumer in the listing-form prefill.
    */
   brokerageCity: string | null
   brokerageState: string | null

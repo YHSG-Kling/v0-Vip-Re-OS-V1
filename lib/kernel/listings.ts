@@ -919,6 +919,46 @@ export async function closeListingLifecycle(input: {
 // ─── 12. prefillListingFormFromRecord ────────────────────────────────────────
 
 /**
+ * Compose a brokerage's office address the way it should read on a form:
+ * "123 Main St, Suite 200, Pensacola, FL 32501".
+ *
+ * Every column is nullable and both live brokerages currently hold NULL for
+ * street and zip, so this NEVER emits a placeholder, an empty string or a bare
+ * comma: parts that are missing are dropped, the city/state/zip line collapses
+ * to whichever of them exist ("FL 32501", "Pensacola", "32501"), and an address
+ * with no parts at all comes back `undefined` so the caller writes NULL rather
+ * than printing punctuation into a contract.
+ *
+ * Whitespace-only values count as missing — a column holding " " would
+ * otherwise contribute a comma and nothing else.
+ */
+function composeBrokerageAddress(brokerage: {
+  address?: string | null
+  address_line2?: string | null
+  city?: string | null
+  state?: string | null
+  zip?: string | null
+} | null | undefined): string | undefined {
+  const clean = (value: unknown): string | null =>
+    typeof value === "string" && value.trim().length > 0 ? value.trim() : null
+
+  const street = clean(brokerage?.address)
+  const suite  = clean(brokerage?.address_line2)
+  const city   = clean(brokerage?.city)
+  const state  = clean(brokerage?.state)
+  const zip    = clean(brokerage?.zip)
+
+  // City and state are comma-separated; the postcode follows the state with a
+  // SPACE, not a comma — "Pensacola, FL 32501".
+  const locality = [[city, state].filter(Boolean).join(", "), zip]
+    .filter((part) => part && part.length > 0)
+    .join(" ")
+
+  const parts = [street, suite, locality].filter((part) => part && part.length > 0)
+  return parts.length > 0 ? parts.join(", ") : undefined
+}
+
+/**
  * Load all context needed to prefill listing-side forms.
  * Input: { listingId }
  * Output: { prefillData: ListingFormPrefill }
@@ -943,7 +983,7 @@ export async function prefillListingFormFromRecord(input: {
           id, brokerage_id,
           users:user_id(first_name, last_name, email),
           license_number, license_state,
-          brokerage:brokerage_id(name, city, state, phone, license_number)
+          brokerage:brokerage_id(name, address, address_line2, city, state, zip, phone, license_number)
         )
       `)
       .eq("id", input.listingId)
@@ -982,22 +1022,24 @@ export async function prefillListingFormFromRecord(input: {
       agentLicenseNumber: agent.license_number,
       agentLicenseState:  agent.license_state,
       brokerageName:      brokerage.name,
-      // `brokerages` HAS NO `address` COLUMN — verified against
-      // information_schema. This embed asked for one, PostgREST rejects an
-      // unknown column in a nested select, and the catch below turned that into
-      // `{ success: false }` for EVERY listing. So this whole prefill — agent
-      // name, agent licence, brokerage name, phone, brokerage licence — has
-      // never once returned data, and lib/kernel/forms.ts:377 depends on it.
-      // The failure was total and silent because the error was swallowed into a
-      // generic result shape.
+      // The brokerage's OFFICE ADDRESS, composed from the columns the table now
+      // actually has. History, because it decides what this line may and may not
+      // do: this embed once asked for `brokerages.address` when no such column
+      // existed — PostgREST rejects an unknown column in a nested select, and the
+      // whole prefill (agent name, agent licence, brokerage name, phone, licence)
+      // failed for EVERY listing, silently, because the error was swallowed into a
+      // generic result shape. m456 added the real columns (`address`,
+      // `address_line2`, `zip`, verified in information_schema), so the street line
+      // is read rather than guessed at, and `brokerage_address` — a REQUIRED brand
+      // field for email and direct mail (lib/brand-template-registry/
+      // brand-requirements.ts:90,127) — can finally carry a physical address.
       //
-      // city + state are the only location the table actually stores, so that is
-      // what is reported. NOT a fabricated street address: `brokerage_address` is
-      // a REQUIRED brand field (lib/brand-template-registry/brand-requirements.ts
-      // :90,127) and there is nowhere in the schema to put a real one. Filling it
-      // with something invented would be worse than reporting what is known —
-      // recorded as an open question, not papered over.
-      brokerageAddress:   [brokerage.city, brokerage.state].filter(Boolean).join(", ") || undefined,
+      // NOTHING IS INVENTED. Every part is optional in the schema and both live
+      // brokerages currently store NULL for street and zip. A form that prints
+      // ", ," is worse than a blank one, so parts that are null are dropped and an
+      // address with no parts at all is `undefined`, never "" and never a stray
+      // comma. See composeBrokerageAddress above.
+      brokerageAddress:   composeBrokerageAddress(brokerage),
       brokeragePhone:     brokerage.phone,
       brokerageLicense:   brokerage.license_number,
     }

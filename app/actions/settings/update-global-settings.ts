@@ -5,8 +5,17 @@ import { updateGlobalSettings as kernelUpdateGlobalSettings } from '@/lib/kernel
 
 // Non-secret fields the settings forms are allowed to write. SMTP + API keys are
 // handled by dedicated hardened actions, never here.
+//
+// `app_name` IS NOT ON THIS LIST, DELIBERATELY. It is a MIRROR of
+// `brokerages.name`, not an independently editable value. The "Brokerage Info"
+// card used to type a brokerage name into app_name while nothing ever wrote
+// brokerages.name — so renaming a brokerage on the settings screen changed the
+// client-facing display name and NOT the column the compliance/disclosure
+// resolver (lib/brokerage/compliance-identity.ts) reads. The single name field
+// now writes brokerages.name and app_name is stepped forward from it, in
+// app/actions/settings/brokerage-identity.ts:updateBrokerageIdentity. Adding
+// app_name back here would re-open that drift.
 const ALLOWED_FIELDS = [
-  'app_name',
   'app_logo_url',
   'primary_color',
   'secondary_color',
