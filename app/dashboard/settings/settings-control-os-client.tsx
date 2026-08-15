@@ -15,6 +15,7 @@ import { IsaAutoRespondSettings } from "@/app/components/isa/IsaAutoRespondSetti
 import { VoiceAccessSettings } from "@/app/components/settings/VoiceAccessSettings"
 import { LeadRoutingPanel } from "./components/lead-routing-panel"
 import { ShowingFinancialGatePanel } from "./components/showing-financial-gate-panel"
+import { ProhibitedPhrasesPanel } from "./components/prohibited-phrases-panel"
 
 interface ProviderData {
   id: string
@@ -222,6 +223,20 @@ export function SettingsControlOSClient({
             and, until m377, ran on no path at all. Broker + admin only, which is
             already this page's gate. */}
         <ShowingFinancialGatePanel />
+
+        {/* Prohibited Words — the brokerage's OWN additions to the federal Fair
+            Housing catalogue (m454 added prohibited_phrases.brokerage_id; NULL is
+            the platform list, a set id is a tenant's own words). The federal rows
+            are listed read-only because RLS refuses a tenant write against them.
+            Two columns wide: it carries a list and a form, not a single control.
+            The same panel also renders on /compliance/settings, which is where the
+            settings command strip's "Compliance" button goes and the only such
+            surface a COMPLIANCE OFFICER can reach — this page is broker + admin
+            only, while RLS grants phrase writes to is_compliance_officer_role()
+            as well. */}
+        <div className="md:col-span-2">
+          <ProhibitedPhrasesPanel />
+        </div>
       </div>
     </div>
   )

@@ -29,7 +29,7 @@ const SEEDED_REFERENCE = new Set([
   "tax_categories", "global_settings", "platform_settings", "achievements",
   "gamification_badges", "onboarding_steps", "milestone_template_items",
   "training_videos", "onboarding_quizzes", "brokerage_fee_types",
-  "compliance_rules", "prohibited_phrases", "journey_blueprints",
+  "compliance_rules", "journey_blueprints",
   "offer_strategy_templates", "listing_task_templates", "transaction_milestone_templates",
   "email_templates", "newsletter_templates", "video_templates", "brand_templates",
   "content_templates", "document_templates", "chat_templates",
@@ -45,8 +45,19 @@ const SEEDED_REFERENCE = new Set([
   // classifications is the routing RULE set (brokerage_id-null global default
   // rows); form_field_maps is per-form-template field mapping.
   "behavioral_patterns", "brokerage_forms", "document_classifications", "form_field_maps",
-  // W44: the THIRD sibling of compliance_rules + prohibited_phrases, both already
-  // above. It only escaped this list because lib/seed-compliance-rules.ts was its
+  // W45 REMOVED prohibited_phrases from this list, and the removal is the point.
+  // It sat here honestly for as long as the table was a platform-only catalogue.
+  // The owner then ruled that a brokerage may add its own prohibited words in
+  // settings, so m454 gave the table a tenant layer and
+  // app/actions/compliance-phrases.ts gave it REAL runtime writers. An exemption
+  // that says "a runtime writer is not expected" is now false, and a false
+  // exemption is worse than none: it would keep passing this table even if every
+  // one of those writers were later deleted. Dropping it puts the table back
+  // under the guard, which now has something true to check.
+  //
+  // W44: the THIRD sibling of compliance_rules + prohibited_phrases (the latter
+  // has since earned its way off this list, see above). It only escaped this
+  // list because lib/seed-compliance-rules.ts was its
   // runtime writer — and that file could never actually run (see m450: zero rows,
   // a severity the CHECK forbids, and an upsert carrying a column that does not
   // exist). Now seeded by m452 and asserted by m453, and the classification is

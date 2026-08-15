@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Settings, ArrowLeft } from 'lucide-react'
 import Link from 'next/link'
+import { ProhibitedPhrasesPanel } from '@/app/dashboard/settings/components/prohibited-phrases-panel'
 
 /**
  * Compliance settings.
@@ -59,6 +60,22 @@ export default async function ComplianceSettingsPage() {
           Compliance Settings
         </h1>
       </div>
+      {/* THE BROKERAGE'S OWN PROHIBITED WORDS.
+          Owner's ruling: "the users can also add in their settings prohibited
+          words." This is the compliance settings surface the settings command
+          strip already points at (settings-command-strip.tsx: Compliance →
+          /compliance/settings), so the words live where a broker looking for
+          compliance settings actually lands — rather than behind a second,
+          parallel compliance route.
+          It matters that they are HERE and not only on /dashboard/settings:
+          that page redirects any user_type outside broker/admin, while the RLS
+          write predicate on prohibited_phrases also admits
+          is_compliance_officer_role() — compliance_officer / compliance_manager.
+          Those roles can reach this page and no other settings surface. The
+          panel itself resolves the caller and the brokerage from the session and
+          hides its controls when the caller may not write. */}
+      <ProhibitedPhrasesPanel />
+
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Compliance Notification Rules</CardTitle>

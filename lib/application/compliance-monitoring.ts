@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache"
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { businessDaysInclusive } from "@/lib/compliance/trid-disclosure-clock"
+import { resolveBrokerageComplianceIdentity } from "@/lib/brokerage/compliance-identity"
 
 // ============================================
 // AUDIT LOGGING
@@ -547,7 +548,18 @@ export async function scanContentComplianceService(content: {
   const { data: prohibitedPhrases, error: phrasesError } = await supabase
     .from("prohibited_phrases")
     .select("*")
+    // ORDERING IS A CAPABILITY, NOT A DETAIL. The deleted
+    // lib/seed-compliance-rules.ts:getProhibitedPhrases ordered by category, and
+    // nothing that replaced it did — so issues surfaced in physical row order on
+    // submit-content-form.tsx and pending-approvals-list.tsx, meaning an agent's
+    // fair_housing violation could sit below a them_first nitpick. Restored here,
+    // with `phrase` as a deterministic tiebreak so the same content always
+    // produces the same report. NOTE: no .eq("brokerage_id", …) — m454 unions the
+    // federal catalogue with this tenant's own words through RLS, and a filter
+    // here would hide all 25 federal phrases (NULL = <uuid> is never true).
     .eq("is_active", true)
+    .order("category", { ascending: true })
+    .order("phrase", { ascending: true })
 
   if (phrasesError) {
     throw new Error(
@@ -597,6 +609,142 @@ export async function scanContentComplianceService(content: {
         disclosureType: disclosure.disclosure_type,
         requiredText: disclosure.disclosure_text,
         placement: disclosure.placement_requirement,
+      })
+    }
+  }
+
+  // ── TENANT IDENTITY DISCLOSURES — brokerage name + licence number ──────────
+  //
+  // These two are required disclosures, but they are NOT catalogue rows and
+  // never could be. `required_disclosures` is checked with a LITERAL substring
+  // test (`contentBody.includes(disclosure_text)`), and the authored catalogue
+  // carried two rows whose "text" was a LABEL, not a disclosure:
+  //
+  //   brokerage_name  → "Brokerage Name Required"
+  //   license_number  → "Licensed Real Estate Agent"
+  //
+  // No real advertisement contains either string, so both would have warned on
+  // 100% of content forever while never once checking the thing they name. m452
+  // left them out of the seed on purpose. The requirement is real — the VALUE is
+  // per-tenant and per-agent, and it lives in the user's own settings — so it is
+  // checked here, against the tenant's actual recorded identity.
+  //
+  // IDENTITY COMES FROM THE SESSION. Not from an argument: a caller-supplied
+  // brokerage or agent id would let content be graded against someone else's
+  // licence number.
+  const { data: { user: scanUser }, error: scanUserError } = await supabase.auth.getUser()
+  const identity = await resolveBrokerageComplianceIdentity(supabase, scanUser?.id ?? null)
+  if (!scanUser) {
+    // No session means no tenant, which means there is nothing to check the
+    // content against. Every caller of this service is a server action that has
+    // one; if that ever stops being true the scan says so rather than reporting
+    // two unchecked requirements as merely "unset".
+    identity.unreadable.push(
+      scanUserError
+        ? `signed-in user (${scanUserError.message})`
+        : "no signed-in user — the brokerage and agent identity could not be resolved",
+    )
+  }
+
+  // Case-insensitive, whitespace-collapsed containment for names.
+  const haystackText = content.contentBody.toLowerCase().replace(/\s+/g, " ")
+  const namePresent = (value: string | null) => {
+    if (!value) return false
+    const needle = value.toLowerCase().replace(/\s+/g, " ").trim()
+    // A one-character "name" would match nearly any text — that is a data
+    // problem, not a compliant advertisement, so it never counts as satisfied.
+    return needle.length >= 2 && haystackText.includes(needle)
+  }
+
+  // Licence numbers are written a dozen ways in real copy — "FL-SL3456789",
+  // "Lic #FL SL3456789", "License No. FLSL3456789". Compare on alphanumerics
+  // only so formatting never decides compliance.
+  const alnum = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "")
+  const haystackAlnum = alnum(content.contentBody)
+  const licensePresent = (value: string | null) => {
+    if (!value) return false
+    const needle = alnum(value)
+    return needle.length >= 3 && haystackAlnum.includes(needle)
+  }
+
+  // A READ THAT FAILED IS NOT AN EMPTY RECORD. supabase-js resolves a denial as
+  // `data: null`; the resolver reports those separately so this never grades a
+  // permission error as "the brokerage has no licence".
+  if (identity.unreadable.length > 0) {
+    warnings.push({
+      type: "missing_disclosure",
+      severity: "warning",
+      disclosureType: "identity_unverifiable",
+      message:
+        `The brokerage-name and license-number disclosures could not be checked: ` +
+        `${identity.unreadable.join("; ")}. This content has NOT been checked against ` +
+        `either requirement — treat both as unverified, not as satisfied.`,
+      placement: "footer",
+    })
+  } else {
+    // ── Brokerage name ──────────────────────────────────────────────────────
+    // The DBA satisfies it too: a brokerage advertising under its registered
+    // trade name is identified. This matches the rendered attribution band,
+    // which prefers DBA → legal name (lib/ai/image-generation.ts).
+    const brokerageNames = [identity.brokerageName, identity.brokerageDba].filter(Boolean) as string[]
+    if (brokerageNames.length === 0) {
+      // THE CHECK CANNOT RUN. Say so — do not skip, and do not call it passed.
+      warnings.push({
+        type: "missing_disclosure",
+        severity: "warning",
+        disclosureType: "brokerage_name",
+        message:
+          "No brokerage name is recorded for your account, so this content could not be checked " +
+          "for the required brokerage identification. Add the brokerage's legal name (and DBA, if " +
+          "it advertises under one) on the brokerage record — Superadmin → Brokerages " +
+          "(/dashboard/superadmin/brokerages) — or ask your broker or platform admin to.",
+        placement: "footer",
+      })
+    } else if (!brokerageNames.some(namePresent)) {
+      warnings.push({
+        type: "missing_disclosure",
+        severity: "warning",
+        disclosureType: "brokerage_name",
+        requiredText: identity.brokerageDba ?? identity.brokerageName,
+        message:
+          `This content does not identify the brokerage. Advertising must name ` +
+          `"${identity.brokerageDba ?? identity.brokerageName}".`,
+        placement: "footer",
+      })
+    }
+
+    // ── Licence number ──────────────────────────────────────────────────────
+    // EITHER licence satisfies it. That is the distinction the rendered
+    // attribution band already draws: it prints the brokerage licence, and adds
+    // the agent's own only when it differs. Many states accept either on an
+    // advertisement, so requiring both here would fail compliant copy.
+    const licenses = [identity.agentLicense, identity.brokerageLicense].filter(Boolean) as string[]
+    if (licenses.length === 0) {
+      warnings.push({
+        type: "missing_disclosure",
+        severity: "warning",
+        disclosureType: "license_number",
+        message:
+          "No license number is recorded — neither yours nor your brokerage's — so this content " +
+          "could not be checked for the required license disclosure. Set your own license number " +
+          "and state on My Profile (/dashboard/profile); it then shows under Settings → License & CE. " +
+          "The brokerage license is set on the brokerage record by your broker or platform admin.",
+        placement: "footer",
+      })
+    } else if (!licenses.some(licensePresent)) {
+      const shown = identity.agentLicense ?? identity.brokerageLicense
+      const state = identity.agentLicense
+        ? identity.agentLicenseState
+        : identity.brokerageLicenseState
+      warnings.push({
+        type: "missing_disclosure",
+        severity: "warning",
+        disclosureType: "license_number",
+        requiredText: state ? `Lic #${shown} (${state})` : `Lic #${shown}`,
+        message:
+          `This content does not carry a license number. Include your license (#${shown}) ` +
+          `or your brokerage's.`,
+        placement: "footer",
       })
     }
   }

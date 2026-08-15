@@ -943,7 +943,7 @@ export async function prefillListingFormFromRecord(input: {
           id, brokerage_id,
           users:user_id(first_name, last_name, email),
           license_number, license_state,
-          brokerage:brokerage_id(name, address, phone, license_number)
+          brokerage:brokerage_id(name, city, state, phone, license_number)
         )
       `)
       .eq("id", input.listingId)
@@ -982,7 +982,22 @@ export async function prefillListingFormFromRecord(input: {
       agentLicenseNumber: agent.license_number,
       agentLicenseState:  agent.license_state,
       brokerageName:      brokerage.name,
-      brokerageAddress:   brokerage.address,
+      // `brokerages` HAS NO `address` COLUMN — verified against
+      // information_schema. This embed asked for one, PostgREST rejects an
+      // unknown column in a nested select, and the catch below turned that into
+      // `{ success: false }` for EVERY listing. So this whole prefill — agent
+      // name, agent licence, brokerage name, phone, brokerage licence — has
+      // never once returned data, and lib/kernel/forms.ts:377 depends on it.
+      // The failure was total and silent because the error was swallowed into a
+      // generic result shape.
+      //
+      // city + state are the only location the table actually stores, so that is
+      // what is reported. NOT a fabricated street address: `brokerage_address` is
+      // a REQUIRED brand field (lib/brand-template-registry/brand-requirements.ts
+      // :90,127) and there is nowhere in the schema to put a real one. Filling it
+      // with something invented would be worse than reporting what is known —
+      // recorded as an open question, not papered over.
+      brokerageAddress:   [brokerage.city, brokerage.state].filter(Boolean).join(", ") || undefined,
       brokeragePhone:     brokerage.phone,
       brokerageLicense:   brokerage.license_number,
     }

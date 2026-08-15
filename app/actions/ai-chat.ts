@@ -485,7 +485,13 @@ async function checkMessageCompliance(message: string, sessionId: string): Promi
   const { data: prohibitedPhrases, error: phrasesError } = await supabase
     .from("prohibited_phrases")
     .select("*")
+    // Same ordering the content lane restored, for the same reason: the deleted
+    // seeder's getProhibitedPhrases ordered by category and nothing replacing it
+    // did. No brokerage_id filter — m454's RLS unions federal + this tenant's own
+    // words, and filtering here would hide the whole Fair Housing catalogue.
     .eq("is_active", true)
+    .order("category", { ascending: true })
+    .order("phrase", { ascending: true })
 
   if (phrasesError || !prohibitedPhrases || prohibitedPhrases.length === 0) {
     issues.push({
