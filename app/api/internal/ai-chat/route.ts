@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { readRoleGrants, allRoles, selectPrimaryRole, selectTenantBrokerageId, selectVendorId } from "@/lib/auth/role-grants"
 import { createServiceClient } from "@/lib/supabase/service"
 import { streamText, convertToModelMessages, tool, stepCountIs } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
@@ -102,14 +103,24 @@ async function loadVendorContext(service: ReturnType<typeof createServiceClient>
     .limit(1)
     .maybeSingle()
 
-  // Fallback: check user_role_assignments for vendor_id
-  const { data: roleRow } = await service
-    .from("user_role_assignments")
-    .select("vendor_id")
-    .eq("user_id", userId)
-    .maybeSingle()
+  // Fallback: check user_role_assignments for vendor_id.
+  //
+  // This one did not even narrow to the vendor-bearing grants, so `.maybeSingle()`
+  // errored for ANY user holding more than one grant, and the discarded error read
+  // as "no vendor" — the vendor assistant then answered with an empty job list
+  // rather than saying anything was wrong.
+  const grantsResult = await readRoleGrants(service, userId)
+  if (!grantsResult.ok) {
+    console.error("[ai-chat] vendor role grant read failed:", grantsResult.error)
+  }
+  const { vendorId: grantVendorId, ambiguous } = grantsResult.ok
+    ? selectVendorId(grantsResult.grants)
+    : { vendorId: null, ambiguous: false }
+  if (ambiguous) {
+    console.error("[ai-chat] user", userId, "is linked to more than one vendor")
+  }
 
-  const vendorId = vendor?.id ?? roleRow?.vendor_id
+  const vendorId = vendor?.id ?? grantVendorId
   if (!vendorId) return { jobs: [], bookings: [] }
 
   const [{ data: jobs }, { data: bookings }] = await Promise.all([
@@ -329,21 +340,22 @@ export async function POST(req: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
-  // Resolve role
-  const { data: roleRow } = await supabase
-    .from("user_role_assignments")
-    .select("role, brokerage_id")
-    .eq("user_id", user.id)
-    .limit(1)
-    .maybeSingle()
+  // Resolve role.
+  //
+  // WAS `.limit(1).maybeSingle()` with no ORDER BY — fail-ARBITRARY. It decides
+  // both a 403 gate and which context loader runs, off a row PostgREST chose for
+  // no reason, so the same seat could be admitted on one request and refused on
+  // the next. Under the seat model (one user carrying transactions AND compliance
+  // AND admin) that is not an edge case, it is the ordinary account.
+  const [grantsResult, { data: userData }] = await Promise.all([
+    readRoleGrants(supabase, user.id),
+    supabase.from("users").select("role, brokerage_id").eq("id", user.id).maybeSingle(),
+  ])
+  if (!grantsResult.ok) {
+    console.error("[ai-chat] role grant read failed:", grantsResult.error)
+  }
+  const grants = grantsResult.ok ? grantsResult.grants : []
 
-  const { data: userData } = await supabase
-    .from("users")
-    .select("role, brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-
-  const rawRole = (roleRow?.role ?? userData?.role ?? "agent").toLowerCase()
   // Normalise legacy role strings to canonical values
   const ROLE_ALIASES: Record<string, string> = {
     transaction_coordinator: "tc",
@@ -352,12 +364,28 @@ export async function POST(req: NextRequest) {
     super_admin: "superadmin",
     platform_admin: "superadmin",
   }
-  const role = ROLE_ALIASES[rawRole] ?? rawRole
-  const brokerageId = (roleRow?.brokerage_id ?? userData?.brokerage_id) as string
+  const canonical = (r: string) => ROLE_ALIASES[r.toLowerCase()] ?? r.toLowerCase()
 
-  if (!PERMITTED_ROLES.has(role)) {
+  // The GATE is a question about the SET: this assistant is open to a user who
+  // holds ANY permitted role. Testing one picked role name would lock out a seat
+  // whose permitted grant simply was not the one that got picked.
+  const heldRoles = allRoles(grants).map(canonical)
+  const profileRole = userData?.role ? canonical(String(userData.role)) : null
+  const admissible = [...heldRoles, ...(profileRole ? [profileRole] : [])]
+  if (!admissible.some((r) => PERMITTED_ROLES.has(r))) {
     return NextResponse.json({ error: "Role not permitted" }, { status: 403 })
   }
+
+  // The CONTEXT LOADER can only run one branch, so one role is genuinely needed.
+  // The seat's own declared identity wins when it is actually granted; otherwise
+  // authority order decides — deterministically, never by row order.
+  const role = canonical(selectPrimaryRole(grants, userData?.role as string | null) ?? String(userData?.role ?? "agent"))
+  if (heldRoles.length > 1) {
+    console.warn("[ai-chat] user", user.id, "holds roles", heldRoles.join("+"), "— loading context for", role)
+  }
+  // Tenant: grant-then-profile as before, but chosen by precedence, and an
+  // untenanted grant (contact/lender) can no longer win and blank it.
+  const brokerageId = (selectTenantBrokerageId(grants) ?? userData?.brokerage_id) as string
 
   const { messages } = await req.json()
   if (!messages || !Array.isArray(messages)) {

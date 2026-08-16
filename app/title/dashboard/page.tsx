@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { readRoleGrants, selectVendorId } from '@/lib/auth/role-grants'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -22,19 +23,23 @@ export default async function TitleDashboardPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  // Get title company/vendor ID for this user (canonical linkage via user_role_assignments)
-  const { data: ra } = await supabase
-    .from('user_role_assignments')
-    .select('vendor_id')
-    .eq('user_id', user.id)
-    .not('vendor_id', 'is', null)
-    .maybeSingle()
+  // Get title company/vendor ID for this user (canonical linkage via
+  // user_role_assignments). Not in the reported list but the identical shape:
+  // narrowing to the vendor-bearing grants still leaves several rows possible,
+  // because the table is UNIQUE on (user_id, role) and not on user_id.
+  const grantsResult = await readRoleGrants(supabase, user.id)
+  if (!grantsResult.ok) {
+    console.error('[title/dashboard] role grant read failed:', grantsResult.error)
+  }
+  const { vendorId: titleVendorId } = grantsResult.ok
+    ? selectVendorId(grantsResult.grants)
+    : { vendorId: null }
 
-  const { data: vendor } = ra?.vendor_id
+  const { data: vendor } = titleVendorId
     ? await supabase
         .from('vendors')
         .select('id')
-        .eq('id', ra.vendor_id)
+        .eq('id', titleVendorId)
         .eq('category', VENDOR_CATEGORY_TITLE)
         .maybeSingle()
     : { data: null }

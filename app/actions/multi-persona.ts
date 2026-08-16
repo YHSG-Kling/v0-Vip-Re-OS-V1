@@ -1867,13 +1867,18 @@ export async function submitVendorInvoice(params: {
     if (booking.brokerage_id !== auth.brokerageId) {
       // Not the booking's brokerage — the only other legitimate submitter is the
       // vendor being invoiced for.
-      const { data: ra, error: raErr } = await supabase
+      // EXISTENCE, not identity: "does this caller hold ANY grant linking them to
+      // the booking's vendor?" (user_id, vendor_id) is not a unique key — the
+      // table is UNIQUE on (user_id, role) — so a caller holding two grants
+      // against the same vendor produced two rows, `.maybeSingle()` errored, and
+      // this money gate returned Forbidden to the vendor it was written to admit.
+      // Counting rows answers the question the gate is actually asking.
+      const { data: ras, error: raErr } = await supabase
         .from("user_role_assignments")
         .select("id")
         .eq("user_id", auth.userId)
         .eq("vendor_id", booking.vendor_id)
-        .maybeSingle()
-      if (raErr || !ra) return { success: false, error: "Forbidden" }
+      if (raErr || (ras?.length ?? 0) === 0) return { success: false, error: "Forbidden" }
     }
 
     const { data: invoice, error } = await supabase

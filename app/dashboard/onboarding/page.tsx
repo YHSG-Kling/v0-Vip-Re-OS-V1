@@ -6,6 +6,7 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
+import { readRoleGrants, selectVendorId } from '@/lib/auth/role-grants'
 import { ensureAgentBrokerage } from '@/app/actions/onboarding/ensure-agent-brokerage'
 import { getAgentOnboardingDashboard } from '@/lib/kernel/agent-onboarding'
 import { OnboardingDashboardClient } from './OnboardingDashboardClient'
@@ -125,9 +126,21 @@ export default async function OnboardingPage() {
       if (role === 'team_lead') teamLead = true
       let vendorId: string | null = null
       if (role === 'vendor') {
-        const { data: ra } = await svc.from('user_role_assignments').select('vendor_id')
-          .eq('user_id', user.id).not('vendor_id', 'is', null).maybeSingle()
-        vendorId = (ra as { vendor_id?: string | null } | null)?.vendor_id ?? null
+        // Read every grant and choose: narrowing to the vendor-bearing rows still
+        // leaves several possible (the table is UNIQUE on (user_id, role)), and
+        // `.maybeSingle()` over them ERRORS — which here silently emptied the
+        // vendor half of the critical-setup meter and told a vendor their setup
+        // was complete when it had simply not been looked at.
+        const grantsResult = await readRoleGrants(svc, user.id)
+        if (!grantsResult.ok) {
+          console.error('[Onboarding] role grant read failed:', grantsResult.error)
+        } else {
+          const resolved = selectVendorId(grantsResult.grants)
+          if (resolved.ambiguous) {
+            console.error('[Onboarding] user', user.id, 'is linked to more than one vendor')
+          }
+          vendorId = resolved.vendorId
+        }
       }
       const facts = await loadCriticalSetupFacts(svc, {
         brokerageId,

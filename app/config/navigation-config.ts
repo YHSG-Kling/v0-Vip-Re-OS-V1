@@ -986,10 +986,111 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
   },
 }
 
+/**
+ * STAFF roles, in the order their navigation is merged.
+ *
+ * THIS ORDER IS THE POINT. A user's roles arrive from user_role_assignments with
+ * NO ordering — the table is UNIQUE on (user_id, role), so the rows come back in
+ * whatever order the planner produced. The old resolver took `roles[0]` from that
+ * unordered set, which meant the sidebar a multi-role user saw could differ
+ * between two logins. Merging in a FIXED precedence removes the arbitrariness:
+ * the same role set always produces the same navigation.
+ *
+ * Widest-governing first, so when two roles both define an item the more
+ * responsible role's label/href wins the dedupe.
+ */
+const STAFF_NAV_PRECEDENCE: readonly UserRole[] = [
+  'broker', 'admin', 'team_lead', 'compliance_officer', 'tc', 'isa', 'agent',
+] as unknown as readonly UserRole[]
+
+/**
+ * EXTERNAL personas. These are people the brokerage works WITH, not staff of it,
+ * and their navigation is a portal rather than a workspace.
+ *
+ * They are deliberately NOT merged into a staff union. Measured on the live
+ * database, one account holds BOTH `contact` and `team_lead` — a client who is
+ * also a team lead. Merging those would put the staff workspace and the client
+ * portal in one sidebar, which is not "one person wearing several business
+ * hats"; it is two different relationships to the brokerage in one nav. If a
+ * user holds ANY staff role, staff navigation is what they get.
+ */
+const EXTERNAL_NAV_ROLES: ReadonlySet<string> = new Set([
+  'contact', 'vendor', 'lender', 'title_agent',
+])
+
+/**
+ * The single role to name when a surface genuinely needs ONE (a page-context
+ * label, an analytics tag). Resolved by the SAME fixed precedence the navigation
+ * merge uses, so "which role am I acting as" and "what can I see" never disagree.
+ *
+ * Callers must not hand-roll `roles[0]` for this — that is the arbitrary pick
+ * this module exists to remove.
+ */
+export function resolvePrimaryRole(roles: string[] | undefined | null): string {
+  const held = new Set(roles ?? [])
+  const staff = STAFF_NAV_PRECEDENCE.find((r) => held.has(r as string))
+  if (staff) return staff as string
+  for (const r of held) if (NAVIGATION_BY_ROLE[r as UserRole]) return r
+  return 'contact'
+}
+
+/** Merge nav item lists, first occurrence wins. Keyed on id, falling back to
+ *  href so two roles listing the same destination under different ids collapse. */
+function mergeNavItems(lists: NavItem[][]): NavItem[] {
+  const seen = new Set<string>()
+  const out: NavItem[] = []
+  for (const list of lists) {
+    for (const item of list ?? []) {
+      const key = item.id || item.href
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      out.push(item)
+    }
+  }
+  return out
+}
+
+/**
+ * The navigation for everything this person is.
+ *
+ * OWNER'S RULING, which this implements: a solo tenant has two seats — the
+ * producing agent, and a second user who carries everything else the business
+ * needs (transactions, compliance, support, admin, marketing). Business roles
+ * are ASSIGNED to a user, so ONE USER HOLDING SEVERAL ROLES IS THE DESIGNED
+ * CASE. The signature already accepted an array; it then read `roles[0]` and
+ * threw the rest away, so that second user only ever saw one role's surfaces —
+ * the exact capability the seat model exists to provide was unreachable.
+ *
+ * Unknown role strings are ignored rather than defaulting, so a typo cannot
+ * silently widen somebody. A user with no recognised role still lands on the
+ * contact portal, as before.
+ */
 export function getNavigationForRole(role: string | string[]): NavigationConfig {
-  const roles = Array.isArray(role) ? role : [role]
-  const primaryRole = roles[0]
-  return NAVIGATION_BY_ROLE[primaryRole as UserRole] || NAVIGATION_BY_ROLE.contact
+  const held = new Set(Array.isArray(role) ? role : [role])
+
+  const staff = STAFF_NAV_PRECEDENCE.filter((r) => held.has(r as string))
+  if (staff.length > 0) {
+    const configs = staff.map((r) => NAVIGATION_BY_ROLE[r]).filter(Boolean)
+    if (configs.length === 1) return configs[0]
+    return {
+      sidebarItems:        mergeNavItems(configs.map((c) => c.sidebarItems)),
+      topNavItems:         mergeNavItems(configs.map((c) => c.topNavItems)),
+      mobileBottomNav:     mergeNavItems(configs.map((c) => c.mobileBottomNav)),
+      commandPaletteItems: mergeNavItems(configs.map((c) => c.commandPaletteItems)),
+    }
+  }
+
+  // No staff role: a single external persona, unmerged.
+  for (const r of held) {
+    if (EXTERNAL_NAV_ROLES.has(r) && NAVIGATION_BY_ROLE[r as UserRole]) {
+      return NAVIGATION_BY_ROLE[r as UserRole]
+    }
+  }
+  // superadmin and any other non-staff, non-external role still resolve directly.
+  for (const r of held) {
+    if (NAVIGATION_BY_ROLE[r as UserRole]) return NAVIGATION_BY_ROLE[r as UserRole]
+  }
+  return NAVIGATION_BY_ROLE.contact
 }
 
 export function filterNavItemsByPermissions(items: NavItem[], userPermissions: string[]): NavItem[] {

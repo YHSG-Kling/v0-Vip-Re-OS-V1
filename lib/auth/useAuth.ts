@@ -124,12 +124,24 @@ export function useAuth(): AuthState {
       const canonicalRole = toCanonicalRoleOrDefault(rawRole, 'agent')
       const persona: string | null = authUser.user_metadata?.contact_persona ?? null
 
-      // Build roles array - include users table user_type as fallback
-      const resolvedRoles = rolesData && rolesData.length > 0
-        ? rolesData.map((r: Record<string, unknown>) =>
-            toCanonicalRoleOrDefault(r.role as string, 'agent')
-          )
-        : [canonicalRole]
+      // THE UNION, not a replacement.
+      //
+      // This used to be "grants if any, ELSE user_type" — so the moment a user
+      // was given a single role grant, the role on their users row STOPPED
+      // counting. An account whose user_type is 'admin' and who is then granted
+      // 'agent' silently lost admin. Both are real statements about the same
+      // person: users.user_type is the seat they were created as, and each
+      // user_role_assignments row is a business role ASSIGNED to them. The owner's
+      // model is that one user wears several hats, so the answer is every hat.
+      //
+      // Deduped, and ORDER-STABLE by construction (user_type first, then grants
+      // in the order returned) — but nothing downstream may depend on that order:
+      // getNavigationForRole re-sorts into its own fixed precedence precisely
+      // because the grant rows themselves come back unordered.
+      const grantRoles = (rolesData ?? []).map((r: Record<string, unknown>) =>
+        toCanonicalRoleOrDefault(r.role as string, 'agent'),
+      )
+      const resolvedRoles = Array.from(new Set([canonicalRole, ...grantRoles]))
 
       const ctx: UserContext = {
         id: authUser.id,

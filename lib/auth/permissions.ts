@@ -2,6 +2,7 @@
 
 import { createServerClient } from "@supabase/ssr"
 import { cookies } from "next/headers"
+import { selectTenantGrant } from "@/lib/auth/role-grants"
 
 // Canonical user_type values — must match users.user_type in the DB
 export type Role =
@@ -107,16 +108,26 @@ export async function getCurrentUserContext(): Promise<UserWithRole | null> {
       .select("brokerage_id, user_type")
       .eq("id", user.id)
       .maybeSingle(),
+    // NOT `.maybeSingle()`: user_role_assignments is UNIQUE on (user_id, role),
+    // NOT on user_id, so a user holding several grants made this read an ERROR
+    // that supabase-js resolves — and `roleResult.data` then read as null, losing
+    // the brokerage fallback and the brokerage NAME for exactly the busiest seats.
+    // The grant that speaks for the tenant is chosen below by the one shared
+    // precedence in lib/auth/role-grants.ts, never by row order.
     supabase
       .from("user_role_assignments")
       .select("id, role, brokerage_id, brokerages(id, name, slug)")
-      .eq("user_id", user.id)
-      .maybeSingle(),
+      .eq("user_id", user.id),
   ])
+
+  if (roleResult.error) {
+    console.error("[Auth] role grant read failed for user:", user.id, roleResult.error.message)
+  }
+  const tenantGrant = selectTenantGrant(roleResult.data ?? [])
 
   // Derive brokerage_id and user_type from canonical sources
   const brokerageId: string =
-    (usersResult.data?.brokerage_id ?? roleResult.data?.brokerage_id) ?? ""
+    (usersResult.data?.brokerage_id ?? tenantGrant?.brokerage_id) ?? ""
 
   const rawUserType: string =
     usersResult.data?.user_type ??
@@ -126,11 +137,13 @@ export async function getCurrentUserContext(): Promise<UserWithRole | null> {
   const roleName: Role = rawUserType as Role
   const capabilities: string[] = ROLE_CAPABILITIES[rawUserType] ?? ROLE_CAPABILITIES.agent
 
-  // Brokerage name from user_role_assignments join (optional enrichment)
-  const brokRecord = roleResult.data
-    ? (Array.isArray(roleResult.data.brokerages)
-        ? roleResult.data.brokerages[0]
-        : roleResult.data.brokerages)
+  // Brokerage name from user_role_assignments join (optional enrichment). Taken off
+  // the SAME grant that supplied brokerageId, so the id and the name can never
+  // describe two different brokerages.
+  const brokRecord = tenantGrant
+    ? (Array.isArray(tenantGrant.brokerages)
+        ? tenantGrant.brokerages[0]
+        : tenantGrant.brokerages)
     : null
 
   if (!brokerageId) {
@@ -142,7 +155,7 @@ export async function getCurrentUserContext(): Promise<UserWithRole | null> {
     email: user.email!,
     brokerageId,
     brokerageName: (brokRecord as any)?.name ?? "",
-    roleId: roleResult.data?.id ?? rawUserType,
+    roleId: tenantGrant?.id ?? rawUserType,
     roleName,
     capabilities,
     isPrimary: true,

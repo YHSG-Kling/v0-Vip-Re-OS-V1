@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge"
 import { getVendorBookings } from "@/app/actions/multi-persona"
 import { getVendorJobs } from "@/app/actions/vendor-portal"
 import { createClient } from "@/lib/supabase/server"
+import { readRoleGrants, selectVendorId } from "@/lib/auth/role-grants"
 import { redirect } from "next/navigation"
 import Link from "next/link"
 import { Wrench, Calendar, CheckCircle2, Clock, DollarSign, FileText, MessageSquare, Users } from "lucide-react"
@@ -20,17 +21,33 @@ export default async function VendorPortalDashboard({ searchParams }: { searchPa
   if (!user) redirect("/login")
 
   let vendorId = params.vendorId
+  let vendorLookupFailed = false
   if (!vendorId) {
-    // Look up vendor via user_role_assignments.vendor_id first
-    const { data: roleRow } = await supabase
-      .from("user_role_assignments")
-      .select("vendor_id")
-      .eq("user_id", user.id)
-      .not("vendor_id", "is", null)
-      .maybeSingle()
+    // Look up vendor via user_role_assignments.vendor_id first.
+    //
+    // This is the harder of the two shapes to spot: the failure of
+    // `.maybeSingle()` over several vendor-bearing grants did not just blank the
+    // page, it fell THROUGH to the email fallback below and resolved a vendor by
+    // matching on an email address. A silent read error was therefore quietly
+    // downgrading the identity check from a role grant to a string match.
+    const grantsResult = await readRoleGrants(supabase, user.id)
+    if (!grantsResult.ok) {
+      console.error("[portal/vendor] role grant read failed:", grantsResult.error)
+      vendorLookupFailed = true
+    }
+    const { vendorId: grantVendorId, ambiguous } = grantsResult.ok
+      ? selectVendorId(grantsResult.grants)
+      : { vendorId: null, ambiguous: false }
+    if (ambiguous) {
+      console.error("[portal/vendor] user", user.id, "is linked to more than one vendor")
+      vendorLookupFailed = true
+    }
 
-    if (roleRow?.vendor_id) {
-      vendorId = roleRow.vendor_id
+    if (grantVendorId) {
+      vendorId = grantVendorId
+    } else if (vendorLookupFailed) {
+      // Do NOT fall through to the email match on a failed or ambiguous grant
+      // read — that substitutes a weaker identity check for the one that broke.
     } else {
       // Fallback: match by email
       const { data: userRow } = await supabase
@@ -60,7 +77,11 @@ export default async function VendorPortalDashboard({ searchParams }: { searchPa
         <Card>
           <CardContent className="p-8 text-center">
             <Wrench className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
-            <p className="text-muted-foreground">No vendor profile found. Please contact your administrator.</p>
+            <p className="text-muted-foreground">
+              {vendorLookupFailed
+                ? "We could not verify your vendor account just now. Please refresh, or contact your administrator if this persists."
+                : "No vendor profile found. Please contact your administrator."}
+            </p>
           </CardContent>
         </Card>
       </div>

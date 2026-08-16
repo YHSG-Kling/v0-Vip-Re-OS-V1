@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server"
+import { readRoleGrants, selectAgentId, selectTenantBrokerageId, holdsAnyRole } from "@/lib/auth/role-grants"
 import { redirect } from "next/navigation"
 import Link from "next/link"
 import { Camera, QrCode, Home, TrendingUp, Eye, Zap, ArrowRight, Users, DollarSign, BarChart3 } from "lucide-react"
@@ -17,14 +18,21 @@ export default async function AcquisitionPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
-  // Resolve role + ids
-  const { data: roleRow } = await supabase
-    .from("user_role_assignments")
-    .select("role, agent_id, brokerage_id")
-    .eq("user_id", user.id)
-    .maybeSingle()
+  // Resolve role + ids.
+  //
+  // This page asked THREE different questions of one row, and a single-row read
+  // could not honestly answer any of them: user_role_assignments is UNIQUE on
+  // (user_id, role), NOT on user_id, so `.maybeSingle()` over a user with several
+  // grants is an ERROR that supabase-js resolves — and the `{ data: … }`
+  // destructuring turned it into role "agent", agentId "" and brokerageId "".
+  // MEASURED live: a user holding admin+agent+isa hit exactly that, and lost the
+  // admin panels they are entitled to along with every agent-scoped panel.
+  const grantsResult = await readRoleGrants(supabase, user.id)
+  if (!grantsResult.ok) {
+    console.error("[dashboard/acquisition] role grant read failed:", grantsResult.error)
+  }
+  const grants = grantsResult.ok ? grantsResult.grants : []
 
-  const role = roleRow?.role ?? "agent"
   // NOT `?? user.id` (m348). business_card_scans.agent_id and qr_codes.agent_id
   // both FK agents, so the users id matched nothing — the substitution bought
   // an identical empty result with an ambiguous id attached to it.
@@ -33,9 +41,27 @@ export default async function AcquisitionPage() {
   // admin legitimately has no agents row and this page still works for them
   // through the brokerage branch below. The agent-scoped panels are empty for
   // them either way, which is pre-existing and not this change's business.
-  const agentId = roleRow?.agent_id ?? ""
-  const brokerageId = roleRow?.brokerage_id ?? ""
-  const isAdminOrBroker = ["admin", "broker", "superadmin"].includes(role)
+  //
+  // Only a grant that actually CARRIES an agent_id can supply it — naming "the"
+  // grant first and reading agent_id off it would throw away a real agent linkage
+  // whenever another grant sorted ahead of it. And `find` would still let row order
+  // settle a tie: public.agents is UNIQUE (user_id), so two distinct agent ids on
+  // one user's grants is a data fault, and resolving it either way would show this
+  // page another agent's scans, QR codes and production as if they were this
+  // user's. selectAgentId reports it and yields nothing, which this page already
+  // handles — the agent-scoped panels come back empty, as they do for an admin
+  // with no agents row.
+  const { agentId: grantAgentId, ambiguous: agentAmbiguous } = selectAgentId(grants)
+  if (agentAmbiguous) {
+    console.error("[dashboard/acquisition] user", user.id, "holds grants naming more than one agent")
+  }
+  const agentId = grantAgentId ?? ""
+  const brokerageId = selectTenantBrokerageId(grants) ?? ""
+  // "Does this user hold an admin-ish role?" is a question about the SET of grants,
+  // not about one chosen grant. Under the seat model a single user legitimately
+  // carries admin alongside agent; comparing one picked role name against this list
+  // would deny the admin panels to the very users who most need them.
+  const isAdminOrBroker = holdsAnyRole(grants, ["admin", "broker", "superadmin"])
 
   const startOfMonth = new Date()
   startOfMonth.setDate(1)

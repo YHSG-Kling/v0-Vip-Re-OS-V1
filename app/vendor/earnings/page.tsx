@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getVendorEarningsSummary, completeStripeConnectOnboarding } from "@/app/actions/vendor-payments"
 import { readVendorStripeConnect } from "@/lib/connections/vendor-stripe"
+import { readRoleGrants, selectVendorId } from "@/lib/auth/role-grants"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -59,17 +60,24 @@ export default async function VendorEarningsPage({
   // both failed their actor gate. `vendors` has no user_id — the canonical linkage
   // is `user_role_assignments.vendor_id`, which is what every other /vendor page
   // (dashboard, invoices, documents, connections, portfolio, reviews) already uses.
-  const { data: ra, error: raErr } = await supabase
-    .from("user_role_assignments")
-    .select("vendor_id")
-    .eq("user_id", user.id)
-    .not("vendor_id", "is", null)
-    .maybeSingle()
+  //
+  // The error was already checked here; what was still wrong is that the read
+  // could only ever succeed for a user with exactly ONE vendor-bearing grant.
+  // user_role_assignments is UNIQUE on (user_id, role), so a vendor who also holds
+  // a second vendor-bearing grant makes `.maybeSingle()` a guaranteed error — and
+  // this page then shows the outage banner to someone whose account is fine.
+  const grantsResult = await readRoleGrants(supabase, user.id)
+  if (!grantsResult.ok) {
+    console.error("[vendor/earnings] role grant read failed:", grantsResult.error)
+  }
+  const { vendorId: resolvedVendorId, ambiguous } = grantsResult.ok
+    ? selectVendorId(grantsResult.grants)
+    : { vendorId: null, ambiguous: false }
 
   // supabase-js resolves a REFUSED read, so `data` alone reads "denied" as
   // "no vendor". Surface the failure instead of telling a real vendor they have
   // no profile.
-  if (raErr) {
+  if (!grantsResult.ok) {
     return (
       <div className="p-6 text-center text-muted-foreground">
         <p>Could not load your vendor account. Please refresh, or contact support if this persists.</p>
@@ -80,12 +88,16 @@ export default async function VendorEarningsPage({
     )
   }
 
-  const vendorId = (ra?.vendor_id as string | null) ?? null
+  const vendorId = resolvedVendorId
 
   if (!vendorId) {
     return (
       <div className="p-6 text-center text-muted-foreground">
-        <p>Vendor profile not found.</p>
+        <p>
+          {ambiguous
+            ? "Your account is linked to more than one vendor — ask the brokerage to correct it."
+            : "Vendor profile not found."}
+        </p>
         <Link href="/vendor/dashboard">
           <Button variant="link">Back to Dashboard</Button>
         </Link>

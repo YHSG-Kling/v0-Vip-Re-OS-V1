@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
+import { readRoleGrants, selectAgentId, selectPrimaryRole, selectTenantBrokerageId } from "@/lib/auth/role-grants"
 import { resolveActiveImpersonation } from "@/lib/platform/impersonation"
 
 export interface AgentContext {
@@ -71,40 +72,68 @@ export async function getAgentContext(): Promise<AgentContext> {
       return UNAUTHENTICATED_CONTEXT
     }
 
-    // Fetch users row + role assignments in parallel.
-    // Both use maybeSingle() / array — never throw on missing rows.
-    const [{ data: userData }, { data: rolesData }] = await Promise.all([
+    // Fetch users row + role assignments in parallel. Neither throws on a missing
+    // row; the grant read returns a discriminated result so a REFUSED read stays
+    // distinguishable from a seat that genuinely holds no grants.
+    const [{ data: userData }, rolesResult] = await Promise.all([
       supabase
         .from("users")
         .select("id, brokerage_id, user_type, platform_role, team_id")
         .eq("id", user.id)
         .maybeSingle(),
-      supabase
-        .from("user_role_assignments")
-        .select("brokerage_id, role, agent_id")
-        .eq("user_id", user.id)
-        .limit(1),
+      // NOT `.limit(1)`. A seat legitimately holds several grants (the table is
+      // UNIQUE on (user_id, role), not on user_id), and taking the first of them
+      // with no ORDER BY let PostgREST's row order decide this user's TENANT, their
+      // role and their agent linkage — three different answers, all from one row
+      // chosen for no reason, and free to change between two identical requests.
+      // Read them all; each of the three is derived by its own rule below.
+      readRoleGrants(supabase, user.id),
     ])
 
-    const firstRole = rolesData?.[0]
+    if (!rolesResult.ok) {
+      console.error("[get-agent-context] role grant read failed:", rolesResult.error)
+    }
+    const grants = rolesResult.ok ? rolesResult.grants : []
 
-    // Source priority: users.user_type > role_assignments.role > auth metadata > 'agent'
+    // Source priority: users.user_type > role_assignments.role > auth metadata > 'agent'.
+    // The seat's own declared identity still wins; the grant half is now chosen by
+    // explicit authority order rather than by row order.
     const userType: string =
       userData?.user_type ??
-      firstRole?.role ??
+      selectPrimaryRole(grants) ??
       (user.user_metadata?.user_type as string | undefined) ??
       "agent"
 
-    // brokerageId: users table > role assignments > auth metadata > null
+    // brokerageId: users table > role assignments > auth metadata > null.
+    // An untenanted grant (contact/lender, brokerage_id NULL) can no longer win and
+    // blank the tenant — selectTenantBrokerageId skips those by construction.
     const brokerageId: string | null =
       userData?.brokerage_id ??
-      firstRole?.brokerage_id ??
+      selectTenantBrokerageId(grants) ??
       (user.user_metadata?.brokerage_id as string | undefined) ??
       null
 
-    // agentId: role assignments > agents table lookup (only for agent-type users)
-    let agentId: string | null = firstRole?.agent_id ?? null
-    if (!agentId && userType === "agent") {
+    // agentId: role assignments > agents table lookup (only for agent-type users).
+    // Only a grant that actually CARRIES an agent_id can supply it — picking "the"
+    // grant first and reading agent_id off it discards a real agent linkage
+    // whenever another grant happens to sort ahead of it.
+    //
+    // And it must not be `grants.find(g => g.agent_id)` either. `public.agents` is
+    // UNIQUE (user_id), so one user's grants can only correctly carry ONE distinct
+    // agent_id; two different ones is a provable data fault, and `find` would settle
+    // it by row order — handing this request someone else's production and
+    // commissions under this user's identity. selectAgentId REPORTS that instead.
+    const { agentId: grantAgentId, ambiguous: agentAmbiguous } = selectAgentId(grants)
+    if (agentAmbiguous) {
+      console.error(
+        "[get-agent-context] user", user.id,
+        "holds grants naming more than one agent — resolving from public.agents, which is UNIQUE (user_id)",
+      )
+    }
+    let agentId: string | null = grantAgentId
+    // On ambiguity the authoritative table decides regardless of userType: agents
+    // is unique on user_id, so it can answer what the grants could not.
+    if (!agentId && (userType === "agent" || agentAmbiguous)) {
       const { data: agentRow } = await supabase
         .from("agents")
         .select("id")

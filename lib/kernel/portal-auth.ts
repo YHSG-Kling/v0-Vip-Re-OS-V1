@@ -159,18 +159,36 @@ export async function requireVendorActor(claimedVendorId: string): Promise<Vendo
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new PortalAuthError("Not authenticated")
 
-  const { data: row } = await supabase
+  // "Does this user hold ANY grant against the claimed vendor?" — an EXISTENCE
+  // question, and (user_id, vendor_id) is not a unique key: the table is UNIQUE on
+  // (user_id, role), so one user may hold e.g. both `vendor` and `title_agent`
+  // against the same vendor. `.maybeSingle()` over those two rows is an ERROR, and
+  // this gate — reading `data` alone — refused a legitimately linked vendor with
+  // "your account does not have a vendor role for this vendor". A gate must never
+  // speak a refused read as a settled denial.
+  const { data: rows, error } = await supabase
     .from("user_role_assignments")
     .select("user_id, vendor_id, brokerage_id, role")
     .eq("user_id", user.id)
     .eq("vendor_id", claimedVendorId)
-    .maybeSingle()
 
-  if (!row) {
+  if (error) {
+    throw new PortalAuthError("Could not verify your vendor access just now — please try again")
+  }
+
+  if (!rows || rows.length === 0) {
     throw new PortalAuthError(
       "Not authorized for this vendor — your account does not have a vendor role for this vendor",
     )
   }
+
+  // All these rows describe the SAME vendor; the only thing to choose between them
+  // is the brokerage scope, and a grant that carries one is strictly better than a
+  // grant that does not. Ordered by role name so the choice is stable rather than
+  // whatever the plan returned.
+  const row =
+    [...rows].sort((a, b) => String(a.role ?? "").localeCompare(String(b.role ?? "")))
+      .find((r) => r.brokerage_id) ?? rows[0]
 
   if (!row.brokerage_id) {
     throw new PortalAuthError("Vendor role is missing a brokerage scope")

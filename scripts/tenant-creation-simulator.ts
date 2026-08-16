@@ -153,8 +153,10 @@ async function liveLayer() {
 
       const { data: agentRow } = await svc.from("agents").select("id").eq("user_id", owner.userId!).maybeSingle()
       check(`live[${tier}]: agents row present === spec`, !!agentRow === requiresAgentRow("admin", tier))
-      const { data: roleRow } = await svc.from("user_role_assignments").select("id").eq("user_id", owner.userId!).maybeSingle()
-      check(`live[${tier}]: role assignment written (onConflict fix)`, !!roleRow)
+      // Existence, over ROWS — `.maybeSingle()` here would start erroring the day
+      // provisioning writes an owner a second grant, and report the write missing.
+      const { data: roleRows } = await svc.from("user_role_assignments").select("id").eq("user_id", owner.userId!)
+      check(`live[${tier}]: role assignment written (onConflict fix)`, (roleRows?.length ?? 0) > 0)
       const { data: onbRow } = await svc.from("agent_onboarding").select("id").eq("user_id", owner.userId!).maybeSingle()
       check(`live[${tier}]: onboarding row present === agent-scoped spec`, !!onbRow === requiresAgentRow("admin", tier))
       if (tier === "team") {

@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { readRoleGrants, selectPrimaryRole, selectTenantBrokerageId, selectVendorId } from "@/lib/auth/role-grants"
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { NextRequest, NextResponse } from "next/server"
@@ -33,22 +34,36 @@ export async function POST(req: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
-  // Resolve role, brokerage, vendor_id
-  const { data: roleRow } = await supabase
-    .from("user_role_assignments")
-    .select("role, brokerage_id, vendor_id")
-    .eq("user_id", user.id)
-    .limit(1)
-    .maybeSingle()
-  const { data: userData } = await supabase
-    .from("users")
-    .select("role, brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
+  // Resolve role, brokerage, vendor_id.
+  //
+  // WAS one `.limit(1).maybeSingle()` row asked for all three — the fail-ARBITRARY
+  // shape. With no ORDER BY the "chosen" grant is whatever the plan returned, so a
+  // multi-role seat could get its role, its TENANT and its vendor id from a row
+  // picked at random, and get different answers on the next request. Each of the
+  // three is now derived from the whole grant set by its own rule.
+  const [grantsResult, { data: userData }] = await Promise.all([
+    readRoleGrants(supabase, user.id),
+    supabase.from("users").select("role, brokerage_id").eq("id", user.id).maybeSingle(),
+  ])
+  if (!grantsResult.ok) {
+    console.error("[ai-note] role grant read failed:", grantsResult.error)
+  }
+  const grants = grantsResult.ok ? grantsResult.grants : []
 
-  const role = (roleRow?.role ?? userData?.role ?? "agent").toLowerCase()
-  const brokerageId = (roleRow?.brokerage_id ?? userData?.brokerage_id) as string
-  const vendorId = (roleRow?.vendor_id ?? null) as string | null
+  // ONE role is genuinely required here — it names the writer in the system prompt
+  // and picks which extra note type is offered. The seat's own declared identity
+  // (users.role) wins when the user actually holds a grant for it; otherwise
+  // authority order decides, the same way on every call.
+  const role = (selectPrimaryRole(grants, userData?.role as string | null) ?? userData?.role ?? "agent").toLowerCase()
+  // Tenant: same grant-then-profile precedence as before, but the grant half is now
+  // chosen by explicit authority order instead of by row order, and an untenanted
+  // grant (contact/lender, brokerage_id NULL) can no longer win and blank it.
+  const brokerageId = (selectTenantBrokerageId(grants) ?? userData?.brokerage_id) as string
+  // Vendor: single-valued, and reported rather than guessed if it is not.
+  const { vendorId, ambiguous: vendorAmbiguous } = selectVendorId(grants)
+  if (vendorAmbiguous) {
+    console.error("[ai-note] user", user.id, "is linked to more than one vendor — vendor note targets suppressed")
+  }
 
   const body = await req.json()
   const { action } = body as { action: string }

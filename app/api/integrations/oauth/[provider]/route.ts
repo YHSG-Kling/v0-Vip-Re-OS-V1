@@ -14,6 +14,7 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { PROVIDER_METADATA, type ProviderName } from "@/lib/onboarding/integration-tester"
 import { connectionScopeForUserType } from "@/lib/connections/field-spec"
+import { readRoleGrants, selectVendorGrant } from "@/lib/auth/role-grants"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -498,15 +499,27 @@ export async function GET(
     let brokerageId: string | null = (userData?.brokerage_id as string | null) ?? null
 
     if (scope === "vendor") {
-      // canonical vendor linkage: user_role_assignments.vendor_id (vendors has no user_id)
-      const { data: ra } = await supabase
-        .from("user_role_assignments")
-        .select("vendor_id, brokerage_id")
-        .eq("user_id", user.id)
-        .not("vendor_id", "is", null)
-        .maybeSingle()
-      ownerId = (ra?.vendor_id as string | null) ?? null
-      brokerageId = brokerageId ?? ((ra?.brokerage_id as string | null) ?? null)
+      // canonical vendor linkage: user_role_assignments.vendor_id (vendors has no user_id).
+      //
+      // This resolves the OWNER that the OAuth tokens will be stored under, so a
+      // wrong or missing answer here misfiles a vendor's own calendar/email
+      // credentials. `.maybeSingle()` over the vendor-bearing grants ERRORS the
+      // moment there are two (the table is UNIQUE on (user_id, role), not user_id)
+      // and the discarded error read as "no vendor" → the flow aborted with
+      // "Could not resolve your account for this connection" for a real vendor.
+      const grantsResult = await readRoleGrants(supabase, user.id)
+      if (!grantsResult.ok) {
+        console.error("[OAuth] role grant read failed:", grantsResult.error)
+        return redirectWithResult(baseUrl, false, provider, "Could not verify your vendor account — please try again")
+      }
+      const { grant: vendorGrant, ambiguous } = selectVendorGrant(grantsResult.grants)
+      if (ambiguous) {
+        return redirectWithResult(baseUrl, false, provider, "Your account is linked to more than one vendor — ask the brokerage to correct it")
+      }
+      ownerId = vendorGrant?.vendor_id ?? null
+      // The tenant anchor comes off the SAME grant that supplied the owner, so the
+      // credential can never be filed under one vendor and one other tenant.
+      brokerageId = brokerageId ?? (vendorGrant?.brokerage_id ?? null)
     } else if (scope === "contact") {
       const { data: c } = await supabase.from("contacts").select("id, brokerage_id").eq("contact_user_id", user.id).maybeSingle()
       ownerId = (c?.id as string | null) ?? null

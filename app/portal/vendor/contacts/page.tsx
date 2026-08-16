@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge"
 import { Users, Phone, Mail, Building2, Lock } from "lucide-react"
 import { listVendorAssignedContactsAction } from "@/app/actions/vendor-contact-access"
 import { createClient } from "@/lib/supabase/server"
+import { readRoleGrants, selectVendorId } from "@/lib/auth/role-grants"
 import { redirect } from "next/navigation"
 import { ContactMessagePanel } from "./contact-message-panel"
 
@@ -25,13 +26,19 @@ export default async function VendorContactsPage() {
 
   // Resolve the calling vendor's own id so the message panel can address the
   // vendor↔contact thread (same role-assignment lookup the list action uses).
-  const { data: roleRow } = await supabase
-    .from("user_role_assignments")
-    .select("vendor_id")
-    .eq("user_id", user.id)
-    .not("vendor_id", "is", null)
-    .maybeSingle()
-  const vendorId = (roleRow?.vendor_id as string | null) ?? null
+  //
+  // It must resolve the vendor the SAME way the list action does — that action
+  // already reads every grant and chooses (app/actions/vendor-contact-access.ts).
+  // Leaving this page on `.maybeSingle()` meant the two could disagree for a user
+  // with two vendor-bearing grants: the list would render its contacts while the
+  // message panel silently vanished, with no error anywhere to explain it.
+  const grantsResult = await readRoleGrants(supabase, user.id)
+  if (!grantsResult.ok) {
+    console.error("[portal/vendor/contacts] role grant read failed:", grantsResult.error)
+  }
+  const { vendorId } = grantsResult.ok
+    ? selectVendorId(grantsResult.grants)
+    : { vendorId: null }
 
   const r = await listVendorAssignedContactsAction()
   if (!r.ok) {

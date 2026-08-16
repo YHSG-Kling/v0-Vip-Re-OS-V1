@@ -5,6 +5,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { BUYER_CRITERIA_SELECT } from "@/lib/buyer-search/buyer-criteria"
 import { generateBuyerPredictions } from "@/lib/behavior-learning/prediction-engine"
 import { updateBuyerPreferences }   from "@/lib/behavior-learning/preference-updater"
+import { readRoleGrants, selectTenantBrokerageId } from "@/lib/auth/role-grants"
 
 export interface BuyerInsights {
   preferences: {
@@ -59,14 +60,20 @@ async function getBrokerageId(authUserId: string): Promise<string> {
     .maybeSingle()
   if (userRow?.brokerage_id) return userRow.brokerage_id
 
-  // Fallback: try user_role_assignments
-  const { data: uraRow } = await svc
-    .from("user_role_assignments")
-    .select("brokerage_id")
-    .eq("user_id", authUserId)
-    .limit(1)
-    .maybeSingle()
-  return uraRow?.brokerage_id ?? ""
+  // Fallback: try user_role_assignments.
+  //
+  // WAS `.limit(1).maybeSingle()` with no ORDER BY — the fail-ARBITRARY shape. It
+  // never errors, which is what made it dangerous: PostgREST returns rows in
+  // whatever order the plan produced, so the TENANT this whole insights surface is
+  // scoped to could differ between two runs of the same code, and the row that won
+  // might be an untenanted `contact` grant whose brokerage_id is NULL. Row order
+  // must never decide a tenant. Read every grant and choose by explicit precedence.
+  const grantsResult = await readRoleGrants(svc, authUserId)
+  if (!grantsResult.ok) {
+    console.error("[buyer-insights] role grant read failed:", grantsResult.error)
+    return ""
+  }
+  return selectTenantBrokerageId(grantsResult.grants) ?? ""
 }
 
 export async function getBuyerInsights(

@@ -37,7 +37,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
 import { requiresAgentRow } from "./tenant-provisioning-spec"
 import { ROLE_DASHBOARD_ROUTES } from "./role-routes"
-import { readRoleGrants } from "@/lib/auth/role-grants"
+import { readRoleGrants, selectAgentId } from "@/lib/auth/role-grants"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -170,12 +170,40 @@ export async function createOrRepairUserDomainRecords(
     const { userId, userType, brokerageId, teamId, tier, callerUserId } = params
 
     // ── 1. user_role_assignments ──────────────────────────────────────────
-    // Write canonical RBAC join row for ALL roles
-    const { data: existingRole } = await service
+    // Does the grant this run is about to write ALREADY exist?
+    //
+    // This read does NOT choose insert-vs-update — step 5 below is an upsert and
+    // decides that itself, in the database, on the real unique key. The only thing
+    // this answers is whether "user_role_assignments" belongs in `created`, which
+    // in turn picks USER_DOMAIN_RECORDS_CREATED vs …_REPAIRED on the lifecycle
+    // event. So the question is narrow and exact: is there already a grant for
+    // (this user, THIS role)?
+    //
+    // WAS: `.eq("user_id", userId).maybeSingle()` with no role filter — which asks
+    // "does this user hold any grant at all?", a different question, and one that
+    // cannot be answered by a single-row read: the table is UNIQUE on
+    // (user_id, role), NOT on user_id. MEASURED live, one user holds three grants
+    // (admin+agent+isa) and another holds two (contact+team_lead); over several
+    // rows `.maybeSingle()` is an ERROR, supabase-js RESOLVES it, and the
+    // `{ data: … }` destructuring threw the error away. Every provisioning run for
+    // those users therefore reported a brand-new grant it had not created, and
+    // emitted CREATED where the truth was REPAIRED.
+    //
+    // Adding `.eq("role", …)` makes the read single-row BY THE CONSTRAINT, not by
+    // a `.limit(1)` that would merely hide the ambiguity. `agent_id` came out of
+    // the select because nothing read it.
+    const { data: existingRole, error: existingRoleErr } = await service
       .from("user_role_assignments")
-      .select("id, agent_id")
+      .select("id")
       .eq("user_id", userId)
+      .eq("role", userType)
       .maybeSingle()
+
+    // A refused read must not masquerade as "no grant yet" — that is how a repair
+    // run comes to announce itself as a first-time provision.
+    if (existingRoleErr) {
+      console.error("[kernel/users] existing role-grant probe failed:", existingRoleErr.message)
+    }
 
     // ── 2. agents row — AGENT_ROLES + solo/team tenant OWNER ─────────────
     if (requiresAgentRow(userType, tier) && brokerageId) {
@@ -302,7 +330,7 @@ export async function createOrRepairUserDomainRecords(
 
     // ── 5. user_role_assignments — upsert canonical RBAC row ─────────────
     if (brokerageId) {
-      await service
+      const { data: upserted, error: upsertErr } = await service
         .from("user_role_assignments")
         .upsert(
           {
@@ -318,8 +346,25 @@ export async function createOrRepairUserDomainRecords(
           // alone matches no unique index and throws 42P10 at runtime.
           { onConflict: "user_id,role" }
         )
+        // supabase-js RESOLVES a failed write, and a row refused by RLS comes back
+        // as error:null with nothing written. Selecting the id turns both into
+        // something this function can actually see.
+        .select("id")
 
-      if (!existingRole) created.push("user_role_assignments")
+      if (upsertErr || (upserted?.length ?? 0) === 0) {
+        return {
+          success: false,
+          agentId,
+          coordinatorId,
+          domainRecordsCreated: created,
+          error: upsertErr?.message ?? "role grant upsert wrote no row",
+        }
+      }
+
+      // Only claim a creation when the probe SUCCEEDED and found nothing. A failed
+      // probe leaves `existingRole` null too, and reporting that as a creation is
+      // the same conflation this pass exists to remove.
+      if (!existingRoleErr && !existingRole) created.push("user_role_assignments")
     }
 
     // ── 6. Emit lifecycle event ───────────────────────────────────────────
@@ -397,7 +442,17 @@ export async function resolveUserWorkspaceContext(userId: string): Promise<Works
   // Only a grant that actually carries an agent_id can stand in for the agents row;
   // picking "the" grant first and then reading agent_id off it would discard a real
   // agent linkage whenever another grant happened to sort ahead of it.
-  const agentGrantId = roleGrants.find((g) => g.agent_id)?.agent_id ?? null
+  //
+  // And `find` is not enough either: public.agents is UNIQUE (user_id), so one
+  // user's grants can only correctly name ONE agent, and two different ones is a
+  // provable data fault that `find` would settle by row order. selectAgentId
+  // reports it instead — and here the authoritative `agentData` (read straight off
+  // agents by user_id) is already preferred, so a reported fault simply leaves the
+  // fallback unused rather than substituting another agent's identity.
+  const { agentId: agentGrantId, ambiguous: agentGrantAmbiguous } = selectAgentId(roleGrants)
+  if (agentGrantAmbiguous) {
+    console.error("[kernel/users] user", userId, "holds grants naming more than one agent")
+  }
   const agentId    = agentData?.id ?? agentGrantId
   const coordinatorId = tcData?.id ?? null
 

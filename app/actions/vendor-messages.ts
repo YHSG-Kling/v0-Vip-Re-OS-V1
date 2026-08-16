@@ -22,14 +22,23 @@ async function callerOwnsVendor(
   userId: string,
   vendorId: string,
 ): Promise<boolean> {
-  const { data } = await supabase
+  // EXISTENCE, over rows. (user_id, vendor_id) is NOT a unique key — the table is
+  // UNIQUE on (user_id, role) — so a caller holding two grants against the same
+  // vendor produced two rows. `.limit(1)` kept that from erroring, but only by
+  // picking one row at random to prove a question that is about the SET; and the
+  // discarded `error` meant a REFUSED read was indistinguishable from "does not
+  // own this vendor". Counting rows answers the real question, and the refusal is
+  // now reported rather than quietly denied.
+  const { data, error } = await supabase
     .from("user_role_assignments")
     .select("id")
     .eq("user_id", userId)
     .eq("vendor_id", vendorId)
-    .limit(1)
-    .maybeSingle()
-  return !!data
+  if (error) {
+    console.error("[vendor-messages] vendor ownership read failed:", error.message)
+    return false
+  }
+  return (data?.length ?? 0) > 0
 }
 
 export interface SendVendorMessageInput {

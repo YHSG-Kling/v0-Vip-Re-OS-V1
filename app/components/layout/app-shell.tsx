@@ -7,7 +7,7 @@ import { useAuth } from '@/lib/auth/client'
 import { Sidebar } from './sidebar'
 import { Header } from './header'
 import { MobileBottomNav } from './mobile-bottom-nav'
-import { getNavigationForRole } from '@/app/config/navigation-config'
+import { getNavigationForRole, resolvePrimaryRole } from '@/app/config/navigation-config'
 import { Loader2, X } from 'lucide-react'
 import { InternalAIAssistant } from '@/app/components/shared/internal-ai-assistant'
 import { PageContextAssistant } from '@/app/components/shared/page-context-assistant'
@@ -132,8 +132,20 @@ export function AppShell({ children }: AppShellProps) {
 
   // userContext should always be set when user is set (after useAuth fix).
   // Fallback to 'agent' role if it ever arrives null to prevent crash.
-  const primaryRole = userContext?.roles?.[0] ?? 'agent'
-  const navigation = getNavigationForRole(primaryRole)
+  // EVERY role this person holds, not the first one.
+  //
+  // This used to read `userContext?.roles?.[0]`. The roles array comes from
+  // user_role_assignments, which is UNIQUE on (user_id, role) and returns rows
+  // in no particular order — so `[0]` was an ARBITRARY pick, and the second seat
+  // of a solo tenant (the user carrying transactions, compliance, support, admin
+  // and marketing) saw exactly one of those surfaces, chosen by the planner.
+  // getNavigationForRole now merges them in a fixed precedence.
+  const heldRoles: UserContext['roles'] =
+    userContext?.roles?.length ? userContext.roles : (['agent'] as UserContext['roles'])
+  const navigation = getNavigationForRole(heldRoles)
+  // Where a surface genuinely needs ONE role name, it comes from the shared
+  // precedence — never from heldRoles[0], which is unordered.
+  const primaryRole = resolvePrimaryRole(heldRoles)
 
   // Build a safe userContext for components — if null, create a minimal one
   const safeUserContext = userContext ?? {
@@ -141,11 +153,14 @@ export function AppShell({ children }: AppShellProps) {
     email: user.email ?? '',
     firstName: '',
     lastName: '',
-    roles: [primaryRole],
+    roles: heldRoles,
   }
 
   // Only staff roles may see the Internal AI Assistant
-  const showAIAssistant = STAFF_AI_ROLES.has(primaryRole?.toLowerCase?.() ?? '')
+  // ANY staff role qualifies. Testing only the primary role hid the assistant
+  // from a multi-role user whose precedence-winning role happened not to be on
+  // the staff-AI list, even though another role they hold is.
+  const showAIAssistant = heldRoles.some((r) => STAFF_AI_ROLES.has(String(r).toLowerCase()))
 
   return (
     <ShellProvider>
