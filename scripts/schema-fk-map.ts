@@ -659,6 +659,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "tenant_sso_connections": { "brokerage_id": "brokerages", "created_by": "users" },
   "tenant_webhook_deliveries": { "brokerage_id": "brokerages", "subscription_id": "tenant_webhook_subscriptions" },
   "tenant_webhook_subscriptions": { "brokerage_id": "brokerages", "created_by": "users" },
+  "team_cap_tracking": { "brokerage_id": "brokerages", "team_id": "teams", "agent_id": "agents" },
   "territory_metrics": { "brokerage_id": "brokerages" },
   "thank_you_note_templates": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "thank_you_notes": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "email_queue_id": "email_queue", "template_id": "thank_you_note_templates", "transaction_id": "transactions" },
