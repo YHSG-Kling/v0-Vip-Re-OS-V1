@@ -19,6 +19,7 @@ import {
   bookMarketingService,
   getMarketingPackageServices,
   getSyndicationStatus,
+  getVendorRecommendations,
   syncListingToPlatforms,
 } from "@/app/actions/marketing-package-automation"
 import {
@@ -63,6 +64,25 @@ interface BookedService {
   vendor: { company_name: string | null } | null
 }
 
+/**
+ * One row of the ranked bench behind a Book button. Every field comes from
+ * getVendorRecommendations, which ranks on the SAME published rules the
+ * automation books with — so this list is the order it would actually pick in,
+ * not a second opinion.
+ */
+interface VendorCandidate {
+  id: string
+  name: string | null
+  rating: number | null
+  preferred: boolean | null
+  estimated_turnaround_days: number | null
+  score: number
+  measured: string[]
+  unmeasured: string[]
+  autoBookable: boolean
+  autoBookBlockedReason: string | null
+}
+
 interface SyndicationRow {
   id: string
   platform_name: string | null
@@ -84,6 +104,14 @@ export function MarketingPackagePanel({ transactionId, activePackage }: Marketin
   const [servicesLoading, setServicesLoading] = useState(false)
   const [bookingService, setBookingService] = useState<string | null>(null)
   const [bookError, setBookError] = useState<string | null>(null)
+
+  // The ranked bench behind a Book button, per service type. An agent used to
+  // click Book and receive whoever the automation chose, with no sight of who
+  // else was considered or why. Keyed by service type so opening one does not
+  // discard another.
+  const [candidates, setCandidates] = useState<Record<string, VendorCandidate[]>>({})
+  const [candidatesLoading, setCandidatesLoading] = useState<string | null>(null)
+  const [openCandidates, setOpenCandidates] = useState<string | null>(null)
 
   // Portal syndication tracking, initialised by activation. Nothing showed it.
   const [syndication, setSyndication] = useState<SyndicationRow[]>([])
@@ -120,6 +148,26 @@ export function MarketingPackagePanel({ transactionId, activePackage }: Marketin
 
   const bookedTypes = new Set(services.map((s) => s.service_type).filter(Boolean) as string[])
   const unbookedServices = (activePackage?.included_services ?? []).filter((s) => !bookedTypes.has(s))
+
+  /**
+   * Load (or collapse) the bench for one service. The result is cached per
+   * service type: the ranking is deterministic and the bench does not change
+   * between two clicks, so re-fetching would only add latency.
+   */
+  const toggleCandidates = (serviceType: string) => {
+    if (openCandidates === serviceType) { setOpenCandidates(null); return }
+    setOpenCandidates(serviceType)
+    if (candidates[serviceType] || !transactionId) return
+    setCandidatesLoading(serviceType)
+    void (async () => {
+      try {
+        const rows = await getVendorRecommendations(serviceType, transactionId)
+        setCandidates((prev) => ({ ...prev, [serviceType]: (rows ?? []) as unknown as VendorCandidate[] }))
+      } finally {
+        setCandidatesLoading(null)
+      }
+    })()
+  }
 
   const handleBook = (serviceType: string) => {
     if (!packageId || !transactionId) return
@@ -294,20 +342,92 @@ export function MarketingPackagePanel({ transactionId, activePackage }: Marketin
                 {unbookedServices.length > 0 ? (
                   <div className="space-y-2">
                     <p className="text-xs font-medium text-muted-foreground">Not booked yet</p>
-                    <div className="flex flex-wrap gap-2">
+                    <div className="space-y-2">
                       {unbookedServices.map((s) => (
-                        <Button
-                          key={s}
-                          size="sm"
-                          variant="outline"
-                          disabled={isPending && bookingService === s}
-                          onClick={() => handleBook(s)}
-                        >
-                          {isPending && bookingService === s && (
-                            <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                        <div key={s} className="rounded-lg border p-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={isPending && bookingService === s}
+                              onClick={() => handleBook(s)}
+                            >
+                              {isPending && bookingService === s && (
+                                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                              )}
+                              Book {prettyService(s)}
+                            </Button>
+                            {/* Booking used to be the only affordance here, so the
+                                choice of vendor was invisible until after it was
+                                made. This shows the same ranking the automation
+                                books with, BEFORE the click. */}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => toggleCandidates(s)}
+                            >
+                              {openCandidates === s ? "Hide" : "Who would be booked?"}
+                            </Button>
+                          </div>
+
+                          {openCandidates === s && (
+                            <div className="mt-2 space-y-1.5 border-t pt-2">
+                              {candidatesLoading === s ? (
+                                <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> Reading the bench…
+                                </p>
+                              ) : (candidates[s] ?? []).length === 0 ? (
+                                <p className="text-xs text-muted-foreground">
+                                  No approved vendor on this brokerage&apos;s bench handles{" "}
+                                  {prettyService(s).toLowerCase()}. Booking it will say the same.
+                                </p>
+                              ) : (
+                                <>
+                                  {(candidates[s] ?? []).map((v, i) => (
+                                    <div key={v.id} className="flex flex-wrap items-baseline justify-between gap-2">
+                                      <div className="min-w-0">
+                                        <p className="text-xs font-medium">
+                                          {i + 1}. {v.name ?? "Unnamed vendor"}
+                                          {v.preferred === true && (
+                                            <Badge variant="secondary" className="ml-2">Preferred</Badge>
+                                          )}
+                                          {i === 0 && v.autoBookable && (
+                                            <Badge variant="outline" className="ml-2">Would be booked</Badge>
+                                          )}
+                                        </p>
+                                        <p className="text-[11px] text-muted-foreground">
+                                          {v.rating !== null ? `Rated ${v.rating.toFixed(1)}` : "Unrated"}
+                                          {v.estimated_turnaround_days !== null
+                                            ? ` · ~${v.estimated_turnaround_days}d turnaround`
+                                            : " · turnaround unknown"}
+                                        </p>
+                                        {/* The honest half: what the ranking could
+                                            NOT weigh on this row. A blank column
+                                            scores nothing and says so, rather than
+                                            defaulting to a flattering number. */}
+                                        {v.unmeasured.length > 0 && (
+                                          <p className="text-[11px] text-muted-foreground">
+                                            Not counted (no value on record):{" "}
+                                            {v.unmeasured.map((u) => u.replace(/_/g, " ")).join(", ")}
+                                          </p>
+                                        )}
+                                        {v.autoBookBlockedReason && (
+                                          <p className="text-[11px] text-muted-foreground">
+                                            {v.autoBookBlockedReason}
+                                          </p>
+                                        )}
+                                      </div>
+                                    </div>
+                                  ))}
+                                  <p className="text-[11px] text-muted-foreground">
+                                    Ranked on rating, your preferred flag, your display order and
+                                    turnaround — the same rules the automation books with.
+                                  </p>
+                                </>
+                              )}
+                            </div>
                           )}
-                          Book {prettyService(s)}
-                        </Button>
+                        </div>
                       ))}
                     </div>
                   </div>

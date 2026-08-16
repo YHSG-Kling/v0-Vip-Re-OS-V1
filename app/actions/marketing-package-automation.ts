@@ -15,6 +15,8 @@ import {
   getPackageDisplayName,
 } from "@/lib/marketing/package-catalog"
 import {
+  MIN_AUTO_BOOK_RATING,
+  isAutoBookable,
   pickBestVendor,
   rankVendors,
   vendorCategoryForService,
@@ -286,7 +288,7 @@ async function selectOptimalVendor(serviceType: string, transactionId: string): 
       .eq("brokerage_id", transaction.brokerage_id) // tenant anchor — never rank another brokerage's bench
       .eq("category", category)
       .eq("status", "active") // broker approval — the real surfacing flag on the bench
-      .gte("rating", 3.75) // 0-5 scale; below this the broker's own bench is not auto-picked from
+      .gte("rating", MIN_AUTO_BOOK_RATING) // shared with getVendorRecommendations so the two paths cannot disagree
 
     if (benchError) {
       console.error("Select optimal vendor — bench read refused:", benchError)
@@ -341,7 +343,32 @@ export async function getVendorRecommendations(serviceType: string, transactionI
 
   // Ordered by the same published ranking the auto-pick uses, so the list an
   // agent sees is the order the automation would actually book in.
-  return rankVendors((vendors ?? []) as RankableVendor[]).slice(0, 5)
+  //
+  // The bench is NOT filtered by MIN_AUTO_BOOK_RATING here, deliberately. These
+  // vendors are all on the broker's approved bench; the threshold governs what
+  // the automation picks UNPROMPTED, not what an agent may choose. Hiding the
+  // rest would answer "who could do this job?" with the answer to a different
+  // question. Instead each row SAYS whether the automation would take it, so
+  // the list and the auto-pick can no longer disagree silently — which they did
+  // before, the auto-pick filtering on this number while the list did not.
+  return rankVendors((vendors ?? []) as RankableVendor[])
+    .slice(0, 5)
+    .map((v) => ({
+      ...v,
+      /** True when bookMarketingService would pick this vendor on its own. */
+      autoBookable: isAutoBookable(v),
+      /**
+       * Why not, in words an agent can act on — null when it would be booked.
+       * An unrated vendor and a low-rated one are different situations and are
+       * not collapsed into one sentence.
+       */
+      autoBookBlockedReason:
+        isAutoBookable(v)
+          ? null
+          : typeof v.rating === "number"
+            ? `Rated ${v.rating.toFixed(1)} — below the ${MIN_AUTO_BOOK_RATING} the automation books at. You can still book them.`
+            : "No rating yet, so the automation will not pick them on its own. You can still book them.",
+    }))
 }
 
 // ============================================

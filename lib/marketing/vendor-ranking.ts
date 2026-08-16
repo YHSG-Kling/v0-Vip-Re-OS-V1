@@ -113,6 +113,27 @@ export type ScoredVendor = RankableVendor & VendorScore
 export const MAX_PRIORITY_BONUS = 10
 
 /**
+ * The rating (0-5 scale) at or above which the automation will AUTO-BOOK a
+ * vendor without an agent choosing them. Below it the vendor is still on the
+ * broker's approved bench and can be booked deliberately — they are simply not
+ * picked on the agent's behalf.
+ *
+ * It lives here because TWO paths need the same answer and used to disagree:
+ * the auto-pick filtered the bench by this number while the recommendation list
+ * did not, so the list could rank a vendor at position 1 that the automation
+ * would never book. A list that shows the ordering the automation "would
+ * actually book in" has to mean it.
+ */
+export const MIN_AUTO_BOOK_RATING = 3.75
+
+/** Whether the automation may pick this vendor unprompted. A vendor with NO
+ *  rating is not auto-booked — unrated is not the same as good, and the whole
+ *  point of the measured/unmeasured split is to stop absence reading as merit. */
+export function isAutoBookable(vendor: Pick<RankableVendor, "rating">): boolean {
+  return typeof vendor.rating === "number" && vendor.rating >= MIN_AUTO_BOOK_RATING
+}
+
+/**
  * PURE — score one bench row from live columns only.
  *
  *   rating (0-5)              × 20  → 0-100, the spine of the score

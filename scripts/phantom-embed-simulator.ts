@@ -55,6 +55,8 @@ import {
   pickBestVendor,
   rankVendors,
   vendorCategoryForService,
+  MIN_AUTO_BOOK_RATING,
+  isAutoBookable,
   type RankableVendor,
 } from "../lib/marketing/vendor-ranking"
 
@@ -464,6 +466,53 @@ async function liveLayer(): Promise<void> {
   }
 }
 
+/**
+ * THE TWO PATHS USED TO DISAGREE ABOUT WHAT IS BOOKABLE.
+ * The auto-pick filtered the bench at rating >= 3.75; the recommendation list
+ * did not — so the list could rank a vendor at position 1 that the automation
+ * would refuse to book, while its own comment claimed it showed "the order the
+ * automation would actually book in". One constant now answers both, and the
+ * list marks each row instead of hiding the rest.
+ */
+function autoBookLayer() {
+  console.log("\n[auto-book · one threshold, and a list that admits what it means]")
+  const AUTOMATION = "app/actions/marketing-package-automation.ts"
+  const PANEL = "app/dashboard/listings/[id]/marketing-tier/marketing-package-panel.tsx"
+  const automation = src(AUTOMATION)
+  const panel = src(PANEL)
+
+  check("AB1 an unrated vendor is NOT auto-booked — absence of a rating is not merit",
+    isAutoBookable({ rating: null }) === false)
+  check("AB2 a vendor exactly AT the threshold is auto-bookable (the bound is inclusive)",
+    isAutoBookable({ rating: MIN_AUTO_BOOK_RATING }) === true)
+  check("AB3 a vendor just below the threshold is not",
+    isAutoBookable({ rating: MIN_AUTO_BOOK_RATING - 0.01 }) === false)
+
+  check("AB4 the auto-pick reads the SHARED constant, not a re-typed literal",
+    automation.includes('.gte("rating", MIN_AUTO_BOOK_RATING)')
+      && !/\.gte\("rating",\s*3\.75\)/.test(automation))
+
+  check("AB5 the recommendation list does NOT hide the rest of the approved bench",
+    !/getVendorRecommendations[\s\S]*?\.gte\("rating"/.test(automation))
+
+  check("AB6 …it marks each candidate instead, and says why one would not be auto-booked",
+    automation.includes("autoBookable: isAutoBookable(v)")
+      && automation.includes("autoBookBlockedReason"))
+
+  check("AB7 the panel actually CONSUMES the ranking — it was an action with no caller",
+    panel.includes("getVendorRecommendations")
+      && /from "@\/app\/actions\/marketing-package-automation"/.test(panel))
+
+  check("AB8 the panel shows what the ranking could not weigh, not just the winner",
+    panel.includes("v.unmeasured") && panel.includes("autoBookBlockedReason"))
+
+  // NEGATIVE CONTROL — re-introduce the drift the constant exists to prevent.
+  const drifted = automation.replace('.gte("rating", MIN_AUTO_BOOK_RATING)', '.gte("rating", 3.75)')
+  check("NEGATIVE CONTROL a re-typed 3.75 literal fails AB4 — went RED as required",
+    !(drifted.includes('.gte("rating", MIN_AUTO_BOOK_RATING)')
+      && !/\.gte\("rating",\s*3\.75\)/.test(drifted)))
+}
+
 async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" Phantom-embed simulator — starred embeds hid columns that were never there")
@@ -471,6 +520,7 @@ async function main() {
   pureLayer()
   graphAndWiringLayer()
   mutationLayer()
+  autoBookLayer()
   await liveLayer()
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
