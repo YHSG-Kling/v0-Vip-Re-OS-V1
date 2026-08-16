@@ -950,10 +950,52 @@ export async function generateListingDescription(params: {
 
     const supabase = await createClient()
 
+    // ── THE ENRICHMENT USED TO BE COMPUTED AND THEN THROWN AWAY ──────────────
+    //
+    // WAS: `propertyData` was seeded from `params.propertyDetails`, and then, if
+    // `params.propertyId` was a valid uuid, a fresh starred listing read ASSIGNED
+    // OVER it — `propertyData = data`, an overwrite rather than a merge.
+    //
+    // (The old shape is described rather than quoted because a quoted supabase
+    // chain in a comment is indistinguishable from a real one to the tenant-scope
+    // guard, which would read it as an unscoped listings query.)
+    //
+    // enhancedGenerateListingDescription (below in this file) exists to assemble
+    // neighborhood data, comparable sales and SEO keywords and hand them here as
+    // `propertyDetails` — and it also passes `propertyId`. So the branch fired on
+    // every one of its calls and REPLACED the enriched object with a bare listing
+    // row. The comps, the neighborhood profile and the keywords never reached
+    // buildListingDescriptionPrompt; they were fetched, paid for (getNeighborhoodData
+    // is an AI call) and discarded. The "enhanced" generator produced exactly the
+    // same prompt as the plain one.
+    //
+    // NOW A MERGE, WHICH KEEPS THE CONTRACT INTACT FOR EVERY CALLER:
+    //   · caller passes propertyId only (the bulk path at ~line 2790, and
+    //     generateListingDescription's external callers) — spread of an undefined
+    //     `propertyDetails` is a no-op, so they get precisely the listing row they
+    //     got before. Unchanged.
+    //   · caller passes both (the enhanced path) — it still gets the full
+    //     `select("*")` listing row underneath, so no column it relied on
+    //     disappears, PLUS its own enrichment layered on top.
+    //
+    // Order matters: the caller's object wins on conflict, because it is a
+    // superset built FROM the listing (or from the named transaction embed) and
+    // carries the extra keys. buildListingDescriptionPrompt JSON-stringifies this
+    // whole object, so the added keys reach the model verbatim.
     let propertyData = params.propertyDetails
     if (params.propertyId && isValidUUID(params.propertyId)) {
-      const { data } = await supabase.from("listings").select("*").eq("id", params.propertyId).single()
-      propertyData = data
+      const { data, error: listingError } = await supabase
+        .from("listings").select("*").eq("id", params.propertyId).single()
+      // supabase-js RESOLVES a failed query. Unchecked, a refused listing read set
+      // propertyData to null and this function went on to ask the model to write a
+      // description of `null` — and, on the enhanced path, silently discarded the
+      // enrichment on the way. Keep whatever the caller supplied and say what broke.
+      if (listingError) {
+        console.error("[generateListingDescription] Listing read failed:", listingError.message)
+        if (!propertyData) return { success: false, error: "Property not found" }
+      } else {
+        propertyData = { ...(data ?? {}), ...(params.propertyDetails ?? {}) }
+      }
     }
 
     const { data: brandVoice } = await supabase
@@ -2926,13 +2968,32 @@ export async function generateSEOKeywords(property: any, neighborhoodData?: any)
     keywords.push(`${property.property_type.toLowerCase()} for sale`)
   }
 
-  // Feature keywords
-  const features = property.features || property.property_features || []
-  if (features.includes?.('pool') || features.includes?.('Pool')) {
+  // Feature keywords.
+  //
+  // WAS: `const features = property.features || property.property_features || []`
+  // then `features.includes?.('pool')`. NEITHER `features` NOR `property_features`
+  // is a column on `listings` — the live schema carries a dedicated boolean
+  // `has_pool` instead. So `features` was ALWAYS the empty array, `.includes()`
+  // was always false, and the "homes with pool" keyword could never be emitted
+  // for any listing in the system. The `||` chain is what hid it: three names, all
+  // phantom, collapsing to a plausible-looking default.
+  //
+  // `has_pool` is the real column and is already named in the transaction embed
+  // that feeds this function.
+  if (property.has_pool) {
     keywords.push(`${property.city} homes with pool`)
   }
-  if ((property.lot_size_acres || 0) > 1) {
-    keywords.push(`${property.city} homes on acreage`)
+  // WAS `property.lot_size_acres` — also not a listings column; the live name is
+  // `lot_size`, which the embed already selects. Same permanent-zero defect: the
+  // acreage keyword was unreachable.
+  //
+  // The `> 1` threshold is DROPPED rather than carried over, because it only means
+  // "acreage" if the column is denominated in acres, and m206-listings-property-attributes.sql
+  // declares `lot_size numeric` with no unit (the column holds no live rows to infer
+  // one from). Comparing an unknown unit against 1 would be a guess dressed as a
+  // rule. Presence of a lot size is what the schema honestly supports.
+  if ((Number(property.lot_size) || 0) > 0) {
+    keywords.push(`${property.city} homes with land`)
   }
 
   // School district keywords
@@ -2995,7 +3056,6 @@ export async function detectTargetBuyer(property: any) {
   const bedrooms = property.bedrooms || 0
   const sqft = property.sqft || property.square_feet || property.square_footage || 0
   const price = property.list_price || property.price || property.listing_price || 0
-  const features = property.features || property.property_features || []
 
   if (bedrooms >= 4 && sqft > 2500) {
     return 'Growing families / Move-up buyers'
@@ -3006,9 +3066,23 @@ export async function detectTargetBuyer(property: any) {
   if (price > 800000) {
     return 'Luxury buyers'
   }
-  if (features.includes?.('investment') || features.includes?.('rental potential')) {
-    return 'Investors'
-  }
+  // THE 'Investors' BRANCH IS DELETED, NOT REPAIRED.
+  //
+  // It read `property.features || property.property_features || []` and then
+  // `features.includes('investment') || features.includes('rental potential')`.
+  // Neither `features` nor `property_features` is a column on `listings`, so the
+  // array was always empty and this branch was DEAD — no listing has ever been
+  // classified as investor-targeted by this function.
+  //
+  // Unlike the pool keyword above, there is NO honest column to repoint it to.
+  // `listings` carries no investment/rental-potential flag of any kind, and the
+  // nearest real signals (has_pool, lot_size, year_built) do not mean "investment
+  // property". Inventing a proxy — say, treating a low list_price as investor
+  // intent — would be fabricating a classification the data does not support and
+  // then feeding it to the copywriter as a target persona.
+  //
+  // If investor targeting is wanted, it needs a real column on `listings` (or the
+  // agent's own selection) to read from; DO NOT restore a `features` read.
   return 'General buyers'
 }
 
@@ -3128,7 +3202,10 @@ export async function enhancedGenerateListingDescription(params: {
       // schema guard (defect #214). These are exactly the columns the downstream
       // helpers read — getNeighborhoodData(city, zip), getComparableProperties
       // (id, city, sqft), detectTargetBuyer (bedrooms, sqft, list_price) and
-      // generateSEOKeywords (city, bedrooms, property_type, lot_size, list_price).
+      // generateSEOKeywords (city, bedrooms, property_type, lot_size, has_pool,
+      // list_price). `has_pool` and `lot_size` are the REAL columns that replaced
+      // generateSEOKeywords' phantom `features` / `property_features` /
+      // `lot_size_acres` reads — see the notes on that function.
       const { data: transaction, error: txError } = await supabase
         .from('transactions')
         .select(`

@@ -515,19 +515,45 @@ export async function generateWelcomeMessage(agentId: string) {
   const supabase = await createClient()
 
   try {
+    // WAS: `.select("*, user:users(*), brokerage:brokerages(*)")`.
+    //
+    // The starred embeds are what hid the defect (#214): the schema-drift guard
+    // checks the columns an embed NAMES, and `(*)` names none — so the target's
+    // columns went unchecked and a phantom property read off the result was
+    // invisible to it.
+    //
+    // `agent.user?.name` IS such a phantom. public.users has NO `name` column —
+    // it carries first_name / last_name / username / email. So the expression
+    // was permanently undefined and this prompt has ALWAYS addressed the new
+    // agent as the literal fallback "New Agent". Every welcome message this
+    // action has ever produced was impersonal, and nothing surfaced it because
+    // `||` turned the phantom into a plausible-looking default.
+    //
+    // `brokerages.name` is real, so `agent.brokerage?.name` genuinely worked and
+    // is preserved verbatim below.
+    //
+    // Columns are named now so the guard can see them. Only what this function
+    // reads is selected: the agent's own license_state, the user's name parts,
+    // and the brokerage's name.
     const { data: agent, error } = await supabase
       .from("agents")
-      .select("*, user:users(*), brokerage:brokerages(*)")
+      .select("license_state, user:users(first_name, last_name), brokerage:brokerages(name)")
       .eq("id", agentId)
       .single()
 
     if (error) throw error
 
+    // Rebuilt from the columns that exist. Trimmed because a user with a
+    // first_name and no last_name must not become "Ada " with a trailing space,
+    // and one with neither must fall back rather than render an empty string.
+    const agentName =
+      [agent.user?.first_name, agent.user?.last_name].filter(Boolean).join(" ").trim() || "New Agent"
+
     const { text: welcomeMessage } = await generateText({
       model: "openai/gpt-4o-mini",
       prompt: `Generate a warm, professional welcome message for a new real estate agent joining a brokerage:
 
-Agent Name: ${agent.user?.name || "New Agent"}
+Agent Name: ${agentName}
 Brokerage: ${agent.brokerage?.name || "Our Brokerage"}
 License State: ${agent.license_state}
 

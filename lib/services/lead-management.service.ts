@@ -118,16 +118,24 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
       // legitimately has no intelligence/behaviour row, and that is an absence, not an
       // error. Same lookup app/actions/ai-predictions.ts uses for these two tables.
       if (record) {
-        const { data: intelligence } = await supabase
+        // `location_preferences` is NEW to this select and it is the fix for the
+        // dead +10 in calculateFitScore — see the note at that branch.
+        const { data: intelligence, error: intelligenceError } = await supabase
           .from("lead_intelligence")
-          .select("id, timeline, pre_approved")
+          .select("id, timeline, pre_approved, location_preferences")
           .eq("lead_id", params.id)
+        if (intelligenceError) {
+          console.error("[lead-management] lead_intelligence read failed:", intelligenceError.message)
+        }
         record.lead_intelligence = intelligence || []
 
-        const { data: behavioral } = await supabase
+        const { data: behavioral, error: behavioralError } = await supabase
           .from("lead_behavioral_data")
           .select("event_type, event_data, occurred_at")
           .eq("lead_id", params.id)
+        if (behavioralError) {
+          console.error("[lead-management] lead_behavioral_data read failed:", behavioralError.message)
+        }
         record.lead_behavioral_data = behavioral || []
       }
     } else {
@@ -507,8 +515,26 @@ function calculateFitScore(record: any, table: string): number {
     // actually supports, and it is now reachable for the first time.
     if (persona) score += 15
 
-    // Location preferences
-    if (record.preferred_cities?.length > 0) score += 10
+    // Location preferences.
+    //
+    // WAS `record.preferred_cities`. `contacts` has NO `preferred_cities` column
+    // (its only location columns are city / mailing_city / location_id), so this
+    // was permanently undefined and the +10 was UNREACHABLE — the contacts fit
+    // score could never exceed 85 of the 100 the scale implies.
+    //
+    // REPOINTED to lead_intelligence.location_preferences, which is a real column
+    // with a real writer: app/actions/lead-intelligence.ts:1341 upserts it as a
+    // de-duplicated array of location strings, and app/components/intelligence/
+    // LeadIntelligencePanel.tsx reads `.length` off it the same way. It is fetched
+    // above by `lead_id` — the pre-conversion id class this file already uses for
+    // lead_intelligence and lead_behavioral_data — so no new linkage is invented
+    // here. A contact that was never a scraped lead simply has no row, and that
+    // absence correctly scores nothing rather than erroring.
+    //
+    // It is jsonb, so guard the shape before trusting `.length`: a jsonb object or
+    // scalar would otherwise read `.length` as undefined and silently score zero.
+    const locationPrefs = record.lead_intelligence?.[0]?.location_preferences
+    if (Array.isArray(locationPrefs) && locationPrefs.length > 0) score += 10
   } else {
     // For leads - check data completeness
     if (record.email) score += 10

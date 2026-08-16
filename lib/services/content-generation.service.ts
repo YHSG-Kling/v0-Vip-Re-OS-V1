@@ -188,15 +188,23 @@ async function gatherContextData(params: ContentGenerationParams) {
     // query — `context.property` and `context.contact` have always been undefined on the
     // transaction path. The embed is now named by constraint, picking the side meant
     // here: the client on the deal. Columns are named, never `*` inside an embed (#214).
-    // NOTE for a future reader: buildEmailPrompt reads `property.price` and
-    // `property.square_feet`, which are NOT listings columns (the live names are
-    // `list_price` and `sqft`). That is a separate prompt-quality defect — it prints
-    // "undefined", it does not refuse the query — and is deliberately not changed here.
+    // The prompt-quality defect this NOTE used to describe is now FIXED rather than
+    // recorded: buildEmailPrompt (and buildSocialPrompt, buildListingPrompt and
+    // buildVideoPrompt with it) read `property.price`, `property.square_feet`,
+    // `property.zip_code` and `property.lot_size_acres` — NONE of which are listings
+    // columns. The live names are `list_price`, `sqft`, `zip` and `lot_size`. Those
+    // reads printed the literal string "undefined" INTO THE AI PROMPT, so the model
+    // was told the price of a house was "$undefined" and wrote around it.
+    //
+    // The select is widened to name every column those four builders actually read.
+    // `property_type`, `year_built`, `zip` and `lot_size` were consumed but never
+    // selected, which is the same fault from the other side: an embed must name what
+    // its consumers read, and nothing else.
     const { data: transaction, error: transactionError } = await supabase
       .from("transactions")
       .select(`
         *,
-        listings(id, address, city, state, list_price, bedrooms, bathrooms, sqft),
+        listings(id, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, property_type, year_built, lot_size),
         contacts!transactions_contact_id_fkey(id, first_name, last_name, lead_temperature)
       `)
       .eq("id", params.transactionId)
@@ -293,11 +301,13 @@ function buildEmailPrompt(params: ContentGenerationParams, contextData: any): st
   }
 
   if (property) {
+    // `price` → `list_price`, `square_feet` → `sqft`: the phantom names printed
+    // "$undefined" and "undefined sqft" into the prompt. See gatherContextData.
     prompt += `\nPROPERTY:\n`
     prompt += `- Address: ${property.address}\n`
-    prompt += `- Price: $${property.price?.toLocaleString()}\n`
+    prompt += `- Price: $${property.list_price?.toLocaleString()}\n`
     prompt += `- ${property.bedrooms}BR/${property.bathrooms}BA\n`
-    prompt += `- ${property.square_feet} sqft\n`
+    prompt += `- ${property.sqft} sqft\n`
   }
 
   // Platform-specific character limits
@@ -316,8 +326,9 @@ function buildSocialPrompt(params: ContentGenerationParams, contextData: any): s
 
   if (property) {
     prompt += `PROPERTY:\n`
+    // `price` → `list_price` (phantom; printed "$undefined"). See gatherContextData.
     prompt += `- ${property.address}, ${property.city}\n`
-    prompt += `- $${property.price?.toLocaleString()}\n`
+    prompt += `- $${property.list_price?.toLocaleString()}\n`
     prompt += `- ${property.bedrooms}BR/${property.bathrooms}BA\n`
     prompt += `- ${property.property_type}\n`
   }
@@ -343,13 +354,21 @@ function buildListingPrompt(params: ContentGenerationParams, contextData: any): 
 
   if (property) {
     prompt += `PROPERTY DETAILS:\n`
-    prompt += `- ${property.address}, ${property.city}, ${property.state} ${property.zip_code}\n`
-    prompt += `- List Price: $${property.price?.toLocaleString()}\n`
+    // FOUR phantoms on these six lines: `zip_code` → `zip`, `price` → `list_price`,
+    // `square_feet` → `sqft`, `lot_size_acres` → `lot_size`. See gatherContextData.
+    prompt += `- ${property.address}, ${property.city}, ${property.state} ${property.zip}\n`
+    prompt += `- List Price: $${property.list_price?.toLocaleString()}\n`
     prompt += `- ${property.bedrooms} Bedrooms, ${property.bathrooms} Bathrooms\n`
-    prompt += `- ${property.square_feet} Square Feet\n`
+    prompt += `- ${property.sqft} Square Feet\n`
     prompt += `- Property Type: ${property.property_type}\n`
     if (property.year_built) prompt += `- Year Built: ${property.year_built}\n`
-    if (property.lot_size_acres) prompt += `- Lot Size: ${property.lot_size_acres} acres\n`
+    // The " acres" suffix is NOT carried over with the repoint. `listings.lot_size` is
+    // a bare numeric: m206-listings-property-attributes.sql declares no unit, the
+    // column holds no live rows to infer one from, and the only other renderer of it
+    // (app/actions/ai-listing-packet.ts) prints it unitless too. The old line asserted
+    // acres about a column that never fed it; stating a unit we cannot establish would
+    // put a fabricated fact in front of the model, which is worse than omitting it.
+    if (property.lot_size) prompt += `- Lot Size: ${property.lot_size}\n`
   }
 
   prompt += `\nCreate a description that highlights the lifestyle benefits and unique features.\n`
@@ -364,8 +383,9 @@ function buildVideoPrompt(params: ContentGenerationParams, contextData: any): st
 
   if (property) {
     prompt += `PROPERTY:\n`
+    // `price` → `list_price` (phantom; printed "$undefined"). See gatherContextData.
     prompt += `- ${property.address}\n`
-    prompt += `- $${property.price?.toLocaleString()}\n`
+    prompt += `- $${property.list_price?.toLocaleString()}\n`
     prompt += `- ${property.bedrooms}BR/${property.bathrooms}BA\n`
   }
 

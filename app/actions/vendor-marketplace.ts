@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
 import { dispatchEmail } from "@/lib/providers/dispatch"
 import { compareVendors, pickBestVendor } from "@/lib/vendors/rank"
+import { readRoleGrants, selectVendorId } from "@/lib/auth/role-grants"
 
 // ============================================
 // VENDOR DIRECTORY & SEARCH
@@ -723,17 +724,24 @@ async function resolveCallerVendorId(
   supabase: Awaited<ReturnType<typeof createClient>>,
   userId: string,
 ): Promise<string | null> {
-  const { data, error } = await supabase
-    .from("user_role_assignments")
-    .select("vendor_id")
-    .eq("user_id", userId)
-    .not("vendor_id", "is", null)
-    .maybeSingle()
-  if (error) {
-    console.error("[vendor-marketplace] vendor linkage read failed:", error.message)
+  // WAS: `.not("vendor_id","is",null).maybeSingle()` with no limit. The error was
+  // already checked here — but the check could not save it, because the failure it
+  // would catch is one this shape CREATES: user_role_assignments is UNIQUE on
+  // (user_id, role), NOT on user_id, so the constraint permits a user to hold two
+  // vendor-bearing grants under different roles, and `.maybeSingle()` over two rows
+  // errors. This helper would then return null and every caller below would read the
+  // vendor as "not a vendor". Read all the grants and choose.
+  const grantsResult = await readRoleGrants(supabase, userId)
+  if (!grantsResult.ok) {
+    console.error("[vendor-marketplace] vendor linkage read failed:", grantsResult.error)
     return null
   }
-  return (data?.vendor_id as string | undefined) ?? null
+  const { vendorId, ambiguous } = selectVendorId(grantsResult.grants)
+  if (ambiguous) {
+    console.error("[vendor-marketplace] user holds grants for MORE THAN ONE vendor; refusing to guess:", userId)
+    return null
+  }
+  return vendorId
 }
 
 /**
@@ -1112,14 +1120,15 @@ export async function getAllVendorBookings(limit: number = 50) {
   // For brokerage members (broker/admin/agent/tc/isa) the brokerage-wide read is correct.
   let vendorIdFilter: string | null = null
   if (profile.user_type === "vendor") {
-    const { data: roleRow } = await supabase
-      .from("user_role_assignments")
-      .select("vendor_id")
-      .eq("user_id", user.id)
-      .not("vendor_id", "is", null)
-      .maybeSingle()
-    if (!roleRow?.vendor_id) return []
-    vendorIdFilter = roleRow.vendor_id as string
+    // Repointed onto resolveCallerVendorId above rather than repeating the read:
+    // this was the SECOND copy of the same `.not("vendor_id","is",null).maybeSingle()`
+    // shape in this one file, and it is the copy that carried no error check at all.
+    // Since it gates a tenant-wide bookings read down to this vendor's own rows, a
+    // read failure that resolved to `null` here would NOT have opened the query — the
+    // `return []` closes it — but it would have shown a working vendor an empty
+    // bookings list with no explanation. UNIQUE is on (user_id, role), not user_id.
+    vendorIdFilter = await resolveCallerVendorId(supabase, user.id)
+    if (!vendorIdFilter) return []
   }
 
   let query = supabase

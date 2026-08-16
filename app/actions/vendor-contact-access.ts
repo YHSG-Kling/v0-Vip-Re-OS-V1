@@ -24,6 +24,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
+import { readRoleGrants, selectVendorId } from "@/lib/auth/role-grants"
 
 const ASSIGN_ALLOWED_ROLES = new Set([
   "broker", "broker_admin", "admin", "superadmin", "team_lead", "agent", "tc",
@@ -307,14 +308,26 @@ export async function listVendorAssignedContactsAction(): Promise<
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthenticated" }
 
-  // Resolve calling user's vendor_id via user_role_assignments
-  const { data: roleRow } = await supabase
-    .from("user_role_assignments")
-    .select("vendor_id")
-    .eq("user_id", user.id)
-    .not("vendor_id", "is", null)
-    .maybeSingle()
-  if (!roleRow?.vendor_id) return { ok: false, error: "Not a vendor account" }
+  // Resolve calling user's vendor_id via user_role_assignments.
+  //
+  // WAS: `.not("vendor_id","is",null).maybeSingle()` with no limit, and no error
+  // check. user_role_assignments is UNIQUE on (user_id, role), NOT on user_id —
+  // the constraint permits two vendor-bearing grants under different roles, and
+  // `.maybeSingle()` over two rows is an ERROR. supabase-js RESOLVES that error,
+  // so the unchecked read collapsed BOTH "you hold no vendor grant" and "the read
+  // was refused" into the same "Not a vendor account" message. Those are a
+  // permissions answer and an outage, and reporting them identically is how an
+  // outage reads as a data problem.
+  const grantsResult = await readRoleGrants(supabase, user.id)
+  if (!grantsResult.ok) {
+    console.error("[vendor-contact-access] role grant read failed:", grantsResult.error)
+    return { ok: false, error: "Could not verify your vendor account — please retry" }
+  }
+  const { vendorId, ambiguous } = selectVendorId(grantsResult.grants)
+  if (ambiguous) {
+    return { ok: false, error: "Your account is linked to more than one vendor — ask the brokerage to correct it" }
+  }
+  if (!vendorId) return { ok: false, error: "Not a vendor account" }
 
   const svc = createServiceClient()
 
@@ -322,7 +335,7 @@ export async function listVendorAssignedContactsAction(): Promise<
   // expires_at was already enforced below; this adds the whole-vendor
   // time box (engagement ended = every assignment goes dark at once).
   const { data: vendorRow } = await svc
-    .from("vendors").select("access_expires_at, status").eq("id", roleRow.vendor_id).maybeSingle()
+    .from("vendors").select("access_expires_at, status").eq("id", vendorId).maybeSingle()
   if (vendorRow?.access_expires_at && new Date(vendorRow.access_expires_at).getTime() < Date.now()) {
     return { ok: false, error: "Vendor access has expired — ask the brokerage to renew it" }
   }
@@ -334,7 +347,7 @@ export async function listVendorAssignedContactsAction(): Promise<
       contact:contacts!inner ( id, first_name, last_name, email, phone ),
       transaction:transactions ( id, property_address )
     `)
-    .eq("vendor_id", roleRow.vendor_id)
+    .eq("vendor_id", vendorId)
     .eq("status", "active")
     .or("expires_at.is.null,expires_at.gt." + new Date().toISOString())
     .order("granted_at", { ascending: false })

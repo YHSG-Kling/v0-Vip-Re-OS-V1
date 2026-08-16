@@ -37,6 +37,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
 import { requiresAgentRow } from "./tenant-provisioning-spec"
 import { ROLE_DASHBOARD_ROUTES } from "./role-routes"
+import { readRoleGrants } from "@/lib/auth/role-grants"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -355,24 +356,49 @@ export async function createOrRepairUserDomainRecords(
 export async function resolveUserWorkspaceContext(userId: string): Promise<WorkspaceContext> {
   const service = createServiceClient()
 
+  // The role-grant read is NOT `.maybeSingle()` — see below. It is the one read
+  // in this batch whose subject can legitimately be several rows.
   const [
     { data: userData },
     { data: agentData },
     { data: tcData },
     { data: onboardingData },
-    { data: roleData },
+    roleGrantsResult,
   ] = await Promise.all([
     service.from("users").select("user_type, brokerage_id, team_id").eq("id", userId).maybeSingle(),
     service.from("agents").select("id").eq("user_id", userId).maybeSingle(),
     service.from("transaction_coordinators").select("id").eq("user_id", userId).maybeSingle(),
     service.from("agent_onboarding").select("id, status").eq("user_id", userId).maybeSingle(),
-    service.from("user_role_assignments").select("role, agent_id").eq("user_id", userId).maybeSingle(),
+    readRoleGrants(service, userId),
   ])
+
+  // WAS: `.from("user_role_assignments").select("role, agent_id").eq("user_id", userId).maybeSingle()`
+  // — no vendor filter, no limit, and the error discarded by the `{ data: … }`
+  // destructuring. This was the most exposed instance of defect #221 in the tree:
+  // every other site at least narrowed by `.not("vendor_id","is",null)` first, so
+  // they needed an unlucky data shape to break. This one narrowed by nothing, and
+  // user_role_assignments is UNIQUE on (user_id, role), NOT on user_id.
+  //
+  // MEASURED on the live database: one user holds THREE grants (agent + admin +
+  // isa). `.maybeSingle()` over three rows is an ERROR, supabase-js RESOLVES it,
+  // and the discarded error became `roleData = null`. So for that user this
+  // function reported hasRoleAssignment:false and lost the `agent_id` fallback on
+  // the line below — meaning a user WITH an agent grant could be told they were
+  // missing their agents row and pushed back into setup. It is broken today, not
+  // hypothetically.
+  if (!roleGrantsResult.ok) {
+    console.error("[kernel/users] role grant read failed:", roleGrantsResult.error)
+  }
+  const roleGrants = roleGrantsResult.ok ? roleGrantsResult.grants : []
 
   const userType   = userData?.user_type ?? "agent"
   const brokerageId = userData?.brokerage_id ?? null
   const teamId     = userData?.team_id ?? null
-  const agentId    = agentData?.id ?? roleData?.agent_id ?? null
+  // Only a grant that actually carries an agent_id can stand in for the agents row;
+  // picking "the" grant first and then reading agent_id off it would discard a real
+  // agent linkage whenever another grant happened to sort ahead of it.
+  const agentGrantId = roleGrants.find((g) => g.agent_id)?.agent_id ?? null
+  const agentId    = agentData?.id ?? agentGrantId
   const coordinatorId = tcData?.id ?? null
 
   // Load the tenant tier so a solo/team OWNER (admin/broker) is correctly held
@@ -412,7 +438,7 @@ export async function resolveUserWorkspaceContext(userId: string): Promise<Works
     coordinatorId,
     hasAgentRow:       !!agentId,
     hasOnboardingRow:  !!onboardingData,
-    hasRoleAssignment: !!roleData,
+    hasRoleAssignment: roleGrants.length > 0,
     isComplete,
     dashboardRoute,
     requiresSetup,
