@@ -140,19 +140,46 @@ export async function resolveLedTeamId(
   client: SupabaseClient<any, any, any>,
   userId: string,
 ): Promise<string | null> {
+  // TWO ROWS ARE FETCHED, NOT ONE, and the order is explicit.
+  //
+  // MEASURED: `teams` has NO unique index on team_lead_id, and nothing in the
+  // app prevents one person leading two teams — the territory surface already
+  // models led teams as a LIST (`viewer.ledTeamIds`). The previous `.limit(1)`
+  // therefore answered a genuinely ambiguous question by taking whichever row
+  // the planner happened to return first, with no ordering: the same person
+  // could get a different team on two consecutive calls, and every caller —
+  // the financial workspace's access level, the team-branding write gate —
+  // would silently follow it.
+  //
+  // Nobody leads two teams on the live database today (checked). This does not
+  // decide whether they SHOULD be able to; that is a product question and is
+  // deliberately left open. It only stops the answer being arbitrary when they
+  // are: `created_at` makes the pick deterministic (the team they have led
+  // longest), and the ambiguity is REPORTED rather than absorbed, because a
+  // wrong-but-stable answer that nobody can see is worse than a loud one.
   const { data, error } = await client
     .from("teams")
-    .select("id")
+    .select("id, created_at")
     .eq("team_lead_id", userId)
     .is("deleted_at", null)
-    .limit(1)
-    .maybeSingle()
+    .order("created_at", { ascending: true })
+    .limit(2)
 
   if (error) {
     console.error(`[resolve-user-team] teams read REFUSED for ${userId}: ${error.message}`)
     return null
   }
-  return (data as { id?: string } | null)?.id ?? null
+
+  const rows = (data ?? []) as Array<{ id?: string }>
+  if (rows.length > 1) {
+    console.error(
+      `[resolve-user-team] ${userId} leads ${rows.length} teams; every caller of ` +
+        `resolveLedTeamId assumes ONE. Returning the earliest-created team ` +
+        `(${rows[0]?.id}) so the answer is at least deterministic. Team-scoped ` +
+        `surfaces will show only that team until this is designed for.`,
+    )
+  }
+  return rows[0]?.id ?? null
 }
 
 /**
