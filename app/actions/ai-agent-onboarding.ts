@@ -543,18 +543,30 @@ export async function generateWelcomeMessage(agentId: string) {
 
     if (error) throw error
 
+    // NORMALIZED, NOT ASSERTED. Naming the embed's columns makes supabase-js
+    // type these as ARRAYS: it infers to-one only from a unique constraint on
+    // the FK column, and neither agents.user_id nor agents.brokerage_id carries
+    // one. At runtime PostgREST returns a single object for a to-one embed, so
+    // both shapes are real depending on the client version — casting would paper
+    // over exactly the drift this select was rewritten to expose.
+    const one = <T,>(v: T | T[] | null | undefined): T | undefined =>
+      Array.isArray(v) ? v[0] : (v ?? undefined)
+
+    const agentUser = one(agent.user as { first_name?: string | null; last_name?: string | null } | Array<{ first_name?: string | null; last_name?: string | null }>)
+    const agentBrokerage = one(agent.brokerage as { name?: string | null } | Array<{ name?: string | null }>)
+
     // Rebuilt from the columns that exist. Trimmed because a user with a
     // first_name and no last_name must not become "Ada " with a trailing space,
     // and one with neither must fall back rather than render an empty string.
     const agentName =
-      [agent.user?.first_name, agent.user?.last_name].filter(Boolean).join(" ").trim() || "New Agent"
+      [agentUser?.first_name, agentUser?.last_name].filter(Boolean).join(" ").trim() || "New Agent"
 
     const { text: welcomeMessage } = await generateText({
       model: "openai/gpt-4o-mini",
       prompt: `Generate a warm, professional welcome message for a new real estate agent joining a brokerage:
 
 Agent Name: ${agentName}
-Brokerage: ${agent.brokerage?.name || "Our Brokerage"}
+Brokerage: ${agentBrokerage?.name || "Our Brokerage"}
 License State: ${agent.license_state}
 
 The message should:

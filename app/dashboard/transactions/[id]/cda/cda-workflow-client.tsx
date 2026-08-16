@@ -124,9 +124,22 @@ interface CDAWorkflowClientProps {
     id: string
     user_id: string
     commission_split: number | null
-    cap_amount: number | null
-    cap_progress: number | null
   } | null
+  /**
+   * Cap progress from `agent_cap_tracking` — the ledger the commission engine
+   * reads — for the anniversary window containing today. BOTH figures are
+   * dollars, which is what this card always claimed to show and never did: it
+   * used to render `agents.cap_progress`, a 0-100 percentage, through
+   * formatCurrency. `null` = this agent has no cap window (correctly uncapped),
+   * or the read was refused — see `capUnavailable`, which tells the two apart.
+   */
+  agentCap: {
+    capAmount: number | null
+    capPaidToDate: number | null
+    isCapped: boolean
+  } | null
+  /** True when the cap ledger read was REFUSED. "Unknown" is not "$0". */
+  capUnavailable: boolean
   commissionCalc: {
     id: string
     gross_commission: number | null
@@ -160,6 +173,8 @@ export function CDAWorkflowClient({
   cda,
   offersCda,
   agent,
+  agentCap,
+  capUnavailable,
   commissionCalc,
   complianceChecks,
   cdaTimeline,
@@ -656,9 +671,26 @@ export function CDAWorkflowClient({
                       </div>
                       <div>
                         <p className="text-muted-foreground">Cap Progress</p>
-                        <p className="font-medium">
-                          {formatCurrency(agent?.cap_progress ?? 0)} / {formatCurrency(agent?.cap_amount ?? 0)}
-                        </p>
+                        {/*
+                          Dollars over dollars, from agent_cap_tracking. Each of
+                          the three states below is a DIFFERENT fact and they used
+                          to be one indistinguishable "$0.00 / $0.00":
+                          refused read, no cap, and a real cap at zero progress.
+                        */}
+                        {capUnavailable ? (
+                          <p className="font-medium text-muted-foreground">
+                            Unavailable — the cap ledger could not be read
+                          </p>
+                        ) : agentCap?.capAmount == null ? (
+                          <p className="font-medium text-muted-foreground">
+                            No cap — the brokerage collects its full split on this deal
+                          </p>
+                        ) : (
+                          <p className="font-medium">
+                            {formatCurrency(agentCap.capPaidToDate ?? 0)} / {formatCurrency(agentCap.capAmount)}
+                            {agentCap.isCapped ? " · capped" : ""}
+                          </p>
+                        )}
                       </div>
                     </div>
 

@@ -5,8 +5,29 @@
  * that already exist (keep-one, no new pipelines):
  *
  *   production   — agents denormalized YTD stats (updateAgentYTDStats maintains
- *                  ytd_gci / ytd_transactions / cap_progress / cap_amount)
- *                  + a live active-transactions count
+ *                  ytd_gci / ytd_transactions) + a live active-transactions
+ *                  count + the CAP, read from `agent_cap_tracking`
+ *
+ * ── WHERE THE CAP COMES FROM, AND WHY IT MOVED ──────────────────────────────
+ * This panel used to read `agents.cap_amount` and `agents.cap_progress`. Both
+ * are the losing copy of a fact stored in three places, and neither is what the
+ * commission engine acts on: `lib/commission/waterfall/07-apply-cap.ts` reads
+ * `agent_cap_tracking` and nothing else, and
+ * `app/actions/ai-financial-management.ts:291` had already declared that ledger
+ * canonical.
+ *
+ * The gap was not academic. Measured on the live database before m461, four
+ * agents carried `agents.cap_amount` and THREE had no `agent_cap_tracking` row
+ * at all — so this panel showed a manager a cap that the payout engine had never
+ * once enforced. The fourth disagreed with itself: `agents.cap_amount` said
+ * 100,000 while the ledger said 80,000 with 72,500 collected. Two numbers, one
+ * truth, and this screen was showing the one nobody was paid against.
+ *
+ * PROGRESS IS NOW `cap_paid_to_date / cap_amount` FROM THE LEDGER, and it is a
+ * different quantity from the one it replaces in more than provenance: the old
+ * `agents.cap_progress` was `ytd_gci / cap_amount`, i.e. what the AGENT KEPT
+ * measured against a ceiling on what the BROKERAGE COLLECTS. The ledger's
+ * `cap_paid_to_date` is the brokerage's side, which is the side the cap is about.
  *   goals        — agent_goals for the current year (target vs current;
  *                  syncGoalCurrentValues keeps current_value fresh)
  *   payments     — commissions ledger (the payouts flow's table): paid rows are
@@ -27,6 +48,13 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
+import {
+  pickCapAmount,
+  resolveAnniversaryWindow,
+  windowContains,
+  normalizeCapAnniversaryBasis,
+  type CapSource,
+} from "@/lib/commission/cap-resolver"
 
 const MANAGER_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
 
@@ -58,8 +86,42 @@ export interface Agent360 {
   production: {
     ytdGci: number
     ytdTransactions: number
+    /**
+     * `agent_cap_tracking.cap_paid_to_date` — DOLLARS the brokerage has already
+     * collected toward this agent's cap in the current anniversary window. NULL
+     * when there is no ledger row, i.e. no cap in force.
+     *
+     * THE UNITS CHANGED AND THAT IS A FIX. `agents.cap_progress` was a
+     * PERCENTAGE (0-100), while the panel that renders this
+     * (app/dashboard/admin/users/[userId]/agent-360-panels.tsx:44) has always
+     * printed it as `usd(capProgress) of usd(capAmount)` and computed its own
+     * percentage from `capProgress / capAmount`. An agent 72.5% of the way to a
+     * $100,000 cap therefore rendered as "$72.50 of $100,000" at 0%. Feeding it
+     * the ledger's dollars makes the display it already had correct.
+     */
     capProgress: number | null
+    /** `agent_cap_tracking.cap_amount` for the window containing today — the cap
+     *  the payout engine will actually apply. NULL means genuinely uncapped. */
     capAmount: number | null
+    /**
+     * TRUE when a ledger row covers today, i.e. the cap above is one the payout
+     * engine can see. FALSE with a non-null `capConfigured` is the exact defect
+     * this consolidation exists to end: a cap agreed with the agent that the
+     * engine has never applied to a cheque.
+     */
+    capEnforced: boolean
+    /**
+     * What the CONFIGURED cap resolves to today — per-agent
+     * `agent_commission_profiles.cap_amount`, else
+     * `brokerages.default_cap_amount`, else null. Reported alongside the ledger
+     * so a manager can see the two agree, or see that they do not.
+     */
+    capConfigured: number | null
+    /** Where `capConfigured` came from, so the manager can go and change it. */
+    capConfiguredSource: CapSource
+    /** The anniversary window in force today, inclusive at both ends — the year
+     *  the cap above is measured over. NULL when it could not be resolved. */
+    capWindow: { start: string; end: string } | null
     activeTransactions: number
   }
   goals: Agent360Goal[]
@@ -130,15 +192,19 @@ export async function getAgent360Action(
   // (TC, vendor, staff) simply have no 360; the page shows the base profile.
   const { data: agent } = await svc
     .from("agents")
-    .select("id, ytd_gci, ytd_transactions, cap_progress, cap_amount, gamification_points")
+    // `created_at` — NOT `start_date`, which does not exist on this table. It is
+    // the anchor the anniversary window is rolled forward from.
+    .select("id, created_at, ytd_gci, ytd_transactions, gamification_points")
     .eq("user_id", targetUserId)
     .eq("brokerage_id", caller.brokerage_id)
     .maybeSingle()
   if (!agent) return { ok: true, data: null }
 
   const year = new Date().getFullYear()
+  const today = new Date().toISOString().slice(0, 10)
   const [goalsRes, commissionsRes, badgesRes, pointsLogRes, activeTxRes,
-         onboardingRes, brokerageRes, recruitsRes, assignmentsRes, modulesRes] = await Promise.all([
+         onboardingRes, brokerageRes, recruitsRes, assignmentsRes, modulesRes,
+         capRes, capProfileRes] = await Promise.all([
     svc.from("agent_goals")
       .select("goal_type, target_value, current_value, year")
       .eq("agent_id", agent.id)
@@ -173,7 +239,7 @@ export async function getAgent360Action(
       .eq("brokerage_id", caller.brokerage_id)
       .maybeSingle(),
     svc.from("brokerages")
-      .select("recruiting_split_to_agent, recruiting_monthly_fee")
+      .select("created_at, recruiting_split_to_agent, recruiting_monthly_fee, default_cap_amount, default_cap_anniversary_basis")
       .eq("id", caller.brokerage_id)
       .maybeSingle(),
     svc.from("recruits")
@@ -193,6 +259,24 @@ export async function getAgent360Action(
       .eq("status", "published")
       .order("title")
       .limit(100),
+    // THE CANONICAL CAP LEDGER, filtered exactly the way
+    // lib/commission/waterfall/07-apply-cap.ts filters it — the window that
+    // CONTAINS TODAY. Any other window is a closed year and would show a manager
+    // last year's ceiling. Tenant-anchored on brokerage_id as well as agent_id.
+    svc.from("agent_cap_tracking")
+      .select("cap_amount, cap_paid_to_date, is_capped, anniversary_start, anniversary_end")
+      .eq("brokerage_id", caller.brokerage_id)
+      .eq("agent_id", agent.id)
+      .lte("anniversary_start", today)
+      .gte("anniversary_end", today)
+      .limit(1),
+    // THE CONFIGURED cap, so the panel can say when configuration and ledger
+    // disagree. Same tenant anchor; same precedence the seeder uses, because it
+    // is the same function.
+    svc.from("agent_commission_profiles")
+      .select("cap_amount, is_active, effective_date")
+      .eq("brokerage_id", caller.brokerage_id)
+      .eq("agent_id", agent.id),
   ])
 
   const allCommissions = (commissionsRes.data ?? []).map((c: any): Agent360Payment => ({
@@ -229,6 +313,69 @@ export async function getAgent360Action(
 
   const points = Number(agent.gamification_points) || 0
 
+  // supabase-js RESOLVES a refused read as an empty list, so "the ledger says
+  // nothing" and "we were not allowed to look" would otherwise both render as
+  // "no cap set" — and "no cap" is exactly the wrong thing to tell a manager
+  // about an agent who has one. The refusal is logged and the values stay NULL,
+  // which the panel renders as "no cap set" only when the read succeeded.
+  if (capRes.error) {
+    console.error(`[agent-360] agent_cap_tracking read refused for agent ${agent.id}: ${capRes.error.message}`)
+  }
+  const capRow = (capRes.data ?? [])[0] as
+    | { cap_amount: unknown; cap_paid_to_date: unknown }
+    | undefined
+  // numeric arrives from PostgREST as a STRING, and Number("") is 0 — which
+  // would report "capped, $0 ceiling" for an unreadable value.
+  const capAmount = capRow?.cap_amount != null && capRow.cap_amount !== "" ? Number(capRow.cap_amount) : null
+  const capPaid =
+    capRow?.cap_paid_to_date != null && capRow.cap_paid_to_date !== "" ? Number(capRow.cap_paid_to_date) : null
+
+  // ── CONFIGURED vs ENFORCED ────────────────────────────────────────────────
+  // The whole reason this consolidation exists: a cap can be agreed, displayed
+  // and believed while the payout engine never sees it. `capEnforced` is FALSE
+  // exactly when there is no ledger row covering today, and `capConfigured` says
+  // whether there was nevertheless a cap to enforce. On the live database before
+  // m461 that pair read (false, 150000) for three of the four capped agents.
+  //
+  // Same precedence function the seeder uses — not a second copy of the rules.
+  if (capProfileRes.error) {
+    console.error(`[agent-360] agent_commission_profiles read refused for agent ${agent.id}: ${capProfileRes.error.message}`)
+  }
+  const brokerageRow = (brokerageRes.data ?? null) as {
+    created_at?: string | null
+    default_cap_amount?: unknown
+    default_cap_anniversary_basis?: unknown
+  } | null
+
+  const configured = pickCapAmount({
+    profiles: (capProfileRes.data ?? []) as unknown as Array<{ cap_amount: unknown; is_active: unknown; effective_date: unknown }>,
+    brokerageDefaultCap: brokerageRow?.default_cap_amount ?? null,
+    today,
+  })
+
+  // The window in force today. Prefer the LEDGER's own window when a row exists —
+  // that is the year the engine is actually measuring against — and fall back to
+  // the window the configured cap WOULD use, so a manager can see when an
+  // unenforced cap would start counting.
+  let capWindow: { start: string; end: string } | null = null
+  const ledgerWindow = (capRes.data ?? [])[0] as { anniversary_start?: string; anniversary_end?: string } | undefined
+  if (ledgerWindow?.anniversary_start && ledgerWindow?.anniversary_end) {
+    capWindow = { start: ledgerWindow.anniversary_start, end: ledgerWindow.anniversary_end }
+  } else {
+    const resolved = resolveAnniversaryWindow({
+      basis: normalizeCapAnniversaryBasis(brokerageRow?.default_cap_anniversary_basis),
+      today,
+      agentCreatedAt: (agent as { created_at?: string | null }).created_at ?? null,
+      brokerageCreatedAt: brokerageRow?.created_at ?? null,
+    })
+    // Reported only if it really is the LIVE window. A window that does not
+    // contain today is the closed-year bug in miniature, and showing one to a
+    // manager as "this cap year" would be the same lie in a smaller font.
+    capWindow = resolved.ok && windowContains(resolved.window, today)
+      ? { start: resolved.window.start, end: resolved.window.end }
+      : null
+  }
+
   return {
     ok: true,
     data: {
@@ -236,8 +383,14 @@ export async function getAgent360Action(
       production: {
         ytdGci: Number(agent.ytd_gci) || 0,
         ytdTransactions: Number(agent.ytd_transactions) || 0,
-        capProgress: agent.cap_progress != null ? Number(agent.cap_progress) : null,
-        capAmount: agent.cap_amount != null ? Number(agent.cap_amount) : null,
+        // FROM THE LEDGER, never from agents.cap_progress / agents.cap_amount —
+        // see the header. Those are the copies the payout engine has never read.
+        capProgress: capPaid !== null && Number.isFinite(capPaid) ? capPaid : null,
+        capAmount: capAmount !== null && Number.isFinite(capAmount) ? capAmount : null,
+        capEnforced: !!capRow,
+        capConfigured: configured.capAmount,
+        capConfiguredSource: configured.source,
+        capWindow,
         activeTransactions: activeTxRes.count ?? 0,
       },
       goals: (goalsRes.data ?? []).map((g: any): Agent360Goal => ({

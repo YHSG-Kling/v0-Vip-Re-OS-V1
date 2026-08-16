@@ -182,6 +182,14 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'settings-general', label: 'General', href: '/dashboard/settings/general' },
           { id: 'settings-calendar', label: 'Calendar Sync', href: '/dashboard/settings/calendar' },
           { id: 'settings-branding', label: 'Branding', href: '/dashboard/settings/branding' },
+          // Owner: "settings sets territories covered." subscriber_service_areas — the
+          // per-zip roster lib/platform/distribution-engine.ts routes platform leads
+          // through — had no settings surface at all; its only writer was a side effect
+          // of creating a lead-SCRAPING market. It is listed HERE as well as under
+          // Brokerage Settings because the table's grain is brokerage / team / agent and
+          // an agent may set their own coverage: one destination, and the page itself
+          // decides from the SESSION which grains that particular viewer may write.
+          { id: 'settings-territories', label: 'Territories', href: '/dashboard/settings/territories' },
           // Walkthrough [28]: this AGENT entry pointed at the brokerage's provider
           // CREDENTIAL surface (platform_credentials API keys, provider overrides) — a
           // broker/admin responsibility, not an individual agent's. Agents connect their
@@ -372,6 +380,10 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           // duplicated.
           { id: 'compliance-settings', label: 'Compliance & Prohibited Words', href: '/compliance/settings' },
           { id: 'team-mgmt', label: 'Team Management', href: '/dashboard/settings/teams' },
+          // The brokerage-wide grain — the ONLY grain the platform lead rotation reads
+          // (distribution-engine filters .is(agent_user_id,null).is(team_id,null)) — is
+          // settable only by a brokerage admin, so this entry is the primary one.
+          { id: 'territories', label: 'Territories', href: '/dashboard/settings/territories' },
           { id: 'integrations', label: 'Integrations', href: '/dashboard/settings/integrations' },
           { id: 'isa-calling', label: 'ISA Calling', href: '/dashboard/settings/isa-calling' },
           { id: 'widget-settings', label: 'Widget & AI Setup', href: '/dashboard/settings/widget' },

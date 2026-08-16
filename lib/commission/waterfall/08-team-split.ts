@@ -1,6 +1,64 @@
 import { createServiceClient } from '@/lib/supabase/service'
+import { centsToDollars } from '../utils'
 import type { WaterfallContext, DistributionRecord } from '../types'
-import { resolveTeamLeadOverride, isAgreementEffective, type TeamLeadAgreement } from '../team-lead-split'
+import {
+  resolveTeamLeadOverride,
+  isAgreementEffective,
+  applyTeamCap,
+  interpretTeamCapLedgerRead,
+  TeamCapLedgerUnreadable,
+  type TeamLeadAgreement,
+  type TeamCapLedger,
+  type TeamCapLedgerRead,
+  type TeamCapStatus,
+} from '../team-lead-split'
+
+/**
+ * Read the team's cap ledger row for THIS agent — the row whose anniversary
+ * window contains today, the same way 07-apply-cap.ts finds the agent's.
+ *
+ * FAIL CLOSED. supabase-js RESOLVES a failed query rather than rejecting, so an
+ * unchecked read hands back `data: null` and an untouched `error`. Treating that
+ * null as "no cap configured" would SILENTLY UNCAP THE TEAM — the exact failure
+ * mode this whole change exists to remove. The whole { data, error } result is
+ * therefore handed to interpretTeamCapLedgerRead, which is the pure, proven
+ * decision: a non-null error becomes a THROW, never a null ledger. This function
+ * keeps ONLY the query, so the decision has no database in front of it.
+ *
+ * `.maybeSingle()` is safe here in a way it is NOT for agent_cap_tracking: it
+ * throws if the filter matches two rows, and agent_cap_tracking has no unique
+ * constraint protecting its (agent, window) — a real fragility in 07-apply-cap.ts.
+ * team_cap_tracking_agent_window_key (m461) makes one row per
+ * (team_id, agent_id, anniversary_start) impossible to violate, so the single-row
+ * assumption here is enforced by the database rather than assumed by the code.
+ */
+async function readTeamCapLedger(
+  supabase: ReturnType<typeof createServiceClient>,
+  teamId: string,
+  context: WaterfallContext,
+): Promise<TeamCapLedger | null> {
+  const today = new Date().toISOString().slice(0, 10)
+  const { data, error } = await supabase
+    .from('team_cap_tracking')
+    // Explicit columns — never select("*"): a column that vanishes should break
+    // loudly here, not read back as a $0 cap.
+    .select('id, cap_amount, cap_paid_to_date')
+    .eq('team_id', teamId)
+    .eq('agent_id', context.agentId)
+    .eq('brokerage_id', context.brokerageId)
+    .lte('anniversary_start', today)
+    .gte('anniversary_end', today)
+    .maybeSingle()
+
+  // The ENTIRE result goes to the pure decision — error included. Nothing here
+  // may reduce a failed read to a null ledger. (A no-row result comes back null
+  // ⇒ uncapped, the same known gap as 07-apply-cap.ts: a cap configured on
+  // `teams` with no ledger row is not enforced until the ledger is seeded.)
+  return interpretTeamCapLedgerRead({ data, error } as TeamCapLedgerRead, {
+    teamId,
+    agentId: context.agentId,
+  })
+}
 
 /**
  * Resolve the closing agent's team-lead override agreement (owner rule: a team
@@ -17,30 +75,40 @@ async function resolveTeamLeadAgreement(
   supabase: ReturnType<typeof createServiceClient>,
   context: WaterfallContext,
 ): Promise<TeamLeadAgreement | null> {
-  const { data: agentRow } = await supabase
+  // Every read below destructures AND checks `error`: supabase-js resolves a
+  // failed query, so an unchecked read makes a refusal look like "this agent has
+  // no team". A throw here is caught by the caller's best-effort catch and
+  // reported — the override is simply not applied, which never charges the agent
+  // for a cut we could not prove was owed.
+  const { data: agentRow, error: agentRowError } = await supabase
     .from('agents')
     .select('team_id')
     .eq('id', context.agentId)
     .maybeSingle()
+  if (agentRowError) throw new Error(`[team-split] agents lookup failed: ${agentRowError.message}`)
   const teamId = (agentRow as any)?.team_id as string | null
   if (!teamId) return null
 
-  const { data: team } = await supabase
+  const { data: team, error: teamError } = await supabase
     .from('teams')
-    .select('id, team_lead_id, team_split_type, team_split_percent, team_split_value, terms_effective_date')
+    // cap_amount (m461) is the team's UNCAPPED/CAPPED switch — see the capAmount
+    // note on TeamLeadAgreement.
+    .select('id, team_lead_id, team_split_type, team_split_percent, team_split_value, terms_effective_date, cap_amount')
     .eq('id', teamId)
     .maybeSingle()
+  if (teamError) throw new Error(`[team-split] teams lookup failed: ${teamError.message}`)
   if (!team || !(team as any).team_lead_id) return null
   if (!isAgreementEffective((team as any).terms_effective_date ?? null, new Date())) return null
 
   // teams.team_lead_id is a USERS id → resolve to the lead's AGENTS id (same
   // brokerage). If the lead is not an agent, there is no distributable target → inert.
-  const { data: leadAgent } = await supabase
+  const { data: leadAgent, error: leadAgentError } = await supabase
     .from('agents')
     .select('id')
     .eq('user_id', (team as any).team_lead_id)
     .eq('brokerage_id', context.brokerageId)
     .maybeSingle()
+  if (leadAgentError) throw new Error(`[team-split] team-lead agents lookup failed: ${leadAgentError.message}`)
   const leadAgentId = (leadAgent as any)?.id as string | null
   if (!leadAgentId) return null
 
@@ -49,7 +117,10 @@ async function resolveTeamLeadAgreement(
     ? Number((team as any).team_split_value ?? 0)
     : Number((team as any).team_split_percent ?? 0)
 
-  return { teamId: (team as any).id, teamLeadId: leadAgentId, splitType, splitValue }
+  const rawCap = (team as any).cap_amount
+  const capAmount = rawCap === null || rawCap === undefined ? null : Number(rawCap)
+
+  return { teamId: (team as any).id, teamLeadId: leadAgentId, splitType, splitValue, capAmount }
 }
 
 /**
@@ -106,18 +177,100 @@ export async function applyTeamSplit(
   // paid to the lead. Best-effort: an agreement-resolution failure must never break
   // the whole commission calc — the agent simply keeps their full net (no override,
   // never a wrong charge). Inert when the agent has no team / no effective agreement.
+  //
+  // ══ ORDERING: WHAT THE TEAM'S CUT IS A PERCENTAGE OF ══════════════════════
+  //
+  // Stage 07 (brokerage cap) runs BEFORE this stage, and that is load-bearing.
+  // Stage 07 does not just clamp the brokerage; when the brokerage has capped it
+  // moves the brokerage's forgone share ACROSS to the agent:
+  //
+  //     agentNetCents = agentPortionCents + agentBonusCents
+  //                                         └─ the brokerage's forgone share
+  //
+  // So by the time we get here, a CAPPED agent's `agentNetCents` is INFLATED by
+  // the brokerage's forgone share, and a percentage cut of it is arithmetically
+  // LARGER than the same percentage before the agent capped. Unbounded, that
+  // means crossing the brokerage cap makes an agent pay their team MORE — the
+  // cap-crush windfall partly siphoned away, the opposite of what a cap is for.
+  //
+  // TWO THINGS COULD BE DONE ABOUT THAT, AND THEY ARE NOT THE SAME QUESTION:
+  //
+  //  (a) change the BASE — take the lead's percentage of the pre-cap
+  //      agentPortionCents instead of the post-cap agentNetCents; or
+  //  (b) bound the TOTAL — cap what the team may collect across the year.
+  //
+  // (b) is the owner's ruling ("brokerage and teams may also have commission
+  // caps") and is what is implemented here. (a) is NOT done: whether a team
+  // lead's "X% of the agent's net" means net-before or net-after the brokerage
+  // cap is a real-world team-agreement question with defensible answers on both
+  // sides, and silently re-basing every existing team agreement would rewrite
+  // live money on no ruling at all. The base therefore stays exactly what it has
+  // always been — the agent's post-cap net less member deductions — and the
+  // ceiling is what stops the team collecting for ever.
+  //
+  // What the cap DOES fix, precisely: the team's annual take is now bounded, so a
+  // capped agent reaches the team ceiling SOONER and then pays the team nothing
+  // for the rest of the year. What it does NOT fix: within a year, before the
+  // team ceiling is reached, a brokerage-capped agent still pays a percentage of
+  // the larger base. That is (a)'s territory and needs an owner ruling.
   let leadDeductionCents = 0
+  let teamCapStatus: TeamCapStatus = 'n/a'
+  let teamAmountTowardsCap = 0
+  let teamCapTeamId: string | null = null
   try {
     const agreement = await resolveTeamLeadAgreement(supabase, context)
     // Net available to the lead's cut is what remains after member deductions.
     const netForLead = context.agentNetCents - totalTeamDeductionCents
     const { leadCents, distribution } = resolveTeamLeadOverride(netForLead, context.agentId, agreement)
-    if (distribution) {
-      leadDeductionCents = leadCents
-      teamDistributions.push(distribution)
+    if (distribution && agreement) {
+      teamCapTeamId = agreement.teamId
+
+      // THE TEAM CAP (m461). teams.cap_amount NULL ⇒ uncapped, which is what
+      // every team was before m461 — short-circuit without touching the ledger.
+      // Otherwise the ledger row whose anniversary window contains today decides,
+      // exactly as 07-apply-cap.ts does for the brokerage.
+      const ledger: TeamCapLedger | null =
+        agreement.capAmount === null || agreement.capAmount === undefined
+          ? null
+          : await readTeamCapLedger(supabase, agreement.teamId, context)
+
+      const capped = applyTeamCap(leadCents, ledger)
+      teamCapStatus = capped.capStatus
+      teamAmountTowardsCap = capped.amountTowardsCapCents
+
+      // capped.agentKeepsCents is not added back explicitly: the agent's final
+      // net below is `agentNetCents − deductions`, so deducting only what the
+      // team actually collects IS handing the remainder to the agent. Cents are
+      // conserved either way, which is what stage 11's validation checks.
+      if (capped.teamCents > 0) {
+        leadDeductionCents = capped.teamCents
+        teamDistributions.push({
+          ...distribution,
+          calculated_amount: centsToDollars(capped.teamCents),
+          cap_applied: capped.capApplied,
+          cap_status: capped.capStatus,
+          notes: capped.capStatus === 'hit_cap'
+            ? 'Team lead override split (team cap reached on this deal)'
+            : distribution.notes,
+        })
+      }
+      // capped.teamCents === 0 ⇒ post_cap: the team is done collecting for this
+      // anniversary year. NO distribution row is written at all — a $0 payable is
+      // noise on a CDA, and teamCapStatus carries the explanation instead.
     }
   } catch (err) {
-    console.error('[team-split] team-lead override skipped (non-fatal):', err)
+    if (err instanceof TeamCapLedgerUnreadable) {
+      // FAIL CLOSED. An unreadable ledger is NOT an uncapped team. We cannot
+      // prove the team is still owed anything, so it collects nothing on this
+      // deal and the status says exactly that — rather than charging the agent a
+      // cut against a ceiling we could not check.
+      leadDeductionCents = 0
+      teamCapStatus = 'unavailable'
+      teamAmountTowardsCap = 0
+      console.error('[team-split] team cap ledger unreadable — failing CLOSED, team collects $0 on this deal:', err)
+    } else {
+      console.error('[team-split] team-lead override skipped (non-fatal):', err)
+    }
   }
 
   // Calculate agent's final amount after member deductions + the team-lead override.
@@ -135,6 +288,11 @@ export async function applyTeamSplit(
   return {
     ...context,
     agentFinalNetCents: agentFinalCents,
-    teamDistributions
+    teamDistributions,
+    // Carried to stage 11, which writes the counter back to team_cap_tracking,
+    // and out to the caller so a CDA / P&L can explain the team's number.
+    teamCapStatus,
+    teamAmountTowardsCap,
+    teamCapTeamId
   }
 }

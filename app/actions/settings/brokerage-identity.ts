@@ -3,6 +3,13 @@
 import { createClient } from '@/lib/supabase/server'
 import { isAdminOrBroker } from '@/lib/auth/resolve-user-role'
 import { STATE_CODES } from '@/lib/constants/us-states'
+import {
+  CAP_ANNIVERSARY_BASES,
+  DEFAULT_CAP_ANNIVERSARY_BASIS,
+  normalizeCapAnniversaryBasis,
+  parseCapAmountInput,
+  type CapAnniversaryBasis,
+} from '@/lib/commission/cap-resolver'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BROKERAGE IDENTITY — the ONE place a brokerage's real identity is set.
@@ -23,13 +30,21 @@ import { STATE_CODES } from '@/lib/constants/us-states'
 // plan_tier, status, trial_ends_at, billing_metadata, is_demo,
 // brokerage_on_platform, twilio_subaccount_sid. A settings action that spread a
 // client payload into an update would be a privilege-escalation bug — a broker
-// could promote their own tenant's plan_tier from a form post. Only the nine
+// could promote their own tenant's plan_tier from a form post. Only the eleven
 // fields below are ever written, and the payload is re-sanitized through
-// pickIdentityFields() on the way in, the same defence-in-depth
+// pickWritableFields() on the way in, the same defence-in-depth
 // lib/platform/config-snapshots.ts applies to SNAPSHOT_SITE_FIELDS on apply.
+//
+// ── AND THE BROKERAGE'S DEFAULT COMMISSION CAP ──────────────────────────────
+// m461 added `default_cap_amount` and `default_cap_anniversary_basis` to this
+// same row, on the owner's ruling that "brokerage and teams may also have
+// commission caps". They are written HERE — extending this allow-list rather
+// than standing up a second action against `brokerages` — because a second
+// writer is exactly how an allow-list stops being one. See BROKERAGE_CAP_FIELDS.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The ONLY `brokerages` columns this surface may ever write. */
+/** The brokerage's IDENTITY columns. See BROKERAGE_WRITABLE_FIELDS for the
+ *  complete allow-list this surface may write. */
 const BROKERAGE_IDENTITY_FIELDS = [
   'name',
   'dba',
@@ -42,7 +57,53 @@ const BROKERAGE_IDENTITY_FIELDS = [
   'zip',
 ] as const
 
+/**
+ * THE BROKERAGE'S DEFAULT COMMISSION CAP — added to this writer, not given a
+ * second one.
+ *
+ * OWNER RULING: "brokerage and teams may also have commission caps", and settings
+ * is where a brokerage configures itself — the same ruling that put the brokerage
+ * LICENCE NUMBER beside the brokerage NAME. A cap is a configured fact about the
+ * brokerage, so it lives on the `brokerages` row and is written through the one
+ * allow-listed writer that row already has. A second action pointed at the same
+ * table is how an allow-list stops being one.
+ *
+ * WHAT THESE TWO COLUMNS ARE (m461):
+ *
+ *   `default_cap_amount`  numeric(12,2), NULL = uncapped. The ceiling on what the
+ *       brokerage COLLECTS from an agent per anniversary year — not what the
+ *       agent earns. `lib/commission/waterfall/07-apply-cap.ts` says it in its
+ *       own header: once the brokerage has taken this much, its share drops to $0
+ *       and the agent keeps the rest.
+ *   `default_cap_anniversary_basis`  text, CHECK IN ('agent_start_date',
+ *       'calendar_year','brokerage_fiscal_year'), DEFAULT 'agent_start_date'.
+ *       Which 12-month window the cap resets on.
+ *
+ * SETTING THIS ALONE DOES NOT CAP ANYBODY, and the surface says so. The
+ * commission engine reads exactly one table — `agent_cap_tracking` — and this
+ * default is what `lib/commission/cap-resolver.ts:ensureAgentCapWindow`
+ * materialises INTO that ledger for each agent. That seeder is what makes this
+ * setting real; before it existed, four agents on the live database carried a cap
+ * that had never once been enforced because three of them had no ledger row at
+ * all.
+ */
+const BROKERAGE_CAP_FIELDS = [
+  'default_cap_amount',
+  'default_cap_anniversary_basis',
+] as const
+
 type IdentityField = (typeof BROKERAGE_IDENTITY_FIELDS)[number]
+type CapField = (typeof BROKERAGE_CAP_FIELDS)[number]
+
+/** The COMPLETE allow-list — identity plus the cap default, and nothing else.
+ *  `pickWritableFields` iterates this, so a column that is not named here can
+ *  never reach the update no matter what a form post contains. */
+const BROKERAGE_WRITABLE_FIELDS = [
+  ...BROKERAGE_IDENTITY_FIELDS,
+  ...BROKERAGE_CAP_FIELDS,
+] as const
+
+type WritableField = IdentityField | CapField
 
 /**
  * Columns that share the `brokerages` row but must be unreachable from this
@@ -72,6 +133,16 @@ export type BrokerageIdentity = {
    * instead of offering a Save button that the database will refuse.
    */
   canEdit: boolean
+  /**
+   * `brokerages.default_cap_amount` in DOLLARS, or null for UNCAPPED. Typed as a
+   * number rather than folded into the string map above because it is money and
+   * every reader has to do arithmetic on it; `0` and `null` are different facts
+   * and a string map would let "" stand for both.
+   */
+  defaultCapAmount: number | null
+  /** `brokerages.default_cap_anniversary_basis`, normalized to one of the three
+   *  values the live CHECK constraint admits. */
+  defaultCapAnniversaryBasis: CapAnniversaryBasis
 }
 
 type ActionResult<T> = { data: T | null; error: string | null }
@@ -88,9 +159,9 @@ function trimOrNull(v: unknown): string | null {
  * `plan_tier` a tampered form post tried to smuggle in — is dropped here and
  * never reaches the update.
  */
-function pickIdentityFields(input: Record<string, unknown>): Partial<Record<IdentityField, unknown>> {
-  const out: Partial<Record<IdentityField, unknown>> = {}
-  for (const k of BROKERAGE_IDENTITY_FIELDS) {
+function pickWritableFields(input: Record<string, unknown>): Partial<Record<WritableField, unknown>> {
+  const out: Partial<Record<WritableField, unknown>> = {}
+  for (const k of BROKERAGE_WRITABLE_FIELDS) {
     if (input[k] !== undefined) out[k] = input[k]
   }
   return out
@@ -187,13 +258,13 @@ export async function getBrokerageIdentity(): Promise<ActionResult<BrokerageIden
   const { supabase, brokerageId, canEdit, error: sessionError } = await resolveSessionBrokerage()
   if (sessionError || !brokerageId) return { data: null, error: sessionError ?? 'Unauthorized' }
 
-  // Spelled out as a literal, not built from BROKERAGE_IDENTITY_FIELDS.join():
+  // Spelled out as a literal, not built from BROKERAGE_WRITABLE_FIELDS.join():
   // scripts/schema-drift-guard.ts can only check column names it can read
   // statically, and a computed select argument would silently opt this query out
   // of the guard that exists to catch exactly the "column isn't there" failure.
   const { data, error } = await supabase
     .from('brokerages')
-    .select('name, dba, license_number, license_state, address, address_line2, city, state, zip')
+    .select('name, dba, license_number, license_state, address, address_line2, city, state, zip, default_cap_amount, default_cap_anniversary_basis')
     .eq('id', brokerageId)
     .maybeSingle()
 
@@ -212,10 +283,24 @@ export async function getBrokerageIdentity(): Promise<ActionResult<BrokerageIden
   const identity = { canEdit } as BrokerageIdentity
   for (const k of BROKERAGE_IDENTITY_FIELDS) identity[k] = trimOrNull(row[k])
 
+  // numeric(12,2) arrives from PostgREST as a STRING. Number("") is 0, which
+  // would turn "no cap set" into "the brokerage collects nothing" — the two most
+  // opposite answers this field has — so the empty case is mapped explicitly.
+  const rawCap = row.default_cap_amount
+  const capNum = rawCap === null || rawCap === undefined || rawCap === '' ? null : Number(rawCap)
+  identity.defaultCapAmount = capNum !== null && Number.isFinite(capNum) ? capNum : null
+  identity.defaultCapAnniversaryBasis = normalizeCapAnniversaryBasis(row.default_cap_anniversary_basis)
+
   return { data: identity, error: null }
 }
 
-export type UpdateBrokerageIdentityInput = Partial<Record<IdentityField, string>>
+export type UpdateBrokerageIdentityInput = Partial<Record<IdentityField, string>> & {
+  /** Dollars as typed. "" / null clears the cap (uncapped); more than two
+   *  decimal places is REFUSED rather than rounded. */
+  default_cap_amount?: string | null
+  /** One of CAP_ANNIVERSARY_BASES. */
+  default_cap_anniversary_basis?: string
+}
 
 /**
  * Save the brokerage's identity. Called by
@@ -269,7 +354,7 @@ export async function updateBrokerageIdentity(
 
   const payload = (input ?? {}) as Record<string, unknown>
 
-  // Defence-in-depth. pickIdentityFields() alone would silently DROP a smuggled
+  // Defence-in-depth. pickWritableFields() alone would silently DROP a smuggled
   // `plan_tier`, which is safe but invisible. A payload carrying an identity or
   // billing column is not a typo — it is someone probing this endpoint — so it
   // is refused outright and never half-applied.
@@ -279,7 +364,7 @@ export async function updateBrokerageIdentity(
     return { data: null, error: 'That request tried to change fields this form does not control.' }
   }
 
-  const picked = pickIdentityFields(payload)
+  const picked = pickWritableFields(payload)
 
   // brokerages.name is NOT NULL in the live schema, and a blank name would break
   // every disclosure line that renders it. Refuse rather than write whitespace.
@@ -302,7 +387,39 @@ export async function updateBrokerageIdentity(
     return { data: null, error: 'ZIP must be 5 digits, or 5+4 (12345-6789).' }
   }
 
-  const updates: Partial<Record<IdentityField, string | null>> = {}
+  // ── THE BROKERAGE'S DEFAULT COMMISSION CAP ────────────────────────────────
+  // Money is `numeric(12,2)`. parseCapAmountInput REFUSES more precision rather
+  // than rounding it away — the same rule `saveTeamSplits` applies to a team
+  // split, and for the same reason: a silently rounded cap is not the cap that
+  // was agreed. Blank clears it, which means UNCAPPED; `0` is a different and
+  // equally real answer meaning the brokerage collects nothing.
+  const capAmount = parseCapAmountInput(
+    picked.default_cap_amount === undefined ? undefined : (picked.default_cap_amount as string | null),
+    "The brokerage's default commission cap",
+  )
+  if (!capAmount.ok) return { data: null, error: capAmount.error }
+
+  // REFUSED, not normalized. normalizeCapAnniversaryBasis() falls back to the
+  // column default, which is right when READING a value the database already
+  // holds — but on a WRITE, quietly turning an unrecognised basis into
+  // 'agent_start_date' would store a cap that resets on a different day from the
+  // one the broker chose, and the live CHECK constraint would have refused it
+  // anyway. Say so instead.
+  let basisValue: CapAnniversaryBasis | null = null
+  if ('default_cap_anniversary_basis' in picked) {
+    const rawBasis = trimOrNull(picked.default_cap_anniversary_basis)
+    if (rawBasis && !(CAP_ANNIVERSARY_BASES as readonly string[]).includes(rawBasis)) {
+      return {
+        data: null,
+        error: `"${rawBasis}" is not a cap reset schedule. Choose one of: ${CAP_ANNIVERSARY_BASES.join(', ')}.`,
+      }
+    }
+    // The column is NOT NULL-able in practice (it carries a DEFAULT), so a
+    // cleared control means "back to the default", not "no schedule".
+    basisValue = (rawBasis as CapAnniversaryBasis | null) ?? DEFAULT_CAP_ANNIVERSARY_BASIS
+  }
+
+  const updates: Partial<Record<WritableField, string | number | null>> = {}
   if ('name' in picked) updates.name = trimOrNull(picked.name)
   if ('dba' in picked) {
     // A DBA that is just the legal name retyped is not a trade name, and storing
@@ -320,6 +437,8 @@ export async function updateBrokerageIdentity(
   if ('city' in picked) updates.city = trimOrNull(picked.city)
   if ('state' in picked) updates.state = brokerageState.value
   if ('zip' in picked) updates.zip = zip
+  if ('default_cap_amount' in picked) updates.default_cap_amount = capAmount.value
+  if (basisValue !== null) updates.default_cap_anniversary_basis = basisValue
 
   if (Object.keys(updates).length === 0) {
     return { data: null, error: 'Nothing to save.' }
@@ -353,10 +472,13 @@ export async function updateBrokerageIdentity(
   // `global_settings_tenant_update` policy is `brokerage_id =
   // current_user_brokerage_id()`, which is the identical expression this
   // brokerage id was resolved from, so it cannot refuse a row that exists.
-  if (updates.name) {
+  // `updates` now also carries a NUMERIC column, so the narrowing is explicit:
+  // app_name is text and only the name may ever be mirrored into it.
+  const mirroredName = typeof updates.name === 'string' ? updates.name : null
+  if (mirroredName) {
     const { data: mirrored, error: mirrorError } = await supabase
       .from('global_settings')
-      .update({ app_name: updates.name, updated_at: new Date().toISOString() })
+      .update({ app_name: mirroredName, updated_at: new Date().toISOString() })
       .eq('brokerage_id', brokerageId)
       .select('id')
 

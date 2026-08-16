@@ -16,6 +16,7 @@ import { VoiceAccessSettings } from "@/app/components/settings/VoiceAccessSettin
 import { LeadRoutingPanel } from "./components/lead-routing-panel"
 import { ShowingFinancialGatePanel } from "./components/showing-financial-gate-panel"
 import { ProhibitedPhrasesPanel } from "./components/prohibited-phrases-panel"
+import type { CapAnniversaryBasis } from "@/lib/commission/cap-resolver"
 
 interface ProviderData {
   id: string
@@ -75,7 +76,15 @@ interface AccountingStatus {
 
 interface CommissionSettings {
   defaultSplitPct: number
+  /**
+   * `brokerages.default_cap_amount` (m461) in dollars, or null for UNCAPPED.
+   * This was a hardcoded `null` on the server page until the cap setting existed,
+   * so the panel's Cap Amount tile could never draw. See the note in page.tsx.
+   */
   capAmount?: number | null
+  /** `brokerages.default_cap_anniversary_basis` — which 12-month window the cap
+   *  resets on. A cap amount without its reset schedule is only half a setting. */
+  capAnniversaryBasis: CapAnniversaryBasis
   hasStructures: boolean
   structureCount: number
 }

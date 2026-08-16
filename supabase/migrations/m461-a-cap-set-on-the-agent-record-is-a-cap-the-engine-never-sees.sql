@@ -191,9 +191,10 @@ where a.cap_amount is not null
 -- touch them — app/actions/agents.ts:280 writes cap_amount when an agent is
 -- created, and app/actions/admin/agent-360.ts:133 reads both — and dropping a
 -- column out from under live code is how a migration turns a data problem into
--- an outage. The repoint lands in this same wave; the DROP is m462, written only
--- after the repoint is verified, so the two facts stay separable if either has
--- to be reverted.
+-- an outage. The repoint lands in this same wave; the DROP is written only after
+-- the repoint is verified, so the two facts stay separable if either has to be
+-- reverted. (That drop is m463 — m462 was claimed by the territory work in the
+-- same wave.)
 
 -- ══ MEASURED AFTER ═════════════════════════════════════════════════════════
 --
@@ -218,6 +219,45 @@ where a.cap_amount is not null
 -- finishing the consolidation rather than leaving three copies alive. It is
 -- reported here rather than silently reconciled: picking one would be inventing
 -- a fact about somebody's compensation.
+
+-- ══ MEASURED AFTER — team_cap_tracking, proved behaviourally ═══════════════
+--
+-- The backfill above was verified by re-reading the ledger. The NEW table's
+-- constraints and policies are verified the only way that means anything: by
+-- three different live sessions trying to break them. Throwaway row, deleted at
+-- the end. Residue 0, and the table is back to the 0 rows it starts with.
+--
+--   as admin@vip.demo (a brokerage admin of VIP Premier Realty)
+--   A  writes a team cap ledger row .......................... 1 row
+--   B  a SECOND row for the same (team, agent, window) ....... REFUSED 23505
+--   C  a window that ends before it starts ................... REFUSED 23514
+--   D  stamps the row with ANOTHER brokerage's id ............ REFUSED 42501
+--   E  MOVES the existing row to another brokerage ........... REFUSED 42501
+--
+--   as agent@vip.demo (an ordinary agent of the same brokerage)
+--   F  reads their own team-cap progress ...................... 1 row
+--   G  erases their own cap_paid_to_date ...................... 0 rows
+--   H  deletes the ledger row ................................. 0 rows
+--
+--   as admin@yourbrokerage.com (an admin of the OTHER tenant)
+--   I  reads VIP's ledger ..................................... 0 rows
+--   ·  residue after cleanup .................................. 0
+--
+-- B is what agent_cap_tracking still lacks, and the reason 07-apply-cap.ts has
+-- to reach for .maybeSingle() over a date range — a call that THROWS rather than
+-- picks if a second overlapping row ever appears. Here the database refuses the
+-- second row instead of leaving the engine to trip over it.
+--
+-- D and E are the m448 lesson holding: a tenant anchor in USING alone stops you
+-- reading another tenant's row but not MOVING your own into theirs. The anchor
+-- is repeated in WITH CHECK, so E is refused too.
+--
+-- F beside G/H is the whole shape of this table's authority. An agent must be
+-- able to SEE their progress toward the ceiling — it is their own compensation —
+-- and must not be able to move it. Note G and H return ZERO ROWS rather than an
+-- error: an RLS refusal on UPDATE and DELETE is silent, which is exactly why
+-- every write in the app layer checks the row count instead of trusting a null
+-- error. F returning 1 is what proves G's 0 was the policy and not an empty table.
 
 do $$
 begin

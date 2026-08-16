@@ -55,8 +55,14 @@ async function loadAgentContext(service: ReturnType<typeof createServiceClient>,
 
 async function loadBrokerContext(service: ReturnType<typeof createServiceClient>, brokerageId: string) {
   const [{ data: agents }, { data: transactions }, { data: activeLeads }] = await Promise.all([
+    // `cap_progress` is NOT read here any more. It was `ytd_gci / cap_amount`
+    // — the agent's own earnings against a brokerage-side ceiling, i.e. the
+    // wrong side of the split — and nothing writes it now that the cap lives in
+    // `agent_cap_tracking`. Feeding a stale, mis-scaled number into the broker's
+    // AI context would have it assert cap facts that no cheque agrees with, so
+    // it is dropped rather than approximated; the cap surfaces read the ledger.
     service.from("agents")
-      .select("id, user_id, ytd_gci, ytd_transactions, cap_progress, is_active")
+      .select("id, user_id, ytd_gci, ytd_transactions, is_active")
       .eq("brokerage_id", brokerageId).eq("is_active", true).limit(30),
     service.from("transactions")
       .select("id, deal_name, status, stage, close_date, purchase_price, health_score, agent_id")

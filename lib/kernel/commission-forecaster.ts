@@ -411,18 +411,34 @@ const realSynthesizer: WhisperSynthesizer = async (script, voiceId) => {
   } catch { return null }
 }
 
-/** Resolve the agent's configured commission cap (OPTIONAL): agents.cap_amount first,
- *  then the current agent_cap_tracking window's cap_amount. Null when unconfigured. */
+/**
+ * Resolve the agent's commission cap (OPTIONAL). Null when unconfigured.
+ *
+ * THE PRECEDENCE WAS INVERTED. This read `agents.cap_amount` FIRST and only fell
+ * back to `agent_cap_tracking` — i.e. it preferred the copy the commission engine
+ * never applies over the ledger that decides the actual cheque
+ * (lib/commission/waterfall/07-apply-cap.ts reads agent_cap_tracking and nothing
+ * else). So a forecast could tell an agent they were $20k from cap while the
+ * payout engine, reading a different number, capped them somewhere else entirely
+ * — or, for the three of four capped agents measured with no ledger row at all,
+ * never capped them.
+ *
+ * `agents.cap_amount` is dropped in m463, and it is not consulted here any more.
+ * The ledger is the only answer, filtered by stage 07's own window predicate so
+ * a forecast and a disbursement cannot disagree about which year is in force.
+ *
+ * `error` is destructured because supabase-js RESOLVES a refused read: without
+ * it a permission denial would read as "no cap" and the forecast would quietly
+ * promise the agent an uncapped year.
+ */
 async function resolveCap(supabase: Svc, agentId: string, now: Date): Promise<number | null> {
-  const { data: a } = await supabase.from("agents").select("cap_amount").eq("id", agentId).maybeSingle()
-  const direct = (a as { cap_amount: number | null } | null)?.cap_amount ?? null
-  if (direct != null && Number(direct) > 0) return Number(direct)
   const today = now.toISOString().slice(0, 10)
-  const { data: track } = await supabase
+  const { data: track, error } = await supabase
     .from("agent_cap_tracking").select("cap_amount, anniversary_start, anniversary_end")
     .eq("agent_id", agentId).lte("anniversary_start", today).gte("anniversary_end", today)
-    .order("anniversary_start", { ascending: false }).limit(1).maybeSingle()
-  const tracked = (track as { cap_amount: number | null } | null)?.cap_amount ?? null
+    .order("anniversary_start", { ascending: false }).limit(1)
+  if (error) return null
+  const tracked = ((track ?? [])[0] as { cap_amount: number | null } | undefined)?.cap_amount ?? null
   return tracked != null && Number(tracked) > 0 ? Number(tracked) : null
 }
 

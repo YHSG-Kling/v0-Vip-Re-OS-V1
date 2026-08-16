@@ -68,7 +68,7 @@ export default async function CDAPage({ params }: PageProps) {
   // broker/admin/tc/compliance could open the page. RESOLVE, never substitute.
   const { data: txnAgent } = await supabase
     .from("agents")
-    .select("id, user_id, commission_split, cap_amount, cap_progress")
+    .select("id, user_id, commission_split")
     .eq("id", transaction.agent_id)
     .maybeSingle()
 
@@ -106,6 +106,57 @@ export default async function CDAPage({ params }: PageProps) {
     .eq("id", brokerageId)
     .maybeSingle()
 
+  // ── CAP PROGRESS COMES FROM THE LEDGER, AND THE UNITS ARE THE FIX ─────────
+  //
+  // This page used to select `agents.cap_amount, agents.cap_progress` and render
+  // BOTH through formatCurrency. `cap_progress` was never dollars: its only
+  // writer (updateAgentYTDStats) computed `min(ytd_gci / cap_amount * 100, 100)`
+  // — a PERCENTAGE. So a Commission Disbursement Authorization, the document an
+  // agent reads at closing to see what they are owed, has been printing
+  // "$43.00 / $100,000.00" for an agent 43% of the way to their cap.
+  //
+  // Both of those columns are also the copy the commission engine never reads
+  // and they are being dropped, so this is a repoint and a units fix in one:
+  // `agent_cap_tracking` is the ledger `lib/commission/waterfall/07-apply-cap.ts`
+  // actually applies, `cap_paid_to_date` and `cap_amount` on it are both real
+  // dollars, and formatCurrency is finally telling the truth about them.
+  //
+  // The window filter is stage 07's own (`anniversary_start <= today <=
+  // anniversary_end`) so this page and the engine cannot disagree about which
+  // year is being reported. `.limit(1)` rather than `.maybeSingle()`:
+  // agent_cap_tracking carries no uniqueness on the window, and a CDA must not
+  // 500 because two overlapping rows exist.
+  const todayIso = new Date().toISOString().slice(0, 10)
+  const { data: capRows, error: capError } = await supabase
+    .from("agent_cap_tracking")
+    .select("cap_amount, cap_paid_to_date, is_capped")
+    .eq("brokerage_id", brokerageId)
+    .eq("agent_id", transaction.agent_id)
+    .lte("anniversary_start", todayIso)
+    .gte("anniversary_end", todayIso)
+    .order("anniversary_start", { ascending: false })
+    .limit(1)
+
+  // A refused read is not "no cap". supabase-js RESOLVES a failed query, so
+  // without this the CDA would silently claim an uncapped agent. `null` means
+  // "we could not establish it" and the client says so rather than printing $0.
+  const capLedgerRow = capError ? null : ((capRows ?? [])[0] as
+    | { cap_amount: unknown; cap_paid_to_date: unknown; is_capped: unknown }
+    | undefined) ?? null
+
+  const num = (v: unknown): number | null => {
+    if (v === null || v === undefined || v === "") return null
+    const n = Number(v)
+    return Number.isFinite(n) ? n : null
+  }
+  const agentCap = capLedgerRow
+    ? {
+        capAmount: num(capLedgerRow.cap_amount),
+        capPaidToDate: num(capLedgerRow.cap_paid_to_date),
+        isCapped: capLedgerRow.is_capped === true,
+      }
+    : null
+
   // Fetch commission calculations if any
   const { data: commissionCalc } = await supabase
     .from("commission_calculations")
@@ -142,6 +193,8 @@ export default async function CDAPage({ params }: PageProps) {
       cda={cda}
       offersCda={(brokerage as { offers_cda?: boolean | null } | null)?.offers_cda ?? true}
       agent={agent}
+      agentCap={agentCap}
+      capUnavailable={!!capError}
       commissionCalc={commissionCalc}
       complianceChecks={complianceChecks ?? []}
       cdaTimeline={cdaTimeline ?? []}

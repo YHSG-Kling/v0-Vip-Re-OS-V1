@@ -178,7 +178,11 @@ export default async function AgentFinancialsPage() {
     anniversary_start: capTrackingRaw.anniversaryStart,
     anniversary_end: capTrackingRaw.anniversaryEnd,
   } : null
-  const agentData = summary.agentData ?? null
+  // `summary.agentData` is no longer read on this page. Its only two consumers
+  // were the cap fallbacks below, and both were reading `agents.cap_amount` /
+  // `agents.cap_progress` — the copy the commission engine never applies, in
+  // units that did not match what they were compared against. The kernel still
+  // returns the field; this page simply has nothing left to ask it for.
   const pipelineTransactions = summary.pipelineTransactions ?? []
   const earningsHistory = summary.earningsHistory ?? []
 
@@ -387,10 +391,25 @@ export default async function AgentFinancialsPage() {
         ytdTransactionCount={ytdTransactionCount}
       />
 
-      {/* Section 2: Cap Progress — prefers agent_cap_tracking, falls back to agents table */}
+      {/*
+        Section 2: Cap Progress — agent_cap_tracking ONLY.
+
+        THE FALLBACK WAS A UNITS BUG, not a safety net. It read
+        `capTracking?.cap_paid_to_date ?? agentData?.cap_progress` — DOLLARS on
+        the left, a 0-100 PERCENTAGE on the right (its writer computed
+        `ytd_gci / cap_amount * 100`). So exactly when the ledger was missing —
+        the case measured on three of four capped agents — this bar rendered "43"
+        as $43 collected against a $100,000 cap. And `cap_progress` measured what
+        the AGENT KEPT, while a cap ceilings what the BROKERAGE COLLECTS
+        (07-apply-cap.ts), so the two operands were never the same quantity.
+
+        Both `agents` columns are the copy the engine never reads and are dropped
+        in m463. No cap window now renders as "no cap", which is the truthful
+        statement, and is what the payout engine does with the same absence.
+      */}
       <CapProgressBar
-        capAmount={capTracking?.cap_amount ?? agentData?.cap_amount ?? null}
-        capProgress={capTracking?.cap_paid_to_date ?? agentData?.cap_progress ?? 0}
+        capAmount={capTracking?.cap_amount ?? null}
+        capProgress={capTracking?.cap_paid_to_date ?? 0}
         capProgressPct={capTrackingRaw?.capProgressPct || 0}
         bonusCredits={bonusCredits.reduce((sum: number, b: any) => sum + (b.amount || b.credit_amount || 0), 0)}
         isCapped={capTracking?.is_capped ?? false}
@@ -581,12 +600,17 @@ export default async function AgentFinancialsPage() {
             expenseRatio: (ytdEarnings?.agent_net || 0) > 0 
               ? (totalExpensesYTD / (ytdEarnings?.agent_net || 1)) * 100 
               : 0,
-            // cap_progress on agents table is a 0-100 percentage value
-            targetProgress: agentData?.cap_amount 
-              ? Math.min((agentData?.cap_progress || 0), 100)
-              : capTracking?.cap_amount
-                ? Math.min(((capTracking.cap_paid_to_date ?? 0) / capTracking.cap_amount) * 100, 100)
-                : undefined,
+            // Percent of cap collected, from the ledger. The branch that used to
+            // sit in front of this one preferred `agents.cap_progress` — and
+            // that BEAT the ledger whenever `agents.cap_amount` was set, which
+            // is precisely the stale copy the engine never applies. Worse, it
+            // was `ytd_gci / cap_amount`: the agent's own earnings measured
+            // against a ceiling on the BROKERAGE's, so on a 70/30 it read ~43%
+            // when the true figure was ~30%. One source now, and it is the one
+            // that decides the cheque.
+            targetProgress: capTracking?.cap_amount
+              ? Math.min(((capTracking.cap_paid_to_date ?? 0) / capTracking.cap_amount) * 100, 100)
+              : undefined,
           }}
           period="ytd"
         />

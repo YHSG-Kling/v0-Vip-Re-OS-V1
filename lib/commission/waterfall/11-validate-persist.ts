@@ -61,6 +61,7 @@ export async function validateAndPersist(
       net_to_brokerage: centsToDollars(context.brokerageFinalCents),
       cap_applied: context.capApplied,
       cap_status: context.capStatus,
+      team_cap_status: context.teamCapStatus ?? 'n/a',
       total_fees: centsToDollars(context.totalFeesCents),
       distributions: [
         ...allDistributions,
@@ -301,6 +302,81 @@ export async function validateAndPersist(
     }
   }
 
+  // 3b. Update TEAM cap tracking (m461) — read the active row, add, write back.
+  // Deliberately the same fetch→add→update shape as the agent cap above, because
+  // it is the same question one level down: what has this TEAM collected from
+  // this agent in this anniversary year, and is it done collecting?
+  if (context.teamCapTeamId && (context.teamAmountTowardsCap ?? 0) > 0) {
+    const teamNowDate = new Date().toISOString().slice(0, 10)
+    // .maybeSingle() is safe over this date range because m461 put a UNIQUE index
+    // on (team_id, agent_id, anniversary_start) — unlike agent_cap_tracking,
+    // which has no such constraint and would throw here if two overlapping rows
+    // ever appeared.
+    const { data: teamCap, error: teamCapReadError } = await supabase
+      .from('team_cap_tracking')
+      .select('id, cap_amount, cap_paid_to_date')
+      .eq('team_id', context.teamCapTeamId)
+      .eq('agent_id', context.agentId)
+      .eq('brokerage_id', context.brokerageId)
+      .lte('anniversary_start', teamNowDate)
+      .gte('anniversary_end', teamNowDate)
+      .maybeSingle()
+
+    if (teamCapReadError) {
+      // FAIL LOUD, NOT SILENT. supabase-js resolves a failed query, so without
+      // this check an unreadable ledger would look like "no row" and the counter
+      // would just never advance — the team would collect its cut for ever while
+      // the ledger claimed it had collected nothing.
+      console.error('[commission-engine] team_cap_tracking read failed — counter NOT advanced:', teamCapReadError.message)
+    } else if (teamCap) {
+      // Add in CENTS, then convert once. The agent-cap block above adds the two
+      // dollar floats directly; doing it in integer cents here keeps repeated
+      // deals from accumulating float drift into a money column.
+      const paidBeforeDollars = Number((teamCap as { cap_paid_to_date: number | string }).cap_paid_to_date)
+      const capAmountDollars = Number((teamCap as { cap_amount: number | string }).cap_amount)
+      const newPaidToDate = centsToDollars(
+        dollarsToCents(paidBeforeDollars) + (context.teamAmountTowardsCap ?? 0),
+      )
+      const isCapped = newPaidToDate >= capAmountDollars
+
+      const { error: teamCapWriteError } = await supabase
+        .from('team_cap_tracking')
+        .update({
+          cap_paid_to_date: newPaidToDate,
+          is_capped: isCapped,
+          // team_cap_tracking HAS updated_at (agent_cap_tracking does not), so
+          // the ledger can be audited for when it last moved.
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', (teamCap as { id: string }).id)
+
+      if (teamCapWriteError) {
+        console.error('[commission-engine] team_cap_tracking update failed — counter NOT advanced:', teamCapWriteError.message)
+      }
+
+      // NO CAP-CRUSH CELEBRATION FOR THE TEAM CAP, deliberately.
+      //
+      // 1. It would BREAK the agent one. celebrateCapCrush dedupes on
+      //    (brokerage_id, type='cap_crushed', entity_id=agentId) since the
+      //    anniversary. Firing it here would use the same key, so whichever cap
+      //    crossed first would suppress the other — an agent who later crushes
+      //    their BROKERAGE cap would get no notification at all. Reusing the key
+      //    silently deletes a working feature.
+      // 2. The copy would be false. It says "you now keep 100% of your commission
+      //    for the rest of your anniversary year." Reaching the TEAM ceiling means
+      //    the agent stops paying their team lead — real good news, but they still
+      //    pay the brokerage its split until the brokerage cap is met.
+      // 3. The paired recruiting signal (agent_crushed_cap) is a retention proof
+      //    about BROKERAGE cap economics — a broker reading it as team-cap news
+      //    would be reading a different fact than the one that happened.
+      //
+      // A team-cap milestone may well deserve its own notification type and its
+      // own copy. That is a new feature with its own ruling, not a side effect of
+      // wiring a ledger — so this writes the counter and surfaces team_cap_status,
+      // and nothing else.
+    }
+  }
+
   // 4. Log lifecycle event via kernel
   await transitionLifecycle({
     brokerageId: context.brokerageId,
@@ -318,6 +394,7 @@ export async function validateAndPersist(
       gross_commission:     centsToDollars(context.grossCommissionCents),
       cap_applied:          context.capApplied,
       cap_status:           context.capStatus,
+      team_cap_status:      context.teamCapStatus ?? 'n/a',
     },
   })
 
@@ -329,6 +406,7 @@ export async function validateAndPersist(
     net_to_brokerage: centsToDollars(context.brokerageFinalCents),
     cap_applied: context.capApplied,
     cap_status: context.capStatus,
+    team_cap_status: context.teamCapStatus ?? 'n/a',
     total_fees: centsToDollars(context.totalFeesCents),
       distributions: distributionRows.map(d => ({
       distribution_type: (d as any).distribution_type as any,

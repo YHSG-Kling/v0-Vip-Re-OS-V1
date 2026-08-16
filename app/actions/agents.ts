@@ -6,6 +6,7 @@ import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { resolveUserOffice, pickUserOffice } from "@/lib/kernel/resolve-user-office"
+import { ensureAgentCapWindow } from "@/lib/commission/cap-resolver"
 
 interface AchievementRow {
   id: string
@@ -277,12 +278,26 @@ export async function createAgent(agentData: {
       license_state: agentData.license_state?.trim() || null,
       license_expiry: agentData.license_expiry?.trim() || null,
       commission_split: agentData.commission_split ?? null,
-      cap_amount: agentData.cap_amount ?? null,
+      // NEITHER `cap_amount` NOR `cap_progress` IS WRITTEN HERE ANY MORE, and
+      // that is the fix, not an omission.
+      //
+      // The commission engine reads exactly one table for a cap:
+      // `agent_cap_tracking` (lib/commission/waterfall/07-apply-cap.ts). Writing
+      // the number onto the `agents` row put it somewhere nothing enforces —
+      // measured on the live database before m461, four agents carried
+      // `agents.cap_amount` and THREE of them had no ledger row at all, so
+      // stage 07 found nothing, returned capStatus 'n/a', and never capped them.
+      // A broker set a cap, this screen showed it back, and it had never once
+      // been applied to a cheque.
+      //
+      // The cap the caller named is materialised into the LEDGER below, by
+      // `ensureAgentCapWindow`, along with the brokerage's default for a caller
+      // who named none. Both columns stay on the table until m463 drops them,
+      // because other surfaces still read them; nothing here adds to them.
       team_id: agentData.team_id ?? null,
       gamification_points: 0,
       ytd_gci: 0,
       ytd_transactions: 0,
-      cap_progress: 0,
       is_active: true,
     })
     .select("id, user_id, brokerage_id")
@@ -302,6 +317,48 @@ export async function createAgent(agentData: {
       }
     }
     return { error: error.message }
+  }
+
+  // ── SEED THE CAP LEDGER — THIS IS WHAT MAKES THE CAP REAL ─────────────────
+  //
+  // A cap that is only CONFIGURED is not a cap. `07-apply-cap.ts` reads
+  // `agent_cap_tracking` and nothing else, so a number that never reaches that
+  // table is a number the engine cannot see. `ensureAgentCapWindow` resolves
+  // which cap applies — the cap named on this form, else
+  // `agent_commission_profiles.cap_amount` (honouring is_active / effective_date),
+  // else `brokerages.default_cap_amount`, else none — and writes it into the
+  // anniversary window that CONTAINS TODAY, which is the only window stage 07's
+  // `anniversary_start <= today <= anniversary_end` filter will ever match.
+  //
+  // Calling it here is what lets a brokerage state its cap ONCE in settings and
+  // have every new agent inherit it, instead of a broker re-typing the number
+  // into a field that nothing enforced.
+  //
+  // BEST EFFORT, and reported. The agent record is committed and is the point of
+  // this action; a failure to seed must not reverse it. But it is never silent —
+  // an agent with no ledger row is exactly the state that hid this defect for as
+  // long as it hid, so the caller is told the cap is not yet in force.
+  let capSeeding: { capAmount?: number | null; source?: string; error?: string } | undefined
+  if (data?.id) {
+    const seeded = await ensureAgentCapWindow(svc, {
+      agentId: data.id,
+      brokerageId: ctx.brokerageId,
+      explicitCapAmount: agentData.cap_amount ?? null,
+    })
+    if (!seeded.ok) {
+      // Logged as well as returned. The one UI that calls this action today
+      // surfaces `phoneProvisioning` and not yet `capSeeding`, and an
+      // unenforced cap that nobody is told about is precisely the silence this
+      // whole change exists to end.
+      console.error(`[agents] cap ledger not seeded for agent ${data.id}: ${seeded.error}`)
+      capSeeding = {
+        error: `Agent created, but their commission cap was not put into the ledger the payout engine reads, so it is not yet enforced: ${seeded.error}`,
+      }
+    } else if (seeded.result.outcome === "seeded") {
+      capSeeding = { capAmount: seeded.result.capAmount, source: seeded.result.source }
+    } else if (seeded.result.outcome === "no_cap_configured") {
+      capSeeding = { capAmount: null, source: "none" }
+    }
   }
 
   // ── AUTO-PROVISION THE AGENT'S PHONE NUMBER ────────────────────────────────
@@ -350,9 +407,23 @@ export async function createAgent(agentData: {
   }
 
   revalidatePath("/dashboard/admin/users")
-  return { data, phoneProvisioning }
+  return { data, phoneProvisioning, capSeeding }
 }
 
+/**
+ * `cap_amount` IS NO LONGER ACCEPTED HERE. It used to be spread straight onto
+ * the `agents` row, which is the copy the commission engine never reads —
+ * `07-apply-cap.ts` reads `agent_cap_tracking` and nothing else. A cap changed
+ * through this function would have been shown back on every screen and applied
+ * to no cheque.
+ *
+ * A cap now has two honest homes and both reach the engine: the brokerage
+ * default at /dashboard/settings (`brokerages.default_cap_amount`), and the
+ * per-agent override on the agent profile form
+ * (`agent_commission_profiles.cap_amount`, written by
+ * app/actions/admin/agent-profile.ts). `lib/commission/cap-resolver.ts` resolves
+ * between them and materialises the answer into the ledger.
+ */
 export async function updateAgent(
   agentId: string,
   updates: Partial<{
@@ -360,7 +431,6 @@ export async function updateAgent(
     license_state: string
     license_expiry: string
     commission_split: number
-    cap_amount: number
     team_id: string
     specializations: string[]
     bio: string
@@ -369,9 +439,15 @@ export async function updateAgent(
 ) {
   const supabase = await createClient()
 
+  // Re-sanitized rather than trusted: this is a spread of a caller-supplied
+  // object, so a `cap_amount` (or anything else) smuggled past the type would
+  // otherwise reach the column the type just removed.
+  const { cap_amount: _droppedCap, cap_progress: _droppedProgress, ...safeUpdates } =
+    (updates ?? {}) as Record<string, unknown>
+
   const { data, error } = await supabase
     .from("agents")
-    .update({ ...updates, updated_at: new Date().toISOString() })
+    .update({ ...safeUpdates, updated_at: new Date().toISOString() })
     .eq("id", agentId)
     .select()
     .single()
@@ -765,17 +841,26 @@ async function updateAgentYTDStats(agentId: string) {
   const ytdGci = commissions?.reduce((sum, c) => sum + (c.agent_commission || 0), 0) || 0
   const ytdTransactions = commissions?.length || 0
 
-  // Get agent cap
-  const { data: agent } = await supabase.from("agents").select("cap_amount").eq("id", agentId).single()
-
-  const capProgress = agent?.cap_amount ? Math.min((ytdGci / agent.cap_amount) * 100, 100) : 0
-
+  // ── cap_progress IS NO LONGER COMPUTED OR WRITTEN HERE ────────────────────
+  //
+  // It was `min(ytdGci / agents.cap_amount * 100, 100)` — and that is not what a
+  // cap measures. A cap is a ceiling on what the BROKERAGE COLLECTS from the
+  // agent (`07-apply-cap.ts`: "Cap tracks brokerage's cumulative earnings, NOT
+  // agent's"); `ytdGci` here is the sum of `agent_commissions.agent_commission`,
+  // which is what the AGENT KEPT. So the third copy of cap state was not merely
+  // duplicated, it was measuring the opposite side of the split — an agent on a
+  // 70/30 with a $100k cap would have read as "capped" while the brokerage had
+  // collected roughly $43k of it.
+  //
+  // The canonical answer is `agent_cap_tracking.cap_paid_to_date / cap_amount`,
+  // advanced by the commission engine on every disbursement, and that is what
+  // app/actions/admin/agent-360.ts now reads. `agents.cap_progress` is dropped
+  // in m463; nothing here keeps feeding it in the meantime.
   await supabase
     .from("agents")
     .update({
       ytd_gci: ytdGci,
       ytd_transactions: ytdTransactions,
-      cap_progress: capProgress,
       updated_at: new Date().toISOString(),
     })
     .eq("id", agentId)

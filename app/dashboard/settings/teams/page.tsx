@@ -2,7 +2,11 @@
  * app/dashboard/settings/teams/page.tsx
  * ─────────────────────────────────────────────────────────────────────────────
  * THE TEAM SETTINGS SURFACE — the home of a team's own logo and brand, and from
- * W47 also of its SPLIT and its EMAIL SIGNATURE.
+ * W47 also of its SPLIT and its EMAIL SIGNATURE. m461 adds its CAP, on the
+ * owner's ruling that "brokerage and teams may also have commission caps": the
+ * ceiling on what the split may collect from one agent in an anniversary year,
+ * set beside the split it caps and written through the same
+ * `resolveWritableTeamId` gate, so a lead can cap their own team and only theirs.
  *
  * This route was a six-line `redirect("/settings/users")`. FOUR things already
  * pointed at it and none of them arrived anywhere useful:
@@ -41,7 +45,7 @@ import { createClient } from "@/lib/supabase/server"
 import { TeamBrandingPanel } from "../components/team-branding-panel"
 import { Users, ExternalLink } from "lucide-react"
 
-export const metadata = { title: "Team Settings | Brand, Split & Signature" }
+export const metadata = { title: "Team Settings | Brand, Split, Cap & Signature" }
 
 export default async function DashboardSettingsTeamsPage() {
   const supabase = await createClient()
@@ -57,8 +61,9 @@ export default async function DashboardSettingsTeamsPage() {
         <p className="text-muted-foreground mt-1">
           Your team&apos;s own logo, colours and contact details — and what they inherit from the
           brokerage when you leave them blank. Also the team&apos;s commission split, which the
-          payout calculation applies to every closing by an agent on this team, and the team&apos;s
-          fallback email signature.
+          payout calculation applies to every closing by an agent on this team, the{" "}
+          <strong>cap</strong> that stops the team collecting it once an agent has paid that much in
+          a year, and the team&apos;s fallback email signature.
         </p>
       </div>
 

@@ -90,6 +90,7 @@ import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
 import { resolveLedTeamId } from "@/lib/kernel/resolve-user-team"
 import { resolveBrandContext } from "@/lib/branding/resolve-brand-context"
+import { parseCapAmountInput, ensureTeamCapWindows } from "@/lib/commission/cap-resolver"
 import { revalidatePath } from "next/cache"
 
 /**
@@ -138,12 +139,33 @@ const TEAM_BRAND_COLUMNS = [
  * `lib/recruiting/recruiting-pitch-kit.ts:151` prefers `team_split_percent`
  * unconditionally — a leftover percent under a flat agreement would be published
  * as the team's recruiting split.
+ *
+ * ── AND FROM m461, `cap_amount` ─────────────────────────────────────────────
+ *
+ * OWNER RULING: "brokerage and teams may also have commission caps."
+ *
+ *   `cap_amount`  numeric(12,2), NULL = UNCAPPED, which is what every team was
+ *       before m461. It is the ceiling on what THE TEAM collects from each of its
+ *       agents across an anniversary year, via the split above. The split says
+ *       how much per closing; the cap says when the team stops collecting.
+ *
+ * The asymmetry it closes is real: `07-apply-cap.ts` already stops the BROKERAGE
+ * once it has taken its cap, while `08-team-split.ts` applies the team override
+ * with no ceiling at all — so a team went on collecting for ever while the
+ * brokerage stopped. The per-agent ledger for it is `team_cap_tracking`, the
+ * mirror of `agent_cap_tracking`, and the same rule holds one level down: a cap
+ * that is only CONFIGURED is not a cap until it reaches its ledger.
+ *
+ * It belongs on THIS writer, beside the split, because it is the same agreement
+ * and the same person's decision — and so it passes the same `resolveWritableTeamId`
+ * gate, which is what stops a team lead setting anyone's cap but their own.
  */
 const TEAM_SPLIT_COLUMNS = [
   "team_split_type",
   "team_split_percent",
   "team_split_value",
   "terms_effective_date",
+  "cap_amount",
 ] as const
 
 /**
@@ -195,6 +217,12 @@ export interface TeamSplitValues {
   flatDollars: number | null
   /** teams.terms_effective_date, YYYY-MM-DD. NULL = in effect from the start. */
   effectiveDate: string | null
+  /**
+   * teams.cap_amount — the ceiling on what the TEAM collects from each of its
+   * agents per anniversary year. NULL = uncapped. `0` is a different answer
+   * meaning the team collects nothing, and the two are not interchangeable.
+   */
+  capAmount: number | null
 }
 
 export interface TeamSignatureValues {
@@ -312,6 +340,7 @@ function rowToSplits(row: Record<string, unknown>): TeamSplitValues {
     percent: numOrNull(row.team_split_percent),
     flatDollars: numOrNull(row.team_split_value),
     effectiveDate: (row.terms_effective_date as string | null) ?? null,
+    capAmount: numOrNull(row.cap_amount),
   }
 }
 
@@ -918,12 +947,39 @@ export interface TeamSplitsInput {
   flatDollars: string
   /** YYYY-MM-DD, or "" for "in effect from the start". */
   effectiveDate: string
+  /**
+   * The team's cap in DOLLARS as typed. "" clears it, which means UNCAPPED —
+   * what every team was before m461. Two decimal places at most; more is
+   * refused, never rounded.
+   */
+  capAmount: string
 }
 
 export interface SaveTeamSplitsResult {
   success: boolean
   error?: string
   snapshot?: TeamBrandingSnapshot
+  /**
+   * What happened to the TEAM CAP LEDGER when the cap was saved.
+   *
+   * A cap on the `teams` row is not a cap: `waterfall/08-team-split.ts` reads
+   * `team_cap_tracking` and nothing else, so a ceiling with no ledger row is a
+   * ceiling the payout engine never applies — the m461 defect one level down.
+   * This reports whether the ledger actually opened, because "saved" and
+   * "enforced" were exactly the two things that came apart last time.
+   */
+  capLedger?: {
+    /** Rows opened by this save. */
+    seeded: number
+    /** Agents already inside a live window — never overwritten, so a mid-year
+     *  cap change applies from the NEXT window and this says how many. */
+    alreadyCovered: number
+    /** Agents on the team at the time of the save. */
+    agentsConsidered: number
+    /** Present when the ledger did not fully open. The cap is then only partly
+     *  in force, and the surface must not imply otherwise. */
+    error?: string
+  }
 }
 
 /**
@@ -945,6 +1001,15 @@ export interface SaveTeamSplitsResult {
  * onboarding item `lead_team_splits` honest: its checker
  * (`critical-setup.ts:564`) tests `team_split_type` for non-null, and after this
  * action that column is a deliberate choice rather than a column default.
+ *
+ * WHY THE CAP IS WRITTEN HERE TOO. It is the ceiling on the very cut these four
+ * columns describe — the split says how much per closing, the cap says when the
+ * team stops collecting — so it is one agreement and one decision by one person.
+ * Writing it through this action means it passes `resolveWritableTeamId`, which
+ * is the gate that lets a team lead set their OWN team's cap and no other team's:
+ * a lead's target is resolved from the SESSION and no field on the wire can
+ * redirect it, and the brokerage-admin path re-reads the row and re-checks
+ * `brokerage_id` before a column is touched.
  */
 export async function saveTeamSplits(input: TeamSplitsInput): Promise<SaveTeamSplitsResult> {
   const g = await gate()
@@ -962,12 +1027,23 @@ export async function saveTeamSplits(input: TeamSplitsInput): Promise<SaveTeamSp
   const effective = normalizeDate(input.effectiveDate ?? "", "The date these terms start")
   if (!effective.ok) return { success: false, error: effective.error }
 
+  // THE TEAM CAP. `teams.cap_amount` is numeric(12,2) and the SAME parser the
+  // brokerage default cap uses (`lib/commission/cap-resolver.ts`), so the two
+  // levels of the same setting cannot drift in what they accept. Refused rather
+  // than rounded: a cap silently moved by a fraction of a cent is not the cap
+  // that was agreed. Blank means UNCAPPED, which is a real and common answer —
+  // it is what every team was before m461 — and `0` means "the team collects
+  // nothing", which is a different one.
+  const cap = parseCapAmountInput(input.capAmount ?? "", "The team's commission cap")
+  if (!cap.ok) return { success: false, error: cap.error }
+
   // numeric(5,2) and numeric(12,4) on the live table; 2 decimals is what a split
   // agreement is written in, and more precision than that is refused rather than
   // silently rounded.
   const patch: Record<string, unknown> = {
     team_split_type: input.splitType,
     terms_effective_date: effective.value,
+    cap_amount: cap.value,
     updated_at: new Date().toISOString(),
   }
 
@@ -996,13 +1072,60 @@ export async function saveTeamSplits(input: TeamSplitsInput): Promise<SaveTeamSp
   const wrote = await writeTeamRow(g, target.teamId, patch)
   if (!wrote.ok) return { success: false, error: wrote.error }
 
+  // ── OPEN THE LEDGER, OR THE CAP IS DECORATIVE ─────────────────────────────
+  //
+  // `teams.cap_amount` is now saved. That is NOT the same as the cap being in
+  // force: `lib/commission/waterfall/08-team-split.ts` bounds the team's cut by
+  // reading `team_cap_tracking`, and a ceiling with no ledger row covering today
+  // is read as UNCAPPED. m461 found this exact shape one level up — four agents
+  // carried a cap and three had no ledger row, so the engine had never applied
+  // one of them.
+  //
+  // SERVICE CLIENT, DELIBERATELY. `team_cap_tracking`'s INSERT policy admits
+  // brokerage admins only, because it is a money ledger and a team lead moving
+  // their own collections counter is the thing that policy exists to stop. But a
+  // lead IS allowed to set their team's cap — `resolveWritableTeamId` above just
+  // proved they lead this team — and opening the ledger is a CONSEQUENCE of that
+  // authorised act, not a ledger edit in its own right. On the session client
+  // this write would come back as zero rows with error:null, which is silence.
+  //
+  // BEST EFFORT, NEVER SILENT. The agreement is saved and that is what the lead
+  // asked for; a ledger failure must not roll it back. But it is reported, both
+  // to the caller and to the log, because a cap that looks saved and is not
+  // enforced is precisely the failure this whole change exists to end.
+  let capLedger: SaveTeamSplitsResult["capLedger"]
+  {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const seeded = await ensureTeamCapWindows(createServiceClient() as never, {
+      teamId: target.teamId,
+      brokerageId: g.brokerageId,
+    })
+    if (!seeded.ok) {
+      console.error(`[team-branding] team cap ledger not opened for team ${target.teamId}: ${seeded.error}`)
+      capLedger = {
+        seeded: 0, alreadyCovered: 0, agentsConsidered: 0,
+        error: `The team's terms were saved, but the cap ledger the payout engine reads could not be opened, so the cap is not yet enforced: ${seeded.error}`,
+      }
+    } else {
+      capLedger = {
+        seeded: seeded.result.seeded,
+        alreadyCovered: seeded.result.alreadyCovered,
+        agentsConsidered: seeded.result.agentsConsidered,
+        error: seeded.result.errors.length > 0
+          ? `The cap is in force for ${seeded.result.seeded + seeded.result.alreadyCovered} of ${seeded.result.agentsConsidered} agents on this team. Not opened for: ${seeded.result.errors.join("; ")}`
+          : undefined,
+      }
+      if (capLedger.error) console.error(`[team-branding] partial team cap ledger: ${capLedger.error}`)
+    }
+  }
+
   revalidatePath("/dashboard/settings/teams")
   revalidatePath("/dashboard/settings")
   // The onboarding checklist that sent the lead here reads team_split_type.
   revalidatePath("/dashboard")
 
   const snapshot = await loadTeamBranding()
-  return { success: true, snapshot }
+  return { success: true, snapshot, capLedger }
 }
 
 // ── Write: THE TEAM EMAIL SIGNATURE ──────────────────────────────────────────

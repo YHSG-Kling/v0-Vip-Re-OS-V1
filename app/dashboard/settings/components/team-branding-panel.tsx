@@ -10,10 +10,11 @@
  *
  *   1. TEAM BRAND — `teams.logo_url` and friends, read by
  *      `lib/branding/resolve-brand-context.ts` on every rendered piece.
- *   2. TEAM SPLIT — `teams.team_split_*` / `terms_effective_date`, read by
- *      `lib/commission/waterfall/08-team-split.ts` on every closing. The
- *      REQUIRED onboarding item `lead_team_splits` sends a team lead to THIS
- *      page to set them, and until now this page could not.
+ *   2. TEAM SPLIT AND TEAM CAP — `teams.team_split_*` / `terms_effective_date`,
+ *      read by `lib/commission/waterfall/08-team-split.ts` on every closing, plus
+ *      `teams.cap_amount` (m461), the ceiling on what that split may collect from
+ *      one agent in a year. The REQUIRED onboarding item `lead_team_splits` sends
+ *      a team lead to THIS page to set them, and until now this page could not.
  *   3. TEAM EMAIL SIGNATURE — `teams.branding_override.email_signature_html`,
  *      read by `lib/kernel/communications/assemble-email.ts` as tier 2 of the
  *      signature waterfall.
@@ -93,9 +94,18 @@ interface SplitForm {
   percent: string
   flatDollars: string
   effectiveDate: string
+  /** `teams.cap_amount` as typed. "" means UNCAPPED — what every team was before
+   *  m461 — and is a different answer from "0". */
+  capAmount: string
 }
 
-const EMPTY_SPLIT: SplitForm = { splitType: "percent", percent: "", flatDollars: "", effectiveDate: "" }
+const EMPTY_SPLIT: SplitForm = {
+  splitType: "percent",
+  percent: "",
+  flatDollars: "",
+  effectiveDate: "",
+  capAmount: "",
+}
 
 function formFromTeam(team: TeamBrandOption | undefined): FormState {
   if (!team) return EMPTY_FORM
@@ -120,6 +130,10 @@ function splitFromTeam(team: TeamBrandOption | undefined): SplitForm {
     percent: team.splits.percent != null ? String(team.splits.percent) : "",
     flatDollars: team.splits.flatDollars != null ? String(team.splits.flatDollars) : "",
     effectiveDate: team.splits.effectiveDate ?? "",
+    // NULL and 0 are distinct facts here, so the coercion is explicit rather
+    // than `String(x ?? "")` — which would turn 0 into "0" correctly but only
+    // by accident, and any future `|| ""` would turn it into "uncapped".
+    capAmount: team.splits.capAmount != null ? String(team.splits.capAmount) : "",
   }
 }
 
@@ -180,6 +194,37 @@ function splitExample(type: TeamSplitType, percent: string, flat: string): strin
   return `On a ${USD.format(net)} net commission the team takes ${USD.format(team)} and the agent keeps ${USD.format(net - team)}.`
 }
 
+/** What the cap means in the terms the lead just typed above it.
+ *
+ *  Only the arithmetic that follows DIRECTLY from the two numbers on the form —
+ *  how much production, or how many closings, it takes to reach the ceiling.
+ *  Nothing here re-implements the ledger: `team_cap_tracking.cap_paid_to_date` is
+ *  what the engine actually counts, and this is only a sanity check on the
+ *  number being entered. Returns null when there is nothing honest to say. */
+function capPreview(capRaw: string, type: TeamSplitType, percent: string, flat: string): string | null {
+  const t = capRaw.trim().replace(/,/g, "").replace(/^\$/, "").trim()
+  if (!t || !/^\d+(?:\.\d+)?$/.test(t)) return null
+  const cap = Number(t)
+  if (!Number.isFinite(cap)) return null
+  if (cap === 0) {
+    return "A cap of $0 means the team collects nothing from its agents at all — the split above never applies. Leave this blank instead if you meant \"no cap\"."
+  }
+  if (type === "percent") {
+    const pct = Number(percent)
+    if (!Number.isFinite(pct) || pct <= 0 || percent.trim() === "") {
+      return `The team collects at most ${USD.format(cap)} from each agent per year.`
+    }
+    const netToReach = cap / (pct / 100)
+    return `At ${pct}% of net, an agent reaches this ${USD.format(cap)} cap after about ${USD.format(netToReach)} of net commission in their year. After that the team takes nothing more from them until the year resets.`
+  }
+  const per = Number(flat)
+  if (!Number.isFinite(per) || per <= 0 || flat.trim() === "") {
+    return `The team collects at most ${USD.format(cap)} from each agent per year.`
+  }
+  const closings = Math.ceil(cap / per)
+  return `At ${USD.format(per)} per closing, an agent reaches this ${USD.format(cap)} cap after ${closings} closing${closings === 1 ? "" : "s"} in their year. After that the team takes nothing more from them until the year resets.`
+}
+
 export function TeamBrandingPanel() {
   const [snap, setSnap] = useState<TeamBrandingSnapshot | null>(null)
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -236,6 +281,10 @@ export function TeamBrandingPanel() {
     () => splitExample(split.splitType, split.percent, split.flatDollars),
     [split.splitType, split.percent, split.flatDollars],
   )
+  const capPreviewText = useMemo(
+    () => capPreview(split.capAmount, split.splitType, split.percent, split.flatDollars),
+    [split.capAmount, split.splitType, split.percent, split.flatDollars],
+  )
   const futureTerms = useMemo(() => {
     if (!split.effectiveDate) return false
     return split.effectiveDate > new Date().toISOString().slice(0, 10)
@@ -263,7 +312,11 @@ export function TeamBrandingPanel() {
         return
       }
       if (res.snapshot) apply(res.snapshot, activeId)
-      toast.success("Team split saved. It applies to commissions calculated from now on.")
+      toast.success(
+        split.capAmount.trim()
+          ? "Team split and cap saved. They apply to commissions calculated from now on."
+          : "Team split saved, with no cap — the team keeps collecting all year. It applies to commissions calculated from now on.",
+      )
     })
   }
 
@@ -575,13 +628,15 @@ export function TeamBrandingPanel() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <Percent className="h-4 w-4" />
-            Team Split
+            Team Split &amp; Cap
           </CardTitle>
           <CardDescription>
             What the team takes out of a team agent&apos;s commission. This is the agreement the
             commission calculation applies on every closing by an agent on this team: the amount is
             <strong> deducted from that agent&apos;s net and paid to the team lead</strong>. It never
             applies to the lead&apos;s own deals, and it is taken after any per-member splits.
+            The <strong>cap</strong> below is the ceiling on that same cut — the most the team may
+            collect from one agent in an anniversary year.
           </CardDescription>
         </CardHeader>
 
@@ -679,6 +734,60 @@ export function TeamBrandingPanel() {
                 <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
                 This date is in the future, so the team takes nothing until {split.effectiveDate}.
               </p>
+            )}
+          </div>
+
+          {/* ── THE TEAM CAP ─────────────────────────────────────────────────
+              OWNER RULING: "brokerage and teams may also have commission caps."
+              It sits beside the split because it is the ceiling on that same
+              cut: the split says how much per closing, the cap says when the
+              team stops taking it. Until m461 the brokerage's cap stopped the
+              brokerage and nothing stopped the team. */}
+          <div className="space-y-2 border-t pt-5">
+            <Label htmlFor="team-cap-amount">The team&apos;s cap</Label>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">$</span>
+              <Input
+                id="team-cap-amount"
+                inputMode="decimal"
+                placeholder="Leave blank for no cap"
+                value={split.capAmount}
+                onChange={(e) => setSplit({ ...split, capAmount: e.target.value })}
+                disabled={splitPending}
+                className="max-w-[200px]"
+              />
+              <span className="text-sm text-muted-foreground">per agent, per year</span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              The most this team collects from <strong>each</strong> of its agents in an anniversary
+              year. Once an agent has paid the team this much, the split above stops being taken from
+              that agent for the rest of their year.
+            </p>
+            {/* HONEST ABOUT THE SEAM. `08-team-split.ts` enforces this ceiling by
+                reading `team_cap_tracking` — the team's per-agent ledger — and a
+                cap with no ledger row reads as uncapped ("an unseeded cap is an
+                unenforced cap", stated in that stage). Saying otherwise here
+                would be the same class of claim this whole change exists to
+                stop: a number on a screen that no cheque is measured against. */}
+            <p className="text-xs text-muted-foreground">
+              A cap takes effect for an agent once their team cap ledger has been opened for the
+              current year. Until then the calculation treats that agent as uncapped, so check with
+              your broker if a cap you have set is not showing up in a payout.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              <strong>Leave it blank for no cap</strong> — which is what every team had until now.
+              Entering <strong>0</strong> is a different answer: it means the team collects nothing at
+              all. At most two decimal places; a longer number is refused rather than rounded, because
+              a rounded cap is not the cap you agreed.
+            </p>
+            {capPreviewText && (
+              <div className="rounded-md border bg-muted/40 p-3">
+                <p className="text-xs font-medium flex items-center gap-1.5">
+                  <Info className="h-3.5 w-3.5" />
+                  What the cap means here
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">{capPreviewText}</p>
+              </div>
             )}
           </div>
 

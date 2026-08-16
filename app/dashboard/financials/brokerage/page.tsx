@@ -128,10 +128,12 @@ export default async function BrokeragePLPage() {
       .order("gross_commission", { ascending: false })
       .then(r => r.data || []),
 
-    // Agents with cap status
+    // Active agents. `cap_progress` and `cap_amount` are NO LONGER READ from
+    // here — they are the copy the commission engine never applied and they are
+    // being dropped. Cap state comes from agent_cap_tracking, read below.
     supabase
       .from("agents")
-      .select("id, cap_progress, cap_amount, user_id, ytd_gci")
+      .select("id, user_id, ytd_gci")
       .eq("brokerage_id", profile.brokerage_id)
       .eq("is_active", true)
       .then(r => r.data || []),
@@ -170,18 +172,82 @@ export default async function BrokeragePLPage() {
       .limit(8),
   ])
 
-  // ─── COMPUTE CAP SUMMARY ───────────────────────────────────────────────────
+  // ─── COMPUTE CAP SUMMARY, FROM THE LEDGER THE ENGINE READS ─────────────────
+  //
+  // This block used to derive every figure on the cap card from
+  // `agents.cap_progress` and `agents.cap_amount`. Both were wrong in a way that
+  // is worth stating, because the card looked plausible either way:
+  //
+  //  · `cap_progress` measured THE WRONG SIDE OF THE SPLIT. Its only writer
+  //    computed `ytd_gci / cap_amount * 100`, and `ytd_gci` is what the AGENT
+  //    KEPT — but a cap is a ceiling on what the BROKERAGE COLLECTS
+  //    (lib/commission/waterfall/07-apply-cap.ts: "Cap tracks brokerage's
+  //    cumulative earnings, NOT agent's"). On a 70/30 an agent read as capped
+  //    when the brokerage had taken roughly 43% of the cap.
+  //  · `totalCapRevenue` then multiplied that percentage back out into dollars,
+  //    so "Cap Revenue" — a number a broker reads as money collected — was a
+  //    reconstruction of a figure that measured the other party's earnings.
+  //
+  // MEASURED before this change: of four agents carrying `agents.cap_amount`,
+  // THREE had no ledger row at all, so the engine never capped them. The screen
+  // showed caps that had never been applied to a cheque.
+  //
+  // Now every figure comes from `agent_cap_tracking` for the window containing
+  // today — stage 07's own filter — so this card and the payout agree by
+  // construction. `cap_paid_to_date` is already dollars the brokerage collected;
+  // nothing is reconstructed.
+  const todayIso = new Date().toISOString().slice(0, 10)
+  const { data: capRows, error: capRowsError } = await supabase
+    .from("agent_cap_tracking")
+    .select("agent_id, cap_amount, cap_paid_to_date, is_capped")
+    .eq("brokerage_id", profile.brokerage_id)
+    .lte("anniversary_start", todayIso)
+    .gte("anniversary_end", todayIso)
+
+  const num = (v: unknown): number => {
+    const n = Number(v)
+    return Number.isFinite(n) ? n : 0
+  }
+  // A refused read is not "nobody is capped". Reported rather than rendered as
+  // a confident zero — the whole defect this replaces was a confident number.
+  const capLedgerUnavailable = !!capRowsError
+  const capByAgent = new Map<string, { amount: number; paid: number; capped: boolean }>()
+  for (const r of (capRows ?? []) as Array<{ agent_id: string; cap_amount: unknown; cap_paid_to_date: unknown; is_capped: unknown }>) {
+    // agent_cap_tracking has no uniqueness on (agent, window); if two rows
+    // overlap, the one further along is the one the money is actually against.
+    const prev = capByAgent.get(r.agent_id)
+    const next = { amount: num(r.cap_amount), paid: num(r.cap_paid_to_date), capped: r.is_capped === true }
+    if (!prev || next.paid > prev.paid) capByAgent.set(r.agent_id, next)
+  }
+
+  const cappedAgents = agents.filter(a => {
+    const c = capByAgent.get(a.id)
+    return !!c && (c.capped || c.paid >= c.amount)
+  })
+
   const capSummary = {
-    belowCap: agents.filter(a => (a.cap_progress || 0) < 100).length,
-    atCap: agents.filter(a => (a.cap_progress || 0) >= 100 && (a.cap_progress || 0) < 101).length,
-    postCap: agents.filter(a => (a.cap_progress || 0) >= 101).length,
-    recentlyCapped: agents.filter(a => (a.cap_progress || 0) >= 100),
+    // Has a cap and has not reached it.
+    belowCap: agents.filter(a => {
+      const c = capByAgent.get(a.id)
+      return !!c && !(c.capped || c.paid >= c.amount)
+    }).length,
+    // Has reached it: the brokerage's share is now $0 and the agent is on 100%.
+    atCap: cappedAgents.length,
+    // NO cap configured at all — uncapped for ever, which is the real revenue
+    // exposure the old "Post-Cap" card was gesturing at with a percentage band
+    // (`>= 101`) that a value clamped to 100 could never enter, so it always
+    // read zero.
+    uncapped: agents.filter(a => !capByAgent.has(a.id)).length,
+    recentlyCapped: cappedAgents,
     totalAgents: agents.length,
+    capLedgerUnavailable,
+    // Dollars the brokerage has actually collected toward caps, straight off the
+    // ledger. Clamped at the cap because collection stops there.
     totalCapRevenue: agents.reduce((sum, a) => {
-      const capPaid = ((a.cap_progress || 0) / 100) * (a.cap_amount || 0)
-      return sum + Math.min(capPaid, a.cap_amount || 0)
+      const c = capByAgent.get(a.id)
+      return c ? sum + Math.min(c.paid, c.amount) : sum
     }, 0),
-    totalCapPotential: agents.reduce((sum, a) => sum + (a.cap_amount || 0), 0),
+    totalCapPotential: agents.reduce((sum, a) => sum + (capByAgent.get(a.id)?.amount ?? 0), 0),
   }
 
   // Format currency
@@ -213,13 +279,19 @@ export default async function BrokeragePLPage() {
       }
     }
     
-    if (capSummary.postCap > capSummary.totalAgents * 0.3) {
+    // This priority could NEVER FIRE before. It tested `postCap`, defined as
+    // `cap_progress >= 101` — and cap_progress was written as
+    // `Math.min(…, 100)`, clamped, so no agent could ever exceed 100 and the
+    // count was structurally zero. The exposure it was written to catch is real,
+    // so it is now asked of the ledger: agents who have HIT their cap are on
+    // 100% commission from here to their anniversary.
+    if (capSummary.atCap > capSummary.totalAgents * 0.3) {
       return {
         id: "cap-exposure",
         title: "High Post-Cap Agent Ratio",
-        description: `${capSummary.postCap} agents at 100% commission - revenue exposure`,
+        description: `${capSummary.atCap} agents have hit their cap and are on 100% commission - revenue exposure`,
         urgency: "medium",
-        metric: `${capSummary.postCap}`,
+        metric: `${capSummary.atCap}`,
         metricLabel: "post-cap agents",
         ctaLabel: "Review Caps",
         ctaHref: "/dashboard/financials/payouts",
@@ -509,7 +581,9 @@ export default async function BrokeragePLPage() {
             Agent Caps Summary
           </CardTitle>
           <CardDescription>
-            Cap status distribution and revenue impact
+            {capSummary.capLedgerUnavailable
+              ? "The cap ledger could not be read — the figures below are not a statement that nobody is capped."
+              : "Cap status distribution and revenue impact, from agent_cap_tracking — the ledger the payout engine applies"}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -528,12 +602,20 @@ export default async function BrokeragePLPage() {
               </div>
               <p className="text-2xl font-bold mt-1">{capSummary.atCap}</p>
             </div>
+            {/*
+              Was "Post-Cap", counting cap_progress >= 101 — impossible, because
+              the writer clamped that value to 100. It read 0 for every brokerage
+              for its whole life. The genuinely distinct third state, which
+              nothing surfaced before, is an agent with NO cap configured: they
+              never stop earning the brokerage its full split, and equally the
+              brokerage has never agreed a ceiling with them.
+            */}
             <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
               <div className="flex items-center gap-2">
                 <Award className="h-4 w-4 text-green-600" />
-                <span className="text-sm text-green-800">Post-Cap</span>
+                <span className="text-sm text-green-800">No Cap Set</span>
               </div>
-              <p className="text-2xl font-bold mt-1">{capSummary.postCap}</p>
+              <p className="text-2xl font-bold mt-1">{capSummary.uncapped}</p>
             </div>
             <div className="p-4 bg-muted rounded-lg">
               <div className="flex items-center gap-2">

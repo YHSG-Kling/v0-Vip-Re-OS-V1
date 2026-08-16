@@ -7,6 +7,7 @@ import { resolveSeatUsage } from "@/lib/kernel/seat-usage"
 import { redirect } from "next/navigation"
 import { SettingsControlOSClient } from "./settings-control-os-client"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { normalizeCapAnniversaryBasis } from "@/lib/commission/cap-resolver"
 
 export const metadata = { title: "Settings | Control Center" }
 
@@ -89,10 +90,12 @@ export default async function SettingsControlOSPage() {
       .eq("brokerage_id", brokerageId)
       .eq("is_active", true),
     
-    // Brokerage tier + seat override — the seat meter's inputs
+    // Brokerage tier + seat override — the seat meter's inputs — and the
+    // BROKERAGE'S DEFAULT COMMISSION CAP (m461), which the Accounting &
+    // Commission panel below has always claimed to show. See the note there.
     service
       .from("brokerages")
-      .select("plan_tier, billing_metadata")
+      .select("plan_tier, billing_metadata, default_cap_amount, default_cap_anniversary_basis")
       .eq("id", brokerageId)
       .maybeSingle(),
 
@@ -108,7 +111,12 @@ export default async function SettingsControlOSPage() {
   const integrations = integrationRes.data || []
   const branding = brandingRes.data
   const users = usersRes.data || []
-  const brokerageRow = (brokerageRowRes.data ?? null) as { plan_tier: string | null; billing_metadata: unknown } | null
+  const brokerageRow = (brokerageRowRes.data ?? null) as {
+    plan_tier: string | null
+    billing_metadata: unknown
+    default_cap_amount: unknown
+    default_cap_anniversary_basis: unknown
+  } | null
   const notificationRules = notificationRulesRes.data || []
   const globalSettings = globalSettingsRes.data
   const commissionStructures = commissionStructuresRes.data || []
@@ -209,10 +217,31 @@ export default async function SettingsControlOSPage() {
     syncErrors: 0, // Would need to query sync_errors table for actual count
   }
 
-  // Commission settings
+  // ── Commission settings ────────────────────────────────────────────────────
+  // `capAmount` WAS A HARDCODED `null` with the comment "Would come from
+  // agent_cap_tracking or commission_structures". The panel has declared
+  // `capAmount?: number | null` and rendered a "Cap Amount" tile since it was
+  // written, and because the value was literally null the tile was never once
+  // drawn — a control that looked configurable and was a constant.
+  //
+  // The honest source is `brokerages.default_cap_amount` (m461): this panel is a
+  // BROKERAGE-level surface, so the brokerage-level setting is the one it can
+  // truthfully show. `agent_cap_tracking` is per-agent-per-window and has no
+  // single number to put here; `commission_structures` has no cap column at all.
+  //
+  // numeric(12,2) arrives from PostgREST as a STRING, and Number("") is 0 —
+  // which would render "$0" (the brokerage collects nothing) for a brokerage
+  // that has simply not set a cap. The two are opposite facts, so the empty case
+  // is mapped to null explicitly rather than through a truthiness check.
+  const rawDefaultCap = brokerageRow?.default_cap_amount
+  const parsedDefaultCap =
+    rawDefaultCap === null || rawDefaultCap === undefined || rawDefaultCap === ""
+      ? null
+      : Number(rawDefaultCap)
   const commissionSettings = {
     defaultSplitPct: commissionStructures[0]?.base_percentage ?? 70,
-    capAmount: null, // Would come from agent_cap_tracking or commission_structures
+    capAmount: parsedDefaultCap !== null && Number.isFinite(parsedDefaultCap) ? parsedDefaultCap : null,
+    capAnniversaryBasis: normalizeCapAnniversaryBasis(brokerageRow?.default_cap_anniversary_basis),
     hasStructures: commissionStructures.length > 0,
     structureCount: commissionStructures.length,
   }
