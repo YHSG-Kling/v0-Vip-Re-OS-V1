@@ -2205,7 +2205,16 @@ async function main() {
         // star has not crept back. (test:phantom-embed proves the ranking.)
         && /vendor:vendors\(\s*id\s*,/.test(src("app/actions/marketing-package-automation.ts"))
         && !src("app/actions/marketing-package-automation.ts").includes("vendor:vendors(*)")
-        && src("lib/communications/vendor-communications.tsx").includes("vendors(*)")
+        // vendor-communications.tsx now names its embedded columns too. This
+        // line used to assert the STAR was present, which recorded the state of
+        // the file rather than a property worth keeping — and it contradicted
+        // the rule stated two comments up. Both of its embeds were checked
+        // against the live schema (one FK each: vendor_id→vendors,
+        // transaction_id→transactions, listing_id→listings, so no PGRST200/201)
+        // and narrowed to exactly the columns the two emails read. Asserted as
+        // the claim — named, and no starred embed left anywhere in the file.
+        && src("lib/communications/vendor-communications.tsx").includes("vendors(id, name, email)")
+        && !/\w+\(\*\)/.test(src("lib/communications/vendor-communications.tsx"))
         && src("app/dashboard/isa/calling/page.tsx").includes("ai_identity_profiles")
         && src("lib/auth/permissions-client.ts").includes("user_role_assignments")
         && src("lib/data/brokerKPIs.ts").includes('from("agents")')

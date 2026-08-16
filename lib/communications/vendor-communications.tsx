@@ -5,6 +5,23 @@ import { isValidUUID } from "@/lib/validations"
 import { ValidationError } from "@/lib/errors"
 
 /**
+ * A PostgREST embed arrives as an OBJECT for a many-to-one relation and an
+ * ARRAY for a one-to-many, and supabase-js types the ambiguous ones as arrays.
+ * Both reads below embed through a plain FK, so at runtime they are objects —
+ * but writing `x.address` against an array-typed value is a compile error, and
+ * silencing it with a cast would be asserting a shape rather than handling one.
+ * This narrows honestly and works whichever shape actually arrives.
+ *
+ * It exists because the selects here were changed from `select("*")` to named
+ * columns. The star returned `any`, so this mismatch was invisible: the drift
+ * guard could not see the columns AND the type checker could not see the shape.
+ */
+function firstEmbedded<T>(value: T | T[] | null | undefined): T | null {
+  if (Array.isArray(value)) return value[0] ?? null
+  return value ?? null
+}
+
+/**
  * Send booking confirmation to vendor for marketing service
  */
 export async function sendVendorBookingConfirmation(params: {
@@ -36,7 +53,15 @@ export async function sendVendorBookingConfirmation(params: {
     // "not found" — on the one read that decides which brokerage owns the record.
     const { data: transaction, error: txError } = await supabase
       .from("transactions")
-      .select("*, listings(*)")
+      // NAMED, not starred. `select("*")` inside an embed is invisible to the
+      // schema-drift guard, which is how brokerages.address survived as a
+      // phantom for its whole life — the guard can only check a column it can
+      // see. Every column below was verified against the live schema before it
+      // was written here, and the set is exactly what this function reads:
+      // brokerage_id for the tenant stamp, listings.address/city for the email.
+      // The relation resolves through the single FK transactions.listing_id →
+      // listings.id (checked: one FK, so no PGRST201 ambiguity).
+      .select("id, brokerage_id, listing_id, listings(id, address, city)")
       .eq("id", params.transactionId)
       .single()
 
@@ -80,7 +105,7 @@ export async function sendVendorBookingConfirmation(params: {
       }
     }
 
-    const property = transaction.listings
+    const property = firstEmbedded(transaction.listings)
     const scheduledDate = params.scheduledDate
       ? new Date(params.scheduledDate).toLocaleDateString()
       : "TBD"
@@ -178,7 +203,17 @@ export async function sendVendorServiceReminder(params: {
     // sendVendorBookingConfirmation above).
     const { data: service, error: serviceError } = await supabase
       .from("listing_marketing_services")
-      .select("*, vendors(*), transactions(*, listings(*))")
+      // NAMED for the same reason as the booking read above: a starred embed is
+      // a blind spot in the drift guard, not a convenience. All three relations
+      // were checked live and each resolves through exactly ONE foreign key —
+      // listing_marketing_services.vendor_id → vendors.id,
+      // listing_marketing_services.transaction_id → transactions.id,
+      // transactions.listing_id → listings.id — so none of them can raise
+      // PGRST200 (no relation) or PGRST201 (ambiguous, needs a !hint).
+      // ONE STRING LITERAL, not a concatenation: supabase-js parses the select
+      // at the type level, and a concatenated expression is opaque to it — the
+      // whole row degrades to GenericStringError and every field read goes red.
+      .select("id, service_type, status, brokerage_id, vendor_id, transaction_id, vendors(id, name, email), transactions(id, brokerage_id, listing_id, listings(id, address))")
       .eq("id", params.serviceId)
       .single()
 
@@ -191,8 +226,9 @@ export async function sendVendorServiceReminder(params: {
       return { success: false, error: "Service not found" }
     }
 
-    const vendor = service.vendors
-    const property = service.transactions?.listings
+    const vendor = firstEmbedded(service.vendors)
+    const transaction = firstEmbedded(service.transactions)
+    const property = firstEmbedded(transaction?.listings)
 
     // ── TENANT OF THIS DELIVERY LEDGER ROW ────────────────────────────────────
     // VERDICT: STAMP, on the same reasoning recorded in
@@ -203,13 +239,25 @@ export async function sendVendorServiceReminder(params: {
     // the live `listing_marketing_services_set_brokerage_trg`), so the service row
     // is the nearest tenant of record; the parent transaction is the fallback.
     // Neither is caller-supplied: both are read from the row named by serviceId.
+    // Reads the NORMALIZED transaction, not `service.transactions` directly: the
+    // embed can arrive as an array, and `arr?.brokerage_id` is `undefined` — so
+    // the fallback would have silently stopped working while still looking correct.
     const brokerageId: string | null =
-      ((service as any).brokerage_id ?? (service as any).transactions?.brokerage_id) || null
+      (service.brokerage_id ?? transaction?.brokerage_id) || null
     if (!brokerageId) {
       return {
         success: false,
         error: "This service has no brokerage, so the reminder cannot be sent or recorded",
       }
+    }
+
+    // The vendor is checked BEFORE the message is composed, not after. This
+    // reminder is addressed to them by name and sent to their address; if the
+    // vendor row could not be resolved there is no one to send it to, and
+    // building the body first only defers the same refusal past the point where
+    // it reads as an error about the message rather than about the recipient.
+    if (!vendor?.email) {
+      return { success: false, error: "Vendor has no email on file" }
     }
 
     const emailHtml = `
@@ -230,7 +278,8 @@ export async function sendVendorServiceReminder(params: {
     `
 
     // REAL SEND through the canonical email gate (used to console.log only).
-    if (!vendor?.email) return { success: false, error: "Vendor has no email on file" }
+    // The vendor/email check that used to sit here has moved ABOVE the body —
+    // same refusal, raised before the work rather than after it.
     const { dispatchEmail } = await import("@/lib/providers/dispatch")
     const send = await dispatchEmail({
       brokerageId,
