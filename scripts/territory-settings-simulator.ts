@@ -431,7 +431,13 @@ const PROBES: Probe[] = [
   },
   {
     name: "S-G3 SELECT stays tenant-wide — the gate restricts WRITES, it does not blank the settings page",
-    run: () => !/for select/i.test(sqlCodeOnly(grainGateDdl())),
+    run: () => {
+      const cmds = gatedPolicyCommands(grainGateDdl())
+      // The gate must govern writes and ONLY writes. `all` counts as a failure
+      // too: FOR ALL silently covers SELECT, which is the same page-blanking
+      // outcome by another spelling.
+      return cmds.length > 0 && cmds.every((c) => c === "insert" || c === "update" || c === "delete")
+    },
   },
   {
     name: "S-G4 the team branch does NOT lean on current_user_led_team_id() — its LIMIT 1 would refuse a lead of two teams",
@@ -456,13 +462,46 @@ const PROBES: Probe[] = [
  * so renaming or splitting the migration that carries it cannot make these
  * probes report a removal.
  */
+/**
+ * The DDL that actually DEFINES OR USES the grain gate, comments stripped FIRST.
+ *
+ * The comment-stripping has to happen BEFORE the filter, not after. It used to
+ * happen after, and the day a later migration merely CITED m465 in a prose
+ * comment — m466 does, twice, naming can_write_service_area as the precedent it
+ * follows — that whole unrelated file was pulled into this corpus, bringing five
+ * SELECT policies for OTHER tables with it and turning S-G3 red on green code.
+ * A probe must key on the CODE, and on the claim; being cited is not being used.
+ */
 function grainGateDdl(): string {
   const dir = join(process.cwd(), "supabase/migrations")
   return readdirSync(dir)
     .filter((f) => f.endsWith(".sql"))
-    .map((f) => readFileSync(join(dir, f), "utf8"))
+    .map((f) => sqlCodeOnly(readFileSync(join(dir, f), "utf8")))
     .filter((sql) => /can_write_service_area/i.test(sql))
     .join("\n")
+}
+
+/**
+ * Every `create policy` statement in `ddl` that actually REFERENCES the gate,
+ * paired with the command it governs.
+ *
+ * S-G3's real claim is "no policy that uses the gate is a SELECT policy" — a
+ * statement about the POLICIES, which is what the settings page's visibility
+ * actually depends on. Testing instead whether the string "for select" appears
+ * anywhere in a pile of concatenated files is a statement about the CORPUS, and
+ * the corpus is not the claim: it goes red when an unrelated migration lands
+ * beside it and stays green if someone adds a gated SELECT policy in a file this
+ * scan never pulled in. Both directions were wrong.
+ */
+function gatedPolicyCommands(ddl: string): string[] {
+  const out: string[] = []
+  const re = /create\s+policy[\s\S]*?(?=create\s+policy|create\s+or\s+replace|alter\s+table|$)/gi
+  for (const m of ddl.match(re) ?? []) {
+    if (!/can_write_service_area/i.test(m)) continue
+    const cmd = /\bfor\s+(select|insert|update|delete|all)\b/i.exec(m)
+    out.push((cmd?.[1] ?? "unspecified").toLowerCase())
+  }
+  return out
 }
 
 function sourceLayer() {
@@ -649,6 +688,31 @@ function pureNegativeControls() {
     ({ ok: true as const, columns: { team_id: ids.teamId ?? null, agent_user_id: null } })
   check("NEGATIVE CONTROL a resolver that widens a team claim to brokerage-wide fails P7 — went RED as required",
     laxResolve("team", {}).ok === true)
+
+  // ── S-G3's OWN falsifiability, both directions ────────────────────────────
+  // This probe shipped red on green code: it asserted the string "for select"
+  // appeared nowhere in a pile of concatenated migration files, so an unrelated
+  // migration that merely CITED the gate in a comment dragged its own SELECT
+  // policies into the corpus and failed it. Both directions now get proved.
+  const sel = (cmd: string) => `
+    create policy "p_write" on public.subscriber_service_areas
+      for insert with check (public.can_write_service_area(brokerage_id, team_id, agent_user_id));
+    create policy "p_read" on public.subscriber_service_areas
+      for ${cmd} using (public.can_write_service_area(brokerage_id, team_id, agent_user_id));`
+
+  check("NEGATIVE CONTROL a SELECT policy that leans on the grain gate — the page-blanking defect — goes RED as required",
+    !gatedPolicyCommands(sel("select")).every((c) => c !== "select"))
+  check("NEGATIVE CONTROL …and so does FOR ALL, which covers SELECT under another spelling",
+    gatedPolicyCommands(sel("all")).includes("all"))
+
+  // The false-positive direction: an unrelated policy for another table sitting
+  // in the same DDL must NOT be attributed to the gate.
+  const unrelated = `
+    create policy "other" on public.some_other_table for select using (true);
+    create policy "p_write" on public.subscriber_service_areas
+      for update using (public.can_write_service_area(brokerage_id, team_id, agent_user_id));`
+  check("…while an unrelated SELECT policy beside the gate is NOT counted against it (the defect that failed CI)",
+    JSON.stringify(gatedPolicyCommands(unrelated)) === JSON.stringify(["update"]))
 }
 
 // ─── LIVE ────────────────────────────────────────────────────────────────────
