@@ -4,6 +4,8 @@ import type { WaterfallContext, DistributionRecord } from '../types'
 import {
   resolveTeamLeadOverride,
   isAgreementEffective,
+  pickTeamTerms,
+  type AgentNegotiatedTermRow,
   applyTeamCap,
   interpretTeamCapLedgerRead,
   TeamCapLedgerUnreadable,
@@ -112,15 +114,51 @@ async function resolveTeamLeadAgreement(
   const leadAgentId = (leadAgent as any)?.id as string | null
   if (!leadAgentId) return null
 
-  const splitType = (team as any).team_split_type === 'flat' ? 'flat' : 'percent'
-  const splitValue = splitType === 'flat'
+  const teamSplitType = (team as any).team_split_type === 'flat' ? 'flat' : 'percent'
+  const teamSplitValue = teamSplitType === 'flat'
     ? Number((team as any).team_split_value ?? 0)
     : Number((team as any).team_split_percent ?? 0)
+
+  // ── THE AGENT'S OWN NEGOTIATED TERM OUTRANKS THE TEAM DEFAULT ─────────────
+  //
+  // OWNER RULING: "all commission agreements can be negotiated per agent before
+  // signing." `agent_commission_profiles.team_override_percent` is where that
+  // negotiated term lives — and until now NOTHING read it. A broker could agree
+  // 15% with an agent whose team charges 25%, store it, show it back, and the
+  // engine would still take 25% off every cheque.
+  //
+  // Tenant-scoped: an agent id from another brokerage resolves to no rows rather
+  // than to somebody else's terms. `error` is checked because supabase-js
+  // RESOLVES a failed query — an unchecked refusal here would silently fall back
+  // to the team default and quietly charge the agent the rate they negotiated
+  // away from.
+  const { data: negotiated, error: negotiatedError } = await supabase
+    .from('agent_commission_profiles')
+    .select('team_override_percent, is_active, effective_date')
+    .eq('agent_id', context.agentId)
+    .eq('brokerage_id', context.brokerageId)
+  if (negotiatedError) {
+    throw new Error(`[team-split] agent_commission_profiles lookup failed: ${negotiatedError.message}`)
+  }
+
+  const terms = pickTeamTerms({
+    profiles: (negotiated ?? []) as unknown as AgentNegotiatedTermRow[],
+    teamSplitType,
+    teamSplitValue,
+    today: new Date().toISOString().slice(0, 10),
+  })
 
   const rawCap = (team as any).cap_amount
   const capAmount = rawCap === null || rawCap === undefined ? null : Number(rawCap)
 
-  return { teamId: (team as any).id, teamLeadId: leadAgentId, splitType, splitValue, capAmount }
+  return {
+    teamId: (team as any).id,
+    teamLeadId: leadAgentId,
+    splitType: terms.splitType,
+    splitValue: terms.splitValue,
+    capAmount,
+    source: terms.source,
+  }
 }
 
 /**
@@ -199,20 +237,37 @@ export async function applyTeamSplit(
   //      agentPortionCents instead of the post-cap agentNetCents; or
   //  (b) bound the TOTAL — cap what the team may collect across the year.
   //
-  // (b) is the owner's ruling ("brokerage and teams may also have commission
-  // caps") and is what is implemented here. (a) is NOT done: whether a team
-  // lead's "X% of the agent's net" means net-before or net-after the brokerage
-  // cap is a real-world team-agreement question with defensible answers on both
-  // sides, and silently re-basing every existing team agreement would rewrite
-  // live money on no ruling at all. The base therefore stays exactly what it has
-  // always been — the agent's post-cap net less member deductions — and the
-  // ceiling is what stops the team collecting for ever.
+  // BOTH ARE NOW RULED, and the ruling is (b) plus a per-agent escape hatch:
   //
-  // What the cap DOES fix, precisely: the team's annual take is now bounded, so a
-  // capped agent reaches the team ceiling SOONER and then pays the team nothing
-  // for the rest of the year. What it does NOT fix: within a year, before the
-  // team ceiling is reached, a brokerage-capped agent still pays a percentage of
-  // the larger base. That is (a)'s territory and needs an owner ruling.
+  //   OWNER: "the decision about team percentage rebasing should be per deal net
+  //           but all commission agreements can be negotiated per agent before
+  //           signing."
+  //
+  // So (a) is DECLINED, deliberately and permanently: the base is THE PER-DEAL
+  // NET — `agentNetCents` less member deductions, exactly what it has always
+  // been. The lead's percentage is taken of what the agent actually nets on THIS
+  // deal, whatever produced that number. It is NOT re-based onto the pre-cap
+  // `agentPortionCents`.
+  //
+  // DO NOT "FIX" THIS LATER. A future reader will notice that a brokerage-capped
+  // agent pays a percentage of an inflated base and will be tempted to re-base
+  // it. That is the ruled-against option. Re-basing would silently rewrite every
+  // signed team agreement in the system, and the ruling's second half is what
+  // makes that unnecessary: an agent who does not want to pay a percentage of the
+  // post-cap base NEGOTIATES THEIR OWN TERM before signing, and
+  // `agent_commission_profiles.team_override_percent` is where that term lives —
+  // now read by resolveTeamLeadAgreement above, and outranking the team default.
+  // The answer to "this percentage is wrong for me" is a negotiated percentage,
+  // not a silent change to what everyone else's percentage means.
+  //
+  // What the team cap adds on top: the team's annual take is bounded, so a capped
+  // agent reaches the team ceiling SOONER and then pays the team nothing for the
+  // rest of the year. Within a year, before that ceiling, a brokerage-capped
+  // agent does pay a percentage of the larger base — and per the ruling, that is
+  // correct behaviour, not a defect.
+  //
+  // scripts/team-cap-simulator.ts locks the base, so a re-base cannot land
+  // silently: it would turn that assertion red and force this comment to be read.
   let leadDeductionCents = 0
   let teamCapStatus: TeamCapStatus = 'n/a'
   let teamAmountTowardsCap = 0

@@ -48,6 +48,144 @@ export interface TeamLeadAgreement {
    * copy — the ledger is what the engine reads and therefore what it must honour.
    */
   capAmount?: number | null
+  /**
+   * WHERE THE PERCENTAGE CAME FROM (owner ruling: "all commission agreements can
+   * be negotiated per agent before signing").
+   *
+   *   "agent_negotiated" — agent_commission_profiles.team_override_percent, the
+   *                        term this individual agent signed.
+   *   "team_default"     — teams.team_split_*, the team's standing terms.
+   *
+   * Carried so the CDA and the distribution note can say which one was applied.
+   * An agent who negotiated 15% where the team default is 25% must be able to
+   * see that the 15% is what ran, not merely trust it.
+   */
+  source: "agent_negotiated" | "team_default"
+}
+
+/**
+ * One row of `agent_commission_profiles`, as the per-agent negotiated term.
+ * `unknown` because numeric arrives from PostgREST as a string, a number or null.
+ */
+export interface AgentNegotiatedTermRow {
+  team_override_percent: unknown
+  is_active: unknown
+  effective_date: unknown
+}
+
+/**
+ * ══ THE UNITS OF `team_override_percent`, DECIDED AND WRITTEN DOWN ══════════
+ *
+ * IT IS A WHOLE PERCENTAGE. 15 means 15%, exactly like `teams.team_split_percent`
+ * which it overrides. It is NOT a fraction: 0.15 stored here would be read as
+ * 0.15%, paying the team a hundredth of what was agreed.
+ *
+ * This needed deciding rather than assuming, because the column's SHAPE is
+ * ambiguous and inconsistent with its own table. MEASURED on the live schema:
+ *
+ *   split_percent          numeric(5,2)   whole percent
+ *   referral_percent       numeric(5,2)   whole percent
+ *   residual_percent       numeric(5,2)   whole percent
+ *   teams.team_split_percent numeric(5,2) whole percent
+ *   agents.commission_split  numeric(5,2) whole percent
+ *   team_override_percent  numeric(6,4)   ← the odd one out: 25.0000 and 0.2500 both fit
+ *   royalty_percent        numeric(6,5)   ← max 9.99999, so that one IS a fraction
+ *
+ * The column holds ZERO rows, so no existing data disambiguates it, and until now
+ * it had no reader at all — which means this module gets to define the contract
+ * rather than infer one. Whole percentage is the only coherent choice: pickTeamTerms
+ * substitutes this value directly for the team's own whole-percent default, so any
+ * other reading would silently change what a substitution means.
+ *
+ * REPORTED, NOT MIGRATED: numeric(6,4) caps at 99.9999, so this column cannot
+ * store 100 while its siblings can. The writer validates to the real bound and
+ * says so. Normalising the column to numeric(5,2) is the tidy-up — deliberately
+ * not bundled into a change that is already re-wiring how the team gets paid.
+ *
+ * ── PROVED ON THE LIVE DATABASE, residue 0 ─────────────────────────────────
+ *
+ *   A  no negotiated term on file ................ 0 rows → team default applies
+ *   B  a negotiated 15 stores as ................. 15.0000
+ *   C  stage 08's own (agent_id, brokerage_id) select returns .... 1 row
+ *   D  12.3456 keeps all four decimals ........... 12.3456
+ *   E  a negotiated 0 stores as 0.0000, `is null` = false
+ *   F  100 ....................................... REFUSED 22003
+ *   G  99.9999 ................................... accepted
+ *
+ * F is why the writer's bound is 99.9999 and not 100. The first draft of that
+ * validation allowed 100 — which the column rejects with a numeric-overflow the
+ * broker could do nothing about. E is why NULL and 0 are kept distinct all the
+ * way through: 0 is "this agent pays their team nothing", a term someone signed.
+ */
+
+/** PURE. A `numeric` column arrives as a string, a number, or null. */
+function numOrNull(v: unknown): number | null {
+  if (v === null || v === undefined || v === "") return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+export interface TeamTerms {
+  splitType: "percent" | "flat"
+  splitValue: number
+  source: "agent_negotiated" | "team_default"
+}
+
+/**
+ * PURE. THE PRECEDENCE, with nothing else in it, so it can be asserted directly.
+ *
+ * OWNER RULING: a commission agreement is negotiated PER AGENT before signing.
+ * So the individual's negotiated term OUTRANKS the team's standing terms — the
+ * team default is what applies to an agent who negotiated nothing, not a floor
+ * that overrides what somebody actually signed.
+ *
+ * `agent_commission_profiles.team_override_percent` existed on this schema and
+ * was read by NOTHING — a negotiated term that reached no cheque, which is the
+ * same defect class as `agents.cap_amount` (m461/m463): a number a broker typed,
+ * a screen showed back, and the engine never applied.
+ *
+ * A profile row counts only when `is_active` is true AND its `effective_date` has
+ * arrived — a term dated next quarter is not this quarter's deal. Among rows that
+ * qualify, the LATEST effective_date wins; a NULL effective_date means "from the
+ * start" and therefore loses to any dated row that has arrived. This is the same
+ * rule `lib/commission/cap-resolver.ts:pickCapAmount` applies to caps, on purpose:
+ * two different precedence rules over the same table is how they drift apart.
+ *
+ * A negotiated **0 is a real answer** — "this agent pays their team nothing" — and
+ * it beats the team default. Only NULL means nobody negotiated. Same distinction
+ * the cap resolver draws between a 0 cap and an absent one.
+ */
+export function pickTeamTerms(input: {
+  profiles: AgentNegotiatedTermRow[]
+  teamSplitType: "percent" | "flat"
+  teamSplitValue: number
+  /** YYYY-MM-DD. */
+  today: string
+}): TeamTerms {
+  const eligible = input.profiles
+    .filter((p) => p.is_active === true)
+    .filter((p) => numOrNull(p.team_override_percent) !== null)
+    .filter((p) => {
+      const eff = typeof p.effective_date === "string" ? p.effective_date.slice(0, 10) : null
+      return eff === null || eff <= input.today
+    })
+    .sort((a, b) => {
+      const ea = typeof a.effective_date === "string" ? a.effective_date.slice(0, 10) : ""
+      const eb = typeof b.effective_date === "string" ? b.effective_date.slice(0, 10) : ""
+      return eb.localeCompare(ea)
+    })
+
+  if (eligible.length > 0) {
+    // The column is a PERCENT, so a negotiated term is always percent-typed —
+    // it cannot silently become a flat dollar amount.
+    return {
+      splitType: "percent",
+      splitValue: numOrNull(eligible[0].team_override_percent) as number,
+      source: "agent_negotiated",
+    }
+  }
+
+  return { splitType: input.teamSplitType, splitValue: input.teamSplitValue, source: "team_default" }
 }
 
 export interface TeamLeadSplitResult {
@@ -95,7 +233,12 @@ export function resolveTeamLeadOverride(
       calculation_value: agreement.splitValue,
       calculated_amount: leadCents / 100,
       source_of_funds: "agent",
-      notes: "Team lead override split",
+      // WHICH TERM RAN, on the row itself. A disbursement line that says only
+      // "team lead override" cannot be checked against the agreement the agent
+      // signed; naming the source makes the CDA self-evidencing.
+      notes: agreement.source === "agent_negotiated"
+        ? "Team lead override split (agent's negotiated term)"
+        : "Team lead override split (team default terms)",
     },
   }
 }

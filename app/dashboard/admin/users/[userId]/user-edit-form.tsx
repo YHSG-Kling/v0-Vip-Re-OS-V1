@@ -85,6 +85,8 @@ export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages, 
     license_state: agentProfile?.licenseState ?? "",
     license_expiry: agentProfile?.licenseExpiry ?? "",
     commission_split: agentProfile?.commissionSplit != null ? String(agentProfile.commissionSplit) : "",
+    team_override_percent:
+      agentProfile?.teamOverridePercent != null ? String(agentProfile.teamOverridePercent) : "",
     location_id: agentProfile?.locationId ?? NO_OFFICE,
   })
   const [saving, setSaving] = useState(false)
@@ -136,6 +138,11 @@ export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages, 
         licenseState: agent.license_state,
         licenseExpiry: agent.license_expiry || null,
         commissionSplit: agent.commission_split === "" ? null : Number(agent.commission_split),
+        // "" is a DELIBERATE CLEAR back to the team's standing terms, so it must
+        // send null rather than be omitted — omitting it would leave a torn-up
+        // agreement silently in force.
+        teamOverridePercent:
+          agent.team_override_percent === "" ? null : Number(agent.team_override_percent),
         locationId: agent.location_id === NO_OFFICE ? null : agent.location_id,
       })
       if (!agentRes.ok) {
@@ -317,6 +324,35 @@ export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages, 
                   placeholder="e.g. 70"
                 />
               </div>
+            </div>
+            {/*
+              THE NEGOTIATED TEAM TERM (owner ruling: "all commission agreements
+              can be negotiated per agent before signing"). Until this field
+              existed, `agent_commission_profiles.team_override_percent` had no
+              writer at all — a negotiated percentage could be agreed and had
+              nowhere to be recorded, so the engine always charged the team default.
+              Max is 99.9999, not 100: the column is numeric(6,4) and refuses 100
+              with a numeric-overflow the broker could do nothing about.
+            */}
+            <div className="space-y-1.5">
+              <Label htmlFor="teamOverridePercent">Negotiated Team Split (%)</Label>
+              <Input
+                id="teamOverridePercent"
+                type="number"
+                min={0}
+                max={99.9999}
+                step="0.25"
+                value={agent.team_override_percent}
+                onChange={(e) => setAgentField("team_override_percent", e.target.value)}
+                placeholder="Leave blank to use the team's standard terms"
+              />
+              <p className="text-xs text-muted-foreground">
+                {agentProfile?.teamOverrideUnavailable
+                  ? "This agent's negotiated term could not be read — the value shown is not confirmed."
+                  : agent.team_override_percent === ""
+                    ? "Blank: this agent pays their team's standard percentage."
+                    : "This agent's own agreement. It overrides the team's standard percentage on every deal."}
+              </p>
             </div>
             <div className="space-y-1.5">
               <Label>Office / Location</Label>
