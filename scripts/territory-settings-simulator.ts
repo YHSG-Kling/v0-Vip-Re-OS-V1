@@ -38,7 +38,7 @@
  * NEGATIVE CONTROLS: every check is re-run against a deliberately broken copy and
  *         must go RED. A check that cannot fail is not a check.
  */
-import { readFileSync } from "node:fs"
+import { readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
 import {
@@ -405,7 +405,65 @@ const PROBES: Probe[] = [
         && (ddl.match(/WHERE is_primary AND active/g) ?? []).length === 3
     },
   },
+
+  // ── THE GRAIN GATE AT THE DATABASE BOUNDARY (m465) ────────────────────────
+  // Found by scanning EVERY migration for the gate, not by naming one file: a
+  // probe keyed to a filename reports a rename as a removal, which is how three
+  // earlier probes in this repo failed on green code.
+  {
+    name: "S-G1 a grain gate exists in the migrations, and the three WRITE policies are the ones that use it",
+    run: () => {
+      const ddl = sqlCodeOnly(grainGateDdl())
+      return /create or replace function public\.can_write_service_area/i.test(ddl)
+        && /for insert[\s\S]*?can_write_service_area/i.test(ddl)
+        && /for update[\s\S]*?can_write_service_area/i.test(ddl)
+        && /for delete[\s\S]*?can_write_service_area/i.test(ddl)
+    },
+  },
+  {
+    name: "S-G2 UPDATE is gated on BOTH sides — without WITH CHECK an agent could promote their own row to the brokerage grain",
+    run: () => {
+      const ddl = sqlCodeOnly(grainGateDdl())
+      const upd = ddl.slice(ddl.toLowerCase().indexOf("for update"))
+      return /using\s*\([^)]*can_write_service_area/i.test(upd)
+        && /with check\s*\([^)]*can_write_service_area/i.test(upd)
+    },
+  },
+  {
+    name: "S-G3 SELECT stays tenant-wide — the gate restricts WRITES, it does not blank the settings page",
+    run: () => !/for select/i.test(sqlCodeOnly(grainGateDdl())),
+  },
+  {
+    name: "S-G4 the team branch does NOT lean on current_user_led_team_id() — its LIMIT 1 would refuse a lead of two teams",
+    run: () => !/current_user_led_team_id/i.test(sqlCodeOnly(grainGateDdl())),
+  },
+  {
+    name: "S-G5 admin means user_type OR a tenant role grant, matching requireBrokerageAdmin — a grant-only admin is not silently refused",
+    run: () => {
+      const ddl = sqlCodeOnly(grainGateDdl())
+      return /is_brokerage_admin\(\)/.test(ddl) && /user_role_assignments/.test(ddl)
+    },
+  },
+  {
+    name: "S-G6 the app-side gate is KEPT, not replaced — RLS gives a refusal, authorizeTerritoryWrite gives the sentence a person reads",
+    run: (s) => /authorizeTerritoryWrite/.test(codeOnly(s[ACTIONS]))
+      && /export function authorizeTerritoryWrite/.test(s[RULES]),
+  },
 ]
+
+/**
+ * Every migration concatenated. The grain gate is located by WHAT IT DEFINES,
+ * so renaming or splitting the migration that carries it cannot make these
+ * probes report a removal.
+ */
+function grainGateDdl(): string {
+  const dir = join(process.cwd(), "supabase/migrations")
+  return readdirSync(dir)
+    .filter((f) => f.endsWith(".sql"))
+    .map((f) => readFileSync(join(dir, f), "utf8"))
+    .filter((sql) => /can_write_service_area/i.test(sql))
+    .join("\n")
+}
 
 function sourceLayer() {
   console.log("\n[SOURCE · the writers are session-gated, grain-gated and error-checked]")
@@ -610,6 +668,33 @@ async function liveLayer() {
     .limit(1)
   check("live: subscriber_service_areas exposes all three grain columns plus is_primary/active",
     !error, error?.message ?? "")
+
+  // THE GATE ITSELF, not the file that created it. A migration file on disk is
+  // not the database — m462's own history in this repo turned on exactly that
+  // distinction. Calling the function proves it EXISTS and is callable.
+  //
+  // The service role carries no auth.uid(), so current_user_brokerage_id() is
+  // NULL and every branch must fail. That is the assertion worth making: an
+  // identity-less caller is admitted to NO grain, including the brokerage grain
+  // that steers the platform lead rotation. A gate that returned true here would
+  // be no gate at all.
+  const grains: Array<[string, string | null, string | null]> = [
+    ["brokerage", null, null],
+    ["team", "00000000-0000-0000-0000-000000000001", null],
+    ["agent", null, "00000000-0000-0000-0000-000000000002"],
+  ]
+  for (const [grain, teamId, agentUserId] of grains) {
+    const { data, error: rpcError } = await svc.rpc("can_write_service_area", {
+      p_brokerage_id: "00000000-0000-0000-0000-000000000009",
+      p_team_id: teamId,
+      p_agent_user_id: agentUserId,
+    })
+    check(
+      `live: the grain gate exists and admits an identity-less caller to NO ${grain} grain`,
+      !rpcError && data === false,
+      rpcError?.message ?? `returned ${JSON.stringify(data)}`,
+    )
+  }
 }
 
 async function main() {

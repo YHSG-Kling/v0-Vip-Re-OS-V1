@@ -54,10 +54,18 @@ import {
   isVendorCategory,
   pickBestVendor,
   rankVendors,
-  scoreVendor,
   vendorCategoryForService,
   type RankableVendor,
 } from "../lib/marketing/vendor-ranking"
+
+/**
+ * The per-row scorer is NOT exported — it is an internal of rankVendors, and an
+ * export nothing outside calls is indistinguishable from an unfinished feature.
+ * Ranking a bench of one observes exactly the same three fields (score,
+ * measured, unmeasured), so every scoring assertion below is unchanged in what
+ * it proves and is now made through the surface real callers actually use.
+ */
+const scoreVendor = (v: RankableVendor) => rankVendors([v])[0]
 import { MEMORY_VIDEO_PERSONAS, qualifiesForMemoryVideo } from "../lib/video/memory-video-gate"
 
 let pass = 0

@@ -122,8 +122,17 @@ export const MAX_PRIORITY_BONUS = 10
  *
  * A null column contributes nothing and is reported as unmeasured — it never
  * silently defaults to a flattering (or punishing) number.
+ *
+ * NOT EXPORTED, deliberately. Every field it produces — score, measured,
+ * unmeasured — is spread onto each row by rankVendors below, so a caller
+ * holding a ScoredVendor already has this function's whole output. Exporting it
+ * as well would put an entry point in the module that nothing outside needs, and
+ * "no caller" is what an unfinished feature looks like from the outside. The
+ * scoring rules are still proved directly — scripts/phantom-embed-simulator.ts
+ * exercises them through rankVendors([one vendor])[0], which observes exactly
+ * the same three fields. The capability is intact; only the surplus door is shut.
  */
-export function scoreVendor(vendor: RankableVendor): VendorScore {
+function scoreVendor(vendor: RankableVendor): VendorScore {
   const measured: string[] = []
   const unmeasured: string[] = [...UNMEASURED_RANKING_INPUTS]
   let score = 0
