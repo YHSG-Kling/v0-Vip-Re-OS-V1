@@ -1490,6 +1490,11 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   recruiting_roi: "recruiting_manager",
   recruits: "recruiting_manager",
   team_activity_snapshots: "recruiting_manager",
+  // The TEAM cap ledger is a money ledger, so it sits with finance_manager
+  // beside agent_cap_tracking — NOT with the other team_* tables, which are
+  // recruiting_manager's roster and performance surfaces. Same reasoning the
+  // registry already applies to commissions: "the deal didn't move, the money did".
+  team_cap_tracking: "finance_manager",
   team_earnings: "recruiting_manager",
   team_heatmap_snapshots: "recruiting_manager",
   team_members: "recruiting_manager",
