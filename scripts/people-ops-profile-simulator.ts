@@ -50,10 +50,37 @@ console.log("\n── the agent real-estate profile is managed inline (LIVE colu
     a.includes('.from("locations")') && a.includes("Office not found for this brokerage"))
   check("commission split is validated to 0–100",
     a.includes("between 0 and 100"))
+  // SHAPE-TOLERANT, because the CLAIM is not a shape. This probe used to require
+  // three exact literals: `.from("agent_commission_profiles").upsert(` on ONE
+  // line, and the payload key written inline as `split_percent: patch.commission_split`.
+  // Both broke on a refactor that KEPT the behaviour and strengthened it — the
+  // chain gained a `.select("id")` row-count proof (a zero-row RLS refusal arrives
+  // as error:null) and the payload moved into a variable so a negotiated team term
+  // could be written in the same upsert without either field blanking the other.
+  //
+  // A guard that fails on a legitimate refactor while the behaviour is intact is
+  // not protecting anything; it is taxing improvement. Asserted here as: the split
+  // REACHES agent_commission_profiles.split_percent, upserted on the unique
+  // agent_id. Removing the sync still turns this red — see the negative control.
+  const aFlat = a.replace(/\s+/g, " ")
+  const rule1Sync = (source: string) => {
+    const flat = source.replace(/\s+/g, " ")
+    return /from\("agent_commission_profiles"\)\s*\.upsert\(/.test(flat)
+      && /onConflict: "agent_id"/.test(flat)
+      // `split_percent: patch.commission_split` OR `profilePatch.split_percent = patch.commission_split`
+      && /split_percent\s*[:=]\s*patch\.commission_split/.test(flat)
+  }
   check("RULE-1 SYNC: the broker's split is mirrored onto the engine-authoritative agent_commission_profiles",
-    a.includes('.from("agent_commission_profiles").upsert(') && /split_percent: patch\.commission_split/.test(a) && a.includes('onConflict: "agent_id"'))
+    rule1Sync(a))
+  check("NEGATIVE CONTROL removing the profile sync turns RULE-1 red — went RED as required",
+    !rule1Sync(a.replace(/split_percent/g, "split_percent_REMOVED")))
   check("the sync sets is_active so the engine's active-profile read finds it",
-    /agent_commission_profiles[\s\S]*?is_active: true/.test(a))
+    /agent_commission_profiles[\s\S]*?is_active: true/.test(a) || /is_active: true[\s\S]*?agent_commission_profiles/.test(aFlat))
+  // The write must be PROVEN, not assumed: supabase-js resolves a refused write
+  // with error:null and zero rows, so a broker would be told a split was saved
+  // that the engine will never see.
+  check("…and the profile write proves it landed (row count, not a resolved promise)",
+    /\.select\("id"\)/.test(aFlat) && /profileRows/.test(aFlat))
 
   const form = src("app/dashboard/admin/users/[userId]/user-edit-form.tsx")
   check("the form shows the Agent Profile card only when an agent row exists",
