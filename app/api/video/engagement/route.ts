@@ -141,25 +141,59 @@ export async function GET(request: NextRequest) {
 }
 
 // POST: Record a video engagement event and update aggregates
+//
+// TENANCY. The tenant is resolved from the SESSION and from nowhere else. The
+// previous shape of this handler had no auth gate at all and read the tenant id
+// out of the JSON body — the caller got to NAME the brokerage it wanted its
+// event, its aggregate row and its lifecycle_events row written into. That is
+// the whole defect class: an unauthenticated body naming a tenant is a write
+// primitive into any tenant on the platform.
+//
+// Three things close it, and all three are needed:
+//   1. requireAuth on the POST path (not merely imported for GET's benefit).
+//   2. The tenant comes from auth.brokerageId. A body that still carries one is
+//      REFUSED with 400 rather than silently ignored — a caller that thinks it
+//      is choosing a tenant must be told it is not, and a silent ignore is
+//      indistinguishable from the old behaviour in a test.
+//   3. The NAMED VIDEO is verified into that tenant before anything is written.
+//      Without (3), (1) and (2) only move the lie: a caller in brokerage A
+//      could stamp its own tenant onto engagement for brokerage B's video and
+//      corrupt both ledgers at once.
 export async function POST(request: Request) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
+
+  // Session-resolved tenant. Never read from the request body.
+  const brokerageId = auth.brokerageId
+
   try {
     const body = await request.json()
     const {
       videoAssetId,
       videoProjectId,
-      brokerageId,
       contactId,
       eventType,
       watchDurationSeconds,
-      metadata,
     } = body
+
+    // A caller-supplied tenant is refused outright, not quietly dropped.
+    if (body && Object.prototype.hasOwnProperty.call(body, "brokerageId")) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "brokerageId is not accepted in the request body — the tenant is resolved from the session",
+        },
+        { status: 400 }
+      )
+    }
 
     // Validate required fields
     if (!eventType || !VALID_EVENT_TYPES.includes(eventType)) {
       return NextResponse.json(
-        { 
-          success: false, 
-          error: `Invalid event_type. Must be one of: ${VALID_EVENT_TYPES.join(", ")}` 
+        {
+          success: false,
+          error: `Invalid event_type. Must be one of: ${VALID_EVENT_TYPES.join(", ")}`
         },
         { status: 400 }
       )
@@ -172,10 +206,24 @@ export async function POST(request: Request) {
       )
     }
 
-    const supabase = await createClient()
+    // The named video must belong to the session's tenant. Both tables carry
+    // brokerage_id, so this is an equality test against a resolved value — not
+    // an FK, which would only prove the row exists somewhere.
+    const owned = await assertVideoBelongsToTenant(
+      supabase,
+      videoAssetId || null,
+      videoProjectId || null,
+      brokerageId
+    )
+    if (!owned.ok) {
+      return NextResponse.json({ success: false, error: owned.error }, { status: owned.status })
+    }
 
-    // 1. Insert raw event into video_engagement_events
+    // 1. Insert raw event into video_engagement_events — STAMPED with the
+    //    session tenant. This column exists and was previously left null on
+    //    every row, so the raw event ledger had no tenant at all.
     const eventRecord = {
+      brokerage_id: brokerageId,
       video_asset_id: videoAssetId || null,
       contact_id: contactId || null,
       event_type: eventType as VideoEventType,
@@ -205,7 +253,7 @@ export async function POST(request: Request) {
     )
 
     // 3. Check thresholds and fire kernel events
-    if (trackingResult && brokerageId) {
+    if (trackingResult) {
       await checkPerformanceThresholds(supabase, trackingResult, brokerageId)
     }
 
@@ -220,17 +268,61 @@ export async function POST(request: Request) {
   }
 }
 
+// Helper: prove the named video asset / project sits inside the caller's tenant.
+// Reads are error-checked: supabase-js RESOLVES a rejected query, so an
+// unchecked read would turn a refusal into "no such row" and, worse, a missing
+// `error` check plus a null row would read as "not ours" or "ours" by accident.
+async function assertVideoBelongsToTenant(
+  supabase: any,
+  videoAssetId: string | null,
+  videoProjectId: string | null,
+  brokerageId: string
+): Promise<{ ok: true } | { ok: false; error: string; status: number }> {
+  if (videoAssetId) {
+    const { data: asset, error: assetError } = await supabase
+      .from("video_assets")
+      .select("id, brokerage_id")
+      .eq("id", videoAssetId)
+      .maybeSingle()
+    if (assetError) return { ok: false, error: assetError.message, status: 500 }
+    if (!asset) return { ok: false, error: "Video asset not found", status: 404 }
+    if (asset.brokerage_id !== brokerageId) {
+      return { ok: false, error: "Video asset does not belong to your brokerage", status: 403 }
+    }
+  }
+
+  if (videoProjectId) {
+    const { data: project, error: projectError } = await supabase
+      .from("ai_video_projects")
+      .select("id, brokerage_id")
+      .eq("id", videoProjectId)
+      .maybeSingle()
+    if (projectError) return { ok: false, error: projectError.message, status: 500 }
+    if (!project) return { ok: false, error: "Video project not found", status: 404 }
+    if (project.brokerage_id !== brokerageId) {
+      return { ok: false, error: "Video project does not belong to your brokerage", status: 403 }
+    }
+  }
+
+  return { ok: true }
+}
+
 // Helper: Aggregate event into video_performance_tracking
 async function aggregateVideoPerformance(
   supabase: any,
   videoAssetId: string | null,
   videoProjectId: string | null,
-  brokerageId: string | null,
+  brokerageId: string,
   eventType: VideoEventType,
   watchDurationSeconds: number = 0
 ) {
-  // Find or create tracking record
-  let query = supabase.from("video_performance_tracking").select("*")
+  // Find or create tracking record. Scoped to the session tenant as well as the
+  // video id: the aggregate row is a tenant-owned row, and a lookup on the video
+  // id alone would let one tenant's event land on another tenant's aggregate.
+  let query = supabase
+    .from("video_performance_tracking")
+    .select("*")
+    .eq("brokerage_id", brokerageId)
 
   if (videoAssetId) {
     query = query.eq("video_asset_id", videoAssetId)
@@ -314,7 +406,7 @@ async function aggregateVideoPerformance(
     const newRecord = {
       video_asset_id: videoAssetId || null,
       video_project_id: videoProjectId || null,
-      brokerage_id: brokerageId || null,
+      brokerage_id: brokerageId,
       total_views: eventType === "view" ? 1 : 0,
       unique_views: eventType === "view" ? 1 : 0,
       total_watch_time_seconds: watchDurationSeconds || 0,
@@ -434,12 +526,17 @@ async function checkPerformanceThresholds(
   // should be shared to the whole brokerage." Wired into the two lanes that
   // already evaluate thresholds off these same aggregates, not onto a new path.
   //
-  // Note what is NOT passed: this route's `brokerageId` comes from the request
-  // body and this handler has no auth gate, so the promoter is given the project
-  // id ALONE and re-resolves the view count, the video's tenant and the script's
-  // tenant from the database itself (recurring defect (d)). It also refuses a
-  // video/script tenant mismatch outright. Non-fatal: the engagement event has
-  // already been recorded and must not be lost to a failed promotion.
+  // Note what is NOT passed. This used to be justified by the POST handler
+  // having no auth gate and taking its tenant from the request body; that is no
+  // longer true — POST is session-gated and the tenant is resolved from the
+  // session (see the header note on this handler). The promoter still takes the
+  // project id ALONE, and still re-resolves the view count, the video's tenant
+  // and the script's tenant from the database itself, because that is the right
+  // shape regardless of who calls it: an argument surface too small to lie
+  // through cannot be talked into promoting the wrong script, and this module
+  // has a second caller (the video-generation server action) too. It also
+  // refuses a video/script tenant mismatch outright. Non-fatal: the engagement
+  // event has already been recorded and must not be lost to a failed promotion.
   if (tracking.video_project_id) {
     const { shareViralScriptWithBrokerage } = await import("@/lib/video/viral-script-share")
     await shareViralScriptWithBrokerage(tracking.video_project_id).catch(err =>

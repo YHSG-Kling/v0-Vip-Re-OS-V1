@@ -170,11 +170,22 @@ export async function processZoomRecordingEvent(
 
   // ── TENANT-hosted: attach to the CONTACT via the ONE voice-transcript ledger ─
   const vendorCallId = `zoom:${meetingUuid}`
-  const { data: dupCall } = await svc
+  // The FAST path only. This read answers "has this meeting already been
+  // attached?" for the common re-delivery, but it is a check-then-insert and
+  // therefore a race — two concurrent deliveries can both read null. m464's
+  // uq_voice_calls_vendor_call_id is what actually decides; the insert below
+  // reads 23505 as the same "already attached" answer this branch returns, so
+  // losing the race costs a round trip and never a duplicate ledger row.
+  //
+  // The error is checked because supabase-js RESOLVES a rejected read: an
+  // unchecked read here would report a refused query as "no such row" and send
+  // a duplicate straight at the insert.
+  const { data: dupCall, error: dupError } = await svc
     .from("voice_calls")
     .select("id")
     .eq("vendor_call_id", vendorCallId)
     .maybeSingle()
+  if (dupError) return { handled: false, reason: `voice_calls duplicate check failed: ${dupError.message}` }
   if (dupCall) return { handled: true, attached: "contact", analyzed: false, reason: "already attached (idempotent)" }
 
   // voice_calls.agent_id + call_analyses.agent_id carry agents.id — resolve it
@@ -202,6 +213,13 @@ export async function processZoomRecordingEvent(
     .select("id")
     .single()
   if (callErr || !callRow) {
+    // Losing the race above is the SAME answer as winning the fast-path check,
+    // not a failure: 23505 on the vendor-call-id unique means another delivery
+    // already attached this meeting. Reporting it as a failed attach would make
+    // a correctly-idempotent lane look broken.
+    if ((callErr as any)?.code === "23505") {
+      return { handled: true, attached: "contact", analyzed: false, reason: "already attached (idempotent)" }
+    }
     return { handled: false, reason: `voice_calls insert failed: ${callErr?.message ?? "no row"}` }
   }
 

@@ -712,17 +712,39 @@ export async function aiPersonalizeNewsletter(params: {
       return { success: false, error: contactError.message }
     }
 
-    // Get newsletter content
-    const { data: newsletter } = await supabase
+    // Get newsletter content. Name the columns the prompt below actually uses —
+    // a refusal here arrives as a resolved promise, so the error is read.
+    const { data: newsletter, error: newsletterError } = await supabase
       .from("newsletter_campaigns")
-      .select("*")
+      .select("id, campaign_name, subject_line")
       .eq("id", params.newsletterId)
       .eq("brokerage_id", sessionBrokerageId)
       .maybeSingle()
 
+    if (newsletterError) {
+      console.error("[aiPersonalizeNewsletter] newsletter read failed:", newsletterError.message)
+      return { success: false, error: newsletterError.message }
+    }
+
     if (!contact || !newsletter) {
       return { success: false, error: "Contact or newsletter not found" }
     }
+
+    // WHAT THE MODEL IS TOLD THE NEWSLETTER IS ABOUT.
+    //
+    // A campaign carries no free-standing "topic" — the subject line is the
+    // stated subject, and the campaign name is the fallback the rest of this
+    // file already treats as the human label. Neither is guaranteed to be set,
+    // so the topic line is OMITTED from the prompt rather than emitted with an
+    // empty or absent value: a topic line with nothing behind it is worse than
+    // no topic line, because the model reads it as the actual subject and
+    // steers the whole personalization toward that non-answer.
+    const newsletterTopic =
+      [newsletter.subject_line, newsletter.campaign_name]
+        .find((v): v is string => typeof v === "string" && v.trim().length > 0)
+        ?.trim() ?? null
+
+    const topicLine = newsletterTopic ? `\nNewsletter Topic: ${newsletterTopic}\n` : ""
 
     // `property_alerts` has no single `criteria` blob (the old `saved_searches.criteria`
     // was never a real column) — the search is spread across typed columns, so summarize
@@ -764,9 +786,7 @@ Contact:
 - Persona: ${contact.contact_persona || "general"}
 - Interests: ${alertSummaries.join(", ") || "Unknown"}
 - Last Interaction: ${lastActivity?.notes || "None"}
-
-Newsletter Topic: ${newsletter.topic}
-
+${topicLine}
 Create personalized elements that will resonate with this specific contact.`,
     })
 

@@ -2198,7 +2198,13 @@ async function main() {
         && src("app/api/cron/listing-presentation-prep/route.ts").includes('from("calendar_events")')
         && src("app/api/cron/listing-presentation-prep/route.ts").includes('"listing_appointment"')
         && src("app/dashboard/vendors/page.tsx").includes('from("vendors")')
-        && src("app/actions/marketing-package-automation.ts").includes("vendor:vendors(*)")
+        // The marketing-package embed now NAMES its vendor columns. A starred
+        // embed resolves against the right table but hides WHICH columns the
+        // consumer reads, so a column the bench does not have stays undefined
+        // forever instead of failing — assert the named shape, and that the
+        // star has not crept back. (test:phantom-embed proves the ranking.)
+        && /vendor:vendors\(\s*id\s*,/.test(src("app/actions/marketing-package-automation.ts"))
+        && !src("app/actions/marketing-package-automation.ts").includes("vendor:vendors(*)")
         && src("lib/communications/vendor-communications.tsx").includes("vendors(*)")
         && src("app/dashboard/isa/calling/page.tsx").includes("ai_identity_profiles")
         && src("lib/auth/permissions-client.ts").includes("user_role_assignments")

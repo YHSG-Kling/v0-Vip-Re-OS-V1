@@ -26,13 +26,16 @@
 //
 // ── WHY IT TRUSTS NOTHING BUT AN id ─────────────────────────────────────────
 //
-// One of those two callers is POST /api/video/engagement, which has NO auth gate
-// and takes `brokerageId` from the request body. So this function accepts a
-// project id and NOTHING ELSE: the view count, the video's tenant and the
-// script's tenant are all re-read server-side through the service client. A
-// caller cannot supply a count, cannot supply a tenant, and cannot name a script
-// — recurring defect (d), resolved by making the argument surface too small to
-// lie through.
+// This shape was originally forced by POST /api/video/engagement, which at the
+// time had NO auth gate and took `brokerageId` from the request body. That hole
+// is now closed — the route is session-gated and resolves its tenant from the
+// session — but the argument surface stays exactly this small on purpose: this
+// function accepts a project id and NOTHING ELSE, and the view count, the
+// video's tenant and the script's tenant are all re-read server-side through the
+// service client. A caller cannot supply a count, cannot supply a tenant, and
+// cannot name a script — recurring defect (d), resolved by making the argument
+// surface too small to lie through, independently of how well any one caller is
+// gated today.
 //
 // ── THE TWO REFUSALS THAT ARE THE POINT ─────────────────────────────────────
 //

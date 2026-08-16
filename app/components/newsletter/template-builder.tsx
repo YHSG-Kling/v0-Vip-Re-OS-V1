@@ -26,6 +26,7 @@ import {
   NEWSLETTER_SECTION_TYPES,
   type NewsletterSectionType,
 } from '@/lib/kernel/newsletter/section-types'
+import type { TemplateSectionBlueprint } from '@/lib/kernel/newsletter/template-blueprint'
 import { deleteTemplate } from '@/app/actions/newsletter/delete-template'
 import { submitTemplateForApproval } from '@/app/actions/newsletter/approve-template'
 import {
@@ -43,12 +44,11 @@ interface Template {
   approval_status: 'draft' | 'pending_review' | 'approved' | 'rejected'
   is_default: boolean
   version_number: number
-  // NO `sections` — a saved template's sections are not readable. The live
-  // newsletter_sections table hangs off newsletter_campaigns, and has no FK (and
-  // no column) tying a section to a broker template, so listTemplates cannot
-  // embed them. See the explanation in app/actions/newsletter/list-templates.ts.
-  // The section count is therefore no longer shown on the card rather than
-  // being reported as 0, which would be a fabricated number.
+  /** Decoded section blueprint stored on the template row. `null` means the
+   *  template carries no blueprint (prose content, or created by another
+   *  producer) — distinct from `[]`, which means it was authored with no
+   *  sections. The card must not print a count for the null case. */
+  sections: TemplateSectionBlueprint[] | null
   created_at: string
 }
 
@@ -547,9 +547,22 @@ export function TemplateBuilder() {
                 </div>
               </CardHeader>
 
-              {template.template_description && (
-                <CardContent className="pt-0">
-                  <p className="text-sm text-slate-600">{template.template_description}</p>
+              {(template.template_description || template.sections) && (
+                <CardContent className="pt-0 space-y-2">
+                  {template.template_description && (
+                    <p className="text-sm text-slate-600">{template.template_description}</p>
+                  )}
+                  {/* Only rendered when a blueprint was actually decoded. A
+                      template with no blueprint shows nothing here rather than
+                      "0 sections", which would be a number we did not read. */}
+                  {template.sections && (
+                    <p className="text-xs text-slate-500">
+                      {template.sections.length} section{template.sections.length === 1 ? '' : 's'}
+                      {template.sections.length > 0 && (
+                        <>: {template.sections.map(s => s.sectionName).join(' · ')}</>
+                      )}
+                    </p>
+                  )}
                 </CardContent>
               )}
             </Card>

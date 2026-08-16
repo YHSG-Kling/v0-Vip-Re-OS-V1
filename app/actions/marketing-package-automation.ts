@@ -14,6 +14,13 @@ import {
   calculatePackageCost,
   getPackageDisplayName,
 } from "@/lib/marketing/package-catalog"
+import {
+  pickBestVendor,
+  rankVendors,
+  vendorCategoryForService,
+  type RankableVendor,
+  type ScoredVendor,
+} from "@/lib/marketing/vendor-ranking"
 
 // ============================================
 // TENANT GUARDS
@@ -169,14 +176,21 @@ export async function bookMarketingService(params: {
   const supabase = await createClient()
 
   try {
-    // Find optimal vendor
-    const vendor = await selectOptimalVendor(params.serviceType, params.transactionId)
+    // Find optimal vendor. The result is a discriminated outcome, not a nullable
+    // vendor: a REFUSED read and an EMPTY bench are different facts and the agent
+    // is told which one happened instead of both surfacing as "none available".
+    const pick = await selectOptimalVendor(params.serviceType, params.transactionId)
 
-    if (!vendor) {
-      return { success: false, error: "No available vendors for this service" }
+    if (!pick.ok) {
+      return { success: false, error: pick.error }
     }
+    const vendor = pick.vendor
 
-    // Create service booking
+    // Create service booking.
+    // estimated_cost is deliberately omitted (stays NULL): the bench carries no
+    // price for a vendor and the package catalog prices a whole TIER, not one
+    // service, so there is no honest per-service figure to persist here. A number
+    // invented at booking time would be indistinguishable from a quote.
     const { data: service, error } = await supabase
       .from("listing_marketing_services")
       .insert({
@@ -186,97 +200,111 @@ export async function bookMarketingService(params: {
         vendor_id: vendor.id,
         scheduled_date: params.preferredDate || null,
         status: "scheduled",
-        estimated_cost: vendor.base_price,
       })
       .select()
       .single()
 
     if (error) throw error
 
-    // Send booking confirmation to vendor
-    await sendVendorBookingConfirmation({
-      vendorId: vendor.id,
-      vendorEmail: vendor.contact_email,
-      serviceType: params.serviceType,
-      transactionId: params.transactionId,
-      serviceId: service.id,
-      scheduledDate: service.scheduled_date,
-    })
-
-    console.log(`[v0] Booked ${params.serviceType} with vendor ${vendor.company_name}`)
+    // Send booking confirmation to vendor. email is nullable on the bench, so a
+    // vendor with no address is booked and reported rather than crashing the
+    // booking on a notification that was never deliverable.
+    if (vendor.email) {
+      await sendVendorBookingConfirmation({
+        vendorId: vendor.id,
+        vendorEmail: vendor.email,
+        serviceType: params.serviceType,
+        transactionId: params.transactionId,
+        serviceId: service.id,
+        scheduledDate: service.scheduled_date,
+      })
+    }
 
     revalidatePath("/dashboard/listings")
-    return { success: true, serviceId: service.id, vendorName: vendor.company_name }
+    return {
+      success: true,
+      serviceId: service.id,
+      vendorName: vendor.name,
+      vendorNotified: !!vendor.email,
+      // What the auto-pick could NOT weigh, carried forward so the surface can be
+      // honest about the basis of the choice.
+      unmeasuredRankingInputs: vendor.unmeasured,
+    }
   } catch (error) {
     console.error("Book marketing service error:", error)
     return { success: false, error: "Failed to book service" }
   }
 }
 
-async function selectOptimalVendor(serviceType: string, transactionId: string) {
+/** The outcome of the auto-pick. A refusal is never collapsed into "no vendors". */
+type VendorPick =
+  | { ok: true; vendor: ScoredVendor & { email: string | null } }
+  | { ok: false; error: string }
+
+/**
+ * Pick the bench vendor that should fulfil one marketing service.
+ *
+ * The bench is filtered by CATEGORY, which is a CHECK'd vocabulary on the vendor
+ * table (photographer / videographer / drone_pilot / 3d_tour / stager / …). A
+ * package service type ("professional_photos", "drone_video") is a different
+ * vocabulary and matches no category, so the service is translated through
+ * lib/marketing/vendor-ranking.ts:vendorCategoryForService first. Services with
+ * no bench category are fulfilled in-house and say so.
+ *
+ * The ordering itself is pure and lives in vendor-ranking.ts:rankVendors — it
+ * weighs only columns the bench actually has (rating, preferred, display
+ * priority, turnaround days) and publishes what it could not weigh.
+ */
+async function selectOptimalVendor(serviceType: string, transactionId: string): Promise<VendorPick> {
   const supabase = await createClient()
 
   try {
-    const { data: transaction } = await supabase
+    const category = vendorCategoryForService(serviceType)
+    if (!category) {
+      return { ok: false, error: `"${serviceType}" is fulfilled in-house — there is no vendor bench for it` }
+    }
+
+    // Only the tenant anchor is needed from the deal; the ranking reads nothing
+    // off the listing (the bench carries no location to compare it against).
+    const { data: transaction, error: txError } = await supabase
       .from("transactions")
-      .select("*, listings(*)")
+      .select("id, brokerage_id")
       .eq("id", transactionId)
       .single()
 
-    if (!transaction?.listings) return null
+    if (txError) {
+      console.error("Select optimal vendor — transaction read refused:", txError)
+      return { ok: false, error: "Could not read the transaction" }
+    }
+    if (!transaction?.brokerage_id) {
+      return { ok: false, error: "Transaction has no brokerage — cannot scope a vendor bench" }
+    }
 
-    const listing = transaction.listings
-
-    // Find vendors for this service type — vendors replaced vendor_directory —
-    // vendor_directory was a writer-less legacy twin (burn-down round 4 repoint).
-    // visible_in_portal→status='active' (broker approval, the real surfacing flag on vendors).
-    const { data: vendors } = await supabase
+    const { data: vendors, error: benchError } = await supabase
       .from("vendors")
-      .select("*")
+      .select("id, name, email, rating, preferred, display_priority, estimated_turnaround_days")
       .eq("brokerage_id", transaction.brokerage_id) // tenant anchor — never rank another brokerage's bench
-      .eq("category", serviceType)
-      .eq("status", "active")
-      .gte("rating", 3.75) // rescaled from quality_score>=75 (0-100) → rating>=3.75 (0-5)
+      .eq("category", category)
+      .eq("status", "active") // broker approval — the real surfacing flag on the bench
+      .gte("rating", 3.75) // 0-5 scale; below this the broker's own bench is not auto-picked from
 
-    if (!vendors || vendors.length === 0) return null
+    if (benchError) {
+      console.error("Select optimal vendor — bench read refused:", benchError)
+      return { ok: false, error: "Could not read the vendor bench" }
+    }
+    if (!vendors || vendors.length === 0) {
+      return { ok: false, error: `No approved ${category} on this brokerage's bench` }
+    }
 
-    // Score vendors based on multiple factors
-    const scoredVendors = vendors.map((vendor) => {
-      let score = (vendor.rating || 0) * 20 // rating 0-5 → 0-100 to keep downstream bonuses on scale
+    const best = pickBestVendor(vendors as RankableVendor[])
+    if (!best) return { ok: false, error: `No approved ${category} on this brokerage's bench` }
 
-      // Proximity bonus (if location data available)
-      const distance = calculateDistance(listing, vendor)
-      if (distance < 10) score += 20
-      else if (distance < 25) score += 10
-
-      // Price efficiency
-      const avgPrice = 500 // Average market price
-      if (vendor.base_price < avgPrice * 0.8) score += 10
-      else if (vendor.base_price > avgPrice * 1.2) score -= 10
-
-      // Response time
-      if ((vendor.avg_response_hours || 24) < 4) score += 15
-      else if ((vendor.avg_response_hours || 24) > 24) score -= 10
-
-      // Completion rate
-      if ((vendor.completion_rate || 0) > 0.95) score += 10
-
-      return { ...vendor, finalScore: score }
-    })
-
-    // Return highest scoring vendor
-    scoredVendors.sort((a, b) => b.finalScore - a.finalScore)
-    return scoredVendors[0]
+    const email = (vendors.find((v) => v.id === best.id)?.email ?? null) as string | null
+    return { ok: true, vendor: { ...best, email } }
   } catch (error) {
     console.error("Select optimal vendor error:", error)
-    return null
+    return { ok: false, error: "Failed to select a vendor" }
   }
-}
-
-function calculateDistance(listing: any, vendor: any): number {
-  // Simplified distance calculation (would use actual geocoding in production)
-  if (listing.city === vendor.service_area) return 5
-  return 50 // Default to 50 miles if different cities
 }
 
 export async function getVendorRecommendations(serviceType: string, transactionId: string) {
@@ -292,17 +320,28 @@ export async function getVendorRecommendations(serviceType: string, transactionI
 
   const supabase = await createClient()
 
-  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint)
-  const { data: vendors } = await supabase
-    .from("vendors")
-    .select("*")
-    .eq("brokerage_id", auth.brokerageId) // tenant anchor — caller's brokerage only
-    .eq("category", serviceType)
-    .eq("status", "active") // visible_in_portal→status='active' (broker approval, the real surfacing flag)
-    .order("rating", { ascending: false, nullsFirst: false })
-    .limit(5)
+  // Same category translation as the auto-pick: a package service type is not a
+  // bench category, so the raw service type would match no row.
+  const category = vendorCategoryForService(serviceType)
+  if (!category) return []
 
-  return vendors || []
+  const { data: vendors, error } = await supabase
+    .from("vendors")
+    .select("id, name, email, phone, rating, preferred, display_priority, estimated_turnaround_days")
+    .eq("brokerage_id", auth.brokerageId) // tenant anchor — caller's brokerage only
+    .eq("category", category)
+    .eq("status", "active") // broker approval — the real surfacing flag on the bench
+    .limit(25)
+
+  // A refused read must not read as "this brokerage has no vendors".
+  if (error) {
+    console.error("getVendorRecommendations — bench read refused:", error)
+    return []
+  }
+
+  // Ordered by the same published ranking the auto-pick uses, so the list an
+  // agent sees is the order the automation would actually book in.
+  return rankVendors((vendors ?? []) as RankableVendor[]).slice(0, 5)
 }
 
 // ============================================
@@ -442,14 +481,16 @@ export async function generateListingOptimizations(transactionId: string) {
   const supabase = await createClient()
 
   try {
-    // NOTE: this used to embed `listing_photos(*)` off `transactions`. There is
-    // no FK from transactions to that table, so PostgREST rejected the whole
-    // select — `transaction` came back null and every call answered
-    // "Transaction not found". Photos are read separately below, from the
-    // listing they actually hang off.
+    // Only `listings` is embedded here, and only because a real FK joins the
+    // two. Two other tables were embedded off this same select in the past —
+    // listing photos and AI content — and neither has a foreign key to a
+    // transaction, so PostgREST rejected the whole select: `transaction` came
+    // back null and every call answered "Transaction not found". Photos are read
+    // separately below, from the listing they actually hang off. The AI-content
+    // rows had no reader at all once fetched, so nothing replaces them.
     const { data: transaction, error: transactionError } = await supabase
       .from("transactions")
-      .select("*, listings(*), ai_generated_content(*)")
+      .select("*, listings(*)")
       .eq("id", transactionId)
       .eq("brokerage_id", auth.brokerageId)
       .maybeSingle()
@@ -463,7 +504,6 @@ export async function generateListingOptimizations(transactionId: string) {
     }
 
     const listing = transaction.listings
-    const content = transaction.ai_generated_content || []
 
     // media_type pinned to 'photo' — the photo count and the average quality
     // score below are advice the agent acts on. Counting floorplans and
@@ -607,14 +647,24 @@ export async function getMarketingPackageServices(packageId: string) {
 
   const supabase = await createClient()
 
-  const { data } = await supabase
+  // Columns are NAMED, not starred. A starred embed hides which vendor columns
+  // the panel reads, so a column that is not on the bench reads as undefined
+  // forever instead of failing loudly. `company_name` is aliased onto the real
+  // `name` column because that is the key the panel renders
+  // (app/dashboard/listings/[id]/marketing-tier/marketing-package-panel.tsx).
+  const { data, error } = await supabase
     .from("listing_marketing_services")
-    // Live FK: listing_marketing_services.vendor_id → vendors(id). The old
-    // vendor_directory embed could never resolve (no FK to that legacy twin) —
-    // PostgREST errored the whole select. Burn-down round 4 repoint.
-    .select("*, vendor:vendors(*)")
+    .select(
+      "id, package_id, transaction_id, service_type, vendor_id, scheduled_date, status, estimated_cost, actual_cost, completed_at, vendor:vendors(id, company_name:name, email, phone, category, rating, estimated_turnaround_days)",
+    )
     .eq("package_id", packageId)
     .order("scheduled_date")
+
+  // A refused read must not read as "this package has no booked services".
+  if (error) {
+    console.error("getMarketingPackageServices — read refused:", error)
+    return []
+  }
 
   return data || []
 }

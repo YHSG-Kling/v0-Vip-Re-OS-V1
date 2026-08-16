@@ -137,39 +137,81 @@ export async function POST(request: NextRequest) {
   }
 
   if (contactId || leadId) {
-    // Sentinel-tracked (pass 4): a lost call-ledger row used to vanish
-    // silently — now it lands on the self-heal ledger for the repair digest.
-    const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
-    await sentinelWrite(svc, svc.from("voice_calls").insert({
-      brokerage_id: ctx.brokerageId,
-      contact_id: contactId,
-      lead_id: leadId,
-      agent_id: agentRowId,
-      direction: "inbound",
-      call_type: "ai_inbound", // CHECK value for AI inbound; ai_notes carries the real engine
-      status: "in_progress",
-      phone_from: from, phone_to: to,
-      started_at: new Date().toISOString(),
-      vendor_call_id: callSid, // vendor call id (Twilio CallSid here)
-      transcription: appendTranscript(null, null, firstMessage),
-      ai_notes: "engine:twilio",
-    }), { table: "voice_calls", flow: "voice_call_ledger", brokerageId: ctx.brokerageId })
+    // ── IDEMPOTENCE (m464) ────────────────────────────────────────────────────
+    // Twilio retries any webhook it believes failed, so this handler must be
+    // safe to run twice for ONE call. It previously was not: a retry inserted a
+    // SECOND ledger row carrying the same vendor call id, and since every later
+    // stage of the call resolves its row with maybeSingle(), the duplicate did
+    // not merely litter the ledger — it broke the rest of that call outright.
+    //
+    // m464's uq_voice_calls_vendor_call_id makes the DATABASE the arbiter
+    // instead of an application check-then-insert, which is a race with a nicer
+    // shape rather than a fix. The second delivery now loses at SQLSTATE 23505.
+    //
+    // 23505 on that index means exactly one thing — "this call is already
+    // recorded" — which is the IDEMPOTENT OUTCOME, not a lost write. It must
+    // therefore never reach the self-heal ledger, or every retried call would
+    // surface in the weekly repair digest as phantom data loss. Every OTHER
+    // error still goes to the sentinel, exactly as before.
+    const { data: insertedCall, error: callInsertError } = await svc
+      .from("voice_calls")
+      .insert({
+        brokerage_id: ctx.brokerageId,
+        contact_id: contactId,
+        lead_id: leadId,
+        agent_id: agentRowId,
+        direction: "inbound",
+        call_type: "ai_inbound", // CHECK value for AI inbound; ai_notes carries the real engine
+        status: "in_progress",
+        phone_from: from, phone_to: to,
+        started_at: new Date().toISOString(),
+        vendor_call_id: callSid, // vendor call id (Twilio CallSid here)
+        transcription: appendTranscript(null, null, firstMessage),
+        ai_notes: "engine:twilio",
+      })
+      .select("id")
+      .maybeSingle()
+
+    const alreadyRecorded = (callInsertError as any)?.code === "23505"
+
+    if (callInsertError && !alreadyRecorded) {
+      // Sentinel-tracked (pass 4): a lost call-ledger row used to vanish
+      // silently — now it lands on the self-heal ledger for the repair digest.
+      const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+      await sentinelWrite(svc, Promise.resolve({ error: callInsertError }), {
+        table: "voice_calls", flow: "voice_call_ledger", brokerageId: ctx.brokerageId,
+      })
+    }
 
     // ai_isa_calls lifecycle: an INBOUND AI call gets its scoring row now
     // (outbound calls get theirs at placement) so the post-call brain can persist
     // appointment_set + lead_quality_score against it. Best-effort.
-    const { data: vc } = await svc.from("voice_calls").select("id").eq("vendor_call_id", callSid).maybeSingle()
-    if ((vc as any)?.id) {
-      try {
-        await svc.from("ai_isa_calls").insert({
-          brokerage_id: ctx.brokerageId,
-          contact_id: contactId,
-          lead_id: leadId,
-          voice_call_id: (vc as any).id,
-          script_used: "inbound",
-          appointment_set: false,
+    //
+    // GATED ON "DID THIS DELIVERY CREATE THE CALL?", not on "does a call row
+    // exist?". ai_isa_calls carries no uniqueness of its own, so the old shape —
+    // re-read the call by its vendor id, then insert — moved the fork from one
+    // table to the next: a retry found the FIRST delivery's row and wrote a
+    // second scoring row against it. The insert's own returned id is the only
+    // answer that distinguishes the two cases, and the unique index above is
+    // what makes that answer trustworthy.
+    if (insertedCall?.id && !alreadyRecorded) {
+      // supabase-js RESOLVES a rejected write with { error } — it does not
+      // throw — so the try/catch that used to wrap this could never have seen a
+      // rejected row. Best-effort stays best-effort; the loss becomes observable.
+      const { error: isaError } = await svc.from("ai_isa_calls").insert({
+        brokerage_id: ctx.brokerageId,
+        contact_id: contactId,
+        lead_id: leadId,
+        voice_call_id: insertedCall.id,
+        script_used: "inbound",
+        appointment_set: false,
+      })
+      if (isaError) {
+        const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+        await sentinelWrite(svc, Promise.resolve({ error: isaError }), {
+          table: "ai_isa_calls", flow: "voice_call_ledger", brokerageId: ctx.brokerageId,
         })
-      } catch { /* best-effort — never block the answer */ }
+      }
     }
   }
 
