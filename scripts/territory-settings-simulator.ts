@@ -189,6 +189,26 @@ function codeOnly(source: string): string {
     .join("\n")
 }
 
+/**
+ * The SQL twin of codeOnly, for the migration probes.
+ *
+ * SQL comments are `--`, which codeOnly does not strip. M2 COUNTS occurrences of
+ * `WHERE is_primary AND active` and requires exactly three — one per grain — so
+ * it was counting the migration's own prose alongside its DDL. Adding a
+ * MEASURED-AFTER note that quoted the predicate turned three into four and the
+ * probe went red against a migration that had not changed at all.
+ *
+ * That is the same trap the S2/S3 probes hit against their own doc comments: a
+ * probe whose window includes prose is testing the prose. A migration is DDL
+ * plus commentary, and only the DDL is the claim.
+ */
+function sqlCodeOnly(source: string): string {
+  return source
+    .split("\n")
+    .filter((l) => !l.trim().startsWith("--"))
+    .join("\n")
+}
+
 /** deleteScrapingMarket only — updateScrapingMarket above it uses the same table names. */
 function deleteBody(source: string): string {
   const start = source.indexOf("export async function deleteScrapingMarket")
@@ -361,18 +381,29 @@ const PROBES: Probe[] = [
   },
   {
     name: "M1 m462 adds the two MISSING grain uniques and does not touch the one that already existed",
-    run: (s) => /uq_service_area_team_zip/.test(s[MIGRATION])
-      && /uq_service_area_agent_zip/.test(s[MIGRATION])
-      && /WHERE team_id IS NOT NULL AND agent_user_id IS NULL/.test(s[MIGRATION])
-      && /WHERE agent_user_id IS NOT NULL/.test(s[MIGRATION])
-      && !/DROP INDEX/.test(s[MIGRATION]),
+    run: (s) => {
+      const ddl = sqlCodeOnly(s[MIGRATION])
+      return /uq_service_area_team_zip/.test(ddl)
+        && /uq_service_area_agent_zip/.test(ddl)
+        && /WHERE team_id IS NOT NULL AND agent_user_id IS NULL/.test(ddl)
+        && /WHERE agent_user_id IS NOT NULL/.test(ddl)
+        // DROP INDEX is banned in the DDL only: the prose above legitimately
+        // explains why the pre-existing brokerage unique is left alone, and a
+        // ban that reads the prose would forbid saying so.
+        && !/DROP INDEX/.test(ddl)
+    },
   },
   {
     name: "M2 m462 enforces at most one PRIMARY per claimant per grain, scoped to active rows",
-    run: (s) => /uq_service_area_primary_brokerage/.test(s[MIGRATION])
-      && /uq_service_area_primary_team/.test(s[MIGRATION])
-      && /uq_service_area_primary_agent/.test(s[MIGRATION])
-      && (s[MIGRATION].match(/WHERE is_primary AND active/g) ?? []).length === 3,
+    run: (s) => {
+      const ddl = sqlCodeOnly(s[MIGRATION])
+      return /uq_service_area_primary_brokerage/.test(ddl)
+        && /uq_service_area_primary_team/.test(ddl)
+        && /uq_service_area_primary_agent/.test(ddl)
+        // EXACTLY three — one index per grain. Counted over the DDL, never over
+        // the file: this predicate is discussed in the migration's own comments.
+        && (ddl.match(/WHERE is_primary AND active/g) ?? []).length === 3
+    },
   },
 ]
 
