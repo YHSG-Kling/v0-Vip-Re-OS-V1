@@ -223,7 +223,43 @@ function codeOnly(s: string): string {
     .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1) => p1 + " ".repeat(m.length - p1.length))
 }
 
-/** Every `.from("user_role_assignments")` chain in a file, as [startIndex, chain]. */
+/**
+ * codeOnly, PLUS string and template literals blanked.
+ *
+ * Comments are not the only place prose hides. This proof's own registry entry in
+ * lib/kernel/manager-registry.ts documents the defect it forbids by QUOTING it —
+ * `grants.find(g => g.agent_id)` — inside a plain string literal, and the shape
+ * scan below matched that quotation and failed on green code. That is the same
+ * mistake as the comment case, one layer down: a description of a call is not a
+ * call, wherever it is stored.
+ *
+ * Deliberately NOT solved by skipping the registry file or by rewording the
+ * sentence. Pinning a scan to a file path is how a probe goes blind the day the
+ * code moves, and editing the documentation to dodge the scanner would leave the
+ * scanner still wrong for the next quotation someone writes.
+ */
+function executableCodeOnly(s: string): string {
+  return codeOnly(s)
+    // Longest-first so a template literal is not chewed up by the quote rules.
+    .replace(/`(?:\\.|[^`\\])*`/g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/"(?:\\.|[^"\\\n])*"/g, (m) => " ".repeat(m.length))
+    .replace(/'(?:\\.|[^'\\\n])*'/g, (m) => " ".repeat(m.length))
+}
+
+/**
+ * Every `.from("user_role_assignments")` chain in a file, as [startIndex, chain].
+ *
+ * DELIBERATELY uses codeOnly, NOT executableCodeOnly. Do not "fix" this to match
+ * the agent-linkage scan below: this one matches on a STRING ARGUMENT — the table
+ * name itself — so blanking string literals would turn every
+ * `.from("user_role_assignments")` into `.from(                        )` and
+ * blind the scan completely, silently, while it went on reporting zero.
+ *
+ * The two scans differ because the two shapes differ: one is identified by
+ * identifiers (`g.agent_id`), where a quotation is noise; the other is identified
+ * by a quoted table name, where the quotation IS the signal. Which text to ignore
+ * is a per-scan judgement, not a global setting.
+ */
 function grantChains(code: string): Array<[number, string]> {
   const out: Array<[number, string]> = []
   const re = /\.from\(\s*["']user_role_assignments["']\s*\)/g
@@ -273,8 +309,10 @@ function unsoundSingleRowReads(): string[] {
  * resolving it either way hands a caller another agent's production and
  * commissions. selectAgentId reports it; this scan keeps it reported.
  *
- * Comment-blind, like the scan above, so the prose in the three call sites
- * describing the shape they NO LONGER have is not counted as the shape.
+ * Blind to prose WHEREVER it is stored — comments AND string literals — so
+ * neither the three call sites' notes about the shape they no longer have, nor
+ * the manager-registry entry that documents this very rule by quoting it, is
+ * counted as the shape itself.
  */
 const ORDER_PICKED_AGENT = /\.find\(\s*\(?\s*(\w+)\s*\)?\s*=>\s*\1\.agent_id\s*\)/g
 
@@ -282,7 +320,7 @@ function orderPickedAgentLinkage(): string[] {
   const hits: string[] = []
   const re = new RegExp(ORDER_PICKED_AGENT.source, "g")
   for (const file of walk(ROOT)) {
-    const code = codeOnly(readFileSync(file, "utf8"))
+    const code = executableCodeOnly(readFileSync(file, "utf8"))
     let m: RegExpExecArray | null
     re.lastIndex = 0
     while ((m = re.exec(code))) hits.push(`${relative(ROOT, file)}:${lineOf(code, m.index)}`)
@@ -314,6 +352,26 @@ function sourceLayer() {
     matches("grants.find(g => g.agent_id)") && matches("grants.find((x)=>x.agent_id)"))
   check("…while staying green on a DIFFERENT question (vendor) and on a mismatched binding",
     !matches("grants.find((g) => g.vendor_id)") && !matches("grants.find((a) => b.agent_id)"))
+
+  // PROSE IS NOT CODE, WHEREVER IT IS STORED. The scan already blanked comments;
+  // it did NOT blank string literals, and this proof's own registry entry
+  // documents the rule by QUOTING the forbidden call inside a plain string. CI
+  // went red on green code for it. Both halves are asserted: the quotation is
+  // invisible, and a real call on the very next line is still seen.
+  const quoted = [
+    'const REGISTRY = { what: "WAS: grants.find(g => g.agent_id) — now selectAgentId" }',
+    "const NOTE = 'grants.find((g) => g.agent_id)'",
+    "const TPL = `see grants.find((g) => g.agent_id) for the old shape`",
+    "// grants.find((g) => g.agent_id) in a comment",
+  ].join("\n")
+  const scan = (s: string) => new RegExp(ORDER_PICKED_AGENT.source, "g").test(executableCodeOnly(s))
+
+  check("a quoted occurrence — string, single-quote, template or comment — is NOT a call (the defect that failed CI)",
+    !scan(quoted))
+  check("NEGATIVE CONTROL …and a REAL call beside all that prose is still caught, so the blanking did not blind the scan",
+    scan(quoted + "\nconst agentId = grants.find((g) => g.agent_id)?.agent_id"))
+  check("blanking preserves line numbers, so a reported hit still points at the right line",
+    executableCodeOnly(quoted).split("\n").length === quoted.split("\n").length)
 
   const unsound = unsoundSingleRowReads()
   check(
