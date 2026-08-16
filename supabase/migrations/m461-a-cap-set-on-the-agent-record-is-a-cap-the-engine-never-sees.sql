@@ -158,8 +158,9 @@ create policy team_cap_tracking_admin_delete on public.team_cap_tracking
 --
 -- cap_paid_to_date starts at the agents.cap_progress the record already claims,
 -- so a broker who has been watching that number does not see it reset to zero.
--- team_cap_tracking starts EMPTY on purpose: no team has ever had a cap, so
--- there is nothing to backfill. Rows appear when a team lead sets one.
+--
+-- (team_cap_tracking is NOT backfilled and starts empty: no team has ever had a
+-- cap, so there is nothing to carry forward. Rows appear when a lead sets one.)
 insert into public.agent_cap_tracking (agent_id, brokerage_id, anniversary_start, anniversary_end, cap_amount, cap_paid_to_date, is_capped)
 select a.id,
        a.brokerage_id,
