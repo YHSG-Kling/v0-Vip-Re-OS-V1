@@ -50,6 +50,7 @@ const code = (p: string) => src(p).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s
 const A_VENDOR = "app/actions/vendor-marketplace.ts"
 const A_PHOTO = "app/actions/photo-management.ts"
 const A_VIDEO = "app/actions/video.ts"
+const A_ROLE_GRANTS = "lib/auth/role-grants.ts"
 const S_DIRECTORY = "app/dashboard/vendors/vendor-directory-client.tsx"
 const S_TXN = "app/components/transactions/VendorBookingSection.tsx"
 const S_VENDOR_REVIEWS = "app/vendor/reviews/reviews-client.tsx"
@@ -86,8 +87,29 @@ function vendorReviewLayer() {
   // the caller's own vendor id must be COMPARED against the reviewed vendor id.
   check("the response gate compares the CALLER'S vendor to the reviewed vendor",
     /export async function respondToVendorReview[\s\S]{0,1600}?resolveCallerVendorId[\s\S]{0,300}?!==\s*\(review as any\)\.vendor_id/.test(actions))
+  // THE CLAIM IS THE LINKAGE, NOT THE FILE IT LIVES IN.
+  //
+  // This used to require the literal `.from("user_role_assignments")` INSIDE
+  // resolveCallerVendorId. That query has since moved into the shared reader
+  // lib/auth/role-grants.ts — because user_role_assignments is UNIQUE on
+  // (user_id, ROLE), not on user_id, so a single-row read of it is unsound and
+  // six sites were reading it that way. Pinning the assertion to one file turned
+  // a correct consolidation into a red guard: the probe could not tell a MOVE
+  // from a DELETION, which is the same lesson the orphan-export census had to
+  // learn.
+  //
+  // So it is asserted as a CHAIN. The caller must delegate to the shared reader,
+  // and the shared reader must be the thing that reads vendor_id off
+  // user_role_assignments. Either link breaking still goes red — including the
+  // failure this guards against, a linkage invented on `vendors.user_id`, a
+  // column that does not exist.
+  const roleGrants = code(A_ROLE_GRANTS)
   check("...and that vendor linkage is user_role_assignments.vendor_id (vendors has no user_id)",
-    /async function resolveCallerVendorId[\s\S]{0,600}?from\("user_role_assignments"\)[\s\S]{0,200}?select\("vendor_id"\)/.test(actions))
+    /async function resolveCallerVendorId[\s\S]{0,900}?readRoleGrants\([\s\S]{0,400}?selectVendorId\(/.test(actions)
+    && /from\("user_role_assignments"\)[\s\S]{0,200}?vendor_id/.test(roleGrants)
+    && !/from\("vendors"\)[\s\S]{0,200}?user_id/.test(actions + roleGrants))
+  check("...and an AMBIGUOUS vendor linkage refuses rather than picking one",
+    /ambiguous/.test(actions) && /ambiguous/.test(roleGrants))
   check("...so the old existence-check gate is gone",
     !/from\("vendors"\)\s*\.select\("id"\)\s*\.eq\("id",\s*\(review as any\)\.vendor_id\)/.test(actions))
 
