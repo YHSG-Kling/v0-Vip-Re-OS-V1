@@ -643,15 +643,20 @@ const CHECKS: Check[] = [
   {
     id: "A4-createAgent-role-gate",
     desc: "createAgent refuses a non-admin caller",
+    // Anchored to the SHARED tenant-admin predicate, not to a module-local
+    // roster const. The const this used to name (BROKER_ADMIN_ROLES) was one of
+    // 176 spellings of the same question and is gone — collapsed onto the one
+    // roster the owner's ruling requires. A gate is proven by the predicate it
+    // calls and the refusal it returns, never by the name of a set literal.
     run: () => {
       const b = body("agents", "createAgent")
-      return refusingBranch(b.text, "BROKER_ADMIN_ROLES.has(ctx.userType)")
+      return refusingBranch(b.text, "isAdminOrBroker({ user_type: ctx.userType })")
         ? true
         : "createAgent has no refusing role gate"
     },
     neg: {
       file: "agents",
-      find: "  if (!BROKER_ADMIN_ROLES.has(ctx.userType)) {\n    return { error: \"Only brokers / admins / team leads can create agent records.\" }\n  }",
+      find: "  if (!isAdminOrBroker({ user_type: ctx.userType })) {\n    return { error: \"Only brokers / admins / team leads can create agent records.\" }\n  }",
       replace: "",
     },
   },
@@ -716,9 +721,15 @@ const CHECKS: Check[] = [
         return "the insert takes agent_id straight from the caller"
       }
       if (!/agent_id\s*:\s*agentId/.test(p.text)) return "the insert does not carry the resolved agentId"
-      return refusingBranch(b.text, "BROKER_ADMIN_ROLES.has(ctx.userType)")
+      // The NARROWER tier, deliberately. Booking a cost against someone else's
+      // ledger is brokerage-wide money — business_expenses is a FINANCE table
+      // under is_brokerage_finance_admin() (m472), which holds team_lead out —
+      // and this write goes through the SERVICE client, so RLS is bypassed and
+      // this predicate is the only gate it has. Asserting the WIDE roster here
+      // would have blessed an app gate that overrules the database.
+      return refusingBranch(b.text, "isBrokerageFinanceAdmin({ user_type: ctx.userType })")
         ? true
-        : "naming another agent is not gated on a broker/admin role"
+        : "naming another agent's ledger is not gated on the brokerage-money roster"
     },
     neg: {
       file: "agents",
