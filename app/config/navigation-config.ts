@@ -3,6 +3,85 @@
 import { UserRole } from '@/app/types/roles'
 import { NavigationConfig, NavItem } from '@/app/types/navigation'
 
+// ─── CROSS-ROLE SURFACE GROUPS ───────────────────────────────────────────────
+//
+// OWNER RULING, verbatim: "a tc needs to see compliance and marketing;
+// compliance officer needs to see transactions and marketing… the compliance
+// manager is the one that deals with marketing."
+//
+// Neither of those was true. MEASURED before this change:
+//   tc                 7 sidebar items — transactions only. NO compliance, NO marketing.
+//   compliance_officer 14 sidebar items — compliance only. NO transactions, NO marketing.
+//
+// These three consts exist so the shared surfaces have ONE definition. The
+// alternative — pasting the items into each role's array — is how the same link
+// ends up with two hrefs and one of them rots; this file already carries scars
+// from that (several `Nav-parity:` and `Orphan-route sweep:` comments below mark
+// links that had gone missing from one role and not another).
+//
+// Every href here is COPIED VERBATIM from the role that already owned it, not
+// invented: the transaction items from `tc`, the compliance items from
+// `compliance_officer`, the marketing group from the broker/admin `content`
+// group. A new href would be a route nobody has built.
+//
+// getNavigationForRole() dedupes by `id || href` when it merges several roles, so
+// a user holding BOTH tc and compliance_officer sees each of these once, not twice.
+
+/** Deal-coordination surfaces. Source of truth: the `tc` role's own sidebar. */
+const TRANSACTION_ITEMS: readonly NavItem[] = [
+  { id: 'deals', label: 'Active Deals', href: '/transaction/deals', icon: 'Handshake', badgeKey: 'active_deals' },
+  { id: 'checklists', label: 'Checklists', href: '/transaction/checklists', icon: 'CheckSquare' },
+  { id: 'documents', label: 'Documents', href: '/transaction/documents', icon: 'Folder' },
+  { id: 'vendors', label: 'Vendor Coordination', href: '/transaction/vendors', icon: 'Users' },
+] as const
+
+/**
+ * Compliance surfaces a NON-compliance-officer role needs in order to do its own
+ * job — deliberately NARROWER than the compliance officer's own sidebar.
+ *
+ * A TC needs to know what is BLOCKING a file: the queue, and the violations
+ * raised against it. A TC does not need Policies, Audit Logs, AI Quality or Comm
+ * Intelligence — those are the officer's instruments, not a coordinator's, and
+ * handing them over would make the two roles identical.
+ *
+ * "Required Documents" is deliberately ABSENT. The only route of that name is
+ * /dashboard/settings/required-documents, which is where a BROKERAGE CONFIGURES
+ * which documents it demands — an admin surface, not a per-deal one. The
+ * coordinator's per-deal equivalent is Checklists, which they already have. (I
+ * first wrote this const with a /compliance/required-documents entry; that route
+ * does not exist. Checking every href against app/ before shipping is why it is
+ * not in here.)
+ */
+const COMPLIANCE_ITEMS_FOR_COORDINATION: readonly NavItem[] = [
+  { id: 'compliance-queue', label: 'Compliance Queue', href: '/dashboard/compliance/queue', icon: 'ListChecks' },
+  { id: 'violations', label: 'Violations', href: '/compliance/violations', icon: 'AlertTriangle', badgeKey: 'compliance_violations' },
+] as const
+
+/**
+ * The marketing group, verbatim from the broker/admin `content` group.
+ *
+ * Given to BOTH tc and compliance_officer by the ruling. For the compliance
+ * officer it is not a courtesy: they are "the one that deals with marketing", so
+ * Review Queue is their approval surface — the place brand/fair-housing review
+ * actually happens — and it was unreachable for them before this.
+ */
+const MARKETING_GROUP: NavItem = {
+  id: 'content',
+  label: 'Marketing & Content',
+  icon: 'Palette',
+  children: [
+    { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
+    { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
+    { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
+    { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
+    { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/marketing/lead-magnets' },
+    { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/studio?tab=blog' },
+    { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },
+    { id: 'seo', label: 'SEO / GEO', href: '/dashboard/marketing/seo' },
+    { id: 'video-pages', label: 'Video Pages', href: '/dashboard/marketing/video-pages' },
+  ],
+}
+
 export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
   agent: {
     sidebarItems: [
@@ -701,6 +780,13 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       // a dead "Forbidden" link for tenant compliance officers. AI Audit is their tenant-scoped
       // audit surface (page allows compliance_officer); /compliance/audits covers the rest above.
       { id: 'ai-audit', label: 'AI Audit', href: '/dashboard/admin/ai-audit', icon: 'Database' },
+      // OWNER RULING: "compliance officer needs to see transactions and marketing…
+      // the compliance manager is the one that deals with marketing." Both were
+      // missing entirely — the officer could audit a deal's paperwork without ever
+      // being able to open the deal, and Review Queue, which IS their approval
+      // surface for brand and fair-housing review, was unreachable.
+      ...TRANSACTION_ITEMS,
+      MARKETING_GROUP,
       // Notification-rail parity: every tenant user type gets the /notifications home.
       { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'settings', label: 'Settings', href: '/compliance/settings', icon: 'Settings' },
@@ -730,6 +816,14 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'checklists', label: 'Checklists', href: '/transaction/checklists', icon: 'CheckSquare' },
       { id: 'documents', label: 'Documents', href: '/transaction/documents', icon: 'Folder' },
       { id: 'vendors', label: 'Vendor Coordination', href: '/transaction/vendors', icon: 'Users' },
+      // OWNER RULING: "a tc needs to see compliance and marketing". Neither was
+      // reachable. A coordinator whose whole job is clearing what blocks a file
+      // could not see the compliance queue that holds the blocks, and could not
+      // see the listing marketing they are coordinating.
+      // Narrower than the officer's own compliance sidebar on purpose — see
+      // COMPLIANCE_ITEMS_FOR_COORDINATION.
+      ...COMPLIANCE_ITEMS_FOR_COORDINATION,
+      MARKETING_GROUP,
       // Notification-rail parity: every tenant user type gets the /notifications home.
       { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'settings', label: 'Settings', href: '/transaction/settings', icon: 'Settings' },

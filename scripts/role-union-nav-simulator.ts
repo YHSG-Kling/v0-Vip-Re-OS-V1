@@ -57,6 +57,7 @@ import {
   resolvePrimaryRole,
   NAVIGATION_BY_ROLE,
 } from "../app/config/navigation-config"
+import type { NavItem } from "../app/types/navigation"
 
 let pass = 0
 let fail = 0
@@ -155,6 +156,68 @@ function pureLayer() {
 
   check("U14 a bare string still works (the signature's other shape)",
     sig(getNavigationForRole("admin")) === sig(getNavigationForRole(["admin"])))
+
+  // ── OWNER RULING · cross-role surface reach ────────────────────────────────
+  // "a tc needs to see compliance and marketing; compliance officer needs to see
+  //  transactions and marketing… the compliance manager is the one that deals
+  //  with marketing."
+  //
+  // Asserted against the REACHABLE HREF SET, flattened through group children,
+  // because that is the claim: can this role GET THERE. Deliberately not asserted
+  // against item counts, item labels, or the presence of a particular const —
+  // this session lost a CI run to a probe pinned to a variable's spelling, which
+  // could not tell an improvement from a regression. A count would break the day
+  // someone legitimately adds a link; a label would break on a rename; the href
+  // set is the thing the ruling is actually about.
+  const reach = (role: string): Set<string> => {
+    const out = new Set<string>()
+    const walk = (items: readonly NavItem[]) => {
+      for (const i of items ?? []) {
+        if (i.href) out.add(i.href)
+        if (i.children) walk(i.children as readonly NavItem[])
+      }
+    }
+    walk(getNavigationForRole([role]).sidebarItems)
+    return out
+  }
+  const reaches = (role: string, prefix: string) =>
+    [...reach(role)].some((h) => h.startsWith(prefix))
+
+  check("U15 a tc reaches COMPLIANCE (the queue that holds what blocks their file)",
+    reaches("tc", "/dashboard/compliance") || reaches("tc", "/compliance"))
+  check("U16 a tc reaches MARKETING",
+    reaches("tc", "/dashboard/marketing"))
+  check("U17 a compliance officer reaches TRANSACTIONS (they can open the deal they audit)",
+    reaches("compliance_officer", "/transaction"))
+  check("U18 a compliance officer reaches MARKETING — they are the one who deals with it",
+    reaches("compliance_officer", "/dashboard/marketing"))
+  check("U19 …including the Review Queue specifically, which IS their approval surface",
+    reach("compliance_officer").has("/dashboard/marketing/review"))
+
+  // The two roles must still be DIFFERENT roles. Giving a coordinator the
+  // officer's whole instrument panel would satisfy U15 while quietly collapsing
+  // the distinction the tenant depends on, so pin that too.
+  check("U20 a tc does NOT inherit the officer's own instruments (policies / audit logs)",
+    !reach("tc").has("/compliance/policies") && !reach("tc").has("/compliance/audits"))
+  // U20 is an ABSENCE claim, and an absence claim passes for free if the collector
+  // is broken. Prove reach() actually finds those two hrefs for the role that DOES
+  // own them, so U20 is measuring the role and not a bug in the helper.
+  check("U20a …and reach() really does find those instruments for the officer, so U20 is not vacuous",
+    reach("compliance_officer").has("/compliance/policies") &&
+    reach("compliance_officer").has("/compliance/audits"))
+  // Same guard for the reach-through-children walk: an external persona must not
+  // pick up the marketing group, which also proves the walk is not returning
+  // every href in the file regardless of role.
+  check("U20b an external persona reaches NEITHER marketing nor transactions",
+    !reaches("contact", "/dashboard/marketing") && !reaches("contact", "/transaction"))
+
+  // Union hygiene for the newly-shared groups: one person holding both roles must
+  // see each shared link ONCE. mergeNavItems dedupes on `id || href`, and these
+  // groups are now referenced from two places, so this is the case that would
+  // regress if a copy were pasted instead of referenced.
+  const bothIds = getNavigationForRole(["tc", "compliance_officer"]).sidebarItems.map((i) => i.id || i.href)
+  check("U21 holding BOTH tc and compliance_officer shows every shared surface exactly once",
+    bothIds.length === new Set(bothIds).size)
 }
 
 // ── Layer 2 · SOURCE ─────────────────────────────────────────────────────────
