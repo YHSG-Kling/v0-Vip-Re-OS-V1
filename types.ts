@@ -15,6 +15,10 @@ export type UserRole =
   | 'lender'
   | 'title_agent'
   | 'contact'
+  // m469 — the bare seat: a user holding NO business role, who sees only their
+  // own work until one is granted. Added here SECOND, per the rule above: it
+  // went into lib/security/types.ts first, and this union mirrors that one.
+  | 'member'
 
 // Runtime accessor object — enables UserRole.ADMIN, UserRole.TC, etc.
 // Values are always the canonical strings above.
@@ -33,6 +37,7 @@ export const UserRole = {
   LENDER: 'lender' as const,
   TITLE_AGENT: 'title_agent' as const,
   CONTACT: 'contact' as const,
+  MEMBER: 'member' as const,
 } as const
 
 export type PersonaType =
