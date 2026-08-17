@@ -9,7 +9,8 @@ import { getAgentContext } from "@/lib/identity"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { validateTeamMember, agentFundedTotal, isSourceOfFunds, type SourceOfFunds } from "@/lib/teams/membership"
-import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
+import { resolveLedTeamId } from "@/lib/teams/team-scope"
 
 
 export interface TeamMemberRow {
@@ -54,10 +55,23 @@ export async function addTeamMember(input: {
 }): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
-  if (!isAdminOrBroker({ user_type: ctx.userType })) return { ok: false, error: "Forbidden — only a broker, admin, or team lead can manage team members" }
   if (!isSourceOfFunds(input.sourceOfFunds)) return { ok: false, error: "Invalid source of funds" }
 
   const svc = createServiceClient()
+  // ROSTER + MEMBER SPLIT are the team's terms (m473, owner ruling: the lead
+  // "set[s] the caps and percentages of their agents"). Finance admins manage
+  // any team; the LEAD manages exactly the team whose teams.team_lead_id is
+  // them — the FACT, not a user_type, which also admits the live lead whose
+  // user_type is 'agent'. The write below is service-client, so this gate is
+  // the only gate; it mirrors m473's team_members RLS exactly.
+  if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
+    if (!ctx.userId) return { ok: false, error: "Unauthorized" }
+    const led = await resolveLedTeamId(svc, ctx.userId)
+    if (!led.ok) return { ok: false, error: led.error }
+    if (!led.teamId || led.teamId !== input.teamId) {
+      return { ok: false, error: "Forbidden — only a broker/admin or this team's lead can manage its members" }
+    }
+  }
   // Verify the team + agent both belong to the caller's brokerage (no cross-tenant assignment).
   const [{ data: team }, { data: agent }] = await Promise.all([
     svc.from("teams").select("id").eq("id", input.teamId).eq("brokerage_id", ctx.brokerageId).maybeSingle(),
@@ -100,8 +114,20 @@ export async function addTeamMember(input: {
 export async function removeTeamMember(memberId: string): Promise<{ ok: true } | { ok: false; error: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
-  if (!isAdminOrBroker({ user_type: ctx.userType })) return { ok: false, error: "Forbidden" }
   const svc = createServiceClient()
+  // Same authority as adding: finance admin, or the lead of the team this
+  // member row belongs to. The row is read FIRST so the refusal names the right
+  // fact — and a refused read is an outage, not a denial.
+  const { data: row, error: readErr } = await svc.from("team_members")
+    .select("team_id").eq("id", memberId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+  if (readErr) return { ok: false, error: `Could not read the member row: ${readErr.message}` }
+  if (!row) return { ok: false, error: "Member not found in your brokerage" }
+  if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
+    if (!ctx.userId) return { ok: false, error: "Unauthorized" }
+    const led = await resolveLedTeamId(svc, ctx.userId)
+    if (!led.ok) return { ok: false, error: led.error }
+    if (!led.teamId || led.teamId !== row.team_id) return { ok: false, error: "Forbidden" }
+  }
   const { error } = await svc.from("team_members")
     .update({ is_active: false, effective_to: new Date().toISOString().split("T")[0] })
     .eq("id", memberId).eq("brokerage_id", ctx.brokerageId)

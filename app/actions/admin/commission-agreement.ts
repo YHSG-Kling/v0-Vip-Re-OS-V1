@@ -25,17 +25,38 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
 import { uploadBufferToBucket } from "@/lib/storage/buckets"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
+import { leadsAgentsTeam, resolveLedTeamId } from "@/lib/teams/team-scope"
 
 const COMMISSION_CATEGORY = "commission_agreement"
 
-async function requireAdmin(): Promise<
+/**
+ * Finance admin, OR — when a target is named — the LEAD of that agent's team
+ * (m473). Sending or reading a commission agreement IS setting the agent's
+ * terms, which the owner assigns to the lead for THEIR agents. The template
+ * library (upload/list, no target) stays finance-only: forms are
+ * brokerage-level assets. Service-client writes; this gate is the only gate.
+ */
+async function requireAdmin(targetUserId?: string): Promise<
   | { ok: true; brokerageId: string; userId: string; userType: string }
   | { ok: false; error: string }
 > {
   const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
-  if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) return { ok: false, error: "Forbidden" }
-  return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId, userType: ctx.userType }
+  if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) return { ok: false, error: "Unauthorized" }
+  if (isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
+    return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId, userType: ctx.userType }
+  }
+  if (targetUserId) {
+    const svc = createServiceClient()
+    const { data: agent, error } = await svc
+      .from("agents").select("id, brokerage_id").eq("user_id", targetUserId).maybeSingle()
+    if (error) return { ok: false, error: `Could not resolve the target agent: ${error.message}` }
+    if (agent && agent.brokerage_id === ctx.brokerageId) {
+      const lead = await leadsAgentsTeam(svc, ctx.userId, agent.id)
+      if (!lead.ok) return { ok: false, error: lead.error }
+      if (lead.leads) return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId, userType: ctx.userType }
+    }
+  }
+  return { ok: false, error: "Forbidden" }
 }
 
 export interface CommissionFormField {
@@ -110,9 +131,18 @@ export async function uploadCommissionAgreementFormAction(input: {
 export async function listCommissionAgreementFormsAction(): Promise<
   { ok: true; forms: CommissionForm[] } | { ok: false; error: string }
 > {
-  const auth = await requireAdmin()
-  if (!auth.ok) return auth
+  // READ-ONLY template picker. Finance admins, plus any FK team lead — the lead
+  // cannot exercise their m473 send authority without seeing the form list.
+  // Uploading/managing templates stays finance-only above.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) return { ok: false, error: "Unauthorized" }
   const svc = createServiceClient()
+  if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
+    const led = await resolveLedTeamId(svc, ctx.userId)
+    if (!led.ok) return { ok: false, error: led.error }
+    if (!led.teamId) return { ok: false, error: "Forbidden" }
+  }
+  const auth = { ok: true as const, brokerageId: ctx.brokerageId, userId: ctx.userId, userType: ctx.userType }
   const { data, error } = await svc
     .from("brokerage_forms")
     .select("id, form_name, document_url, field_schema")
@@ -147,7 +177,7 @@ export interface CommissionAgreementStatus {
 export async function getCommissionAgreementStatusAction(
   targetUserId: string,
 ): Promise<{ ok: true; status: CommissionAgreementStatus } | { ok: false; error: string }> {
-  const auth = await requireAdmin()
+  const auth = await requireAdmin(targetUserId)
   if (!auth.ok) return auth
   const svc = createServiceClient()
 
@@ -210,7 +240,7 @@ export async function sendCommissionAgreementAction(input: {
     }
   | { ok: false; error: string }
 > {
-  const auth = await requireAdmin()
+  const auth = await requireAdmin(input.targetUserId)
   if (!auth.ok) return auth
   const svc = createServiceClient()
 

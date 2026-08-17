@@ -19,15 +19,40 @@ import { revalidatePath } from "next/cache"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
+import { leadsAgentsTeam } from "@/lib/teams/team-scope"
 
-async function requireAdmin(): Promise<
+/**
+ * Finance admin, OR the LEAD of the target agent's team (m473, owner ruling:
+ * "the team lead needs to … be able to set the caps and percentages of their
+ * agents"). Every write below goes through the SERVICE client, so this gate is
+ * the only gate — and it now mirrors the RLS lanes exactly: brokerage-wide for
+ * the finance roster, row-scoped by teams.team_lead_id for the lead. Leading is
+ * the FK FACT, never a user_type: the live team's lead carries user_type
+ * 'agent', and a 'team_lead' seat that leads no team row leads nothing.
+ */
+async function requireAdmin(targetUserId?: string): Promise<
   | { ok: true; brokerageId: string; userType: string }
   | { ok: false; error: string }
 > {
   const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
-  if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) return { ok: false, error: "Forbidden" }
-  return { ok: true, brokerageId: ctx.brokerageId, userType: ctx.userType }
+  if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) return { ok: false, error: "Unauthorized" }
+  if (isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
+    return { ok: true, brokerageId: ctx.brokerageId, userType: ctx.userType }
+  }
+  if (targetUserId) {
+    const svc = createServiceClient()
+    const { data: agent, error } = await svc
+      .from("agents").select("id, brokerage_id").eq("user_id", targetUserId).maybeSingle()
+    // A refused read is an outage, not a denial — do not tell a lead they are
+    // not one because a lookup failed.
+    if (error) return { ok: false, error: `Could not resolve the target agent: ${error.message}` }
+    if (agent && agent.brokerage_id === ctx.brokerageId) {
+      const lead = await leadsAgentsTeam(svc, ctx.userId, agent.id)
+      if (!lead.ok) return { ok: false, error: lead.error }
+      if (lead.leads) return { ok: true, brokerageId: ctx.brokerageId, userType: ctx.userType }
+    }
+  }
+  return { ok: false, error: "Forbidden" }
 }
 
 export interface AgentProfile {
@@ -69,7 +94,7 @@ export async function getAgentProfileForUserAction(
   | { ok: true; agent: AgentProfile | null; offices: OfficeOption[] }
   | { ok: false; error: string }
 > {
-  const auth = await requireAdmin()
+  const auth = await requireAdmin(targetUserId)
   if (!auth.ok) return auth
   const svc = createServiceClient()
 
@@ -162,7 +187,7 @@ export interface UpdateAgentProfileInput {
 export async function updateAgentProfileAction(
   input: UpdateAgentProfileInput,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const auth = await requireAdmin()
+  const auth = await requireAdmin(input.targetUserId)
   if (!auth.ok) return auth
   const svc = createServiceClient()
 
