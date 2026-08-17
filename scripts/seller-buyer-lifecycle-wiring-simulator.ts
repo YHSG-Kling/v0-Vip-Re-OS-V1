@@ -756,9 +756,15 @@ const MUTATIONS: Array<{ id: string; file: string; note: string; find: string; r
     find: `        peerContactIds: peers.contactIds.filter((id) => id !== contactId),`,
     replace: `        peerContactIds: peers.contactIds,` },
 
+  // ANCHORED ON THE NAME, NOT THE PARAMETER SHAPE. This anchor used to include
+  // `(input: {` — the inline object literal the signature carried — so the day
+  // that signature stopped restating the evaluator's type and started IMPORTING
+  // it (CMAQualityInput), the mutation silently stopped applying and the
+  // negative control reported UNTESTABLE. A control that cannot fail is not a
+  // control; a prefix anchor survives any change to the parameter list.
   { id: "D1", file: GOV, note: "resurrect the boolean-only CMA wrapper",
-    find: `export async function evaluateListingCMAQuality(input: {`,
-    replace: `export async function checkCMAReady(listingId: string) {\n  return { success: true, data: { isReady: false } }\n}\n\nexport async function evaluateListingCMAQuality(input: {` },
+    find: `export async function evaluateListingCMAQuality(`,
+    replace: `export async function checkCMAReady(listingId: string) {\n  return { success: true, data: { isReady: false } }\n}\n\nexport async function evaluateListingCMAQuality(` },
 
   { id: "D6", file: GOV, note: "drop the expiry warning the survivor carries",
     find: `      await emitNetSheetExpirationWarning(input.listingId, result.daysRemaining)`,
