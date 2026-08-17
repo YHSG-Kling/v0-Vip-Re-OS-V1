@@ -32,8 +32,11 @@ import { ArrowLeft, BarChart2, FileText, QrCode, Magnet, Building2 } from "lucid
 
 type View = "library" | "new" | "detail"
 
-/** Personas that see the whole brokerage's magnets. Mirrors BROKERAGE_WIDE_ROLES in the action. */
-const BROKERAGE_WIDE_ROLES = ["admin", "broker", "superadmin"]
+/** Personas that see the whole brokerage's magnets. Mirrors the action's gate
+ *  (isAdminOrBroker — the ONE tenant roster; operational marketing surface, so
+ *  team_lead is included per the owner ruling). 'superadmin' was dead here:
+ *  0 live rows store that users.user_type. */
+const BROKERAGE_WIDE_ROLES = ["admin", "broker", "broker_owner", "broker_admin", "team_lead"]
 const ALLOWED_ROLES = ["agent", "team_leader", ...BROKERAGE_WIDE_ROLES]
 
 interface UserContext {

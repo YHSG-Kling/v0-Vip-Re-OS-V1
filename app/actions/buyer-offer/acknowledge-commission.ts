@@ -77,7 +77,9 @@ export async function acknowledgeBuyerCommissionAction(
 
   const isAuthorizedAgent =
     profile?.brokerage_id === offer.brokerage_id
-    && ["broker","broker_admin","admin","superadmin","team_lead","agent","tc"].includes(profile?.user_type ?? "")
+    // SCOPE LADDER (kept inline — admits agent/tc/team_lead): 'superadmin'
+    // removed — dead as users.user_type (0 live rows); broker_owner added.
+    && ["broker","broker_owner","broker_admin","admin","team_lead","agent","tc"].includes(profile?.user_type ?? "")
 
   if (!isBuyer && !isAuthorizedAgent) {
     return { ok: false, error: "Only the buyer or an authorized agent can acknowledge" }

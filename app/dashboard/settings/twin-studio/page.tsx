@@ -19,14 +19,17 @@ import { Skeleton } from "@/app/components/ui/skeleton"
 
 export const dynamic = "force-dynamic"
 
-const APPROVAL_ROLES = ["broker", "admin", "superadmin", "team_lead"]
+// TRUE ADMIN GATE (operational approval surface, team_lead already included) —
+// repointed to the ONE tenant roster below. 'superadmin' was dead: 0 live rows
+// store that users.user_type.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 async function loadData() {
   const ctx = await resolveWriteContext()
   if (!ctx.isAuthenticated) {
     return { ok: false as const, twins: [], pending: [], canApprove: false }
   }
-  const canApprove = APPROVAL_ROLES.includes(ctx.userType)
+  const canApprove = isAdminOrBroker({ user_type: ctx.userType })
 
   const [{ twins }, pendingRes] = await Promise.all([
     listMyTwins(),

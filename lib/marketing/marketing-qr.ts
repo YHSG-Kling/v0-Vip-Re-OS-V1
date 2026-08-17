@@ -106,7 +106,9 @@ async function notifyOwnerToAssignUrl(
       const { data: admins } = await svc
         .from("users").select("id")
         .eq("brokerage_id", args.brokerageId)
-        .in("user_type", ["admin", "broker", "superadmin"])
+        // RECIPIENT FILTER: 'superadmin' dropped (matches zero users.user_type
+        // rows); broker_owner added — storable seat that owns the brokerage.
+        .in("user_type", ["admin", "broker", "broker_owner"])
       for (const u of admins ?? []) recipients.push(u.id)
     }
 

@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { createServiceClient } from "@/lib/supabase/service"
 import { AutomationsClient } from "./automations-client"
 
@@ -15,9 +16,10 @@ export default async function AutomationsPage() {
   if (!ctx.isAuthenticated) redirect("/login")
   if (!ctx.brokerageId) redirect("/dashboard")
 
-  // Gate: admin/broker only
-  const allowedRoles = ["admin", "broker", "superadmin"]
-  if (!allowedRoles.includes(ctx.userType)) redirect("/dashboard")
+  // TRUE ADMIN GATE (operational: automations/assignment rules) — repointed to
+  // the ONE tenant roster. 'superadmin' was dead: 0 live rows store that
+  // users.user_type.
+  if (!isAdminOrBroker({ user_type: ctx.userType })) redirect("/dashboard")
 
   const service = createServiceClient()
 

@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { KernelEvent } from "@/lib/kernel/events"
 import { QuickBooksProvider, type AccountingWriteResult } from "@/lib/providers/accounting/quickbooks"
 
@@ -88,7 +89,10 @@ export async function disconnectProvider(data: {
     .eq("id", user.id)
     .single()
 
-  if (!profile || !["broker", "admin"].includes(profile.user_type ?? profile.role ?? "")) {
+  // Same finance-roster gate as the write path above (accounting-sync is a
+  // brokerage-wide MONEY surface; the predicate is case-insensitive and takes
+  // the legacy `role` spelling on input only).
+  if (!profile || !isBrokerageFinanceAdmin({ user_type: profile.user_type ?? profile.role })) {
     throw new Error("Unauthorized: broker or admin role required")
   }
 
@@ -275,7 +279,10 @@ export async function pushAccountingEntry(
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Not authenticated" }
   const { data: profile } = await supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
-  if (!["superadmin", "broker", "broker_owner", "admin"].includes(profile?.user_type ?? "")) {
+  // TRUE ADMIN GATE, brokerage-wide MONEY (accounting-sync): repointed to THE
+  // finance roster (mirrors public.is_brokerage_finance_admin, m472).
+  // 'superadmin' was dead — 0 live rows store that users.user_type.
+  if (!isBrokerageFinanceAdmin({ user_type: profile?.user_type })) {
     return { ok: false, error: "Broker/admin role required" }
   }
 

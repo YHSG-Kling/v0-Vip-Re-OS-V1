@@ -49,14 +49,16 @@ function rowToWidget(r: any): EmbedWidget {
   }
 }
 
-const ADMIN_ROLES = ["broker", "admin", "superadmin", "team_lead"]
+// TRUE ADMIN GATE (operational, team_lead already included) — repointed to the
+// ONE tenant roster. 'superadmin' was dead: 0 live rows store that users.user_type.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export async function listMyEmbeds(): Promise<{ widgets: EmbedWidget[]; canCreateBrokerageWide: boolean; error?: string }> {
   const ctx = await resolveWriteContext()
   if (!ctx.isAuthenticated) return { widgets: [], canCreateBrokerageWide: false, error: "Unauthorized" }
 
   const supabase = createServiceClient()
-  const canCreateBrokerageWide = ADMIN_ROLES.includes(ctx.userType)
+  const canCreateBrokerageWide = isAdminOrBroker({ user_type: ctx.userType })
 
   // Brokers see all embeds in their brokerage. Agents see only their own.
   const query = supabase
@@ -106,7 +108,7 @@ export async function createEmbed(params: {
   const ctx = await resolveWriteContext()
   if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
 
-  if (params.scope === "brokerage" && !ADMIN_ROLES.includes(ctx.userType)) {
+  if (params.scope === "brokerage" && !isAdminOrBroker({ user_type: ctx.userType })) {
     return { ok: false, error: "Only brokers / admins can create brokerage-wide embeds" }
   }
 
@@ -175,11 +177,11 @@ export async function updateEmbed(params: {
   if (existing.brokerage_id !== ctx.brokerageId) return { ok: false, error: "Forbidden" }
 
   // Brokerage-wide embeds (agent_id NULL) only editable by admin roles.
-  if (existing.agent_id === null && !ADMIN_ROLES.includes(ctx.userType)) {
+  if (existing.agent_id === null && !isAdminOrBroker({ user_type: ctx.userType })) {
     return { ok: false, error: "Forbidden" }
   }
   // Personal embeds editable only by their owner.
-  if (existing.agent_id !== null && existing.agent_id !== ctx.agentId && !ADMIN_ROLES.includes(ctx.userType)) {
+  if (existing.agent_id !== null && existing.agent_id !== ctx.agentId && !isAdminOrBroker({ user_type: ctx.userType })) {
     return { ok: false, error: "Forbidden" }
   }
 
@@ -230,8 +232,8 @@ export async function deleteEmbed(id: string): Promise<{ ok: boolean; error?: st
     .maybeSingle()
   if (!existing) return { ok: false, error: "Not found" }
   if (existing.brokerage_id !== ctx.brokerageId) return { ok: false, error: "Forbidden" }
-  if (existing.agent_id === null && !ADMIN_ROLES.includes(ctx.userType)) return { ok: false, error: "Forbidden" }
-  if (existing.agent_id !== null && existing.agent_id !== ctx.agentId && !ADMIN_ROLES.includes(ctx.userType)) {
+  if (existing.agent_id === null && !isAdminOrBroker({ user_type: ctx.userType })) return { ok: false, error: "Forbidden" }
+  if (existing.agent_id !== null && existing.agent_id !== ctx.agentId && !isAdminOrBroker({ user_type: ctx.userType })) {
     return { ok: false, error: "Forbidden" }
   }
 
@@ -311,7 +313,7 @@ export async function getEmbedAnalytics(params: {
   const supabase = createServiceClient()
   const days = params.days ?? 30
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
-  const isAdmin = ADMIN_ROLES.includes(ctx.userType)
+  const isAdmin = isAdminOrBroker({ user_type: ctx.userType })
 
   // Determine which widget ids to query
   let widgetIds: string[]

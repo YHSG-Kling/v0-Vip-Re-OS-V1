@@ -33,14 +33,18 @@ export interface EgressScope {
 }
 
 /** Role families. */
-const BROKERAGE_WIDE = new Set(["superadmin", "broker", "broker_admin"])
+// SCOPE LADDER (kept inline — collapsing to a shared admin predicate would move
+// roles between tiers). 'superadmin' removed: dead as users.user_type (0 live
+// rows; platform staff carry platform_role). 'broker_owner' added: storable,
+// owns the brokerage, and previously fell to the "own work" tier below.
+const BROKERAGE_WIDE = new Set(["broker", "broker_owner", "broker_admin"])
 const ADMIN = new Set(["admin"])
 const TEAM_LEVEL = new Set(["team_lead"])
 
 /**
  * Resolve what a user oversees. Pure.
  *
- *  · superadmin / broker / broker_admin → the whole brokerage, ALL locations.
+ *  · broker / broker_owner / broker_admin → the whole brokerage, ALL locations.
  *  · admin WITH a locationId → that location only (a multi-location office admin).
  *  · admin WITHOUT a locationId → the whole brokerage (single-office admin).
  *  · team_lead → their team.

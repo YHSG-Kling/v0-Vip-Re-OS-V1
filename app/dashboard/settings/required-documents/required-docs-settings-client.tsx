@@ -56,9 +56,12 @@ export function RequiredDocsSettingsClient({ brokerageId, teamId, userId, userTy
 
   // Scope choices depend on the user's role.
   const allowedScopes: ("brokerage" | "team" | "agent")[] = []
-  if (["broker","broker_admin","admin","superadmin","compliance_manager","compliance_officer"].includes(userType)) allowedScopes.push("brokerage")
-  if (teamId && ["team_lead","broker","broker_admin","admin","superadmin","compliance_manager","compliance_officer"].includes(userType)) allowedScopes.push("team")
-  if (["agent","team_lead","broker","broker_admin","admin","superadmin","compliance_manager","compliance_officer"].includes(userType)) allowedScopes.push("agent")
+  // SCOPE LADDER (kept inline — each rung admits a different tier): 'superadmin'
+  // removed from every rung — dead as users.user_type (0 live rows);
+  // broker_owner added — storable seat that owns the brokerage.
+  if (["broker","broker_owner","broker_admin","admin","compliance_manager","compliance_officer"].includes(userType)) allowedScopes.push("brokerage")
+  if (teamId && ["team_lead","broker","broker_owner","broker_admin","admin","compliance_manager","compliance_officer"].includes(userType)) allowedScopes.push("team")
+  if (["agent","team_lead","broker","broker_owner","broker_admin","admin","compliance_manager","compliance_officer"].includes(userType)) allowedScopes.push("agent")
 
   function seed() {
     setResult(null)

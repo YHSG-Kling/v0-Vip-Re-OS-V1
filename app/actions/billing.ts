@@ -6,7 +6,12 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { toPlanTier } from "@/lib/billing/plan-tier"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 
-const BILLING_ADMIN_ROLES = new Set(["admin", "broker", "broker_owner", "superadmin", "super_admin"])
+// TRUE ADMIN GATE, brokerage-wide MONEY (billing): derived from THE finance
+// roster (admin/broker/broker_owner — mirrors public.is_brokerage_finance_admin,
+// m472) instead of a retyped list. 'superadmin'/'super_admin' were dead here —
+// tested against users.user_type, where 0 live rows store either spelling.
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
+const BILLING_ADMIN_ROLES = BROKERAGE_FINANCE_ADMIN_USER_TYPES
 
 /**
  * Open the Stripe billing portal for the caller's brokerage — self-serve card /

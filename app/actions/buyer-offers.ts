@@ -38,7 +38,9 @@ import { MAX_PENDING_OFFERS } from "@/lib/offers/multi-offer-rules"
 //
 // `users.role` is RETIRED (almost every live row is NULL); authority is read
 // from `user_type`, which is what `requireContactAccess` hands back.
-const STAFF_USER_TYPES = ["agent", "team_lead", "tc", "admin", "broker", "superadmin"]
+// SCOPE LADDER (staff roster): 'superadmin' removed — dead as users.user_type
+// (0 live rows); broker_owner added — storable same-tenant seat that owns the brokerage.
+const STAFF_USER_TYPES = ["agent", "team_lead", "tc", "admin", "broker", "broker_owner"]
 
 async function requireStaffOnContact(contactId: string): Promise<
   | { ok: true; userId: string; brokerageId: string }

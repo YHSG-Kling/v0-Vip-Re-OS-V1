@@ -111,7 +111,9 @@ export async function runSiteTrafficInsights(svc: Svc, now = new Date()): Promis
       .select("id").eq("brokerage_id", brokerageId)
       // broker_owner is a legal user_type but not a canonical role, so the
       // expansion cannot carry it — it is appended rather than dropped.
-      .in("user_type", [...rawRoleVariantsFor(["broker", "admin", "superadmin"]), "broker_owner"]).limit(2)
+      // 'superadmin' dropped from the expansion: it matches zero users.user_type
+      // rows (platform staff carry platform_role instead).
+      .in("user_type", [...rawRoleVariantsFor(["broker", "admin"]), "broker_owner"]).limit(2)
     if (!principals || principals.length === 0) {
       const { data: anyUser } = await svc.from("users")
         .select("id").eq("brokerage_id", brokerageId).order("created_at", { ascending: true }).limit(1)

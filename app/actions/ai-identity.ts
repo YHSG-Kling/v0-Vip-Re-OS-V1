@@ -9,7 +9,10 @@ import { revalidatePath } from "next/cache"
 // and never verified caller auth. Any signed-in user could read or
 // overwrite another brokerage's assistant identity (the system prompt
 // applied to all customer-facing AI calls).
-const SAVE_ROLES = ["admin", "super_admin", "superadmin", "broker", "broker_owner", "broker_admin", "team_lead", "team_leader", "agent"]
+// SCOPE LADDER (kept inline — admits agent/team_lead tiers, not an admin gate):
+// 'superadmin'/'super_admin' removed — tested against users.user_type, where 0
+// live rows store either spelling (platform staff carry platform_role).
+const SAVE_ROLES = ["admin", "broker", "broker_owner", "broker_admin", "team_lead", "team_leader", "agent"]
 
 async function requireCaller(): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string; teamId: string | null }

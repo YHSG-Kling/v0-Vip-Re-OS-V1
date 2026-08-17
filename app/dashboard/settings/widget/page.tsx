@@ -35,7 +35,10 @@ export default async function WidgetSettingsPage() {
   if (!profile?.brokerage_id) redirect("/dashboard")
 
   // Only internal staff can access this page
-  const ALLOWED_TYPES = ["agent","broker","admin","superadmin","tc","team_lead","isa","compliance_officer"]
+  // SCOPE LADDER (staff roster, kept inline): 'superadmin' removed — dead as
+  // users.user_type (0 live rows); broker_owner added — storable seat that owns
+  // the brokerage.
+  const ALLOWED_TYPES = ["agent","broker","broker_owner","admin","tc","team_lead","isa","compliance_officer"]
   if (!ALLOWED_TYPES.includes(profile.user_type ?? "")) redirect("/dashboard")
 
   const brokerageId = profile.brokerage_id

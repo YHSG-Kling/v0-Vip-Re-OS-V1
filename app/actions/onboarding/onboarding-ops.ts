@@ -18,14 +18,17 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { loadOnboardingRoster, type OnboardingRosterRow } from "@/lib/onboarding/onboarding-roster"
 import { revalidatePath } from "next/cache"
 
-const OPS_ROLES = ["admin", "broker", "broker_admin", "superadmin"]
+// TRUE ADMIN GATE (operational: onboarding — the owner ruling's team_lead-included
+// tier) — repointed to the ONE tenant roster. 'superadmin' was dead: 0 live rows
+// store that users.user_type.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 async function requireOnboardingOps(): Promise<
   { ok: true; brokerageId: string; userId: string } | { ok: false; error: string }
 > {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Not authenticated" }
-  if (!OPS_ROLES.includes(ctx.role)) return { ok: false, error: "Forbidden" }
+  if (!isAdminOrBroker({ user_type: ctx.role })) return { ok: false, error: "Forbidden" }
   return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId }
 }
 

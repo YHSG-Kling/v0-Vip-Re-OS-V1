@@ -134,8 +134,11 @@ export type HealthRead<T> =
   | { status: "empty"; collector: string; detail: string }
   | { status: "unavailable"; reason: HealthReadFailure; detail: string }
 
-/** Roles allowed to read this brokerage's own operational health. */
-const HEALTH_READER_ROLES = ["superadmin", "admin", "broker"] as const
+// TRUE ADMIN GATES (operational: system health) — every role check in this file
+// is repointed to the ONE tenant roster (isAdminOrBroker). The old
+// ["superadmin","admin","broker"] literals were dead on 'superadmin': 0 live
+// rows store that users.user_type.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // ============================================================================
 // Server Actions
@@ -156,8 +159,8 @@ export async function getServiceStatuses(): Promise<{
     redirect("/login")
   }
 
-  // Role gate: superadmin, admin, broker only
-  if (!HEALTH_READER_ROLES.includes(ctx.role as never)) {
+  // Role gate: brokerage admin roles only
+  if (!isAdminOrBroker({ user_type: ctx.role })) {
     redirect("/dashboard")
   }
 
@@ -261,11 +264,11 @@ export async function getServiceHealthHistory(
 ): Promise<HealthRead<HealthCheck[]>> {
   const ctx = await getAgentContext()
 
-  if (!ctx.isAuthenticated || !HEALTH_READER_ROLES.includes(ctx.role as never)) {
+  if (!ctx.isAuthenticated || !isAdminOrBroker({ user_type: ctx.role })) {
     return {
       status: "unavailable",
       reason: "unauthorized",
-      detail: "System health history is limited to broker, admin and superadmin roles.",
+      detail: "System health history is limited to brokerage admin roles.",
     }
   }
   if (!ctx.brokerageId) {
@@ -313,11 +316,11 @@ export async function getUptimeHistory(
 ): Promise<HealthRead<HealthCheckHistory[]>> {
   const ctx = await getAgentContext()
 
-  if (!ctx.isAuthenticated || !HEALTH_READER_ROLES.includes(ctx.role as never)) {
+  if (!ctx.isAuthenticated || !isAdminOrBroker({ user_type: ctx.role })) {
     return {
       status: "unavailable",
       reason: "unauthorized",
-      detail: "Uptime history is limited to broker, admin and superadmin roles.",
+      detail: "Uptime history is limited to brokerage admin roles.",
     }
   }
   if (!ctx.brokerageId) {
@@ -368,11 +371,11 @@ export async function getResponseTimeLogs(
 ): Promise<HealthRead<ApiResponseLog[]>> {
   const ctx = await getAgentContext()
 
-  if (!ctx.isAuthenticated || !HEALTH_READER_ROLES.includes(ctx.role as never)) {
+  if (!ctx.isAuthenticated || !isAdminOrBroker({ user_type: ctx.role })) {
     return {
       status: "unavailable",
       reason: "unauthorized",
-      detail: "API latency logs are limited to broker, admin and superadmin roles.",
+      detail: "API latency logs are limited to brokerage admin roles.",
     }
   }
   if (!ctx.brokerageId) {
@@ -429,7 +432,7 @@ export async function getCronExecutionLogs(limit = 50): Promise<CronExecutionLog
   const supabase = await createClient()
   const ctx = await getAgentContext()
 
-  if (!ctx || !["superadmin", "admin", "broker"].includes(ctx.role)) {
+  if (!ctx || !isAdminOrBroker({ user_type: ctx.role })) {
     return []
   }
 
@@ -455,7 +458,7 @@ export async function getAutomationErrors(days = 7): Promise<{
   const supabase = await createClient()
   const ctx = await getAgentContext()
 
-  if (!ctx || !["superadmin", "admin", "broker"].includes(ctx.role)) {
+  if (!ctx || !isAdminOrBroker({ user_type: ctx.role })) {
     return { errors: [], byWorkflow: {} }
   }
 
@@ -500,11 +503,11 @@ export async function getMessageProviderStats(
 ): Promise<HealthRead<MessageProviderSummary>> {
   const ctx = await getAgentContext()
 
-  if (!ctx.isAuthenticated || !HEALTH_READER_ROLES.includes(ctx.role as never)) {
+  if (!ctx.isAuthenticated || !isAdminOrBroker({ user_type: ctx.role })) {
     return {
       status: "unavailable",
       reason: "unauthorized",
-      detail: "Message provider delivery stats are limited to broker, admin and superadmin roles.",
+      detail: "Message provider delivery stats are limited to brokerage admin roles.",
     }
   }
   if (!ctx.brokerageId) {
@@ -621,11 +624,11 @@ async function readSLASummary(
 ): Promise<HealthRead<SLARow[]>> {
   const ctx = await getAgentContext()
 
-  if (!ctx.isAuthenticated || !HEALTH_READER_ROLES.includes(ctx.role as never)) {
+  if (!ctx.isAuthenticated || !isAdminOrBroker({ user_type: ctx.role })) {
     return {
       status: "unavailable",
       reason: "unauthorized",
-      detail: "SLA reporting is limited to broker, admin and superadmin roles.",
+      detail: "SLA reporting is limited to brokerage admin roles.",
     }
   }
   if (!ctx.brokerageId) {
@@ -747,7 +750,7 @@ export async function triggerManualHealthCheck(): Promise<{
   const supabase = await createClient()
   const ctx = await getAgentContext()
 
-  if (!ctx || !["superadmin", "admin", "broker"].includes(ctx.role)) {
+  if (!ctx || !isAdminOrBroker({ user_type: ctx.role })) {
     return { success: false, message: "Unauthorized" }
   }
 

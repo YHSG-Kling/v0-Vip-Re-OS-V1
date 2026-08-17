@@ -156,8 +156,10 @@ async function ErrorMetricsSection() {
 export default async function ErrorHandlerPage() {
   const { role } = await getAgentContext()
 
-  // Only admins and compliance officers can access
-  if (!["broker", "admin", "superadmin", "compliance_officer"].includes(role)) {
+  // Only admins and compliance officers can access.
+  // SCOPE LADDER (kept inline — admits compliance_officer): 'superadmin'
+  // removed — dead as users.user_type (0 live rows); broker_owner added.
+  if (!["broker", "broker_owner", "admin", "compliance_officer"].includes(role)) {
     redirect("/dashboard")
   }
 

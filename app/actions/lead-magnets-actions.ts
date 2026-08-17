@@ -4,8 +4,12 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { listLeadMagnets, createLeadMagnet, publishLeadMagnet } from "@/lib/kernel/lead-magnets"
 
-/** Roles whose Lead Magnets view is the whole brokerage rather than just their own. */
-const BROKERAGE_WIDE_ROLES = ["admin", "broker", "superadmin"]
+/** Roles whose Lead Magnets view is the whole brokerage rather than just their own.
+ *  TRUE ADMIN GATE (operational: marketing — the owner ruling's team_lead-included
+ *  tier) — repointed to the ONE tenant roster via isAdminOrBroker below.
+ *  'superadmin' was dead: 0 live rows store that users.user_type. Mirrored by
+ *  BROKERAGE_WIDE_ROLES in app/dashboard/marketing/lead-magnets/page.tsx. */
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 /**
  * Scope is resolved HERE, from the session — never from a client-supplied id.
@@ -28,7 +32,7 @@ export async function listLeadMagnetsAction(options?: { scope?: "mine" | "broker
     if (!bId) return { success: false as const, error: "Not authenticated" }
 
     const wantsBrokerageWide =
-      options?.scope !== "mine" && BROKERAGE_WIDE_ROLES.includes(ctx.role)
+      options?.scope !== "mine" && isAdminOrBroker({ user_type: ctx.role })
 
     if (wantsBrokerageWide) {
       return listLeadMagnets({ brokerageId: bId })

@@ -49,7 +49,8 @@ export interface VendorBillInvoice {
 /** Mirrors VENDOR_CHARGE_ADMIN_ROLES minus 'agent' — authorizing a payment OUT of
  *  brokerage funds is leadership's, and markInvoicePaid enforces the same set
  *  server-side. Rendering this to an agent would only produce a "Forbidden". */
-const BILL_PAYER_ROLES = ["broker", "broker_owner", "broker_admin", "admin", "superadmin", "team_lead"]
+// 'superadmin' removed (task #211): dead as users.user_type — 0 live rows store it.
+const BILL_PAYER_ROLES = ["broker", "broker_owner", "broker_admin", "admin", "team_lead"]
 const PAYMENT_METHODS = ["check", "ach", "bill_pay", "card", "manual"]
 
 function fmt(amount: number) {

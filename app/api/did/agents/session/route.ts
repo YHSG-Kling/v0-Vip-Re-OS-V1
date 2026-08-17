@@ -74,7 +74,9 @@ export async function POST(request: NextRequest) {
       .select("user_type, brokerage_id")
       .eq("id", user.id)
       .maybeSingle()
-    const STAFF_TYPES = ["agent", "team_lead", "tc", "admin", "broker", "superadmin"]
+    // SCOPE LADDER (staff roster): 'superadmin' removed — dead as users.user_type
+    // (0 live rows); broker_owner added — storable same-tenant seat that owns the brokerage.
+    const STAFF_TYPES = ["agent", "team_lead", "tc", "admin", "broker", "broker_owner"]
     if (
       ur?.brokerage_id === contact.brokerage_id &&
       STAFF_TYPES.includes(ur?.user_type ?? "")

@@ -42,11 +42,15 @@ interface BrokerCtx {
   actorUserId: string
 }
 
-/** Same lead-desk role set the lead lifecycle actions admit (LEAD_DESK_ROLES). */
-const LEAD_DESK_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "super_admin", "superadmin"])
+/** Same lead-desk role set the lead lifecycle actions admit (LEAD_DESK_ROLES).
+ *  SCOPE LADDER (kept inline to mirror lead-management, which deliberately
+ *  excludes team_lead): 'superadmin'/'super_admin' removed — tested against
+ *  users.user_type where both are dead (0 live rows / not storable). */
+const LEAD_DESK_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
-/** Same manager set contact-reassignment's requireReassignAuthority admits. */
-const REASSIGN_MANAGER_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "superadmin"])
+/** Same manager set contact-reassignment's requireReassignAuthority admits.
+ *  'superadmin' removed there and here — dead as users.user_type (0 live rows). */
+const REASSIGN_MANAGER_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
 async function loadActor(svc: Svc, ctx: BrokerCtx): Promise<{ userType: string; brokerageId: string | null } | null> {
   const { data } = await svc

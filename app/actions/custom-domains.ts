@@ -45,7 +45,10 @@ import {
   type VercelVerificationChallenge,
 } from "@/lib/platform/custom-domains"
 
-const ADMIN_TYPES = new Set(["broker", "broker_admin", "admin", "superadmin"])
+// TENANT ADMIN GATE (kept inline, infra/credentials): 'superadmin' removed —
+// dead as users.user_type (0 live rows); broker_owner added — storable seat
+// that owns the brokerage.
+const ADMIN_TYPES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 const DOMAIN_CAP = 2
 
 // ── Gating helpers ───────────────────────────────────────────────────────────

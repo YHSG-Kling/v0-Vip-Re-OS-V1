@@ -16,7 +16,9 @@ import {
 } from "@/lib/recruiting/challenges"
 import { scoreChallenge, type ChallengeRow } from "@/lib/recruiting/challenge-runner"
 
-const ADMIN_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "superadmin"])
+// TENANT ADMIN GATE (kept inline, mirrored by app/dashboard/challenges/page.tsx):
+// 'superadmin' removed — dead as users.user_type (0 live rows store it).
+const ADMIN_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
 async function requireAdmin() {
   const ctx = await getAgentContext()

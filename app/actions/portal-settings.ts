@@ -196,7 +196,8 @@ export async function fileDataSubjectRequestFromPortal(params: {
       .from("users")
       .select("id")
       .eq("brokerage_id", access.brokerageId)
-      .in("user_type", ["admin", "broker", "broker_owner", "superadmin"])
+      // RECIPIENT FILTER: 'superadmin' dropped — matches zero users.user_type rows.
+      .in("user_type", ["admin", "broker", "broker_owner"])
       .limit(5)
 
     for (const u of (staff ?? []) as Array<{ id: string }>) {

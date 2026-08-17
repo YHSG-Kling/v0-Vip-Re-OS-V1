@@ -43,7 +43,9 @@ export default async function LicenseCEPage() {
     .select("user_type")
     .eq("id", user.id)
     .maybeSingle()
-  const canManageProvider = ["broker", "broker_owner", "admin", "superadmin"].includes(
+  // Mirrors CE_ADMIN_USER_TYPES in app/actions/ce-provider.ts — 'superadmin'
+  // removed there and here (dead as users.user_type; 0 live rows store it).
+  const canManageProvider = ["broker", "broker_owner", "admin"].includes(
     String((viewer as { user_type?: string | null } | null)?.user_type ?? ""),
   )
 

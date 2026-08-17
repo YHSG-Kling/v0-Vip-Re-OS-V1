@@ -12,7 +12,10 @@ import { resolveWriteContext } from "@/lib/kernel/identity"
 import { validateA2pProfile, loadA2pState, runA2pRegistration, describeA2pState, nextA2pStep, type A2pState } from "@/lib/voice/a2p-registration"
 
 function isBrokerRole(t?: string | null) {
-  return ["admin", "broker", "broker_admin", "superadmin"].includes(t ?? "")
+  // TENANT ADMIN GATE (kept inline, telecom infra): 'superadmin' removed — dead
+  // as users.user_type (0 live rows); broker_owner added — storable seat that
+  // owns the brokerage and was wrongly refused its own carrier registration.
+  return ["admin", "broker", "broker_owner", "broker_admin"].includes(t ?? "")
 }
 
 async function requireBrokerCtx(): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {

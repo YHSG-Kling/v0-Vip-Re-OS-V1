@@ -52,7 +52,9 @@ async function requireContactAccess(contactId: string): Promise<
 
   const { data: callerRow } = await svc
     .from("users").select("brokerage_id, user_type").eq("id", authUser.id).maybeSingle()
-  if (callerRow?.brokerage_id === contact.brokerage_id && ["agent","team_lead","tc","admin","broker","superadmin"].includes(((callerRow as any)?.user_type) ?? "")) {
+  // SCOPE LADDER (staff roster): 'superadmin' removed — dead as users.user_type
+  // (0 live rows); broker_owner added — storable same-tenant seat that owns the brokerage.
+  if (callerRow?.brokerage_id === contact.brokerage_id && ["agent","team_lead","tc","admin","broker","broker_owner"].includes(((callerRow as any)?.user_type) ?? "")) {
     return { ok: true, userId: authUser.id, brokerageId: contact.brokerage_id, isContactSelf: false }
   }
 

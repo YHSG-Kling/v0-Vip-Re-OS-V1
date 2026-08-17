@@ -80,7 +80,9 @@ export async function launchCeCourse(courseId: string): Promise<{ url: string } 
  * to `users.role`, which is RETIRED (mostly NULL, the rest title-cased), i.e. a
  * second door keyed on a column that no longer carries the answer.
  */
-const CE_ADMIN_USER_TYPES = new Set(["broker", "broker_owner", "admin", "superadmin"])
+// 'superadmin' removed (task #211): dead as users.user_type — 0 live rows store
+// it; the platform superadmin is user_type='admin' and already passes.
+const CE_ADMIN_USER_TYPES = new Set(["broker", "broker_owner", "admin"])
 
 /** Admin connects/updates the brokerage's accredited CE provider (name, launch URL, course catalog). */
 export async function connectCeProvider(config: CeProviderConfig): Promise<{ ok: true }> {

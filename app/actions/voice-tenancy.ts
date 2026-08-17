@@ -9,7 +9,10 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { resolveWriteContext } from "@/lib/kernel/identity"
 import { loadVoiceUsage, type VoiceUsage } from "@/lib/voice/twilio-tenancy"
 
-const ADMIN_TYPES = new Set(["broker", "broker_admin", "admin", "superadmin"])
+// TENANT ADMIN GATE (kept inline, telecom tenancy — deliberately no team_lead):
+// 'superadmin' removed — dead as users.user_type (0 live rows); broker_owner
+// added — storable seat that owns the brokerage.
+const ADMIN_TYPES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
 async function requireBrokerageAdmin(): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {
   const ctx = await resolveWriteContext()

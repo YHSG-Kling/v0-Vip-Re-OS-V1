@@ -7,6 +7,10 @@
 // All server actions verify session, enforce RLS, and return typed { data, error }.
 
 import { createClient } from "@/lib/supabase/server"
+// TRUE ADMIN GATES (operational: license/onboarding) — the two user_type role
+// arrays below are repointed to the ONE tenant roster. 'superadmin'/'super_admin'
+// were dead there: 0 live rows store either users.user_type spelling.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
@@ -75,8 +79,7 @@ export async function getAgentLicenseStatus(
     const { data: caller } = await supabase
       .from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
     if (!caller?.brokerage_id) return { data: null, error: "Unauthorized" }
-    const isAdmin = ["admin", "broker", "broker_owner", "superadmin", "super_admin"]
-      .includes(caller.user_type ?? "")
+    const isAdmin = isAdminOrBroker({ user_type: caller.user_type })
 
     // Caller-supplied agentId — allow only self OR admin in same brokerage.
     // Previously any caller could view any agent's license/E&O/contract
@@ -549,8 +552,7 @@ export async function sendContractForSignature(
     if (!caller?.brokerage_id) {
       return { success: false, error: "Unauthorized" }
     }
-    const isAdmin = ["admin", "broker", "broker_owner", "superadmin", "super_admin"]
-      .includes(caller.user_type ?? "")
+    const isAdmin = isAdminOrBroker({ user_type: caller.user_type })
     if (user.id !== agentId && !isAdmin) {
       return { success: false, error: "Unauthorized to send contract for this agent" }
     }

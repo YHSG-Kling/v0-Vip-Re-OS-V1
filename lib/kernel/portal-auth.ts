@@ -415,8 +415,12 @@ export interface OverrideContext {
  *   - user_type is not broker / admin / superadmin / compliance_officer
  *   - reason is shorter than 10 characters (audit trail integrity)
  */
+// SCOPE LADDER (kept inline — admits compliance tiers): 'superadmin' removed —
+// dead as users.user_type (0 live rows store it); broker_owner added — storable
+// seat that owns the brokerage. Mirrored by COMPLIANCE_OVERRIDE_USER_TYPES in
+// app/components/layout/unified-inbox-slideout.tsx.
 const OVERRIDE_USER_TYPES = new Set([
-  "broker", "broker_admin", "admin", "superadmin",
+  "broker", "broker_owner", "broker_admin", "admin",
   "compliance_officer", "compliance_manager",
 ])
 

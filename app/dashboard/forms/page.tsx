@@ -81,7 +81,9 @@ export default async function FormsLibraryPage() {
     .limit(50)
 
   // Agent sees own submissions only; broker/admin sees all
-  const isAdminOrBroker = ["admin", "broker", "superadmin", "broker_owner", "broker_admin"].includes(role)
+  // SCOPE LADDER (kept inline — team_leader has its own tier below):
+  // 'superadmin' removed — dead as users.user_type (0 live rows store it).
+  const isAdminOrBroker = ["admin", "broker", "broker_owner", "broker_admin"].includes(role)
   const isTeamLeader    = role === "team_leader" || role === "teamleader"
 
   if (!isAdminOrBroker && !isTeamLeader && agentId) {

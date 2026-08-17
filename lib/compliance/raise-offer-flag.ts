@@ -244,7 +244,11 @@ export async function resolveUnattendedRaiserUserId(
     .from("users")
     .select("id")
     .eq("brokerage_id", brokerageId)
-    .in("user_type", rawRoleVariantsFor(["broker", "admin", "superadmin"]))
+    // RECIPIENT FILTER: 'superadmin' dropped — it matches zero users.user_type
+    // rows (platform staff carry platform_role instead). broker_owner appended:
+    // storable, owns the brokerage, and not a canonical role so the expansion
+    // cannot carry it.
+    .in("user_type", [...rawRoleVariantsFor(["broker", "admin"]), "broker_owner"])
     .order("created_at", { ascending: true })
     .limit(1)
 

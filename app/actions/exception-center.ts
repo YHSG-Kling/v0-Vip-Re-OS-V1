@@ -25,7 +25,9 @@ import { pickUserOffice } from "@/lib/kernel/resolve-user-office"
 // brokerage/multi-location tiers, the solo agent on a solo tier, the team
 // lead on a team tier. A team member or a brokerage's staff agent is
 // OVERSEEN by their principal, not a principal themselves.
-const PRINCIPAL_TYPES = new Set(["broker", "broker_admin", "admin", "superadmin", "solo_agent", "team_lead"])
+// SCOPE LADDER (kept inline): 'superadmin' removed — dead as users.user_type
+// (0 live rows); broker_owner added — storable seat that OWNS the subscription.
+const PRINCIPAL_TYPES = new Set(["broker", "broker_owner", "broker_admin", "admin", "solo_agent", "team_lead"])
 
 async function resolveBroker() {
   const supabase = await createClient()

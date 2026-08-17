@@ -111,7 +111,10 @@ export async function requireContactAccess(contactId: string): Promise<ContactAc
 
   if (
     (callerRow as { brokerage_id?: string | null } | null)?.brokerage_id === contact.brokerage_id &&
-    ["agent", "team_lead", "tc", "admin", "broker", "superadmin"].includes(callerType ?? "")
+    // SCOPE LADDER (staff roster, kept inline): 'superadmin' removed — dead as
+    // users.user_type (0 live rows); broker_owner added — storable seat that
+    // owns the brokerage and is same-tenant staff by definition.
+    ["agent", "team_lead", "tc", "admin", "broker", "broker_owner"].includes(callerType ?? "")
   ) {
     return {
       ok: true,

@@ -33,7 +33,10 @@ function parseAIJsonResponse(text: string) {
 
 function shouldFilterByUser(role: string): boolean {
   // Admin, Broker, and Compliance Officer see all content
-  const adminRoles = ["ADMIN", "BROKER", "COMPLIANCE_OFFICER", "admin", "broker", "broker_owner", "broker_admin", "superadmin", "super_admin", "compliance_officer"]
+  // SCOPE LADDER (kept inline — admits compliance tier; legacy uppercase
+  // spellings retained for old rows): 'superadmin'/'super_admin' removed — dead
+  // as users.user_type (0 live rows store either spelling).
+  const adminRoles = ["ADMIN", "BROKER", "COMPLIANCE_OFFICER", "admin", "broker", "broker_owner", "broker_admin", "compliance_officer"]
   return !adminRoles.includes(role)
 }
 

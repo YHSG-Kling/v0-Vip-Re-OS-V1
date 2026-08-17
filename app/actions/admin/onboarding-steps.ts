@@ -33,7 +33,10 @@ import {
   clampOnboardingStepOrder,
 } from "@/lib/onboarding/step-categories"
 
-const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin"])
+// TRUE ADMIN GATE (operational: onboarding — the owner ruling's team_lead-included
+// tier) — repointed to the ONE tenant roster. 'superadmin' was dead: 0 live rows
+// store that users.user_type.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 async function requireAdmin(): Promise<
   | { ok: true; brokerageId: string; userId: string }
@@ -41,7 +44,7 @@ async function requireAdmin(): Promise<
 > {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
-  if (!ADMIN_ROLES.has(ctx.userType)) return { ok: false, error: "Forbidden" }
+  if (!isAdminOrBroker({ user_type: ctx.userType })) return { ok: false, error: "Forbidden" }
   return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId }
 }
 

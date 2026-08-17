@@ -96,8 +96,13 @@ export interface ComplianceDashboard {
 // transaction coordinator was refused their own compliance dashboard. It also
 // listed broker_admin and compliance_manager, which are legacy aliases, not
 // legal user_type values; toCanonicalRole maps both.
+// SCOPE LADDER (kept inline — admits tc/compliance_officer): 'superadmin'
+// removed. It is compared against toCanonicalRole(users.user_type), and the
+// only raw spellings that canonicalize to it ('superadmin'/'super_admin') are
+// stored by 0 live rows — the platform superadmin is user_type='admin' and is
+// admitted via 'admin'. (broker_owner canonicalizes to 'broker', so it already passes.)
 const ACCESS_ROLES: CanonicalRole[] = [
-  "broker", "admin", "superadmin", "compliance_officer", "tc",
+  "broker", "admin", "compliance_officer", "tc",
 ]
 
 /** Not exported — a "use server" module may only export async functions. */

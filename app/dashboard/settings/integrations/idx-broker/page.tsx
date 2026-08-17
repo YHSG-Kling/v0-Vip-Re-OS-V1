@@ -263,8 +263,10 @@ export default function IDXBrokerSettingsPage() {
     }))
   }
 
-  // Role gate
-  const canManage = role && ["superadmin", "admin", "broker"].includes(role)
+  // Role gate (presentation only — reads users.user_type).
+  // 'superadmin' removed: dead as users.user_type (0 live rows); broker_owner
+  // added — storable seat that owns the brokerage.
+  const canManage = role && ["admin", "broker", "broker_owner"].includes(role)
 
   if (role && !canManage) {
     return (

@@ -18,7 +18,10 @@ import {
 import { aiClassifyCdaFields, type SuggestedBinding } from "@/lib/transactions/cda-field-classifier"
 import { listPdfFields } from "@/lib/forms/pdf-form-fill"
 
-const FIELD_ADMIN_ROLES = new Set(["compliance_officer", "broker", "broker_admin", "admin", "superadmin"])
+// SCOPE LADDER (kept inline — admits compliance_officer): 'superadmin' removed
+// — dead as users.user_type (0 live rows); broker_owner added — storable seat
+// with CDA (finance) authority per m472.
+const FIELD_ADMIN_ROLES = new Set(["compliance_officer", "broker", "broker_owner", "broker_admin", "admin"])
 
 // Build the resolve context for a CDA from the waterfall + the transaction.
 async function buildContext(

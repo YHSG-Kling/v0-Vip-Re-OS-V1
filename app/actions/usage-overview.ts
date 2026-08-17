@@ -55,7 +55,10 @@ const METRIC_LABELS: Record<string, string> = {
   ai_voice_minutes: "AI calling (min)",
 }
 
-const VIEWER_ROLES = ["broker", "admin", "superadmin", "team_lead"]
+// TRUE ADMIN GATE (operational usage view, team_lead already included) —
+// repointed to the ONE tenant roster (isAdminOrBroker below). 'superadmin' was
+// dead: 0 live rows store that users.user_type.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export async function loadUsageOverview(): Promise<{
   ok: boolean
@@ -64,7 +67,7 @@ export async function loadUsageOverview(): Promise<{
 }> {
   const ctx = await resolveWriteContext()
   if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
-  if (!VIEWER_ROLES.includes(ctx.userType)) return { ok: false, error: "Forbidden" }
+  if (!isAdminOrBroker({ user_type: ctx.userType })) return { ok: false, error: "Forbidden" }
 
   const supabase = createServiceClient()
   const now = new Date()

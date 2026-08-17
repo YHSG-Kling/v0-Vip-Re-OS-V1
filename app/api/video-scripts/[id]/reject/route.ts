@@ -3,7 +3,10 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireAuth } from "@/lib/kernel/api-auth"
 
-const REJECT_ROLES = ["broker", "admin", "superadmin"]
+// TRUE ADMIN GATE (operational: marketing-content approval) — repointed to the
+// ONE tenant roster below. 'superadmin' was dead: 0 live rows store that
+// users.user_type.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
@@ -11,7 +14,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const auth = await requireAuth(supabase)
   if (!auth.ok) return auth.response
 
-  if (!REJECT_ROLES.includes(auth.userType)) {
+  if (!isAdminOrBroker({ user_type: auth.userType })) {
     return NextResponse.json({ error: "Only brokers and admins can reject scripts" }, { status: 403 })
   }
 

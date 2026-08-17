@@ -15,7 +15,9 @@ export async function GET(request: NextRequest) {
     // agents work CONTACTS only (post-promotion), so lead reads are now
     // restricted to brokerage-LEVEL roles + platform staff. team_lead / TC /
     // compliance are excluded deliberately.
-    const leadVisibleRoles = ["broker", "broker_owner", "broker_admin", "admin", "superadmin", "support"]
+    // 'superadmin' removed (task #211): dead as users.user_type — 0 live rows
+    // store it ('support' stays: a storable platform-staff user_type).
+    const leadVisibleRoles = ["broker", "broker_owner", "broker_admin", "admin", "support"]
     if (!leadVisibleRoles.includes(auth.userType)) {
       return NextResponse.json({ success: false, error: "Forbidden" }, { status: 403 })
     }

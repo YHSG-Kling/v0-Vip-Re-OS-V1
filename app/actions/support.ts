@@ -38,7 +38,11 @@ import {
 } from "@/lib/support/ticket-constants"
 import { BROKERAGE_ADMIN_USER_TYPES } from "@/lib/auth/require-brokerage-admin"
 
-const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead", "support"])
+// SCOPE LADDER (kept inline — 'support' is a storable platform-staff user_type
+// this queue deliberately admits): 'superadmin' removed — dead as
+// users.user_type (0 live rows; the platform superadmin is user_type='admin',
+// admitted already); broker_owner added — storable seat that owns the brokerage.
+const ADMIN_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "team_lead", "support"])
 
 /** The columns every ticket read in this file selects. One list so a lane can
  *  never be dropped from one query and present in another. */

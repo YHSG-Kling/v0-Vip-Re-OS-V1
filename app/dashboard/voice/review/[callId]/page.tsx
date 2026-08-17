@@ -58,7 +58,9 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
     .single()
 
   const userRole = userData?.user_type || "agent"
-  const canViewAllCalls = ["team_lead", "broker", "broker_owner", "admin", "superadmin", "compliance_officer"].includes(userRole)
+  // SCOPE LADDER (kept inline — admits compliance_officer): 'superadmin'
+  // removed — dead as users.user_type (0 live rows store it).
+  const canViewAllCalls = ["team_lead", "broker", "broker_owner", "admin", "compliance_officer"].includes(userRole)
 
   // Fetch voice call with contact and agent info
   const { data: voiceCall, error: voiceCallError } = await supabase

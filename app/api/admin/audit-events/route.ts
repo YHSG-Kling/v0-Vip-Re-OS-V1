@@ -3,8 +3,12 @@
 import { createClient } from "@/lib/supabase/server"
 import { NextRequest, NextResponse } from "next/server"
 
-// Role validation for admin routes
-const ALLOWED_ROLES = ["broker", "admin", "superadmin", "compliance_officer"]
+// Role validation for admin routes.
+// SCOPE LADDER (kept inline — admits compliance_officer; platform staff pass
+// via the separate platform_role check below): 'superadmin' removed — dead as
+// users.user_type (0 live rows); broker_owner added — storable seat that owns
+// the brokerage.
+const ALLOWED_ROLES = ["broker", "broker_owner", "admin", "compliance_officer"]
 
 interface UnifiedAuditEvent {
   id: string

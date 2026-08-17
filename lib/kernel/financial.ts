@@ -27,6 +27,15 @@
 //   11. emailFinancialReport — send report via email_queue
 
 import { createServiceClient } from "@/lib/supabase/service"
+// BROKERAGE-WIDE MONEY GATES: every role check in this file guards commission /
+// expense / report surfaces backed by the SERVICE client (RLS bypassed), so the
+// app predicate is the only gate. Repointed from inline
+// ["broker","admin","superadmin"] literals to THE finance roster
+// (admin/broker/broker_owner — mirrors public.is_brokerage_finance_admin, m472):
+// 'superadmin' was dead (0 live rows store that user_type; the platform's
+// superadmin is user_type='admin' + platform_role='superadmin'), and
+// broker_owner — a storable seat that OWNS the brokerage — was wrongly refused.
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
 import { syncAgentLedgerToStamp } from "@/lib/commission/ledger-sync"
@@ -785,7 +794,7 @@ export async function markCommissionApproved(
 
   try {
     // Guard: only brokerage users can approve
-    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
       return { success: false, error: "Insufficient permissions to approve commissions" }
     }
 
@@ -858,7 +867,7 @@ export async function markCommissionPaid(
 
   try {
     // Guard: only brokerage users can mark paid
-    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
       return { success: false, error: "Insufficient permissions to mark commissions as paid" }
     }
 
@@ -995,7 +1004,7 @@ export async function markCommissionDisputed(input: {
 
     // Gate: the owning agent, or a broker/admin.
     const isOwner = ctx.agentId != null && ctx.agentId === commission.agent_id
-    const isBroker = ["broker", "admin", "superadmin"].includes(ctx.userType)
+    const isBroker = isBrokerageFinanceAdmin({ user_type: ctx.userType })
     if (!isOwner && !isBroker) return { success: false, error: "Only the owning agent or a broker can dispute this commission" }
 
     if (!COMMISSION_STATUS_TRANSITIONS[commission.status]?.includes("disputed")) {
@@ -1038,7 +1047,7 @@ export async function resolveCommissionDispute(input: {
   const { ctx, commissionId, brokerageId, resolution, notes } = input
   const supabase = createServiceClient()
   try {
-    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
       return { success: false, error: "Only a broker can resolve a dispute" }
     }
     const { data: commission } = await supabase
@@ -1095,7 +1104,7 @@ export async function createExpenseRecord(
 
   try {
     // Guard: owner can only create own expenses (unless broker/admin)
-    if (ctx.agentId !== agentId && !["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    if (ctx.agentId !== agentId && !isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
       return { success: false, error: "Can only create expenses for yourself" }
     }
 
@@ -1380,7 +1389,7 @@ export async function exportFinancialReport(
 
   try {
     // Guard: only authorized users can export
-    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
       return { success: false, error: "Insufficient permissions to export reports" }
     }
 
@@ -1452,7 +1461,7 @@ export async function emailFinancialReport(
 
   try {
     // Guard: only authorized users can email reports
-    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
       return { success: false, error: "Insufficient permissions to email reports" }
     }
 

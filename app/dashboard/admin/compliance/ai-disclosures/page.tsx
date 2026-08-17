@@ -40,7 +40,9 @@ export default async function AiDisclosureLedgerPage() {
   const { data: profile } = await supabase
     .from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
   if (!profile?.brokerage_id) return <div className="p-6 text-red-600">Brokerage not configured</div>
-  if (!["broker", "broker_admin", "admin", "superadmin", "team_lead", "compliance_officer"].includes(profile.user_type ?? "")) {
+  // SCOPE LADDER (kept inline — admits compliance/team_lead tiers): 'superadmin'
+  // removed — dead as users.user_type (0 live rows); broker_owner added.
+  if (!["broker", "broker_owner", "broker_admin", "admin", "team_lead", "compliance_officer"].includes(profile.user_type ?? "")) {
     return <div className="p-6 text-red-600">Forbidden</div>
   }
 

@@ -9,7 +9,9 @@ import { generateAiDisclosureLedger } from "@/lib/compliance/ai-disclosure-ledge
  * human-approver proof + the recipient's live consent state — the EU AI Act /
  * FTC human-oversight evidence, as a file counsel can file.
  */
-const ALLOWED = ["broker", "broker_admin", "admin", "superadmin", "team_lead", "compliance_officer"]
+// SCOPE LADDER (kept inline — same roster as the page): 'superadmin' removed —
+// dead as users.user_type (0 live rows); broker_owner added.
+const ALLOWED = ["broker", "broker_owner", "broker_admin", "admin", "team_lead", "compliance_officer"]
 
 /**
  * RFC-4180 CSV cell: always quoted, embedded quotes doubled. Also neutralizes

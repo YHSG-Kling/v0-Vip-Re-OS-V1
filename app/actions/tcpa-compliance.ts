@@ -14,7 +14,10 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { persistContactConsent, buildConsentText } from "@/lib/kernel/compliance/require-contact-consent"
 
-const COMPLIANCE_ROLES = ["broker", "broker_admin", "admin", "superadmin", "team_lead", "compliance_officer"]
+// SCOPE LADDER (kept inline — admits compliance/team_lead tiers): 'superadmin'
+// removed — dead as users.user_type (0 live rows); broker_owner added —
+// storable seat that owns the brokerage.
+const COMPLIANCE_ROLES = ["broker", "broker_owner", "broker_admin", "admin", "team_lead", "compliance_officer"]
 
 async function requireComplianceActor(): Promise<
   { userId: string; brokerageId: string; brokerageName: string } | { error: string }

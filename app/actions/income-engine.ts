@@ -92,8 +92,14 @@ export async function computeAndPersistGapAction(params?: {
   if (params?.agentId && params?.brokerageId) {
     const supabase = await createClient()
     const { data: profile } = await supabase
-      .from("users").select("user_type").eq("id", ctx.userId).maybeSingle()
-    if (!["superadmin", "super_admin"].includes(profile?.user_type ?? "")) {
+      .from("users").select("user_type, platform_role").eq("id", ctx.userId).maybeSingle()
+    // PLATFORM GATE: mirrors requirePlatformSuperadmin (lib/kernel/api-auth.ts).
+    // The old ["superadmin","super_admin"] user_type test admitted NOBODY — 0 live
+    // rows store either spelling; the platform's one superadmin is
+    // (user_type='admin', platform_role='superadmin'), so the override this gate
+    // exists to allow was unreachable. Dual-column check fixes that; 'super_admin'
+    // is dropped (not a storable user_type at all).
+    if (!(profile?.user_type === "superadmin" || (profile as any)?.platform_role === "superadmin")) {
       return { ok: false, error: "Forbidden: only superadmin may override agentId/brokerageId" }
     }
     agentId     = params.agentId

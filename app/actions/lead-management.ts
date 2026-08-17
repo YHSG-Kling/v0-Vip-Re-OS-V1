@@ -20,7 +20,10 @@ import type { LeadScore, LeadIntent, LeadStatus, LeadSource, Lead } from "@/app/
 // / admin) + platform staff (superadmin / support). Agents, team leads, TCs and
 // compliance officers are deliberately excluded — agents work CONTACTS only
 // (post-promotion).
-const LEAD_DESK_ROLES = ["admin", "broker", "broker_owner", "broker_admin", "superadmin"] as const
+// SCOPE LADDER (kept inline — the policy above deliberately EXCLUDES team_lead,
+// so this must not widen to the shared operational roster): 'superadmin' removed
+// — dead as users.user_type (0 live rows; platform staff carry platform_role).
+const LEAD_DESK_ROLES = ["admin", "broker", "broker_owner", "broker_admin"] as const
 
 /**
  * Session-derived lead-desk gate. Resolves the caller with the cookie-bound

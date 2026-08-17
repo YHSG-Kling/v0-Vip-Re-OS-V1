@@ -324,8 +324,12 @@ async function validateContact(contact: { email?: string; phone?: string; first_
 }
 
 // Purge invalid contacts
-/** Roles allowed to run a bulk destructive purge of contact records. */
-const PURGE_ALLOWED_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin"])
+/** Roles allowed to run a bulk destructive purge of contact records.
+ *  TENANT ADMIN GATE (kept inline — a brokerage-wide destructive purge stays at
+ *  this deliberate roster, no team_lead): 'superadmin' removed — dead as
+ *  users.user_type (0 live rows); broker_owner added — the storable seat that
+ *  owns the brokerage whose records this purges. */
+const PURGE_ALLOWED_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
 /**
  * Bulk soft-delete every contact this brokerage's health scan marked Invalid.

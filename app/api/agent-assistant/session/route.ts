@@ -32,7 +32,9 @@ import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
 // Settings → Voice Assistant Access), and PLATFORM STAFF always have it.
 // Expansion grants SURFACE access only — per-intent permissions stay each
 // role's existing tool-registry authority gates, never widened here.
-const PRINCIPAL_VOICE_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "superadmin"])
+// 'superadmin' removed (task #211): dead as users.user_type — 0 live rows store
+// it; platform staff are admitted via isPlatformStaffIdentity below.
+const PRINCIPAL_VOICE_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
 export const runtime = "nodejs"
 

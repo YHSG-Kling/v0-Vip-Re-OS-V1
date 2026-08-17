@@ -16,7 +16,10 @@ import { writeScopeFor } from "@/lib/connections/scope"
 
 export type PhonePlatform = "twilio" | "telnyx" | "bandwidth"
 const PHONE_PLATFORMS: PhonePlatform[] = ["twilio", "telnyx", "bandwidth"]
-const BROKERAGE_ROLES = ["superadmin", "admin", "broker", "broker_owner"]
+// SCOPE LADDER (kept inline — this array decides WHERE credentials are scoped,
+// agent vs brokerage): 'superadmin' removed — dead as users.user_type (0 live
+// rows store it).
+const BROKERAGE_ROLES = ["admin", "broker", "broker_owner"]
 
 interface Member { userId: string; brokerageId: string; agentScoped: boolean }
 

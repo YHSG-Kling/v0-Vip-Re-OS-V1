@@ -194,15 +194,19 @@ export async function notifyComplianceFlag(
   for (const uid of alsoNotifyUserIds ?? []) if (uid) recipientSet.add(uid)
 
   const widenForCritical = flag.severity === "critical"
+  // RECIPIENT FILTER: 'superadmin' dropped from the critical widening — it
+  // matches zero users.user_type rows (platform staff carry platform_role).
+  // broker_owner appended below for the same widening: storable, owns the
+  // brokerage, and not a canonical role so the expansion cannot carry it.
   const targetRoles: CanonicalRole[] = widenForCritical
-    ? ["tc", "compliance_officer", "broker", "admin", "superadmin"]
+    ? ["tc", "compliance_officer", "broker", "admin"]
     : ["tc", "compliance_officer"]
 
   const { data: staff, error: staffError } = await supabase
     .from("users")
     .select("id, user_type")
     .eq("brokerage_id", brokerageId)
-    .in("user_type", rawRoleVariantsFor(targetRoles))
+    .in("user_type", [...rawRoleVariantsFor(targetRoles), ...(widenForCritical ? ["broker_owner"] : [])])
 
   // A failed staff lookup is not "no staff". Say so — silently notifying only
   // the acting agent is how the TC stopped being told in the first place.

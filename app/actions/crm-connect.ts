@@ -20,7 +20,10 @@ export type CrmProvider = "gohighlevel" | "lofty" | "followupboss"
 const CRM_PROVIDERS: CrmProvider[] = ["gohighlevel", "lofty", "followupboss"]
 
 // Roles that manage the BROKERAGE-wide CRM. Everyone else (agents) manages their OWN.
-const BROKERAGE_ROLES = ["superadmin", "admin", "broker", "broker_owner"]
+// SCOPE LADDER (kept inline — this array decides WHERE credentials are scoped,
+// so widening it moves seats across scopes): 'superadmin' removed — dead as
+// users.user_type (0 live rows store it).
+const BROKERAGE_ROLES = ["admin", "broker", "broker_owner"]
 
 interface Member {
   userId: string

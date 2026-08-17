@@ -9,7 +9,11 @@ import { licenseNeedsManualReview, manualReviewOutcome } from "@/lib/onboarding/
 // Now: session is required, brokerage is resolved from session, and write
 // actions require broker / admin / superadmin role.
 
-const ADMIN_ROLES = ["admin", "super_admin", "superadmin", "broker", "broker_owner", "broker_admin"]
+// TRUE ADMIN GATE (operational: license tooling) — repointed to the ONE tenant
+// roster below. 'superadmin'/'super_admin' were dead — tested against
+// users.user_type, where 0 live rows store either spelling. The separate
+// isSuperadmin flag is left as-is (still a dead-false marker, unchanged behavior).
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 async function requireAdminInBrokerage(): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string; isSuperadmin: boolean }
@@ -24,7 +28,7 @@ async function requireAdminInBrokerage(): Promise<
     .eq("id", user.id)
     .maybeSingle()
   if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  if (!ADMIN_ROLES.includes(u.user_type ?? "")) return { ok: false, error: "Forbidden" }
+  if (!isAdminOrBroker({ user_type: u.user_type })) return { ok: false, error: "Forbidden" }
   return {
     ok: true,
     userId: user.id,

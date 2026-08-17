@@ -16,7 +16,10 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { resolveActingContext, READ_ONLY_ACTING_ERROR } from "@/lib/platform/acting-context"
 
-const BROKERAGE_ADMIN_ROLES = ["admin", "broker", "broker_owner", "superadmin", "super_admin"]
+// TRUE ADMIN GATE (operational: branding/onboarding) — repointed to the ONE
+// tenant roster (isAdminOrBroker below). 'superadmin'/'super_admin' were dead:
+// 0 live rows store either users.user_type spelling.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 /**
  * Brand config is brokerage-wide + admin-gated. Now IMPERSONATION-AWARE: when a platform
@@ -32,7 +35,7 @@ async function requireBrandAdmin(): Promise<
   const ctx = await resolveActingContext()
   if (!ctx.ok || !ctx.userId) return { ok: false, error: "Unauthorized" }
   if (!ctx.brokerageId) return { ok: false, error: "Brokerage not found" }
-  if (!BROKERAGE_ADMIN_ROLES.includes(ctx.userType)) {
+  if (!isAdminOrBroker({ user_type: ctx.userType })) {
     return { ok: false, error: "Forbidden: brokerage admin only" }
   }
   return { ok: true, userId: ctx.userId, brokerageId: ctx.brokerageId, db: ctx.db, readOnly: ctx.readOnly, isImpersonating: ctx.isImpersonating }

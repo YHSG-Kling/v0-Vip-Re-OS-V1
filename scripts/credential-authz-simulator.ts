@@ -51,6 +51,16 @@ const GATE_MARKERS = [
   "gateStaffAction",
   "isPlatformStaff",
   "requireAdminMaintenanceAccess",
+  // The SHARED role predicates (#211): the local role-array literals this scan's
+  // inline-gate fallback recognised were collapsed onto lib/auth/resolve-user-role,
+  // so the canonical predicate names ARE the gate spellings now. isAdminOrBroker
+  // is the operational tenant-admin tier; isBrokerageFinanceAdmin the money tier
+  // (accounting-sync — provider credentials for the BOOKS — gates on it);
+  // the resolve* forms are their async grant-aware halves.
+  "isAdminOrBroker",
+  "isBrokerageFinanceAdmin",
+  "resolveTenantAdmin",
+  "resolveBrokerageFinanceAdmin",
   "CREDENTIAL_ADMIN_ROLES",
   "TECH_STACK_ADMIN_ROLES",
   "ADMIN_TYPES",

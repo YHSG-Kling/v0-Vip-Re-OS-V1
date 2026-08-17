@@ -757,12 +757,17 @@ export function authorityAllows(toolName: string, userType: string): boolean {
   if (!tool) return false
   switch (tool.authority) {
     case "any_authenticated": return true
-    case "agent":             return userType === "agent" || userType === "broker" || userType === "broker_admin" || userType === "admin" || userType === "superadmin" || userType === "team_lead"
-    case "agent_or_isa":      return ["agent", "isa", "team_lead", "broker", "broker_admin", "admin", "superadmin"].includes(userType)
-    case "tenant_staff":      return ["agent", "isa", "tc", "team_lead", "broker", "broker_admin", "admin", "superadmin"].includes(userType)
+    // SCOPE LADDERS (kept inline — each tier admits a different non-admin mix, so
+    // they must not collapse into one predicate). 'superadmin' removed from every
+    // tier: tested against users.user_type, where 0 live rows store it (platform
+    // staff carry platform_role). 'broker_owner' added: storable, owns the
+    // brokerage, and was wrongly refused tools its own broker seat can use.
+    case "agent":             return ["agent", "broker", "broker_owner", "broker_admin", "admin", "team_lead"].includes(userType)
+    case "agent_or_isa":      return ["agent", "isa", "team_lead", "broker", "broker_owner", "broker_admin", "admin"].includes(userType)
+    case "tenant_staff":      return ["agent", "isa", "tc", "team_lead", "broker", "broker_owner", "broker_admin", "admin"].includes(userType)
     case "admin":             return isAdminOrBroker({ user_type: userType })
     case "vendor":            return ["vendor", "lender", "title"].includes(userType)  // reachability only — assigned_party gate enforces the per-contact grant
-    case "financial_staff":   return ["agent", "broker", "broker_admin", "admin", "superadmin", "compliance_officer", "tc", "transaction_coordinator"].includes(userType)  // entity_owner gate enforces brokerage ownership
+    case "financial_staff":   return ["agent", "broker", "broker_owner", "broker_admin", "admin", "compliance_officer", "tc", "transaction_coordinator"].includes(userType)  // entity_owner gate enforces brokerage ownership
     default:                  return false
   }
 }

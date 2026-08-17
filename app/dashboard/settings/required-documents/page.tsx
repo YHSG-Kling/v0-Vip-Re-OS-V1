@@ -10,7 +10,10 @@ import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const dynamic = "force-dynamic"
 
-const ADMIN_ROLES = ["broker","broker_admin","admin","superadmin","compliance_manager","compliance_officer","team_lead","agent"]
+// SCOPE LADDER (kept inline — admits compliance/team_lead/agent tiers):
+// 'superadmin' removed — dead as users.user_type (0 live rows); broker_owner
+// added — storable seat that owns the brokerage.
+const ADMIN_ROLES = ["broker","broker_owner","broker_admin","admin","compliance_manager","compliance_officer","team_lead","agent"]
 
 export default async function RequiredDocsSettingsPage() {
   const supabase = await createClient()

@@ -31,8 +31,11 @@ export default async function UserEditPage({ params }: Props) {
     .single()
 
   const callerRole = caller?.user_type ?? caller?.role ?? ""
-  // Same triad as the list page + updateUser action: admin, broker, superadmin.
-  if (!["admin", "broker", "superadmin"].includes(callerRole)) redirect("/dashboard")
+  // Same roster as the updateUser action gate. SCOPE LADDER PARITY (kept inline):
+  // 'superadmin' removed — dead as users.user_type, which wins the ?? chain on
+  // every populated row (0 live rows store it); broker_owner added — storable
+  // seat that owns the brokerage.
+  if (!["admin", "broker", "broker_owner"].includes(callerRole)) redirect("/dashboard")
 
   // Load target user
   const { data: target } = await supabase

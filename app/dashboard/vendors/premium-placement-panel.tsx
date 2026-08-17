@@ -55,7 +55,10 @@ export interface PlacementInvoice {
   }> | null
 }
 
-const MANAGER_ROLES = ["admin", "broker", "broker_admin", "superadmin", "team_lead"]
+// SCOPE LADDER (kept inline — mirrors the vendor-billing server gates):
+// 'superadmin' removed — dead as users.user_type (0 live rows); broker_owner
+// added — storable seat that owns the brokerage these placements bill for.
+const MANAGER_ROLES = ["admin", "broker", "broker_owner", "broker_admin", "team_lead"]
 const PAYMENT_METHODS = ["check", "ach", "stripe", "cash_app", "manual"]
 
 function placementItem(inv: PlacementInvoice) {

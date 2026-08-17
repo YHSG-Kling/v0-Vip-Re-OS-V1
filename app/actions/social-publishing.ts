@@ -156,7 +156,10 @@ export async function handleContentApproved(payload: any) {
 
 function shouldFilterByUser(role: string): boolean {
   // Admin, Broker, and Compliance Officer see all posts in brokerage
-  const adminRoles = ["ADMIN", "BROKER", "COMPLIANCE_OFFICER", "admin", "broker", "broker_owner", "compliance_officer", "superadmin"]
+  // SCOPE LADDER (kept inline — admits compliance tier; legacy uppercase
+  // spellings retained for old rows): 'superadmin' removed — dead as
+  // users.user_type (0 live rows store it).
+  const adminRoles = ["ADMIN", "BROKER", "COMPLIANCE_OFFICER", "admin", "broker", "broker_owner", "compliance_officer"]
   return !adminRoles.includes(role)
 }
 

@@ -525,5 +525,8 @@ export async function purchaseBrokerageNumberAction(params: {
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 function isBrokerRole(t?: string | null) {
-  return ["admin", "broker", "broker_admin", "superadmin"].includes(t ?? "")
+  // SCOPE LADDER (kept inline — also drives per-agent vs brokerage provisioning
+  // scope): 'superadmin' removed — dead as users.user_type (0 live rows);
+  // broker_owner added — storable seat that owns the brokerage.
+  return ["admin", "broker", "broker_owner", "broker_admin"].includes(t ?? "")
 }

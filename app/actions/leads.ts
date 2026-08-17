@@ -22,7 +22,10 @@ import { getAgentContext } from "@/lib/identity"
 
 // ─── RBAC helpers ────────────────────────────────────────────────────────────
 
-const ISA_ALLOWED_ROLES = new Set(["admin", "broker", "broker_admin", "superadmin", "isa"])
+// SCOPE LADDER (kept inline — admits isa): 'superadmin' removed — dead as
+// users.user_type (0 live rows); broker_owner added — storable seat that owns
+// the brokerage (the lead-desk policy already groups it with broker).
+const ISA_ALLOWED_ROLES = new Set(["admin", "broker", "broker_owner", "broker_admin", "isa"])
 
 function assertISARole(userType: string): void {
   if (!ISA_ALLOWED_ROLES.has(userType)) {

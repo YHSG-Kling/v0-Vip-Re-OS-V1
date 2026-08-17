@@ -47,8 +47,11 @@ function BROKERAGE_CONNECTABLE_PROVIDERS(): string[] {
   return [...out].sort()
 }
 
-/** Roles allowed to see or change a brokerage's provider credentials. */
-const CREDENTIAL_ADMIN_ROLES = ["admin", "broker", "broker_admin", "superadmin"]
+/** Roles allowed to see or change a brokerage's provider credentials.
+ *  TENANT ADMIN GATE (kept inline, tenant credentials — deliberately no
+ *  team_lead): 'superadmin' removed — dead as users.user_type (0 live rows);
+ *  broker_owner added — storable seat that owns the brokerage. */
+const CREDENTIAL_ADMIN_ROLES = ["admin", "broker", "broker_owner", "broker_admin"]
 
 /**
  * Resolve the caller's brokerage AND enforce that they may administer its provider

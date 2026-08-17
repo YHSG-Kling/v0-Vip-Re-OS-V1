@@ -46,7 +46,10 @@ import {
   SAML_NOT_ENABLED_DETAIL,
 } from "@/lib/platform/tenant-sso"
 
-const ADMIN_TYPES = new Set(["broker", "broker_admin", "admin", "superadmin"])
+// TENANT ADMIN GATE (kept inline, SSO/security config — deliberately no
+// team_lead): 'superadmin' removed — dead as users.user_type (0 live rows);
+// broker_owner added — storable seat that owns the brokerage.
+const ADMIN_TYPES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
 // ── Gating helpers ───────────────────────────────────────────────────────────
 

@@ -77,7 +77,10 @@ async function IsaCallingContent() {
     .from("users")
     .select("id, first_name, last_name, email")
     .eq("brokerage_id", profile.brokerage_id)
-    .in("user_type", rawRoleVariantsFor(["admin", "broker", "superadmin"]))
+    // RECIPIENT FILTER: 'superadmin' dropped — matches zero users.user_type rows;
+    // broker_owner appended (storable owner seat; not a canonical role, so the
+    // expansion cannot carry it).
+    .in("user_type", [...rawRoleVariantsFor(["admin", "broker"]), "broker_owner"])
     .limit(1)
     .maybeSingle()
   if (dutyAgentError) {

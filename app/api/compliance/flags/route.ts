@@ -50,7 +50,10 @@ export async function PATCH(request: NextRequest) {
   if (!auth.ok) return auth.response
 
   // Only brokers/admins/compliance officers can update flags
-  if (!["broker", "admin", "superadmin", "compliance_officer"].includes(auth.userType)) {
+  // SCOPE LADDER (kept inline — admits compliance_officer): 'superadmin'
+  // removed — dead as users.user_type (0 live rows); broker_owner added —
+  // storable seat that owns the brokerage.
+  if (!["broker", "broker_owner", "admin", "compliance_officer"].includes(auth.userType)) {
     return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 })
   }
 

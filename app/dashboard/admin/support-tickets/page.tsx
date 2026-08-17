@@ -6,7 +6,10 @@ import { SupportQueueClient } from "./support-queue-client"
 
 export const dynamic = "force-dynamic"
 
-const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead", "support"])
+// SCOPE LADDER (kept inline — mirrors app/actions/support.ts, which admits the
+// storable platform 'support' user_type): 'superadmin' removed — dead as
+// users.user_type (0 live rows); broker_owner added.
+const ADMIN_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "team_lead", "support"])
 
 /**
  * THE OFFICE QUEUE, ONE LANE AT A TIME.

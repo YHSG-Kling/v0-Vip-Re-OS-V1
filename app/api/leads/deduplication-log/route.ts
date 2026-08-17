@@ -12,7 +12,10 @@ export async function GET(request: NextRequest) {
   // lead-pipeline metadata (lead ids + raw_record ids) — restricted to
   // brokerage-LEVEL roles + platform staff. Previously any authenticated
   // brokerage user (agent / TC / compliance) could read it.
-  const leadVisibleRoles = ["broker", "broker_owner", "broker_admin", "admin", "superadmin", "support"]
+  // SCOPE LADDER (kept inline — the policy deliberately excludes team_lead;
+  // 'support' is a storable platform-staff user_type): 'superadmin' removed —
+  // dead as users.user_type (0 live rows store it).
+  const leadVisibleRoles = ["broker", "broker_owner", "broker_admin", "admin", "support"]
   if (!leadVisibleRoles.includes(auth.userType)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 })
   }

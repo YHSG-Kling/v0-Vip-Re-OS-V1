@@ -263,7 +263,10 @@ export async function assignLenderToTransaction(data: {
 }): Promise<{ success: boolean; error?: string }> {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
-  if (!["broker", "broker_admin", "admin", "superadmin", "tc", "agent", "team_lead"].includes(auth.userType)) {
+  // SCOPE LADDER (kept inline — admits tc/agent/team_lead): 'superadmin' removed
+  // — dead as users.user_type (0 live rows); broker_owner added — storable seat
+  // that owns the brokerage. Mirrored by assign-lender-panel.tsx.
+  if (!["broker", "broker_owner", "broker_admin", "admin", "tc", "agent", "team_lead"].includes(auth.userType)) {
     return { success: false, error: "Your role cannot assign a lender" }
   }
   const vendorId = data.vendorId ?? data.lenderUserId ?? data.lenderId

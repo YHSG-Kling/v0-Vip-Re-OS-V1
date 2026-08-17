@@ -48,8 +48,12 @@ export async function updateUser({ userId, updates }: UpdateUserParams): Promise
     .maybeSingle()
 
   const callerRole = caller?.user_type ?? "agent"
-  if (!["admin", "broker", "superadmin"].includes(callerRole)) {
-    return { success: false, error: "Forbidden: admin, broker, or superadmin only" }
+  // SCOPE LADDER (kept inline — the 'superadmin' branch below hands wider,
+  // cross-tenant scope): dead 'superadmin' removed from the ARRAY only — 0 live
+  // rows store that users.user_type, so it admitted nobody. broker_owner added:
+  // storable seat that owns the brokerage; it takes the tenant-anchored branch.
+  if (!["admin", "broker", "broker_owner"].includes(callerRole)) {
+    return { success: false, error: "Forbidden: admin or broker only" }
   }
 
   // ── 3. Scope guard for non-superadmin callers ─────────────────────────────

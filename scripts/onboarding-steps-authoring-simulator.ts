@@ -28,8 +28,13 @@ console.log("\n── the authoring actions (admin-gated, brokerage-scoped) ─�
     a.includes("export async function listOnboardingCurriculumAction") &&
     a.includes("export async function saveOnboardingStepAction") &&
     a.includes("export async function deleteOnboardingStepAction"))
-  check("admin-gated (broker/broker_admin/admin/superadmin)",
-    a.includes("ADMIN_ROLES") && a.includes("requireAdmin"))
+  // Pinned to the GATE, not a roster const's name (#211): the local ADMIN_ROLES
+  // literal was replaced by the ONE shared tenant-admin predicate, which also
+  // admits broker_owner and team_lead (operational surface) and drops a
+  // superadmin user_type measured at zero live rows.
+  check("admin-gated on the shared tenant-admin roster, and the gate REFUSES",
+    /if \(!isAdminOrBroker\(\{ user_type/.test(a) && a.includes("requireAdmin") &&
+    /import \{[^}]*isAdminOrBroker[^}]*\} from "@\/lib\/auth\/resolve-user-role"/.test(a))
   check("writes the CANONICAL onboarding_steps table (no parallel system)",
     a.includes('.from("onboarding_steps")'))
   check("brokerage_id is pinned to the caller's tenant (can't author a platform default)",

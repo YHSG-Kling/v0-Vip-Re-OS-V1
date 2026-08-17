@@ -1,6 +1,7 @@
 "use server"
 import { createClient } from "@/lib/supabase/server"
 import { NextResponse } from "next/server"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export async function requireAdminMaintenanceAccess(request: Request): Promise<
   { authorized: true } | { authorized: false; response: NextResponse }
@@ -46,8 +47,9 @@ export async function requireAdminMaintenanceAccess(request: Request): Promise<
     .eq("id", user.id)
     .single()
 
-  const allowedTypes = ["admin", "broker", "superadmin"]
-  if (!profile || !allowedTypes.includes(profile.user_type ?? "")) {
+  // TRUE ADMIN GATE (operational maintenance): repointed to the ONE tenant
+  // roster. 'superadmin' was dead here — 0 live rows store that user_type.
+  if (!profile || !isAdminOrBroker({ user_type: profile.user_type })) {
     return {
       authorized: false,
       response: NextResponse.json({ error: "Forbidden" }, { status: 403 }),

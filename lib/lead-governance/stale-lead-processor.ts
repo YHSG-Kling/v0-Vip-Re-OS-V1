@@ -75,7 +75,9 @@ export async function processStaleLeadsAndSLA(
           .from("users")
           .select("id")
           .eq("brokerage_id", brokerageId)
-          .in("user_type", ["broker", "admin", "superadmin"])
+          // RECIPIENT FILTER: 'superadmin' dropped (matches zero users.user_type
+          // rows); broker_owner added — storable seat that owns the brokerage.
+          .in("user_type", ["broker", "admin", "broker_owner"])
           .limit(5)
 
         for (const admin of adminUsers ?? []) {

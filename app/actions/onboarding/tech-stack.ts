@@ -46,7 +46,10 @@ export interface IntegrationStatusResult {
  * overwrite or delete the credentials the whole tenant runs on. Same defect, and same
  * fix, as app/actions/settings/integrations.ts.
  */
-const TECH_STACK_ADMIN_ROLES = ["admin", "broker", "broker_admin", "superadmin"]
+// TENANT ADMIN GATE (kept inline, tenant credentials — deliberately no team_lead):
+// 'superadmin' removed — dead as users.user_type (0 live rows); broker_owner
+// added — storable seat that owns the brokerage these credentials run.
+const TECH_STACK_ADMIN_ROLES = ["admin", "broker", "broker_owner", "broker_admin"]
 
 /** Authenticate, confirm tenant membership, AND confirm the caller may administer it. */
 async function requireBrokerageAdmin(

@@ -100,8 +100,10 @@ function toSendChannel(raw: string | null | undefined): SendChannel | null {
 
 // UI gate mirrors lib/kernel/portal-auth requireOverrideActor. Server is the
 // real boundary — hiding the override panel from a regular agent is UX only.
+// 'superadmin' removed / broker_owner added — mirrors OVERRIDE_USER_TYPES in
+// lib/kernel/portal-auth.ts (superadmin is dead as users.user_type: 0 live rows).
 const COMPLIANCE_OVERRIDE_USER_TYPES = new Set([
-  "broker", "broker_admin", "admin", "superadmin",
+  "broker", "broker_owner", "broker_admin", "admin",
   "compliance_officer", "compliance_manager",
 ])
 

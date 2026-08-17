@@ -107,7 +107,12 @@ export async function emitEvent(
 // ORCHESTRATE BY EVENT ID — admin-only replay
 // =====================================================
 
-const REPLAY_ROLES = ["admin", "super_admin", "superadmin", "broker", "broker_owner"]
+// TRUE ADMIN GATE that also named the platform ('superadmin'/'super_admin' —
+// both dead as users.user_type, 0 live rows) — repointed to
+// isTenantAdminOrPlatformStaff: tenant admins via the ONE roster, platform
+// staff via the dual-column identity the row's platform_role (selected below)
+// actually carries.
+import { isTenantAdminOrPlatformStaff } from "@/lib/auth/resolve-user-role"
 
 export async function orchestrateEventById(eventId: string) {
   const supabase = await createClient()
@@ -120,7 +125,7 @@ export async function orchestrateEventById(eventId: string) {
     .eq("id", user.id)
     .maybeSingle()
   if (!u?.brokerage_id) return { success: false, error: "Unauthorized" }
-  if (!REPLAY_ROLES.includes(u.user_type ?? "")) {
+  if (!isTenantAdminOrPlatformStaff({ user_type: u.user_type, platform_role: (u as any).platform_role })) {
     return { success: false, error: "Forbidden" }
   }
 

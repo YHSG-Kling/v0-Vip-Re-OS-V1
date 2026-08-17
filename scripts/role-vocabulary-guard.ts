@@ -195,8 +195,13 @@ console.log("\n[the sites this guard was written for]")
   // test:compliance-checkpoints — one guard, one concern.
 
   const isa = src("app/dashboard/settings/isa-calling/page.tsx")
+  // The claim is the COLUMN, not the array's exact spelling: #211 appended
+  // broker_owner outside the canonical expansion (a spread), which the old
+  // regex — pinned to `rawRoleVariantsFor(` immediately after the comma —
+  // read as a regression. Accept any user_type filter built FROM the
+  // canonical expansion; still refuse the legacy role column.
   check("the ISA duty agent resolves off user_type, not the legacy role column",
-    /\.in\(\s*"user_type",\s*rawRoleVariantsFor\(/.test(isa)
+    /\.in\(\s*"user_type",\s*(\[\s*\.\.\.)?\s*rawRoleVariantsFor\(/.test(isa)
     && !/^\s*\.eq\("role", "Admin"\)/m.test(isa))
 }
 

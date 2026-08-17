@@ -5,7 +5,9 @@ import { ChallengesClient } from "./challenges-client"
 
 export const dynamic = "force-dynamic"
 
-const ADMIN_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "superadmin"])
+// TENANT ADMIN GATE (kept inline — mirrors app/actions/challenges.ts):
+// 'superadmin' removed — dead as users.user_type (0 live rows store it).
+const ADMIN_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
 export default async function ChallengesPage() {
   // Self-healing identity: an agent who reached this page without a brokerage/agents row is

@@ -27,8 +27,11 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { ACTIVE_DEAL_STATUSES } from "@/lib/agents/agent-deactivation"
 import { revalidatePath } from "next/cache"
 
-/** Same manager set the bulk deactivation flow admits. */
-const MANAGER_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "superadmin"])
+/** Same manager set the bulk deactivation flow admits.
+ *  SCOPE LADDER (kept inline — team leads come through the tenancy-principal
+ *  branch, not this set): 'superadmin' removed — dead as users.user_type
+ *  (0 live rows store it). */
+const MANAGER_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
 type Svc = ReturnType<typeof createServiceClient>
 

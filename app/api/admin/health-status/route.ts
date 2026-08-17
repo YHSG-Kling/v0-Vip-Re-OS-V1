@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export async function GET() {
   try {
@@ -11,8 +12,9 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    // Role gate: superadmin, admin, broker only
-    if (!["superadmin", "admin", "broker"].includes(ctx.role)) {
+    // TRUE ADMIN GATE (operational: health status) — repointed to the ONE tenant
+    // roster. 'superadmin' was dead: 0 live rows store that users.user_type.
+    if (!isAdminOrBroker({ user_type: ctx.role })) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }
 

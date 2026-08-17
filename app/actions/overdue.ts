@@ -59,7 +59,10 @@ export async function getOverdueSummary(): Promise<OverdueSummary> {
   }
 
   const svc = createServiceClient()
-  const elevated = ["admin", "broker", "broker_admin", "superadmin", "tc", "transaction_coordinator", "compliance_officer"].includes(
+  // SCOPE LADDER (kept inline — admits tc/compliance tiers): 'superadmin'
+  // removed — dead as users.user_type (0 live rows); broker_owner added —
+  // storable seat that owns the brokerage.
+  const elevated = ["admin", "broker", "broker_owner", "broker_admin", "tc", "transaction_coordinator", "compliance_officer"].includes(
     ctx.userType ?? ""
   )
 

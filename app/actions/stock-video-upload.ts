@@ -19,6 +19,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { toCanonicalRoleOrDefault } from "@/lib/security"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 const ALLOWED_CATEGORIES = ["intro", "outro", "b_roll", "avatar_background"] as const
 type AllowedCategory = typeof ALLOWED_CATEGORIES[number]
@@ -79,7 +80,11 @@ export async function uploadStockClip(input: UploadStockClipInput): Promise<Uplo
   //   - brokerage scope requires broker / admin / superadmin
   //   - team scope requires the uploader to be on a team
   //   - agent scope requires an agents row
-  if (input.scope === "brokerage" && !["broker", "admin", "superadmin"].includes(role)) {
+  // TRUE ADMIN GATE (operational: marketing clips) — repointed to the ONE tenant
+  // roster, asked of the raw user_type (the predicate accepts every legacy input
+  // spelling the canonicalizer does). 'superadmin' was dead: 0 live rows store
+  // that users.user_type.
+  if (input.scope === "brokerage" && !isAdminOrBroker({ user_type: profile.user_type })) {
     return { success: false, error: "Only brokers and admins can publish brokerage-wide clips" }
   }
   if (input.scope === "team" && !agentRow?.team_id) {
@@ -172,8 +177,8 @@ export async function deleteStockClip(assetId: string): Promise<{ success: boole
       .select("user_type, brokerage_id")
       .eq("id", user.id)
       .maybeSingle()
-    const role = toCanonicalRoleOrDefault(profile?.user_type, "agent")
-    isAdmin = ["broker", "admin", "superadmin"].includes(role) && profile?.brokerage_id === clip.brokerage_id
+    // TRUE ADMIN GATE — same repoint as the upload gate above.
+    isAdmin = isAdminOrBroker({ user_type: profile?.user_type }) && profile?.brokerage_id === clip.brokerage_id
   }
   if (!isOwner && !isAdmin) {
     return { success: false, error: "Only the uploader or a broker/admin can delete this clip" }

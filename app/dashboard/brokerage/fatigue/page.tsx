@@ -41,7 +41,9 @@ export default async function BrokerageFatiguePage() {
     .single()
 
   if (!profile?.brokerage_id) redirect("/dashboard")
-  if (!["broker", "broker_owner", "broker_admin", "admin", "superadmin"].includes(profile.user_type ?? "") && profile.platform_role !== "superadmin") {
+  // TENANT ADMIN GATE (kept inline; platform staff pass via the platform_role
+  // clause): 'superadmin' removed — dead as users.user_type (0 live rows store it).
+  if (!["broker", "broker_owner", "broker_admin", "admin"].includes(profile.user_type ?? "") && profile.platform_role !== "superadmin") {
     redirect("/dashboard")
   }
 

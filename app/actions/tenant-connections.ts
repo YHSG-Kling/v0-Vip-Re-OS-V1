@@ -11,7 +11,10 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveWriteContext } from "@/lib/kernel/identity"
 
-const ADMIN_TYPES = new Set(["broker", "broker_admin", "admin", "superadmin"])
+// TENANT ADMIN GATE (kept inline, tenant credentials — deliberately no team_lead):
+// 'superadmin' removed — dead as users.user_type (0 live rows); broker_owner
+// added — storable seat that owns the brokerage.
+const ADMIN_TYPES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
 import { TENANT_CONNECTION_SLOTS } from "@/lib/settings/tenant-connection-slots"
 

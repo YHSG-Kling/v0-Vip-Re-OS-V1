@@ -27,8 +27,12 @@ import { revalidatePath } from "next/cache"
 import { readRoleGrants, selectVendorId } from "@/lib/auth/role-grants"
 import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
+// SCOPE LADDER (kept inline — admits agent/tc tiers): 'superadmin' removed —
+// dead as users.user_type (0 live rows); broker_owner added — storable seat
+// that owns the brokerage. (REVOKE_ALLOWED_ROLES below keeps its documented
+// explicit 'superadmin' platform lane untouched.)
 const ASSIGN_ALLOWED_ROLES = new Set([
-  "broker", "broker_admin", "admin", "superadmin", "team_lead", "agent", "tc",
+  "broker", "broker_owner", "broker_admin", "admin", "team_lead", "agent", "tc",
 ])
 
 // DERIVED from the ONE tenant-admin roster; `superadmin` added explicitly
