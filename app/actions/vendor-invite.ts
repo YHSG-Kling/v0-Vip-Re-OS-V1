@@ -35,6 +35,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { randomBytes } from "node:crypto"
 import { canInviteVendors, resolveVendorActorScope } from "@/lib/vendors/vendor-scope"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 /**
  * Best-effort first-inviter-wins attribution stamp on the vendor row
@@ -70,8 +71,6 @@ const INVITE_TTL_DAYS = 14
  *  rather than in vendor-scope because nothing else needs it; the INVITE side
  *  now defers to lib/vendors/vendor-scope.ts:canInviteVendors so the two copies
  *  of that list cannot drift apart. */
-const REVOKE_ALLOWED_ROLES = new Set(["broker","broker_admin","admin","superadmin","team_lead"])
-
 function generateInviteToken(): string {
   // 32 random bytes → 43 url-safe base64 chars. Plenty of entropy
   // (~256 bits) and short enough for a clean URL.
@@ -375,7 +374,7 @@ export async function revokeVendorInviteAction(
     .maybeSingle()
   if (callerErr) return { ok: false, error: `Could not verify your account: ${callerErr.message}` }
   if (!caller?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
-  if (!REVOKE_ALLOWED_ROLES.has(caller.user_type ?? "")) {
+  if (!isAdminOrBroker({ user_type: caller.user_type ?? "" })) {
     return { ok: false, error: "Forbidden — only a broker, admin or team lead can revoke an invitation" }
   }
 

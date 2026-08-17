@@ -415,7 +415,13 @@ const SOURCE_PROBES: SourceProbe[] = [
       const b = body(s.brokerage, "export async function updateBrokerageIdentity")
       return /const \{ supabase, brokerageId, canEdit, error: sessionError \} = await resolveSessionBrokerage\(\)/.test(b)
         && /if \(!canEdit\)/.test(b)
-        && /canEdit: isAdminOrBroker\(/.test(s.brokerage)
+        // Keyed to canEdit being resolved from the SESSION through the one roster
+        // module, not to the identifier. The gate has been renamed twice since this
+        // line was written (the admin-vocabulary consolidation, then m472 moving the
+        // brokerage row onto the finance tier because it carries default_cap_amount
+        // — this very cap) and each rename read as a regression.
+        && /from\s+["']@\/lib\/auth\/resolve-user-role["']/.test(s.brokerage)
+        && /canEdit: (isBrokerageFinanceAdmin\(|isAdminOrBroker\(|\w+\.is(Finance|Tenant)Admin\b)/.test(s.brokerage)
         // The brokerage id comes from users.brokerage_id for auth.uid(), never a payload field.
         && !/brokerageId = \(?input/.test(b)
     },

@@ -14,8 +14,7 @@
 import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-
-const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 async function requireAdmin(): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string }
@@ -32,7 +31,7 @@ async function requireAdmin(): Promise<
     .maybeSingle()
   if (!row?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
   const userType = row.user_type as string
-  if (!ADMIN_ROLES.has(userType)) return { ok: false, error: "Forbidden" }
+  if (!isAdminOrBroker({ user_type: userType })) return { ok: false, error: "Forbidden" }
   return { ok: true, userId: user.id, brokerageId: row.brokerage_id as string, userType }
 }
 

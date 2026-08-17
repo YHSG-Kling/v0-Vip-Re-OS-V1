@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import LeadLineageClient, { type Lead } from './lead-lineage-client'
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = 'force-dynamic'
 
@@ -24,7 +25,7 @@ export default async function LeadLineagePage() {
     .eq('id', user.id)
     .single()
 
-  if (!['admin', 'broker', 'superadmin'].includes(profile?.user_type ?? '')) {
+  if (!isAdminOrBroker({ user_type: profile?.user_type ?? '' })) {
     redirect('/dashboard')
   }
 

@@ -5,6 +5,7 @@
 // admin/broker/superadmin can access any agent within their brokerage.
 
 import { createClient } from "@/lib/supabase/server"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -82,7 +83,7 @@ async function assertCanAccessAgent(params: {
     if (agent.user_id !== params.userId) {
       throw new Error("Forbidden: cannot access other agents' onboarding")
     }
-  } else if (!["admin", "broker", "superadmin"].includes(userType)) {
+  } else if (!isAdminOrBroker({ user_type: userType })) {
     throw new Error("Forbidden: insufficient permissions")
   }
   return { brokerageId }
@@ -318,7 +319,7 @@ export async function createOnboardingStepForBrokerage(params: {
 }): Promise<{ id: string }> {
   const { brokerageId, userType } = await requireUserContext(params.userId)
 
-  if (!["admin", "broker", "superadmin"].includes(userType)) {
+  if (!isAdminOrBroker({ user_type: userType })) {
     throw new Error("Forbidden: insufficient permissions to create onboarding steps")
   }
 
@@ -367,7 +368,7 @@ export async function updateOnboardingStepForBrokerage(params: {
 }): Promise<void> {
   const { brokerageId, userType } = await requireUserContext(params.userId)
 
-  if (!["admin", "broker", "superadmin"].includes(userType)) {
+  if (!isAdminOrBroker({ user_type: userType })) {
     throw new Error("Forbidden: insufficient permissions to update onboarding steps")
   }
 
@@ -403,7 +404,7 @@ export async function deleteOnboardingStepForBrokerage(params: {
 }): Promise<void> {
   const { brokerageId, userType } = await requireUserContext(params.userId)
 
-  if (!["admin", "broker", "superadmin"].includes(userType)) {
+  if (!isAdminOrBroker({ user_type: userType })) {
     throw new Error("Forbidden: insufficient permissions to delete onboarding steps")
   }
 
@@ -438,7 +439,7 @@ export async function listOnboardingSteps(params: {
 }): Promise<OnboardingStepRow[]> {
   const { brokerageId, userType } = await requireUserContext(params.userId)
 
-  if (!["admin", "broker", "superadmin"].includes(userType)) {
+  if (!isAdminOrBroker({ user_type: userType })) {
     throw new Error("Forbidden: insufficient permissions to list onboarding steps")
   }
 

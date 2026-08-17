@@ -14,8 +14,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { advanceBrokerageOnboarding } from "@/lib/onboarding/state-machine"
 import { revalidatePath } from "next/cache"
-
-const ADMIN_ROLES = new Set(["broker","broker_admin","admin","superadmin","team_lead"])
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 async function requireBrokerageAdmin(): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string }
@@ -30,7 +29,7 @@ async function requireBrokerageAdmin(): Promise<
     .eq("id", user.id)
     .maybeSingle()
   if (!data?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
-  if (!ADMIN_ROLES.has(data.user_type ?? "")) return { ok: false, error: "Forbidden" }
+  if (!isAdminOrBroker({ user_type: data.user_type ?? "" })) return { ok: false, error: "Forbidden" }
   return { ok: true, userId: user.id, brokerageId: data.brokerage_id, userType: data.user_type }
 }
 
@@ -164,7 +163,7 @@ export async function markBrokerageSetupCompleteAction(): Promise<
   const auth = await requireBrokerageAdmin()
   if (!auth.ok) return auth
   // Only admin tier should be able to declare "we're done setting up"
-  if (!["broker","broker_admin","admin","superadmin"].includes(auth.userType)) {
+  if (!isAdminOrBroker({ user_type: auth.userType })) {
     return { ok: false, error: "Forbidden — only admin or broker can mark setup complete" }
   }
   const r = await advanceBrokerageOnboarding(auth.brokerageId, "completed")

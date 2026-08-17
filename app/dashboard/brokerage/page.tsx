@@ -53,6 +53,7 @@ import { BrokerProviderHealthActions } from "./components/broker-provider-health
 import { BrokerTeamAssignmentBar } from "./components/broker-team-assignment-bar"
 import { SetupReadinessCard } from "@/app/components/onboarding/setup-readiness-card"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export default async function BrokerageDashboard({
   searchParams,
@@ -83,7 +84,7 @@ export default async function BrokerageDashboard({
       .eq("id", user.id)
       .maybeSingle()
     // Guard: only broker/admin/superadmin may access this dashboard
-    if (!userRow?.brokerage_id || !["broker", "admin", "superadmin"].includes(userRow.user_type ?? "")) {
+    if (!userRow?.brokerage_id || !isAdminOrBroker({ user_type: userRow.user_type ?? "" })) {
       redirect("/dashboard")
     }
     brokerageId = userRow.brokerage_id

@@ -96,6 +96,7 @@ import type { Lead, LeadScore, LeadIntent, LeadStatus, LeadSource } from "@/app/
 import { cn } from "@/lib/utils"
 import { createClient } from "@/lib/supabase/client"
 import { toast } from "sonner"
+import { isTenantAdminOrPlatformStaff as isTenantAdminOrPlatformStaffFn } from "@/lib/auth/resolve-user-role"
 
 export default function LeadsPage() {
   const router = useRouter()
@@ -404,11 +405,19 @@ export default function LeadsPage() {
         return
       }
 
-      const platformStaff = ["superadmin", "admin", "marketing", "support"].includes(
-        String((profile as any)?.platform_role ?? "")
-      )
-      const adminBroker =
-        ["admin", "broker", "broker_owner", "broker_admin", "superadmin"].includes(resolvedType) || platformStaff
+      // This surface genuinely means BOTH: a tenant admin sees the brokerage's
+      // leads, and so does platform staff. It says so with the explicit OR of the
+      // two single definitions rather than restating either — the four platform
+      // roles were inlined here, a second copy of the roster that
+      // lib/platform/platform-staff-roster.ts already owns.
+      //
+      // Called under an ALIAS because the component below binds a state variable
+      // of the same name; the unaliased import would be shadowed by that boolean
+      // and the call would fail at runtime, not at build time.
+      const adminBroker = isTenantAdminOrPlatformStaffFn({
+        user_type: resolvedType,
+        platform_role: String((profile as any)?.platform_role ?? "") || null,
+      })
       setIsAdminOrBroker(adminBroker)
 
       // Resolve brokerageId from users table

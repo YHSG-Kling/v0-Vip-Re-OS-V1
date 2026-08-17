@@ -31,6 +31,7 @@ import "server-only"
 import { type NextRequest, NextResponse } from "next/server"
 import { timingSafeEqual } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const runtime = "nodejs"
 
@@ -2672,8 +2673,7 @@ async function requireContactOwnership(
     .maybeSingle()
   const userType = (actingUser?.user_type ?? "") as string
 
-  const OVERRIDE_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
-  if (OVERRIDE_ROLES.has(userType)) return { ok: true }
+if (isAdminOrBroker({ user_type: userType })) return { ok: true }
 
   // Plain agents may only act on their own contacts (session.agent_id is
   // the agents.id row; contact.agent_id FKs agents.id).

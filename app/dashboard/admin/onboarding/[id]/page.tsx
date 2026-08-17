@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import { getAgentProgress } from "@/app/actions/onboarding/progress"
 import { ProgressDashboardClient } from "@/app/dashboard/onboarding/progress/progress-dashboard-client"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const metadata = {
   title: "Agent Progress | Admin View",
@@ -40,7 +41,7 @@ export default async function AdminAgentProgressPage({ params }: PageProps) {
   }
 
   // Only admins and brokers can access this page
-  if (!["admin", "broker"].includes(userData.user_type || "")) {
+  if (!isAdminOrBroker({ user_type: userData.user_type || "" })) {
     redirect("/dashboard")
   }
 

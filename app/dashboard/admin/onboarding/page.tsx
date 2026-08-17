@@ -6,6 +6,7 @@ import { OnboardingCurriculumEditor } from "./onboarding-curriculum-editor"
 import { getBrokerageProviderReadiness } from "@/lib/platform/provider-posture"
 import { loadOnboardingRoster } from "@/lib/onboarding/onboarding-roster"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const metadata = {
   title: "Onboarding Operations | Admin OS",
@@ -39,7 +40,7 @@ export default async function AdminOnboardingOsPage() {
   }
 
   // Only admins and brokers can access this page
-  if (!["admin", "broker"].includes(userData.user_type || "")) {
+  if (!isAdminOrBroker({ user_type: userData.user_type || "" })) {
     redirect("/dashboard")
   }
 

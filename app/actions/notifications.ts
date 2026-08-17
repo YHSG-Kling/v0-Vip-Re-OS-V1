@@ -4,6 +4,7 @@ import { getAgentContext } from "@/lib/identity"
 import { resolveWriteContext } from "@/lib/kernel/identity"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -151,7 +152,7 @@ export async function createNotification(params: {
 
   // Deny authenticated callers who have no agent identity and are not a
   // broker/admin/superadmin — they cannot be authorized to create notifications.
-  if (!ctx.agentId && !["broker", "admin", "superadmin"].includes(ctx.userType)) {
+  if (!ctx.agentId && !isAdminOrBroker({ user_type: ctx.userType })) {
     return { success: false, error: "Agent identity required" }
   }
 

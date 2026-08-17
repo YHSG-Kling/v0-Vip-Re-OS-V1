@@ -20,19 +20,42 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { createClient } from "@/lib/supabase/server"
+import { resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
 import { getAgentContext } from "@/lib/identity"
 import { revalidatePath } from "next/cache"
 import { isRuleType, RULE_TYPE_LABELS, type RuleType } from "@/lib/lead-assignment/rule-matcher"
 
-/** Broker + admin only — the same gate the Settings page itself applies. */
+/**
+ * May this caller change how the brokerage's leads are assigned?
+ *
+ * The inline ["broker","admin"] this replaces was one of 46 spellings of the same
+ * question, and it was the narrowest of them: it refused broker_owner — the person
+ * who OWNS the brokerage — and team_lead, whom the owner's ruling names admin-class.
+ *
+ * resolveTenantAdmin rather than the sync predicate, because lead routing is
+ * brokerage-wide configuration and this action is already async: a user holding an
+ * `admin` GRANT on this brokerage administers it, which is what
+ * public.is_brokerage_admin() has decided since m466. The SESSION client is used on
+ * purpose — RLS still applies underneath, and user_role_assignments_select_own is
+ * what lets a caller read their own grants.
+ */
 async function requireRoutingAdmin(): Promise<
   { ok: true; brokerageId: string } | { ok: false; error: string }
 > {
   const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Not authenticated" }
-  const type = ctx.userType ?? ctx.role ?? ""
-  if (!["broker", "admin"].includes(type)) {
-    return { ok: false, error: "Only a broker or an admin can change how leads are assigned." }
+  if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) return { ok: false, error: "Not authenticated" }
+
+  const supabase = await createClient()
+  const admin = await resolveTenantAdmin(supabase, ctx.userId, {
+    user_type: ctx.userType,
+    brokerage_id: ctx.brokerageId,
+  })
+  // supabase-js RESOLVES a refused query. Reporting that as the ordinary refusal
+  // below would tell an administrator they are not one, during an outage.
+  if (!admin.ok) return { ok: false, error: `Could not resolve your permissions: ${admin.error}` }
+  if (!admin.isTenantAdmin) {
+    return { ok: false, error: "Only a broker, an admin or a team lead can change how leads are assigned." }
   }
   return { ok: true, brokerageId: ctx.brokerageId }
 }

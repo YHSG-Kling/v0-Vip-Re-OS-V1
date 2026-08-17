@@ -4,6 +4,7 @@ import { ChevronLeft, Brain } from "lucide-react"
 import { createClient } from "@/lib/supabase/server"
 import { getBrokerageInsights } from "@/app/actions/brokerage-intelligence"
 import { IntelligenceMeshClient } from "./intelligence-mesh-client"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 /**
  * /dashboard/admin/intelligence-mesh
@@ -19,8 +20,7 @@ export default async function IntelligenceMeshPage() {
   const { data: profile } = await supabase
     .from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
 
-  const allowed = new Set(["superadmin","broker","broker_admin","admin","team_lead"])
-  if (!allowed.has(profile?.user_type ?? "")) redirect("/dashboard")
+if (!isAdminOrBroker({ user_type: profile?.user_type ?? "" })) redirect("/dashboard")
 
   // Load all open + recently dismissed for triage
   const [openRes, dismissedRes] = await Promise.all([

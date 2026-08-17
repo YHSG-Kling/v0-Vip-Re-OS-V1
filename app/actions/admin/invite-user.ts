@@ -9,6 +9,7 @@ import { KernelEvent } from "@/lib/kernel/events"
 import type { UserDomainRole } from "@/lib/kernel/users"
 import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS, roleConsumesSeat, seatDecision, seatDecisionMessage, parseSeatOverride } from "@/lib/kernel/tier-role-matrix"
 import { resolveSeatUsage } from "@/lib/kernel/seat-usage"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export interface InviteUserParams {
   email: string
@@ -57,7 +58,7 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
   const callerType = caller?.user_type ?? "agent"
 
   // Only admin, broker, superadmin, and team_lead can invite
-  if (!["admin", "broker", "superadmin", "team_lead"].includes(callerType)) {
+  if (!isAdminOrBroker({ user_type: callerType })) {
     return { success: false, error: "Forbidden: insufficient privileges to invite users" }
   }
 

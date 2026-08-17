@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import { AIIdentityEditor } from "@/app/components/ai-identity/AIIdentityEditor"
 import { getAIIdentityProfile, getParentAIIdentityProfile } from "@/app/actions/ai-identity"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -31,7 +32,7 @@ export default async function TeamAIIdentityPage() {
     .maybeSingle()
 
   // Role gate: team_lead + admin + broker
-  if (!profile?.brokerage_id || !profile.team_id || !["team_lead", "admin", "broker"].includes(profile.user_type || "")) {
+  if (!profile?.brokerage_id || !profile.team_id || !isAdminOrBroker({ user_type: profile.user_type || "" })) {
     redirect("/dashboard")
   }
 

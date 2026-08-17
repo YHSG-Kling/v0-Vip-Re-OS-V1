@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useTransition } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 type VisitorRow = {
   id: string
@@ -51,7 +52,7 @@ export default function VisitorTrackingPage() {
         .eq('id', user.id)
         .single()
 
-      if (!prof || !['admin', 'broker', 'superadmin'].includes(prof.user_type)) {
+      if (!prof || !isAdminOrBroker({ user_type: prof.user_type })) {
         setError('Forbidden')
         setLoading(false)
         return

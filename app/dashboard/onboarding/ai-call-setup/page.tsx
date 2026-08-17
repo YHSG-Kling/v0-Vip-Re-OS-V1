@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import { getAIIdentityProfile } from "@/app/actions/ai-identity"
 import { AICallSetupClient } from "./AICallSetupClient"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -29,7 +30,7 @@ export default async function AICallSetupPage() {
     .eq("id", user.id)
     .maybeSingle()
 
-  if (!profile?.brokerage_id || !["broker", "admin", "superadmin"].includes(profile.user_type ?? "")) {
+  if (!profile?.brokerage_id || !isAdminOrBroker({ user_type: profile.user_type ?? "" })) {
     redirect("/dashboard")
   }
 

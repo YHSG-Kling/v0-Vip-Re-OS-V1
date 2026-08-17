@@ -18,9 +18,28 @@
 
 export type CitationScope = "agent" | "team" | "brokerage"
 
-/** Broker-tier roles: the whole brokerage is theirs to see. */
+/**
+ * Broker-tier roles: the whole brokerage is theirs to see.
+ *
+ * DELIBERATELY NARROWER than the canonical tenant-admin roster
+ * (lib/auth/resolve-user-role.ts#isAdminOrBroker): `team_lead` is admin-class
+ * under the owner's ruling but belongs in TEAM_ROLES below, because this module's
+ * entire job is to separate the brokerage tier from the team tier. Folding it in
+ * would make the team branch unreachable and show every team lead the whole
+ * company's citations.
+ *
+ * TWO PHANTOMS REMOVED, both of which matched nothing:
+ *   · `platform_admin` — not a users.user_type value (the CHECK admits fourteen,
+ *     and that is not one) and not how platform identity is asked either: that
+ *     lives in users.platform_role and is answered by isPlatformStaffIdentity.
+ *     `superadmin` stays because it IS a legal user_type value.
+ *   · `owner` — in no vocabulary at all. MEASURED live: zero rows carry it in
+ *     users.user_type, users.role, or user_role_assignments.role.
+ * `broker_owner` — the real spelling `owner` was reaching for — is ADDED: the
+ * brokerage's owner was being scoped to their own pages.
+ */
 const BROKERAGE_ROLES = new Set([
-  "broker", "broker_admin", "admin", "superadmin", "platform_admin", "owner",
+  "broker", "broker_admin", "broker_owner", "admin", "superadmin",
 ])
 /** Team-tier roles: their team plus their own pages. */
 const TEAM_ROLES = new Set(["team_lead", "team_leader"])

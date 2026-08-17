@@ -7,6 +7,7 @@ import { isValidUUID } from "@/lib/validations"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { resolveUserOffice, pickUserOffice } from "@/lib/kernel/resolve-user-office"
 import { ensureAgentCapWindow } from "@/lib/commission/cap-resolver"
+import { isAdminOrBroker, isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 interface AchievementRow {
   id: string
@@ -18,15 +19,6 @@ interface AchievementRow {
 }
 
 /** Roles allowed to administer OTHER people's agent records / brokerage rollups. */
-const BROKER_ADMIN_ROLES = new Set([
-  "broker",
-  "broker_owner",
-  "broker_admin",
-  "admin",
-  "superadmin",
-  "team_lead",
-])
-
 // ==================== AGENT CRUD ====================
 
 /**
@@ -62,7 +54,7 @@ export async function getAgents(): Promise<
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) return { ok: false, error: "Not authenticated" }
   if (!ctx.brokerageId) return { ok: false, error: "Your account is not linked to a brokerage yet." }
-  if (!BROKER_ADMIN_ROLES.has(ctx.userType)) {
+  if (!isAdminOrBroker({ user_type: ctx.userType })) {
     return { ok: false, error: "Only brokers / admins / team leads can view the full agent roster." }
   }
 
@@ -124,7 +116,7 @@ async function requireAgentLedgerAccess(
   if (!ctx.isAuthenticated) return { ok: false, error: "Not authenticated" }
   if (!ctx.brokerageId) return { ok: false, error: "Your account is not linked to a brokerage yet." }
   if (ctx.agentId === agentId) return { ok: true, brokerageId: ctx.brokerageId }
-  if (!BROKER_ADMIN_ROLES.has(ctx.userType)) {
+  if (!isAdminOrBroker({ user_type: ctx.userType })) {
     return { ok: false, error: "You can only view your own commissions and expenses." }
   }
   // A broker/admin may look at their OWN brokerage's agents, not an id from
@@ -208,7 +200,7 @@ export async function createAgent(agentData: {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) return { error: "Not authenticated" }
   if (!ctx.brokerageId) return { error: "Your account is not linked to a brokerage yet." }
-  if (!BROKER_ADMIN_ROLES.has(ctx.userType)) {
+  if (!isAdminOrBroker({ user_type: ctx.userType })) {
     return { error: "Only brokers / admins / team leads can create agent records." }
   }
   if (!isValidUUID(agentData.user_id)) return { error: "A valid user is required." }
@@ -945,7 +937,14 @@ export async function addAgentExpense(expenseData: {
   // that agent is in the caller's own brokerage.
   let agentId = ctx.agentId
   if (expenseData.agent_id && expenseData.agent_id !== ctx.agentId) {
-    if (!BROKER_ADMIN_ROLES.has(ctx.userType)) {
+    // BROKERAGE-WIDE MONEY (m472). business_expenses is a FINANCE table under
+    // public.is_brokerage_finance_admin(), and this branch is "book a cost
+    // against SOMEONE ELSE'S ledger" — money beyond the caller's own team, which
+    // the owner's ruling holds team_lead out of. The write below goes through the
+    // SERVICE client, which bypasses RLS, so this predicate is the only gate it
+    // has: had it stayed on the widened roster the app would not merely have
+    // disagreed with RLS, it would have overruled it.
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
       return { error: "You can only log expenses against your own book." }
     }
     const { data: target, error: targetErr } = await svc
@@ -1019,7 +1018,7 @@ export async function getExpenseSummary(
   // agentId is an agents.id. Anyone may read their OWN book; reading someone
   // else's requires a broker/admin role AND that agent being in this tenant.
   if (agentId !== ctx.agentId) {
-    if (!BROKER_ADMIN_ROLES.has(ctx.userType)) {
+    if (!isAdminOrBroker({ user_type: ctx.userType })) {
       return { ok: false, ...empty, error: "Forbidden" }
     }
     const { data: target, error: targetErr } = await svc
@@ -1161,7 +1160,7 @@ export async function setAgentGoal(goalData: {
   // named agent honoured only for a broker/admin inside their own tenant.
   let agentId = ctx.agentId
   if (goalData.agent_id && goalData.agent_id !== ctx.agentId) {
-    if (!BROKER_ADMIN_ROLES.has(ctx.userType)) {
+    if (!isAdminOrBroker({ user_type: ctx.userType })) {
       return { error: "You can only set your own goals." }
     }
     const { data: target, error: targetErr } = await svc
@@ -1263,8 +1262,6 @@ export async function updateGoalProgress(goalId: string, currentValue: number) {
  * contacts.agent_id FKs agents(id) with no tenant predicate of its own, so the
  * database would have accepted it.
  */
-const ASSIGN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
-
 export async function assignAgentToContact(contactId: string, agentId: string) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -1280,7 +1277,7 @@ export async function assignAgentToContact(contactId: string, agentId: string) {
     .eq("id", user.id)
     .maybeSingle()
   if (userErr) return { error: userErr.message }
-  if (!userRow || !ASSIGN_ROLES.has(userRow.user_type ?? "")) {
+  if (!userRow || !isAdminOrBroker({ user_type: userRow.user_type ?? "" })) {
     return { error: "Only brokers / admins / team leads can assign contacts" }
   }
   if (!userRow.brokerage_id) {

@@ -24,6 +24,7 @@ import { isDidSentiment } from "@/lib/did/agent-presenter"
 import { createServiceClient } from "@/lib/supabase/service"
 import { syncAgentVoiceId } from "@/lib/voice/sync-voice-id"
 import { revalidatePath } from "next/cache"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -110,7 +111,7 @@ export async function listMyTwins(): Promise<{ twins: Twin[]; error?: string }> 
 export async function listPendingApprovals(): Promise<{ twins: Twin[]; error?: string }> {
   const ctx = await resolveWriteContext()
   if (!ctx.isAuthenticated) return { twins: [], error: "Unauthorized" }
-  if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+  if (!isAdminOrBroker({ user_type: ctx.userType })) {
     return { twins: [], error: "Forbidden" }
   }
 
@@ -277,7 +278,7 @@ export async function updateTwinDetails(params: {
 export async function approveTwin(twinId: string): Promise<{ ok: boolean; error?: string }> {
   const ctx = await resolveWriteContext()
   if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
-  if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+  if (!isAdminOrBroker({ user_type: ctx.userType })) {
     return { ok: false, error: "Forbidden" }
   }
   const supabase = createServiceClient()
@@ -311,7 +312,7 @@ export async function rejectTwin(params: {
 }): Promise<{ ok: boolean; error?: string }> {
   const ctx = await resolveWriteContext()
   if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
-  if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+  if (!isAdminOrBroker({ user_type: ctx.userType })) {
     return { ok: false, error: "Forbidden" }
   }
   if (!params.reason?.trim()) return { ok: false, error: "Reason required" }

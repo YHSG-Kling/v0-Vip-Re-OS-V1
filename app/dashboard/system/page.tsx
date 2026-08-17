@@ -16,6 +16,7 @@ import {
   ServiceSLAPanel,
   SchemaReadinessPanel,
 } from './components/os'
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // Force dynamic rendering - this page requires authentication
 export const dynamic = 'force-dynamic'
@@ -35,7 +36,7 @@ export default async function SystemPage() {
 
   // Role gate: broker, admin, superadmin only (NOT agents)
   // This is a broker/admin operations surface, not superadmin-only
-  if (!['admin', 'broker', 'superadmin'].includes(context.userType)) {
+  if (!isAdminOrBroker({ user_type: context.userType })) {
     redirect('/dashboard')
   }
 

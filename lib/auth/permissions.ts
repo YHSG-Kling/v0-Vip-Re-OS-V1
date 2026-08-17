@@ -3,6 +3,7 @@
 import { createServerClient } from "@supabase/ssr"
 import { cookies } from "next/headers"
 import { selectTenantGrant } from "@/lib/auth/role-grants"
+import { isTenantAdminGrantRole } from "@/lib/auth/resolve-user-role"
 
 // Canonical user_type values — must match users.user_type in the DB
 export type Role =
@@ -259,7 +260,12 @@ export async function isAdmin(): Promise<boolean> {
     return false
   }
 
-  return ["broker", "admin", "superadmin"].includes(user.roleName)
+  // `roleName` is a GRANT role name (user_role_assignments.role), not a
+  // users.user_type — so it is asked with the grant-side half of the ONE roster.
+  // superadmin dropped: it is not a TENANT role. A platform superadmin reaches
+  // admin surfaces through isPlatformStaffIdentity, and MEASURED live no
+  // user_role_assignments row carries 'superadmin' at all.
+  return isTenantAdminGrantRole(user.roleName)
 }
 
 /**

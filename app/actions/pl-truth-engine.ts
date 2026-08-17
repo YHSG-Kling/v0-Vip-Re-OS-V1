@@ -12,10 +12,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-
-const ADMIN_ROLES = new Set([
-  "broker", "broker_admin", "admin", "superadmin", "team_lead",
-])
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 async function requireBrokerAdmin() {
   const supabase = await createClient()
@@ -35,7 +32,7 @@ async function requireBrokerAdmin() {
 
   if (userError) return { ok: false as const, error: `Identity read refused: ${userError.message}` }
   if (!row?.brokerage_id) return { ok: false as const, error: "Brokerage not configured" }
-  if (!ADMIN_ROLES.has(row.user_type as string)) return { ok: false as const, error: "Forbidden" }
+  if (!isBrokerageFinanceAdmin({ user_type: row.user_type as string })) return { ok: false as const, error: "Forbidden" }
 
   return {
     ok: true as const,

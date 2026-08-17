@@ -4,6 +4,7 @@ import { redirect } from "next/navigation"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { AlertTriangle, CheckCircle2, Clock, XCircle, Activity, Zap } from "lucide-react"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -50,7 +51,7 @@ export default async function CronHealthPage() {
     .eq("id", user.id)
     .maybeSingle()
 
-  if (!["broker", "broker_admin", "admin", "superadmin", "team_lead"].includes(profile?.user_type ?? "")) {
+  if (!isAdminOrBroker({ user_type: profile?.user_type ?? "" })) {
     redirect("/dashboard")
   }
 

@@ -18,8 +18,7 @@
 import { revalidatePath } from "next/cache"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
-
-const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 async function requireAdmin(): Promise<
   | { ok: true; brokerageId: string; userType: string }
@@ -27,7 +26,7 @@ async function requireAdmin(): Promise<
 > {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
-  if (!ADMIN_ROLES.has(ctx.userType)) return { ok: false, error: "Forbidden" }
+  if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) return { ok: false, error: "Forbidden" }
   return { ok: true, brokerageId: ctx.brokerageId, userType: ctx.userType }
 }
 

@@ -6,6 +6,7 @@ import { RawLeadsReviewPanel } from "./raw-leads-review"
 import { SocialScrapeTrigger } from "./social-scrape-trigger"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const metadata = {
   title: "Lead Intake Cockpit | Kernel OS",
@@ -35,7 +36,7 @@ export default async function LeadIntakeCockpitPage() {
   const brokerageId = u?.brokerage_id ?? undefined
   // ACCESS POLICY (owner): LEADS = BROKERAGE + PLATFORM ONLY — the cockpit's
   // funnel AGGREGATES are brokerage-level observability (broker/admin family).
-  if (!["admin", "broker", "broker_owner", "broker_admin", "superadmin"].includes(userType) || !brokerageId) redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: userType }) || !brokerageId) redirect("/dashboard")
 
   const data = await loadLeadIntakeCockpit(brokerageId)
   const { funnel } = data

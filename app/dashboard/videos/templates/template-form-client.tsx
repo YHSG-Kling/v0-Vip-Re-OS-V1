@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { saveVideoTemplate } from "@/app/actions/video-generation"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 const CATEGORIES = [
   "education",
@@ -63,8 +64,8 @@ export function TemplateFormClient({ brokerageId, agentId, teamId, userType, ini
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
 
-  const canCreateBrokerageTemplate = ["broker", "admin", "superadmin"].includes(userType)
-  const canCreateTeamTemplate = ["team_lead", "broker", "admin", "superadmin"].includes(userType)
+  const canCreateBrokerageTemplate = isAdminOrBroker({ user_type: userType })
+  const canCreateTeamTemplate = isAdminOrBroker({ user_type: userType })
   const canCreateBrokerageWide = canCreateBrokerageTemplate
 
   const [form, setForm] = useState({

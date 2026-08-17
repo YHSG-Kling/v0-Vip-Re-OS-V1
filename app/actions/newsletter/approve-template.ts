@@ -2,8 +2,7 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
-
-const TEMPLATE_APPROVER_ROLES = new Set(['broker', 'broker_admin', 'admin', 'superadmin', 'team_lead'])
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 /**
  * Can this user approve/reject newsletter templates?
@@ -19,7 +18,7 @@ async function canApproveTemplates(
   role: string | null,
   brokerageId: string,
 ): Promise<boolean> {
-  if (TEMPLATE_APPROVER_ROLES.has(userType ?? role ?? '')) return true
+  if (isAdminOrBroker({ user_type: userType ?? role ?? '' })) return true
   const svc = createServiceClient()
   const { data: b } = await svc
     .from('brokerages').select('plan_tier').eq('id', brokerageId).maybeSingle()

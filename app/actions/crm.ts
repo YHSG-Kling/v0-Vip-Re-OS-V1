@@ -13,6 +13,7 @@ import {
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 /**
  * CRM-specific actions - uses consolidated contact service
@@ -143,8 +144,6 @@ export async function createContact(contact: {
  * delegating to the service layer (which uses the admin client and would
  * otherwise blindly trust the IDs passed from the client).
  */
-const CRM_ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
-
 export async function deleteContact(contactId: string, agentId: string) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -158,7 +157,7 @@ export async function deleteContact(contactId: string, agentId: string) {
   ])
   if (!contact) return { success: false, error: "Contact not found" }
 
-  const isAdmin = callerRow && CRM_ADMIN_ROLES.has((callerRow.user_type ?? "") as string)
+  const isAdmin = callerRow && isAdminOrBroker({ user_type: (callerRow.user_type ?? "") as string })
   const isOwner = callerAgent?.id && callerAgent.id === contact.agent_id
   const sameBrokerage = callerRow?.brokerage_id === contact.brokerage_id
 
@@ -287,7 +286,7 @@ async function requireMergeAuthority(primaryContact: { agent_id: string | null; 
   if (primaryContact.brokerage_id !== ctx.brokerageId || duplicateContact.brokerage_id !== ctx.brokerageId) {
     return { ok: false as const, error: "Forbidden: cross-brokerage merge" }
   }
-  const isManager = CRM_ADMIN_ROLES.has(ctx.role)
+  const isManager = isAdminOrBroker({ user_type: ctx.role })
   const ownsBoth = !!ctx.agentId && primaryContact.agent_id === ctx.agentId && duplicateContact.agent_id === ctx.agentId
   if (!isManager && !ownsBoth) return { ok: false as const, error: "Forbidden: not your contacts" }
   return { ok: true as const, ctx }
@@ -433,7 +432,7 @@ export async function findDuplicateContacts(contactId: string): Promise<
       .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle()
     if (!me) return { success: false, error: "Contact not found" }
-    const isManager = CRM_ADMIN_ROLES.has(ctx.role)
+    const isManager = isAdminOrBroker({ user_type: ctx.role })
     if (!isManager && (!ctx.agentId || (me as any).agent_id !== ctx.agentId)) {
       return { success: false, error: "Forbidden: not your contact" }
     }

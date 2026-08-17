@@ -20,6 +20,7 @@ import { loadTenantAutonomyHalt } from "@/lib/managers/autonomy-gate"
 import { listEarnedAutonomyAction } from "@/app/actions/document-kernel-review"
 import { getQuarterlyReviewAction } from "@/app/actions/quarterly-review"
 import { listAiTeammatesAction } from "@/app/actions/ai-teammates"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const metadata = {
   title:       "Agent Command Center | Kernel OS Admin",
@@ -60,7 +61,7 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
   // Earned Autonomy — is for the tenancy's PRINCIPAL, whatever shape the
   // tenancy has. A solo agent IS their own broker; a team lead governs a team
   // signup. Only brokerage/multi_location tiers require the broker/admin seat.
-  let mayEnter = ["admin", "broker", "superadmin"].includes(userType)
+  let mayEnter = isAdminOrBroker({ user_type: userType })
   if (!mayEnter && brokerageId) {
     const svcGate = createServiceClient()
     const { data: brk } = await svcGate.from("brokerages").select("plan_tier").eq("id", brokerageId).maybeSingle()
@@ -278,7 +279,7 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
           tier-parity rule); the server action re-enforces it. In-app only. */}
       {brokerageId && !isSuperadmin && (
         <div className="mx-6 mt-4">
-          <TeamAnnouncementComposer canChooseScope={["admin", "broker"].includes(userType)} />
+          <TeamAnnouncementComposer canChooseScope={isAdminOrBroker({ user_type: userType })} />
         </div>
       )}
       {earned?.ok && earned.grants && (

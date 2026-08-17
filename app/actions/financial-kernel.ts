@@ -11,6 +11,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import {
   loadFinancialWorkspace,
   loadAgentFinancialSummary,
@@ -128,7 +129,10 @@ async function authorizeAgentScope(
   // Self is always allowed. agents.id and users.id are DISJOINT id spaces — this compares
   // agents.id to agents.id (ctx.agentId), never to ctx.userId.
   const isSelf = !!ctx.agentId && ctx.agentId === agentId
-  const isBrokerLevel = ["broker", "admin", "superadmin"].includes(ctx.userType)
+  // BROKERAGE-WIDE MONEY (m472): the ONE finance roster, which excludes
+  // team_lead by the owner's ruling and admits broker_owner — the person who
+  // OWNS the brokerage, whom the old literal silently refused.
+  const isBrokerLevel = isBrokerageFinanceAdmin({ user_type: ctx.userType })
   if (!isSelf && !isBrokerLevel) {
     return { ok: false, error: "Forbidden — you may only view your own financials" }
   }
@@ -341,7 +345,7 @@ export async function loadMyDisputableCommissionsAction() {
 export async function loadCommissionDisputesAction() {
   try {
     const ctx = await getFinancialActorContext()
-    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
       return { success: false as const, error: "forbidden" }
     }
     const { createServiceClient } = await import("@/lib/supabase/service")
@@ -370,7 +374,7 @@ export async function recordCommissionDepositReceivedAction(
 ) {
   try {
     const ctx = await getFinancialActorContext()
-    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
       return { success: false as const, error: "Insufficient permissions to record a deposit" }
     }
     const { createServiceClient } = await import("@/lib/supabase/service")

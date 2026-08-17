@@ -4,6 +4,7 @@ import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { createTenantUserAction } from "@/app/actions/superadmin/tenant-users"
 import { NextRequest, NextResponse } from "next/server"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // ─── Intent types the voice assistant understands ────────────────────────────
 type VoiceIntent =
@@ -663,7 +664,7 @@ Respond with ONLY the intent string, nothing else.`,
       if (!brokerageId) {
         spokenResponse = "I can't draft save-plays without a brokerage on your profile."
       } else {
-        const isStaff = ["broker", "broker_admin", "admin", "superadmin"].includes(profile.user_type ?? "")
+        const isStaff = isAdminOrBroker({ user_type: profile.user_type ?? "" })
         let allowed = isStaff
         if (!allowed) {
           const { data: b } = await service.from("brokerages").select("plan_tier").eq("id", brokerageId).maybeSingle()

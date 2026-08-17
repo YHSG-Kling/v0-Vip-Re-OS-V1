@@ -37,6 +37,7 @@ import {
 } from '@/app/actions/onboarding/progress'
 import { completeMyOnboardingStep } from '@/app/actions/onboarding/agent-onboarding-actions'
 import type { OnboardingStepRow } from '@/lib/kernel'
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 interface OnboardingDashboardClientProps {
   initialData: {
@@ -214,7 +215,7 @@ export function OnboardingDashboardClient({
   )
 
   const certifications = progressData?.certifications || []
-  const isAdmin = ['admin', 'broker', 'superadmin'].includes(userType)
+  const isAdmin = isAdminOrBroker({ user_type: userType })
 
   return (
     <div className="min-h-screen bg-muted/30">

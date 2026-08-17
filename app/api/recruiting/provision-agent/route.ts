@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export async function POST(req: Request) {
   try {
@@ -16,7 +17,7 @@ export async function POST(req: Request) {
 
     const resolvedType = profile?.user_type ?? ""
     const isPlatformAdmin = profile?.platform_role === "superadmin" || resolvedType === "superadmin"
-    const isBrokerageAdmin = ["broker", "broker_owner", "admin"].includes(resolvedType)
+    const isBrokerageAdmin = isAdminOrBroker({ user_type: resolvedType })
     if (!isPlatformAdmin && !isBrokerageAdmin) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }

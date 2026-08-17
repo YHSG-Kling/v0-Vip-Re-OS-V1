@@ -14,6 +14,7 @@ import {
   awardCertification as awardCertEngine,
   getCertificationStatus,
 } from "@/lib/onboarding/certification-engine"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -86,8 +87,7 @@ export async function getAgentProgress(
     .from('users').select('brokerage_id, user_type').eq('id', user.id).maybeSingle()
   if (!callerProfile?.brokerage_id) return { success: false, error: 'No brokerage found' }
 
-  const isAdmin = ['admin','broker','broker_owner','superadmin','super_admin']
-    .includes(callerProfile.user_type ?? '')
+  const isAdmin = isAdminOrBroker({ user_type: callerProfile.user_type ?? '' })
 
   // Resolve target agent: default to self. If caller specifies someone
   // else, must be admin AND in same brokerage.
@@ -674,7 +674,7 @@ export async function getAdminOnboardingOverview(
     return { success: false, error: 'No brokerage found' }
   }
 
-  if (!['admin', 'broker', 'broker_owner', 'superadmin', 'super_admin'].includes(userData.user_type || '')) {
+  if (!isAdminOrBroker({ user_type: userData.user_type || '' })) {
     return { success: false, error: 'Unauthorized' }
   }
 
@@ -804,7 +804,7 @@ export async function sendOnboardingReminder(
     .eq('id', user.id)
     .single()
 
-  if (!['admin', 'broker', 'broker_owner', 'superadmin', 'super_admin'].includes(userData?.user_type || '')) {
+  if (!isAdminOrBroker({ user_type: userData?.user_type || '' })) {
     return { success: false, error: 'Unauthorized' }
   }
 

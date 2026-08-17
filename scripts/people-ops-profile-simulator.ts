@@ -36,8 +36,16 @@ console.log("\n── the agent real-estate profile is managed inline (LIVE colu
     a.includes('"use server"') &&
     a.includes("export async function getAgentProfileForUserAction") &&
     a.includes("export async function updateAgentProfileAction"))
-  check("admin-gated via requireAdmin (broker/admin/superadmin/team_lead)",
-    a.includes("ADMIN_ROLES") && a.includes("requireAdmin"))
+  // Pinned to WHERE the gate comes from, not to the identifier it is spelled
+  // with. The previous form named a local const that the admin-vocabulary
+  // consolidation deleted and m472 renamed again, so it reported a CORRECT
+  // tightening as a regression. There is exactly one module allowed to answer
+  // "is this caller an admin"; a gate imported from it is the shared answer.
+  // agent_commission_profiles is a FINANCE table (m472), so this one must be on
+  // the NARROW tier — the owner holds team_lead out of brokerage-wide money, and
+  // this action writes through the SERVICE client where RLS cannot re-decide.
+  check("admin-gated via requireAdmin, from the ONE roster module, on the FINANCE tier",
+    a.includes("requireAdmin") && /from\s+["\x27]@\/lib\/auth\/resolve-user-role["\x27]/.test(a) && a.includes("isBrokerageFinanceAdmin"))
   check("target agent is pinned to the caller's own brokerage",
     a.includes('.eq("brokerage_id", auth.brokerageId)') && a.includes("belongs to a different brokerage"))
   check("writes ONLY live columns (license_number/state/expiry, commission_split, location_id)",

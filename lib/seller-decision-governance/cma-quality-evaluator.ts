@@ -11,6 +11,8 @@
  * This is GOVERNANCE ONLY - no CMA calculations, no data fetching
  */
 
+import { isBrokerageFinanceAdmin, type UserRole } from "@/lib/auth/resolve-user-role"
+
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 
@@ -26,7 +28,12 @@ export interface CMAQualityInput {
   brokerApproved?: boolean
   
   // Override context
-  overrideByRole?: "agent" | "team_lead" | "broker" | "admin"
+  // ONE VOCABULARY: this value is handed straight to isBrokerageFinanceAdmin,
+  // which keys on `users.user_type`. So its type IS the user_type vocabulary,
+  // imported from the module that defines it — not a subset restated here.
+  // A restated subset is a second vocabulary that silently refuses whoever the
+  // judge would have admitted (this one refused broker_owner for its whole life).
+  overrideByRole?: UserRole
   overrideReason?: string
 }
 
@@ -82,7 +89,13 @@ export async function evaluateCMAQuality(input: CMAQualityInput): Promise<CMAQua
   }
   
   // Check for explicit override
-  if (input.overrideByRole && ["broker", "admin"].includes(input.overrideByRole)) {
+  // BROKERAGE-WIDE MONEY (m472): the owner's ruling names the net-sheet and
+  // CMA-quality OVERRIDES among the financial gates team_lead is held out of.
+  // An override here suppresses a governance failure on a document the SELLER
+  // relies on, so it is authority over money, not a display preference. Asking
+  // the ONE shared finance roster rather than a literal keeps that true as roles
+  // change, and admits broker_owner, whom the literal refused.
+  if (input.overrideByRole && isBrokerageFinanceAdmin({ user_type: input.overrideByRole })) {
     return {
       isReady: true,
       qualityScore: 100,

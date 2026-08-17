@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { listLearningModulesForBrokerageAction } from "@/app/actions/learning-modules"
 import { LearningModulesClient } from "./learning-modules-client"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -34,7 +35,7 @@ export default async function LearningModulesPage() {
     .eq("id", user.id)
     .maybeSingle()
   const t = (row?.user_type as string | undefined) ?? ""
-  if (!["broker", "broker_admin", "admin", "superadmin", "team_lead"].includes(t)) {
+  if (!isAdminOrBroker({ user_type: t })) {
     redirect("/dashboard")
   }
 

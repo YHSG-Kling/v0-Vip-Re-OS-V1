@@ -11,7 +11,7 @@
  */
 
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
-import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
+import { isPlatformStaffIdentity, isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { NextResponse } from "next/server"
 import type { SupabaseClient, User } from "@supabase/supabase-js"
 
@@ -177,7 +177,7 @@ export async function requireBrokerAuth(
   const auth = await requireAuth(supabase)
   if (!auth.ok) return auth
 
-  if (!["broker", "admin", "superadmin"].includes(auth.userType)) {
+  if (!isAdminOrBroker({ user_type: auth.userType })) {
     return {
       ok: false,
       response: NextResponse.json(

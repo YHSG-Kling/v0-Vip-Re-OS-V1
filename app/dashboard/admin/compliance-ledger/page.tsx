@@ -4,6 +4,7 @@ import Link from "next/link"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { loadComplianceLedger } from "@/lib/kernel/compliance-ledger"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const metadata = {
   title: "Compliance Ledger | Kernel OS Admin",
@@ -33,7 +34,7 @@ export default async function ComplianceLedgerPage({ searchParams }: { searchPar
   const { data: userData } = await supabase
     .from("users").select("user_type, platform_role, brokerage_id").eq("id", user.id).maybeSingle()
   const userType = userData?.user_type ?? "agent"
-  if (!["admin", "broker", "superadmin"].includes(userType)) redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: userType })) redirect("/dashboard")
   // Platform-wide ledger scope from BOTH identity columns. `userType ===
   // "superadmin"` is FALSE for the platform's only superadmin (user_type='admin',
   // platform_role='superadmin'), so brokerageId was never null and the

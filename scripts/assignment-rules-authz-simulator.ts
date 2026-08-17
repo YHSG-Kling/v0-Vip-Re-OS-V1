@@ -28,8 +28,17 @@ console.log("\n── the server action is admin-gated + brokerage-pinned ──
     a.includes("export async function deleteAssignmentRuleAction"))
   check("every writer calls requireAdmin() before mutating",
     (a.match(/const auth = await requireAdmin\(\)/g) ?? []).length >= 3)
-  check("requireAdmin enforces the admin role set (broker/admin/superadmin/team_lead)",
-    a.includes("ADMIN_ROLES") && a.includes('"broker"') && a.includes('"superadmin"'))
+  // Pinned to WHERE the gate comes from, not to the identifier it is spelled
+  // with. The previous form named a local const that the admin-vocabulary
+  // consolidation deleted and m472 renamed again, so it reported a CORRECT
+  // tightening as a regression. There is exactly one module allowed to answer
+  // "is this caller an admin"; a gate imported from it is the shared answer.
+  // Assignment rules are OPERATIONAL admin — named as such in the owner's m472
+  // ruling — so this stays on the WIDE tier, which admits team_lead. Asserted
+  // positively, because "not the finance gate" would also be true of no gate.
+  check("requireAdmin enforces the admin roster, from the ONE module, on the OPERATIONAL tier",
+    a.includes("requireAdmin") && /from\s+["\x27]@\/lib\/auth\/resolve-user-role["\x27]/.test(a) &&
+    (a.includes("isAdminOrBroker") || a.includes("resolveTenantAdmin")))
   check("brokerage_id is pinned to the caller's own tenant, never trusted from input",
     a.includes("brokerage_id: auth.brokerageId"))
   check("update/toggle/delete verify the rule belongs to the caller's brokerage first",

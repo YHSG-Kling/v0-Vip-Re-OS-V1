@@ -26,9 +26,21 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { revalidatePath } from "next/cache"
 
-const ADMIN_ROLES = new Set(["admin", "broker", "broker_admin", "superadmin"])
+// BROKERAGE-WIDE MONEY (m472). "CDA storage" is named in the owner's ruling among
+// the financial gates team_lead is held out of, and this file writes
+// public.brokerages (offers_cda / cda_onboarding_at / non_cda_payout_default) —
+// a FINANCE table whose UPDATE policy is now is_brokerage_finance_admin(). A gate
+// on the widened roster here would admit a team lead the database then refuses,
+// and supabase-js resolves that refusal as zero rows with `error: null`.
+//
+// The ONE shared roster replaces the local literal. It adds broker_owner, whom
+// the literal refused from their own brokerage's CDA setup, and drops
+// 'superadmin', which is MEASURED dead as a user_type (zero live rows; the
+// platform's one superadmin is user_type='admin' with platform_role='superadmin').
+const isCdaSetupAdmin = (userType: string) => isBrokerageFinanceAdmin({ user_type: userType })
 
 // ─── Onboarding answer + payout default ───────────────────────────────────
 
@@ -39,7 +51,7 @@ export async function setBrokerageCdaSettingAction(input: {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
-  if (!ADMIN_ROLES.has(auth.userType)) {
+  if (!isCdaSetupAdmin(auth.userType)) {
     return { success: false as const, error: "forbidden" }
   }
 
@@ -89,7 +101,7 @@ export async function uploadCdaTemplateAction(input: {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
-  if (!ADMIN_ROLES.has(auth.userType)) {
+  if (!isCdaSetupAdmin(auth.userType)) {
     return { success: false as const, error: "forbidden" }
   }
   if (!input.name?.trim()) return { success: false as const, error: "name_required" }
@@ -151,7 +163,7 @@ export async function updateCdaTemplateAction(input: {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
-  if (!ADMIN_ROLES.has(auth.userType)) {
+  if (!isCdaSetupAdmin(auth.userType)) {
     return { success: false as const, error: "forbidden" }
   }
 

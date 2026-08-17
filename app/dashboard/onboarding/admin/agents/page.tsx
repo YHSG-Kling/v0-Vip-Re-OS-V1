@@ -28,6 +28,7 @@ import {
   TrendingUp,
   ChevronRight,
 } from 'lucide-react'
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = 'force-dynamic'
 
@@ -68,7 +69,7 @@ export default async function AdminAgentsPage() {
     redirect('/dashboard')
   }
 
-  if (!['admin', 'broker', 'superadmin'].includes(userData.user_type || '')) {
+  if (!isAdminOrBroker({ user_type: userData.user_type || '' })) {
     redirect('/dashboard/onboarding')
   }
 

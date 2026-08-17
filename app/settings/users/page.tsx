@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { UsersManagementClient } from "./users-management-client"
 import { SsoConnectionCard } from "./sso-connection-card"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -22,7 +23,7 @@ export default async function SettingsUsersPage() {
   const userType = profile?.user_type ?? "agent"
 
   // Only admin/broker/superadmin can manage users
-  if (!["admin", "broker", "superadmin", "broker_admin"].includes(userType)) {
+  if (!isAdminOrBroker({ user_type: userType })) {
     redirect("/dashboard")
   }
 

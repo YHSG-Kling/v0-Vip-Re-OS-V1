@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { scoreVendorApplication, canTransition, type VendorStatus } from "@/lib/kernel/vendor-verification"
 import { readVendorInsurance, type InsuranceStatus } from "@/lib/kernel/vendor-doc-compliance"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 async function requireAdmin(): Promise<{ userId: string; brokerageId: string }> {
   const supabase = await createClient()
@@ -12,7 +13,7 @@ async function requireAdmin(): Promise<{ userId: string; brokerageId: string }> 
   const svc = createServiceClient()
   const { data: profile } = await svc.from("users").select("brokerage_id, user_type, role").eq("id", user.id).maybeSingle()
   const brokerageId = (profile as any)?.brokerage_id
-  const isAdmin = ["broker", "admin", "broker_admin", "superadmin"].includes(String((profile as any)?.user_type)) || ["broker", "admin", "owner"].includes(String((profile as any)?.role))
+  const isAdmin = isAdminOrBroker({ user_type: String((profile as any)?.user_type) }) || isAdminOrBroker({ user_type: String((profile as any)?.role) })
   if (!brokerageId || !isAdmin) throw new Error("Not authorized — vendor approval is broker/admin only")
   return { userId: user.id, brokerageId }
 }

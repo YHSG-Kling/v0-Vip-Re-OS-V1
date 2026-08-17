@@ -2,7 +2,7 @@
 
 import { createClient } from '@/lib/supabase/server';
 import { createServiceClient } from '@/lib/supabase/service';
-import { isAdminOrBroker } from '@/lib/auth/resolve-user-role';
+import { isBrokerageFinanceAdmin } from '@/lib/auth/resolve-user-role';
 
 // Commission/rev-share structures are broker-level config — the same roles that
 // may CREATE them (create-commission-structure.ts) may read them. This read used
@@ -20,7 +20,7 @@ export async function listCommissionStructures() {
     .eq('id', user.id)
     .maybeSingle();
   if (!u?.brokerage_id) return [];
-  if (!isAdminOrBroker(u)) return [];
+  if (!isBrokerageFinanceAdmin(u)) return [];
 
   const svc = createServiceClient();
   const { data, error } = await svc

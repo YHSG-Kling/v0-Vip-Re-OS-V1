@@ -35,6 +35,7 @@ import { CheckCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import Link from "next/link"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 interface PageProps {
   params: Promise<{ id: string }>
@@ -298,7 +299,7 @@ const { data: listingVendorBookings } = await supabase
     .not("status", "in", "(cancelled,no_show)")
     .order("scheduled_date", { ascending: true })
 
-  const canOverride = ["broker", "broker_owner", "admin", "team_lead", "superadmin"].includes(userRow.user_type ?? "")
+  const canOverride = isAdminOrBroker({ user_type: userRow.user_type ?? "" })
   // BOTH identity columns. `userRow.user_type === "superadmin"` was FALSE for the
   // platform's only superadmin (user_type='admin', platform_role='superadmin'),
   // and this flag is the SOLE route to the marketing-tier controls: the tier

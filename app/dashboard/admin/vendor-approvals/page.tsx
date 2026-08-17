@@ -6,6 +6,7 @@ import { ReviewModerationClient } from "./review-moderation-client"
 import { getVendorReviewModerationQueue } from "@/app/actions/vendor-marketplace"
 import { resolveVendorTiers, type VendorTier } from "@/lib/kernel/vendor-subscription"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -34,8 +35,8 @@ export default async function VendorApprovalsPage() {
 
   if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
   const isAdmin =
-    ["broker", "admin", "broker_admin", "superadmin"].includes(String(profile.user_type)) ||
-    ["broker", "admin", "owner"].includes(String((profile as { role?: string }).role))
+    isAdminOrBroker({ user_type: String(profile.user_type) }) ||
+    isAdminOrBroker({ user_type: String((profile as { role?: string }).role) })
   if (!isAdmin) redirect("/dashboard")
 
   const [{ data: pending }, { data: settingsRow }] = await Promise.all([

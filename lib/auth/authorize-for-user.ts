@@ -1,3 +1,5 @@
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 // lib/auth/authorize-for-user.ts
 //
 // "Are you this user, or someone entitled to act for them?"
@@ -21,12 +23,13 @@
 // `users.role` is RETIRED — 19 of 23 live rows are NULL and the rest are title-cased, so any
 // filter on it matches nobody. Authority is read from `user_type`.
 
+// DERIVED from the ONE tenant-admin roster (lib/auth/resolve-user-role.ts), not
+// retyped beside it. `superadmin` is added EXPLICITLY and only here — it is a
+// PLATFORM identity, deliberately absent from the tenant roster, and acting for
+// another user is a lane platform staff are meant to have.
 export const ACT_FOR_OTHERS_ROLES = new Set([
-  "broker",
-  "broker_admin",
-  "admin",
+  ...TENANT_ADMIN_USER_TYPES,
   "superadmin",
-  "team_lead",
 ])
 
 export type AuthorizeForUserResult =
@@ -66,7 +69,7 @@ export async function authorizeForUser(
     .maybeSingle()
   if (roleError) return { ok: false, error: "Could not verify your role" }
 
-  if (userRow && ACT_FOR_OTHERS_ROLES.has((userRow.user_type ?? "") as string)) {
+  if (userRow && isAdminOrBroker({ user_type: (userRow.user_type ?? "") as string })) {
     return { ok: true, callerUserId: user.id }
   }
 

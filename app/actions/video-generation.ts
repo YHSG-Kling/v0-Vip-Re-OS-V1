@@ -18,6 +18,7 @@ import {
 } from "@/lib/video/script-compliance"
 import type { ScriptType, ApprovalStatus, VideoScript, ScriptVariation, VideoEventType } from "@/app/types/video-generation"
 import { VIDEO_EVENT_TYPES, PERFORMANCE_THRESHOLDS } from "@/app/types/video-generation"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 //
@@ -1462,8 +1463,7 @@ export async function saveVideoTemplate(data: {
 
   const { data: callerUser } = await supabase
     .from("users").select("user_type").eq("id", auth.userId).maybeSingle()
-  const isAdmin = ["admin", "broker", "broker_owner", "superadmin", "super_admin"]
-    .includes(callerUser?.user_type ?? "")
+  const isAdmin = isAdminOrBroker({ user_type: callerUser?.user_type ?? "" })
   if (!isAdmin) {
     throw new Error("Forbidden: only brokerage admins can save video templates (global library)")
   }

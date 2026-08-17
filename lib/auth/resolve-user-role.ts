@@ -146,7 +146,14 @@ export function requireRole(
 // They stay HERE and only here, because this function judges a value a CALLER
 // hands in, which can be anything; it is not a query. A `.in("user_type", [...])`
 // RECIPIENT lookup must NOT carry them: there they match nothing, forever.
-const TENANT_ADMIN_USER_TYPES = new Set([
+/**
+ * EXPORTED so that a surface needing a Set (rather than the predicate) DERIVES it
+ * instead of restating it — see lib/vendors/vendor-scope.ts and
+ * lib/auth/authorize-for-user.ts, which spread this and add their own explicit,
+ * documented extras. Deriving keeps ONE definition; retyping the five is the
+ * duplication the ruling forbids.
+ */
+export const TENANT_ADMIN_USER_TYPES = new Set([
   "admin",
   "broker",
   "broker_owner",
@@ -202,6 +209,89 @@ export function isAdminOrBroker(profile: {
  */
 export function isTenantAdminGrantRole(role: string | null | undefined): boolean {
   return TENANT_ADMIN_USER_TYPES.has(String(role ?? "").toLowerCase())
+}
+
+// ─── BROKERAGE-WIDE MONEY — THE SAME ROSTER, ONE ROLE SHORTER ────────────────
+//
+// OWNER RULING, verbatim:
+//
+//   "Admin surfaces, but NOT brokerage-wide money. team_lead joins the roster for
+//    operational admin gates (support, onboarding, assignment rules, roster,
+//    marketing). Hold it OUT of the ~18 brokerage-wide financial gates —
+//    financial-kernel, brokerage-fees, accounting-sync, income-engine, billing,
+//    revenue-share, CDA storage, net-sheet overrides — which stay
+//    broker/broker_owner/admin. Also add team_lead to is_brokerage_admin() so app
+//    and DB agree on the non-money gates."
+//
+// ── WHY THIS IS DERIVED AND NOT RETYPED ──────────────────────────────────────
+//
+// The obvious way to write this is a second literal — `["admin","broker",
+// "broker_owner"]` — and that is exactly the "more than one vocab over the same
+// function" the earlier ruling forbids. Retyped, the two sets drift the first
+// time a role is added to one of them: a new admin-class role would land in the
+// tenant roster above and be silently ADMITTED to the brokerage's books here,
+// because nobody would think to also subtract it.
+//
+// So the finance set is COMPUTED from TENANT_ADMIN_USER_TYPES by removing the
+// one role the ruling removes. There is still ONE roster. This is the same
+// roster asked a narrower question, and the subtraction is the whole of the
+// difference — visible in one line instead of buried in a diff between two
+// lists. Add a role above and it joins BOTH tiers unless it is named here too,
+// which is the safe default for an operational role and a deliberate decision
+// for a financial one.
+export const BROKERAGE_FINANCE_ADMIN_USER_TYPES = new Set(
+  [...TENANT_ADMIN_USER_TYPES].filter((t) => t !== "team_lead"),
+)
+
+/**
+ * THE brokerage-wide money predicate. Pure and synchronous, like isAdminOrBroker.
+ *
+ * Mirrors public.is_brokerage_finance_admin() (m472), which governs the 49
+ * FINANCE tables — commissions, splits, caps, fees, billing, invoices, payouts,
+ * revenue share, accounting sync, P&L, CDA storage, net sheets, earnings — while
+ * public.is_brokerage_admin() keeps the 64 operational ones and admits team_lead.
+ *
+ * ── THE DEFECT THIS EXISTS TO PREVENT ────────────────────────────────────────
+ *
+ * A gate that ADMITS in the app and REFUSES in RLS does not produce an error.
+ * supabase-js RESOLVES a refused write: the statement matches zero rows, `error`
+ * is null, and the surface reports SUCCESS over a change that never happened.
+ * The moment team_lead joined isAdminOrBroker, every finance gate still spelled
+ * `isAdminOrBroker` became exactly that defect — the app says yes, m472's RLS
+ * says no. Repointing them here is what closes it.
+ *
+ * The inverse is worse and is the reason this is not simply "check RLS will
+ * catch it": several of these gates write through the SERVICE client, which
+ * bypasses RLS entirely. There the app predicate is the ONLY gate, and admitting
+ * team_lead would not be a false success — it would be a real write to the
+ * brokerage's books.
+ *
+ * broker_admin rides along from the roster above as an INPUT spelling only. It
+ * is not a storable user_type (users_user_type_check admits fourteen values and
+ * that is not one of them, and the constraint is VALIDATED), so it matches no
+ * row on either side and cannot make the app wider than the database in
+ * practice. It is not carried into any `.in("user_type", [...])` query.
+ */
+export function isBrokerageFinanceAdmin(profile: {
+  user_type?: string | null
+  role?: string | null // tolerated on input, intentionally unread — see the module header
+}): boolean {
+  return BROKERAGE_FINANCE_ADMIN_USER_TYPES.has(String(profile.user_type ?? "").toLowerCase())
+}
+
+/**
+ * The same finance roster, asked of a `user_role_assignments.role` value.
+ *
+ * public.is_brokerage_finance_admin() carries the three-role list in BOTH
+ * branches — user_type AND the grant — because m466 made a grant an
+ * administering fact. A finance gate that honoured user_type but not the grant
+ * would refuse the ruling's SECOND SEAT (the grant-only admin, live on this
+ * database as agent1@yourbrokerage.com: user_type 'agent' holding an 'admin'
+ * grant on their own brokerage) at exactly the tables m467 already taught the
+ * database to let them READ.
+ */
+export function isBrokerageFinanceAdminGrantRole(role: string | null | undefined): boolean {
+  return BROKERAGE_FINANCE_ADMIN_USER_TYPES.has(String(role ?? "").toLowerCase())
 }
 
 /**
@@ -290,4 +380,54 @@ export async function resolveTenantAdmin(
     return { ok: true, isTenantAdmin: true, via: "grant" }
   }
   return { ok: true, isTenantAdmin: false, via: "none" }
+}
+
+export type FinanceAdminResult =
+  | { ok: true; isFinanceAdmin: boolean; via: "user_type" | "grant" | "none" }
+  | { ok: false; error: string }
+
+/**
+ * The FULL brokerage-wide money rule: users.user_type OR a tenant role GRANT.
+ *
+ * The exact twin of resolveTenantAdmin, one role narrower, and it exists for the
+ * same reason: public.is_brokerage_finance_admin() (m472) reads BOTH columns, so
+ * an app gate reading only user_type is NARROWER than RLS and refuses the second
+ * seat — the merely-annoying direction, but still a disagreement, and this whole
+ * migration exists because the two answers drifted once already.
+ *
+ * A gate that guards a finance WRITE should prefer this over the pure predicate
+ * when it has the ids to hand. The pure isBrokerageFinanceAdmin stays correct for
+ * render paths and `.filter()` callbacks that cannot await.
+ *
+ * The tenant pin is not optional: a grant administering a DIFFERENT brokerage
+ * authorises nothing, matching `ura.brokerage_id = current_user_brokerage_id()`
+ * in the SQL. A NULL brokerage_id on either side is not a tenancy and can never
+ * satisfy the pin — live, the `contact` and `lender` grants both carry NULL.
+ *
+ * Returns a RESULT, not a boolean: supabase-js resolves a refused query, so a
+ * boolean would have to report "the grant read was denied" as "not an admin",
+ * refusing a legitimate finance admin for the wrong reason, invisibly.
+ *
+ * @param userId the SESSION user's id — never an id from a request body.
+ */
+export async function resolveBrokerageFinanceAdmin(
+  supabase: Parameters<typeof readRoleGrants>[0],
+  userId: string,
+  profile: { user_type?: string | null; brokerage_id?: string | null },
+): Promise<FinanceAdminResult> {
+  if (isBrokerageFinanceAdmin(profile)) return { ok: true, isFinanceAdmin: true, via: "user_type" }
+
+  const brokerageId = profile.brokerage_id ?? null
+  if (!brokerageId) return { ok: true, isFinanceAdmin: false, via: "none" }
+
+  // NEVER .maybeSingle(): user_role_assignments is UNIQUE on (user_id, role),
+  // not on user_id, and the account this exists to admit holds three grants.
+  const res = await readRoleGrants(supabase, userId)
+  if (!res.ok) return { ok: false, error: res.error }
+
+  const pinned = res.grants.filter((g) => g.brokerage_id && g.brokerage_id === brokerageId)
+  if (holdsAnyRole(pinned, [...BROKERAGE_FINANCE_ADMIN_USER_TYPES])) {
+    return { ok: true, isFinanceAdmin: true, via: "grant" }
+  }
+  return { ok: true, isFinanceAdmin: false, via: "none" }
 }

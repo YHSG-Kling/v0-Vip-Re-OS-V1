@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation'
 import { KnowledgeBaseClient } from './knowledge-base-client'
 import { getEmbeddingQueueStatus } from '@/app/actions/knowledge/search'
 import { HELP_TOPIC_CATEGORIES } from "@/lib/knowledge/help-topic-categories"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = 'force-dynamic'
 
@@ -29,7 +30,7 @@ export default async function KnowledgeBasePage() {
     .eq('id', user.id)
     .single()
 
-  if (!userData || !['admin', 'broker', 'superadmin'].includes(userData.user_type)) {
+  if (!userData || !isAdminOrBroker({ user_type: userData.user_type })) {
     redirect('/dashboard')
   }
 

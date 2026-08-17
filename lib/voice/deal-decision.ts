@@ -46,13 +46,12 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 type Svc = ReturnType<typeof createServiceClient>
 
 /** Same override set as requireContactOwnership (tool-call route) and the
  *  approvals routes: these roles decide brokerage-wide; agents self-scope. */
-const DECISION_OVERRIDE_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
-
 export interface VoiceAcceptOfferInput {
   brokerageId: string
   /** users.id of the speaking staff user (agent_assistant_sessions.user_id). */
@@ -107,7 +106,7 @@ async function resolveActor(svc: Svc, input: VoiceAcceptOfferInput): Promise<{
   // agent plus the override roles. Enforced here too (not only at the route
   // gate) because the run_team_command free-text lane reaches this backend
   // without a per-tool registry check.
-  if (userType !== "agent" && !DECISION_OVERRIDE_ROLES.has(userType)) {
+  if (userType !== "agent" && !isAdminOrBroker({ user_type: userType })) {
     return { error: "Deal decisions aren't available for your role — ask the assigned agent or your broker." }
   }
 

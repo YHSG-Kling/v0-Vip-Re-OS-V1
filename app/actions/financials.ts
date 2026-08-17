@@ -3,11 +3,27 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { uploadBufferToBucket } from "@/lib/storage/buckets"
 import { generateTextRouted } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 
-const ADMIN_ROLES = new Set(["admin", "broker", "broker_owner", "superadmin", "super_admin"])
+// BROKERAGE-WIDE MONEY. Owner ruling (m472): admin surfaces admit team_lead,
+// the brokerage's books do not. This file reads and writes agent_commissions,
+// commission_splits, brokerage_p_l and business_expenses — all FINANCE tables
+// under public.is_brokerage_finance_admin(), which excludes team_lead. The gate
+// is the ONE shared roster, not a local literal, so the app and RLS cannot
+// answer differently. Several paths below use the SERVICE client, which bypasses
+// RLS, so this predicate is the only gate they have.
+//
+// The two roles the old local literal carried and this set does not are PROVEN
+// dead, not dropped: MEASURED live, ZERO users rows hold user_type 'superadmin'
+// (the platform's one superadmin is user_type='admin' WITH
+// platform_role='superadmin', already admitted through 'admin'), and
+// 'super_admin' is not a storable user_type at all — users_user_type_check
+// admits fourteen values and that is not one of them, and it is VALIDATED, so
+// no row was grandfathered either. Removing them changes no behaviour.
+const isFinanceAdmin = (userType: string) => isBrokerageFinanceAdmin({ user_type: userType })
 
 // ─── AI FORECAST ─────────────────────────────────────────────────────────────
 
@@ -40,7 +56,7 @@ export async function generateAIForecast(params: {
     if (!targetAgent || targetAgent.brokerage_id !== ctx.brokerageId) {
       return { success: false, error: "Forbidden" }
     }
-    if (!ADMIN_ROLES.has(ctx.userType)) {
+    if (!isFinanceAdmin(ctx.userType)) {
       return { success: false, error: "Forbidden: admin only" }
     }
   }
@@ -127,13 +143,13 @@ export async function generatePLReport(params: {
 
   // Brokerage-level P&L → admin only
   if (params.isBrokerage) {
-    if (!ADMIN_ROLES.has(ctx.userType)) {
+    if (!isFinanceAdmin(ctx.userType)) {
       return { success: false, error: "Forbidden: admin only" }
     }
   } else if (params.agentId) {
     // Per-agent P&L → must be the same agent OR an admin in the same brokerage
     if (params.agentId !== ctx.agentId) {
-      if (!ADMIN_ROLES.has(ctx.userType)) {
+      if (!isFinanceAdmin(ctx.userType)) {
         return { success: false, error: "Forbidden" }
       }
       const { data: targetAgent } = await svc
@@ -262,7 +278,7 @@ export async function exportCommissionsCSV(agentId: string) {
   // Caller may export their own commissions, or an admin/broker can export
   // for any agent within their brokerage.
   if (agentId !== ctx.agentId) {
-    if (!ADMIN_ROLES.has(ctx.userType)) {
+    if (!isFinanceAdmin(ctx.userType)) {
       return { success: false, error: "Forbidden" }
     }
     const { data: targetAgent } = await svc
@@ -456,7 +472,7 @@ export async function attachExpenseReceipt(input: {
   // it is never substituted with ctx.userId.
   const ownsAsAgent = expense.agent_id != null && expense.agent_id === ctx.agentId
   const sameBrokerage = expense.brokerage_id != null && expense.brokerage_id === ctx.brokerageId
-  const isAdmin = ADMIN_ROLES.has(ctx.userType)
+  const isAdmin = isFinanceAdmin(ctx.userType)
   if (!ownsAsAgent && !(isAdmin && sameBrokerage)) {
     return { success: false, error: "That expense is not yours to attach a receipt to" }
   }
@@ -509,7 +525,11 @@ export async function updateCommissionStatus(
   if (!user) return { success: false, error: "Unauthorized" }
 
   const context = await getAgentContext()
-  if (!["broker", "admin", "superadmin"].includes(context.userType)) {
+  // Marking a commission PAID is the brokerage's money moving. Found by the shape
+  // scan in scripts/finance-authority-simulator.ts, which fails a module that asks
+  // the shared finance predicate while ALSO keeping a role array of its own — this
+  // one had been left behind, and it refused broker_owner from their own ledger.
+  if (!isFinanceAdmin(context.userType)) {
     return { success: false, error: "Insufficient permissions" }
   }
 
@@ -577,14 +597,14 @@ export async function logScopedExpense(input: {
     if (!teamId) return { success: false, error: "no_team_context" }
     const { data: team } = await svc.from("teams").select("id, brokerage_id").eq("id", teamId).maybeSingle()
     if (!team || (team.brokerage_id as string) !== ctx.brokerageId) return { success: false, error: "team_not_in_brokerage" }
-    if (!ADMIN_ROLES.has(ctx.userType) && ctx.userType !== "team_lead") {
+    if (!isFinanceAdmin(ctx.userType) && ctx.userType !== "team_lead") {
       // Non-lead agents may still log against THEIR OWN team (split dues etc.).
       const { data: self } = await svc.from("users").select("team_id").eq("id", ctx.userId).maybeSingle()
       if ((self?.team_id as string | null) !== teamId) return { success: false, error: "forbidden_team_scope" }
     }
     row.team_id = teamId
   } else if (input.scope === "brokerage") {
-    if (!ADMIN_ROLES.has(ctx.userType)) return { success: false, error: "forbidden_brokerage_scope" }
+    if (!isFinanceAdmin(ctx.userType)) return { success: false, error: "forbidden_brokerage_scope" }
     // agent_id and team_id stay NULL — that IS the brokerage-scope marker.
   } else {
     return { success: false, error: "unknown_scope" }

@@ -77,6 +77,7 @@ import { SocialCalendarAiPlanner } from "@/app/components/ai-copilot/social-cale
 import { PostComposerDialog } from "./components/post-composer-dialog"
 import { getPublishedPostUrl } from "@/lib/social/get-published-post-url"
 import { toast } from "sonner"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // ── Platform config ──────────────────────────────────────────────────────────
 
@@ -91,7 +92,6 @@ const PLATFORM_CONFIG: Record<string, { icon: string; color: string; bgColor: st
 }
 
 // Roles allowed to approve/reject posts
-const APPROVER_ROLES = new Set(["broker", "admin", "superadmin", "teamlead"])
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -165,7 +165,7 @@ export function SocialDashboardClient({
   const [logMeasurements, setLogMeasurements] = useState<any[]>([])
   const [metricsPulling, setMetricsPulling] = useState(false)
 
-  const isApprover = APPROVER_ROLES.has(userRole)
+  const isApprover = isAdminOrBroker({ user_type: userRole })
 
   // ── Computed ──────────────────────────────────────────────────────────────
 

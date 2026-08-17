@@ -13,6 +13,7 @@ import { requireAuth } from "@/lib/kernel/api-auth"
 import { checkUsageCap } from "@/lib/usage/check-cap"
 import { logMediaUsage } from "@/lib/usage/log-media-usage"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 const EL_API_BASE = "https://api.elevenlabs.io/v1"
 
@@ -83,7 +84,7 @@ export async function POST(request: NextRequest) {
       }
     }
     // Setting the brokerage-wide default ISA voice is a broker/admin action.
-    if (isa_default && !["broker", "broker_admin", "admin", "superadmin"].includes(auth.userType)) {
+    if (isa_default && !isAdminOrBroker({ user_type: auth.userType })) {
       return NextResponse.json({ error: "Only broker / admin can set the default ISA voice" }, { status: 403 })
     }
 

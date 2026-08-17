@@ -9,8 +9,8 @@ import { getAgentContext } from "@/lib/identity"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { validateTeamMember, agentFundedTotal, isSourceOfFunds, type SourceOfFunds } from "@/lib/teams/membership"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
-const MANAGER_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead", "team_manager"])
 
 export interface TeamMemberRow {
   id: string
@@ -54,7 +54,7 @@ export async function addTeamMember(input: {
 }): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
-  if (!MANAGER_ROLES.has(ctx.userType)) return { ok: false, error: "Forbidden — only a broker, admin, or team lead can manage team members" }
+  if (!isAdminOrBroker({ user_type: ctx.userType })) return { ok: false, error: "Forbidden — only a broker, admin, or team lead can manage team members" }
   if (!isSourceOfFunds(input.sourceOfFunds)) return { ok: false, error: "Invalid source of funds" }
 
   const svc = createServiceClient()
@@ -100,7 +100,7 @@ export async function addTeamMember(input: {
 export async function removeTeamMember(memberId: string): Promise<{ ok: true } | { ok: false; error: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
-  if (!MANAGER_ROLES.has(ctx.userType)) return { ok: false, error: "Forbidden" }
+  if (!isAdminOrBroker({ user_type: ctx.userType })) return { ok: false, error: "Forbidden" }
   const svc = createServiceClient()
   const { error } = await svc.from("team_members")
     .update({ is_active: false, effective_to: new Date().toISOString().split("T")[0] })

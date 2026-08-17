@@ -6,6 +6,7 @@ import {
   claimLead,
 } from "@/lib/lead-assignment/assignment-engine"
 import { handleLeadAssigned } from "@/lib/kernel/lead-acquisition-handlers"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export async function assignLead(
   leadId: string
@@ -25,7 +26,7 @@ export async function assignLead(
 
   if (!profile?.brokerage_id) throw new Error("No brokerage found for user")
 
-  if (!["admin", "broker", "superadmin"].includes(profile.user_type ?? "")) {
+  if (!isAdminOrBroker({ user_type: profile.user_type ?? "" })) {
     throw new Error("Forbidden: insufficient permissions to assign leads")
   }
 
@@ -67,7 +68,7 @@ export async function manualAssignLead(
     .eq("id", user.id)
     .single()
 
-  if (!["admin", "broker", "superadmin"].includes(profile?.user_type ?? "")) {
+  if (!isAdminOrBroker({ user_type: profile?.user_type ?? "" })) {
     throw new Error("Forbidden: insufficient permissions to assign leads")
   }
   if (!profile?.brokerage_id) throw new Error("No brokerage found for user")

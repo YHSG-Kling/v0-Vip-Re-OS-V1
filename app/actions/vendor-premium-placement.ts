@@ -14,14 +14,7 @@ import {
   offerPremiumPlacement,
   markPlacementPaid,
 } from "@/lib/vendors/premium-placement"
-
-const PLACEMENT_ADMIN_ROLES = new Set([
-  "admin",
-  "broker",
-  "broker_admin",
-  "superadmin",
-  "team_lead",
-])
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 async function requirePlacementAdmin(): Promise<
   | { ok: true; brokerageId: string }
@@ -31,7 +24,7 @@ async function requirePlacementAdmin(): Promise<
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { ok: false, error: "Unauthorized" }
   }
-  if (!PLACEMENT_ADMIN_ROLES.has(ctx.role)) {
+  if (!isAdminOrBroker({ user_type: ctx.role })) {
     return { ok: false, error: "Forbidden: broker, admin, or team lead only" }
   }
   return { ok: true, brokerageId: ctx.brokerageId }

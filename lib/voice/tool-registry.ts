@@ -1,3 +1,4 @@
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 /**
  * Voice tool registry — single source of truth for which tools the voice
  * cockpit (ElevenLabs Conv AI + browser STT in internal-ai-assistant.tsx)
@@ -759,7 +760,7 @@ export function authorityAllows(toolName: string, userType: string): boolean {
     case "agent":             return userType === "agent" || userType === "broker" || userType === "broker_admin" || userType === "admin" || userType === "superadmin" || userType === "team_lead"
     case "agent_or_isa":      return ["agent", "isa", "team_lead", "broker", "broker_admin", "admin", "superadmin"].includes(userType)
     case "tenant_staff":      return ["agent", "isa", "tc", "team_lead", "broker", "broker_admin", "admin", "superadmin"].includes(userType)
-    case "admin":             return ["broker", "broker_admin", "admin", "superadmin"].includes(userType)
+    case "admin":             return isAdminOrBroker({ user_type: userType })
     case "vendor":            return ["vendor", "lender", "title"].includes(userType)  // reachability only — assigned_party gate enforces the per-contact grant
     case "financial_staff":   return ["agent", "broker", "broker_admin", "admin", "superadmin", "compliance_officer", "tc", "transaction_coordinator"].includes(userType)  // entity_owner gate enforces brokerage ownership
     default:                  return false

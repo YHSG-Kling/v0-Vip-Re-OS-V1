@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import { AIIdentityEditor } from "@/app/components/ai-identity/AIIdentityEditor"
 import { getAIIdentityProfile } from "@/app/actions/ai-identity"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -31,7 +32,7 @@ export default async function AdminAIIdentityPage() {
     .maybeSingle()
 
   // Role gate: admin + broker only
-  if (!profile?.brokerage_id || !["broker", "admin"].includes(profile.user_type || "")) {
+  if (!profile?.brokerage_id || !isAdminOrBroker({ user_type: profile.user_type || "" })) {
     redirect("/dashboard")
   }
 

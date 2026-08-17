@@ -21,6 +21,7 @@ import { exportCommissionsCSV, exportExpensesCSV, generatePLReport } from "@/app
 // broker or admin had no way to produce or send a brokerage financial report at all.
 import { exportFinancialReportAction, emailFinancialReportAction } from "@/app/actions/financial-kernel"
 import { Input } from "@/components/ui/input"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 interface Commission {
   id: string
@@ -61,7 +62,7 @@ export function ReportsClient({
   const [plSummary, setPLSummary] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  const isBrokerAdmin = ["broker", "broker_admin", "admin", "superadmin"].includes(userType)
+  const isBrokerAdmin = isBrokerageFinanceAdmin({ user_type: userType })
   const [isBrokerageExportPending, startBrokerageExport] = useTransition()
   const [isBrokerageEmailPending, startBrokerageEmail] = useTransition()
   const [brokerageError, setBrokerageError] = useState<string | null>(null)

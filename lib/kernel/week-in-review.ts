@@ -1,3 +1,4 @@
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 // lib/kernel/week-in-review.ts
 // ─────────────────────────────────────────────────────────────────────────────
 // VOICE WEEK-IN-REVIEW — the voice admin's OUTBOUND direction. The admin takes
@@ -157,7 +158,7 @@ export async function runWeekInReview(svc: any, now: Date = new Date()): Promise
           selfHealByBrokerage.set(a.brokerage_id, facts)
         }
         const { composeSelfHealBrief } = await import("@/lib/kernel/repair-digest")
-        const isBrokerVoice = ["broker", "broker_admin", "admin"].includes(String(u?.user_type ?? ""))
+        const isBrokerVoice = isAdminOrBroker({ user_type: String(u?.user_type ?? "") })
         selfHealBrief = composeSelfHealBrief({ healed: facts.healed, openExceptions: facts.openExceptions, isBrokerVoice })
       } catch { /* the income brief still lands */ }
 

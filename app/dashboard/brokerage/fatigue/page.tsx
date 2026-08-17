@@ -41,7 +41,7 @@ export default async function BrokerageFatiguePage() {
     .single()
 
   if (!profile?.brokerage_id) redirect("/dashboard")
-  if (!["broker", "broker_owner", "admin", "manager", "superadmin"].includes(profile.user_type ?? "") && profile.platform_role !== "superadmin") {
+  if (!["broker", "broker_owner", "broker_admin", "admin", "superadmin"].includes(profile.user_type ?? "") && profile.platform_role !== "superadmin") {
     redirect("/dashboard")
   }
 

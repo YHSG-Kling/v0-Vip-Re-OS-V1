@@ -25,14 +25,15 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { readRoleGrants, selectVendorId } from "@/lib/auth/role-grants"
+import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 const ASSIGN_ALLOWED_ROLES = new Set([
   "broker", "broker_admin", "admin", "superadmin", "team_lead", "agent", "tc",
 ])
 
-const REVOKE_ALLOWED_ROLES = new Set([
-  "broker", "broker_admin", "admin", "superadmin", "team_lead",
-])
+// DERIVED from the ONE tenant-admin roster; `superadmin` added explicitly
+// because this lane admits platform staff on purpose.
+const REVOKE_ALLOWED_ROLES = new Set([...TENANT_ADMIN_USER_TYPES, "superadmin"])
 
 /** vendor_contact_assignments.scope CHECK vocabulary, verified against the live
  *  database. Mirrors VendorAccessScope in lib/vendor/assignment-access.ts. */

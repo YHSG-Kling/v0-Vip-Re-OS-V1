@@ -14,7 +14,7 @@ const PERMITTED_ROLES = new Set([
   "agent", "broker", "admin", "tc", "transaction_coordinator",
   "lender", "vendor", "title", "title_agent",
   "compliance_officer", "compliance_manager",
-  "superadmin", "platform_admin", "super_admin",
+  "superadmin", "super_admin",
   "isa", "team_lead",
 ])
 

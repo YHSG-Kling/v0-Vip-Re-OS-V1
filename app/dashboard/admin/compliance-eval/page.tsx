@@ -8,6 +8,7 @@ import {
   summarizeGovernance,
   type EvalDimension,
 } from "@/lib/compliance/manager-governance-scorecard"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const metadata = {
   title:       "Manager Compliance Eval | Kernel OS Admin",
@@ -44,7 +45,7 @@ export default async function ComplianceEvalPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/auth/login")
   const { data: userData } = await supabase.from("users").select("user_type").eq("id", user.id).maybeSingle()
-  if (!["admin", "broker", "superadmin"].includes(userData?.user_type ?? "agent")) redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: userData?.user_type ?? "agent" })) redirect("/dashboard")
 
   const report = runManagerEval()
   const cleared = !report.releaseBlocked

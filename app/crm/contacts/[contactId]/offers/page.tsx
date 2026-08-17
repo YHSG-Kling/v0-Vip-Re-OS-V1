@@ -8,6 +8,7 @@ import { resolveAgentId }       from "@/lib/kernel/agent-identity"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { AlertTriangle } from "lucide-react"
 import Link from "next/link"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 const OFFER_ELIGIBLE_STAGES = [
   "BUYER_OFFER_ELIGIBLE",
@@ -53,7 +54,7 @@ export default async function BuyerOffersPage({ params }: PageProps) {
   // The users.id is resolved to the agents.id before the comparison.
   const callerAgentId = await resolveAgentId(supabase, user.id)
   const isOwner  = !!callerAgentId && contact.agent_id === callerAgentId
-  const isBroker = ["broker", "broker_owner", "admin", "superadmin"].includes(agentProfile?.user_type ?? "") &&
+  const isBroker = isAdminOrBroker({ user_type: agentProfile?.user_type ?? "" }) &&
     agentProfile?.brokerage_id === contact.brokerage_id
 
   if (!isOwner && !isBroker) redirect("/crm?contact_type=buyer")

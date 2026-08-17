@@ -25,6 +25,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 async function resolveBrokerAdmin(): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {
   const supabase = await createClient()
@@ -50,7 +51,12 @@ async function resolveBrokerAdmin(): Promise<{ ok: true; brokerageId: string } |
   if (brkError) return { ok: false, error: brkError.message }
 
   const isSolo = (brk as { plan_tier?: string } | null)?.plan_tier === "solo_agent"
-  if (!isSolo && !["broker", "broker_admin", "admin", "superadmin"].includes(profile.user_type ?? "")) {
+  // BROKERAGE-WIDE MONEY (m472). The ONE finance roster — the same set
+  // public.is_brokerage_finance_admin() carries — so the app cannot admit where
+  // RLS refuses. It EXCLUDES team_lead by the owner's ruling, and it ADDS
+  // broker_owner, which the local literal omitted: the person who OWNS the
+  // brokerage was refused by the gate guarding their own brokerage's setting.
+  if (!isSolo && !isBrokerageFinanceAdmin(profile as { user_type?: string | null })) {
     return { ok: false, error: "Only a broker or admin can change how showings are gated." }
   }
   return { ok: true, brokerageId: profile.brokerage_id }

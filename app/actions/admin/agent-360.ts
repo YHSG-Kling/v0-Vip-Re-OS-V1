@@ -55,8 +55,7 @@ import {
   normalizeCapAnniversaryBasis,
   type CapSource,
 } from "@/lib/commission/cap-resolver"
-
-const MANAGER_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export interface Agent360Goal {
   goalType: string
@@ -183,7 +182,7 @@ export async function getAgent360Action(
     .eq("id", user.id)
     .maybeSingle()
   const callerRole = (caller?.user_type ?? caller?.role ?? "") as string
-  if (!MANAGER_ROLES.has(callerRole)) return { ok: false, error: "Forbidden" }
+  if (!isAdminOrBroker({ user_type: callerRole })) return { ok: false, error: "Forbidden" }
   if (!caller?.brokerage_id) return { ok: false, error: "No brokerage on your profile" }
 
   const svc = createServiceClient()
@@ -463,7 +462,7 @@ async function requireManager(): Promise<
   const { data: caller } = await supabase
     .from("users").select("user_type, role, brokerage_id").eq("id", user.id).maybeSingle()
   const role = (caller?.user_type ?? caller?.role ?? "") as string
-  if (!MANAGER_ROLES.has(role)) return { ok: false, error: "Forbidden" }
+  if (!isAdminOrBroker({ user_type: role })) return { ok: false, error: "Forbidden" }
   if (!caller?.brokerage_id) return { ok: false, error: "No brokerage on your profile" }
   return { ok: true, brokerageId: caller.brokerage_id as string, userId: user.id }
 }

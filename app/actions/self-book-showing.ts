@@ -7,6 +7,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
 import { loadBookableSlots, bookShowingSlot } from "@/lib/kernel/self-book"
 import { guardShowingFinancialGate } from "@/lib/buyer-execution/showing-financial-policy"
 import type { FreeSlot } from "@/lib/providers/calendar/free-slots"
@@ -30,9 +31,21 @@ async function authorizeForContact(contactId: string): Promise<
   if (user.email && (contact as any).email && user.email.toLowerCase() === (contact as any).email.toLowerCase()) {
     return { ok: true, brokerageId, authUserId: user.id }
   }
-  const { data: u, error: userError } = await svc.from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
+  // BOTH IDENTITY COLUMNS. This read used to select `user_type` alone and test
+  // `user_type === "superadmin"`, which is the last surviving instance of the
+  // single-column gate documented in lib/auth/resolve-user-role.ts: the ONE live
+  // superadmin on this database is (user_type='admin', platform_role='superadmin'),
+  // so the literal never matched them, and 'marketing' is not a legal user_type at
+  // all. The defect here was FAIL-CLOSED — the tenant test beside it still held, so
+  // nothing leaked; the platform's own administrator was simply refused. The gate
+  // now asks the same question the RLS helper public.is_platform_staff() and the
+  // app-side isPlatformStaffIdentity() ask, from the same two columns.
+  const { data: u, error: userError } = await svc
+    .from("users").select("brokerage_id, user_type, platform_role").eq("id", user.id).maybeSingle()
   if (userError) return { ok: false, error: userError.message }
-  if ((u as any)?.brokerage_id === (contact as any).brokerage_id || (u as any)?.user_type === "superadmin") {
+  const sameTenant =
+    (u as any)?.brokerage_id != null && (u as any).brokerage_id === (contact as any).brokerage_id
+  if (sameTenant || isPlatformStaffIdentity((u as any)?.user_type, (u as any)?.platform_role)) {
     return { ok: true, brokerageId, authUserId: user.id }
   }
   return { ok: false, error: "Forbidden" }

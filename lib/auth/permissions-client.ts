@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/client"
 import { ROLE_PERMISSIONS } from "@/lib/security/permission-matrix"
 import { toCanonicalRole } from "@/lib/security/types"
 import { readRoleGrants, allRoles } from "@/lib/auth/role-grants"
+import { isTenantAdminGrantRole } from "@/lib/auth/resolve-user-role"
 
 /**
  * Client-side permission utilities
@@ -98,5 +99,5 @@ export async function clientIsAdmin(): Promise<boolean> {
   // Against roleNames, not roleName: an admin grant held ALONGSIDE an agent grant
   // still makes the user an admin. Testing the one chosen name would have denied
   // it whenever the other grant sorted first.
-  return (role?.roleNames ?? []).some((r) => ["broker", "admin", "superadmin"].includes(r))
+  return (role?.roleNames ?? []).some((r) => isTenantAdminGrantRole(r))
 }

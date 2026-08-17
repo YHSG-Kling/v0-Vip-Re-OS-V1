@@ -17,7 +17,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
-import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
+import { isPlatformStaffIdentity, isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 import { revalidatePath } from "next/cache"
 import {
@@ -28,8 +28,6 @@ import {
   scoreStrategyOutcomes, scoreMarketingOutcomes, effectivenessBand,
   type EffectivenessBand,
 } from "@/lib/managers/outcome-attribution"
-
-const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
 
 export interface ManagerTrustRow {
   agentKind: string
@@ -65,7 +63,7 @@ export async function getManagerTrustScorecard(): Promise<
 > {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
-  if (!ADMIN_ROLES.has(ctx.userType)) return { ok: false, error: "Forbidden" }
+  if (!isAdminOrBroker({ user_type: ctx.userType })) return { ok: false, error: "Forbidden" }
 
   const svc = createServiceClient()
   // Platform staff see all brokerages; everyone else is scoped to their own.
@@ -236,7 +234,7 @@ export async function setManagerAutonomy(
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
   // Setting team operating policy is a broker/admin decision (not team_lead).
-  if (!["broker", "broker_admin", "admin", "superadmin"].includes(ctx.userType)) {
+  if (!isAdminOrBroker({ user_type: ctx.userType })) {
     return { ok: false, error: "Forbidden — only a broker or admin can set manager autonomy policy" }
   }
   if (posture !== null && !isAutonomyPosture(posture)) return { ok: false, error: "Invalid autonomy posture" }
@@ -292,7 +290,7 @@ export async function vetoLearnedAdjustment(
 ): Promise<{ ok: true; vetoed: boolean } | { ok: false; error: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
-  if (!["broker", "broker_admin", "admin", "superadmin"].includes(ctx.userType)) {
+  if (!isAdminOrBroker({ user_type: ctx.userType })) {
     return { ok: false, error: "Forbidden — only a broker or admin can veto a learned adjustment" }
   }
   if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
@@ -336,7 +334,7 @@ export async function getCrossManagerReferrals(): Promise<
 > {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
-  if (!ADMIN_ROLES.has(ctx.userType)) return { ok: false, error: "Forbidden" }
+  if (!isAdminOrBroker({ user_type: ctx.userType })) return { ok: false, error: "Forbidden" }
   if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
 
   const { MANAGER_COLLABORATIONS } = await import("@/lib/kernel/manager-registry")
@@ -392,7 +390,7 @@ export async function overrideDeliberationWinner(
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
   // Overriding the argued winner is a broker/admin governance decision (not team_lead).
-  if (!["broker", "broker_admin", "admin", "superadmin"].includes(ctx.userType)) {
+  if (!isAdminOrBroker({ user_type: ctx.userType })) {
     return { ok: false, error: "Forbidden — only a broker or admin can record the principal's call" }
   }
   if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
@@ -420,7 +418,7 @@ export async function getTeamworkMetrics(): Promise<
 > {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
-  if (!ADMIN_ROLES.has(ctx.userType)) return { ok: false, error: "Forbidden" }
+  if (!isAdminOrBroker({ user_type: ctx.userType })) return { ok: false, error: "Forbidden" }
   if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
   const { loadTeamworkMetrics } = await import("@/lib/managers/teamwork-metrics")
   const metrics = await loadTeamworkMetrics(ctx.brokerageId, { days: 90 }, createServiceClient())
@@ -448,7 +446,7 @@ export async function getStandingReviews(): Promise<
 > {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
-  if (!ADMIN_ROLES.has(ctx.userType)) return { ok: false, error: "Forbidden" }
+  if (!isAdminOrBroker({ user_type: ctx.userType })) return { ok: false, error: "Forbidden" }
   if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
 
   const { REGIONAL_CONVENTION_REVIEW, assessStandingReview } = await import("@/lib/managers/regional-convention-review")
@@ -495,7 +493,7 @@ export async function completeRegionalConventionReview(
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
-  if (!["broker", "broker_admin", "admin", "superadmin"].includes(ctx.userType)) {
+  if (!isAdminOrBroker({ user_type: ctx.userType })) {
     return { ok: false, error: "Forbidden — completing a standing review is a broker/admin attestation" }
   }
   if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }

@@ -464,7 +464,7 @@ const BROADCAST_ADMIN_ROLES = new Set(["broker", "admin", "super_admin", "supera
 
 /** Staff seats (users.user_type) included in a whole-brokerage announcement
  *  alongside every active agent. */
-const BROKERAGE_STAFF_TYPES = ["broker", "admin", "tc", "coordinator"] as const
+const BROKERAGE_STAFF_TYPES = ["broker", "admin", "tc"] as const
 
 async function resolveAnnouncementRecipients(
   svc: any,

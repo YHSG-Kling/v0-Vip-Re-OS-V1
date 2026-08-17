@@ -15,6 +15,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveWriteContext } from "@/lib/kernel/identity"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -380,8 +381,21 @@ export async function generatePeriodicCharges(): Promise<{
 // helpers
 // ---------------------------------------------------------------------------
 
+// BROKERAGE-WIDE MONEY (m472). The fee schedule IS the brokerage charging its
+// agents, and brokerage_fee_types / agent_fee_assignments / agent_fee_charges are
+// all FINANCE tables under public.is_brokerage_finance_admin(). This function is
+// kept as the local NAME its six call sites already read, but its ANSWER now
+// comes from the ONE shared roster instead of a literal written here — so the app
+// and RLS cannot disagree, which matters because these paths write through the
+// SERVICE client and have no RLS backstop.
+//
+// The old literal refused broker_owner — the person who owns the brokerage could
+// not set their own brokerage's fees. The shared roster admits them. It carries
+// 'broker_admin' forward as an input spelling and drops 'superadmin', which is
+// MEASURED dead as a user_type (zero live rows; the platform's one superadmin is
+// user_type='admin' with platform_role='superadmin', admitted through 'admin').
 function isBrokerRole(t?: string | null) {
-  return ["admin", "broker", "broker_admin", "superadmin"].includes(t ?? "")
+  return isBrokerageFinanceAdmin({ user_type: t })
 }
 
 function computePeriodStart(cadence: FeeCadence, today: string): string | null {

@@ -16,6 +16,7 @@ import {
   isViableRecord,
 } from '@/lib/lead-pipeline/raw-record-types'
 import { createClient } from '@/lib/supabase/server'
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export async function runScrapeTestAction(marketId: string, source: string) {
   const supabase = await createClient()
@@ -33,7 +34,7 @@ export async function runScrapeTestAction(marketId: string, source: string) {
     .eq('id', user.id)
     .maybeSingle()
 
-  if (!userRow || !['superadmin', 'admin'].includes(userRow.user_type ?? '')) {
+  if (!userRow || !isAdminOrBroker({ user_type: userRow.user_type ?? '' })) {
     return { error: 'Forbidden', status: 403 }
   }
 

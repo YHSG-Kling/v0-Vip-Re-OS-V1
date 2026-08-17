@@ -2,6 +2,7 @@ import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { createClient } from "@/lib/supabase/server"
 import { FeatureGovernanceClient } from "./feature-governance-client"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -14,7 +15,7 @@ export default async function FeatureGovernancePage() {
   const context = await getAgentContext()
 
   if (!context?.brokerageId) redirect("/login")
-  if (!["admin", "superadmin", "broker"].includes(context.userType ?? "")) {
+  if (!isAdminOrBroker({ user_type: context.userType ?? "" })) {
     redirect("/dashboard")
   }
 

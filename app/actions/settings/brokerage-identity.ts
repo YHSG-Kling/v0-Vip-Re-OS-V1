@@ -1,7 +1,7 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
-import { isAdminOrBroker } from '@/lib/auth/resolve-user-role'
+import { resolveBrokerageFinanceAdmin } from '@/lib/auth/resolve-user-role'
 import { STATE_CODES } from '@/lib/constants/us-states'
 import {
   CAP_ANNIVERSARY_BASES,
@@ -197,15 +197,29 @@ const ZIP_PATTERN = /^\d{5}(-\d{4})?$/
  * THE GATE MIRRORS RLS, IT DOES NOT EXCEED IT. The live UPDATE policy on
  * `brokerages` is:
  *
- *   is_platform_admin() OR (is_brokerage_admin() AND id = current_user_brokerage_id())
+ *   is_platform_admin() OR (is_brokerage_finance_admin() AND id = current_user_brokerage_id())
  *
- * where is_brokerage_admin() = user_type IN ('admin','broker','broker_owner')
+ * — that predicate is is_brokerage_finance_admin() and NOT is_brokerage_admin()
+ * as of m472, because this row carries default_cap_amount, plan_tier,
+ * billing_metadata and revenue_share_enabled alongside the identity fields. The
+ * two predicates differ by exactly one role, team_lead, which the owner admits to
+ * admin surfaces and holds out of brokerage-wide money.
+ *
  * and current_user_brokerage_id() = users.brokerage_id for auth.uid(). Since the
- * brokerage here IS users.brokerage_id, `isAdminOrBroker` (admin, broker,
- * broker_owner, plus the superadmin spellings that satisfy is_platform_admin())
- * is the same set. Every write below still goes through the RLS-respecting user
- * client, so the database re-decides independently — this gate exists to give a
- * refusal a readable message, never to grant anything RLS would deny.
+ * brokerage here IS users.brokerage_id, the two decide the same thing.
+ *
+ * THIS COMMENT WAS STALE, AND THE CODE UNDER IT WITH IT. It said
+ * is_brokerage_admin() = user_type IN ('admin','broker','broker_owner'), which
+ * stopped being true at m466: on the owner's ruling that a role grant is an
+ * ADMINISTERING FACT, that function now admits a tenant role grant in
+ * user_role_assignments as well. The app kept testing user_type alone, so a user
+ * GRANTED admin was permitted by RLS and refused here — the same direction of
+ * mismatch this file's own header already documents for broker_owner, one layer
+ * down. resolveBrokerageFinanceAdmin asks BOTH halves, which is what makes the two agree.
+ *
+ * Every write below still goes through the RLS-respecting user client, so the
+ * database re-decides independently — this gate exists to give a refusal a
+ * readable message, never to grant anything RLS would deny.
  */
 async function resolveSessionBrokerage(): Promise<{
   supabase: Awaited<ReturnType<typeof createClient>>
@@ -242,10 +256,32 @@ async function resolveSessionBrokerage(): Promise<{
     return { supabase, brokerageId: null, canEdit: false, error: 'Your account is not attached to a brokerage.' }
   }
 
+  // Same discipline as the profile read above: "we could not look" and "you may
+  // not edit" are opposite answers, so a refused grant read is reported as an
+  // error rather than collapsing into canEdit:false.
+  //
+  // BROKERAGE-WIDE MONEY (m472), and this one is easy to misread as branding.
+  // The writable field list below includes default_cap_amount and
+  // default_cap_anniversary_basis — the brokerage-wide DEFAULT CAP and the
+  // schedule it resets on — and the row also carries plan_tier, billing_metadata
+  // and revenue_share_enabled. So public.brokerages is a FINANCE table under
+  // m472, its UPDATE policy is is_brokerage_finance_admin(), and a gate here on
+  // the WIDER tenant roster would admit a team lead the database then refuses:
+  // supabase-js resolves that refusal as zero rows with `error: null`, and this
+  // surface would report a saved cap that was never stored.
+  const admin = await resolveBrokerageFinanceAdmin(
+    supabase,
+    auth.user.id,
+    profile as { user_type?: string | null; brokerage_id?: string | null },
+  )
+  if (!admin.ok) {
+    return { supabase, brokerageId, canEdit: false, error: `Could not resolve your permissions: ${admin.error}` }
+  }
+
   return {
     supabase,
     brokerageId,
-    canEdit: isAdminOrBroker(profile as { user_type?: string | null }),
+    canEdit: admin.isFinanceAdmin,
     error: null,
   }
 }

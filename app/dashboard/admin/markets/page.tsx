@@ -7,6 +7,7 @@ import {
   getScrapingJobs,
 } from "@/app/actions/lead-scraping-config"
 import { MarketsSetupClient } from "./markets-client"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -34,7 +35,7 @@ export default async function MarketsSetupPage() {
     .from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
   const userType = userData?.user_type ?? "agent"
   const brokerageId = userData?.brokerage_id ?? null
-  if (!["admin", "broker", "broker_admin", "superadmin"].includes(userType)) redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: userType })) redirect("/dashboard")
 
   // Markets carry their nested property/motivated params from getScrapingMarkets'
   // own select. Keywords and job history are the rest of the scrape config that

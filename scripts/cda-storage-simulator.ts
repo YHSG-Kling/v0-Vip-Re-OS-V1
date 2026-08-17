@@ -32,8 +32,18 @@ console.log("\n── CDA template upload is Supabase, role-gated, PDF-validated
   const a = src("app/actions/cda-storage.ts")
   check("uploadCdaTemplateFile uploads via the Supabase bucket helper",
     a.includes("uploadBufferToBucket") && a.includes('"cda-templates"'))
-  check("role-gated to broker/admin and validates application/pdf",
-    a.includes("isAdminOrBroker") && a.includes('"application/pdf"'))
+  // The gate is asserted by WHERE IT COMES FROM, not by the identifier it is
+  // spelled with. This line used to pin the name `isAdminOrBroker`, and it broke
+  // the moment m472 moved CDA storage onto the narrower money predicate — which
+  // the owner's ruling names explicitly ("CDA storage") among the gates team_lead
+  // is held out of. A probe pinned to a name reports a CORRECT tightening as a
+  // regression, so it is pinned to the canonical roster module instead: there is
+  // exactly one module allowed to answer "is this caller an admin", and any gate
+  // imported from it is the shared answer rather than a local literal.
+  check("role-gated from the ONE roster module, and validates application/pdf",
+    /from\s+["']@\/lib\/auth\/resolve-user-role["']/.test(a) && a.includes('"application/pdf"'))
+  check("...and specifically on the FINANCE tier, which the ruling names CDA storage into",
+    a.includes("isBrokerageFinanceAdmin"))
   check("app/actions/cda-storage.ts does NOT use Vercel Blob", !a.includes("@vercel/blob"))
 
   const panel = src("app/dashboard/admin/onboarding/components/os/cda-setup-panel.tsx")

@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation'
+import { isBrokerageFinanceAdmin } from '@/lib/auth/resolve-user-role'
 import { createClient } from '@/lib/supabase/server'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -39,8 +40,12 @@ export default async function PayoutsPage() {
 
   if (!profile?.brokerage_id) redirect('/dashboard')
 
-  const allowedRoles = ['broker', 'admin', 'superadmin', 'team_lead']
-  if (!allowedRoles.includes(profile.user_type ?? '')) {
+  // BROKERAGE-WIDE MONEY (m472). This page is the brokerage's COMMISSION
+  // PAYOUT QUEUE — every agent's money, not one team's — and the local literal
+  // ADMITTED team_lead, which the owner's ruling holds out of exactly this. It
+  // also refused broker_owner, the person who owns the brokerage. Both are fixed
+  // by asking the ONE finance roster instead of a list written here.
+  if (!isBrokerageFinanceAdmin(profile as { user_type?: string | null })) {
     redirect('/dashboard/financials/agent')
   }
 

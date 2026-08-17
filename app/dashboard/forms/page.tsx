@@ -81,7 +81,7 @@ export default async function FormsLibraryPage() {
     .limit(50)
 
   // Agent sees own submissions only; broker/admin sees all
-  const isAdminOrBroker = ["admin", "broker", "superadmin", "managing_broker", "broker_owner"].includes(role)
+  const isAdminOrBroker = ["admin", "broker", "superadmin", "broker_owner", "broker_admin"].includes(role)
   const isTeamLeader    = role === "team_leader" || role === "teamleader"
 
   if (!isAdminOrBroker && !isTeamLeader && agentId) {

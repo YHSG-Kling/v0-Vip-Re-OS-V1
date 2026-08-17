@@ -12,8 +12,7 @@ import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { publishMarketingCampaignSafe } from "@/lib/marketing/campaign-publisher"
-
-const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 async function requireAdmin(): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string }
@@ -30,7 +29,7 @@ async function requireAdmin(): Promise<
     .maybeSingle()
   if (!row?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
   const userType = row.user_type as string
-  if (!ADMIN_ROLES.has(userType)) {
+  if (!isAdminOrBroker({ user_type: userType })) {
     // TIER PARITY (owner rule): a solo-tier subscriber IS their own broker — their
     // one working seat often carries user_type 'agent'/'solo_agent', which locked
     // them out of their own bulk-campaign rail. Same allowance the voice

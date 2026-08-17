@@ -10,6 +10,7 @@ import { getAgentContext } from "@/lib/identity"
 import { referralStatusBadgeClass, referralStatusLabel } from "@/lib/referrals/referral-status"
 import { PipelineOsClient } from "./pipeline-os-client"
 import { ReferralAppreciationPanel } from "./appreciation-panel"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -68,7 +69,7 @@ export default async function ReferralPipelinePage() {
       />
 
       {/* Referrer love loop — configure appreciation, link referrers, record gifts */}
-      <ReferralAppreciationPanel canSetBrokerage={["broker", "broker_admin", "admin", "superadmin"].includes(userType ?? "")} />
+      <ReferralAppreciationPanel canSetBrokerage={isAdminOrBroker({ user_type: userType ?? "" })} />
 
       <div className="flex items-center justify-between">
         <div>

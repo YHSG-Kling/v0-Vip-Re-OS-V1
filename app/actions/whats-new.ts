@@ -16,6 +16,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { createClient } from "@/lib/supabase/server"
 import { loadStatusNotice, type StatusNotice } from "@/lib/platform/status-notice"
 import { getPlatformControls, resolvePlatformHalt } from "@/lib/platform/platform-controls"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export interface TenantServiceRow {
   serviceName: string
@@ -45,7 +46,7 @@ export async function getTenantPlatformStatusAction(): Promise<
   if (!user) return { ok: false, error: "Unauthenticated" }
   const { data: u } = await supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
   if (!u?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
-  const canSeeServices = ["superadmin", "super_admin", "admin", "broker", "broker_owner"].includes((u as any).user_type ?? "")
+  const canSeeServices = isAdminOrBroker({ user_type: (u as any).user_type ?? "" })
 
   const svc = createServiceClient()
   const [notice, controls, servicesRes] = await Promise.all([

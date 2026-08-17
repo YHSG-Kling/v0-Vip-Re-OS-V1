@@ -13,6 +13,7 @@
 
 import { resolveWriteContext } from "@/lib/kernel/identity"
 import { createServiceClient } from "@/lib/supabase/service"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 const AVATAR_BUCKET = "twin-avatars"
 const VOICE_BUCKET = "twin-voice-samples"
@@ -117,7 +118,7 @@ export async function uploadBrokerageVoiceSample(params: {
 }): Promise<{ ok: boolean; url?: string; error?: string }> {
   const ctx = await resolveWriteContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
-  if (!["broker", "broker_admin", "admin", "superadmin"].includes(ctx.userType ?? "")) {
+  if (!isAdminOrBroker({ user_type: ctx.userType ?? "" })) {
     return { ok: false, error: "Only broker / admin can record the ISA voice" }
   }
   if (!params.mimeType.startsWith("audio/")) {

@@ -6,15 +6,14 @@ import {
 } from "@/app/actions/admin/manager-evals"
 import { composeTeamArgumentMap } from "@/lib/managers/team-argument-map"
 import { ManagerTrustClient } from "./manager-trust-client"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
-
-const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
 
 export default async function ManagerTrustPage() {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) redirect("/login")
-  if (!ADMIN_ROLES.has(ctx.userType)) redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: ctx.userType })) redirect("/dashboard")
 
   const res = await getManagerTrustScorecard()
   if (!res.ok) {

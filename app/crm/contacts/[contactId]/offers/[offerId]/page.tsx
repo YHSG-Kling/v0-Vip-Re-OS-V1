@@ -7,6 +7,7 @@ import { OfferWorkspace }      from "@/app/components/features/offers/offer-work
 import { OfferActionsBar }     from "./offer-actions-bar"
 import { offerRowToActionsState } from "@/app/components/offer/offer-agent-actions"
 import { ChevronLeft }         from "lucide-react"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 /**
  * /crm/contacts/[contactId]/offers/[offerId]
@@ -57,7 +58,7 @@ export default async function OfferDetailPage({ params }: PageProps) {
   }
 
   const isOwner  = offer.agent_id === user.id
-  const isBroker = ["broker", "broker_owner", "admin", "superadmin"].includes(agentProfile.user_type ?? "") &&
+  const isBroker = isAdminOrBroker({ user_type: agentProfile.user_type ?? "" }) &&
     agentProfile.brokerage_id === offer.brokerage_id
 
   if (!isOwner && !isBroker) {

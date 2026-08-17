@@ -31,6 +31,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 async function requireBrokerageAdmin(): Promise<
   | { ok: true; userId: string; brokerageId: string }
@@ -42,8 +43,7 @@ async function requireBrokerageAdmin(): Promise<
   const { data: u } = await supabase
     .from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
   if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  const isAdmin = ["admin", "broker", "broker_owner", "superadmin", "super_admin"]
-    .includes(u.user_type ?? "")
+  const isAdmin = isAdminOrBroker({ user_type: u.user_type ?? "" })
   if (!isAdmin) return { ok: false, error: "Forbidden: brokerage admin only" }
   return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
 }

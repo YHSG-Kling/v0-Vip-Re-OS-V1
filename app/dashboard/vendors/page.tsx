@@ -43,6 +43,7 @@ import {
   VendorSlaPanel,
   AiVendorInsightsPanel,
 } from "@/app/dashboard/partners/components/os"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -238,8 +239,7 @@ export default async function VendorsPage() {
     id: v.id as string,
     name: (v.name as string) ?? "Unnamed vendor",
   }))
-  const canRevokeAccess = ["broker", "broker_admin", "admin", "superadmin", "team_lead"]
-    .includes(profile.user_type ?? "")
+  const canRevokeAccess = isAdminOrBroker({ user_type: profile.user_type ?? "" })
 
   // PLATFORM INVITATIONS — the front door for the vendor portal. vendor_invitations
   // has had a writer (app/actions/vendor-invite.ts) and an acceptance page

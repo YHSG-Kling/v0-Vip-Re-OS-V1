@@ -11,6 +11,7 @@ import { CreateAgentRecordButton } from "./create-agent-record-button"
 import { effectiveSeatLimit, parseSeatOverride, tierLabel } from "@/lib/kernel/tier-role-matrix"
 import { resolveSeatUsage } from "@/lib/kernel/seat-usage"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -53,7 +54,7 @@ export default async function AdminUsersPage() {
     .maybeSingle()
 
   const callerType = profile?.user_type ?? "agent"
-  if (!["admin", "broker", "superadmin"].includes(callerType)) {
+  if (!isAdminOrBroker({ user_type: callerType })) {
     redirect("/dashboard")
   }
 

@@ -138,7 +138,10 @@ console.log("\n── CONNECTION CENTER: phone/SMS is platform-provided (BYO car
   check("subscriber toggle exists: setByoCarrierPolicy is broker-gated, getByoCarrierPolicy is member-readable",
     gs.includes("export async function setByoCarrierPolicy") &&
     gs.includes("export async function getByoCarrierPolicy") &&
-    /setByoCarrierPolicy[\s\S]*?isAdminOrBroker/.test(gs))
+    // Keyed to the roster module, not the identifier: the BYO toggle is
+    // OPERATIONAL tenant admin, and the gate it calls has been renamed since.
+    /from\s+["']@\/lib\/auth\/resolve-user-role["']/.test(gs) &&
+    /setByoCarrierPolicy[\s\S]*?(isAdminOrBroker|resolveTenantAdmin)/.test(gs))
 
   const cc2 = src("app/settings/connections/connection-center-client.tsx")
   check("the subscriber sees a 'let your agents BYO' toggle in the phone panel",

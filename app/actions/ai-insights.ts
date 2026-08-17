@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // Both functions burn paid AI inference. Previously trusted caller-supplied
 // userId / userRole / contactId without verification — any signed-in user
@@ -43,7 +44,7 @@ export async function generateContactInsights(_userId?: string, _userRole?: stri
   const supabase = createServiceClient()
 
   try {
-    const isAdmin = ["admin", "broker", "broker_owner", "superadmin", "super_admin"].includes(auth.userType)
+    const isAdmin = isAdminOrBroker({ user_type: auth.userType })
 
     // Resolve the agent_id (agents.id) for non-admin callers
     let query = supabase

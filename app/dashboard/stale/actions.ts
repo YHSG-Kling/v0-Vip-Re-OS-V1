@@ -19,6 +19,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { initiateAIISAContactEngagement } from "@/app/actions/ai-isa/initiate-contact-engagement"
 import { toggleContactAIISA } from "@/app/actions/ai-isa/engage-contact"
 import { detectStaleContacts } from "@/lib/ai-isa/stale-contact-detector"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 const STALE_LEAD_DAYS = 7
 
@@ -57,8 +58,6 @@ export interface StaleLoad {
   staleThresholdDays:  number
 }
 
-const BROKER_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
-
 export async function loadStaleQueue(): Promise<{ data: StaleLoad } | { error: string }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -71,7 +70,7 @@ export async function loadStaleQueue(): Promise<{ data: StaleLoad } | { error: s
   ])
   if (!agentRow?.id || !agentRow.brokerage_id) return { error: "No agent profile" }
   const brokerageId = agentRow.brokerage_id
-  const isBroker = BROKER_ROLES.has((userRow?.user_type ?? "") as string)
+  const isBroker = isAdminOrBroker({ user_type: (userRow?.user_type ?? "") as string })
 
   const staleLeadCutoff = new Date(Date.now() - STALE_LEAD_DAYS * 86_400_000).toISOString()
 
@@ -226,7 +225,7 @@ export async function claimStaleLead(leadId: string): Promise<{ success: boolean
     svc.from("users").select("user_type").eq("id", user.id).maybeSingle(),
   ])
   if (!agentRow?.id) return { success: false, error: "No agent profile" }
-  if (!BROKER_ROLES.has((userRow?.user_type ?? "") as string)) {
+  if (!isAdminOrBroker({ user_type: (userRow?.user_type ?? "") as string })) {
     return { success: false, error: "Only brokers / admins can assign leads" }
   }
 

@@ -5,6 +5,7 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { dispatchEmail } from "@/lib/providers/dispatch"
 import { compareVendors, pickBestVendor } from "@/lib/vendors/rank"
 import { readRoleGrants, selectVendorId } from "@/lib/auth/role-grants"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // ============================================
 // VENDOR DIRECTORY & SEARCH
@@ -778,8 +779,8 @@ export async function getVendorReviewModerationQueue(): Promise<Array<{
   }
   const brokerageId = (profile as any)?.brokerage_id
   const isAdmin =
-    ["broker", "admin", "broker_admin", "superadmin"].includes(String((profile as any)?.user_type)) ||
-    ["broker", "admin", "owner"].includes(String((profile as any)?.role))
+    isAdminOrBroker({ user_type: String((profile as any)?.user_type) }) ||
+    isAdminOrBroker({ user_type: String((profile as any)?.role) })
   if (!brokerageId || !isAdmin) return []
 
   const { data, error } = await svc
@@ -1013,7 +1014,7 @@ export async function moderateVendorReview(reviewId: string, decision: "approve"
   const svc = createServiceClient()
   const { data: profile } = await svc.from("users").select("brokerage_id, user_type, role").eq("id", user.id).maybeSingle()
   const brokerageId = (profile as any)?.brokerage_id
-  const isAdmin = ["broker", "admin", "broker_admin", "superadmin"].includes(String((profile as any)?.user_type)) || ["broker", "admin", "owner"].includes(String((profile as any)?.role))
+  const isAdmin = isAdminOrBroker({ user_type: String((profile as any)?.user_type) }) || isAdminOrBroker({ user_type: String((profile as any)?.role) })
   if (!brokerageId || !isAdmin) throw new Error("Not authorized")
 
   const { data: review } = await svc.from("vendor_reviews").select("id, vendor_id, brokerage_id").eq("id", reviewId).eq("brokerage_id", brokerageId).maybeSingle()

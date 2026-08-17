@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
@@ -55,9 +56,10 @@ export default async function BrokeragePLPage() {
     .eq("id", user.id)
     .maybeSingle()
 
-  // RBAC: Only broker, admin, superadmin can access
-  const allowedRoles = ["broker", "admin", "superadmin"]
-  if (!profile || !allowedRoles.includes(profile.user_type || "")) {
+  // BROKERAGE-WIDE MONEY (m472) — this is the whole brokerage's P&L. The ONE
+  // finance roster: excludes team_lead per the owner's ruling, and admits
+  // broker_owner, whom the local literal refused from their own books.
+  if (!profile || !isBrokerageFinanceAdmin(profile as { user_type?: string | null })) {
     redirect("/dashboard/financials/agent")
   }
 

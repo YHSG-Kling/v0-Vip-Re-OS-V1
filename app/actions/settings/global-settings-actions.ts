@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
 import {
   getGlobalSettings,
   type GlobalSettingsRow,
@@ -90,8 +90,17 @@ export async function fetchWidgetScope(): Promise<WidgetScope | null> {
     .eq("id", user.id)
     .maybeSingle()
   if (!userRow?.brokerage_id) return null
-  // Widget scope is brokerage-wide admin config — gate the RLS-bypassing read.
-  if (!isAdminOrBroker(userRow)) return null
+  // Widget scope is brokerage-wide admin config, and the read below uses a SERVICE
+  // client — so THIS gate is the only gate. resolveTenantAdmin, not the sync
+  // predicate: it also honours a role GRANT, which is what public.is_brokerage_admin()
+  // has done since m466. The session client is passed deliberately (RLS still
+  // applies underneath, and user_role_assignments_select_own lets a caller read
+  // their own grants).
+  const scopeAdmin = await resolveTenantAdmin(supabase, user.id, userRow)
+  // A refused grant read is NOT "you are not an admin" — say which it was rather
+  // than returning null, which this surface renders as "no widget scope configured".
+  if (!scopeAdmin.ok) throw new Error(`Could not resolve your permissions: ${scopeAdmin.error}`)
+  if (!scopeAdmin.isTenantAdmin) return null
 
   const serviceClient = createServiceClient()
   const { data: gs } = await serviceClient
@@ -114,8 +123,11 @@ export async function updateWidgetScope(scope: WidgetScope): Promise<void> {
     .eq("id", user.id)
     .maybeSingle()
   if (!userRow?.brokerage_id) throw new Error("Brokerage not found")
-  // Only broker/admin may change brokerage-wide widget scope.
-  if (!isAdminOrBroker(userRow)) throw new Error("Forbidden: insufficient permissions")
+  // Only a brokerage administrator may change brokerage-wide widget scope — by
+  // user_type OR by a tenant role grant, the same two ways RLS decides it.
+  const writeAdmin = await resolveTenantAdmin(supabase, user.id, userRow)
+  if (!writeAdmin.ok) throw new Error(`Could not resolve your permissions: ${writeAdmin.error}`)
+  if (!writeAdmin.isTenantAdmin) throw new Error("Forbidden: insufficient permissions")
 
   const serviceClient = createServiceClient()
   const { data: gs } = await serviceClient
@@ -146,9 +158,14 @@ export async function fetchWidgetAgentsAndTeams(): Promise<{
     .eq("id", user.id)
     .maybeSingle()
   if (!userRow?.brokerage_id) return { agents: [], teams: [] }
-  // The full brokerage roster is admin config for the widget scope picker —
-  // gate the RLS-bypassing read to broker/admin.
-  if (!isAdminOrBroker(userRow)) return { agents: [], teams: [] }
+  // The full brokerage roster is admin config for the widget scope picker, read
+  // through a SERVICE client — so this gate is the only gate, and it must admit
+  // the grant-held admin that RLS already admits.
+  const rosterAdmin = await resolveTenantAdmin(supabase, user.id, userRow)
+  // An empty roster is what this surface shows for "not an admin"; a REFUSED read
+  // must not be dressed up as that.
+  if (!rosterAdmin.ok) throw new Error(`Could not resolve your permissions: ${rosterAdmin.error}`)
+  if (!rosterAdmin.isTenantAdmin) return { agents: [], teams: [] }
 
   const serviceClient = createServiceClient()
   const [agentsRes, teamsRes] = await Promise.all([
@@ -207,7 +224,10 @@ export async function setByoCarrierPolicy(allowUserByo: boolean): Promise<{ ok: 
   const { data: userRow } = await supabase
     .from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
   if (!userRow?.brokerage_id) return { ok: false, error: "Brokerage not found" }
-  if (!isAdminOrBroker(userRow)) return { ok: false, error: "Forbidden" }
+  const byoAdmin = await resolveTenantAdmin(supabase, user.id, userRow)
+  // "Forbidden" and "we could not tell" are different answers to the subscriber.
+  if (!byoAdmin.ok) return { ok: false, error: `Could not resolve your permissions: ${byoAdmin.error}` }
+  if (!byoAdmin.isTenantAdmin) return { ok: false, error: "Forbidden" }
 
   const serviceClient = createServiceClient()
   const { data: gs } = await serviceClient

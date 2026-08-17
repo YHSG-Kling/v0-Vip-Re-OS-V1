@@ -8,6 +8,7 @@ import { SubscriptionTierCard } from "@/app/components/features/admin/subscripti
 import { OverageCalculator } from "@/app/components/features/admin/overage-calculator"
 import { FeatureEntitlementList } from "@/app/components/features/admin/feature-entitlement-list"
 import { ManageBillingButton } from "./manage-billing-button"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 /**
  * Billing & Tiering Admin Workspace
@@ -50,7 +51,7 @@ export default async function BillingAdminPage({
     .maybeSingle()
 
   const isSuper = userProfile?.user_type === "superadmin" || (userProfile as any)?.platform_role === "superadmin"
-  const isTenantBillingAdmin = ["broker", "broker_admin", "admin"].includes(userProfile?.user_type ?? "")
+  const isTenantBillingAdmin = isBrokerageFinanceAdmin({ user_type: userProfile?.user_type ?? "" })
   if (!userProfile || (!isSuper && !isTenantBillingAdmin)) {
     redirect("/dashboard")
   }

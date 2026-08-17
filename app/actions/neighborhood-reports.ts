@@ -8,6 +8,7 @@ import { fetchOSINTNeighborhoodData } from "@/lib/external/osint-neighborhood"
 import { getRentcastMarketStats } from "@/lib/property/rentcast"
 import { computeLivabilityScore, isNeighborhoodReportAllowed } from "@/lib/property/neighborhood-scoring"
 import { detectFairHousingViolations } from "@/lib/compliance-rules/fair-housing-patterns"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // Types
 export interface NeighborhoodReport {
@@ -202,7 +203,7 @@ export async function refreshNeighborhoodReport(listingId: string): Promise<{
       .eq("id", (await supabase.auth.getUser()).data.user?.id)
       .single()
 
-    if (!["broker", "broker_owner", "admin", "superadmin"].includes(user?.user_type ?? "")) {
+    if (!isAdminOrBroker({ user_type: user?.user_type ?? "" })) {
       return { success: false, error: "Only brokers or admins can refresh non-expired reports" }
     }
   }

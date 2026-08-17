@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button"
 import { AlertTriangle, AlertCircle, Cpu, Phone, HardDrive, Video, DollarSign, Download, TrendingUp } from "lucide-react"
 import { UsageByTypeChart } from "./usage-by-type-chart"
 import { UsageTrendsChart } from "./usage-trends-chart"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -38,7 +39,7 @@ export default async function UsageMeteringDashboard() {
     .maybeSingle()
 
   // Role gate: broker + admin + superadmin only
-  if (!profile || !["broker", "admin", "superadmin"].includes(profile.user_type ?? "")) {
+  if (!profile || !isAdminOrBroker({ user_type: profile.user_type ?? "" })) {
     redirect("/dashboard")
   }
   // Kernel guard: brokerage_id must be present for all dashboard queries

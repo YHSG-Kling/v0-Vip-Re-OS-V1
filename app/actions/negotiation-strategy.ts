@@ -34,8 +34,7 @@ import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { writeNegotiationStrategy } from "@/lib/negotiation/strategy-writer"
-
-const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 async function requireAgentOrAdmin(): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string }
@@ -53,7 +52,7 @@ async function requireAgentOrAdmin(): Promise<
   if (!row?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
 
   const userType = row.user_type as string
-  if (userType !== "agent" && !ADMIN_ROLES.has(userType)) {
+  if (userType !== "agent" && !isAdminOrBroker({ user_type: userType })) {
     return { ok: false, error: "Forbidden" }
   }
   return {
@@ -108,7 +107,7 @@ export async function acceptStrategyAction(
     .maybeSingle()
   if (!strat) return { ok: false, error: "Strategy not found" }
   if (strat.brokerage_id !== auth.brokerageId) return { ok: false, error: "Forbidden" }
-  if (strat.agent_user_id && strat.agent_user_id !== auth.userId && !ADMIN_ROLES.has(auth.userType)) {
+  if (strat.agent_user_id && strat.agent_user_id !== auth.userId && !isAdminOrBroker({ user_type: auth.userType })) {
     return { ok: false, error: "Forbidden: not your strategy" }
   }
 

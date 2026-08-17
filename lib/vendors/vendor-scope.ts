@@ -30,6 +30,7 @@
 // lib/connections/accounting-scopes.ts idiom) so the simulator can stub it.
 
 import type { createServiceClient } from "@/lib/supabase/service"
+import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 type ServiceClient = ReturnType<typeof createServiceClient>
 
@@ -50,8 +51,14 @@ export const VENDOR_INVITE_ROLES: ReadonlySet<string> = new Set([
 /** Roles that may charge ANY vendor in the brokerage (the round-36½ admin
  *  lane). Agents are deliberately absent — they go through the
  *  their-vendor attribution gate instead. */
+// DERIVED from the ONE tenant-admin roster, not retyped beside it. The five
+// admin-class roles come from lib/auth/resolve-user-role.ts and change only
+// there. `superadmin` is added EXPLICITLY and only here: it is a PLATFORM
+// identity, deliberately absent from the tenant roster, and this lane admits it
+// on purpose — scripts/vendor-scope-charging-simulator.ts asserts it.
 export const VENDOR_CHARGE_ADMIN_ROLES: ReadonlySet<string> = new Set([
-  "broker", "broker_owner", "broker_admin", "admin", "superadmin", "team_lead",
+  ...TENANT_ADMIN_USER_TYPES,
+  "superadmin",
 ])
 
 export function canInviteVendors(userType: string | null | undefined): boolean {
@@ -148,6 +155,10 @@ export function canManageVendorCharge(args: {
   callerUserId: string
   attribution: VendorChargeAttribution | null
 }): boolean {
+  // VENDOR_CHARGE_ADMIN_ROLES, not the bare tenant-admin predicate: this lane
+  // deliberately admits platform staff too, and that Set is DERIVED from the one
+  // tenant roster plus an explicit `superadmin` (see its declaration above), so
+  // there is still a single definition of who the five admin-class roles are.
   if (VENDOR_CHARGE_ADMIN_ROLES.has(args.userType)) return true
   if (args.userType !== "agent") return false
   return !!args.attribution && args.attribution.user_id === args.callerUserId

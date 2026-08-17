@@ -6,7 +6,7 @@
 // error. CDA setup is a broker/admin task, so the upload is role-gated.
 
 import { createClient } from "@/lib/supabase/server"
-import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { uploadBufferToBucket } from "@/lib/storage/buckets"
 
 const CDA_TEMPLATE_BUCKET = "cda-templates"
@@ -23,7 +23,7 @@ export async function uploadCdaTemplateFile(params: {
   const { data: u } = await supabase
     .from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
   if (!u?.brokerage_id) return { ok: false, error: "Brokerage not found" }
-  if (!isAdminOrBroker(u)) return { ok: false, error: "Forbidden — CDA templates are a broker/admin setting." }
+  if (!isBrokerageFinanceAdmin(u)) return { ok: false, error: "Forbidden — CDA templates are a broker/admin setting." }
 
   if (params.mimeType !== "application/pdf") {
     return { ok: false, error: "CDA templates must be PDF files." }

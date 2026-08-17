@@ -26,8 +26,8 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
-const MANAGER_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
 /** Roles whose queue is the approval/review desk. */
 const REVIEW_ROLES = new Set(["compliance_officer", "compliance_manager", "admin", "broker", "broker_admin"])
 
@@ -53,7 +53,7 @@ export async function getStaff360Action(
   const { data: caller } = await supabase
     .from("users").select("user_type, role, brokerage_id").eq("id", user.id).maybeSingle()
   const callerRole = (caller?.user_type ?? caller?.role ?? "") as string
-  if (!MANAGER_ROLES.has(callerRole)) return { ok: false, error: "Forbidden" }
+  if (!isAdminOrBroker({ user_type: callerRole })) return { ok: false, error: "Forbidden" }
   if (!caller?.brokerage_id) return { ok: false, error: "No brokerage on your profile" }
   const brokerageId = caller.brokerage_id as string
 
@@ -164,7 +164,7 @@ export async function assignAcademyModuleToStaffAction(
   const { data: caller } = await supabase
     .from("users").select("user_type, role, brokerage_id").eq("id", user.id).maybeSingle()
   const callerRole = (caller?.user_type ?? caller?.role ?? "") as string
-  if (!MANAGER_ROLES.has(callerRole)) return { ok: false, error: "Forbidden" }
+  if (!isAdminOrBroker({ user_type: callerRole })) return { ok: false, error: "Forbidden" }
   if (!caller?.brokerage_id) return { ok: false, error: "No brokerage on your profile" }
 
   const svc = createServiceClient()

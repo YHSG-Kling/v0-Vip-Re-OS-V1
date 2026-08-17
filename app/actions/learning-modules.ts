@@ -38,6 +38,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { pickLearningModulesForActor, type LearningActorKind, type LearningModulePick } from "@/lib/learning-router/composer"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 type Channel =
   | "article"
@@ -55,7 +56,6 @@ const ALLOWED_CHANNELS: ReadonlySet<Channel> = new Set([
   "newsletter", "email", "social", "quiz", "portal_lesson",
 ])
 
-const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
 
 // ─── Auth helper for admin actions ──────────────────────────────────────────
 async function requireAdmin(): Promise<
@@ -72,7 +72,7 @@ async function requireAdmin(): Promise<
     .eq("id", user.id)
     .maybeSingle()
   if (!row?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
-  if (!ADMIN_ROLES.has(row.user_type as string)) {
+  if (!isAdminOrBroker({ user_type: row.user_type as string })) {
     return { ok: false, error: "Forbidden: requires broker / admin / team_lead" }
   }
   return {
@@ -577,7 +577,7 @@ export async function getLearningAssignmentsForActorAction(opts: {
       .select("user_type")
       .eq("id", user.id)
       .maybeSingle()
-    if (!row || !ADMIN_ROLES.has((row.user_type as string) ?? "")) {
+    if (!row || !isAdminOrBroker({ user_type: (row.user_type as string) ?? "" })) {
       return { ok: false, error: "Forbidden" }
     }
   }

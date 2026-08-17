@@ -8,6 +8,7 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { VOICE_AUTHORITY_MATRIX } from '../helpers/authority-matrix'
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export interface AuthorityValidationResult {
   allowed: boolean
@@ -126,7 +127,7 @@ async function validateListingAccess(
   }
 
   // Admin/broker can access all listings in brokerage
-  if (['admin', 'broker', 'team_lead'].includes(user.user_type ?? user.role ?? '')) {
+  if (isAdminOrBroker({ user_type: user.user_type ?? user.role ?? '' })) {
     return true
   }
 
@@ -172,7 +173,7 @@ async function validateContactAccess(
   }
 
   // Admin/broker/team_leader can access all contacts in brokerage
-  if (['admin', 'broker', 'team_lead'].includes(user.user_type ?? user.role ?? '')) {
+  if (isAdminOrBroker({ user_type: user.user_type ?? user.role ?? '' })) {
     return true
   }
 

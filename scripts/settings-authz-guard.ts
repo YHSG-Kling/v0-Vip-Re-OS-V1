@@ -14,6 +14,7 @@
 
 import { readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
+import { isAdminOrBroker } from "../lib/auth/resolve-user-role"
 
 let passed = 0
 let failed = 0
@@ -59,14 +60,30 @@ for (const t of targets) {
     "add a user_type/isAdminOrBroker gate, or add to EXEMPT with a reason")
 }
 
-// The shared broker-level gate must admit the live legacy variants (broker_admin
-// canonicalizes to broker; super_admin to superadmin), or broker-admins get
-// wrongly denied everywhere isAdminOrBroker is used.
-console.log("\n── isAdminOrBroker admits the live legacy role variants ──")
+// The shared broker-level gate must admit every role the owner calls admin-class,
+// or those seats get wrongly denied everywhere isAdminOrBroker is used.
+//
+// ── THIS BLOCK USED TO PROVE NOTHING, AND WOULD HAVE GONE ON PASSING ────────
+//
+// It read the helper's SOURCE TEXT and asserted `helper.includes("broker_admin")`
+// / `helper.includes("super_admin")`. That is a probe pinned to PROSE: the two
+// words appear in that file's comments as well as its code, so the checks passed
+// on the strength of the documentation. When `super_admin` was deliberately
+// removed from the tenant roster — it is not a storable user_type, and platform
+// identity moved to its own gate — the assertion became FALSE while still
+// reporting green, because the comment explaining the removal contains the word.
+// A check that cannot tell a change from its own changelog is not a check.
+//
+// Replaced with the BEHAVIOUR. Now the gate itself is asked, so the answer
+// changes when the gate changes, whatever anyone writes about it.
+console.log("\n── isAdminOrBroker admits the owner's admin-class roster ──")
 {
-  const helper = readFileSync(join(process.cwd(), "lib/auth/resolve-user-role.ts"), "utf8")
-  check("isAdminOrBroker includes broker_admin", helper.includes("broker_admin"))
-  check("isAdminOrBroker includes super_admin", helper.includes("super_admin"))
+  for (const t of ["broker", "broker_admin", "broker_owner", "team_lead", "admin"]) {
+    check(`isAdminOrBroker admits '${t}'`, isAdminOrBroker({ user_type: t }))
+  }
+  // Paired negative control: an assertion that everything is admitted would pass
+  // the five above just as happily.
+  check("…and still refuses a non-admin seat", !isAdminOrBroker({ user_type: "agent" }))
 }
 
 console.log(`\n RESULT: ${passed} passed, ${failed} failed`)

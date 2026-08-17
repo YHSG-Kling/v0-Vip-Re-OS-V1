@@ -5,6 +5,7 @@ import { TenantCoverageCard } from "./tenant-coverage-card"
 import { loadTenantCoverage, type TenantCoverage } from "@/lib/analytics/territory-coverage"
 import { loadTerritoryRoi, type TerritoryRoiReport } from "@/lib/analytics/territory-roi"
 import { redirect } from "next/navigation"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const metadata = {
   title:       "Scrape Diagnostics | Kernel OS Admin",
@@ -51,7 +52,7 @@ export default async function ScrapeDiagnosticsPage() {
   // see app/actions/vendor-budget.ts:136-147.
   const isSuperadmin = userType === "superadmin" || userData?.platform_role === "superadmin"
 
-  if (!["admin", "broker", "superadmin"].includes(userType)) {
+  if (!isAdminOrBroker({ user_type: userType })) {
     redirect("/dashboard")
   }
 

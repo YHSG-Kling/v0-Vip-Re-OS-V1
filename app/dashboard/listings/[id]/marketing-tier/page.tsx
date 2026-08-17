@@ -9,6 +9,7 @@ import {
   getTierBudgets,
   getTiersForBrokerage,
 } from "@/lib/listings/tier-assigner"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 interface PageProps {
   params: Promise<{ id: string }>
@@ -159,7 +160,7 @@ export default async function ListingMarketingTierPage({ params }: PageProps) {
     ? await getMarketingPackageStatus(transactionId)
     : null
 
-  const isAdmin = ["broker", "broker_owner", "admin", "superadmin"].includes(userRow.user_type ?? "")
+  const isAdmin = isAdminOrBroker({ user_type: userRow.user_type ?? "" })
 
   return (
     <MarketingTierClient

@@ -92,6 +92,7 @@ import { resolveLedTeamId } from "@/lib/kernel/resolve-user-team"
 import { resolveBrandContext } from "@/lib/branding/resolve-brand-context"
 import { parseCapAmountInput, ensureTeamCapWindows } from "@/lib/commission/cap-resolver"
 import { revalidatePath } from "next/cache"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 /**
  * THE ALLOW-LISTS. `teams` also carries tenancy (`brokerage_id`,
@@ -302,7 +303,7 @@ export interface TeamBrandingSnapshot {
 
 /** `is_brokerage_admin()` in SQL — the same three types the brokerages policy uses. */
 function isBrokerageAdmin(userType: string): boolean {
-  return ["admin", "broker", "broker_owner"].includes(userType)
+  return isAdminOrBroker({ user_type: userType })
 }
 
 const EMPTY_SNAPSHOT: TeamBrandingSnapshot = {

@@ -26,6 +26,7 @@ import { CreateTeamDialog } from "./create-team-dialog"
 import { getTeamDashboard } from "@/app/actions/multi-persona"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { resolveUserTeam, resolveTeamAgentIds } from "@/lib/kernel/resolve-user-team"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -65,7 +66,7 @@ function boardScopeFor(userType: string, platformRole: string | null): BoardScop
   // Brokerage tier — is_brokerage_admin() plus the legacy superadmin user_type
   // marker. These are the roles app/dashboard/brokerage/page.tsx already gates
   // itself to, and the whole-brokerage board is unchanged for them.
-  if (["broker", "broker_owner", "admin", "superadmin", "super_admin"].includes(userType)) {
+  if (isAdminOrBroker({ user_type: userType })) {
     return "brokerage"
   }
   // Team tier — the owner's ruling: "teams should only see their own board."

@@ -4,6 +4,7 @@ import { AIQualityDashboardClient } from "./ai-quality-dashboard-client"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getWeeklyMetrics, getLastTwoWeeksMetrics } from "@/lib/intelligence/feedback-aggregator"
 import { getCalibrationLog } from "@/lib/intelligence/prompt-calibrator"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -30,7 +31,7 @@ export default async function AIQualityPage() {
     .eq("id", user.id)
     .single()
 
-  if (!userData || !["admin", "broker", "superadmin"].includes(userData.user_type)) {
+  if (!userData || !isAdminOrBroker({ user_type: userData.user_type })) {
     redirect("/dashboard")
   }
 

@@ -40,6 +40,7 @@ import {
 import { HeatmapFilterBar } from "./heatmap-filter-bar"
 import { HeatmapMap } from "./heatmap-map"
 import { HeatmapLegend } from "./heatmap-legend"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const metadata = {
   title: "Team Heatmap | VIP-OS",
@@ -77,7 +78,7 @@ export default async function TeamHeatmapPage({ searchParams }: PageProps) {
     .single()
 
   const userRole = user?.user_type || "agent"
-  const isPrivileged = ["broker", "broker_owner", "admin", "team_lead", "superadmin"].includes(userRole)
+  const isPrivileged = isAdminOrBroker({ user_type: userRole })
 
   // Parse filters from URL
   const filters: HeatmapFilters = {

@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ contactId: string }> }) {
   // Auth guard — brokerage scoping always from session
@@ -20,7 +21,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     // Agents can only see their own contacts; brokers/admins see all in the brokerage.
     // contacts.agent_id → agents.id (FK corrected in migration 114)
-    if (auth.agentId && !["broker", "admin", "superadmin"].includes(auth.userType)) {
+    if (auth.agentId && !isAdminOrBroker({ user_type: auth.userType })) {
       query = query.eq("agent_id", auth.agentId)
     }
 
@@ -55,7 +56,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
 
     // Agents can only delete their own contacts; brokers/admins can delete any in brokerage.
     // contacts.agent_id → agents.id (FK corrected in migration 114)
-    if (auth.agentId && !["broker", "admin", "superadmin"].includes(auth.userType)) {
+    if (auth.agentId && !isAdminOrBroker({ user_type: auth.userType })) {
       query = query.eq("agent_id", auth.agentId)
     }
 

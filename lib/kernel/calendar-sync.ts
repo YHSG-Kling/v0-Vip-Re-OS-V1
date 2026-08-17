@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { createHash } from "crypto"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -100,7 +101,7 @@ async function assertCanAccessAccount(params: {
     }
     return
   }
-  if (!["admin", "broker", "superadmin"].includes(params.userType)) {
+  if (!isAdminOrBroker({ user_type: params.userType })) {
     throw new Error("Forbidden: insufficient permissions")
   }
 }
@@ -285,7 +286,7 @@ export async function listProviderAccounts(params: {
 
   if (userType === "agent") {
     query = query.eq("user_id", params.userId)
-  } else if (!["admin", "broker", "superadmin"].includes(userType)) {
+  } else if (!isAdminOrBroker({ user_type: userType })) {
     throw new Error("Forbidden: insufficient permissions")
   }
 

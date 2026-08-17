@@ -8,6 +8,7 @@ import { redirect } from "next/navigation"
 import { SettingsControlOSClient } from "./settings-control-os-client"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { normalizeCapAnniversaryBasis } from "@/lib/commission/cap-resolver"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const metadata = { title: "Settings | Control Center" }
 
@@ -34,7 +35,7 @@ export default async function SettingsControlOSPage() {
 
   // Role gate: broker + admin only for full settings — user_type is canonical; role is legacy fallback
   const resolvedType = profile.user_type ?? profile.role ?? ""
-  if (!["broker", "admin"].includes(resolvedType)) {
+  if (!isAdminOrBroker({ user_type: resolvedType })) {
     redirect("/dashboard")
   }
 

@@ -19,6 +19,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { generateAIResponse } from "@/lib/ai"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 const SYSTEM_PROMPT = `You are a real estate brokerage training director. Draft ONE training module.
 
@@ -69,7 +70,7 @@ export async function POST(request: NextRequest) {
   if (brokerageId && brokerageId !== caller.brokerage_id) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 })
   }
-  if (!["admin", "broker", "broker_owner", "superadmin", "super_admin"].includes(caller.user_type ?? "")) {
+  if (!isAdminOrBroker({ user_type: caller.user_type ?? "" })) {
     return NextResponse.json({ error: "Forbidden: brokerage admin only" }, { status: 403 })
   }
 

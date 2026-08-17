@@ -33,6 +33,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { isValidUUID } from "@/lib/validations"
 import { revalidatePath } from "next/cache"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -58,10 +59,6 @@ export interface BrokerageInsight {
   computedAt:            string
 }
 
-const ADMIN_USER_TYPES = new Set([
-  "superadmin", "broker", "broker_admin", "admin", "team_lead",
-])
-
 async function requireAdmin(): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string }
   | { ok: false; error: string }
@@ -75,7 +72,7 @@ async function requireAdmin(): Promise<
     .eq("id", user.id)
     .maybeSingle()
   const userType = (profile?.user_type as string | undefined) ?? ""
-  if (!ADMIN_USER_TYPES.has(userType)) return { ok: false, error: "Insufficient privileges" }
+  if (!isAdminOrBroker({ user_type: userType })) return { ok: false, error: "Insufficient privileges" }
   if (!profile?.brokerage_id) return { ok: false, error: "No brokerage" }
   return { ok: true, userId: user.id, brokerageId: profile.brokerage_id as string, userType }
 }

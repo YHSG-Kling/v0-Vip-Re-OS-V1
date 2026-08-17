@@ -22,6 +22,7 @@ import { SyncHistoryTable } from "./sync-history-table"
 import { ErrorLogTable } from "./error-log-table"
 import { TaxCategoryManager } from "./tax-category-manager"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -48,7 +49,7 @@ export default async function AccountingSettingsPage() {
   if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   // Role gate: broker + admin only
-  if (!["broker", "admin"].includes(profile.user_type ?? "")) {
+  if (!isBrokerageFinanceAdmin({ user_type: profile.user_type ?? "" })) {
     redirect("/dashboard")
   }
 

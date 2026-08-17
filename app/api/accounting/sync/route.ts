@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 export async function POST(request: NextRequest) {
   try {
@@ -20,7 +21,7 @@ export async function POST(request: NextRequest) {
       .single()
 
     const resolvedType = profile?.user_type ?? profile?.role ?? ""
-    if (!profile || !["broker", "admin"].includes(resolvedType)) {
+    if (!profile || !isBrokerageFinanceAdmin({ user_type: resolvedType })) {
       return NextResponse.json({ error: "Forbidden: broker or admin role required" }, { status: 403 })
     }
 
