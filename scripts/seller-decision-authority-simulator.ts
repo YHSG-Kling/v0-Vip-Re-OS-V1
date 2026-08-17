@@ -63,6 +63,11 @@ import {
   isBrokerageFinanceAdmin,
   isBrokerageFinanceAdminGrantRole,
 } from "../lib/auth/resolve-user-role"
+// The scanner vocabulary is SHARED, never restated — finance-authority's scan
+// forbids a module that asks the finance predicate from also keeping a role
+// array, and this module asks it. That scan is what caught the copy this import
+// replaces.
+import { ROLE_WORDS } from "./shared/role-words"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -129,11 +134,7 @@ function codeHits(src: string, needle: string): number[] {
   }
 }
 
-const ROLE_WORDS = new Set([
-  "agent", "broker", "broker_owner", "broker_admin", "admin", "tc", "vendor", "lender",
-  "isa", "team_lead", "compliance_officer", "title_agent", "contact", "system", "support",
-  "superadmin", "super_admin", "marketing",
-])
+
 
 /**
  * Every RESTATED ROLE UNION — a type position spelling out `"a" | "b" | "c"` from

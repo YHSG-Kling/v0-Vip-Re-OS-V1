@@ -64,6 +64,7 @@ import {
   resolveTenantAdmin,
   resolveBrokerageFinanceAdmin,
 } from "../lib/auth/resolve-user-role"
+import { ROLE_WORDS } from "./shared/role-words"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -280,12 +281,14 @@ function stringMask(s: string): { mask: boolean[]; comment: boolean[] } {
   return { mask, comment }
 }
 
-/** The vocabulary a role array may be built from. Anything else is not a roster. */
-const ROLE_WORDS = new Set([
-  "agent", "broker", "broker_owner", "broker_admin", "admin", "tc", "vendor", "lender",
-  "isa", "team_lead", "compliance_officer", "title_agent", "contact", "system", "support",
-  "superadmin", "super_admin", "marketing",
-])
+/**
+ * The vocabulary a role array may be built from. Anything else is not a roster.
+ *
+ * IMPORTED, not restated. This scan forbids any module asking the shared finance
+ * predicate from also keeping a role array — and this module asks it. It escaped
+ * its own rule only through the self-exemption in the walk below; a second proof
+ * that copied this set did NOT escape, and the scan caught it. One definition.
+ */
 
 /**
  * Every ARRAY LITERAL OF ROLE NAMES used as a MEMBERSHIP TEST.
