@@ -356,8 +356,23 @@ console.log("\n[the admin can actually set it — broker/admin gated, in Setting
   const action = src("app/actions/admin/lead-routing-settings.ts")
   check("the action exists and validates against the routing module",
     /isRuleType\(method\)/.test(action))
-  check("…and is gated to broker + admin, the same gate the Settings page uses",
-    /\["broker", "admin"\]\.includes\(type\)/.test(action))
+  // PINNED TO THE GATE, NOT ITS SPELLING. This matched the literal
+  // `["broker", "admin"].includes(type)` — one of 176 spellings of the same
+  // question, now collapsed onto the ONE shared roster (owner ruling). The
+  // action uses the ASYNC resolver, which also honours a role GRANT, so it
+  // admits strictly more than the literal did and is the stronger gate; the
+  // old regex would have gone red on that improvement and stayed green if the
+  // gate's result were simply never read.
+  check("…and is gated on the shared tenant-admin roster, grant half included",
+    /await resolveTenantAdmin\(/.test(action) &&
+    /import \{[^}]*resolveTenantAdmin[^}]*\} from "@\/lib\/auth\/resolve-user-role"/.test(action))
+  // BOTH refusal branches, because they are different facts. supabase-js
+  // RESOLVES a refused query, so "the grant read was denied" and "you are not an
+  // admin" would otherwise collapse into one message that tells an administrator
+  // they are not one, during an outage.
+  check("…and REFUSES a non-admin, distinctly from reporting a refused grant read",
+    /if \(!admin\.ok\) return \{ ok: false/.test(action) &&
+    /if \(!admin\.isTenantAdmin\)[\s\S]{0,200}?return \{\s*ok: false/.test(action))
   check("…and READS the write error rather than discarding it",
     /if \(error\) return \{ success: false, error: error\.message \}/.test(action))
 

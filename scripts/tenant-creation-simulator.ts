@@ -109,8 +109,12 @@ function sourceLayer() {
     /export async function inviteTenantMember/.test(kernel) &&
     kernel.indexOf("inviteUserByEmail", kernel.indexOf("inviteTenantMember")) < kernel.indexOf('.from("users").upsert', kernel.indexOf("export async function inviteTenantMember")))
   const inv = src("app/actions/admin/invite-user.ts")
+  // The literal this replaced carried a `superadmin` user_type matching zero
+  // live rows and omitted broker_owner. The shared roster carries the ruling's
+  // five tenant admin-class roles; the platform half is a SEPARATE question,
+  // asked separately below.
   check("tenant admins/broker/team_lead invite THEIR OWN users via the shared core",
-    /inviteTenantMember\(\{/.test(inv) && /\["admin", "broker", "superadmin", "team_lead"\]\.includes\(callerType\)/.test(inv))
+    /inviteTenantMember\(\{/.test(inv) && /isAdminOrBroker\(\{\s*user_type:\s*callerType/.test(inv))
   const tu = src("app/actions/superadmin/tenant-users.ts")
   check("superadmin can CREATE users down into ANY tenant (gated + audited + shared core)",
     /export async function createTenantUserAction/.test(tu) && /requireSuperadmin/.test(tu) && /inviteTenantMember\(\{/.test(tu) && /"user\.created"/.test(tu))

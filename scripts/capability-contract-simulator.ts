@@ -367,8 +367,11 @@ console.log("\n[a human can see it too, not only the MCP tool list]")
   check("it is actually rendered — a panel nobody mounts is not a surface",
     /AgentCapabilityPanel/.test(src("app/dashboard/system/page.tsx")) &&
     /AgentCapabilityPanel/.test(src("app/dashboard/system/components/os/index.ts")))
+  // The page's local role array — which named a `superadmin` user_type that
+  // MEASURED live matches zero rows, and omitted broker_owner — is gone,
+  // replaced by the one shared roster. Assert the gate, not the array.
   check("…on a broker/admin surface, not an agent one",
-    /\['admin', 'broker', 'superadmin'\]/.test(src("app/dashboard/system/page.tsx")))
+    /isAdminOrBroker\(\{\s*user_type/.test(src("app/dashboard/system/page.tsx")))
   check("Provider Health still answers the PROVIDER question — the two are not merged",
     /getBrokerageProviderReadiness/.test(src("app/dashboard/system/components/os/provider-health-panel.tsx")))
 }

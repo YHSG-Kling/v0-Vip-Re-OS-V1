@@ -116,8 +116,13 @@ function sourceLayer() {
   check("god-switch page stays raw superadmin BY DESIGN (not capability-widened)",
     !src("app/dashboard/superadmin/platform/page.tsx").includes("requirePlatformCapability"))
   const paywall = src("app/dashboard/admin/billing/page.tsx")
+  // `broker_admin` was an INPUT-ONLY spelling in the page's own literal — not a
+  // storable user_type, so it matched no live row. The page now asks the shared
+  // BROKERAGE-MONEY predicate, which is the right tier for a billing surface and
+  // admits broker_owner, whom the literal refused.
   check("PAYWALL BUG FIXED: billing page admits the tenant's own billing admins (pinned to their brokerage)",
-    paywall.includes("isTenantBillingAdmin") && paywall.includes("broker_admin"))
+    paywall.includes("isTenantBillingAdmin") &&
+    /isTenantBillingAdmin\s*=\s*isBrokerageFinanceAdmin\(\{\s*user_type/.test(paywall))
 }
 
 async function liveLayer() {
