@@ -769,7 +769,7 @@ export async function analyzeOffer(offerId: string, _userId?: string) {
 
   const commissionResult = await resolveCommissionRate(userId)
   if ("error" in commissionResult) return { success: false, error: commissionResult.error }
-  const { totalRate } = commissionResult
+  const { brokerageId: usageBrokerageId, totalRate } = commissionResult
 
   const netToSeller = calcNetToSeller({
     offer_price:              offer.offer_price,
@@ -777,7 +777,12 @@ export async function analyzeOffer(offerId: string, _userId?: string) {
     commission_rate:          totalRate,
   })
 
-  await incrementUsage(userId, "llm_calls", 1)
+  // METERED TO THE TENANT, NOT A PERSON. This passed `userId` — a users.id — as
+  // the brokerageId, so the counter row failed usage_counters' tenant RLS
+  // (brokerage_id = current_user_brokerage_id()), the error was swallowed, and
+  // this paid inference was never metered. The commission resolver above already
+  // returned the real brokerage id.
+  await incrementUsage(usageBrokerageId, "llm_calls", 1)
 
   const listPrice = Number((offer.listing as any)?.list_price ?? 0)
 

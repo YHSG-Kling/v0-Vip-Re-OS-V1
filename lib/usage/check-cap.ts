@@ -21,6 +21,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { currentUsagePeriod } from "./period"
 import type { MediaMetric } from "./log-media-usage"
 
 export type CapMetric = MediaMetric | "llm_calls" | "sms_sent" | "emails_sent" | "storage_gb" | "ai_tokens_monthly"
@@ -88,16 +89,14 @@ export async function checkUsageCap(params: {
   if (limit < 0) return UNLIMITED // -1 = unlimited
 
   // 3. Current month usage
-  const now = new Date()
-  const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
-  const periodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))
+  // Canonical UTC period — lib/usage/period.ts is the one definition (#190).
+  const { periodStartIso } = currentUsagePeriod()
 
   const { data: counter } = await supabase
     .from("usage_counters")
     .select("value")
     .eq("brokerage_id", params.brokerageId)
-    .eq("period_start", periodStart.toISOString())
-    .eq("period_end", periodEnd.toISOString())
+    .eq("period_start", periodStartIso)
     .eq("metric", params.metric)
     .maybeSingle()
 

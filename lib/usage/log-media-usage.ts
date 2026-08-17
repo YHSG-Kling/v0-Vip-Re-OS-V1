@@ -16,6 +16,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { currentUsagePeriod } from "./period"
 
 export type MediaMetric =
   | "live_avatar_minutes"
@@ -72,9 +73,8 @@ export async function logMediaUsage(params: LogMediaUsageParams): Promise<void> 
 
   // 2. Monthly counter — UPSERT with delta increment
   // Period: calendar month UTC. UNIQUE(brokerage_id, period_start, period_end, metric).
-  const now = new Date()
-  const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
-  const periodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))
+  // Canonical UTC period — lib/usage/period.ts is the one definition (#190).
+  const { periodStartIso, periodEndIso } = currentUsagePeriod()
 
   // Read-modify-write — small race risk if two events land in the same ms,
   // acceptable for a usage counter (we don't bill off it directly; we bill
@@ -84,8 +84,7 @@ export async function logMediaUsage(params: LogMediaUsageParams): Promise<void> 
     .from("usage_counters")
     .select("id, value")
     .eq("brokerage_id", params.brokerageId)
-    .eq("period_start", periodStart.toISOString())
-    .eq("period_end", periodEnd.toISOString())
+    .eq("period_start", periodStartIso)
     .eq("metric", params.metric)
     .maybeSingle()
 
@@ -100,8 +99,8 @@ export async function logMediaUsage(params: LogMediaUsageParams): Promise<void> 
       .from("usage_counters")
       .insert({
         brokerage_id: params.brokerageId,
-        period_start: periodStart.toISOString(),
-        period_end: periodEnd.toISOString(),
+        period_start: periodStartIso,
+        period_end: periodEndIso,
         metric: params.metric,
         value: Math.ceil(params.quantity),
       })

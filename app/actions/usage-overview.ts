@@ -8,6 +8,7 @@
  */
 
 import { resolveWriteContext } from "@/lib/kernel/identity"
+import { currentUsagePeriod } from "@/lib/usage/period"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export interface MetricSnapshot {
@@ -67,8 +68,10 @@ export async function loadUsageOverview(): Promise<{
 
   const supabase = createServiceClient()
   const now = new Date()
-  const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
-  const periodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))
+  // Canonical UTC period — lib/usage/period.ts (#190).
+  const { periodStartIso: _ps, periodEndIso: _pe } = currentUsagePeriod(now)
+  const periodStart = new Date(_ps)
+  const periodEnd = new Date(_pe)
 
   // 1. Plan tier
   const { data: brokerage } = await supabase

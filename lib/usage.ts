@@ -1,6 +1,7 @@
 
 
 import { createClient } from "@/lib/supabase/server"
+import { currentUsagePeriod } from "@/lib/usage/period"
 
 export interface UsageLimit {
   withinLimit: boolean
@@ -17,45 +18,65 @@ export interface UsageLimit {
 export async function incrementUsage(brokerageId: string, metric: string, amount = 1): Promise<void> {
   const supabase = await createClient()
 
-  // Calculate current billing period (monthly)
-  const now = new Date()
-  const periodStart = new Date(now.getFullYear(), now.getMonth(), 1)
-  const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59)
+  // ONE period vocabulary (#190). This function used to compute LOCAL month
+  // boundaries with an INCLUSIVE end while every reader — including the
+  // v_brokerage_ai_quota view that gates AI spend — keyed on the UTC/EXCLUSIVE
+  // convention. period_end is part of the UNIQUE key, so the quota join could
+  // NEVER match a row this wrote: AI usage metered to a row nothing read.
+  const { periodStartIso, periodEndIso } = currentUsagePeriod()
 
-  // Upsert: increment if exists, create if not
+  // Read-then-write raced under concurrency (two requests both see "missing",
+  // one insert loses). The UNIQUE(brokerage_id, period_start, period_end,
+  // metric) key makes the read half of the old dance unnecessary for the
+  // insert case; the increment still needs the current value, so keep the read
+  // but let a conflicting insert fall through to an update instead of erroring.
   const { data: existing, error: fetchError } = await supabase
     .from("usage_counters")
     .select("id, value")
     .eq("brokerage_id", brokerageId)
     .eq("metric", metric)
-    .eq("period_start", periodStart.toISOString())
-    .eq("period_end", periodEnd.toISOString())
+    .eq("period_start", periodStartIso)
     .maybeSingle()
+  if (fetchError) {
+    console.error("[usage] counter read refused — this call will NOT be metered:", fetchError.message)
+    return
+  }
 
   if (existing) {
-    // Update existing counter
     const { error: updateError } = await supabase
       .from("usage_counters")
       .update({ value: existing.value + amount })
       .eq("id", existing.id)
+    if (updateError) console.error("[usage] counter update refused — not metered:", updateError.message)
+    return
+  }
 
-    if (updateError) {
-      console.error("Error updating usage counter:", updateError)
-    }
-  } else {
-    // Insert new counter
-    const { error: insertError } = await supabase.from("usage_counters").insert({
-      brokerage_id: brokerageId,
-      metric,
-      value: amount,
-      period_start: periodStart.toISOString(),
-      period_end: periodEnd.toISOString(),
-    })
-
-    if (insertError) {
-      console.error(" Error inserting usage counter:", insertError)
+  const { error: insertError } = await supabase.from("usage_counters").insert({
+    brokerage_id: brokerageId,
+    metric,
+    value: amount,
+    period_start: periodStartIso,
+    period_end: periodEndIso,
+  })
+  if (!insertError) return
+  // Lost the insert race: another request created the row between our read and
+  // write. Fold this increment into it rather than dropping the count.
+  if (insertError.code === "23505") {
+    const { data: winner } = await supabase
+      .from("usage_counters")
+      .select("id, value")
+      .eq("brokerage_id", brokerageId)
+      .eq("metric", metric)
+      .eq("period_start", periodStartIso)
+      .maybeSingle()
+    if (winner) {
+      const { error: e2 } = await supabase
+        .from("usage_counters").update({ value: winner.value + amount }).eq("id", winner.id)
+      if (e2) console.error("[usage] post-race update refused — not metered:", e2.message)
+      return
     }
   }
+  console.error("[usage] counter insert refused — this call was NOT metered:", insertError.message)
 }
 
 /**
@@ -102,18 +123,17 @@ export async function checkLimit(brokerageId: string, metric: string): Promise<U
     }
   }
 
-  // Get current usage for this billing period
-  const now = new Date()
-  const periodStart = new Date(now.getFullYear(), now.getMonth(), 1)
-  const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59)
+  // Get current usage for this billing period — the CANONICAL period, keyed on
+  // period_start only. Pinning period_end too is how the old rows (written with
+  // an inclusive end) became unreadable to their own limit check.
+  const { periodStartIso } = currentUsagePeriod()
 
   const { data: usage, error: usageError } = await supabase
     .from("usage_counters")
     .select("value")
     .eq("brokerage_id", brokerageId)
     .eq("metric", metric)
-    .eq("period_start", periodStart.toISOString())
-    .eq("period_end", periodEnd.toISOString())
+    .eq("period_start", periodStartIso)
     .maybeSingle()
 
   const used = usage?.value || 0
