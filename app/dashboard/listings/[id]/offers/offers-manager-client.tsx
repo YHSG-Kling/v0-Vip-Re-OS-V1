@@ -48,6 +48,7 @@ import { SellerDecisionReadinessCard } from "./components/seller-decision-readin
 import { DecisionHistoryPanel } from "@/app/components/dashboard/listings/lifecycle/decision-history-panel"
 import { toast } from "@/hooks/use-toast"
 import { getOfferContext } from "@/lib/contacts/ownership-model"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 type Offer = {
   id: string
@@ -112,9 +113,25 @@ interface Props {
   currentUserId: string
   brokerageId: string
   userRole: string
+  /**
+   * May this caller override a failing seller-decision gate?
+   *
+   * Resolved on the SERVER (page.tsx) because it is not answerable here: it is
+   * users.user_type OR a role GRANT pinned to the caller's own brokerage, and the
+   * grant half needs I/O a render path cannot do. Deriving it client-side from
+   * `userRole` alone would hide the button from the grant-only admin the server
+   * would have admitted — a courtesy gate NARROWER than the real gate, which
+   * refuses a legitimate person for a reason they cannot see.
+   *
+   * Overriding this gate is BROKERAGE-WIDE MONEY, not an admin surface: it
+   * suppresses a failing check on the CMA and the net sheet, the two documents
+   * the seller's money decision rests on. m472 holds team_lead out of that tier,
+   * so this is deliberately narrower than `canApprove`.
+   */
+  canOverrideDecisionGate: boolean
 }
 
-export function OffersManagerClient({ listing, initialOffers, currentUserId, brokerageId, userRole }: Props) {
+export function OffersManagerClient({ listing, initialOffers, currentUserId, brokerageId, userRole, canOverrideDecisionGate }: Props) {
   const [offers, setOffers] = useState<Offer[]>(initialOffers)
   const [refreshError, setRefreshError] = useState<string | null>(null)
 
@@ -263,7 +280,7 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
   }, [listing.id])
 
   const activeOffers = offers.filter((o) => o.status !== "rejected")
-  const canApprove = ["admin", "broker", "owner"].includes(userRole)
+  const canApprove = isAdminOrBroker({ user_type: userRole })
 
   // A counter is PERSISTED as its own offers row pointing back at the original
   // (offers.parent_offer_id). That means the "what did they send back" side of a
@@ -351,17 +368,62 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
   }
 
   // Called after readiness check passes (or override confirmed)
-  function handleProceedAccept(offerId: string, isOverride: boolean, reason: string) {
-    startTransition(async () => {
-      await logSellerDecisionTransition({
-        listing_id: listing.id,
-        to_state: "SELLER_DECISION_READY" as any,
-        authority_role: "agent",
-        override_flag: isOverride,
-        override_reason: isOverride ? reason : undefined,
-        metadata: { offerId, action: "accept_offer" },
+  //
+  // THE ENGINE IS THE AUTHORITY, NOT THE BUTTON. This used to log
+  // `override_flag: true` and proceed — no authority test anywhere on the path.
+  // The seller-decision override suppresses a FAILING check on the CMA and the
+  // net sheet, which m472 places in the brokerage-wide money tier, so an override
+  // now goes back through evaluateSellerDecisionReadiness with requestOverride
+  // set; that action resolves the caller's real authority server-side (user_type
+  // OR a role grant pinned to their own brokerage) and refuses if it is absent.
+  // The button below is gated too, but a client-side gate is a courtesy — this
+  // await is the gate.
+  async function handleProceedAccept(offerId: string, isOverride: boolean, reason: string) {
+    if (isOverride) {
+      const authorized = await evaluateSellerDecisionReadiness({
+        listingId: listing.id,
+        targetState: "SELLER_DECISION_READY" as any,
+        requestOverride: true,
+        overrideReason: reason,
       })
+      if (!authorized?.success) {
+        toast({ title: "Override refused", description: authorized?.error ?? "Not authorised to override this gate.", variant: "destructive" })
+        return
+      }
+      if (!authorized.data?.isReady) {
+        // Authorised, but the override did not reach these blockers — the
+        // presentation checks have no override path at all. Say which remain,
+        // rather than proceeding on an override that cleared nothing.
+        toast({
+          title: "Override did not clear the blockers",
+          description: (authorized.data?.blockers ?? []).join("; ") || "The listing is still not decision-ready.",
+          variant: "destructive",
+        })
+        return
+      }
+    }
+    // authority_role is NOT passed: the server stamps the session's seat. A
+    // client-supplied actor in an audit trail is not an audit trail, and this
+    // call site is why — it passed the literal "agent" for every user.
+    const logged = await logSellerDecisionTransition({
+      listing_id: listing.id,
+      to_state: "SELLER_DECISION_READY" as any,
+      override_flag: isOverride,
+      override_reason: isOverride ? reason : undefined,
+      metadata: { offerId, action: "accept_offer" },
     })
+    if (!logged?.success) {
+      // An OVERRIDE whose record was not written is an override with no
+      // justification on file — halt, because the record IS the authority for it.
+      // A normal acceptance is gated server-side by acceptOffer's compliance
+      // check, so a governance-log outage must not strand the user there; it is
+      // reported loudly and the acceptance goes on.
+      if (isOverride) {
+        toast({ title: "Override NOT recorded — acceptance halted", description: logged?.error ?? "The override could not be written to the audit trail, so it has no justification on file.", variant: "destructive" })
+        return
+      }
+      toast({ title: "Decision not written to the audit trail", description: logged?.error ?? "The acceptance is proceeding, but this transition was not recorded.", variant: "destructive" })
+    }
     handleAccept(offerId)
     setEvalOfferId(null)
     setDecisionEval(null)
@@ -401,7 +463,8 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
       listing_id: listing.id,
       from_state: "SELLER_DECISION_READY" as any,
       reversal_reason: reversalReason || "No reason given",
-      authority_role: "agent",
+      // authority_role is stamped from the session server-side — this used to
+      // pass the literal "agent" for every user, including the broker.
       metadata: { offerId: reversalOffer.id, override_flag: isOverride },
     })
     if (!r?.success) {
@@ -941,14 +1004,16 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                             </ul>
                           )}
                           <div className="flex gap-2 pt-1">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="text-xs h-7"
-                              onClick={() => setShowOverrideInput((v) => !v)}
-                            >
-                              Override & Accept Anyway
-                            </Button>
+                            {canOverrideDecisionGate && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="text-xs h-7"
+                                onClick={() => setShowOverrideInput((v) => !v)}
+                              >
+                                Override & Accept Anyway
+                              </Button>
+                            )}
                             <Button
                               size="sm"
                               variant="ghost"
@@ -958,6 +1023,11 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                               Cancel
                             </Button>
                           </div>
+                          {!canOverrideDecisionGate && (
+                            <p className="text-xs text-amber-800 pt-1 border-t border-amber-200">
+                              Only a broker, brokerage owner or admin may override these checks — ask one of them to review.
+                            </p>
+                          )}
                           {showOverrideInput && (
                             <div className="space-y-2 pt-1 border-t border-amber-200">
                               <Textarea

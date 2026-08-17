@@ -9,6 +9,9 @@
 
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+// The roster the route gates on, asked of the SAME predicate — so this proof
+// cannot agree with a rule the route does not use.
+import { isAdminOrBroker } from "../lib/auth/resolve-user-role"
 
 let passed = 0, failed = 0
 function check(name: string, ok: boolean, detail?: string) {
@@ -22,8 +25,26 @@ console.log("\n── the clone route gained an ISA-default target (broker-gated
   const r = src("app/api/elevenlabs/voice-clone/route.ts")
   check("accepts isa_default and requires one of profile_id/twin_id/isa_default",
     r.includes("isa_default") && r.includes("profile_id (legacy), twin_id (Twin Studio), or isa_default"))
-  check("setting the brokerage-wide ISA voice is broker/admin gated",
-    /isa_default && !\["broker"[^\]]*"admin"[^\]]*"superadmin"\]\.includes\(auth\.userType\)/.test(r))
+  // PINNED TO THE GATE, NOT TO ITS SPELLING.
+  //
+  // This was a regex over the literal role array `["broker","broker_admin",
+  // "admin","superadmin"]`. Repointing the gate onto the ONE shared tenant-admin
+  // roster (owner ruling: "having more than one vocab over the same function or
+  // feature is dangerous") turned it red on an improvement — the shared roster
+  // ADMITS broker_owner, whom the literal refused, so the person who owns the
+  // brokerage could not set their own brokerage's ISA voice; and it drops a
+  // `superadmin` user_type branch that MEASURED live matches zero rows. Worse,
+  // the old regex would have stayed GREEN through a real regression: change
+  // `!includes` to `includes` and it still matches.
+  check("setting the brokerage-wide ISA voice is gated on the shared tenant-admin roster",
+    /if\s*\(\s*isa_default\s*&&\s*!isAdminOrBroker\s*\(\s*\{\s*user_type/.test(r))
+  check("...and the gate REFUSES rather than falling through (403, not a warning)",
+    /isa_default && !isAdminOrBroker[\s\S]{0,200}?status:\s*403/.test(r))
+  check("...and that roster is IMPORTED, not re-declared here",
+    /import\s*\{[^}]*isAdminOrBroker[^}]*\}\s*from\s*"@\/lib\/auth\/resolve-user-role"/.test(r))
+  check("...and it admits the brokerage's own roles, broker_owner included, while refusing an agent",
+    ["broker", "broker_owner", "admin"].every((t) => isAdminOrBroker({ user_type: t })) &&
+    !isAdminOrBroker({ user_type: "agent" }) && !isAdminOrBroker({ user_type: "isa" }))
   check("saves the clone as brokerages.default_isa_voice_id",
     r.includes('.from("brokerages")') && r.includes("default_isa_voice_id: elevenlabs_voice_id"))
   check("still a REAL clone — POST /v1/voices/add, no faked id",

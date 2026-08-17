@@ -7,6 +7,7 @@ import { defaultSellerCosts, type OfferNetInput } from "@/lib/kernel/offer-net-s
 import { deriveNetSheetClosingCostSection } from "@/lib/offers/seller-closing-costs"
 import { resolveAgreedCommission } from "@/lib/offers/net-sheet-calc"
 import { buildSellerDecisionRoom, type DecisionOffer } from "@/lib/kernel/seller-decision-room"
+import { resolveBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 export default async function OffersPage({
   params,
@@ -27,12 +28,29 @@ export default async function OffersPage({
       .single(),
     supabase
       .from("users")
-      .select("brokerage_id, user_type, platform_role")
+      .select("brokerage_id, user_type")
       .eq("id", user.id)
       .single(),
   ])
 
   if (!listing) redirect("/dashboard/listings")
+
+  // WHO MAY OVERRIDE A FAILING SELLER-DECISION GATE — resolved here, on the
+  // server, because the answer is users.user_type OR a role GRANT pinned to this
+  // caller's own brokerage, and the grant half needs I/O the client cannot do.
+  // Overriding suppresses a failing check on the CMA and the net sheet, so m472
+  // puts it in the BROKERAGE-WIDE MONEY tier (team_lead held out) rather than the
+  // operational admin tier — hence the finance resolver, not the admin one.
+  //
+  // FAILS CLOSED: resolveBrokerageFinanceAdmin reports a REFUSED grant read as a
+  // refusal rather than as "not an admin", and a refusal must not hand out the
+  // override button. It only hides a control; the authoritative gate is
+  // evaluateSellerDecisionReadiness, which re-resolves this server-side.
+  const financeAdmin = await resolveBrokerageFinanceAdmin(supabase, user.id, {
+    user_type: agentRow?.user_type ?? null,
+    brokerage_id: agentRow?.brokerage_id ?? null,
+  })
+  const canOverrideDecisionGate = financeAdmin.ok && financeAdmin.isFinanceAdmin
 
   // tenant anchor (scope burn-down): offers are fetched only AFTER the listing
   // (the validated parent) resolves, and are pinned to its brokerage.
@@ -208,7 +226,16 @@ export default async function OffersPage({
         initialOffers={offersWithAgentNames}
         currentUserId={user.id}
         brokerageId={agentRow?.brokerage_id ?? listing.brokerage_id ?? ""}
-        userRole={agentRow?.user_type ?? agentRow?.platform_role ?? "agent"}
+        // TENANT vocabulary only. This used to fall back to `platform_role`, which
+        // put a PLATFORM value into a slot every consumer reads as a `user_type`
+        // — the two columns do not hold the same vocabulary (marketing is a
+        // platform_role and not a storable user_type at all), and mixing them is
+        // what the one-vocabulary ruling forbids. Dropping the fallback is a
+        // no-op for real rows: the live superadmin carries user_type 'admin'
+        // WITH platform_role 'superadmin', so the tenant roster already admits
+        // them through the first term.
+        userRole={agentRow?.user_type ?? "agent"}
+        canOverrideDecisionGate={canOverrideDecisionGate}
       />
     </>
   )

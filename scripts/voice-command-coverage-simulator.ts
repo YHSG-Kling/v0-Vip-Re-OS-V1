@@ -39,6 +39,9 @@ import { voiceTools, authorityAllows } from "../lib/voice/tool-registry"
 import { voiceCoverageViolations } from "../lib/voice/voice-coverage"
 import { parseTeamCommandText } from "../lib/voice/parse-team-command"
 import { TEAM_ACTION_COMMANDS, TEAM_COMMANDS } from "../lib/voice/team-command-names"
+// The deal-decision override roster, asked of the SAME predicate the backend
+// calls — so this proof cannot agree with a rule the code does not use.
+import { isAdminOrBroker } from "../lib/auth/resolve-user-role"
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
 const src = (p: string) => readFileSync(join(ROOT, p), "utf8")
@@ -153,12 +156,35 @@ function main() {
     'offer.offer_type === "counter"',             // not a counter
     '"pending"',                                  // still open …
     '"submitted"',
-    '"team_lead"',                                // override roles
   ]) {
     check(`deal-decision guard literal present: ${literal}`, dealDecisionSrc.includes(literal))
   }
-  check("backend re-checks authority itself (run_team_command lane has no registry gate)",
-    dealDecisionSrc.includes("DECISION_OVERRIDE_ROLES"))
+
+  // THE OVERRIDE ROSTER IS A CLAIM, NOT A SPELLING.
+  //
+  // These two checks used to be `includes('"team_lead"')` and
+  // `includes("DECISION_OVERRIDE_ROLES")` — pinned to the TEXT of a local role
+  // array and the NAME of the const holding it. That made them fail on an
+  // improvement: the roster was replaced by the ONE shared tenant-admin
+  // predicate (owner ruling: "having more than one vocab over the same function
+  // or feature is dangerous"), which ADDED broker_owner — refused by the local
+  // literal, i.e. the person who owns the brokerage could not decide a deal by
+  // voice — and DROPPED a `superadmin` branch that MEASURED live matches zero
+  // users.user_type rows. Worse, they would have stayed GREEN through a real
+  // regression: deleting the `if` and leaving the const would satisfy both.
+  //
+  // Pinned now to what actually matters — the backend consults a shared roster
+  // ITSELF (the run_team_command free-text lane reaches it without a per-tool
+  // registry check), and that roster admits and refuses the right roles.
+  check("backend re-checks authority ITSELF — the shared tenant-admin roster is called on the actor",
+    /if\s*\([^)]*isAdminOrBroker\s*\(\s*\{\s*user_type/.test(dealDecisionSrc) &&
+    /return\s*\{\s*error:/.test(dealDecisionSrc.slice(dealDecisionSrc.indexOf("isAdminOrBroker"))))
+  check("...and it is IMPORTED, not re-declared locally (a second copy is the drift the ruling forbids)",
+    /import\s*\{[^}]*isAdminOrBroker[^}]*\}\s*from\s*"@\/lib\/auth\/resolve-user-role"/.test(dealDecisionSrc))
+  check("...and that roster admits the override roles the deal lane needs, broker_owner included",
+    ["broker", "broker_owner", "admin", "team_lead"].every((r) => isAdminOrBroker({ user_type: r })))
+  check("...and refuses the roles that must not decide a deal brokerage-wide",
+    ["isa", "tc", "contact", "lender", "vendor", "compliance_officer"].every((r) => !isAdminOrBroker({ user_type: r })))
   check("tool-registry row accept_offer exists with authority 'agent'",
     voiceTools.accept_offer?.authority === "agent" && voiceTools.accept_offer?.is_nar_regulated === true)
   check("authorityAllows blocks isa/tc for accept_offer, allows agent + broker",
