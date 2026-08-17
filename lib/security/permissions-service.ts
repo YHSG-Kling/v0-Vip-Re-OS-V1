@@ -215,6 +215,13 @@ const ROLE_UI_PERMISSIONS: Record<UserRole, UIPermission[]> = {
     "view:own_transactions", "view:own_communications",
     "view:own_documents", "upload:documents", "view:own_listings",
   ],
+  // The bare seat holds NO UI permission. Not an oversight — the ruling is that
+  // a user with no role has "no rights except seeing their own work", and every
+  // entry in this vocabulary is a right over something in the business. Their
+  // own work reaches them through the member navigation (profile, their own
+  // notifications, their own notification settings), none of which is gated on
+  // a UIPermission.
+  member: [],
 }
 
 // ─── NAVIGATION ───────────────────────────────────────────────────────────────
@@ -280,6 +287,10 @@ export const ROLE_NAVIGATION: Record<UserRole, string[]> = {
   lender: ["documents", "inbox", "calendar", "transactions", "knowledge-base", "content-studio", "social-planner"],
   title_agent: ["documents", "inbox", "calendar", "transactions", "knowledge-base"],
   contact: ["playbook", "documents", "inbox", "calendar", "matches", "marketplace"],
+  // Empty for the same reason ROLE_UI_PERMISSIONS.member is: every key in this
+  // vocabulary names a business surface. A member's own surfaces come from
+  // NAVIGATION_BY_ROLE.member.
+  member: [],
 }
 
 // ─── SERVICE ──────────────────────────────────────────────────────────────────

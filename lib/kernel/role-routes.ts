@@ -22,6 +22,11 @@ export const ROLE_DASHBOARD_ROUTES: Record<string, string> = {
   lender:             "/lender/dashboard", // legacy: lenders are vendors now; kept as a harmless fallback
   title:              "/title/dashboard",
   title_agent:        "/title/dashboard",
+  // The bare seat lands on its own work. Without this entry it would fall
+  // through to DEFAULT_DASHBOARD_ROUTE — /dashboard/agent — which is a
+  // producing agent's workspace, i.e. the one place a rights-less seat must
+  // not open on. /dashboard/profile is the first item of NAVIGATION_BY_ROLE.member.
+  member:             "/dashboard/profile",
   // `system` is DELIBERATELY ABSENT. It is a real users.user_type (the live CHECK
   // admits it) but it belongs to non-interactive AI-ISA service identities
   // (ai-isa+…@vipreos.internal) that have never signed in and never will. It used
@@ -45,4 +50,5 @@ export const ROLE_LABELS: Record<string, string> = {
   isa: "ISA Qualification", team_lead: "Agent Command", agent: "Agent Command",
   contact: "Client Portal", vendor: "Vendor Portal", lender: "Lender Portal",
   title: "Title Portal", title_agent: "Title Portal", system: "System",
+  member: "My Work",
 }

@@ -1,7 +1,8 @@
 // ─── CANONICAL ROLE DEFINITIONS (single source of truth) ─────────────────────
 //
 // System catalog: superadmin | admin | broker | team_lead | agent | isa |
-//                 tc | compliance_officer | vendor | lender | title_agent | contact
+//                 tc | compliance_officer | vendor | lender | title_agent |
+//                 contact | member
 //
 // All other files in this codebase MUST import UserRole from here (or from
 // @/lib/security which re-exports it).  No file may declare its own UserRole.
@@ -21,6 +22,29 @@ export type CanonicalRole =
   | 'lender'
   | 'title_agent'
   | 'contact'
+  // ─── THE BARE SEAT ─────────────────────────────────────────────────────────
+  // OWNER RULING, verbatim: "users are users with no rights except seeing their
+  // own work but once you give them a role, that is what determines what they
+  // can see and do."
+  //
+  // The owner then chose, between two readings of that sentence, THIS one:
+  // user_type is the SEAT, and role grants ADD ON TOP. An account created as
+  // 'agent'/'tc'/'broker' already HAS its role — the seat it was created as —
+  // and a grant adds business responsibility to it. So `member` is a NEW seat
+  // for the person who gets neither: no business seat, no grant, and therefore
+  // nothing but their own work.
+  //
+  // MEASURED on the live database before adding it: 19 of 23 users hold ZERO
+  // rows in user_role_assignments, and every one of them — the broker, every
+  // agent, the tc, the compliance officer — keeps exactly the surfaces their
+  // user_type already gave them. `member` is ADDITIVE. It narrows nobody,
+  // because no live row holds it (0 rows at the time of writing).
+  //
+  // It is deliberately NOT in STAFF_NAV_PRECEDENCE (it is not staff) and NOT in
+  // EXTERNAL_NAV_ROLES (it is not a client of the brokerage) in
+  // app/config/navigation-config.ts, so a member who is LATER granted a business
+  // role resolves to that role's workspace by the ordinary staff path.
+  | 'member'
 
 /** Public alias — use `UserRole` everywhere in application code. */
 export type UserRole = CanonicalRole
@@ -43,6 +67,7 @@ export type LegacyRole =
   | 'super_admin'              // → superadmin
   | 'broker_admin'             // → broker (brokerage-admin user_type in older rows)
   | 'solo_agent'               // → agent (plan-tier string leaked into role fields)
+  | 'team_member'              // → agent (the TEAM-tier twin of solo_agent)
 
 /** Any raw string that could arrive from the database or a JWT claim. */
 export type RawRole = CanonicalRole | LegacyRole | string
@@ -64,6 +89,31 @@ const LEGACY_ROLE_MAP: Record<string, CanonicalRole> = {
   // solo_agent is a PLAN TIER string that leaked into role fields in early rows;
   // a solo-tier user is an agent.
   solo_agent: 'agent',
+  // team_member is solo_agent's TEAM-TIER TWIN, and it maps the same way.
+  //
+  // AUDITED, because it was named in three places and existed in no vocabulary —
+  // not in CanonicalRole, not in this map, not in users_user_type_check (14
+  // values, none of them this). No account could hold it, so all three
+  // references were dead. What they SAY it is, though, is unanimous:
+  //
+  //   lib/kernel/0.1-feature-access.ts  USER_TYPE_TO_TIER — `team_member: "team"`,
+  //     sitting beside `team_lead: "team"` and `agent: "solo_agent"`. It is a
+  //     BILLING-TIER classification of a producing seat.
+  //   lib/kernel/helpers.ts:309         grouped with agent + team_lead as the
+  //     `isAgent` test, which is what grants canEdit and canCreate.
+  //   lib/kernel/helpers.ts:63          in STAFF_ROLES.
+  //   app/components/layout/app-shell.tsx  in STAFF_AI_ROLES.
+  //
+  // All four give it PRODUCING, STAFF capability. That is the exact opposite of
+  // the rights-less seat, so it is NOT an alias for `member`. It is "an agent
+  // who is on a team" — and this schema already holds team membership as a FACT
+  // in four places (teams.team_lead_id, users.team_id, team_members,
+  // agents.team_id; see m431/m444, "leading a team is a fact, not a role"), so
+  // the role half of it is a duplicate of `agent` and the team half is a
+  // team_id. Mapped, not deleted: the four references above now agree with the
+  // canonicaliser instead of being unreachable, and a legacy JWT or an imported
+  // row carrying 'team_member' resolves to the producing seat it always meant.
+  team_member: 'agent',
 
   // Old enum key strings (stored verbatim in some early rows)
   TC: 'tc',
@@ -82,6 +132,7 @@ const LEGACY_ROLE_MAP: Record<string, CanonicalRole> = {
 const CANONICAL_ROLES = new Set<string>([
   'superadmin', 'admin', 'broker', 'team_lead', 'agent', 'isa',
   'tc', 'compliance_officer', 'vendor', 'lender', 'title_agent', 'contact',
+  'member',
 ])
 
 // ─── MAPPING FUNCTIONS ────────────────────────────────────────────────────────
@@ -251,6 +302,15 @@ export const CANONICAL_ROLE_CONFIG: Record<CanonicalRole, Omit<RoleConfig, 'role
     description: 'Buyer / seller contact',
     icon: 'Home',
     permissions: ['view_transaction', 'view_documents', 'request_showing', 'view_portal'],
+  },
+  member: {
+    label: 'Member',
+    description: 'Workspace member with no business role — sees only their own work',
+    icon: 'UserCircle',
+    // The empty list is the point, not an omission: this seat carries no
+    // business permission at all. Everything a member can do comes from a role
+    // grant added on top.
+    permissions: [],
   },
 }
 

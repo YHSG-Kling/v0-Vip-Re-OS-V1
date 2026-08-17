@@ -1380,6 +1380,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     author_kind: ["staff", "tenant"],
   },
   support_tickets: {
+    lane: ["member_to_brokerage", "tenant_to_platform"],
     priority: ["high", "low", "medium", "urgent"],
     status: ["closed", "in_progress", "open", "resolved"],
   },
@@ -1508,7 +1509,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   users: {
     platform_role: ["admin", "ai_isa_system", "marketing", "superadmin", "support"],
-    user_type: ["admin", "agent", "broker", "broker_owner", "compliance_officer", "contact", "isa", "lender", "superadmin", "support", "system", "tc", "team_lead", "vendor"],
+    // "member" added by m469 — the bare seat for a user with no business role
+    // and no grant. Additive: the other 14 values are untouched.
+    user_type: ["admin", "agent", "broker", "broker_owner", "compliance_officer", "contact", "isa", "lender", "member", "superadmin", "support", "system", "tc", "team_lead", "vendor"],
   },
   valuation_requests: {
     condition: ["excellent", "fair", "good", "poor"],

@@ -17,6 +17,18 @@ import type { RoleHierarchy, RolePermissions, Permission } from './types'
 // ─── ROLE HIERARCHY ───────────────────────────────────────────────────────────
 
 export const ROLE_HIERARCHY: Record<UserRole, RoleHierarchy> = {
+  // The FLOOR of the hierarchy, below the client portal: a workspace member who
+  // has been given no business role. Level 0 is shared with `contact` on
+  // purpose — neither can manage anyone and neither sees past their own row —
+  // but they are different relationships (a contact is a client of the
+  // brokerage, a member is inside it with nothing assigned yet), so they are
+  // separate entries rather than an alias.
+  member: {
+    role: 'member',
+    level: 0,
+    canManage: [],
+    canViewData: 'own',
+  },
   contact: {
     role: 'contact',
     level: 0,
@@ -100,6 +112,16 @@ export const ROLE_HIERARCHY: Record<UserRole, RoleHierarchy> = {
 // ─── ROLE PERMISSIONS ─────────────────────────────────────────────────────────
 
 export const ROLE_PERMISSIONS: Record<UserRole, RolePermissions> = {
+  // No permissions and no features. `settings:manage_account` is deliberately
+  // absent as well: that permission governs the account-settings surfaces the
+  // agent seat carries, and a member's own preferences reach them through their
+  // navigation, not through a permission test.
+  member: {
+    role: 'member',
+    permissions: [],
+    features: [],
+  },
+
   contact: {
     role: 'contact',
     permissions: ['contacts:view', 'transactions:view', 'listings:view_all'],

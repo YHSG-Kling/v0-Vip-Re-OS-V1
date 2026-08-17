@@ -57,6 +57,7 @@ import {
   resolvePrimaryRole,
   NAVIGATION_BY_ROLE,
 } from "../app/config/navigation-config"
+import { toCanonicalRole, isCanonicalRole } from "../lib/security/types"
 import type { NavItem } from "../app/types/navigation"
 
 let pass = 0
@@ -69,11 +70,34 @@ const check = (n: string, c: boolean) => {
 const SHELL = "app/components/layout/app-shell.tsx"
 const NAV = "app/config/navigation-config.ts"
 const USE_AUTH = "lib/auth/useAuth.ts"
+const KERNEL_HELPERS = "lib/kernel/helpers.ts"
 const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 
 /** Strip // and /* *\/ comments so a probe reads CODE, never prose. */
 function codeOnly(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
+}
+
+/**
+ * The string members of `const <name> = new Set([...])`, read from CODE.
+ *
+ * Returns null when the literal cannot be found, and every caller treats null
+ * as FAILURE. That is the point: the claims below are ABSENCE claims ("this
+ * role is not in that set"), and an absence claim passes for free if the
+ * collector silently returns nothing. A broken extractor must go red, not green.
+ */
+function setLiteralMembers(source: string, constName: string): string[] | null {
+  const code = codeOnly(source)
+  const at = code.indexOf(constName)
+  if (at < 0) return null
+  const open = code.indexOf("[", at)
+  const close = code.indexOf("]", open)
+  if (open < 0 || close < 0) return null
+  return code
+    .slice(open + 1, close)
+    .split(",")
+    .map((t) => t.trim().replace(/^['"]|['"]$/g, ""))
+    .filter(Boolean)
 }
 
 const ids = (items: Array<{ id?: string; href?: string }>) =>
@@ -220,6 +244,149 @@ function pureLayer() {
     bothIds.length === new Set(bothIds).size)
 }
 
+// ── Layer 1b · PURE — the bare seat ──────────────────────────────────────────
+//
+// OWNER RULING, verbatim: "users are users with no rights except seeing their
+// own work but once you give them a role, that is what determines what they can
+// see and do."
+//
+// The owner chose, between two readings, that user_type is the SEAT and role
+// grants ADD ON TOP — so `member` is a NEW seat for someone given neither, and
+// the 19 live users who hold zero grants are untouched. These checks are the
+// two halves of that sentence: what a member sees with nothing (their own work,
+// and provably nothing else), and what a member sees the moment a role arrives
+// (that role's workspace, with nothing of the bare seat clinging to it).
+//
+// Everything here is asserted BEHAVIOURALLY — through getNavigationForRole and
+// the reachable-href set — and never by naming STAFF_NAV_PRECEDENCE or
+// EXTERNAL_NAV_ROLES. `member` must be absent from both, and the way to pin
+// that is the behaviour each absence produces, not the spelling of either const:
+//   · if `member` joined STAFF_NAV_PRECEDENCE, member+tc would MERGE and B5/B7
+//     would go red;
+//   · if `member` joined EXTERNAL_NAV_ROLES, the external branch would pick
+//     whichever external role the Set happened to yield first and B9's
+//     order-independence would go red.
+
+function memberSeatLayer() {
+  console.log("\n[1b · pure — the bare seat sees its own work and nothing else]")
+
+  const sig = (n: { sidebarItems: NavItem[] }) => n.sidebarItems.map((i) => i.id || i.href).join("|")
+
+  /** Every href a role can actually GET TO, flattened through group children. */
+  const reach = (roles: string | string[]): Set<string> => {
+    const out = new Set<string>()
+    const walk = (items: readonly NavItem[]) => {
+      for (const i of items ?? []) {
+        if (i.href) out.add(i.href)
+        if (i.children) walk(i.children as readonly NavItem[])
+      }
+    }
+    walk(getNavigationForRole(roles).sidebarItems)
+    return out
+  }
+
+  check("B1 `member` is a canonical role and canonicalises to itself, not to a fallback",
+    isCanonicalRole("member") && toCanonicalRole("member") === "member")
+
+  check("B2 a member ALONE gets the bare workspace, byte-identical to its own config",
+    sig(getNavigationForRole(["member"])) === sig(NAVIGATION_BY_ROLE.member))
+
+  // The whole specification of the seat, as the set of places it can reach.
+  // Asserted as SET EQUALITY, not as a count and not as a label: adding a
+  // destination and removing one both go red, and a rename of an item's label
+  // or id does not. Each of these three was checked against the filesystem
+  // (app/dashboard/profile/page.tsx, app/notifications/page.tsx,
+  // app/settings/notifications/page.tsx all exist) before it was written.
+  const OWN_WORK = ["/dashboard/profile", "/notifications", "/settings/notifications"]
+  const memberReach = reach(["member"])
+  check("B3 the bare seat reaches EXACTLY its own profile, its own notifications and its own notification settings",
+    memberReach.size === OWN_WORK.length && OWN_WORK.every((h) => memberReach.has(h)))
+
+  // "no rights except seeing their own work", stated as the absence of every
+  // business surface — and PAIRED, prefix by prefix, with the role that does
+  // own it, so a broken reach() cannot make this pass by finding nothing.
+  const BUSINESS: Array<[string, string]> = [
+    ["/crm", "agent"],
+    ["/dashboard/transactions", "agent"],
+    ["/dashboard/marketing", "agent"],
+    ["/dashboard/financials", "agent"],
+    ["/compliance", "compliance_officer"],
+    ["/transaction/", "tc"],
+    ["/dashboard/admin", "admin"],
+    ["/leads", "broker"],
+    ["/analytics", "broker"],
+    ["/dashboard/team", "team_lead"],
+  ]
+  const reaches = (roles: string | string[], prefix: string) =>
+    [...reach(roles)].some((h) => h.startsWith(prefix))
+
+  check("B4 a member reaches NONE of the business surfaces",
+    BUSINESS.every(([prefix]) => !reaches(["member"], prefix)))
+  check("B4a …and reach() really does find every one of those surfaces for the role that owns it, so B4 is not vacuous",
+    BUSINESS.every(([prefix, owner]) => reaches([owner], prefix)))
+
+  console.log("\n[1b · pure — grant a role and that role is what they see]")
+
+  // The second half of the ruling. A member LATER granted tc must get the tc
+  // workspace — not a blend of the two.
+  check("B5 member + tc yields the tc workspace, byte-identical to tc alone",
+    sig(getNavigationForRole(["member", "tc"])) === sig(getNavigationForRole(["tc"])))
+
+  check("B5a …and the same in the other order, because grant rows come back unordered",
+    sig(getNavigationForRole(["tc", "member"])) === sig(getNavigationForRole(["tc"])))
+
+  // Not a special case for tc: every staff seat behaves this way.
+  const STAFF = ["broker", "admin", "team_lead", "compliance_officer", "tc", "isa", "agent"]
+  check("B6 member + ANY staff role yields exactly that staff role's workspace, for all seven",
+    STAFF.every((r) => sig(getNavigationForRole(["member", r])) === sig(getNavigationForRole([r]))))
+
+  // B5/B6 would still pass if the bare seat happened to be a SUBSET of every
+  // staff nav. It is not — /settings/notifications belongs to no other role —
+  // so pin the stronger claim directly: the bare seat contributes nothing.
+  const memberOnly = [...memberReach].filter((h) => !reach(["tc"]).has(h))
+  check("B7 the bare seat contributes NOTHING to a granted workspace (and it has surfaces of its own to contribute, so this is a real test)",
+    memberOnly.length > 0 && memberOnly.every((h) => !reach(["member", "tc"]).has(h)))
+
+  console.log("\n[1b · pure — a member is neither staff nor a client]")
+
+  // NOT STAFF: naming one role for a member alone must answer 'member', and the
+  // moment any staff role is held the staff precedence must win outright.
+  check("B8 resolvePrimaryRole names the bare seat when it is all they have, and the staff role the moment they have one",
+    resolvePrimaryRole(["member"]) === "member"
+      && resolvePrimaryRole(["member", "agent"]) === "agent"
+      && resolvePrimaryRole(["member", "broker"]) === "broker")
+
+  // NOT A CLIENT: if `member` were in the external-persona set, this branch
+  // would return whichever of the two the Set yielded first and the two orders
+  // would disagree. Both orders must land on the client portal.
+  check("B9 a member who is ALSO a client gets the client portal, in either order — the bare seat is not an external persona",
+    sig(getNavigationForRole(["member", "contact"])) === sig(NAVIGATION_BY_ROLE.contact)
+      && sig(getNavigationForRole(["contact", "member"])) === sig(NAVIGATION_BY_ROLE.contact))
+
+  console.log("\n[1b · pure — the team_member audit]")
+
+  // `team_member` was named in three places and existed in NO vocabulary, so no
+  // account could hold it. It is NOT the bare seat: every reference gave it
+  // PRODUCING, STAFF capability (USER_TYPE_TO_TIER maps it to the "team" billing
+  // tier beside team_lead; helpers.ts groups it with agent+team_lead for the
+  // isAgent test that grants canEdit/canCreate). It is `agent` + a team_id —
+  // the team-tier twin of solo_agent — so it is MAPPED there, not deleted.
+  check("B10 team_member canonicalises to the producing agent seat",
+    toCanonicalRole("team_member") === "agent")
+
+  check("B10a …and specifically NOT to the bare seat, which is the mapping that would have been wrong",
+    toCanonicalRole("team_member") !== "member")
+
+  check("B10b a legacy team_member therefore lands in the AGENT workspace, not the bare one",
+    sig(getNavigationForRole([toCanonicalRole("team_member") as string])) === sig(NAVIGATION_BY_ROLE.agent)
+      && sig(getNavigationForRole([toCanonicalRole("team_member") as string])) !== sig(NAVIGATION_BY_ROLE.member))
+
+  check("B10c `member` is a real seat and not merely an alias of an existing one — no other canonical role reaches the same set of surfaces",
+    !Object.keys(NAVIGATION_BY_ROLE)
+      .filter((r) => r !== "member")
+      .some((r) => sig(NAVIGATION_BY_ROLE[r as keyof typeof NAVIGATION_BY_ROLE]) === sig(NAVIGATION_BY_ROLE.member)))
+}
+
 // ── Layer 2 · SOURCE ─────────────────────────────────────────────────────────
 
 interface Probe { name: string; run: (s: Record<string, string>) => boolean }
@@ -279,10 +446,40 @@ const PROBES: Probe[] = [
     name: "S8 external personas are named as a set and excluded from the staff union",
     run: (s) => /EXTERNAL_NAV_ROLES/.test(codeOnly(s[NAV])),
   },
+  {
+    // The internal AI assistant is a staff instrument. A seat with no business
+    // role has no business holding it, and the shell's gate admits ANY held
+    // role (S5), so a single wrong entry in this set would hand the assistant
+    // to every bare seat in the tenant.
+    //
+    // Read out of the SET LITERAL rather than by searching the file for the
+    // word: `agent` must be present and `member` absent in the SAME extraction,
+    // so a broken extractor (which returns null) fails instead of passing.
+    name: "M1 the bare seat does NOT get the internal AI assistant — and the extraction proves itself by finding the seat that does",
+    run: (s) => {
+      const roles = setLiteralMembers(s[SHELL], "STAFF_AI_ROLES")
+      return roles !== null && roles.includes("agent") && !roles.includes("member")
+    },
+  },
+  {
+    // helpers.ts STAFF_ROLES is STAFF_AI_ROLES' twin — its own comment says the
+    // two must stay in sync — and it also feeds ROUTE_ROLE_REQUIREMENTS. Same
+    // claim, same self-proving extraction, separate file.
+    name: "M2 the bare seat is not counted as staff by the kernel's own staff set either",
+    run: (s) => {
+      const roles = setLiteralMembers(s[KERNEL_HELPERS], "STAFF_ROLES")
+      return roles !== null && roles.includes("agent") && !roles.includes("member")
+    },
+  },
 ]
 
 function loadSources(): Record<string, string> {
-  return { [SHELL]: src(SHELL), [NAV]: src(NAV), [USE_AUTH]: src(USE_AUTH) }
+  return {
+    [SHELL]: src(SHELL),
+    [NAV]: src(NAV),
+    [USE_AUTH]: src(USE_AUTH),
+    [KERNEL_HELPERS]: src(KERNEL_HELPERS),
+  }
 }
 
 function sourceLayer() {
@@ -341,6 +538,25 @@ const MUTATIONS: Array<{ name: string; probe: string; mutate: (s: Record<string,
     probe: "S8",
     mutate: (s) => ({ ...s, [NAV]: s[NAV].replace(/EXTERNAL_NAV_ROLES/g, "SOME_OTHER_SET") }),
   },
+  {
+    name: "the bare seat is added to the shell's staff-AI set",
+    probe: "M1",
+    mutate: (s) => ({ ...s, [SHELL]: s[SHELL].replace(/const STAFF_AI_ROLES = new Set\(\[/, "const STAFF_AI_ROLES = new Set([\n  'member',") }),
+  },
+  {
+    name: "…and the extraction itself is broken, so M1 cannot pass on a collector failure",
+    probe: "M1",
+    // The other half of M1's honesty. The first mutation proves M1 notices a
+    // WRONG set; this proves M1 notices NO set. An absence claim whose collector
+    // has silently stopped working is the exact defect this run has been burned
+    // by, so it is hand-broken here rather than assumed.
+    mutate: (s) => ({ ...s, [SHELL]: s[SHELL].replace(/STAFF_AI_ROLES/g, "SOME_OTHER_AI_SET") }),
+  },
+  {
+    name: "the bare seat is added to the kernel's staff set",
+    probe: "M2",
+    mutate: (s) => ({ ...s, [KERNEL_HELPERS]: s[KERNEL_HELPERS].replace(/const STAFF_ROLES = new Set\(\[/, "const STAFF_ROLES = new Set([\n  \"member\",") }),
+  },
 ]
 
 function negativeControls() {
@@ -377,6 +593,42 @@ function pureNegativeControls() {
 
   check("NEGATIVE CONTROL a precedence that ignored order would fail U7 — went RED as required",
     resolvePrimaryRole(["agent", "admin"]) !== "agent")
+
+  // ── the bare seat's own negative controls ──────────────────────────────────
+  const sig = (n: { sidebarItems: NavItem[] }) => n.sidebarItems.map((i) => i.id || i.href).join("|")
+
+  // B5/B6 say a granted role REPLACES the bare seat rather than merging with it.
+  // The failure that claim exists to catch is `member` being added to
+  // STAFF_NAV_PRECEDENCE, which would make member+tc a two-config MERGE. Build
+  // that merge by hand and confirm it is a different answer — if it were the
+  // same answer, B5 would be measuring nothing.
+  const handMerged = [
+    ...NAVIGATION_BY_ROLE.tc.sidebarItems,
+    ...NAVIGATION_BY_ROLE.member.sidebarItems,
+  ]
+  const mergedSig = handMerged
+    .filter((it, i, all) => all.findIndex((o) => (o.id || o.href) === (it.id || it.href)) === i)
+    .map((i) => i.id || i.href).join("|")
+  check("NEGATIVE CONTROL a resolver that MERGED the bare seat into tc would fail B5 — went RED as required",
+    mergedSig !== sig(getNavigationForRole(["tc"])))
+
+  // B4 is an absence claim. Prove the shape of the assertion can fail by running
+  // it against a role that DOES reach a business surface.
+  const agentHrefs = new Set<string>()
+  const walk = (items: readonly NavItem[]) => {
+    for (const i of items ?? []) {
+      if (i.href) agentHrefs.add(i.href)
+      if (i.children) walk(i.children as readonly NavItem[])
+    }
+  }
+  walk(getNavigationForRole(["agent"]).sidebarItems)
+  check("NEGATIVE CONTROL the B4 'reaches no business surface' test applied to an AGENT fails — went RED as required",
+    [...agentHrefs].some((h) => h.startsWith("/crm")))
+
+  // B10 says team_member is the producing seat. The mapping that would have been
+  // wrong is team_member → member; assert that answer is not what we get.
+  check("NEGATIVE CONTROL mapping team_member to the bare seat would fail B10 — went RED as required",
+    toCanonicalRole("team_member") !== "member" && toCanonicalRole("team_member") !== null)
 }
 
 function main() {
@@ -384,6 +636,7 @@ function main() {
   console.log(" Role-union navigation — the second seat wears every hat it was given")
   console.log("══════════════════════════════════════════════════")
   pureLayer()
+  memberSeatLayer()
   sourceLayer()
   negativeControls()
   pureNegativeControls()

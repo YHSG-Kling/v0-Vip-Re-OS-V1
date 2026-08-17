@@ -62,6 +62,7 @@ export class RoleManager {
       lender: 'Lender',
       title_agent: 'Title Agent',
       contact: 'Contact',
+      member: 'Member',
     }
     return labels[role] ?? role
   }
