@@ -215,13 +215,6 @@ const ROLE_UI_PERMISSIONS: Record<UserRole, UIPermission[]> = {
     "view:own_transactions", "view:own_communications",
     "view:own_documents", "upload:documents", "view:own_listings",
   ],
-  // The bare seat holds NO UI permission. Not an oversight — the ruling is that
-  // a user with no role has "no rights except seeing their own work", and every
-  // entry in this vocabulary is a right over something in the business. Their
-  // own work reaches them through the member navigation (profile, their own
-  // notifications, their own notification settings), none of which is gated on
-  // a UIPermission.
-  member: [],
 }
 
 // ─── NAVIGATION ───────────────────────────────────────────────────────────────
@@ -287,10 +280,6 @@ export const ROLE_NAVIGATION: Record<UserRole, string[]> = {
   lender: ["documents", "inbox", "calendar", "transactions", "knowledge-base", "content-studio", "social-planner"],
   title_agent: ["documents", "inbox", "calendar", "transactions", "knowledge-base"],
   contact: ["playbook", "documents", "inbox", "calendar", "matches", "marketplace"],
-  // Empty for the same reason ROLE_UI_PERMISSIONS.member is: every key in this
-  // vocabulary names a business surface. A member's own surfaces come from
-  // NAVIGATION_BY_ROLE.member.
-  member: [],
 }
 
 // ─── SERVICE ──────────────────────────────────────────────────────────────────
@@ -340,7 +329,38 @@ export const permissionsService = {
     return false
   },
 
-  isAdminOrBroker(role: UserRole): boolean {
+  /**
+   * DOES THIS ROLE SEE THE WHOLE BROKERAGE'S RECORDS?
+   *
+   * ── WHY THIS IS NOT lib/auth/resolve-user-role.ts#isAdminOrBroker ───────────
+   *
+   * It was called `isAdminOrBroker` — the SAME NAME as the canonical tenant-admin
+   * predicate, over a DIFFERENT roster. That is the owner's complaint made
+   * literal: "having more than one vocab over the same function or feature is
+   * dangerous." Two functions, one name, two answers, and nothing to tell a
+   * reader which one they were looking at.
+   *
+   * It is renamed rather than repointed, because it is DELIBERATELY NARROWER and
+   * collapsing it into the tenant-admin roster would WIDEN access, not tidy it:
+   *
+   *   · `team_lead` IS admin-class under the owner's ruling, and is admitted by
+   *     isAdminOrBroker. It must NOT be admitted HERE. getDataScope() two methods
+   *     above answers 'team' for team_lead, and canAccessRecord() below carries an
+   *     explicit team_lead branch that scopes to ctx.teamIds. Admitting team_lead
+   *     here would make both unreachable and silently promote every team lead from
+   *     TEAM scope to BROKERAGE-WIDE scope — including getQueryFilters(), which
+   *     would start handing them `{ brokerage_id }` instead of their team.
+   *
+   *   · `superadmin` is a CANONICAL role here, not the users.user_type marker the
+   *     tenant roster had to stop testing. This method receives an already-
+   *     canonicalized UserRole, so the value is meaningful at this layer.
+   *
+   * `broker_owner` needs no entry: it canonicalizes to 'broker'
+   * (lib/security/types.ts#LEGACY_ROLE_MAP), which is how it reaches this test at
+   * all — before that mapping it canonicalized to 'agent' and the brokerage's
+   * owner was scoped to their own records.
+   */
+  hasBrokerageWideScope(role: UserRole): boolean {
     return role === 'superadmin' || role === 'admin' || role === 'broker'
   },
 
@@ -375,7 +395,7 @@ export const permissionsService = {
       shared_with?: string[]
     }
   ): boolean {
-    if (this.isAdminOrBroker(ctx.role)) return true
+    if (this.hasBrokerageWideScope(ctx.role)) return true
 
     const isOwner =
       record.agent_id === ctx.agentId ||
@@ -414,7 +434,7 @@ export const permissionsService = {
   },
 
   getQueryFilters(ctx: UserAccessContext): Record<string, unknown> {
-    if (this.isAdminOrBroker(ctx.role)) return ctx.brokerageId ? { brokerage_id: ctx.brokerageId } : {}
+    if (this.hasBrokerageWideScope(ctx.role)) return ctx.brokerageId ? { brokerage_id: ctx.brokerageId } : {}
     if (ctx.role === 'agent') return { agent_id: ctx.agentId }
     if (ctx.role === 'tc') return { team_id: ctx.teamIds }
     if (ctx.role === 'contact') return { contact_id: ctx.contactId }
@@ -442,7 +462,7 @@ export const permissionsService = {
     const basePermission = permissionMap[entityType]?.[action]
     if (!basePermission) return false
 
-    if (this.isAdminOrBroker(ctx.role)) return true
+    if (this.hasBrokerageWideScope(ctx.role)) return true
 
     if (this.hasPermission(ctx.role, basePermission)) {
       if (entityOwnerId === ctx.userId || entityOwnerId === ctx.agentId || entityOwnerId === ctx.contactId) return true

@@ -2,7 +2,7 @@
 //
 // System catalog: superadmin | admin | broker | team_lead | agent | isa |
 //                 tc | compliance_officer | vendor | lender | title_agent |
-//                 contact | member
+//                 contact
 //
 // All other files in this codebase MUST import UserRole from here (or from
 // @/lib/security which re-exports it).  No file may declare its own UserRole.
@@ -22,29 +22,23 @@ export type CanonicalRole =
   | 'lender'
   | 'title_agent'
   | 'contact'
-  // ─── THE BARE SEAT ─────────────────────────────────────────────────────────
-  // OWNER RULING, verbatim: "users are users with no rights except seeing their
-  // own work but once you give them a role, that is what determines what they
-  // can see and do."
   //
-  // The owner then chose, between two readings of that sentence, THIS one:
-  // user_type is the SEAT, and role grants ADD ON TOP. An account created as
-  // 'agent'/'tc'/'broker' already HAS its role — the seat it was created as —
-  // and a grant adds business responsibility to it. So `member` is a NEW seat
-  // for the person who gets neither: no business seat, no grant, and therefore
-  // nothing but their own work.
+  // ─── THERE IS NO SEAT BELOW THE SEAT ───────────────────────────────────────
+  // A `member` value was added here and then REMOVED, on the owner's ruling:
+  // "you introduced member awhile back and we don't need it. user is introduced
+  // with the usertype and then role just adds more capability."
   //
-  // MEASURED on the live database before adding it: 19 of 23 users hold ZERO
-  // rows in user_role_assignments, and every one of them — the broker, every
-  // agent, the tc, the compliance officer — keeps exactly the surfaces their
-  // user_type already gave them. `member` is ADDITIVE. It narrows nobody,
-  // because no live row holds it (0 rows at the time of writing).
+  // The model needs no bare seat. A user is CREATED WITH a user_type — that IS
+  // their seat and it already carries what they can see — and a grant in
+  // user_role_assignments ADDS capability on top of it. `member` was an extra
+  // rung invented under that model, not part of it. Nothing was lost by
+  // removing it: 0 live rows ever held it (measured at the time it was added
+  // and again at the time it was dropped), no policy or boolean helper in the
+  // schema ever named it, and it was in neither STAFF_NAV_PRECEDENCE nor
+  // EXTERNAL_NAV_ROLES, so it contributed nothing to any workspace.
   //
-  // It is deliberately NOT in STAFF_NAV_PRECEDENCE (it is not staff) and NOT in
-  // EXTERNAL_NAV_ROLES (it is not a client of the brokerage) in
-  // app/config/navigation-config.ts, so a member who is LATER granted a business
-  // role resolves to that role's workspace by the ordinary staff path.
-  | 'member'
+  // Do NOT re-add it. `team_member` below is UNRELATED — it is a legacy string
+  // that means a producing agent on a team, and it maps to `agent`.
 
 /** Public alias — use `UserRole` everywhere in application code. */
 export type UserRole = CanonicalRole
@@ -86,6 +80,24 @@ const LEGACY_ROLE_MAP: Record<string, CanonicalRole> = {
   // grouped with 'broker' at brokerage-wide scope (see lib/kernel/egress-scope.ts),
   // so it maps to 'broker', NOT the default fallback ('agent' in most callers).
   broker_admin: 'broker',
+  // broker_owner is NOT legacy — it is one of the fourteen STORABLE user_type
+  // values (users_user_type_check) and it is in the owner's admin-class roster
+  // verbatim: "broker, broker admin, broker owner, team lead, admin". It sat in
+  // NEITHER CanonicalRole NOR this map, so toCanonicalRole('broker_owner')
+  // returned null and toCanonicalRoleOrDefault(…, 'agent') — the form used at 52
+  // call sites, and 'agent' is the default at nearly all of them — DEMOTED THE
+  // PERSON WHO OWNS THE BROKERAGE TO AN AGENT. Every scope, navigation and
+  // permission decision downstream then treated them as a producing agent.
+  //
+  // Mapped to 'broker' rather than added to CanonicalRole, and the choice is
+  // deliberate: broker_owner and broker are the SAME brokerage-wide scope
+  // everywhere this codebase already decides scope — public.is_brokerage_admin()
+  // admits {admin, broker, broker_owner} as one tier, and lib/kernel/egress-scope.ts
+  // groups them. A thirteenth CanonicalRole would have to be given its own row in
+  // every Record<UserRole, …> permission and navigation table, and inventing those
+  // rows is minting a new vocabulary — the exact thing the ruling forbids — where
+  // an alias states the truth: an owner IS a broker, with a title.
+  broker_owner: 'broker',
   // solo_agent is a PLAN TIER string that leaked into role fields in early rows;
   // a solo-tier user is an agent.
   solo_agent: 'agent',
@@ -132,7 +144,6 @@ const LEGACY_ROLE_MAP: Record<string, CanonicalRole> = {
 const CANONICAL_ROLES = new Set<string>([
   'superadmin', 'admin', 'broker', 'team_lead', 'agent', 'isa',
   'tc', 'compliance_officer', 'vendor', 'lender', 'title_agent', 'contact',
-  'member',
 ])
 
 // ─── MAPPING FUNCTIONS ────────────────────────────────────────────────────────
@@ -302,15 +313,6 @@ export const CANONICAL_ROLE_CONFIG: Record<CanonicalRole, Omit<RoleConfig, 'role
     description: 'Buyer / seller contact',
     icon: 'Home',
     permissions: ['view_transaction', 'view_documents', 'request_showing', 'view_portal'],
-  },
-  member: {
-    label: 'Member',
-    description: 'Workspace member with no business role — sees only their own work',
-    icon: 'UserCircle',
-    // The empty list is the point, not an omission: this seat carries no
-    // business permission at all. Everything a member can do comes from a role
-    // grant added on top.
-    permissions: [],
   },
 }
 

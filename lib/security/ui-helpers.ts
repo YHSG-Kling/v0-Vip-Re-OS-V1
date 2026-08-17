@@ -27,10 +27,6 @@ export class UIHelpers {
       lender: [],
       title_agent: [],
       contact: ['pricing', 'commission_structure', 'agent_metrics'],
-      // The bare seat. Hides everything the client persona hides and everything
-      // the vendor persona hides — a seat with no business role has no business
-      // reading a price, a split, or another person's numbers.
-      member: ['pricing', 'commission_structure', 'agent_metrics', 'all_brokerage_contacts', 'team_members'],
     }
     return !hiddenFields[userRole]?.includes(field)
   }
@@ -49,7 +45,6 @@ export class UIHelpers {
       lender: ['crm', 'listings'],
       title_agent: ['crm', 'listings'],
       contact: ['crm', 'admin', 'analytics'],
-      member: ['crm', 'admin', 'analytics', 'listings', 'team', 'team_management', 'broker_settings', 'seller_portal'],
     }
     return !hiddenMenuItems[userRole]?.includes(menuItem)
   }

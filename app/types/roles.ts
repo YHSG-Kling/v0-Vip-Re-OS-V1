@@ -99,11 +99,4 @@ export const ROLE_CONFIG: Record<UserRole, RoleConfig> = {
     icon: 'Home',
     permissions: ['view_transaction', 'view_documents', 'request_showing', 'view_portal'],
   },
-  member: {
-    role: 'member',
-    label: 'Member',
-    description: 'Workspace member with no business role — sees only their own work',
-    icon: 'UserCircle',
-    permissions: [],
-  },
 }

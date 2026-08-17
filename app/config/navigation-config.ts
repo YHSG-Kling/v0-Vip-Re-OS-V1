@@ -1078,66 +1078,6 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'video-studio', label: 'Create AI Video', href: '/dashboard/videos/create' },
     ],
   },
-
-  // ─── member — THE BARE SEAT ─────────────────────────────────────────────────
-  //
-  // OWNER RULING, verbatim: "users are users with no rights except seeing their
-  // own work but once you give them a role, that is what determines what they
-  // can see and do." Under the reading the owner picked, user_type is the SEAT
-  // and grants add on top — so this is the seat for someone given NEITHER.
-  //
-  // Three destinations, and the shortness IS the specification. Everything here
-  // is about the person themselves; nothing here is about the business:
-  //
-  //   /dashboard/profile     their own identity (name, photo, signature).
-  //   /notifications         their own notification feed.
-  //   /settings/notifications their own delivery preferences. Scoped by userId
-  //                          in app/actions/settings/list-notification-rules.ts,
-  //                          and 'notifications' is in the settings layout's
-  //                          PERSONAL_SECTIONS, so this seat is admitted there.
-  //
-  // EVERY href was checked against the filesystem before it was written here,
-  // because this exact file has already shipped an invented route that did not
-  // exist (see COMPLIANCE_ITEMS_FOR_COORDINATION above, which records the same
-  // mistake). All three resolve to a real page.tsx.
-  //
-  // WHAT IS DELIBERATELY ABSENT, and why, since an absence in a nav is a
-  // decision and not an oversight:
-  //   /dashboard/settings      — redirects any user_type outside broker/admin.
-  //   /settings/profile        — NOT in the settings layout's PERSONAL_SECTIONS,
-  //                              so this seat is bounced to /dashboard from it.
-  //   /settings/general        — personal-section, but it renders the
-  //                              BROKERAGE's legal name, DBA, licence and
-  //                              address. That is the business, not their work.
-  //   the AI assistant         — member is not in app-shell's STAFF_AI_ROLES.
-  //
-  // `member` is NOT in STAFF_NAV_PRECEDENCE below (it is not staff) and NOT in
-  // EXTERNAL_NAV_ROLES (it is not a client). Both omissions are load-bearing:
-  // getNavigationForRole falls through both sets to the direct lookup, so a
-  // member ALONE gets this config, and a member who is later granted 'tc' takes
-  // the staff branch and gets the tc workspace — this config contributes
-  // nothing to the union, which is the ruling's "once you give them a role,
-  // that is what determines what they can see and do".
-  member: {
-    sidebarItems: [
-      { id: 'my-profile', label: 'My Profile', href: '/dashboard/profile', icon: 'User' },
-      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
-      { id: 'notification-settings', label: 'Notification Settings', href: '/settings/notifications', icon: 'Settings' },
-    ],
-    topNavItems: [
-      { id: 'notifications', label: 'Notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
-      { id: 'profile', label: 'Profile', icon: 'User' },
-    ],
-    mobileBottomNav: [
-      { id: 'my-profile', label: 'Profile', href: '/dashboard/profile', icon: 'User' },
-      { id: 'notifications', label: 'Alerts', href: '/notifications', icon: 'Bell' },
-      { id: 'notification-settings', label: 'Settings', href: '/settings/notifications', icon: 'Settings' },
-    ],
-    commandPaletteItems: [
-      { id: 'my-profile', label: 'My Profile', href: '/dashboard/profile' },
-      { id: 'notifications', label: 'My Notifications', href: '/notifications' },
-    ],
-  },
 }
 
 /**

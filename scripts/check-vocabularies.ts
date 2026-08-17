@@ -1509,9 +1509,12 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   users: {
     platform_role: ["admin", "ai_isa_system", "marketing", "superadmin", "support"],
-    // "member" added by m469 — the bare seat for a user with no business role
-    // and no grant. Additive: the other 14 values are untouched.
-    user_type: ["admin", "agent", "broker", "broker_owner", "compliance_officer", "contact", "isa", "lender", "member", "superadmin", "support", "system", "tc", "team_lead", "vendor"],
+    // m469 added a 15th value, "member"; m470 removed it again on the owner's
+    // ruling that the user_type IS the seat and a role grant only adds
+    // capability on top of it. Back to the original 14. NOTE: team_members.role
+    // and organization_members.role each carry their own "member" value — those
+    // are TEAM memberships, unrelated to this column, and they stay.
+    user_type: ["admin", "agent", "broker", "broker_owner", "compliance_officer", "contact", "isa", "lender", "superadmin", "support", "system", "tc", "team_lead", "vendor"],
   },
   valuation_requests: {
     condition: ["excellent", "fair", "good", "poor"],
