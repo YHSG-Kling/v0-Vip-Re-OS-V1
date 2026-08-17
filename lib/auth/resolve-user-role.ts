@@ -28,6 +28,19 @@ export type UserRole =
   | "system"
   | "superadmin"
   | "support"
+  // m469. This union models users.user_type, and the database now admits
+  // 'member' — the bare seat for a user carrying NO business role, who sees only
+  // their own work until a role is granted to them.
+  //
+  // THIS IS A SECOND, SEPARATE `UserRole`. lib/security/types.ts exports one too,
+  // and it is a DIFFERENT set: that one is the CANONICAL ROLE vocabulary (what a
+  // user may BE after mapping), this one is the raw user_type COLUMN vocabulary
+  // (what the row may literally store — hence 'system' and 'support', which are
+  // not canonical roles). Adding the seat to one and not the other is what left
+  // three assignments in lib/auth/useAuth.ts unassignable: `User.role` in
+  // types/user.ts resolves to THIS union, while the value being assigned had
+  // already been canonicalised through the other.
+  | "member"
 
 /**
  * PLATFORM-STAFF IDENTITY — the ONE gate, and it takes BOTH columns.

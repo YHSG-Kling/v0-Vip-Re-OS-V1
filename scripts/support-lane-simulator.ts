@@ -434,16 +434,22 @@ async function liveLayer() {
     const noLane = await svc.from("support_tickets")
       .insert({ brokerage_id: brokerageId, subject: "support-lane-proof no lane", status: "open", priority: "low" })
       .select("id")
+    // `.select("id")` on a rejected insert types `data` as `never`, so reading
+    // `.length` off it does not compile. Name the shape we actually selected —
+    // and keep asserting the ROW COUNT, never just the presence of an error,
+    // because a zero-row refusal comes back as error:null.
+    const noLaneRows = (noLane.data ?? []) as Array<{ id: string }>
     check("live: an insert that omits the lane is REFUSED (not_null_violation)",
-      noLane.error !== null && (noLane.data?.length ?? 0) === 0)
-    for (const r of noLane.data ?? []) seeded.push((r as { id: string }).id)
+      noLane.error !== null && noLaneRows.length === 0)
+    for (const r of noLaneRows) seeded.push(r.id)
 
     const badLane = await svc.from("support_tickets")
       .insert({ brokerage_id: brokerageId, lane: "platform", subject: "support-lane-proof bad lane", status: "open", priority: "low" })
       .select("id")
+    const badLaneRows = (badLane.data ?? []) as Array<{ id: string }>
     check("live: a lane outside the vocabulary is REFUSED by the CHECK constraint",
-      badLane.error !== null && (badLane.data?.length ?? 0) === 0)
-    for (const r of badLane.data ?? []) seeded.push((r as { id: string }).id)
+      badLane.error !== null && badLaneRows.length === 0)
+    for (const r of badLaneRows) seeded.push(r.id)
 
     // Both lanes are genuinely storable, and the value round-trips. Proven with
     // `.select("id")` + a length check, because a zero-row refusal is error:null.

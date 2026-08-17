@@ -85,7 +85,10 @@ function pureLayer() {
     agent_id:             "agent-1",
   }
   const ev = (over: Partial<StaleEligibilityInput>, opts: Parameters<typeof staleContactEligibility>[1] = { now }) =>
-    staleContactEligibility({ ...base, ...over }, { now, ...opts })
+    // NOT `{ now, ...opts }`. `opts` already defaults to `{ now }` and its type
+    // requires `now`, so the leading key was always overwritten by the spread —
+    // dead weight that read as if it were a fallback.
+    staleContactEligibility({ ...base, ...over }, opts)
 
   check("a quiet, unblocked, assigned contact is BOTH eligible and dormant",
     ev({}).eligible === true && ev({}).dormant === true)
