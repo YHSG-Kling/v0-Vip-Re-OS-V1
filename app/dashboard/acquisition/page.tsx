@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
-import { readRoleGrants, selectAgentId, selectTenantBrokerageId, holdsAnyRole } from "@/lib/auth/role-grants"
+import { readRoleGrants, selectAgentId, selectTenantBrokerageId } from "@/lib/auth/role-grants"
+import { isTenantAdminGrantRole } from "@/lib/auth/resolve-user-role"
 import { redirect } from "next/navigation"
 import Link from "next/link"
 import { Camera, QrCode, Home, TrendingUp, Eye, Zap, ArrowRight, Users, DollarSign, BarChart3 } from "lucide-react"
@@ -61,7 +62,13 @@ export default async function AcquisitionPage() {
   // not about one chosen grant. Under the seat model a single user legitimately
   // carries admin alongside agent; comparing one picked role name against this list
   // would deny the admin panels to the very users who most need them.
-  const isAdminOrBroker = holdsAnyRole(grants, ["admin", "broker", "superadmin"])
+  //
+  // The roster is the SHARED tenant-admin grant predicate, not a local literal
+  // (#211): the literal named a 'superadmin' grant spelling MEASURED at zero live
+  // rows (and user_role_assignments carries NO CHECK, so a literal can silently
+  // rot), and omitted broker_owner and team_lead, both admin-class by the owner's
+  // ruling. Acquisition is an operational surface, so the OPERATIONAL tier applies.
+  const isAdminOrBroker = grants.some((g) => isTenantAdminGrantRole(g.role))
 
   const startOfMonth = new Date()
   startOfMonth.setDate(1)

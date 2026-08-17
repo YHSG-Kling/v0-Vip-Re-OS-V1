@@ -344,7 +344,31 @@ export default function VideoCreatePage() {
           .order("created_at", { ascending: false })
           .limit(50)
 
-        setScripts(scriptsData || [])
+        // ALSO the agent's SAVED scripts (#186). The owner ruled agent-authored
+        // scripts save to `scripts` — but this picker only read the curated
+        // video_scripts_library, so nothing an agent saved was ever renderable.
+        // RLS scopes this read (own + brokerage-shared + platform catalogue);
+        // rows are NORMALIZED into the library shape so every downstream
+        // consumer (preview, validation, submit) works unchanged, and marked
+        // __saved so the submit can stamp source_script_id lineage.
+        const { data: savedScripts, error: savedErr } = await supabase
+          .from("scripts")
+          .select("id, title, content, category")
+          .order("created_at", { ascending: false })
+          .limit(50)
+        if (savedErr) console.error("[video-create] saved scripts read refused:", savedErr.message)
+
+        setScripts([
+          ...(scriptsData || []),
+          ...((savedScripts || []).map((r: any) => ({
+            id: r.id,
+            title: r.title,
+            script_content: r.content,
+            script_type: r.category,
+            duration_target_seconds: null,
+            __saved: true,
+          }))),
+        ])
 
         // Load agent voice profiles (maps to agents.id, not users.id)
         // First get agent record for current user
@@ -492,6 +516,13 @@ export default function VideoCreatePage() {
           agent_id: resolvedAgentId,
           brokerage_id: brokerage.id,
           title: scriptTitle || `Video — ${new Date().toLocaleDateString()}`,
+          // Lineage (#186): when the pick came from the agent's SAVED scripts,
+          // the project records which script it renders — the same
+          // source_script_id create-video-project stamps on its path.
+          source_script_id:
+            scriptSource === "library" && scripts.find((s) => s.id === selectedScript)?.__saved
+              ? selectedScript
+              : null,
           script_content: script,
           video_type: toVideoType(
             scriptSource === "library"
@@ -1111,9 +1142,9 @@ export default function VideoCreatePage() {
                     {scripts.length === 0 ? (
                       <Alert>
                         <AlertTriangle className="h-4 w-4" />
-                        <AlertTitle>No Approved Scripts</AlertTitle>
+                        <AlertTitle>No Scripts Yet</AlertTitle>
                         <AlertDescription>
-                          You need at least one approved script to generate a video.
+                          Approve a library script or save one of your own to generate a video.
                           <Button variant="link" className="p-0 h-auto ml-1" onClick={() => router.push("/dashboard/videos/library")}>
                             Go to Script Library
                           </Button>
@@ -1128,10 +1159,12 @@ export default function VideoCreatePage() {
                           {scripts.map((script) => (
                             <SelectItem key={script.id} value={script.id}>
                               <div className="flex items-center gap-2">
-                                <CheckCircle2 className="h-4 w-4 text-green-600" />
+                                {script.__saved
+                                  ? <FileText className="h-4 w-4 text-blue-600" />
+                                  : <CheckCircle2 className="h-4 w-4 text-green-600" />}
                                 {script.title}
                                 <span className="text-muted-foreground text-xs">
-                                  ({script.duration_target_seconds || "~"}s)
+                                  {script.__saved ? "(my saved script)" : `(${script.duration_target_seconds || "~"}s)`}
                                 </span>
                               </div>
                             </SelectItem>
