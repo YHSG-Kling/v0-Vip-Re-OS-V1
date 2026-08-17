@@ -141,6 +141,13 @@ export const DEMO_CONFIG = {
   MODE: 'password' as const,
   AUTO_LOGIN: false,
   PASSWORD: process.env.NEXT_PUBLIC_DEMO_PASSWORD || 'Demo@123456',
+  // The tenant every demo account is provisioned into (#204). This is the live
+  // demo brokerage ("VIP Premier Realty") the seed flows and run-vip-re-os
+  // skill already key on. demoSignIn verifies this row EXISTS before creating
+  // any account and refuses otherwise — an account without users.brokerage_id
+  // is invisible to every tenant-scoped surface and RLS policy, which is worse
+  // than no account at all.
+  BROKERAGE_ID: 'b0000000-0000-0000-0000-000000000001',
 };
 
 // ============================================

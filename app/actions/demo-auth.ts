@@ -5,7 +5,69 @@
 
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
+import { createServiceClient } from '@/lib/supabase/service';
 import { DEMO_USERS, DEMO_CONFIG, AUTH_MESSAGES } from '@/app/constants/auth';
+
+// ── TENANCY (#204) ───────────────────────────────────────────────────────────
+// Demo accounts used to be provisioned WITHOUT users.brokerage_id. An
+// untenanted account is a broken account here: every tenant-scoped surface and
+// RLS policy keys on current_user_brokerage_id(), so the demo user saw nothing
+// and could write rows no tenant reader would ever count. Demo accounts now
+// land in the live demo brokerage (DEMO_CONFIG.BROKERAGE_ID, verified to exist
+// before any account is created) or the flow REFUSES.
+//
+// WHY THE SERVICE CLIENT for provisioning: the tenant check and the users
+// upsert cannot ride the just-created session — brokerages_select requires
+// platform staff or `id = current_user_brokerage_id()`, and a brand-new demo
+// user has no users row yet, so RLS would refuse the very read that proves the
+// tenant exists. Provisioning is server-only, demo-gated (DEMO_CONFIG.ENABLED
+// is hard-off in production), and stamps a fixed tenant id.
+
+/** Verify the demo brokerage row actually exists before relying on it. */
+async function verifyDemoTenant(): Promise<{ ok: true } | { ok: false; error: string }> {
+  const service = createServiceClient();
+  const { data, error } = await service
+    .from('brokerages')
+    .select('id')
+    .eq('id', DEMO_CONFIG.BROKERAGE_ID)
+    .maybeSingle();
+  if (error) return { ok: false, error: `Demo tenant check failed: ${error.message}` };
+  if (!data) return { ok: false, error: 'Demo brokerage is not provisioned — refusing to create an untenanted demo account' };
+  return { ok: true };
+}
+
+/** Upsert the canonical users row for a demo account, WITH its tenant anchor. */
+async function provisionDemoProfile(
+  userId: string,
+  demoUser: (typeof DEMO_USERS)[number],
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  // Map demo role → users.user_type (CHECK-constrained); the original role
+  // string is kept in the free-text role col.
+  const USER_TYPE_MAP: Record<string, string> = {
+    manager: 'admin',
+    buyer: 'contact',
+    seller: 'contact',
+  };
+  const userType = USER_TYPE_MAP[demoUser.role] ?? demoUser.role;
+
+  const service = createServiceClient();
+  const { error } = await service.from('users').upsert(
+    {
+      id: userId,
+      email: demoUser.email,
+      first_name: demoUser.firstName,
+      last_name: demoUser.lastName,
+      user_type: userType, // NOT NULL + CHECK
+      role: demoUser.role, // free-text display role
+      brokerage: demoUser.agency, // canonical home for "agency"
+      brokerage_id: DEMO_CONFIG.BROKERAGE_ID, // TENANT ANCHOR — never null
+      created_at: new Date().toISOString(),
+    },
+    { onConflict: 'id' },
+  );
+  if (error) return { ok: false, error: `Failed to provision demo profile: ${error.message}` };
+  return { ok: true };
+}
 
 /**
  * Sign in with demo user email
@@ -57,7 +119,35 @@ export async function demoSignIn(userEmail: string) {
     });
 
     if (!signInError && signInData.user) {
-      // Sign in successful
+      // Sign in successful. SELF-HEAL (#204): accounts created before the
+      // tenancy fix (or whose profile write failed mid-provision) may have no
+      // users row or a NULL brokerage_id. Read through the service client —
+      // the session client's own users_select would hide the very row we are
+      // checking if it is broken — and re-provision when untenanted. Fail
+      // CLOSED: an untenanted session is the bug this flow exists to prevent,
+      // so end the session rather than hand it back.
+      const service = createServiceClient();
+      const { data: profile, error: profileReadError } = await service
+        .from('users')
+        .select('id, brokerage_id')
+        .eq('id', signInData.user.id)
+        .maybeSingle();
+      if (profileReadError) {
+        await supabase.auth.signOut();
+        return { success: false, error: `Demo profile check failed: ${profileReadError.message}` };
+      }
+      if (!profile || !profile.brokerage_id) {
+        const tenant = await verifyDemoTenant();
+        if (!tenant.ok) {
+          await supabase.auth.signOut();
+          return { success: false, error: tenant.error };
+        }
+        const provisioned = await provisionDemoProfile(signInData.user.id, demoUser);
+        if (!provisioned.ok) {
+          await supabase.auth.signOut();
+          return { success: false, error: provisioned.error };
+        }
+      }
       return {
         success: true,
         user: {
@@ -72,6 +162,14 @@ export async function demoSignIn(userEmail: string) {
 
     // User might not exist, try to create them
     if (signInError && signInError.message.includes('Invalid login credentials')) {
+      // TENANT FIRST (#204): prove the demo brokerage exists BEFORE creating
+      // the auth account — a missing tenant refuses the whole flow instead of
+      // minting an account that cannot be anchored.
+      const tenant = await verifyDemoTenant();
+      if (!tenant.ok) {
+        return { success: false, error: tenant.error };
+      }
+
       const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
         email: demoUser.email,
         password: demoUser.password,
@@ -92,33 +190,15 @@ export async function demoSignIn(userEmail: string) {
       }
 
       // Store demo user in the canonical users table (user_profiles is a thin
-      // extension table without these columns). Map demo role → users.user_type
-      // (CHECK-constrained); the original role string is kept in the free-text role col.
-      const USER_TYPE_MAP: Record<string, string> = {
-        manager: 'admin',
-        buyer: 'contact',
-        seller: 'contact',
-      };
-      const userType = USER_TYPE_MAP[demoUser.role] ?? demoUser.role;
-
-      const { error: profileError } = await supabase
-        .from('users')
-        .upsert(
-          {
-            id: signUpData.user.id,
-            email: demoUser.email,
-            first_name: demoUser.firstName,
-            last_name: demoUser.lastName,
-            user_type: userType,        // NOT NULL + CHECK
-            role: demoUser.role,        // free-text display role
-            brokerage: demoUser.agency, // canonical home for "agency"
-            created_at: new Date().toISOString(),
-          },
-          { onConflict: 'id' }
-        );
-
-      if (profileError) {
-        console.error('Profile creation error:', profileError);
+      // extension table without these columns), WITH its tenant anchor. This
+      // used to console.error-and-continue on failure, which is exactly how
+      // untenanted accounts were minted; now the flow fails closed (the auth
+      // account is healed by the sign-in branch's self-heal on the next
+      // attempt once the underlying write succeeds).
+      const provisioned = await provisionDemoProfile(signUpData.user.id, demoUser);
+      if (!provisioned.ok) {
+        await supabase.auth.signOut();
+        return { success: false, error: provisioned.error };
       }
 
       return {

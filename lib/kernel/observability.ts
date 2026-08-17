@@ -2,8 +2,23 @@
 // Read-only observability layer for superadmin dashboards.
 // Queries automation_errors and calendar_sync_logs.
 // All functions require the platform 'sentinel' capability. No writes.
+//
+// WHY THE SERVICE CLIENT (#198): the gate above admits platform staff, but the
+// queries used to run through the RLS-bound session client — and the live
+// SELECT policies on both tables are tenant-only
+// (`brokerage_id = current_user_brokerage_id()`, automation_errors adding an
+// `IS NULL` branch; measured in pg_policies). Platform staff have no tenant
+// brokerage_id, so every read resolved to zero rows / a refused count and the
+// page stayed empty for the only audience allowed to open it. This is the same
+// shape every other platform surface already solved
+// (app/actions/superadmin/*): authorize via requirePlatformCapability, then
+// read through the service client. The RLS alternative — adding an
+// `is_platform_staff()` OR-branch — was rejected because that helper admits
+// marketing/support too, which is BROADER than the 'sentinel' capability
+// ({superadmin, admin} + override layer) this surface is gated on; gate and
+// data path would disagree again, just in the other direction.
 
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import type { CalendarSyncLogRow } from "./calendar-sync"
 
@@ -77,7 +92,9 @@ export async function listAutomationErrors(
 ): Promise<{ rows: AutomationErrorRow[]; total: number }> {
   await requirePlatformObservability(params.userId)
 
-  const supabase = await createClient()
+  // Post-gate service client: platform staff read ANY tenant's telemetry; the
+  // tenant-scoped RLS on automation_errors cannot express that (see header).
+  const supabase = createServiceClient()
   const limit = params.limit ?? 50
   const offset = params.offset ?? 0
 
@@ -135,7 +152,8 @@ export async function listCalendarSyncLogs(params: {
 }): Promise<CalendarSyncLogRow[]> {
   await requirePlatformObservability(params.userId)
 
-  const supabase = await createClient()
+  // Post-gate service client (see header — calendar_sync_logs RLS is tenant-only).
+  const supabase = createServiceClient()
   const limit = params.limit ?? 50
   const offset = params.offset ?? 0
 
@@ -162,7 +180,8 @@ export async function getObservabilityDashboard(params: {
 }> {
   await requirePlatformObservability(params.userId)
 
-  const supabase = await createClient()
+  // Post-gate service client (see header — both tables carry tenant-only RLS).
+  const supabase = createServiceClient()
 
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
 
