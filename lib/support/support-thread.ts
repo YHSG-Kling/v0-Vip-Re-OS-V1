@@ -9,6 +9,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { notifyPlatformStaff } from "@/lib/notifications/platform-staff"
+import { ticketAnsweredBy } from "@/lib/support/ticket-constants"
 
 type Svc = ReturnType<typeof createServiceClient>
 export type AuthorKind = "staff" | "tenant"
@@ -41,9 +42,13 @@ export async function postTicketReply(
   const body = params.body?.trim()
   if (!body) return { ok: false, error: "Message body is required" }
 
-  const { data: ticket } = await svc.from("support_tickets")
-    .select("id, brokerage_id, agent_id, subject, first_response_at, status")
+  // `error` destructured: supabase-js RESOLVES a refused read, so `{ data }` alone
+  // reports "permission denied" as "Ticket not found" — one sentence for two
+  // entirely different failures, and only one of them is the caller's fault.
+  const { data: ticket, error: readErr } = await svc.from("support_tickets")
+    .select("id, brokerage_id, agent_id, lane, submitted_by_user_id, subject, first_response_at, status")
     .eq("id", params.ticketId).maybeSingle()
+  if (readErr) return { ok: false, error: `Could not read the ticket: ${readErr.message}` }
   if (!ticket) return { ok: false, error: "Ticket not found" }
 
   const { data: msg, error } = await svc.from("support_ticket_messages")
@@ -57,24 +62,40 @@ export async function postTicketReply(
   if (params.authorKind === "staff" && (ticket as any).status === "open") patch.status = "in_progress"
   await svc.from("support_tickets").update(patch).eq("id", params.ticketId).then(undefined, () => {})
 
-  // Notify the OTHER side.
+  // ── NOTIFY THE OTHER SIDE, AND WHO THAT IS DEPENDS ON THE LANE ─────────────
+  // Before support_tickets carried a lane, an asking-side reply ALWAYS alerted
+  // platform staff. On a user_to_brokerage ticket that paged the platform about
+  // a conversation it is not a party to, and never told the brokerage's own office
+  // — the side that actually answers it.
+  const lane = String((ticket as any).lane ?? "")
+  const brokerageId = (ticket as any).brokerage_id as string | null
   try {
     if (params.authorKind === "staff") {
-      // Notify the tenant's own user (the ticket's agent).
-      const agentId = (ticket as any).agent_id
-      if (agentId) {
-        const { data: ag } = await svc.from("agents").select("user_id").eq("id", agentId).maybeSingle()
-        const uid = (ag as any)?.user_id
-        if (uid) {
-          await svc.from("notifications").insert({
-            user_id: uid, brokerage_id: (ticket as any).brokerage_id, type: "support_reply",
-            title: "Support replied to your ticket", body: `“${(ticket as any).subject ?? "Your ticket"}” — ${body.slice(0, 180)}`,
-            entity_type: "support_ticket", entity_id: params.ticketId, priority: "medium", is_read: false,
-          }).then(undefined, () => {})
-        }
+      // The ANSWERING side replied → tell the SUBMITTER. submitted_by_user_id
+      // first: it is set for every class of tenant user, where agent_id resolves
+      // only for users holding an agents row.
+      let uid = (ticket as any).submitted_by_user_id as string | null
+      if (!uid && (ticket as any).agent_id) {
+        const { data: ag, error: agErr } = await svc.from("agents").select("user_id").eq("id", (ticket as any).agent_id).maybeSingle()
+        if (agErr) console.error("[support-thread] agent read refused:", agErr.message)
+        uid = ((ag as any)?.user_id as string | null) ?? null
       }
+      if (uid) {
+        await svc.from("notifications").insert({
+          user_id: uid, brokerage_id: brokerageId, type: "support_reply",
+          title: "Support replied to your ticket", body: `“${(ticket as any).subject ?? "Your ticket"}” — ${body.slice(0, 180)}`,
+          entity_type: "support_ticket", entity_id: params.ticketId, priority: "medium", is_read: false,
+        }).then(undefined, () => {})
+      }
+    } else if (ticketAnsweredBy(lane) === "brokerage_office" && brokerageId) {
+      // Lane 2 asking side → the BROKERAGE's own office staff. Never the platform.
+      const { notifyBrokerageAdmins } = await import("@/lib/notifications/brokerage-admins")
+      await notifyBrokerageAdmins(svc as any, brokerageId, {
+        type: "support_ticket_reply", title: `Ticket reply: ${(ticket as any).subject ?? "Support ticket"}`,
+        body: body.slice(0, 400), entityType: "support_ticket", entityId: params.ticketId, priority: "high",
+      })
     } else {
-      // Tenant replied → alert platform staff.
+      // Lane 1 asking side (the tenant) → platform staff. Unchanged.
       await notifyPlatformStaff(svc as any, {
         type: "support_ticket_reply", title: `Ticket reply: ${(ticket as any).subject ?? "Support ticket"}`,
         body: body.slice(0, 400), entityType: "support_ticket", entityId: params.ticketId, priority: "high",
@@ -87,6 +108,8 @@ export async function postTicketReply(
 
 export interface TicketThread {
   id: string
+  /** Which conversation this is — see TICKET_LANES. Decides who answers it. */
+  lane: string
   brokerageId: string | null
   brokerageName: string | null
   subject: string | null
@@ -105,9 +128,10 @@ export interface TicketThread {
 
 /** Load a ticket with its brokerage identity, requester name, and full message thread. */
 export async function loadTicketThread(svc: Svc, ticketId: string): Promise<TicketThread | null> {
-  const { data: t } = await svc.from("support_tickets")
-    .select("id, brokerage_id, agent_id, subject, description, status, priority, category, assigned_to, first_response_at, resolved_at, created_at, satisfaction_rating")
+  const { data: t, error: tErr } = await svc.from("support_tickets")
+    .select("id, brokerage_id, agent_id, lane, subject, description, status, priority, category, assigned_to, first_response_at, resolved_at, created_at, satisfaction_rating")
     .eq("id", ticketId).maybeSingle()
+  if (tErr) { console.error("[support-thread] loadTicketThread refused:", tErr.message); return null }
   if (!t) return null
   const tk = t as any
 
@@ -120,7 +144,7 @@ export async function loadTicketThread(svc: Svc, ticketId: string): Promise<Tick
   const uu = Array.isArray(u) ? u[0] : u
 
   return {
-    id: tk.id, brokerageId: tk.brokerage_id, brokerageName: (brk as any)?.name ?? null,
+    id: tk.id, lane: String(tk.lane ?? ""), brokerageId: tk.brokerage_id, brokerageName: (brk as any)?.name ?? null,
     subject: tk.subject, description: tk.description, status: tk.status, priority: tk.priority, category: tk.category,
     assignedTo: tk.assigned_to, firstResponseAt: tk.first_response_at, resolvedAt: tk.resolved_at, createdAt: tk.created_at,
     requesterName: uu ? [uu.first_name, uu.last_name].filter(Boolean).join(" ") || null : null,

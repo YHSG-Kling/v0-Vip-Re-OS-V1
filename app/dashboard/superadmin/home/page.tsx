@@ -160,7 +160,10 @@ export default async function PlatformStaffHomePage() {
       ? svc.from("brokerages").select("id", { count: "exact", head: true }).eq("status", "active")
       : Promise.resolve({ count: null, error: null }),
     can("support")
-      ? svc.from("support_tickets").select("id", { count: "exact", head: true }).in("status", ["open", "in_progress"])
+      // LANE-FILTERED: this badge is the PLATFORM's own support queue. Before the
+      // lane existed it counted every brokerage's internal tickets too, so the
+      // platform staff home showed work no platform staffer answers.
+      ? svc.from("support_tickets").select("id", { count: "exact", head: true }).eq("lane", "tenant_to_platform").in("status", ["open", "in_progress"])
       : Promise.resolve({ count: null, error: null }),
     can("providers")
       ? svc.from("connector_healing_proposals").select("id", { count: "exact", head: true }).eq("status", "pending")

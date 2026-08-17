@@ -22,7 +22,7 @@ import {
 } from "@/app/actions/support"
 import {
   TICKET_CATEGORIES, TICKET_PRIORITIES,
-  type HelpArticle, type SupportTicket,
+  type HelpArticle, type SupportTicket, type TicketLane,
 } from "@/lib/support/ticket-constants"
 
 const STATUS_BADGE: Record<string, { label: string; className: string }> = {
@@ -41,12 +41,19 @@ const EXTERNAL_RESOURCES = [
 
 export function HelpCenterClient({
   brokerageName, supportEmail, supportPhone, initialArticles, initialTickets,
+  ticketsError, canRaiseWithPlatform,
 }: {
   brokerageName: string | null
   supportEmail: string | null
   supportPhone: string | null
   initialArticles: HelpArticle[]
   initialTickets: SupportTicket[]
+  /** Non-null when the ticket read was REFUSED. A refused read is not an empty
+   *  list, and rendering it as one is how a permissions failure hides. */
+  ticketsError: string | null
+  /** Only a brokerage admin may raise the tenant_to_platform lane — the tenant
+   *  speaks to the platform as an organisation. Mirrors the RLS INSERT policy. */
+  canRaiseWithPlatform: boolean
 }) {
   const { toast } = useToast()
   const [query, setQuery] = useState("")
@@ -190,10 +197,14 @@ export function HelpCenterClient({
                 <h2 className="text-lg font-semibold">My Support Tickets</h2>
                 <p className="text-sm text-muted-foreground">Track requests you've raised with support.</p>
               </div>
-              <NewTicketDialog onCreated={(t) => setTickets((cur) => [t, ...cur])} />
+              <NewTicketDialog canRaiseWithPlatform={canRaiseWithPlatform} onCreated={(t) => setTickets((cur) => [t, ...cur])} />
             </div>
 
-            {tickets.length === 0 ? (
+            {ticketsError ? (
+              <Card><CardContent className="py-10 text-center text-red-600">
+                Could not load your tickets: {ticketsError}
+              </CardContent></Card>
+            ) : tickets.length === 0 ? (
               <Card><CardContent className="py-10 text-center text-muted-foreground">
                 You haven't raised any tickets yet.
               </CardContent></Card>
@@ -245,28 +256,45 @@ export function HelpCenterClient({
   )
 }
 
-function NewTicketDialog({ onCreated }: { onCreated: (t: SupportTicket) => void }) {
+/**
+ * WHO ANSWERS THIS TICKET IS A CHOICE THE SUBMITTER MAKES, AND IT USED NOT TO BE
+ * ASKED. Every ticket raised here went to one undifferentiated pile. Under the
+ * owner's ruling there are two conversations — this office, or the platform — and
+ * the second is admin-class only, so the option only appears for an account that
+ * may actually take it.
+ */
+function NewTicketDialog({
+  canRaiseWithPlatform, onCreated,
+}: { canRaiseWithPlatform: boolean; onCreated: (t: SupportTicket) => void }) {
   const { toast } = useToast()
   const [open, setOpen] = useState(false)
   const [subject, setSubject] = useState("")
   const [description, setDescription] = useState("")
   const [category, setCategory] = useState<string>("general")
   const [priority, setPriority] = useState<string>("medium")
+  const [lane, setLane] = useState<TicketLane>("user_to_brokerage")
   const [submitting, setSubmitting] = useState(false)
 
   async function submit() {
     if (!subject.trim()) { toast({ title: "Subject required", variant: "destructive" }); return }
     setSubmitting(true)
     try {
-      const r = await createSupportTicket({ subject, description, category, priority: priority as (typeof TICKET_PRIORITIES)[number] })
+      const r = await createSupportTicket({ subject, description, lane, category, priority: priority as (typeof TICKET_PRIORITIES)[number] })
       if (!r.ok) { toast({ title: "Could not create ticket", description: r.error, variant: "destructive" }); return }
       onCreated({
         id: r.id, subject: subject.trim(), description: description.trim() || null,
         status: "open", priority, category, agentId: null,
+        lane, vendorId: null, submittedByUserId: null,
         createdAt: new Date().toISOString(), updatedAt: null,
       })
-      toast({ title: "Ticket raised", description: "Support will follow up with you." })
-      setSubject(""); setDescription(""); setCategory("general"); setPriority("medium"); setOpen(false)
+      toast({
+        title: "Ticket raised",
+        description: lane === "tenant_to_platform"
+          ? "Platform support will follow up with you."
+          : "Your brokerage office will follow up with you.",
+      })
+      setSubject(""); setDescription(""); setCategory("general"); setPriority("medium")
+      setLane("user_to_brokerage"); setOpen(false)
     } finally { setSubmitting(false) }
   }
 
@@ -276,6 +304,18 @@ function NewTicketDialog({ onCreated }: { onCreated: (t: SupportTicket) => void 
       <DialogContent>
         <DialogHeader><DialogTitle>Raise a support ticket</DialogTitle></DialogHeader>
         <div className="space-y-4">
+          {canRaiseWithPlatform && (
+            <div className="space-y-1">
+              <Label>Who should answer this?</Label>
+              <Select value={lane} onValueChange={(v) => setLane(v as TicketLane)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="user_to_brokerage">My brokerage office</SelectItem>
+                  <SelectItem value="tenant_to_platform">Platform support</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           <div className="space-y-1">
             <Label htmlFor="t-subject">Subject</Label>
             <Input id="t-subject" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Brief summary of the issue" />

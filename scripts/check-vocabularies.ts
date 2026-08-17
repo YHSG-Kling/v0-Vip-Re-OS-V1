@@ -1380,7 +1380,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     author_kind: ["staff", "tenant"],
   },
   support_tickets: {
-    lane: ["member_to_brokerage", "tenant_to_platform"],
+    lane: ["user_to_brokerage", "tenant_to_platform"],
     priority: ["high", "low", "medium", "urgent"],
     status: ["closed", "in_progress", "open", "resolved"],
   },
