@@ -2,6 +2,7 @@ import {
 NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { initiateAIISAContactEngagement } from '@/app/actions/ai-isa/initiate-contact-engagement'
+import { detectAllEligibleContacts, DEFAULT_MAX_BATCH } from '@/lib/ai-isa/stale-contact-detector'
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -37,20 +38,36 @@ export async function GET(request: NextRequest) {
   const results: Array<{
     brokerageId: string
     staleCount: number
+    /** How many of staleCount were GHOSTED (messaged, no reply) rather than merely quiet. */
+    ghostedCount: number
     reengaged: number
     skipped: number
     errors: string[]
   }> = []
 
   // brokerages table has no is_active column — fetch all and rely on contacts filter
-  const { data: brokerages } = await supabase
+  const { data: brokerages, error: brokeragesErr } = await supabase
     .from('brokerages')
     .select('id')
 
+  // supabase-js RESOLVES a failed query, so an unchecked read here would loop over
+  // zero brokerages and then report `ok: true, totalReengaged: 0` — a refused read
+  // and a genuinely quiet night are indistinguishable to every consumer of this
+  // response. They must not be.
+  if (brokeragesErr) {
+    await recordCronFailureAction({ context_id: contextId, error: brokeragesErr.message, stage: 'load-brokerages' })
+    return NextResponse.json({ ok: false, error: brokeragesErr.message, context_id: contextId }, { status: 500 })
+  }
+
   // Thresholds live in global_settings.additional_settings (per brokerage).
-  const { data: settingsRows } = await supabase
+  const { data: settingsRows, error: settingsErr } = await supabase
     .from('global_settings')
     .select('brokerage_id, additional_settings')
+  if (settingsErr) {
+    // Not fatal — every brokerage falls back to the module default — but it must
+    // not pass as "nobody configured a threshold".
+    console.error('[cron/stale-contact-monitor] global_settings read refused:', settingsErr.message)
+  }
   const settingsByBrokerage = new Map<string, Record<string, unknown>>()
   for (const r of settingsRows ?? []) {
     if (r.brokerage_id) settingsByBrokerage.set(r.brokerage_id as string, (r.additional_settings as Record<string, unknown>) ?? {})
@@ -66,51 +83,73 @@ export async function GET(request: NextRequest) {
         ? settings.isa_ghost_threshold_days
         : 14
 
-    const cutoff = new Date(
-      Date.now() - staleDays * 24 * 60 * 60 * 1000,
-    ).toISOString()
-
     let reengaged = 0
     let skipped = 0
     const errors: string[] = []
 
     try {
-      // Find assigned contacts with no recent activity.
-      // These are converted leads (have agent_id) that have gone quiet.
-      // contacts.last_contacted_at is not in schema — filter on created_at as fallback
-      const { data: staleContacts } = await supabase
-        .from('contacts')
-        .select('id, first_name, last_name, email, agent_id, status, dnc_status, isa_reengage_allowed')
-        .eq('brokerage_id', brokerageId)
-        .not('agent_id', 'is', null)      // must be assigned to an agent
-        .eq('dnc_status', false)           // not on DNC
-        .neq('status', 'archived')
-        .neq('status', 'inactive')
-        .not('isa_reengage_allowed', 'eq', false)  // ISA re-engage must be allowed
-        .lt('created_at', cutoff)          // no activity threshold — use created_at as proxy
-        .limit(20)                         // max 20 per brokerage per run
+      // THE CANONICAL DETECTOR, not a fourth copy of the query.
+      //
+      // This block used to hand-roll the stale read, and its filter was
+      // `.lt('created_at', cutoff)` under a comment asserting that
+      // contacts.last_contacted_at "is not in schema". It is (verified against
+      // scripts/schema-snapshot.ts), and the consequence of the wrong column was
+      // not cosmetic: created_at never moves, so every contact older than the
+      // threshold stayed permanently inside the stale net and was auto-messaged
+      // no matter how recently their agent had spoken to them. The inline query
+      // also had no exclusion for an OPEN TRANSACTION — a client under contract
+      // was a re-engagement candidate.
+      //
+      // detectAllEligibleContacts applies last_contacted_at, the open-transaction
+      // exclusion, ai_outreach_paused, deleted_at, the lifetime long-horizon
+      // threshold, AND the two exclusions this cron used to own (status
+      // archived/inactive, assigned-agent-required) — which were merged into the
+      // shared policy before this query was removed, so nothing was lost.
+      //
+      // It also returns the GHOSTED half (messaged, no reply) that no caller had
+      // ever asked for, labelled per contact so the engine can tell the two apart.
+      const staleContacts = await detectAllEligibleContacts(brokerageId, {
+        staleDays,
+        ghostedDays: staleDays,
+        // The old inline query took 20 per brokerage per run; keep that ceiling
+        // rather than inheriting the module's larger default batch.
+        maxBatch: Math.min(20, DEFAULT_MAX_BATCH),
+        requireAssignedAgent: true,
+      })
 
-      for (const contact of staleContacts ?? []) {
+      for (const contact of staleContacts) {
         try {
           // COLD-CONTACT CHECKPOINT — before another auto-touch, if this contact has gone
           // cold (≥ COLD_CONTACT_TOUCHES unanswered ISA follow-ups), loop in the OWNING AGENT
           // once for a personal call (the automation still nurtures). The contact-side mirror
           // of the ghost-lead escalation — no cold relationship auto-loops without a human.
-          const { count: noReplyTouches } = await supabase
+          const { count: noReplyTouches, error: touchErr } = await supabase
             .from('isa_outreach_log')
             .select('id', { count: 'exact', head: true })
             .eq('contact_id', contact.id)
             .is('replied_at', null)
-          const { coldContactReengagementCheck } = await import('@/lib/ai-isa/reengagement-policy')
-          if (coldContactReengagementCheck(noReplyTouches ?? 0).isCold) {
-            const { escalateColdContact } = await import('@/lib/ai-isa/cold-contact-escalation')
-            await escalateColdContact(supabase, {
-              contactId: contact.id, brokerageId, agentId: contact.agent_id,
-              touches: noReplyTouches ?? 0, firstName: contact.first_name ?? null,
-            })
+          if (touchErr) {
+            // A refused count reads as 0, i.e. "not cold" — which silently
+            // withholds the one human checkpoint on an endlessly-nurtured
+            // relationship. Surface it instead of escalating on a guess.
+            errors.push(`${contact.id}: cold-check read refused: ${touchErr.message}`)
+          } else {
+            const { coldContactReengagementCheck } = await import('@/lib/ai-isa/reengagement-policy')
+            if (coldContactReengagementCheck(noReplyTouches ?? 0).isCold) {
+              const { escalateColdContact } = await import('@/lib/ai-isa/cold-contact-escalation')
+              await escalateColdContact(supabase, {
+                contactId: contact.id, brokerageId, agentId: contact.agent_id,
+                touches: noReplyTouches ?? 0, firstName: contact.first_name ?? null,
+              })
+            }
           }
 
-          const result = await initiateAIISAContactEngagement(contact.id)
+          // THE DETECTED SITUATION, not a fixed label. detection_type is 'stale'
+          // or 'ghosted', and engageContact treats them differently — 'ghosted'
+          // routes the AI call to the ghost_recovery purpose and arms the
+          // situational voicemail's fresh hook. Passing the real one is what
+          // makes the ghosted half of the detector mean anything downstream.
+          const result = await initiateAIISAContactEngagement(contact.id, contact.detection_type)
           if (result.success) {
             reengaged++
           } else {
@@ -191,14 +230,15 @@ export async function GET(request: NextRequest) {
 
       results.push({
         brokerageId,
-        staleCount: staleContacts?.length ?? 0,
+        staleCount: staleContacts.length,
+        ghostedCount: staleContacts.filter((c) => c.detection_type === 'ghosted').length,
         reengaged,
         skipped,
         errors,
       })
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
-      results.push({ brokerageId, staleCount: 0, reengaged: 0, skipped: 0, errors: [msg] })
+      results.push({ brokerageId, staleCount: 0, ghostedCount: 0, reengaged: 0, skipped: 0, errors: [msg] })
     }
   }
 

@@ -184,8 +184,12 @@ async function live() {
 
   // CSAT round-trip on a seeded ticket.
   if (anyBrk) {
+    // `lane` stated, never defaulted — support_tickets.lane is NOT NULL with no
+    // default (m468) so a writer that omits it fails at the insert. CSAT is a
+    // property of a ticket in either lane; this seeds the platform one.
     const { data: ticket, error: tErr } = await svc.from("support_tickets").insert({
-      brokerage_id: (anyBrk as any).id, subject: "SIM csat ticket", status: "resolved",
+      brokerage_id: (anyBrk as any).id, lane: "tenant_to_platform",
+      subject: "SIM csat ticket", status: "resolved",
       priority: "low", resolved_at: new Date().toISOString(),
     }).select("id").single()
     check("live: ticket seeds", !tErr && !!ticket, tErr?.message)

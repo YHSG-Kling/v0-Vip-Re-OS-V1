@@ -637,7 +637,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "subscriber_service_areas": { "brokerage_id": "brokerages" },
   "subscriptions": { "brokerage_id": "brokerages", "tier_id": "subscription_tiers" },
   "support_ticket_messages": { "ticket_id": "support_tickets" },
-  "support_tickets": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts" },
+  "support_tickets": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "submitted_by_user_id": "users", "vendor_id": "vendors" },
   "sync_errors": { "brokerage_id": "brokerages", "sync_log_id": "accounting_sync_log" },
   "system_health_checks": { "brokerage_id": "brokerages" },
   "task_items": { "checklist_id": "smart_checklists" },

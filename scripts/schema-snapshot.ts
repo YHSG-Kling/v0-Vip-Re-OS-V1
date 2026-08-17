@@ -633,7 +633,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   subscription_tiers: ["annual_price_cents", "created_at", "description", "display_name", "features", "id", "is_active", "is_featured", "marketing_bullets", "max_agents", "max_brokerages", "monthly_price_cents", "setup_fee_cents", "stripe_price_id", "tier_name"],
   subscriptions: ["brokerage_id", "cancel_at", "cancelled_at", "created_at", "current_period_end", "current_period_start", "id", "status", "stripe_customer_id", "stripe_subscription_id", "tier_id", "trial_end", "updated_at"],
   superadmin_audit_log: ["action", "actor_email", "actor_user_id", "created_at", "details", "id", "ip_address", "target_id", "target_type", "user_agent"],
-  support_tickets: ["agent_id", "assigned_to", "brokerage_id", "category", "contact_id", "created_at", "description", "first_response_at", "id", "priority", "resolved_at", "satisfaction_at", "satisfaction_comment", "satisfaction_rating", "status", "subject", "updated_at"],
+  support_tickets: ["agent_id", "assigned_to", "brokerage_id", "category", "contact_id", "created_at", "description", "first_response_at", "id", "lane", "priority", "resolved_at", "satisfaction_at", "satisfaction_comment", "satisfaction_rating", "status", "subject", "submitted_by_user_id", "updated_at", "vendor_id"],
   support_ticket_messages: ["author_kind", "author_user_id", "body", "created_at", "id", "ticket_id"],
   sync_errors: ["brokerage_id", "created_at", "error_code", "error_message", "id", "payload_snapshot", "record_id", "record_type", "sync_log_id"],
   system_health_checks: ["brokerage_id", "check_payload", "checked_at", "error_message", "http_status_code", "id", "response_time_ms", "service_category", "service_key", "service_name", "status"],

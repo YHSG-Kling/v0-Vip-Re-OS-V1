@@ -14,7 +14,6 @@
     "app/actions/ai-content-generation.tsx": 4,
     "app/actions/ai-contract-review.ts": 1,
     "app/actions/ai-document-intelligence.ts": 1,
-    "app/actions/ai-isa/engage-contact.ts": 1,
     "app/actions/ai-isa/initiate-engagement.ts": 1,
     "app/actions/ai-lead-nurturing.ts": 3,
     "app/actions/ai-listing-intake.ts": 3,
@@ -174,12 +173,12 @@
     "lib/ai-isa/meeting-followthrough.ts": 2,
     "lib/ai-isa/meeting-recap.ts": 8,
     "lib/ai-isa/next-best-touch.ts": 1,
-    "lib/ai-isa/personalize-outreach.ts": 2,
+    "lib/ai-isa/personalize-outreach.ts": 1,
     "lib/ai-isa/portal-link.ts": 1,
     "lib/ai-isa/post-call-outcome.ts": 2,
     "lib/ai-isa/qualification-core.ts": 1,
     "lib/ai-isa/reengagement-policy.ts": 3,
-    "lib/ai-isa/stale-contact-detector.ts": 3,
+    "lib/ai-isa/stale-contact-detector.ts": 1,
     "lib/ai-isa/voice-dial-batch.ts": 2,
     "lib/analytics/ai-prediction-outcomes.ts": 1,
     "lib/analytics/assignment-outcomes.ts": 4,
@@ -431,7 +430,6 @@
     "lib/kernel/tenant-provisioning-spec.ts": 2,
     "lib/kernel/title-closing-watchtower.ts": 3,
     "lib/kernel/tour-optimizer.ts": 9,
-    "lib/kernel/vendor-categories.ts": 1,
     "lib/kernel/vendor-coverage-forecast.ts": 3,
     "lib/kernel/vendor-doc-compliance.ts": 3,
     "lib/kernel/vendor-no-show-autopilot.ts": 3,
@@ -668,7 +666,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 9027,
+  "census": 9068,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1094,6 +1092,7 @@
     "app/actions/settings/reputation-preferences.ts": 2,
     "app/actions/settings/revenue-share-setting.ts": 2,
     "app/actions/settings/showing-financial-gate-setting.ts": 2,
+    "app/actions/settings/territories.ts": 4,
     "app/actions/settings/update-email-template.ts": 1,
     "app/actions/settings/update-global-settings.ts": 1,
     "app/actions/settings/update-notification-rules.ts": 1,
@@ -1151,7 +1150,7 @@
     "app/actions/superadmin/tenant-message.ts": 3,
     "app/actions/superadmin/tenant-setup.ts": 1,
     "app/actions/superadmin/tenant-users.ts": 6,
-    "app/actions/support.ts": 12,
+    "app/actions/support.ts": 13,
     "app/actions/system-health.ts": 10,
     "app/actions/tasks.ts": 5,
     "app/actions/tax-planning.ts": 3,
@@ -1918,7 +1917,7 @@
     "app/components/voice/CallRecordingPlayer.tsx": 1,
     "app/components/voice/CoachingInsightCard.tsx": 1,
     "app/components/voice/TranscriptViewer.tsx": 1,
-    "app/config/navigation-config.ts": 2,
+    "app/config/navigation-config.ts": 3,
     "app/crm/actions/ask-relationship-ai.ts": 1,
     "app/crm/components/ai-pilot-control.tsx": 1,
     "app/crm/components/closing-workflow-tab.tsx": 1,
@@ -2428,6 +2427,8 @@
     "app/dashboard/settings/stock-library/stock-provider-card.tsx": 1,
     "app/dashboard/settings/team/tc/tc-actions.ts": 5,
     "app/dashboard/settings/team/tc/tc-settings-client.tsx": 1,
+    "app/dashboard/settings/territories/territories-client.tsx": 1,
+    "app/dashboard/settings/territories/territory-rules.ts": 5,
     "app/dashboard/settings/twin-studio/components/approval-queue.tsx": 1,
     "app/dashboard/settings/twin-studio/components/consent-recorder.tsx": 1,
     "app/dashboard/settings/twin-studio/components/twin-card.tsx": 1,
@@ -2443,7 +2444,7 @@
     "app/dashboard/social/social-dashboard-client.tsx": 1,
     "app/dashboard/sphere/actions.ts": 4,
     "app/dashboard/sphere/sphere-client.tsx": 1,
-    "app/dashboard/stale/actions.ts": 5,
+    "app/dashboard/stale/actions.ts": 6,
     "app/dashboard/stale/stale-client.tsx": 1,
     "app/dashboard/superadmin/a2p/actions.ts": 1,
     "app/dashboard/superadmin/a2p/voice-integrity-cell.tsx": 1,
@@ -2909,6 +2910,7 @@
     "lib/auth/require-admin-maintenance-access.ts": 1,
     "lib/auth/require-brokerage-admin.ts": 2,
     "lib/auth/resolve-user-role.ts": 4,
+    "lib/auth/role-grants.ts": 9,
     "lib/auth/useAuth.ts": 1,
     "lib/avm/provider-chain.ts": 3,
     "lib/behavior-learning/prediction-engine.ts": 2,
@@ -3013,13 +3015,14 @@
     "lib/cma/seller-upgrades.ts": 1,
     "lib/cma/state-adjustment-rates.ts": 3,
     "lib/commission/adjustment-vocabulary.ts": 4,
+    "lib/commission/cap-resolver.ts": 7,
     "lib/commission/cda-discrepancy.ts": 6,
     "lib/commission/engine.ts": 1,
     "lib/commission/finalization.ts": 2,
     "lib/commission/ledger-sync.ts": 7,
     "lib/commission/payment-tracker.ts": 3,
     "lib/commission/reconcile-tracking.ts": 5,
-    "lib/commission/team-lead-split.ts": 2,
+    "lib/commission/team-lead-split.ts": 5,
     "lib/commission/utils.ts": 4,
     "lib/commission/waterfall/01-resolve-rate.ts": 1,
     "lib/commission/waterfall/02-calculate-gross.ts": 1,
@@ -3530,6 +3533,7 @@
     "lib/kernel/neighbor-farm.ts": 3,
     "lib/kernel/newsletter/assemble.ts": 2,
     "lib/kernel/newsletter/section-types.ts": 3,
+    "lib/kernel/newsletter/template-blueprint.ts": 1,
     "lib/kernel/nothing-dropped-runner.ts": 1,
     "lib/kernel/nothing-dropped.ts": 2,
     "lib/kernel/notification-center.ts": 4,
@@ -3790,6 +3794,7 @@
     "lib/marketing/touchpoint-recorder.ts": 2,
     "lib/marketing/tracked-qr.ts": 2,
     "lib/marketing/trigger-match.ts": 2,
+    "lib/marketing/vendor-ranking.ts": 5,
     "lib/marketing/video-content-kit.ts": 4,
     "lib/marketing/video-provider-resolver.ts": 2,
     "lib/negotiation/analyzer.ts": 1,
@@ -4065,6 +4070,7 @@
     "lib/supabase/service.ts": 1,
     "lib/support/support-sla.ts": 4,
     "lib/support/support-thread.ts": 3,
+    "lib/support/ticket-constants.ts": 2,
     "lib/teams/membership.ts": 3,
     "lib/territory/metrics-aggregator.ts": 3,
     "lib/testimonials/testimonial-policy.ts": 1,
@@ -4161,6 +4167,7 @@
     "lib/video/listing-promo-reactor.ts": 1,
     "lib/video/living-video-sweep.ts": 2,
     "lib/video/living-video.ts": 6,
+    "lib/video/memory-video-gate.ts": 1,
     "lib/video/module-voice.ts": 2,
     "lib/video/multilingual-reel.ts": 4,
     "lib/video/persona-overlay.ts": 1,
@@ -7130,6 +7137,12 @@
       "getShowingFinancialGateSetting",
       "setShowingFinancialGateRequired"
     ],
+    "app/actions/settings/territories.ts": [
+      "getTerritorySettings",
+      "addTerritoryZips",
+      "setTerritoryActive",
+      "setTerritoryPrimary"
+    ],
     "app/actions/settings/update-email-template.ts": [
       "updateEmailTemplate"
     ],
@@ -7469,6 +7482,7 @@
       "revokeTenantInviteAction"
     ],
     "app/actions/support.ts": [
+      "canRaisePlatformTicket",
       "createSupportTicket",
       "replyToMyTicket",
       "getMyTicketThread",
@@ -10169,6 +10183,7 @@
       "TranscriptViewer"
     ],
     "app/config/navigation-config.ts": [
+      "resolvePrimaryRole",
       "getNavigationForRole",
       "filterNavItemsByPermissions"
     ],
@@ -11727,6 +11742,16 @@
     "app/dashboard/settings/team/tc/tc-settings-client.tsx": [
       "TCSettingsClient"
     ],
+    "app/dashboard/settings/territories/territories-client.tsx": [
+      "TerritoriesClient"
+    ],
+    "app/dashboard/settings/territories/territory-rules.ts": [
+      "grainOf",
+      "parseZipInput",
+      "resolveGrainColumns",
+      "authorizeTerritoryWrite",
+      "feedsPlatformRotation"
+    ],
     "app/dashboard/settings/twin-studio/components/approval-queue.tsx": [
       "ApprovalQueue"
     ],
@@ -11783,7 +11808,8 @@
       "claimStaleLead",
       "reengageStaleContact",
       "markContactTouched",
-      "disableReengagementForContact"
+      "disableReengagementForContact",
+      "resumeReengagementForContact"
     ],
     "app/dashboard/stale/stale-client.tsx": [
       "StaleClient"
@@ -13592,6 +13618,17 @@
       "requireRole",
       "isAdminOrBroker"
     ],
+    "lib/auth/role-grants.ts": [
+      "readRoleGrants",
+      "selectTenantGrant",
+      "selectTenantBrokerageId",
+      "selectVendorGrant",
+      "selectVendorId",
+      "selectAgentId",
+      "holdsAnyRole",
+      "allRoles",
+      "selectPrimaryRole"
+    ],
     "lib/auth/useAuth.ts": [
       "useAuth"
     ],
@@ -14170,6 +14207,15 @@
       "isCommissionAdjustmentReason",
       "commissionAdjustmentReasonLabel"
     ],
+    "lib/commission/cap-resolver.ts": [
+      "normalizeCapAnniversaryBasis",
+      "resolveAnniversaryWindow",
+      "windowContains",
+      "parseCapAmountInput",
+      "pickCapAmount",
+      "ensureAgentCapWindow",
+      "ensureTeamCapWindows"
+    ],
     "lib/commission/cda-discrepancy.ts": [
       "computeCdaDiscrepancies",
       "expectedGrossFromTerms",
@@ -14207,8 +14253,11 @@
       "reconcileCommissionDisbursement"
     ],
     "lib/commission/team-lead-split.ts": [
+      "pickTeamTerms",
       "resolveTeamLeadOverride",
-      "isAgreementEffective"
+      "isAgreementEffective",
+      "interpretTeamCapLedgerRead",
+      "applyTeamCap"
     ],
     "lib/commission/utils.ts": [
       "dollarsToCents",
@@ -16749,6 +16798,9 @@
       "defaultOrderFor",
       "displayLabelFor"
     ],
+    "lib/kernel/newsletter/template-blueprint.ts": [
+      "parseTemplateBlueprint"
+    ],
     "lib/kernel/nothing-dropped-runner.ts": [
       "runNothingDroppedSweep"
     ],
@@ -18136,6 +18188,13 @@
     "lib/marketing/trigger-match.ts": [
       "matchTriggersForEvent",
       "isCooldownActive"
+    ],
+    "lib/marketing/vendor-ranking.ts": [
+      "isVendorCategory",
+      "vendorCategoryForService",
+      "isAutoBookable",
+      "rankVendors",
+      "pickBestVendor"
     ],
     "lib/marketing/video-content-kit.ts": [
       "fallbackVideoKit",
@@ -19535,6 +19594,10 @@
       "postTicketReply",
       "loadTicketThread"
     ],
+    "lib/support/ticket-constants.ts": [
+      "isTicketLane",
+      "ticketAnsweredBy"
+    ],
     "lib/teams/membership.ts": [
       "isSourceOfFunds",
       "validateTeamMember",
@@ -19978,6 +20041,9 @@
       "isStale",
       "describeFactChanges",
       "summarizeRefresh"
+    ],
+    "lib/video/memory-video-gate.ts": [
+      "qualifiesForMemoryVideo"
     ],
     "lib/video/module-voice.ts": [
       "resolveAssistantVoiceId",
@@ -20458,5 +20524,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 236
+  "trulyDead": 232
 }

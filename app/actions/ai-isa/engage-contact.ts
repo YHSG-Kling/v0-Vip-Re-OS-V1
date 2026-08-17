@@ -36,7 +36,7 @@ import { evaluateOutbound } from '@/lib/kernel'
 import { dispatchEmail, dispatchSms } from '@/lib/providers/dispatch'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
 import { emitLifecycleEvent } from '@/lib/kernel/helpers'
-import { buildPersonalizationFacts, buildDeterministicCopy } from '@/lib/ai-isa/personalize-outreach'
+import { buildPersonalizationFacts, personalizeOutreach } from '@/lib/ai-isa/personalize-outreach'
 import { isLifetimeCustomerType } from '@/lib/contact-types'
 import { resolveContactChannel } from '@/lib/ai-isa/contact-channel-policy'
 import type { MessageType, Persona } from '@/lib/kernel/types'
@@ -522,11 +522,47 @@ async function dispatchContactChannel(
       life_events:       (contact as any).life_events ?? null,
       marital_status:    (contact as any).marital_status ?? null,
     })
-    const smsCopy = buildDeterministicCopy(smsFacts, 'sms', contact.first_name ?? undefined)
+    // THE FULL PIPELINE, not just its fallback.
+    //
+    // This called buildDeterministicCopy directly — the composer that
+    // personalizeOutreach falls back to when the AI gateway is unavailable. So
+    // the module whose own header calls itself "the single source of truth for
+    // all AI ISA outreach copy" had its AI half unreachable: personalizeOutreach
+    // had no caller anywhere in app/ or lib/, and every contact SMS shipped the
+    // fallback string as if the gateway were permanently down.
+    //
+    // NOTHING IS LOST BY THE SWAP: personalizeOutreach ends with
+    // `return buildDeterministicCopy(facts, channel, firstName)` on any gateway
+    // failure, non-ok response, or empty body, so the previous behaviour is
+    // exactly this call's degraded path.
+    const smsCopy = await personalizeOutreach({
+      facts:     smsFacts,
+      channel:   'sms',
+      brandVoice: brandVoice.systemBlock,
+      intent:    `AI ISA re-engagement (trigger: ${reason}) — reconnect and invite a reply.`,
+      firstName: contact.first_name ?? undefined,
+    })
     // PORTAL-BACK — every touch (SMS included) pulls the client into OUR portal (matches,
     // journey, value in one place), not a competitor's. SMS is the SMS-first cohorts' channel.
     const { portalSmsLine } = await import('@/lib/ai-isa/portal-link')
     const smsBody = `${smsCopy.body}\n${portalSmsLine(contact.id)}`
+
+    // FINAL COMPLIANCE PASS ON THE GENERATED TEXT — the email branch has always
+    // run one, and SMS did not need one while its body came from the
+    // deterministic composer (fixed, reviewed phrasing). Now that a model can
+    // write this body, the same rule has to apply: the gate above only saw a
+    // placeholder describing the send, not the words that go out.
+    const smsCompliance = await evaluateOutbound({
+      actorContext: { userId: brokerageId, role: 'isa', brokerageId },
+      journeyType,
+      persona,
+      messageType: 'sms',
+      content: smsBody,
+      contact: kernelContact,
+    })
+    if (!smsCompliance.allowed) {
+      return { success: false, reason: `stop:compliance:${smsCompliance.blockedReason ?? 'blocked'}`, channel }
+    }
 
     await dispatchSms({
       brokerageId,

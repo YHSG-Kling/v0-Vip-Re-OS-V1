@@ -17,6 +17,8 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { initiateAIISAContactEngagement } from "@/app/actions/ai-isa/initiate-contact-engagement"
+import { toggleContactAIISA } from "@/app/actions/ai-isa/engage-contact"
+import { detectStaleContacts } from "@/lib/ai-isa/stale-contact-detector"
 
 const STALE_LEAD_DAYS = 7
 
@@ -80,9 +82,11 @@ export async function loadStaleQueue(): Promise<{ data: StaleLoad } | { error: s
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
   const settings = brokerageRow?.additional_settings as Record<string, unknown> | null
+  // The cutoff itself is no longer computed here — detectStaleContacts derives it
+  // from staleDays, and applies the LONGER lifetime-customer horizon per contact,
+  // which a single hand-computed cutoff could not express.
   const staleContactDays =
     typeof settings?.isa_ghost_threshold_days === "number" ? settings.isa_ghost_threshold_days : 14
-  const staleContactCutoff = new Date(Date.now() - staleContactDays * 86_400_000).toISOString()
 
   // ── 1. Unassigned stale leads (broker-only) ────────────────────────────────
   let unassignedStaleLeads: StaleLeadRow[] = []
@@ -158,30 +162,40 @@ export async function loadStaleQueue(): Promise<{ data: StaleLoad } | { error: s
   }
   myStaleLeads.sort((a, b) => b.daysStale - a.daysStale)
 
-  // ── 3. MY stale contacts (mirror of stale-contact-monitor cron query) ──────
-  const { data: contactRows } = await svc
-    .from("contacts")
-    .select("id, first_name, last_name, email, phone, status, contact_type, dnc_status, isa_reengage_allowed, created_at, updated_at")
-    .eq("brokerage_id", brokerageId)
-    .eq("agent_id", agentRow.id)
-    .eq("dnc_status", false)
-    .neq("status", "archived")
-    .neq("status", "inactive")
-    .lt("updated_at", staleContactCutoff)
-    .order("updated_at", { ascending: true })
-    .limit(100)
+  // ── 3. MY stale contacts — THE SAME DETECTOR THE CRON RUNS ─────────────────
+  //
+  // This block used to be a third hand-written copy of the stale rule, under a
+  // comment calling itself a "mirror of stale-contact-monitor cron query". It was
+  // not a mirror: it filtered on contacts.updated_at while the cron filtered on
+  // contacts.created_at and the canonical detector filtered on
+  // contacts.last_contacted_at — three columns, three different answers to one
+  // question. The divergence was visible to users: markContactTouched below
+  // bumped updated_at, so pressing "I just touched" removed the row from THIS
+  // list while the cron, reading created_at, auto-messaged the contact anyway.
+  //
+  // Both exclusions this copy owned (status archived/inactive, per-agent scope)
+  // were merged into the shared policy + detector before it was removed.
+  const detected = await detectStaleContacts(brokerageId, {
+    staleDays: staleContactDays,
+    agentId: agentRow.id, // contacts.agent_id is an agents.id, which agentRow.id is
+    maxBatch: 100,
+    // The agent console, unlike the cron, must still SEE contacts whose ISA switch
+    // is off — the UI badges them "ISA off" and resumeReengagementForContact below
+    // is only reachable from a row that is on screen.
+    includeIsaDisabled: true,
+  })
 
-  const myStaleContacts: StaleContactRow[] = (contactRows ?? []).map((c: any) => ({
+  const myStaleContacts: StaleContactRow[] = detected.map((c) => ({
     id:                 c.id,
     firstName:          c.first_name,
     lastName:           c.last_name,
     email:              c.email,
     phone:              c.phone,
-    status:             c.status,
+    status:             null, // the detector filters status; it is not a display field
     contactType:        c.contact_type,
-    daysStale:          Math.floor((Date.now() - new Date(c.updated_at ?? c.created_at).getTime()) / 86_400_000),
-    lastContactedAt:    c.updated_at ?? c.created_at,
-    isaReengageAllowed: c.isa_reengage_allowed !== false,
+    daysStale:          c.days_since_contact,
+    lastContactedAt:    c.last_contacted_at,
+    isaReengageAllowed: c.isa_reengage_allowed,
   }))
 
   return {
@@ -266,8 +280,21 @@ export async function reengageStaleContact(contactId: string): Promise<{ success
 }
 
 /**
- * Mark a contact as freshly touched — bumps updated_at so it falls out of
- * the stale window. Use after the agent has called/texted/emailed manually.
+ * Mark a contact as freshly touched. Use after the agent has called/texted/emailed
+ * manually.
+ *
+ * ── IT MUST STAMP THE COLUMN STALENESS IS MEASURED ON ───────────────────────
+ *
+ * This wrote `updated_at` alone, because the list above used to be filtered on
+ * `updated_at`. The CRON was filtered on `created_at` and the canonical detector
+ * on `last_contacted_at`, so the button cleared the row from the agent's screen
+ * and changed nothing the automated sender looked at: the agent recorded a
+ * personal call, watched the row disappear, and the ISA emailed the same contact
+ * that night anyway. Now that every reader is the one detector, the write has to
+ * move `last_contacted_at` or the button is decorative.
+ *
+ * `updated_at` is kept alongside it — it is an ordinary row-modified stamp that
+ * other surfaces read, and dropping it would be a second silent divergence.
  */
 export async function markContactTouched(contactId: string): Promise<{ success: boolean; error?: string }> {
   const supabase = await createClient()
@@ -275,36 +302,70 @@ export async function markContactTouched(contactId: string): Promise<{ success: 
   if (!user) return { success: false, error: "Not authenticated" }
 
   const svc = createServiceClient()
-  const { data: agentRow } = await svc.from("agents").select("id, brokerage_id").eq("user_id", user.id).maybeSingle()
+  const { data: agentRow, error: agentErr } = await svc
+    .from("agents").select("id, brokerage_id").eq("user_id", user.id).maybeSingle()
+  if (agentErr) return { success: false, error: agentErr.message }
   if (!agentRow?.id) return { success: false, error: "No agent profile" }
 
-  const { error } = await svc
+  const now = new Date().toISOString()
+  // .select("id") because a zero-row update — a contact this agent does not own —
+  // comes back as error:null, which would report a write that never happened as a
+  // success and leave the row on screen with no explanation.
+  const { data: updated, error } = await svc
     .from("contacts")
-    .update({ updated_at: new Date().toISOString() })
+    .update({ last_contacted_at: now, updated_at: now })
     .eq("id", contactId)
     .eq("agent_id", agentRow.id)
+    .select("id")
   if (error) return { success: false, error: error.message }
+  if (!updated || updated.length === 0) {
+    return { success: false, error: "Contact not found among the ones assigned to you" }
+  }
   return { success: true }
 }
 
 /**
- * Stop AI re-engagement for a contact (sets isa_reengage_allowed=false).
- * Use when the agent prefers to handle this contact manually.
+ * Stop AI re-engagement for a contact. Use when the agent prefers to handle this
+ * contact manually.
+ *
+ * ── WHY THIS IS NOW A DELEGATION ────────────────────────────────────────────
+ *
+ * It used to write `isa_reengage_allowed: false` directly, and that was a partial
+ * copy of app/actions/ai-isa/engage-contact.ts:toggleContactAIISA — which had no
+ * caller anywhere and was the STRICTLY MORE COMPLETE of the two. Everything the
+ * inline write did not do:
+ *
+ *   · it left `ai_outreach_paused` alone, so the OTHER half of the ISA switch
+ *     stayed armed. staleContactEligibility treats those two flags separately,
+ *     and engageContact stops on `ai_outreach_paused` independently — so "Stop
+ *     AI" set one flag and left the contact half-suppressed.
+ *   · it stamped no `isa_reengage_set_at` / `isa_reengage_marked_by`, so the
+ *     accountability columns on a suppression-adjacent decision stayed empty.
+ *   · it emitted no lifecycle event, so the pause was invisible to the kernel.
+ *   · it verified a zero-row update as success. `.eq("agent_id", agentRow.id)`
+ *     against a contact the agent does not own matches nothing, and supabase-js
+ *     returns error:null for that — the UI said "Re-engagement disabled" for a
+ *     write that never happened. toggleContactAIISA proves the row with
+ *     `.select('id')` and a length check.
+ *
+ * The tenant scope also changes shape and that is deliberate: toggleContactAIISA
+ * scopes by the SESSION's brokerage rather than by agent ownership, so a broker
+ * or team lead can quiet a contact they do not personally own — which is the
+ * behaviour the old write silently refused (as a false success).
  */
 export async function disableReengagementForContact(contactId: string): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Not authenticated" }
+  return toggleContactAIISA({ contactId, enabled: false })
+}
 
-  const svc = createServiceClient()
-  const { data: agentRow } = await svc.from("agents").select("id").eq("user_id", user.id).maybeSingle()
-  if (!agentRow?.id) return { success: false, error: "No agent profile" }
-
-  const { error } = await svc
-    .from("contacts")
-    .update({ isa_reengage_allowed: false })
-    .eq("id", contactId)
-    .eq("agent_id", agentRow.id)
-  if (error) return { success: false, error: error.message }
-  return { success: true }
+/**
+ * Resume AI re-engagement for a contact — the return leg the console never had.
+ *
+ * "Stop AI" was a ONE-WAY DOOR: once isa_reengage_allowed went false the row
+ * rendered an "ISA off" badge and the re-engage / stop buttons disappeared, and
+ * no surface anywhere in the app could set the flag back. toggleContactAIISA has
+ * always been able to (it is a symmetric enable/pause switch) and nothing called
+ * it, so the capability existed and was unreachable.
+ */
+export async function resumeReengagementForContact(contactId: string): Promise<{ success: boolean; error?: string }> {
+  return toggleContactAIISA({ contactId, enabled: true })
 }

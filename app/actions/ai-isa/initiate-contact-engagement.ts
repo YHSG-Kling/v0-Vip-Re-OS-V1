@@ -3,7 +3,7 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 import { collectError } from '@/lib/errors/collect-error'
-import { engageContact } from './engage-contact'
+import { engageContact, type ISAEngagementReason } from './engage-contact'
 
 /**
  * initiateAIISAContactEngagement
@@ -25,8 +25,23 @@ import { engageContact } from './engage-contact'
  *   2. Internal trusted callers (cron stale-contact-monitor — already auth'd
  *      via verifyCronAuth at the route layer — and ghost-reengagement which
  *      runs inside cron). CRON_SECRET must be set in env to permit this.
+ *
+ * ── WHY `reason` IS A PARAMETER ─────────────────────────────────────────────
+ *
+ * It used to be the literal 'reactivation', hardcoded — and because EVERY
+ * production caller reaches engageContact through this wrapper, that one literal
+ * made two of the engine's six declared reasons unreachable from anywhere.
+ * engageContact branches on 'ghosted' twice (the 'ghost_recovery' call purpose
+ * handed to buildCallContext, and the situational voicemail's fresh hook), so
+ * those branches could not execute in production no matter what the detector
+ * found. The detector now reports 'stale' vs 'ghosted' per contact and the cron
+ * passes it through; the default stays 'reactivation' so every existing caller
+ * behaves exactly as before.
  */
-export async function initiateAIISAContactEngagement(contactId: string): Promise<{
+export async function initiateAIISAContactEngagement(
+  contactId: string,
+  reason: ISAEngagementReason = 'reactivation',
+): Promise<{
   success: boolean
   emailSent?: boolean
   contactId?: string
@@ -75,7 +90,7 @@ export async function initiateAIISAContactEngagement(contactId: string): Promise
     const result = await engageContact({
       contactId,
       brokerageId: contact.brokerage_id as string,
-      reason: 'reactivation',
+      reason,
       actorId: ctx.userId || undefined,
     })
 
