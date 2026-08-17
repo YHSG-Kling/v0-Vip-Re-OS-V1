@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
-import { streamText, convertToModelMessages } from 'ai'
-import { resolveModel } from '@/lib/ai/resolve-model'
+import { convertToModelMessages } from 'ai'
+import { streamTextRouted, AIFairUseError } from '@/lib/ai/models'
 import type { UIMessage } from 'ai'
 import { NextResponse } from 'next/server'
 
@@ -419,10 +419,17 @@ export async function POST(request: Request) {
     }
 
     // ── Stream response ────────────────────────────────────────────────────────
-    const result = streamText({
-      model:    resolveModel('openai/gpt-4o-mini'),
+    // Through the routed entry: routing table model, tenant fair-use cap
+    // checked BEFORE the first byte, cost ledger written on finish. Identity
+    // is the authenticated caller + the ACCESS-CHECKED contact's tenant
+    // (proven above) — never the raw body.
+    const result = await streamTextRouted({
+      feature:  'portal_chat_stream',
       system:   systemPrompt,
       messages: await convertToModelMessages(messages),
+      userId:      user.id,
+      brokerageId: contact.brokerage_id,
+      agentId:     contact.agent_id ?? null,
       onFinish: async ({ text }) => {
         // Persist AI reply for CRM history
         if (sessionId && text) {
@@ -447,6 +454,10 @@ export async function POST(request: Request) {
     })
 
   } catch (err) {
+    // Fair-use refusal fires pre-stream — tell the client it is the cap, not an outage.
+    if (err instanceof AIFairUseError) {
+      return NextResponse.json({ error: err.message }, { status: 429 })
+    }
     console.error('[portal/ai-chat] Error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }

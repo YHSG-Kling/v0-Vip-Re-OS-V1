@@ -2,8 +2,8 @@ import { createClient } from "@/lib/supabase/server"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { readRoleGrants, allRoles, selectPrimaryRole, selectTenantBrokerageId, selectVendorId } from "@/lib/auth/role-grants"
 import { createServiceClient } from "@/lib/supabase/service"
-import { streamText, convertToModelMessages, tool, stepCountIs } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+import { convertToModelMessages, tool } from "ai"
+import { streamTextRouted, AIFairUseError } from "@/lib/ai/models"
 import { z } from "zod"
 import { NextRequest, NextResponse } from "next/server"
 
@@ -1177,23 +1177,38 @@ export async function POST(req: NextRequest) {
     }),
   }
 
-  const result = streamText({
-      model: resolveModel("openai/gpt-4o-mini"),
-    system: systemPrompt,
-    messages: await convertToModelMessages(messages),
-    maxOutputTokens: 1024,
-    tools: agentTools,
-    stopWhen: stepCountIs(5),
-    onFinish: async ({ text }) => {
-      if (!sessionId) return
-      await service.from("chat_messages").insert({
-        session_id: sessionId,
-        role: "assistant",
-        content: text,
-        metadata: { source: "internal", role },
-      }).then(() => {}, () => {})
-    },
-  })
+  // Routed streaming entry — routing table model, tenant fair-use cap checked
+  // BEFORE streaming, cost ledger written on finish (totalUsage, so every
+  // tool-calling step is billed). Identity is the session-resolved user +
+  // grant-derived tenant above, never the request body.
+  let result: Awaited<ReturnType<typeof streamTextRouted>>
+  try {
+    result = await streamTextRouted({
+      feature: "internal_assistant_chat",
+      system: systemPrompt,
+      messages: await convertToModelMessages(messages),
+      maxTokens: 1024,
+      tools: agentTools,
+      maxSteps: 5,
+      userId: user.id,
+      brokerageId,
+      onFinish: async ({ text }) => {
+        if (!sessionId) return
+        await service.from("chat_messages").insert({
+          session_id: sessionId,
+          role: "assistant",
+          content: text,
+          metadata: { source: "internal", role },
+        }).then(() => {}, () => {})
+      },
+    })
+  } catch (err) {
+    // The cap refusal fires before any bytes stream — surface it as a 429.
+    if (err instanceof AIFairUseError) {
+      return NextResponse.json({ error: err.message }, { status: 429 })
+    }
+    throw err
+  }
 
   const streamResponse = result.toUIMessageStreamResponse()
   const resolvedSessionId = sessionId ?? newSessionId

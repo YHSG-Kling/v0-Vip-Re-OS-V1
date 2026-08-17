@@ -5,8 +5,8 @@
 // No auth required — rate-limited by session token.
 
 import { NextRequest } from 'next/server'
-import { streamText, convertToModelMessages, UIMessage } from 'ai'
-import { resolveModel } from '@/lib/ai/resolve-model'
+import { convertToModelMessages, UIMessage } from 'ai'
+import { streamTextRouted, AIFairUseError } from '@/lib/ai/models'
 import { createServiceClient } from '@/lib/supabase/service'
 import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'
 
@@ -137,31 +137,67 @@ Do NOT make up property listings. Do NOT discuss competitor brokerages.${faqBloc
     // ── Stream response ───────────────────────────────────────────────────
     const recentMessages = messages.slice(-MAX_HISTORY)
 
-    const result = streamText({
-      model: resolveModel('openai/gpt-4o-mini'),
-      system,
-      messages: await convertToModelMessages(recentMessages),
-      temperature: 0.7,
-      maxOutputTokens: 512,
-      onFinish: async ({ text }) => {
-        // Persist assistant turn
-        await supabase.from('chat_messages').insert({
-          session_id: session.id,
-          role: 'assistant',
-          content: text,
-          metadata: { widget: true, assistant_name: assistantName },
-        })
+    // Ledger identity for this anonymous lane: the visitor has no account, so
+    // the usage bills to the ASSIGNED AGENT's user — resolved off the session
+    // row (the only identity this route accepts), never off the body. No
+    // assigned agent → the cap still pre-flights on the tenant, but the ledger
+    // row is skipped (same userId&&brokerageId contract as generateTextRouted).
+    let ledgerUserId: string | null = null
+    if (session.agent_id) {
+      const { data: agentRow, error: agentErr } = await supabase
+        .from('agents')
+        .select('user_id')
+        .eq('id', session.agent_id)
+        .maybeSingle()
+      if (agentErr) {
+        // A refused read only costs us the ledger row — never the visitor's chat.
+        console.error('[Widget/message] agent user lookup failed:', agentErr.message)
+      }
+      ledgerUserId = agentRow?.user_id ?? null
+    }
 
-        // Detect lead capture keywords in assistant reply
-        const captureHit = /your info|follow up|reach out|team will contact/i.test(text)
-        if (captureHit && session.capture_state !== 'captured') {
-          await supabase
-            .from('chat_sessions')
-            .update({ capture_state: 'signals_captured', updated_at: new Date().toISOString() })
-            .eq('id', session.id)
-        }
-      },
-    })
+    // Routed streaming entry: routing table model, tenant fair-use cap checked
+    // BEFORE the first byte, cost ledger written on finish.
+    let result: Awaited<ReturnType<typeof streamTextRouted>>
+    try {
+      result = await streamTextRouted({
+        feature: 'widget_visitor_chat',
+        system,
+        messages: await convertToModelMessages(recentMessages),
+        temperature: 0.7,
+        maxTokens: 512,
+        userId: ledgerUserId,
+        brokerageId: session.brokerage_id,
+        agentId: session.agent_id,
+        onFinish: async ({ text }) => {
+          // Persist assistant turn
+          await supabase.from('chat_messages').insert({
+            session_id: session.id,
+            role: 'assistant',
+            content: text,
+            metadata: { widget: true, assistant_name: assistantName },
+          })
+
+          // Detect lead capture keywords in assistant reply
+          const captureHit = /your info|follow up|reach out|team will contact/i.test(text)
+          if (captureHit && session.capture_state !== 'captured') {
+            await supabase
+              .from('chat_sessions')
+              .update({ capture_state: 'signals_captured', updated_at: new Date().toISOString() })
+              .eq('id', session.id)
+          }
+        },
+      })
+    } catch (err) {
+      // Tenant hit its monthly AI cap — refuse cleanly instead of streaming.
+      if (err instanceof AIFairUseError) {
+        return new Response(JSON.stringify({ error: 'Chat is temporarily unavailable.' }), {
+          status: 429,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      throw err
+    }
 
     return result.toUIMessageStreamResponse()
   } catch (err: any) {

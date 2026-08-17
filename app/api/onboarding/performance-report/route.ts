@@ -5,7 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
-import { streamText } from 'ai'
+import { streamTextRouted, AIFairUseError } from '@/lib/ai/models'
 import { getAgentProgress } from '@/app/actions/onboarding/progress'
 
 export async function POST(request: NextRequest) {
@@ -107,9 +107,16 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Stream AI-generated report using Claude
-  const result = streamText({
-    model: 'anthropic/claude-sonnet-4-20250514',
+  // Stream through the routed entry — routing table model, fair-use cap
+  // checked BEFORE streaming, cost ledger written on finish. Identity is the
+  // session-resolved user/brokerage/agent above, never the request body.
+  let result: Awaited<ReturnType<typeof streamTextRouted>>
+  try {
+    result = await streamTextRouted({
+    feature: 'onboarding_performance_report',
+    userId: user.id,
+    brokerageId,
+    agentId,
     system: `You are a real estate brokerage training coach. Generate a performance report for a new agent going through onboarding. Be encouraging but honest. Provide actionable recommendations.`,
     prompt: `Based on this agent's onboarding metrics:
 
@@ -157,7 +164,14 @@ Make the narrative personalized and actionable. If they're doing well, acknowled
         console.error('[PerformanceReport] Error saving report:', err)
       }
     },
-  })
+    })
+  } catch (err) {
+    // Fair-use refusal fires before any bytes stream — surface the cap, not a 500.
+    if (err instanceof AIFairUseError) {
+      return NextResponse.json({ error: err.message }, { status: 429 })
+    }
+    throw err
+  }
 
   return result.toTextStreamResponse()
 }

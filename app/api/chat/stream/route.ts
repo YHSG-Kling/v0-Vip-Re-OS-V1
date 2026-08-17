@@ -44,14 +44,10 @@
 // direction here — an untenanted conversation belongs to no one.
 
 import { type NextRequest, NextResponse } from "next/server"
-import { streamText } from "ai"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { resolveModel } from "@/lib/ai/resolve-model"
-import { redactSensitive } from "@/lib/data-guard"
-import { checkAIFairUse } from "@/lib/ai/fair-use"
-import { estimateTokens } from "@/lib/ai/cost-tracking"
+import { streamTextRouted, AIFairUseError } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { checkThemFirstCompliance } from "@/app/actions/ai-chat"
 
@@ -184,32 +180,26 @@ Suggestions: ${complianceCheck.suggestions.join(", ") || "None"}
 
 Generate a response that helps the agent communicate more effectively while maintaining Them-First principles.`
 
-    // Data Guard — the prompt above carries contact PII and up to 50 messages of
-    // agent↔client history, so high-confidence secrets (SSN, EIN, card PAN, bank
-    // account) get redacted before anything leaves for the model. Same scrub the
-    // lib/ai chokepoints apply; done here because the streaming path has no
-    // routed equivalent to inherit it from.
-    const safeSystemPrompt = redactSensitive(systemPrompt).text
-
-    // Fair-use pre-flight — this endpoint burns subscription-included AI tokens
-    // on every call, so trip BEFORE the call rather than after the counter has
-    // already exceeded. Fails OPEN on error by design.
-    const fairUse = await checkAIFairUse({
-      brokerageId: ctx.brokerageId,
-      addTokens: estimateTokens(safeSystemPrompt) + 1000,
-    })
-    if (!fairUse.allowed) {
-      return NextResponse.json(
-        { error: fairUse.message ?? "AI fair-use limit reached for this billing period." },
-        { status: 429 },
-      )
+    // Stream through the ONE routed streaming entry — streamTextRouted owns the
+    // Data Guard scrub (the prompt carries contact PII + 50 messages of history),
+    // the fair-use PRE-FLIGHT (refuse before the first byte), and the cost-ledger
+    // write on finish. This route used to hand-roll the first two and skip the
+    // ledger entirely. Identity is the session-resolved ctx — never the body.
+    let result: Awaited<ReturnType<typeof streamTextRouted>>
+    try {
+      result = await streamTextRouted({
+        feature: "agent_chat_stream",
+        prompt: systemPrompt,
+        userId: ctx.userId,
+        brokerageId: ctx.brokerageId,
+        agentId: ctx.agentId,
+      })
+    } catch (err) {
+      if (err instanceof AIFairUseError) {
+        return NextResponse.json({ error: err.message }, { status: 429 })
+      }
+      throw err
     }
-
-    // Stream AI response using Vercel AI Gateway
-    const result = streamText({
-      model: resolveModel("openai/gpt-4o-mini"),
-      prompt: safeSystemPrompt,
-    })
 
     // The tenant anchor for the deferred write, captured here while the request
     // context still exists.

@@ -1,5 +1,6 @@
-import { streamText, convertToModelMessages } from 'ai'
+import { convertToModelMessages } from 'ai'
 import type { UIMessage } from 'ai'
+import { streamTextRouted, AIFairUseError } from '@/lib/ai/models'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { requireAuth } from '@/lib/kernel/api-auth'
@@ -63,12 +64,18 @@ export async function POST(request: Request) {
 Context:
 ${kbContext || 'No specific documentation found for this query.'}`
 
-    const result = streamText({
-      model: 'anthropic/claude-sonnet-4-20250514',
+    // Routed streaming entry — routing table picks the model, the fair-use cap
+    // is checked BEFORE streaming, and the cost ledger is written on finish.
+    // Identity comes from requireAuth above, never from the request body.
+    const result = await streamTextRouted({
+      feature: 'onboarding_setup_assistant',
       system: systemPrompt,
       messages: await convertToModelMessages(messages),
       temperature: 0.7,
-      maxOutputTokens: 400,
+      maxTokens: 400,
+      userId: auth.userId,
+      brokerageId,
+      agentId,
       onFinish: async ({ text: aiResponse }) => {
         // INSERT onboarding_ai_chats
         await supabase.from('onboarding_ai_chats').insert({
@@ -142,6 +149,11 @@ ${kbContext || 'No specific documentation found for this query.'}`
 
     return result.toUIMessageStreamResponse()
   } catch (error) {
+    // Fair-use refusal happens BEFORE any bytes stream — surface it as a 429
+    // rather than laundering "you're at your monthly cap" into a 500.
+    if (error instanceof AIFairUseError) {
+      return Response.json({ error: error.message }, { status: 429 })
+    }
     console.error('[onboarding/assistant] API error:', error)
     return new Response(
       JSON.stringify({ error: 'Failed to process assistant request' }),

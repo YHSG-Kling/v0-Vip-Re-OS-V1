@@ -5,7 +5,7 @@
 // POST: Generates a sample email using the brand voice configuration
 // Uses Vercel AI SDK with streaming response
 
-import { streamText } from "ai"
+import { streamTextRouted, AIFairUseError } from "@/lib/ai/models"
 import { createClient } from "@/lib/supabase/server"
 
 export async function POST(req: Request) {
@@ -49,16 +49,28 @@ export async function POST(req: Request) {
     // Build system prompt from brand voice
     const systemPrompt = buildBrandVoiceSystemPrompt(brandVoice)
 
-    const result = streamText({
-      model: "anthropic/claude-sonnet-4-20250514",
+    // Routed streaming entry — routing table model, fair-use cap checked
+    // BEFORE streaming, cost ledger written on finish. Identity resolved from
+    // the session above, never from the request body.
+    const result = await streamTextRouted({
+      feature: "brand_voice_sample",
       system: systemPrompt,
       prompt: "Write a 3-sentence follow-up email to a new real estate lead who recently inquired about buying a home. The email should feel warm and personal while maintaining professionalism. Include a soft call-to-action.",
-      maxOutputTokens: 500,
+      maxTokens: 500,
       temperature: 0.7,
+      userId: user.id,
+      brokerageId,
     })
 
     return result.toTextStreamResponse()
   } catch (error) {
+    // The cap refusal fires pre-stream — a 429 the wizard can explain, not a 500.
+    if (error instanceof AIFairUseError) {
+      return new Response(JSON.stringify({ error: error.message }), {
+        status: 429,
+        headers: { "Content-Type": "application/json" },
+      })
+    }
     console.error("[L11-Brand] Generate sample error:", error)
     return new Response(JSON.stringify({ error: "Failed to generate sample" }), {
       status: 500,

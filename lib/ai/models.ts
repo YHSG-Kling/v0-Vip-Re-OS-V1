@@ -1,4 +1,4 @@
-import { generateText, Output, stepCountIs } from "ai"
+import { generateText, streamText, Output, stepCountIs } from "ai"
 import type { z } from "zod"
 import { createGateway } from "@ai-sdk/gateway"
 import { resolveModel } from "@/lib/ai/resolve-model"
@@ -95,6 +95,18 @@ export const AI_TASK_ROUTING: Record<string, {
   home_assistant_qa:         { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Lifetime portal 'ask your home anything' — scoped, compliance-safe, client-facing" },
   sequence_step_content:     { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Drip sequence email/SMS — must pass compliance pipeline" },
   live_avatar_conversation:  { model: "gpt-4o-mini",   fallback: "claude-haiku", reason: "D-ID Agents real-time conversational turns — latency-critical, short replies" },
+
+  // ── STREAMING CHAT LANES (streamTextRouted call sites) ────────────────────
+  // Each row pins the model its route was already shipping with when the lane
+  // moved onto streamTextRouted — routing + caps + ledger arrived WITHOUT a
+  // silent model change. Re-route deliberately here, never at the call site.
+  agent_chat_stream:            { model: "gpt-4o-mini",   fallback: "claude-haiku", reason: "Agent coaching chat SSE stream — latency-critical, high volume" },
+  widget_visitor_chat:          { model: "gpt-4o-mini",   fallback: "claude-haiku", reason: "Public website widget chat — anonymous visitors, cheap + fast" },
+  portal_chat_stream:           { model: "gpt-4o-mini",   fallback: "claude-haiku", reason: "Client portal live chat — conversational turns, latency-critical" },
+  internal_assistant_chat:      { model: "gpt-4o-mini",   fallback: "claude-haiku", reason: "Role-scoped internal assistant with staging tools — fast multi-step" },
+  onboarding_setup_assistant:   { model: "claude-sonnet", fallback: "gpt-4o",       reason: "KB-grounded setup Q&A for new agents — quality over latency" },
+  onboarding_performance_report:{ model: "claude-sonnet", fallback: "gpt-4o",       reason: "Onboarding coaching report — long-form, encouraging-but-honest narrative" },
+  brand_voice_sample:           { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Brand-voice sample email during setup — brand quality showcase" },
 
   // ── RESEARCH + LIVE DATA (needs internet) ─────────────────────────────────
   market_insight_generation: { model: "perplexity-sonar-pro", fallback: "claude-sonnet", reason: "Live market data + neighborhood stats — requires web search" },
@@ -741,6 +753,142 @@ export async function generateTextRouted(
   }
 
   return { text: resultText }
+}
+
+/**
+ * AIFairUseError
+ * Thrown by streamTextRouted's PRE-FLIGHT cap check — before any bytes stream.
+ * A distinct class (not a bare Error) so routes can map it to a 429 without
+ * string-matching the message, while every other failure keeps its 500 path.
+ */
+export class AIFairUseError extends Error {
+  /** HTTP status the refusal should surface as. */
+  readonly status = 429 as const
+  constructor(message: string) {
+    super(message)
+    this.name = "AIFairUseError"
+  }
+}
+
+export interface RoutedStreamRequest {
+  prompt?: string
+  system?: string
+  /** ModelMessage[] (e.g. from convertToModelMessages). Typed loose because the
+   *  SDK's message union (tool parts etc.) is wider than the simple pairs
+   *  RoutedTextRequest carries; passed through to streamText unchanged. */
+  messages?: unknown[]
+  temperature?: number
+  maxTokens?: number
+  /** Feature key from AI_TASK_ROUTING — selects the routing row.
+   *  Defaults to "unspecified" → claude-sonnet + gpt-4o fallback. */
+  feature?: string
+  /** Resolved SERVER-SIDE from the caller's session — never from a request
+   *  body. Used for the cost ledger (logAIUsage) and nothing else. */
+  userId?: string | null
+  /** The tenant the fair-use cap and ledger bill against. Null/undefined =
+   *  background job → uncapped (handled inside checkAIFairUse). */
+  brokerageId?: string | null
+  agentId?: string | null
+  /** Tools the model can invoke — same shape as AI SDK's tool() helper. */
+  tools?: Record<string, unknown>
+  /** Multi-step tool calling: stop after N steps (default 5 when tools set). */
+  maxSteps?: number
+  /** Runs AFTER the cost ledger write, with the SDK's finish event
+   *  (event.text is the full generated reply). */
+  onFinish?: (event: { text: string }) => void | PromiseLike<void>
+}
+
+/**
+ * streamTextRouted
+ * ─────────────────────────────────────────────────────────────
+ * The streaming sibling of generateTextRouted — THE one sanctioned entry for
+ * streaming AI calls. Same routing table, same fair-use pre-flight, same cost
+ * ledger, so the streaming lanes stop being invisible to caps and billing.
+ *
+ *   - ROUTING: feature key → AI_TASK_ROUTING → gateway model. Call sites never
+ *     name a model; re-route in the table above.
+ *   - CAPS: checkAIFairUse runs BEFORE streamText — a blocked tenant is refused
+ *     with AIFairUseError before the first byte, never mid-stream.
+ *   - LEDGER: onFinish writes logAIUsage — the SAME vocabulary every
+ *     non-streaming call uses (ai_tool_usage + increment_ai_usage_monthly +
+ *     the ai_tokens_monthly counter). No second ledger.
+ *
+ * NO runtime fallback model, deliberately — unlike generateTextRouted.
+ * streamText returns synchronously and surfaces provider errors INSIDE the
+ * stream, after headers (and possibly bytes) have already been flushed; a
+ * try/catch fallback around it can never fire (the old did/custom-llm route
+ * carried exactly that dead catch), and swapping models mid-stream is not a
+ * thing. The routing table's fallback column still documents the intended
+ * substitute for when a lane's primary is re-routed.
+ *
+ * Returns the streamText result untouched, so routes keep their exact response
+ * shape (toUIMessageStreamResponse / toTextStreamResponse / textStream).
+ */
+export async function streamTextRouted(
+  request: RoutedStreamRequest
+): Promise<ReturnType<typeof streamText>> {
+  const feature = request.feature ?? "unspecified"
+  const { model: routedModel } = selectModelForTask(feature)
+
+  // Fair-use PRE-FLIGHT (skipped for background jobs without brokerageId).
+  // Same estimate shape as generateTextRouted: prompt + system + the output
+  // budget, so one more stream cannot start once the tenant is at the cap.
+  const estTokens = estimateTokens((request.prompt ?? "") + (request.system ?? "")) + (request.maxTokens ?? 2000)
+  const fairUse = await checkAIFairUse({ brokerageId: request.brokerageId, addTokens: estTokens })
+  if (!fairUse.allowed) {
+    throw new AIFairUseError(fairUse.message ?? "AI fair-use limit reached for this billing period.")
+  }
+
+  // Data Guard — redact high-confidence secrets before anything leaves for the
+  // model. Same scrub every routed call applies; the streaming lanes used to
+  // hand-roll this (or skip it) because there was no routed entry to inherit from.
+  {
+    const { redactSensitive } = await import("@/lib/data-guard")
+    if (request.prompt) request.prompt = redactSensitive(request.prompt).text
+    if (request.system) request.system = redactSensitive(request.system).text
+  }
+
+  const primaryConfig = MODEL_CONFIG[routedModel] ?? MODEL_CONFIG["claude-sonnet"]
+  const primaryModelStr = `${primaryConfig.provider}/${primaryConfig.modelId}`
+  const primaryInstance = toGatewayModel(resolveModel(primaryModelStr as Parameters<typeof resolveModel>[0]) as string)
+
+  const stopWhen = request.tools ? stepCountIs(request.maxSteps ?? 5) : undefined
+
+  const callerOnFinish = request.onFinish
+  const { userId, brokerageId, agentId } = request
+
+  return streamText({
+    model: primaryInstance,
+    prompt: request.prompt,
+    system: request.system,
+    maxOutputTokens: request.maxTokens,
+    temperature: request.temperature,
+    messages: request.messages as any,
+    tools: request.tools as any,
+    stopWhen,
+    onFinish: async (event) => {
+      // THE LEDGER — first, so a throwing caller callback can never lose the
+      // usage row. Same userId&&brokerageId contract as generateTextRouted:
+      // both come from the route's own session resolution, never a body.
+      // totalUsage spans every step of a tool-calling stream; usage is the
+      // final step only — prefer the total so tool turns are billed too.
+      const usage: any = (event as any).totalUsage ?? (event as any).usage ?? {}
+      const inputTokens  = usage.inputTokens  ?? usage.promptTokens     ?? estimateTokens((request.prompt ?? "") + (request.system ?? ""))
+      const outputTokens = usage.outputTokens ?? usage.completionTokens ?? estimateTokens(event.text ?? "")
+      if (userId && brokerageId) {
+        await logAIUsage({
+          userId,
+          brokerageId,
+          agentId: agentId ?? null,
+          model: routedModel,
+          inputTokens,
+          outputTokens,
+          feature,
+        })
+      }
+      await callerOnFinish?.(event)
+    },
+  })
 }
 
 /**
