@@ -11,6 +11,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { emitLifecycleTransition } from '@/lib/buyer-lifecycle/lifecycle-logger'
 import { updateBuyerPreferences } from '@/lib/behavior-learning'
 import { isValidUUID } from '@/lib/validations'
+import { dispatchStopScheduling } from '@/app/actions/dispatch-showing'
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 //
@@ -474,7 +475,7 @@ export async function scheduleTourStops(params: {
   tourId:      string
   agentUserId?: string  // ignored — derived from session
   brokerageId?: string  // ignored — derived from session
-}): Promise<{ success: boolean; error?: string; dispatched?: number }> {
+}): Promise<{ success: boolean; error?: string; dispatched?: number; sent?: number; drafted?: number }> {
   const { tourId } = params
   if (!isValidUUID(tourId)) return { success: false, error: 'Invalid tour ID' }
 
@@ -501,30 +502,49 @@ export async function scheduleTourStops(params: {
   }
 
   // Flip status to scheduling
-  await supabase.from('tours').update({ status: 'scheduling' }).eq('id', tourId)
+  const { error: statusError } = await supabase
+    .from('tours').update({ status: 'scheduling' }).eq('id', tourId)
+  if (statusError) return { success: false, error: statusError.message }
 
-  // For each stop, queue the appropriate outbound dispatch. The actual
-  // ShowingTime/SMS/email delivery happens in `lib/showings/dispatcher.ts`
-  // which reads from showing_dispatches. For now we emit lifecycle events
-  // so the UI can show per-stop "scheduling pending" status.
+  // Dispatch each stop through the CANONICAL showing-dispatch lane
+  // (app/actions/dispatch-showing.ts → lib/showings/dispatchers.ts). This used
+  // to only write 'tour_stop.schedule_dispatched' lifecycle events — the toast
+  // said "N listing agents contacted" while nothing had actually gone out; the
+  // real dispatcher was reachable only via the per-stop dropdown. Same lane,
+  // now on the bulk button too: with provider credentials the request is sent
+  // (ShowingTime API / Twilio / Gmail-Outlook-SendGrid); without them the lane
+  // records an honest DRAFT ('tour_stop.scheduling_drafted') the agent finishes
+  // from the per-stop dropdown. dispatchStopScheduling records each attempt as
+  // a lifecycle_event itself, so no duplicate event write here.
+  //
+  // Channel comes from the stop's own scheduling_method, falling back to
+  // whichever listing-agent handle is actually on file — never a channel with
+  // no recipient when a usable one exists.
+  let sent = 0
+  let drafted = 0
   for (const stop of stops ?? []) {
-    await supabase.from('lifecycle_events').insert({
-      brokerage_id:  brokerageId,
-      entity_type:   'tour_stop',
-      entity_id:     stop.id,
-      event_type:    'tour_stop.schedule_dispatched',
-      actor_user_id: agentUserId,
-      metadata: {
-        scheduling_method:   stop.scheduling_method ?? 'manual_call',
-        listing_agent_phone: stop.listing_agent_phone,
-        listing_agent_email: stop.listing_agent_email,
-        suggested_time:      stop.suggested_time,
-        suggested_duration:  stop.suggested_duration_minutes,
-      },
-    }).then(() => null, () => null)
+    const method = stop.scheduling_method ?? 'manual_call'
+    const channel: 'showingtime' | 'sms' | 'email' =
+      method === 'showingtime' ? 'showingtime'
+      : method === 'email'     ? 'email'
+      : stop.listing_agent_phone ? 'sms'
+      : stop.listing_agent_email ? 'email'
+      : 'showingtime'
+    const res = await dispatchStopScheduling({ tourStopId: stop.id, channel })
+    if (!res.success) {
+      // Refusal reported as a refusal — a stop the lane would not take must not
+      // be counted as contacted.
+      return {
+        success: false,
+        error: `Dispatch refused for stop ${stop.property_address ?? stop.id}: ${res.error ?? 'unknown'}`,
+        dispatched: sent + drafted, sent, drafted,
+      }
+    }
+    if (res.sent) sent += 1
+    else drafted += 1
   }
 
-  return { success: true, dispatched: (stops ?? []).length }
+  return { success: true, dispatched: (stops ?? []).length, sent, drafted }
 }
 
 // ─── 4b. Finalize tour (after agent has heard back from listing agents) ──────

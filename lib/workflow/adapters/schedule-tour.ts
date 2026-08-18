@@ -5,7 +5,8 @@
  * tour UI (app/crm/.../tours) and calendar read. The legacy `buyer_tours` table is
  * not used (it was write-only drift). Stops are enriched from `saved_properties`
  * (the buyer property store) keyed by the saved-property ids on the step.
- * AI route optimization runs via the real optimizeTourRoute(tourId) action.
+ * Route optimization runs via the canonical kernel optimizer
+ * (lib/kernel/tour-optimizer.optimizeTourRoute) with this step's service client.
  */
 
 import type { ChannelAdapter, StepContext, StepResult } from "../channel-registry"
@@ -92,15 +93,16 @@ export const scheduleTourAdapter: ChannelAdapter = {
       .update({ added_to_tour: true })
       .in("id", orderedProps.map((p: any) => p.id))
 
-    // AI route optimization (best-effort) — canonical action keyed by tourId.
+    // Route optimization (best-effort) — the canonical Tour Day Optimizer KERNEL,
+    // called directly with this step's service client. The action wrapper
+    // (app/actions/ai-showing-management.optimizeTourRoute) gates on a signed-in
+    // agent session, which a workflow run does not have — importing it here made
+    // this a silent no-op on every run. Same optimizer, honest entry point.
     let routeOptimized = false
     try {
-      const m = await import("@/app/actions/ai-showing-management")
-      const optimizeFn = (m as any).optimizeTourRoute
-      if (typeof optimizeFn === "function") {
-        await optimizeFn(tour.id)
-        routeOptimized = true
-      }
+      const { optimizeTourRoute } = await import("@/lib/kernel/tour-optimizer")
+      const r = await optimizeTourRoute(tour.id, supabase as any)
+      routeOptimized = r.ok && r.reason !== "already_optimized"
     } catch { /* best-effort */ }
 
     // Notify buyer via portal notification

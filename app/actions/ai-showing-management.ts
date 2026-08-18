@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
@@ -122,60 +123,75 @@ export async function updateTour(tourId: string, updates: any) {
   }
 }
 
+/**
+ * REWIRED to the canonical Tour Day Optimizer kernel (lib/kernel/tour-optimizer.ts)
+ * — the SAME optimizer the cron sweep (app/api/cron/tour-optimizer) and the voice
+ * lane (lib/kernel/voice-delegation.ts) already run.
+ *
+ * The previous body was a parallel implementation: it asked an LLM to guess a
+ * stop order from the address strings and then FABRICATED the drive time as
+ * `stops.length * 8` minutes. The kernel does the honest version of both jobs —
+ * nearest-neighbor sequencing over real geocoded coordinates (free Nominatim,
+ * cached), per-leg drive ESTIMATES derived only from real coordinates (30mph
+ * straight-line, labeled as an estimate, NULL when a stop can't be geocoded),
+ * recomputed per-stop suggested times, tours.total_drive_time_minutes, and a
+ * showing_routes audit row with an optimization score. Nothing was merged
+ * forward from the old body: every line of it was the less-honest duplicate of
+ * a kernel line.
+ *
+ * Auth: the old body ran on the RLS client with no explicit gate. The kernel
+ * needs the service client (it writes showing_routes), so the gate is now
+ * explicit — session-resolved caller, tour pinned to the caller's brokerage.
+ */
 export async function optimizeTourRoute(tourId: string) {
   try {
-    const supabase = await createClient()
+    if (!isValidUUID(tourId)) return { success: false, error: "Invalid tour ID" }
 
-    // Load tour_stops — addresses are stored directly on the stop row
-    const { data: tour, error: tourError } = await supabase
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.brokerageId) return { success: false, error: "Your account is not linked to a brokerage yet." }
+
+    const svc = createServiceClient()
+    const { data: tour, error: tourError } = await svc
       .from("tours")
-      .select("id, tour_date")
+      .select("id, brokerage_id")
       .eq("id", tourId)
-      .single()
-
-    if (tourError || !tour) throw tourError ?? new Error("Tour not found")
-
-    const { data: stops, error: stopsError } = await supabase
-      .from("tour_stops")
-      .select("id, order_index, property_address, city, state")
-      .eq("tour_id", tourId)
-      .order("order_index", { ascending: true })
-
-    if (stopsError || !stops?.length) throw stopsError ?? new Error("No stops found")
-
-    const addressList = stops.map((s, i) =>
-      `${i + 1}. ${s.property_address}${s.city ? ", " + s.city : ""}${s.state ? " " + s.state : ""}`
-    ).join("\n")
-
-    const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
-      prompt: `You are a route planner. Given these ${stops.length} properties, suggest the most efficient driving order.
-Return ONLY a comma-separated list of the original 1-based position numbers in the optimized order. Nothing else.
-
-Properties:
-${addressList}`,
-    })
-
-    const order = text.match(/\d+/g)?.map(Number)
-    const uniqueOrder = [...new Set(order)].filter(n => n >= 1 && n <= stops.length)
-
-    let estimatedDriveMins: number | undefined
-    let summary = "Route optimized — stops reordered for minimum drive time."
-
-    if (uniqueOrder.length === stops.length) {
-      // Write new order_index values
-      for (let i = 0; i < uniqueOrder.length; i++) {
-        const originalStop = stops[uniqueOrder[i] - 1]
-        await supabase
-          .from("tour_stops")
-          .update({ order_index: i })
-          .eq("id", originalStop.id)
-      }
-      estimatedDriveMins = stops.length * 8 // rough ~8 min avg drive between stops
-      summary = `Stops reordered for efficient routing. Estimated ~${estimatedDriveMins} min total drive time.`
+      .maybeSingle()
+    if (tourError) return { success: false, error: tourError.message }
+    if (!tour || tour.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Tour not found" }
     }
 
-    return { success: true, tourId, summary, estimatedDriveMins }
+    const { optimizeTourRoute: runKernelOptimizer } = await import("@/lib/kernel/tour-optimizer")
+    const result = await runKernelOptimizer(tourId, svc)
+
+    if (!result.ok) {
+      return {
+        success: false,
+        error:
+          result.reason === "no_stops"
+            ? "This tour has no stops to optimize."
+            : `Route optimization refused: ${result.reason ?? "unknown"}`,
+      }
+    }
+
+    if (result.reason === "already_optimized") {
+      return {
+        success: true,
+        tourId,
+        summary: "Route already optimized — the stop order and drive estimates are unchanged.",
+        estimatedDriveMins: undefined,
+      }
+    }
+
+    // Honest wording: the total is a straight-line ESTIMATE, and stops the
+    // geocoder could not place keep their entered order with no invented drive.
+    const summary =
+      result.stopsSequenced === result.stopsTotal
+        ? `Stops reordered by drive time (${result.stopsSequenced}/${result.stopsTotal} geocoded). ~${result.totalDriveMinutes} min total drive (est., straight-line — not traffic-aware).`
+        : `${result.stopsSequenced}/${result.stopsTotal} stops geocoded and reordered by drive time; the rest kept their entered order (no address match — no invented drive times). ~${result.totalDriveMinutes} min total drive (est.).`
+
+    return { success: true, tourId, summary, estimatedDriveMins: result.totalDriveMinutes }
   } catch (error) {
     return handleError(error, "optimizeTourRoute")
   }

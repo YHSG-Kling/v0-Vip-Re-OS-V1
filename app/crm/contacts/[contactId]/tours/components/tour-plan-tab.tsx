@@ -148,22 +148,15 @@ export function TourPlanTab({
           toast({ title: (res as any).error ?? 'Route optimization failed', variant: 'destructive' })
         }
       } else {
-        // No saved tour yet — use AI to reorder stops by proximity heuristic
-        const addressList = orderedStops.map((s, i) => `${i + 1}. ${s.propertyAddress}${s.city ? ', ' + s.city : ''}`).join('\n')
-        const { generateText } = await import('ai')
-        const { text } = await generateText({
-          model: 'openai/gpt-4o-mini',
-          prompt: `Suggest the most efficient driving order for these properties (return comma-separated numbers only):\n${addressList}`,
+        // No saved tour yet — the real optimizer (lib/kernel/tour-optimizer via
+        // the optimizeTourRoute action) is keyed on a saved tour's stops, and
+        // there is no honest client-side substitute. (The previous branch here
+        // called a paid LLM from the BROWSER — no API key ever exists client-side,
+        // so it failed on every click.) Guide the agent to the working path.
+        toast({
+          title: 'Create the tour plan first',
+          description: 'Route optimization runs on the saved tour — click "Continue to Confirm", then Optimize Route.',
         })
-        const order = text.match(/\d+/g)?.map(Number).filter(n => n >= 1 && n <= orderedStops.length)
-        if (order && order.length === orderedStops.length) {
-          const reordered = order.map(n => orderedStops[n - 1])
-          setOrderedStops(reordered)
-          setRouteSummary('Stops reordered by AI for efficient routing.')
-          toast({ title: 'Route optimized' })
-        } else {
-          toast({ title: 'Could not parse optimized order', variant: 'destructive' })
-        }
       }
     } catch {
       toast({ title: 'Route optimization failed', variant: 'destructive' })
@@ -196,7 +189,12 @@ export function TourPlanTab({
         stops: orderedStops,
         aiPlanNarrative: narrative ?? undefined,
         totalDurationMinutes:  totalStopMins + totalDriveMins,
-        totalDriveTimeMinutes: totalDriveMins,
+        // Only pass a drive total when one was actually computed. The UI never
+        // sets driveTimeFromPrevMinutes, so this was always 0 — and a non-null
+        // tours.total_drive_time_minutes is the kernel optimizer's idempotency
+        // stamp, so passing 0 marked every UI-created tour "already optimized"
+        // and the real optimizer (button AND cron sweep) skipped it forever.
+        totalDriveTimeMinutes: totalDriveMins > 0 ? totalDriveMins : undefined,
       })
       if (res.success) {
         if (res.tourId) setCreatedTourId(res.tourId)
