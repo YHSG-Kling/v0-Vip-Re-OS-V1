@@ -42,17 +42,42 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // migrations). Previously this select silently failed and agent_user_id
     // came back undefined, dropping the per-agent attribution on captured
     // leads.
+    //
+    // `is_active` is NOT part of the lookup, and `expires_at` is now read: a
+    // paused code, an expired code and an id that matches nothing are three
+    // different facts. THIS IS THE REFUSAL THAT MATTERS — /api/qr/scan can only
+    // speak for scans it routes, but this endpoint is reachable directly from a
+    // bookmarked landing page, and capturing a lead through a retired code
+    // writes a contact the tenant will read as coming from a live campaign.
     const { data: qr, error: qrError } = await supabase
       .from('qr_codes')
-      .select('id, brokerage_id, agent_id, lead_count')
+      .select('id, brokerage_id, agent_id, lead_count, is_active, expires_at')
       .eq('id', qrCodeId)
-      .eq('is_active', true)
-      .single()
+      .maybeSingle()
 
     if (qrError || !qr) {
       return NextResponse.json(
-        { success: false, error: 'QR code not found or inactive' },
+        { success: false, error: 'QR code not found' },
         { status: 404 },
+      )
+    }
+
+    if (!qr.is_active) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'This code is paused — the agent who created this QR code has paused it, so it is not accepting submissions right now.',
+        },
+        { status: 403 },
+      )
+    }
+    if (qr.expires_at && new Date(qr.expires_at).getTime() <= Date.now()) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'This code has expired — this QR code was set to expire and that date has passed, so it is no longer accepting submissions.',
+        },
+        { status: 410 },
       )
     }
 

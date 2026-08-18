@@ -409,47 +409,51 @@ async function handleListingLive(event: Event): Promise<ProcessingResult> {
 
     // Auto-mint a QR code pointing to the public listing landing page so the
     // agent has it ready for yard signs, flyers, postcards, and brochures.
+    //
+    // MERGED-THEN-DELETED: this used to be its own `qr_codes` insert deduping on
+    // (brokerage_id, target_url). app/actions/listings-kernel.ts:launchListing minted for the
+    // SAME listing deduping on (listing_id, brokerage_id, purpose) — two different keys, so
+    // neither could see the other and a listing that both launched and fired listing.live ended
+    // up with TWO tracked codes splitting its scans between them. Both paths now call the one
+    // minter with the SAME key, `listing:<listingId>`, so whichever fires first mints and the
+    // other reuses. What this path contributed and kept: the users.id → agents.id resolution
+    // (qr_codes.agent_id FKs agents(id), and a users id there is a refused insert) and the
+    // "QR code minted" note on the smart suggestion, which now fires only on a REAL mint.
     try {
       const { createServiceClient: svcCreate } = await import("@/lib/supabase/service")
       const svc = svcCreate()
       const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://app.vipre.os"
-      const targetUrl = `${appUrl}/listings/${listing_id}`
 
       // qr_codes.agent_id FKs agents(id), not users(id). Look up the agents
       // row from the event's user_id; fall back to null when no agent record
       // exists (qr_codes.agent_id is nullable).
       let agentRowId: string | null = null
       if (event.user_id) {
-        const { data: agentRow } = await svc
+        const { data: agentRow, error: agentError } = await svc
           .from("agents")
           .select("id")
           .eq("user_id", event.user_id)
           .maybeSingle()
+        if (agentError) console.error("[handleListingLive] agent lookup refused:", agentError.message)
         agentRowId = agentRow?.id ?? null
       }
 
-      // qr_codes.slug is globally unique, so suffix with a timestamp.
-      const slug = `listing-${String(listing_id).slice(0, 8)}-${Date.now().toString(36)}`.toLowerCase()
-      const { data: existing } = await svc
-        .from("qr_codes")
-        .select("id")
-        .eq("brokerage_id", event.brokerage_id)
-        .eq("target_url", targetUrl)
-        .maybeSingle()
-      if (!existing) {
-        await svc.from("qr_codes").insert({
-          brokerage_id: event.brokerage_id,
-          agent_id:     agentRowId,
-          label:        `Listing ${mls_number ?? listing_id}`,
-          slug,
-          target_url:   targetUrl,
-          purpose:      "listing",
-          listing_id,
-          scan_count:   0,
-          lead_count:   0,
-          is_active:    true,
-        })
+      const { mintTrackedQr, listingQrLabel } = await import("@/lib/marketing/tracked-qr")
+      const minted = await mintTrackedQr({
+        brokerageId:     event.brokerage_id,
+        agentId:         agentRowId,
+        label:           listingQrLabel(String(listing_id)),
+        destinationType: "listing_detail",
+        targetUrl:       `${appUrl}/listings/${listing_id}`,
+        listingId:       String(listing_id),
+        purpose:         "listing",
+        origin:          appUrl,
+      }, svc)
+
+      if (minted?.created) {
         extras.push("QR code minted for landing page")
+      } else if (!minted) {
+        console.error(`[handleListingLive] QR mint refused for listing ${mls_number ?? listing_id}`)
       }
     } catch (qrErr) {
       console.error("[handleListingLive] QR code creation failed:", qrErr)

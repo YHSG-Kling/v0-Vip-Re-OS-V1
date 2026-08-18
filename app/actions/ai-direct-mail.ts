@@ -27,11 +27,11 @@ import { createQrCodeAction } from "@/app/actions/marketing-studio"
 // Direct mail piece types — matches the piece_type column on direct_mail_campaigns.
 export type DirectMailPieceType = "postcard" | "letter" | "handwritten_letter" | "thank_you_note"
 
-// Build a public QR PNG URL using a free renderer service. The QR resolves to
-// /api/qr/scan?slug=<slug>, which records the scan and redirects to the landing.
-function buildQrImageUrl(absoluteScanUrl: string, size = 300) {
-  return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(absoluteScanUrl)}`
-}
+// REMOVED in the QR merge (wave Q): `buildQrImageUrl(absoluteScanUrl, size)`.
+// It returned an api.qrserver.com URL, so the tracked scan URL for every postcard was handed to a
+// third party, and a print/PDF path depended on an outside host being reachable. The QR image now
+// comes back from the minter as a data: URI rendered by the vendored `qrcode` package — see
+// lib/marketing/tracked-qr.ts:renderQrPng, the only QR image source in the tree.
 
 // ============================================
 // AI DIRECT MAIL SYSTEM
@@ -477,6 +477,11 @@ export async function createDirectMailCampaign(params: {
   budget?: number
   sendDate?: string
   trackingEnabled?: boolean
+  /** ★ TRACKING LINKED TO CAMPAIGN ★ marketing_campaigns.id when this mailer belongs to an
+   *  umbrella marketing campaign — stamped onto qr_codes.marketing_campaign_id so the scans roll
+   *  up in lib/marketing/campaign-measurer.ts. Verified against the caller's brokerage inside
+   *  createQrCodeAction; an FK proves a campaign exists, never that it is ours. */
+  marketingCampaignId?: string
   /** Optional absolute origin (e.g. "https://app.example.com"); QR link defaults
    *  to NEXT_PUBLIC_APP_URL or a relative path if not provided. */
   appOrigin?: string
@@ -543,37 +548,47 @@ export async function createDirectMailCampaign(params: {
     let trackingUrl: string | null = null
 
     if (params.trackingEnabled && trackingId && campaign?.id) {
-      const origin =
-        params.appOrigin ?? process.env.NEXT_PUBLIC_APP_URL ?? ""
-      // Pre-build the canonical scan URL; the QR slug will be embedded once
-      // createQrCodeAction returns it. We use the trackingId as a stable label.
+      // The mint no longer needs a placeholder target_url patched after the fact: the minter owns
+      // the slug and returns the scan URL, and it defaults target_url to this code's own public
+      // /qr/<slug> landing when (as here) there is no other semantic destination.
+      //
+      // ★ TRACKING LINKED TO CAMPAIGN ★ `marketingCampaignId` is the FORWARD link to
+      // marketing_campaigns and is stamped only when the caller actually has one. It is NOT the
+      // same thing as `direct_mail_campaigns.qr_code_id` set below, which is a separate REVERSE
+      // link that already worked and is what /api/qr/scan reads for direct-mail attribution.
+      // Collapsing either into the other would break one of the two lanes.
       const qrResult = await createQrCodeAction({
         brokerageId: params.brokerageId,
         agentId: params.agentId,
         label: `${params.campaignName} (${trackingId})`,
-        targetUrl: `${origin}/api/qr/scan?slug=__placeholder__`,
         purpose: "campaign",
+        destinationType: "landing_page",
+        campaignId: params.marketingCampaignId,
+        // trackingId is unique per campaign, so this doubles as the idempotency key: a retried
+        // create reuses the same tracked code instead of minting a second one.
+        idempotencyLabel: `direct_mail:${trackingId}`,
       })
 
       if (qrResult.success && qrResult.qrCode) {
         qrCodeId = qrResult.qrCode.id
         qrSlug = qrResult.qrCode.slug
-        const scanUrl = `${origin}/api/qr/scan?slug=${qrResult.qrCode.slug}`
 
-        // Update qr_codes.target_url with the real scan URL now that we know the slug.
-        await supabase
-          .from("qr_codes")
-          .update({ target_url: scanUrl })
-          .eq("id", qrResult.qrCode.id)
-
-        // Link the QR to the campaign for scan attribution.
-        await supabase
+        // Link the QR to the campaign for scan attribution (the REVERSE link).
+        const { error: linkError } = await supabase
           .from("direct_mail_campaigns")
           .update({ qr_code_id: qrResult.qrCode.id })
           .eq("id", campaign.id)
+        if (linkError) {
+          // Without this link /api/qr/scan cannot attribute a scan to the mail campaign, so the
+          // Responses tab and cost-per-response stay at zero. Say so rather than reporting a
+          // tracked campaign that is not tracked.
+          console.error("[AI Direct Mail] QR created but NOT linked to the campaign:", linkError.message)
+        }
 
-        trackingUrl = scanUrl
-        qrImageUrl = buildQrImageUrl(scanUrl)
+        trackingUrl = qrResult.qrCode.scan_url
+        qrImageUrl = qrResult.qrCode.image_url
+      } else {
+        console.error("[AI Direct Mail] QR code was NOT created:", (qrResult as { error?: string }).error)
       }
     }
 

@@ -1492,62 +1492,26 @@ export async function repurposeContentAsset(params: {
   return { success: true, data: { logId: data.id } }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 20. createQrAsset
+// ─── REMOVED in the QR merge (wave Q) ────────────────────────────────────────
 //
-// Creates a QR code record.
-// Input:  ctx, label, targetUrl, purpose, listingId?, expiresAt?
-// Output: { qrCodeId, slug }
-// Tables write: qr_codes
-// Rules:  slug must be unique; targetUrl must be a valid URL
-// ───────────────────���─────────────────────────────────────────────────────────
-
-export interface CreateQrAssetInput {
-  ctx:        MarketingActorContext
-  label:      string
-  targetUrl:  string
-  purpose:    "listing" | "open_house" | "general" | "campaign" | "lead_capture"
-  listingId?: string
-  expiresAt?: string
-}
-
-export async function createQrAsset(
-  input: CreateQrAssetInput
-): Promise<KernelMarketingResult<{ qrCodeId: string; slug: string }>> {
-  const { ctx } = input
-  if (!input.label?.trim())    return { success: false, error: "QR code label is required." }
-  if (!input.targetUrl?.trim()) return { success: false, error: "Target URL is required." }
-
-  // Basic URL validation
-  try { new URL(input.targetUrl) } catch {
-    return { success: false, error: "Target URL is not a valid URL." }
-  }
-
-  const slug = `qr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
-  const supabase = await createServiceClient()
-
-  const { data, error } = await supabase
-    .from("qr_codes")
-    .insert({
-      brokerage_id: ctx.brokerageId,
-      agent_id:     ctx.agentId ?? null,
-      label:        input.label.trim(),
-      slug,
-      purpose:      input.purpose,
-      target_url:   input.targetUrl.trim(),
-      listing_id:   input.listingId ?? null,
-      expires_at:   input.expiresAt ?? null,
-      is_active:    true,
-      scan_count:   0,
-      lead_count:   0,
-      created_at:   new Date().toISOString(),
-    })
-    .select("id")
-    .single()
-
-  if (error || !data) return { success: false, error: error?.message ?? "Insert failed" }
-  return { success: true, data: { qrCodeId: data.id, slug } }
-}
+// `createQrAsset(input)` + `CreateQrAssetInput` — MERGED-THEN-DELETED.
+// SURVIVOR: lib/marketing/tracked-qr.ts:mintTrackedQr — the one QR minter, now the single
+// writer of `qr_codes` for the whole tree.
+//
+// WHAT WAS MERGED ONTO THE SURVIVOR FIRST: `expires_at`. This function was the ONLY writer of
+// that column anywhere in the tree, so deleting it without moving the capability would have made
+// a live column dead schema — and app/api/qr/scan reads expires_at to refuse an expired code, so
+// nothing would ever have expired. mintTrackedQr now takes `expiresAt`, and it is reachable from
+// createQrCodeAction (app/actions/marketing-studio.ts) and the admin POST route — more callers
+// than this function ever had.
+//
+// It was deleted rather than kept because it was BOTH a duplicate AND an orphan export: zero
+// callers in the tree, its own fourth slug recipe (`qr-<epoch>-<rand>`), no idempotency (a retry
+// minted a second code for the same thing), and it never set destination_type — so its codes were
+// invisible to every destination-bucketed analytic and to the m148 scan-event metadata.
+//
+// `previewQrAsset` below is NOT a duplicate and stays: it is the only reader that surfaces
+// expires_at alongside the scan/lead counters.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 21. previewQrAsset

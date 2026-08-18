@@ -74,6 +74,8 @@ import {
   getMarketingStudioDashboard,
   linkQrToAsset,
   getAssetQrLinks,
+  unlinkQrFromAsset,
+  getQrCodePerformance,
   type CampaignStatus,
   type AssetApprovalStatus,
   type VisibilityScope,
@@ -82,6 +84,36 @@ import { getMailCampaigns } from "@/app/actions/direct-mail"
 import { createCampaignSequence, createSequenceStep, deleteCampaignSequence } from "@/app/actions/campaign-sequences"
 import { getCampaignRegistry, registerCampaignSource, type ContentSourceItem } from "@/lib/marketing/campaign-registry"
 import { listAvailableQrCodes, type QrLinkInfo } from "@/lib/marketing/qr-asset-linker"
+// TYPE-ONLY: lib/marketing/tracked-qr.ts is `server-only` (it holds the service client), so a
+// value import would crash this client component at load. The types are erased at compile time,
+// and they are what keeps the option lists below from drifting out of the live CHECK vocabularies
+// — an option whose value is not in the union is a build error, not a runtime refused insert.
+import type { QrPurpose, QrDestinationType } from "@/lib/marketing/tracked-qr"
+
+/** qr_codes.purpose CHECK — the full live set. */
+const QR_PURPOSE_OPTIONS: Array<{ value: QrPurpose; label: string }> = [
+  { value: "general",         label: "General" },
+  { value: "open_house",      label: "Open House" },
+  { value: "listing",         label: "Listing" },
+  { value: "listing_inquiry", label: "Listing Inquiry" },
+  { value: "lead_capture",    label: "Lead Capture" },
+  { value: "lead_magnet",     label: "Lead Magnet" },
+  { value: "campaign",        label: "Campaign" },
+  { value: "event",           label: "Event" },
+  { value: "business_card",   label: "Business Card" },
+]
+
+/** qr_codes.destination_type CHECK (m148) — what analytics buckets scans by. */
+const QR_DESTINATION_OPTIONS: Array<{ value: QrDestinationType; label: string }> = [
+  { value: "landing_page",      label: "Landing Page" },
+  { value: "listing_detail",    label: "Listing Detail" },
+  { value: "book_meeting",      label: "Book a Meeting" },
+  { value: "cma_form",          label: "CMA / Home Value Form" },
+  { value: "video_avatar_tour", label: "Video Tour" },
+  { value: "podcast_episode",   label: "Podcast Episode" },
+  { value: "anniversary_video", label: "Anniversary Video" },
+  { value: "other",             label: "Other" },
+]
 import { predictPerformanceAction, getUserContextForPrediction } from "@/app/actions/content-prediction"
 import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { PredictionWidget, type PredictionData } from "@/app/components/prediction-widget"
@@ -211,6 +243,16 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
   const [isQrLinkOpen, setIsQrLinkOpen] = useState(false)
   const [selectedAssetForQr, setSelectedAssetForQr] = useState<string | null>(null)
   const [qrLinkError, setQrLinkError] = useState<string | null>(null)
+  // getAssetQrLinks + unlinkQrFromAsset were IMPORTED BUT NEVER INVOKED: the studio could attach
+  // a QR to an asset and then had no way to see or remove what it had attached, and the Asset
+  // type's `qr_links` field was never populated by anything. Both are now called here.
+  const [assetQrLinks, setAssetQrLinks] = useState<QrLinkInfo[]>([])
+  const [isLoadingQrLinks, setIsLoadingQrLinks] = useState(false)
+  // getQrCodePerformance was an ORPHAN EXPORT — the only reader of per-code scan DETAIL
+  // (unique scans + the recent-scan list from qr_scan_events). Nothing else surfaces it, so it
+  // was wired rather than deleted.
+  const [qrPerformance, setQrPerformance] = useState<Record<string, any>>({})
+  const [loadingQrPerformanceId, setLoadingQrPerformanceId] = useState<string | null>(null)
 
   // Campaign detail (the eye control on every campaign card)
   const [isCampaignDetailOpen, setIsCampaignDetailOpen] = useState(false)
@@ -343,7 +385,17 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
 
   // Create QR dialog state (inline in studio)
   const [isCreateQrOpen, setIsCreateQrOpen] = useState(false)
-  const [newQr, setNewQr] = useState<{ label: string; targetUrl: string; purpose: "listing" | "open_house" | "general" | "campaign" | "lead_capture" }>({ label: "", targetUrl: "", purpose: "general" })
+  // purpose + destinationType are CHECK-constrained vocabularies on qr_codes; these lists are the
+  // LIVE sets (verified against the database), and a value outside them is a refused insert.
+  const [newQr, setNewQr] = useState<{
+    label: string
+    targetUrl: string
+    purpose: QrPurpose
+    destinationType: QrDestinationType | ""
+    /** ★ TRACKING LINKED TO CAMPAIGN ★ marketing_campaigns.id → qr_codes.marketing_campaign_id. */
+    campaignId: string
+    expiresAt: string
+  }>({ label: "", targetUrl: "", purpose: "general", destinationType: "", campaignId: "", expiresAt: "" })
   const [isCreatingQr, setIsCreatingQr] = useState(false)
   const [qrError, setQrError] = useState<string | null>(null)
 
@@ -943,9 +995,20 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
 
   async function handleCreateAsset() {
     try {
-      const qrUrl = newAsset.assetType === "qr" && newAsset.qrTargetUrl.trim()
-        ? `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(newAsset.qrTargetUrl.trim())}`
-        : undefined
+      // The QR preview image is rendered SERVER-SIDE by the vendored `qrcode` package and stored
+      // as a data: URI. It used to be an api.qrserver.com URL persisted onto the asset row, which
+      // shipped the (often lead-bearing) target URL to a third party and left every saved asset
+      // permanently dependent on an outside host to render its own artwork.
+      let qrUrl: string | undefined
+      if (newAsset.assetType === "qr" && newAsset.qrTargetUrl.trim()) {
+        const { renderQrImageAction } = await import("@/app/actions/marketing-studio")
+        const rendered = await renderQrImageAction(newAsset.qrTargetUrl.trim())
+        if (!rendered.success) {
+          toast({ title: "Failed to create asset", description: rendered.error, variant: "destructive" })
+          return
+        }
+        qrUrl = rendered.dataUrl
+      }
       const result = await createAsset({
         ...newAsset,
         assetType: newAsset.assetType as any,
@@ -1055,9 +1118,50 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
       setQrLinkError((result as any).error ?? "The QR code was not linked to this asset.")
       return
     }
-    setIsQrLinkOpen(false)
-    setSelectedAssetForQr(null)
+    await loadAssetQrLinks(assetId)
     loadAssets()
+  }
+
+  /** Show what is ALREADY attached to this asset — the missing half of the link flow. */
+  async function loadAssetQrLinks(assetId: string) {
+    setIsLoadingQrLinks(true)
+    try {
+      const result = await getAssetQrLinks(assetId)
+      if (!result.success) {
+        setQrLinkError(result.error ?? "The linked QR codes could not be loaded.")
+        setAssetQrLinks([])
+        return
+      }
+      setAssetQrLinks(result.links)
+    } finally {
+      setIsLoadingQrLinks(false)
+    }
+  }
+
+  async function handleUnlinkQr(linkId: string, assetId: string) {
+    setQrLinkError(null)
+    const result = await unlinkQrFromAsset(linkId)
+    if (!result.success) {
+      setQrLinkError(result.error ?? "The QR code was not unlinked from this asset.")
+      return
+    }
+    await loadAssetQrLinks(assetId)
+    loadAssets()
+  }
+
+  async function handleLoadQrPerformance(qrCodeId: string) {
+    setLoadingQrPerformanceId(qrCodeId)
+    try {
+      const result = await getQrCodePerformance(qrCodeId)
+      setQrPerformance((prev) => ({
+        ...prev,
+        [qrCodeId]: result.success
+          ? result.performance
+          : { error: result.error ?? "Scan detail could not be loaded." },
+      }))
+    } finally {
+      setLoadingQrPerformanceId(null)
+    }
   }
 
   async function handlePredictPerformance(asset: Asset) {
@@ -2866,15 +2970,62 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                             <div className="h-16 w-16 bg-white rounded-lg flex items-center justify-center border">
                               <QrCode className="h-10 w-10 text-gray-700" />
                             </div>
-                            <div className="flex-1">
-                              <h4 className="font-medium">{qr.label}</h4>
-                              <p className="text-sm text-muted-foreground">{qr.purpose}</p>
+                            <div className="flex-1 min-w-0">
+                              <h4 className="font-medium truncate">{qr.label}</h4>
+                              <p className="text-sm text-muted-foreground">
+                                {qr.purpose}
+                                {qr.destinationType ? ` · ${qr.destinationType.replace(/_/g, " ")}` : ""}
+                              </p>
                               <div className="flex items-center gap-4 mt-1 text-xs text-muted-foreground">
                                 <span>{qr.scanCount} scans</span>
                                 <span>{qr.leadCount} leads</span>
                                 <span>{qr.linkedAssetCount} linked</span>
                               </div>
                             </div>
+                          </div>
+                          {/* getQrCodePerformance is the ONLY reader of per-code scan DETAIL
+                              (unique scans + the recent-scan list off qr_scan_events); the list
+                              above shows only the rolled-up counters. It was an orphan export —
+                              a real capability with no caller — so it is wired here rather than
+                              deleted. */}
+                          <div className="mt-3 border-t pt-3">
+                            {!qrPerformance[qr.id] ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-xs"
+                                disabled={loadingQrPerformanceId === qr.id}
+                                onClick={() => handleLoadQrPerformance(qr.id)}
+                              >
+                                {loadingQrPerformanceId === qr.id
+                                  ? <Loader2 className="h-3 w-3 animate-spin mr-1.5" />
+                                  : <Eye className="h-3 w-3 mr-1.5" />}
+                                Scan detail
+                              </Button>
+                            ) : qrPerformance[qr.id].error ? (
+                              <p className="text-xs text-red-600">{qrPerformance[qr.id].error}</p>
+                            ) : (
+                              <div className="space-y-1.5">
+                                <div className="flex items-center gap-3 text-xs">
+                                  <span className="font-medium">{qrPerformance[qr.id].uniqueScans} unique</span>
+                                  <span className="text-muted-foreground">
+                                    {qrPerformance[qr.id].conversionRate}% converted
+                                  </span>
+                                </div>
+                                {qrPerformance[qr.id].recentScans?.length ? (
+                                  <ul className="text-[11px] text-muted-foreground space-y-0.5">
+                                    {qrPerformance[qr.id].recentScans.slice(0, 5).map((s: any, i: number) => (
+                                      <li key={i}>
+                                        {format(new Date(s.scannedAt), "MMM d, h:mm a")}
+                                        {s.isFirstScan ? " · first scan" : ""}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <p className="text-[11px] text-muted-foreground">No scans recorded yet.</p>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </CardContent>
                       </Card>
@@ -3734,14 +3885,65 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                   id="qr-purpose"
                   className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
                   value={newQr.purpose}
-                  onChange={(e) => setNewQr((prev) => ({ ...prev, purpose: e.target.value as "listing" | "open_house" | "general" | "campaign" | "lead_capture" }))}
+                  onChange={(e) => setNewQr((prev) => ({ ...prev, purpose: e.target.value as QrPurpose }))}
                 >
-                  <option value="general">General</option>
-                  <option value="open_house">Open House</option>
-                  <option value="listing">Listing</option>
-                  <option value="lead_capture">Lead Capture</option>
-                  <option value="campaign">Campaign</option>
+                  {QR_PURPOSE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
                 </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="qr-destination">Destination Type</Label>
+                <select
+                  id="qr-destination"
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  value={newQr.destinationType}
+                  onChange={(e) => setNewQr((prev) => ({ ...prev, destinationType: e.target.value as QrDestinationType | "" }))}
+                >
+                  <option value="">Not specified</option>
+                  {QR_DESTINATION_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  How analytics buckets this code&apos;s scans. Codes created here never set it before,
+                  so they were invisible in every destination breakdown.
+                </p>
+              </div>
+              {/* ★ TRACKING LINKED TO CAMPAIGN ★ — the write side of the campaign link.
+                  qr_codes.marketing_campaign_id is an FK to marketing_campaigns that had ZERO
+                  writers, which is why the campaign measurer reported 0 QR scans for every
+                  campaign no matter how many codes it had. Attaching the code here is what makes
+                  its scans roll up. */}
+              <div className="space-y-1.5">
+                <Label htmlFor="qr-campaign">Campaign</Label>
+                <select
+                  id="qr-campaign"
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  value={newQr.campaignId}
+                  onChange={(e) => setNewQr((prev) => ({ ...prev, campaignId: e.target.value }))}
+                >
+                  <option value="">No campaign (standalone code)</option>
+                  {campaigns.map((c) => (
+                    <option key={c.id} value={c.id}>{c.campaign_name}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  Attach the code to a campaign and its scans, leads and conversions roll up into
+                  that campaign&apos;s results.
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="qr-expires">Expires (optional)</Label>
+                <Input
+                  id="qr-expires"
+                  type="date"
+                  value={newQr.expiresAt}
+                  onChange={(e) => setNewQr((prev) => ({ ...prev, expiresAt: e.target.value }))}
+                />
+                <p className="text-xs text-muted-foreground">
+                  After this date a scan is refused with an explanation instead of routing.
+                </p>
               </div>
               {qrError && (
                 <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700 flex items-center gap-2">
@@ -3785,10 +3987,14 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                       label: newQr.label.trim(),
                       targetUrl: newQr.targetUrl.trim(),
                       purpose: newQr.purpose,
+                      destinationType: newQr.destinationType || undefined,
+                      // ★ TRACKING LINKED TO CAMPAIGN ★ — stamps qr_codes.marketing_campaign_id.
+                      campaignId: newQr.campaignId || undefined,
+                      expiresAt: newQr.expiresAt ? new Date(newQr.expiresAt).toISOString() : undefined,
                     })
                     if (result.success) {
                       setIsCreateQrOpen(false)
-                      setNewQr({ label: "", targetUrl: "", purpose: "general" })
+                      setNewQr({ label: "", targetUrl: "", purpose: "general", destinationType: "", campaignId: "", expiresAt: "" })
                       setQrError(null)
                       await loadQrCodes()
                     } else {
@@ -3811,7 +4017,11 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
         {/* QR Link Dialog */}
         <Dialog
           open={isQrLinkOpen}
-          onOpenChange={(open) => { setIsQrLinkOpen(open); if (!open) setQrLinkError(null) }}
+          onOpenChange={(open) => {
+            setIsQrLinkOpen(open)
+            if (!open) { setQrLinkError(null); setAssetQrLinks([]) }
+            else if (selectedAssetForQr) loadAssetQrLinks(selectedAssetForQr)
+          }}
         >
           <DialogContent>
             <DialogHeader>
@@ -3819,6 +4029,40 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
               <DialogDescription>Select a QR code and placement type</DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
+              {/* ALREADY LINKED — the other half of the flow. Without this the studio could
+                  attach a QR to an asset and then had no way to see or remove what it attached. */}
+              {isLoadingQrLinks ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Loading linked codes…
+                </div>
+              ) : assetQrLinks.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                    Already linked
+                  </p>
+                  {assetQrLinks.map((link) => (
+                    <div key={link.id} className="flex items-center justify-between p-2.5 rounded-lg border bg-muted/30">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <QrCode className="h-6 w-6 text-gray-600 shrink-0" />
+                        <div className="min-w-0">
+                          <p className="font-medium text-sm truncate">{link.qrCode?.label ?? "QR code"}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {link.placementType} · {link.qrCode?.scanCount ?? 0} scans
+                          </p>
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-red-600 hover:text-red-700"
+                        onClick={() => selectedAssetForQr && handleUnlinkQr(link.id, selectedAssetForQr)}
+                      >
+                        Unlink
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
               {availableQrCodes.length === 0 && (
                 <p className="text-sm text-muted-foreground text-center py-4">
                   No QR codes available yet. Create one from the QR Codes tab first.

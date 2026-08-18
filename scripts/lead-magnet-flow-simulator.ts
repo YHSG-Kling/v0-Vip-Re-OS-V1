@@ -89,12 +89,41 @@ console.log("\n── ONE Lead Magnets surface, and its scope is resolved server
   check("MagnetLibrary no longer accepts or forwards an agentId",
     !/agentId/.test(library.replace(/\/\*[\s\S]*?\*\//g, "")))
 
+  // THE QR MERGE (wave Q): there were THREE lead-magnet QR minters with three different dedupe
+  // keys, so one magnet could carry three tracked codes splitting its scans. They collapsed onto
+  // ONE — lib/kernel/lead-magnets.ts:generateQRCode → lib/marketing/tracked-qr.ts:mintTrackedQr —
+  // keyed on `lead_magnet:<magnetId>`. The two facts below still hold; they moved one hop, so the
+  // assertions follow them rather than pinning the deleted insert.
+  const kernel = src("lib/kernel/lead-magnets.ts")
+
+  check("generateQRCodeAction no longer inserts into qr_codes itself (merged-then-deleted)",
+    !/from\("qr_codes"\)[\s\S]{0,80}\.insert\(/.test(action))
+  check("generateQRCodeAction delegates to the ONE lead-magnet minter",
+    /generateQRCode\(\{/.test(action))
+
   // A generated QR used to be written with purpose 'general' while every reader
   // queried purpose = 'lead_magnet' — so it was never found again.
-  check("generateQRCodeAction writes purpose 'lead_magnet' (what the readers filter on)",
-    /purpose: "lead_magnet"/.test(action) && !/purpose: "general"/.test(action))
+  check("the lead-magnet minter writes purpose 'lead_magnet' (what the readers filter on)",
+    /purpose: "lead_magnet"/.test(kernel) && !/purpose: "general"/.test(kernel))
   check("generateQRCodeAction stamps qr_codes.agent_id from the session agents.id",
-    /agent_id: ctx\.agentId/.test(action))
+    /agentId: ctx\.agentId/.test(action))
+
+  // ONE dedupe key for all three former paths — this is the whole point of the merge.
+  check("every lead-magnet QR path shares ONE idempotency key (`lead_magnet:<magnetId>`)",
+    /leadMagnetQrLabel\(magnetId: string\): string \{\s*\n\s*return `lead_magnet:\$\{magnetId\}`/.test(kernel)
+    && /label: leadMagnetQrLabel\(input\.magnetId\)/.test(kernel))
+  check("publishLeadMagnet mints through that same minter, not its own insert",
+    /if \(input\.channels\.includes\("qr_code"\)\) \{[\s\S]{0,400}?await generateQRCode\(\{/.test(kernel))
+
+  // The QR image must come from the vendored `qrcode` package — never a third-party HTTP renderer
+  // handed the lead-bearing landing URL. Comments are stripped first: the tombstones that record
+  // WHY the third-party renderer was removed necessarily name it.
+  const decomment = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
+  check("no lead-magnet path renders its QR through api.qrserver.com",
+    ["lib/kernel/lead-magnets.ts",
+     "app/actions/lead-magnets-actions.ts",
+     "app/components/features/lead-magnets/QRCodeGenerator.tsx",
+    ].every((f) => !/api\.qrserver\.com/.test(decomment(src(f)))))
 }
 
 console.log(`\n RESULT: ${pass} passed, ${fail} failed`)

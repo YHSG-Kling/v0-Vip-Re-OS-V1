@@ -332,39 +332,52 @@ export async function createQrCodeForEvent(params: {
 
   const supabase = await createClient()
 
-  const slug = `oh-${params.eventId.slice(0, 8)}`
-  const targetUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/open-house/${params.eventId}/signin`
+  // MERGED-THEN-DELETED: this used to be its own `qr_codes` upsert-on-slug, using the
+  // deterministic slug `oh-<eventId8>` as its idempotency. It never set destination_type, so
+  // open-house scans were invisible to every destination-bucketed analytic, and an 8-character
+  // slice of a uuid as a GLOBALLY UNIQUE slug is a collision waiting to happen across tenants —
+  // and a collision on that upsert would have re-pointed ANOTHER brokerage's code. The write now
+  // goes through the one minter with the key `open_house:<eventId>`; the slug is generated
+  // per-row and stays unique. What this path contributed and kept: purpose 'open_house' (the
+  // CHECK has no _signin variant) and the sign-in URL as the semantic destination.
+  const { mintTrackedQr, openHouseQrLabel } = await import("@/lib/marketing/tracked-qr")
+  const origin = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")
+  const minted = await mintTrackedQr({
+    brokerageId:     auth.brokerageId,
+    agentId:         evOwn.event.agent_id ?? auth.agentId,
+    label:           openHouseQrLabel(params.eventId),
+    destinationType: "book_meeting",
+    targetUrl:       `${origin}/open-house/${params.eventId}/signin`,
+    listingId:       params.listingId,
+    purpose:         "open_house",
+    origin:          origin || undefined,
+  })
 
-  const { data: qr, error } = await supabase
-    .from("qr_codes")
-    .upsert(
-      {
-        brokerage_id: auth.brokerageId,
-        agent_id: evOwn.event.agent_id ?? auth.agentId,
-        label: `Open House Sign-In — ${params.eventId.slice(0, 8)}`,
-        slug,
-        target_url: targetUrl,
-        // qr_codes.purpose says 'open_house'; there is no _signin variant.
-        purpose: "open_house",
-        listing_id: params.listingId,
-        is_active: true,
-      },
-      { onConflict: "slug" }
-    )
-    .select()
-    .maybeSingle()
+  if (!minted) return { success: false, error: "The QR code was not created — the write was refused." }
 
-  if (error) return { success: false, error: error.message }
-  if (!qr) return { success: false, error: "Failed to upsert QR code" }
-
-  await supabase
+  const { error: linkError } = await supabase
     .from("open_house_events")
-    .update({ qr_code_id: qr.id })
+    .update({ qr_code_id: minted.qrCodeId })
     .eq("id", params.eventId)
     .eq("brokerage_id", auth.brokerageId)
 
+  // The event's qr_code_id is what the sign-in surface reads to find the code; a minted code the
+  // event cannot point at is not a usable QR, so this refusal is reported, not swallowed.
+  if (linkError) return { success: false, error: `QR code created but not attached to the event: ${linkError.message}` }
+
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
-  return { success: true, qr }
+  return {
+    success: true,
+    qr: {
+      id: minted.qrCodeId,
+      slug: minted.slug,
+      target_url: minted.targetUrl,
+      scan_url: minted.scanUrl,
+      image_url: minted.qrCodeDataUrl,
+      purpose: "open_house",
+      listing_id: params.listingId,
+    },
+  }
 }
 
 // ─── TAB 2 — END EVENT ───────────────────────────────────────────────────────

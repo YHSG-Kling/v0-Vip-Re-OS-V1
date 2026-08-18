@@ -65,6 +65,12 @@ export interface MintMarketingQrArgs extends MarketingQrRefs {
   /** agents.id (qr_codes.agent_id FK → agents.id). */
   agentId?: string | null
   kind: MarketingQrKind
+  /** ★ TRACKING LINKED TO CAMPAIGN ★ marketing_campaigns.id when this piece belongs to a
+   *  campaign — stamped onto qr_codes.marketing_campaign_id so campaign-measurer can see the
+   *  scans. Omit for a standalone piece. */
+  marketingCampaignId?: string | null
+  /** qr_codes.expires_at — a dated piece (an open house, a seasonal flyer) can carry one. */
+  expiresAt?: string | null
   origin?: string
   /** When true AND a NEW code was minted, notify the owner to confirm/assign the destination URL. */
   notifyOwner?: boolean
@@ -150,6 +156,8 @@ export async function mintMarketingQr(
       destinationType: dest.destinationType,
       targetUrl: dest.buildTargetUrl(normalizeOrigin(args.origin), args),
       listingId: args.listingId ?? null,
+      marketingCampaignId: args.marketingCampaignId ?? null,
+      expiresAt: args.expiresAt ?? null,
       purpose: args.kind === "open_house_flyer" ? "open_house" : "listing",
       origin: args.origin,
     },

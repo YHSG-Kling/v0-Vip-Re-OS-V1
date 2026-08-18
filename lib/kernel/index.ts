@@ -406,7 +406,9 @@ export {
   publishPodcastEpisode,
   createMarketingCampaign,
   repurposeContentAsset,
-  createQrAsset,
+  // createQrAsset REMOVED in the QR merge (wave Q) — merged-then-deleted into
+  // lib/marketing/tracked-qr.ts:mintTrackedQr (it was the sole writer of qr_codes.expires_at;
+  // that capability moved to the survivor first). See the tombstone in ./marketing.
   previewQrAsset,
 } from "./marketing"
 export type {
@@ -419,7 +421,6 @@ export type {
   CreateVideoProjectInput,
   CreatePodcastEpisodeInput,
   CreateMarketingCampaignInput,
-  CreateQrAssetInput,
 } from "./marketing"
 
 // ─── AI TOOLS OS ─────────────────────────────────────────────────────────────

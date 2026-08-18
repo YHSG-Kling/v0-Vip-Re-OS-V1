@@ -378,6 +378,12 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
           { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
+          // Nav-parity: the QR manager was in the AGENT sidebar only, so a broker
+          // had no way to see the codes their brokerage prints. Same page, same
+          // href — it scopes its own data to the caller (see
+          // app/actions/qr-management.ts), so a broker lands on the whole
+          // brokerage's board rather than an empty personal one.
+          { id: 'qr-codes', label: 'QR Codes', href: '/dashboard/agent/qr-codes' },
           // Nav-parity: agents and team leads could reach Newsletters; the broker could not.
           { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
           { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/marketing/lead-magnets' },
@@ -624,6 +630,9 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
           { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
+          // Nav-parity: the QR manager was agent-only. Same page, scoped by the
+          // caller's role — the admin seat sees the whole brokerage's codes.
+          { id: 'qr-codes', label: 'QR Codes', href: '/dashboard/agent/qr-codes' },
           { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/marketing/lead-magnets' },
           { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/studio?tab=blog' },
           { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },
@@ -1001,6 +1010,10 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           // but were unreachable from the team_lead sidebar.
           { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
+          // Nav-parity: the QR manager was agent-only. The same page narrows a
+          // team lead to their OWN team's codes (#191 — teams see only their own
+          // board), so this is the team's QR board, not the brokerage's.
+          { id: 'qr-codes', label: 'QR Codes', href: '/dashboard/agent/qr-codes' },
           { id: 'newsletters', label: 'Newsletters', href: '/newsletters/templates' },
           { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/studio?tab=blog' },
           { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },

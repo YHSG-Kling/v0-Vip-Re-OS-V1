@@ -599,8 +599,17 @@ console.log("\n═══ 3f. Every write into a users-class agent_id, enumerated
   ok("kernel/marketing RESOLVES an agents id for the two video/podcast tables it\n    writes, instead of sending ctx.userId",
     /agent_id:\s+videoAgentId,/.test(mk) && /agent_id:\s*episodeAgentId,/.test(mk) &&
     !/agent_id:\s*ctx\.userId,/.test(mk))
-  ok("...and KEEPS ctx.agentId for newsletter_campaigns, direct_mail_campaigns and\n    qr_codes, which genuinely FK agents — the same file, both classes, on purpose",
-    (mk.match(/agent_id:\s*ctx\.agentId \?\? null,/g) ?? []).length === 3)
+  // WAS 3 (newsletter_campaigns, direct_mail_campaigns, qr_codes). The qr_codes
+  // writer left this file when the QR minters were collapsed onto one: kernel
+  // marketing's createQrAsset was merged into lib/marketing/tracked-qr.ts and
+  // deleted. The CLAIM is unchanged — a table that genuinely FKs agents must be
+  // written with an agents-class id — so it follows the writer instead of being
+  // relaxed to a smaller count here.
+  ok("...and KEEPS ctx.agentId for newsletter_campaigns and direct_mail_campaigns,\n    which genuinely FK agents — the same file, both classes, on purpose",
+    (mk.match(/agent_id:\s*ctx\.agentId \?\? null,/g) ?? []).length === 2)
+  ok("...and the qr_codes writer carries that class with it to the ONE surviving\n    minter, which takes an agents id and never a users id",
+    /agent_id: args\.agentId \?\? null,/.test(code("lib/marketing/tracked-qr.ts")) &&
+    !/agent_id:\s*(ctx|args)\.userId/.test(code("lib/marketing/tracked-qr.ts")))
 }
 
 console.log("\n═══ 3g. The MIRROR sweep — this guard's own documented blind spot ═══")

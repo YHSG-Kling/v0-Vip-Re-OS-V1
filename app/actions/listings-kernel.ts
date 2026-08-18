@@ -590,45 +590,36 @@ export async function launchListingAction(params: {
           // Non-fatal — the huddle is an enhancement, the launch proceeds.
         }
 
+        // MERGED-THEN-DELETED: this used to be its own `qr_codes` insert deduping on
+        // (listing_id, brokerage_id, purpose). lib/orchestrator/internal.ts:handleListingLive
+        // minted for the SAME listing deduping on (brokerage_id, target_url) — two different
+        // keys, so neither path could ever see the other's row and a listing that both launched
+        // and fired listing.live ended up with TWO tracked codes splitting its scans. Both now
+        // call the one minter with the SAME key: `listing:<listingId>`.
+        //
+        // What this path contributed and kept: the "a failed lookup must not read as no-code-yet"
+        // rule (now enforced inside mintTrackedQr for every caller) and the purpose 'listing' fact
+        // (the CHECK has no 'listing_inquiry' for a launch). What it gave up: the address-bearing
+        // label text — `qr_codes` has one text column and it now holds the key. The address is not
+        // lost, it is READ from listing_id, which every row minted here carries.
         const baseUrl = process.env.NEXT_PUBLIC_APP_URL
         if (!baseUrl) {
           // Base URL not configured — skip QR generation but continue action
         } else {
-        const targetUrl = `${baseUrl}/listings/${listing.id}`
-        // qr_codes.slug is globally unique — suffix with base36 timestamp.
-        const slug = `listing-${listing.id.slice(0, 8)}-${Date.now().toString(36)}`
-        const { data: existing, error: existingError } = await svc
-          .from("qr_codes")
-          .select("id")
-          .eq("listing_id", params.listingId)
-          .eq("brokerage_id", ctx.brokerageId)
-          .eq("purpose", "listing")
-          .maybeSingle()
-
-        // A FAILED lookup must not read as "no QR code yet" — that would mint a
-        // duplicate on every re-launch, each with its own globally-unique slug.
-        if (existingError) {
-          console.error("[launchListing] QR existence check failed — not generating:", existingError.message)
-        } else if (!existing) {
-          const { error: qrError } = await svc.from("qr_codes").insert({
-            brokerage_id: listing.brokerage_id,
-            agent_id:     listing.agent_id,
-            listing_id:   params.listingId,
-            label:        `Listing — ${listing.address}`,
-            slug,
-            target_url:   targetUrl,
-            // qr_codes.purpose CHECK only allows: listing, open_house, event,
-            // business_card, general. 'listing_inquiry' was invalid and the
-            // insert would fail the constraint.
-            purpose:      "listing",
-            scan_count:   0,
-            lead_count:   0,
-            is_active:    true,
-          })
-          if (qrError) {
-            console.error("[launchListing] QR code was NOT created:", qrError.message)
+          const { mintTrackedQr, listingQrLabel } = await import("@/lib/marketing/tracked-qr")
+          const minted = await mintTrackedQr({
+            brokerageId:     listing.brokerage_id,
+            agentId:         listing.agent_id,
+            label:           listingQrLabel(params.listingId),
+            destinationType: "listing_detail",
+            targetUrl:       `${baseUrl}/listings/${listing.id}`,
+            listingId:       params.listingId,
+            purpose:         "listing",
+            origin:          baseUrl,
+          }, svc)
+          if (!minted) {
+            console.error("[launchListing] QR code was NOT created — the mint was refused.")
           }
-        }
         } // end else (baseUrl exists)
       }
     } catch (err) {

@@ -7,6 +7,34 @@ import { KernelEvent } from '@/lib/kernel/events'
 
 export const dynamic = 'force-dynamic'
 
+/**
+ * The honest refusal a scanner sees when the code resolves but must not route.
+ *
+ * A printed QR outlives the campaign it was printed for. Before this, the route
+ * tested `is_active` INSIDE the lookup, so a paused code was indistinguishable
+ * from a slug that never existed and both were bounced to the homepage — the
+ * person holding the postcard was told nothing, and `expires_at` (a real column,
+ * written by marketing surfaces) was never read at all, so an expired code
+ * resolved forever. A scan that is deliberately not honoured says so.
+ */
+function refusalPage(status: number, heading: string, detail: string): NextResponse {
+  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${heading}</title>
+<style>
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+         font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background:#f8fafc; color:#0f172a; }
+  main { max-width:26rem; padding:2rem; text-align:center; }
+  h1 { font-size:1.25rem; margin:0 0 .5rem; }
+  p { font-size:.9rem; line-height:1.5; color:#475569; margin:0; }
+</style></head>
+<body><main><h1>${heading}</h1><p>${detail}</p></main></body></html>`
+  return new NextResponse(body, {
+    status,
+    headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
+  })
+}
+
 export async function GET(req: NextRequest): Promise<NextResponse> {
   try {
     const { searchParams } = new URL(req.url)
@@ -19,15 +47,34 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const supabase = createServiceClient()
 
     // ── Step 1: Fetch QR code ──────────────────────────────────────────────────
+    // `is_active` is NOT part of the lookup: a paused code and a slug that never
+    // existed are different facts and get different answers.
     const { data: qr, error: qrError } = await supabase
       .from('qr_codes')
-      .select('id, brokerage_id, agent_id, scan_count, purpose, destination_type')
+      .select('id, brokerage_id, agent_id, scan_count, purpose, destination_type, is_active, expires_at')
       .eq('slug', slug)
-      .eq('is_active', true)
-      .single()
+      .maybeSingle()
 
     if (qrError || !qr) {
       return NextResponse.redirect(new URL('/', req.url))
+    }
+
+    // ── Step 1a: Refuse a paused or expired code, out loud ────────────────────
+    // 403 for paused (the owner can resume it from the QR manager, so it is not
+    // Gone); 410 for expired (the code named its own end date and reached it).
+    if (!qr.is_active) {
+      return refusalPage(
+        403,
+        'This code is paused',
+        'The agent who created this QR code has paused it, so it is not routing scans right now. Please contact them directly.',
+      )
+    }
+    if (qr.expires_at && new Date(qr.expires_at).getTime() <= Date.now()) {
+      return refusalPage(
+        410,
+        'This code has expired',
+        'This QR code was set to expire and that date has passed, so it no longer routes anywhere. Please contact the agent who shared it for a current link.',
+      )
     }
 
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null

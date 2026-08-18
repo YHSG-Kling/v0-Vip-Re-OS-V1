@@ -194,42 +194,61 @@ export async function getMagnetPerformanceAction(magnetId: string) {
   }
 }
 
+/**
+ * generateQRCodeAction — the session gate in front of the ONE lead-magnet QR minter.
+ *
+ * MERGED-THEN-DELETED: this action's own `qr_codes` insert is gone. It was the third of three
+ * lead-magnet minters, each with a different dedupe key — this one had NO dedupe at all and a
+ * random slug, so every click of "Generate Tracked QR Code" minted another code and the magnet's
+ * scans split across them. The write now goes through lib/kernel/lead-magnets.ts:generateQRCode →
+ * lib/marketing/tracked-qr.ts:mintTrackedQr, deduped on `lead_magnet:<magnetId>`.
+ *
+ * WHAT THIS PATH CONTRIBUTED AND KEPT (merged onto the survivor before it died):
+ *   • purpose 'lead_magnet' — every reader of a lead-magnet QR filters on it; writing "general"
+ *     meant a freshly generated QR was never found again (the tab kept offering "Generate", the
+ *     library never showed a scan count).
+ *   • destination_type 'landing_page' — neither of the other two set it.
+ *   • the agents.id stamp: qr_codes.agent_id FKs agents(id); ctx.agentId is that PK, and a users
+ *     id in that column is a refused insert.
+ *
+ * It also now returns the rendered PNG so the UI stops fetching it from api.qrserver.com.
+ */
 export async function generateQRCodeAction(input: { magnetId: string; url: string }) {
   try {
     const supabase = createServiceClient()
     const ctx = await getAgentContext()
     if (!ctx.brokerageId) return { success: false as const, error: "Not authenticated" }
-    // Verify the form belongs to this brokerage before creating a QR code for it
-    const { data: form } = await supabase
+    // Verify the form belongs to this brokerage before creating a QR code for it.
+    // GATE-THEN-SERVICE: the minter writes with the service client, so this check is the only gate.
+    const { data: form, error: formError } = await supabase
       .from("lead_capture_forms")
       .select("id")
       .eq("id", input.magnetId)
       .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle()
+    if (formError) return { success: false as const, error: formError.message }
     if (!form) return { success: false as const, error: "Magnet not found" }
-    // qr_codes has no magnet_id/qr_image_url; label + slug are NOT NULL (slug UNIQUE).
-    const slug = `lm-${(globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)).replace(/-/g, "").slice(0, 12)}`
-    const { data, error } = await supabase
-      .from("qr_codes")
-      .insert({
-        brokerage_id: ctx.brokerageId,
-        // qr_codes.agent_id is a FK to agents(id) — ctx.agentId is that PK.
-        agent_id: ctx.agentId,
-        label: `Lead Magnet QR: ${input.magnetId}`,
-        slug,
-        target_url: input.url,
-        // Was "general", but EVERY reader of a lead-magnet QR filters on
-        // purpose = 'lead_magnet' (the detail tab's existing-code lookup and
-        // listLeadMagnets' scan-count join). Writing "general" meant a freshly
-        // generated QR was never found again: the tab kept offering "Generate",
-        // and the library never showed a scan count.
-        purpose: "lead_magnet",
-        destination_type: "landing_page",
-      })
-      .select("id, slug, target_url")
-      .single()
-    if (error) return { success: false as const, error: error.message }
-    return { success: true as const, qrCode: data }
+
+    const { generateQRCode } = await import("@/lib/kernel/lead-magnets")
+    const result = await generateQRCode({
+      magnetId: input.magnetId,
+      brokerageId: ctx.brokerageId,
+      agentId: ctx.agentId ?? null,
+      label: `Lead Magnet QR: ${input.magnetId}`,
+      targetUrl: input.url,
+    })
+    if (!result.success) return { success: false as const, error: result.error ?? "Failed to generate QR" }
+
+    return {
+      success: true as const,
+      qrCode: {
+        id: result.qrCodeId!,
+        slug: result.slug!,
+        target_url: result.targetUrl!,
+        scan_url: result.scanUrl!,
+        image_url: result.qrImageUrl!,
+      },
+    }
   } catch (err: any) {
     return { success: false as const, error: err?.message ?? "Failed to generate QR" }
   }

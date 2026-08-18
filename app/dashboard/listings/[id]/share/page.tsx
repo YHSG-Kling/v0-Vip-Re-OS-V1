@@ -100,18 +100,33 @@ export default function ListingSharePage() {
       if (!l) return
       setListing(l as Listing)
 
-      // Fetch the auto-generated QR code for this listing
-      const { data: qr } = await supabase
+      // Fetch the auto-generated QR code for this listing.
+      // purpose is "listing" — the value BOTH minters write (launchListing in
+      // app/actions/listings-kernel.ts and mintMarketingQr in
+      // lib/marketing/marketing-qr.ts) and the only listing value the qr_codes
+      // purpose CHECK admits. This read asked for "listing_inquiry", which no
+      // writer has ever produced and the constraint would reject, so the card
+      // below could never render for any listing.
+      const { data: qr, error: qrError } = await supabase
         .from("qr_codes")
         .select("id, slug, target_url, scan_count, lead_count")
         .eq("listing_id", listingId)
-        .eq("purpose", "listing_inquiry")
+        .eq("purpose", "listing")
+        .order("created_at", { ascending: false })
+        .limit(1)
         .maybeSingle()
+
+      // A refused read is not "no QR code yet" — say which one failed.
+      if (qrError) console.error("[listing-share] QR code lookup failed:", qrError.message)
 
       if (qr) {
         setQrRecord(qr as QrRecord)
-        // Generate QR image client-side using the stored target_url
-        const dataUrl = await QRCode.toDataURL(qr.target_url, {
+        // Encode the TRACKED scan URL, never target_url. /api/qr/scan is what
+        // increments scan_count, writes qr_scan_events and attributes the scan
+        // to its campaign before redirecting to target_url; a printed code that
+        // points straight at target_url is a scan the platform never sees.
+        const origin = process.env.NEXT_PUBLIC_APP_URL ?? window.location.origin
+        const dataUrl = await QRCode.toDataURL(`${origin}/api/qr/scan?slug=${qr.slug}`, {
           width: 300,
           margin: 2,
           color: { dark: "#1e293b", light: "#ffffff" },

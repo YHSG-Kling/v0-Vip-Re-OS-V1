@@ -81,7 +81,8 @@ export interface CaptureFormSubmissionOutput {
 export interface GenerateQRCodeInput {
   magnetId: string
   brokerageId: string
-  agentId: string
+  /** agents.id (qr_codes.agent_id FK → agents.id) — nullable for brokerage-level magnets. */
+  agentId: string | null
   label: string
   targetUrl: string
 }
@@ -89,10 +90,20 @@ export interface GenerateQRCodeInput {
 export interface GenerateQRCodeOutput {
   success: boolean
   qrCodeId?: string
+  /** data:image/png;base64,… rendered by the vendored `qrcode` package (no third-party host). */
   qrImageUrl?: string
+  /** The tracked /api/qr/scan?slug= URL the PNG encodes. */
+  scanUrl?: string
+  /** The SEMANTIC landing URL the code stands for. */
   targetUrl?: string
   slug?: string
   error?: string
+}
+
+/** THE single idempotency key for every lead-magnet QR path. Keyed on the magnet's identity, not
+ *  on its (movable) landing URL — see the note on generateQRCode. */
+export function leadMagnetQrLabel(magnetId: string): string {
+  return `lead_magnet:${magnetId}`
 }
 
 export interface TrackMagnetEventInput {
@@ -297,28 +308,26 @@ export async function publishLeadMagnet(
     .update({ is_active: true })
     .eq("id", input.magnetId)
 
-  // Create QR code if requested
+  // Create QR code if requested.
+  // MERGED-THEN-DELETED: this used to be its own `qr_codes` insert with slug `lm-<formSlug>` and
+  // NO dedupe at all, so re-publishing a magnet minted a second tracked code and split its scan
+  // count away from the one generateQRCode had already made. It now goes through the single
+  // lead-magnet minter (generateQRCode → mintTrackedQr), which dedupes on `lead_magnet:<magnetId>`
+  // and stamps destination_type — neither of which this path did.
   if (input.channels.includes("qr_code")) {
-    const qrSlug = `lm-${form.slug}`
-    const { data: qr, error: qrError } = await supabase
-      .from("qr_codes")
-      .insert({
-        brokerage_id: input.brokerageId,
-        agent_id: form.agent_id,
-        label: `Lead Magnet: ${form.slug}`,
-        slug: qrSlug,
-        target_url: landingUrl,
-        purpose: "lead_magnet",
-        scan_count: 0,
-        lead_count: 0,
-        is_active: true,
-      })
-      .select("id, slug")
-      .maybeSingle()
-
-    if (!qrError && qr) {
-      qrCodeId = qr.id
-      qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(landingUrl)}`
+    const qrResult = await generateQRCode({
+      magnetId: input.magnetId,
+      brokerageId: input.brokerageId,
+      agentId: form.agent_id ?? null,
+      label: `Lead Magnet: ${form.slug}`,
+      targetUrl: landingUrl,
+    })
+    if (qrResult.success) {
+      qrCodeId = qrResult.qrCodeId
+      qrImageUrl = qrResult.qrImageUrl
+    } else {
+      // A refused QR must not read as "published with a QR" — the caller shows the urls it gets.
+      console.error("[publishLeadMagnet] QR code was NOT created:", qrResult.error)
     }
   }
 
@@ -658,6 +667,30 @@ export async function captureFormSubmission(
 // KERNEL COMMAND 4: generateQRCode
 // ============================================================================
 
+/**
+ * generateQRCode — the ONE lead-magnet QR minter (survivor of three).
+ *
+ * MERGED-THEN-DELETED. There were THREE lead-magnet minters writing `qr_codes` with THREE
+ * different dedupe keys, so the same magnet routinely ended up with two or three tracked codes
+ * that could not see each other and split its scan counts:
+ *
+ *   • publishLeadMagnet (this file, ~L300) — inline insert, slug `lm-<formSlug>`, NO dedupe.
+ *   • generateQRCode    (this function)    — deduped on (brokerage_id, target_url), which is not
+ *                                            a stable key: any change to the landing URL minted
+ *                                            a fresh code.
+ *   • generateQRCodeAction (app/actions/lead-magnets-actions.ts) — random slug, NO dedupe.
+ *
+ * This function survived (it is the kernel command with the API-route caller) and the other two
+ * now delegate here. ONE dedupe key for all three: `lead_magnet:<magnetId>` — the magnet's
+ * identity, which does not move when its URL does. What was merged in from the losers:
+ *   • `destination_type: 'landing_page'` — only generateQRCodeAction set it, and every
+ *     destination-bucketed analytic (and the m148 scan-event metadata) was blind without it.
+ *   • the publish path's landing URL as the semantic `target_url`.
+ *
+ * The QR image is now rendered by the vendored `qrcode` package as a data: URI. It used to be an
+ * <img> pointed at api.qrserver.com — which shipped the lead-bearing landing URL to a third party
+ * on every render and put an external host inside a print/PDF path.
+ */
 export async function generateQRCode(
   input: GenerateQRCodeInput
 ): Promise<GenerateQRCodeOutput> {
@@ -666,53 +699,34 @@ export async function generateQRCode(
   }
 
   const supabase = createServiceClient()
+  const { mintTrackedQr } = await import("@/lib/marketing/tracked-qr")
 
-  // Check for existing QR code for this magnet
-  const { data: existing } = await supabase
-    .from("qr_codes")
-    .select("id, slug, target_url")
-    .eq("brokerage_id", input.brokerageId)
-    .eq("target_url", input.targetUrl)
-    .maybeSingle()
-
-  if (existing) {
-    return {
-      success: true,
-      qrCodeId: existing.id,
-      qrImageUrl: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(existing.target_url)}`,
-      targetUrl: existing.target_url,
-      slug: existing.slug,
-    }
-  }
-
-  const slug = `lm-${generateSlug(input.label).substring(0, 40)}`
-
-  const { data: qr, error } = await supabase
-    .from("qr_codes")
-    .insert({
-      brokerage_id: input.brokerageId,
-      agent_id: input.agentId,
-      label: input.label,
-      slug,
-      target_url: input.targetUrl,
+  const minted = await mintTrackedQr(
+    {
+      brokerageId: input.brokerageId,
+      agentId: input.agentId ?? null,
+      // ONE dedupe key for every lead-magnet QR path.
+      label: leadMagnetQrLabel(input.magnetId),
+      destinationType: "landing_page",
+      targetUrl: input.targetUrl,
       purpose: "lead_magnet",
-      scan_count: 0,
-      lead_count: 0,
-      is_active: true,
-    })
-    .select("id, slug, target_url")
-    .maybeSingle()
+    },
+    supabase,
+  )
 
-  if (error || !qr) {
-    return { success: false, error: error?.message ?? "Failed to create QR code" }
+  if (!minted) {
+    return { success: false, error: "Failed to create QR code" }
   }
 
   return {
     success: true,
-    qrCodeId: qr.id,
-    qrImageUrl: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qr.target_url)}`,
-    targetUrl: qr.target_url,
-    slug: qr.slug,
+    qrCodeId: minted.qrCodeId,
+    // The PNG encodes the tracked /api/qr/scan?slug= redirector, never the raw landing URL —
+    // a code that bypasses the resolver records no scan.
+    qrImageUrl: minted.qrCodeDataUrl,
+    scanUrl: minted.scanUrl,
+    targetUrl: minted.targetUrl,
+    slug: minted.slug,
   }
 }
 

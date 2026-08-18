@@ -1,7 +1,11 @@
 import { notFound, redirect } from 'next/navigation'
 import { toCanonicalRoleOrDefault } from '@/lib/security'
-import { createClient } from '@/lib/supabase/server'
 import { ensureAgentContextInPlace } from '@/lib/identity/ensure-agent-context'
+import { loadQrCodesForCaller } from '@/app/actions/qr-management'
+// The live qr_codes.purpose CHECK vocabulary, passed down rather than re-typed
+// in the client — the minter is server-only, so a hard-coded copy in the form
+// would be a second vocabulary that drifts the first time the CHECK changes.
+import { QR_PURPOSES } from '@/lib/marketing/tracked-qr'
 import QRCodesClient from './QRCodesClient'
 
 export default async function AgentQRCodesPage() {
@@ -15,8 +19,9 @@ export default async function AgentQRCodesPage() {
   if (!['agent', 'team_lead', 'admin', 'broker', 'superadmin'].includes(userRole)) notFound()
 
   // Heal genuinely couldn't complete (pending invite / non-agent) — honest in-place
-  // notice, not a 404 or a bounce.
-  if (!ctx.brokerageId || !ctx.agentId) {
+  // notice, not a 404 or a bounce. Only the BROKERAGE is required to render the
+  // board: a broker or admin has no agents row and still owns every code in it.
+  if (!ctx.brokerageId) {
     return (
       <div className="p-8 text-center text-sm text-muted-foreground">
         Finishing your account setup — refresh in a moment to manage your QR codes.
@@ -24,17 +29,25 @@ export default async function AgentQRCodesPage() {
     )
   }
 
-  const supabase = await createClient()
-
-  const { data: qrCodes } = await supabase
-    .from('qr_codes')
-    .select('id, slug, label, purpose, target_url, destination_type, listing_id, scan_count, lead_count, is_active, created_at')
-    .eq('agent_id', ctx.agentId)
-    .order('created_at', { ascending: false })
+  // The scope decision (own codes / team / brokerage) lives in the action, next
+  // to the queries it narrows — see app/actions/qr-management.ts.
+  const data = await loadQrCodesForCaller()
+  if (!data.ok) {
+    return (
+      <div className="p-8 text-center text-sm text-destructive" role="alert">
+        {data.error}
+      </div>
+    )
+  }
 
   return (
     <QRCodesClient
-      qrCodes={qrCodes ?? []}
+      qrCodes={data.codes}
+      campaigns={data.campaigns}
+      linkableCampaigns={data.linkableCampaigns}
+      purposes={[...QR_PURPOSES]}
+      scope={data.scope}
+      scopeLabel={data.scopeLabel}
       agentUserId={ctx.agentId}
       brokerageId={ctx.brokerageId}
     />

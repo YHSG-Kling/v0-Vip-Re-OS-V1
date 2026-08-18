@@ -79,16 +79,30 @@ export async function GET(
     const { createServiceClient } = await import("@/lib/supabase/service")
     const supabase = createServiceClient()
 
+    // LOOK THE CODE UP BY ITS KEY, NOT BY A SUBSTRING OF ITS URL.
+    // This searched `target_url ILIKE %magnetId%`, and a lead-magnet QR's URL
+    // carries the code's own SLUG, never the magnet id — so the match could not
+    // succeed and this endpoint answered "QR code not found" for every magnet
+    // that had one. The mint path keys the row `lead_magnet:<magnetId>`
+    // (lib/marketing/tracked-qr.ts), which is exact, indexed by the same label
+    // uniqueness the minter relies on, and immune to the URL being re-pointed.
     const { data: qr, error } = await supabase
       .from("qr_codes")
       .select("id, slug, target_url, scan_count, label, is_active")
       .eq("brokerage_id", brokerageId)
-      .eq("purpose", "lead_magnet")
-      .ilike("target_url", `%${magnetId}%`)
-      .eq("is_active", true)
+      .eq("label", `lead_magnet:${magnetId}`)
       .maybeSingle()
 
-    if (error || !qr) {
+    // A refused read is not "there is no code" — supabase-js resolves a failed
+    // query, so reporting both as 404 would hide an outage as an empty result.
+    if (error) {
+      console.error("[API] GET /api/lead-magnets/qr:", error.message)
+      return NextResponse.json(
+        { success: false, error: "Could not look up the QR code for this lead magnet." },
+        { status: 500 },
+      )
+    }
+    if (!qr) {
       return NextResponse.json({ success: false, error: "QR code not found" }, { status: 404 })
     }
 

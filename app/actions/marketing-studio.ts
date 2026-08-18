@@ -37,8 +37,17 @@ import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import type { ActorRole, Persona, MessageType } from "@/lib/kernel/types"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
-import { linkQrToAsset, unlinkQrFromAsset, getAssetQrLinks } from "@/lib/marketing/qr-asset-linker"
+import { linkQrToAsset, unlinkQrFromAsset, getAssetQrLinks, getQrCodePerformance } from "@/lib/marketing/qr-asset-linker"
 import { getCampaignRegistry, registerCampaignSource } from "@/lib/marketing/campaign-registry"
+import { resolveWriteContext } from "@/lib/platform/acting-context"
+import {
+  mintTrackedQr,
+  renderQrPng,
+  isQrDestinationType,
+  isQrPurpose,
+  type QrDestinationType,
+  type QrPurpose,
+} from "@/lib/marketing/tracked-qr"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -590,7 +599,11 @@ export async function rejectAsset(assetId: string, reason?: string) {
 
 // ─── QR LINKING (delegated to qr-asset-linker) ────────────────────────────────
 
-export { linkQrToAsset, unlinkQrFromAsset, getAssetQrLinks }
+// getQrCodePerformance was an ORPHAN EXPORT: the only reader of qr_scan_events' per-code detail
+// (unique scans + the recent-scan list) with nothing calling it. Its capability is not
+// represented anywhere else — listAvailableQrCodes returns only the rolled-up counters — so it
+// was WIRED, not deleted. The studio's QR tab now opens it per code.
+export { linkQrToAsset, unlinkQrFromAsset, getAssetQrLinks, getQrCodePerformance }
 
 // ─── CALENDAR ACTIONS ─────────────────────────────────────────────────────────
 
@@ -961,70 +974,137 @@ export async function generateCampaignContent(params: {
 // ─── QR CODE CREATION ────────────────────────────────────────────────────────
 
 /**
- * Creates a new QR code record in qr_codes.
- * Called from the marketing studio QR tab create dialog.
+ * createQrCodeAction — the SESSION-GATED browser door to the one QR minter.
  *
- * Input contract:
- *   brokerageId: string (required, UUID)
- *   agentId: string (required, UUID)
- *   label: string (display label)
- *   targetUrl: string (full URL the QR code points to)
- *   purpose: "listing" | "open_house" | "general" | "campaign" | "lead_capture"
- *   listingId?: string (optional link to a listing)
+ * MERGED-THEN-DELETED: this function's own `qr_codes` insert is gone. It was one of nine rival
+ * creation paths — NOT idempotent (every click of "Create QR Code" minted another row), and it
+ * never set destination_type, so its codes were invisible to every destination-bucketed analytic.
+ * The write now goes through lib/marketing/tracked-qr.ts:mintTrackedQr, which is idempotent per
+ * label, stamps destination_type / listing_id / marketing_campaign_id / expires_at, and is the
+ * single writer of the table. The slug recipe this function owned lives on in the survivor.
  *
- * Output contract:
- *   { success: true, qrCode: { id, slug, label, target_url, purpose } }
+ * GATE-THEN-SERVICE: mintTrackedQr writes with the SERVICE client, so this action's own gate is
+ * the ONLY gate. `brokerageId` / `agentId` used to be taken from the caller's params and written
+ * verbatim — and a "use server" export is reachable by any browser, so that let a caller mint
+ * into ANY brokerage. The tenant now comes from the session; a supplied brokerageId is only ever
+ * checked against it, never trusted.
+ *
+ * NOT CALLABLE WITHOUT A SESSION. Server-side/cron minters (workflow adapters, orchestrator
+ * handlers, kernel commands) must call mintTrackedQr directly with their own resolved tenant —
+ * see lib/workflow/qr-modifier.ts for the pattern.
+ *
+ * Output contract (unchanged for existing callers, plus the tracked fields):
+ *   { success: true, qrCode: { id, slug, label, target_url, purpose, destination_type,
+ *                             scan_url, image_url } }
  *   { success: false, error: string }
- *
- * Tables written: qr_codes
  */
 export async function createQrCodeAction(params: {
-  brokerageId: string
-  agentId: string
+  brokerageId?: string
+  agentId?: string
   label: string
-  targetUrl: string
-  purpose: "listing" | "open_house" | "general" | "campaign" | "lead_capture"
+  /** SEMANTIC destination. Omit → the code's own public /qr/<slug> landing. */
+  targetUrl?: string
+  purpose: QrPurpose
   listingId?: string
+  destinationType?: QrDestinationType
+  /** ★ TRACKING LINKED TO CAMPAIGN ★ marketing_campaigns.id — stamps qr_codes.marketing_campaign_id. */
+  campaignId?: string
+  /** qr_codes.expires_at (ISO timestamptz). */
+  expiresAt?: string
+  /** Deterministic idempotency key. Defaults to `studio:<label>` so repeat clicks reuse one code. */
+  idempotencyLabel?: string
 }) {
   try {
-    if (!params.brokerageId || !params.agentId) {
-      return { success: false, error: "brokerageId and agentId are required" }
-    }
     if (!params.label?.trim()) {
       return { success: false, error: "Label is required" }
     }
-    if (!params.targetUrl?.trim()) {
-      return { success: false, error: "Target URL is required" }
+    if (params.purpose && !isQrPurpose(params.purpose)) {
+      return { success: false, error: `Invalid purpose. Must be one of: ${["business_card","campaign","event","general","lead_capture","lead_magnet","listing","listing_inquiry","open_house"].join(", ")}` }
+    }
+    if (params.destinationType && !isQrDestinationType(params.destinationType)) {
+      return { success: false, error: "Invalid destination type." }
     }
 
-    const supabase = await createClient()
+    const ctx = await resolveWriteContext()
+    if (!ctx.ok) return { success: false, error: ctx.error }
+    if (!ctx.brokerageId) return { success: false, error: "No brokerage on your account." }
+    if (params.brokerageId && params.brokerageId !== ctx.brokerageId) {
+      return { success: false, error: "That QR code belongs to another brokerage." }
+    }
 
-    // Generate a unique slug from label + timestamp
-    const slug = `${params.label.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").slice(0, 40)}-${Date.now().toString(36)}`
+    // qr_codes.agent_id FKs agents(id). ctx.agentId IS that PK; a users id in this column is a
+    // refused insert, so never fall back to userId.
+    const agentId = params.agentId ?? ctx.agentId ?? null
 
-    const { data: qrCode, error } = await supabase
-      .from("qr_codes")
-      .insert({
-        brokerage_id: params.brokerageId,
-        agent_id: params.agentId,
-        label: params.label.trim(),
-        target_url: params.targetUrl.trim(),
+    // The campaign must be one of OURS — an FK proves a campaign row exists, never that it is
+    // ours to attribute scans to.
+    let marketingCampaignId: string | null = null
+    if (params.campaignId) {
+      const gate = await createClient()
+      const { data: campaign, error: campaignError } = await gate
+        .from("marketing_campaigns")
+        .select("id")
+        .eq("id", params.campaignId)
+        .eq("brokerage_id", ctx.brokerageId)
+        .maybeSingle()
+      if (campaignError) return { success: false, error: campaignError.message }
+      if (!campaign) return { success: false, error: "That campaign is not on your brokerage." }
+      marketingCampaignId = campaign.id as string
+    }
+
+    const label = params.label.trim()
+    const minted = await mintTrackedQr({
+      brokerageId: ctx.brokerageId,
+      agentId,
+      label: params.idempotencyLabel?.trim() || label,
+      destinationType: params.destinationType ?? null,
+      targetUrl: params.targetUrl?.trim() || null,
+      listingId: params.listingId ?? null,
+      marketingCampaignId,
+      expiresAt: params.expiresAt ?? null,
+      purpose: params.purpose,
+    })
+
+    if (!minted) {
+      return { success: false, error: "The QR code was not created — the write was refused." }
+    }
+
+    return {
+      success: true,
+      qrCode: {
+        id: minted.qrCodeId,
+        slug: minted.slug,
+        label,
+        target_url: minted.targetUrl,
         purpose: params.purpose,
-        slug,
-        listing_id: params.listingId ?? null,
-        is_active: true,
-        scan_count: 0,
-        lead_count: 0,
-      })
-      .select("id, slug, label, target_url, purpose")
-      .maybeSingle()
-
-    if (error) throw error
-
-    return { success: true, qrCode }
+        destination_type: minted.destinationType,
+        scan_url: minted.scanUrl,
+        image_url: minted.qrCodeDataUrl,
+      },
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create QR code"
     return { success: false, error: message }
+  }
+}
+
+/**
+ * renderQrImageAction — server-side PNG for any URL, as a data: URI.
+ *
+ * Exists because the studio's asset-create dialog built its QR preview from api.qrserver.com,
+ * which shipped the (lead-bearing) target URL to a third party and put an external host inside a
+ * path that has to work offline/in print. The vendored `qrcode` package is the only QR image
+ * source in the tree now.
+ */
+export async function renderQrImageAction(url: string, size = 300) {
+  try {
+    const trimmed = (url ?? "").trim()
+    if (!trimmed) return { success: false as const, error: "A URL is required." }
+    const ctx = await resolveWriteContext()
+    if (!ctx.ok) return { success: false as const, error: ctx.error }
+    return { success: true as const, dataUrl: await renderQrPng(trimmed, size) }
+  } catch (err) {
+    return { success: false as const, error: err instanceof Error ? err.message : "Failed to render QR image" }
   }
 }
 
