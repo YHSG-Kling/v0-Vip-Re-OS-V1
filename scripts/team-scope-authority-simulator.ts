@@ -96,7 +96,11 @@ check("leadsAgentsTeam returns a RESULT, never a bare boolean over a refused rea
 console.log("\n[the three gates — finance admin OR the FK lead, never a seat]")
 for (const [name, src] of [["agent-profile", PROFILE], ["commission-agreement", AGREEMENT]] as const) {
   check(`${name}: the gate takes the TARGET and asks leadsAgentsTeam when finance fails`,
-    /requireAdmin\(targetUserId\?: string\)/.test(src) && codeHits(src, "leadsAgentsTeam(") >= 1)
+    // Pin the CLAIM (first param is the optional target), not the full parameter
+    // list — the commission-agreement gate legitimately grew a contractType
+    // param (m481 team_agreement lane) and an exact-signature pin went red on
+    // that improvement, the recurring probe anti-pattern.
+    /requireAdmin\(\s*targetUserId\?: string[,)]/.test(src) && codeHits(src, "leadsAgentsTeam(") >= 1)
   check(`${name}: the helper is IMPORTED, not restated`,
     /import \{[^}]*leadsAgentsTeam[^}]*\} from "@\/lib\/teams\/team-scope"/.test(src))
   check(`${name}: a refused resolution is relayed, not converted into Forbidden`,

@@ -9,6 +9,8 @@ import { OverageCalculator } from "@/app/components/features/admin/overage-calcu
 import { FeatureEntitlementList } from "@/app/components/features/admin/feature-entitlement-list"
 import { ManageBillingButton } from "./manage-billing-button"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
+import { SubscriptionAgreementCard } from "./subscription-agreement-card"
+import { getSubscriptionAgreementAction } from "@/app/actions/admin/subscription-agreement"
 
 /**
  * Billing & Tiering Admin Workspace
@@ -61,6 +63,20 @@ export default async function BillingAdminPage({
     ? (params.brokerageId || (userProfile as any).brokerage_id || user.id)
     : (userProfile as any).brokerage_id
 
+  // LANE 1 (m481): the platform-authored subscription agreement, signed in-app
+  // by the tenant's own admins. This page is where a blocked tenant lands at
+  // login AND where an activating tenant manages their subscription — the
+  // natural seam to surface the contract. Shown only to the tenant's own admins
+  // (signing binds THEIR brokerage; a superadmin inspecting another tenant via
+  // ?brokerageId= must not be offered someone else's signature line). The
+  // agreement is surfaced, not enforced: no blocking gate is added here — see
+  // the m481 follow-up note (a hard gate would strand live tenants).
+  let agreementView = null
+  if (isTenantBillingAdmin && (userProfile as any).brokerage_id) {
+    const agreementRes = await getSubscriptionAgreementAction()
+    if (agreementRes.ok) agreementView = agreementRes.view
+  }
+
   return (
     <div className="min-h-screen bg-background">
       <div className="max-w-7xl mx-auto px-4 py-8">
@@ -93,6 +109,7 @@ export default async function BillingAdminPage({
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Left Column - Subscription & Features */}
           <div className="lg:col-span-2 space-y-6">
+            {agreementView && <SubscriptionAgreementCard initialView={agreementView} />}
             <BillingDashboard brokerageId={brokerageId} />
             <SubscriptionTierCard
               brokerageId={brokerageId}

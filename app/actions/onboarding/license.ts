@@ -38,6 +38,15 @@ export interface EOFormData {
   certificateUrl?: string
 }
 
+export interface ContractRecordView {
+  id: string
+  status: string
+  sent_at: string | null
+  signed_at: string | null
+  provider: string
+  signing_url: string | null
+}
+
 export interface AgentLicenseStatus {
   currentStep: number
   licenseRecord: {
@@ -49,14 +58,18 @@ export interface AgentLicenseStatus {
     verification_status: string
     document_url: string | null
   } | null
-  contractRecord: {
-    id: string
-    status: string
-    sent_at: string | null
-    signed_at: string | null
-    provider: string
-    signing_url: string | null
-  } | null
+  /** The brokerage-join contract (contract_type 'independent_contractor'). */
+  contractRecord: ContractRecordView | null
+  /**
+   * m481 — the TEAM-join contract (contract_type 'team_agreement'). Present
+   * only when the agent is on a team: an agent joining a team signs BOTH the
+   * brokerage's independent-contractor agreement AND the team's agreement
+   * (owner ruling: "the agent has to sign contracts to join the brokerage and
+   * teams"). null = no team, or no team contract issued yet.
+   */
+  teamContractRecord: ContractRecordView | null
+  /** The team the agent resolved to (public.agent_team_id), or null. */
+  teamId: string | null
   completedSteps: string[]
   onboardingId: string | null
 }
@@ -179,6 +192,39 @@ export async function getAgentLicenseStatus(
           .single()
       : { data: null }
 
+    // m481 — TEAM-JOIN AWARENESS. If the agent resolves to a team (the same
+    // FK-anchored resolution RLS uses: public.agent_team_id — never a
+    // user_type), surface the team_agreement contract beside the
+    // independent-contractor one, so joining a team is also in writing.
+    // DESTRUCTURED errors: a refused read must not report as "no team" /
+    // "no contract".
+    let teamId: string | null = null
+    let teamContractRecord: ContractRecordView | null = null
+    const { data: resolvedTeam, error: teamErr } = await supabase.rpc("agent_team_id", {
+      p_agent_id: agentRecordId,
+    })
+    if (teamErr) {
+      console.error("[L11-License] Could not resolve the agent's team:", teamErr)
+    } else if (resolvedTeam) {
+      teamId = resolvedTeam as string
+      const { data: teamContract, error: teamContractErr } = agentRowIds.length > 0
+        ? await supabase
+            .from("contract_signatures")
+            .select("id, status:esign_status, sent_at, signed_at:fully_signed_at, provider:provider_name, signing_url")
+            .in("agent_id", agentRowIds)
+            .eq("brokerage_id", agent.brokerage_id)
+            .eq("contract_type", "team_agreement")
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle()
+        : { data: null, error: null }
+      if (teamContractErr) {
+        console.error("[L11-License] Team contract read failed:", teamContractErr)
+      } else {
+        teamContractRecord = (teamContract as ContractRecordView | null) ?? null
+      }
+    }
+
     // Get completed steps
     const { data: completedStepsData } = await supabase
       .from("agent_step_completions")
@@ -225,6 +271,8 @@ export async function getAgentLicenseStatus(
         currentStep,
         licenseRecord,
         contractRecord,
+        teamContractRecord,
+        teamId,
         completedSteps,
         onboardingId: onboarding?.id || null,
       },
@@ -668,10 +716,13 @@ export async function markContractSignedManually(
       return { success: false, error: "Only admins can manually mark contracts as signed" }
     }
 
-    // Get contract and verify brokerage
+    // Get contract and verify brokerage. contract_type matters below: the
+    // "contract_signed" onboarding step means the BROKERAGE-JOIN contract
+    // (independent_contractor); a team_agreement (m481) is recorded here too,
+    // but must not tick the brokerage-contract checklist step.
     const { data: contract } = await supabase
       .from("contract_signatures")
-      .select("id, agent_id, brokerage_id")
+      .select("id, agent_id, brokerage_id, contract_type")
       .eq("id", contractSignatureId)
       .single()
 
@@ -685,14 +736,26 @@ export async function markContractSignedManually(
 
     const now = new Date().toISOString()
 
-    // Update contract status
-    await supabase
+    // Update contract status. `.select("id")` + destructured error: a zero-row
+    // RLS refusal on an UPDATE resolves with error:null and no rows — counting
+    // the rows is the only way "recorded" cannot be reported over a refusal.
+    const { data: signedRows, error: signErr } = await supabase
       .from("contract_signatures")
       .update({
         esign_status: "fully_signed",
         fully_signed_at: now,
       })
       .eq("id", contractSignatureId)
+      .select("id")
+    if (signErr) {
+      console.error("[L11-License] Failed to mark contract signed:", signErr)
+      return { success: false, error: "Failed to mark contract as signed" }
+    }
+    if (!signedRows || signedRows.length === 0) {
+      return { success: false, error: "Contract was not updated — you may not have permission to sign it off" }
+    }
+
+    const isBrokerageJoinContract = contract.contract_type === "independent_contractor"
 
     // Get agent's onboarding record
     const { data: onboarding } = await supabase
@@ -702,26 +765,33 @@ export async function markContractSignedManually(
       .eq("brokerage_id", contract.brokerage_id)
       .single()
 
-    // Mark step as complete
-    const { data: stepRecord } = await supabase
-      .from("onboarding_steps")
-      .select("id")
-      .eq("step_key", "contract_signed")
-      .or(`brokerage_id.eq.${contract.brokerage_id},brokerage_id.is.null`)
-      .order("brokerage_id", { ascending: false, nullsFirst: false })
-      .limit(1)
-      .single()
+    // Mark the checklist step — ONLY for the brokerage-join contract; a signed
+    // team agreement is its own record, not the "contract_signed" step.
+    if (isBrokerageJoinContract) {
+      const { data: stepRecord } = await supabase
+        .from("onboarding_steps")
+        .select("id")
+        .eq("step_key", "contract_signed")
+        .or(`brokerage_id.eq.${contract.brokerage_id},brokerage_id.is.null`)
+        .order("brokerage_id", { ascending: false, nullsFirst: false })
+        .limit(1)
+        .single()
 
-    if (stepRecord) {
-      await supabase.from("agent_step_completions").upsert({
-        agent_id: contract.agent_id,
-        brokerage_id: contract.brokerage_id,
-        step_id: stepRecord.id,
-        completed: true,
-        completed_at: new Date().toISOString(),
-      }, {
-        onConflict: "agent_id,step_id",
-      })
+      if (stepRecord) {
+        const { error: stepErr } = await supabase.from("agent_step_completions").upsert({
+          agent_id: contract.agent_id,
+          brokerage_id: contract.brokerage_id,
+          step_id: stepRecord.id,
+          completed: true,
+          completed_at: new Date().toISOString(),
+        }, {
+          onConflict: "agent_id,step_id",
+        })
+        if (stepErr) {
+          // The contract IS recorded signed; only the checklist tick failed.
+          console.error("[L11-License] Contract signed but step completion failed:", stepErr)
+        }
+      }
     }
 
     // Fire kernel event
@@ -732,8 +802,10 @@ export async function markContractSignedManually(
       entityId: contractSignatureId,
     })
 
-    if (onboarding) {
-      // Transition lifecycle
+    if (onboarding && isBrokerageJoinContract) {
+      // Transition lifecycle — the onboarding machine's contract_signed state
+      // is about the brokerage-join contract, so the team agreement does not
+      // drive it.
       await transitionLifecycle({
         brokerageId: contract.brokerage_id,
         entityType: "agent_onboarding_machine",

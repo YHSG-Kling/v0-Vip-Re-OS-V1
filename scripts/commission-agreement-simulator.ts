@@ -31,8 +31,12 @@ console.log("\n── the actions: upload → list → send → status ──")
     a.includes('.from("brokerage_forms")') && a.includes('COMMISSION_CATEGORY = "commission_agreement"'))
   check("the upload stores the PDF in a Supabase bucket (not blob)",
     a.includes("uploadBufferToBucket") && a.includes('"commission-agreements"') && !a.includes("@vercel/blob"))
+  // m481 widened the family: the insert is typed (contract_type: contractType),
+  // whose normalizeContractType default is COMMISSION_CATEGORY — same record for
+  // the commission lane, plus independent_contractor / team_agreement beside it.
   check("the signed record is the agent-keyed contract_signatures ledger",
-    a.includes('.from("contract_signatures")') && a.includes("contract_type: COMMISSION_CATEGORY") && a.includes("agent_id: agentId"))
+    a.includes('.from("contract_signatures")') && a.includes("contract_type: contractType") &&
+    a.includes("const t = input ?? COMMISSION_CATEGORY") && a.includes("agent_id: agentId"))
   check("captures which form + the filled values (form_id / field_values)",
     a.includes("form_id: input.formId") && a.includes("field_values: input.fieldValues"))
   check("provider_name is never null (NOT-NULL column) — 'none' records the honest no-provider state",

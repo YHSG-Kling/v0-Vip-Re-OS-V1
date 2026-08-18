@@ -828,6 +828,47 @@ function ContractStep({
           </Badge>
         </div>
 
+        {/* m481 — TEAM AGREEMENT, beside the brokerage contract. Joining a team
+            is also in writing: when the agent resolves to a team, the team's
+            agreement (issued by the brokerage/team lead from the agency
+            contract family) appears here with its own status. It does not gate
+            the onboarding step — the checklist step is the brokerage-join
+            contract; the team agreement is its own record. */}
+        {status?.teamId && (
+          <div className="flex items-center justify-between rounded-lg border p-4">
+            <div>
+              <p className="font-medium">Team Agreement</p>
+              <p className="text-sm text-muted-foreground">
+                {status?.teamContractRecord
+                  ? status.teamContractRecord.status === "fully_signed"
+                    ? `Signed on ${status.teamContractRecord.signed_at ? new Date(status.teamContractRecord.signed_at).toLocaleDateString() : ""}`
+                    : "Awaiting signature — sign offline and your admin records it, or use the signing link if one exists"
+                  : "Your team's agreement has not been issued yet — your team lead or admin sends it"}
+              </p>
+              {status?.teamContractRecord?.signing_url && status.teamContractRecord.status !== "fully_signed" && (
+                <a
+                  href={status.teamContractRecord.signing_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm underline"
+                >
+                  Sign Team Agreement
+                </a>
+              )}
+            </div>
+            <Badge
+              variant={status?.teamContractRecord?.status === "fully_signed" ? "default" : "outline"}
+              className={status?.teamContractRecord?.status === "fully_signed" ? "bg-green-600" : ""}
+            >
+              {status?.teamContractRecord
+                ? status.teamContractRecord.status === "fully_signed"
+                  ? (<><Check className="mr-1 h-3 w-3" /> Signed</>)
+                  : "Pending"
+                : "Not Issued"}
+            </Badge>
+          </div>
+        )}
+
         {/* Actions */}
         {!isSent && !isSigned && (
           <Button onClick={handleSendContract} className="w-full" disabled={isSubmitting}>
