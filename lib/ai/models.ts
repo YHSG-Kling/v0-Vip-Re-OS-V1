@@ -606,7 +606,7 @@ export async function generateObjectRouted<TSchema extends z.ZodTypeAny>(
   const { model: routedModel, fallback } = selectModelForTask(feature)
 
   // Fair-use pre-flight (skipped for background jobs without brokerageId)
-  const estTokens = estimateTokens((request.prompt ?? "") + (request.system ?? "")) + (request.maxTokens ?? 2000)
+  const estTokens = estimateTokens((request.prompt ?? "") + (request.system ?? "") + messagesTextForEstimate(request.messages)) + (request.maxTokens ?? 2000)
   const fairUse = await checkAIFairUse({ brokerageId: request.brokerageId, addTokens: estTokens })
   if (!fairUse.allowed) throw new Error(fairUse.message ?? "AI fair-use limit reached.")
 
@@ -658,9 +658,11 @@ export async function generateObjectRouted<TSchema extends z.ZodTypeAny>(
     resultObject = result.experimental_output as z.infer<TSchema>
   }
 
-  if (request.userId && request.brokerageId) {
+  // Cost keys on the TENANT alone — a turn with no staff seat is still the
+  // brokerage's spend (#187; null user = anonymous tenant traffic).
+  if (request.brokerageId) {
     await logAIUsage({
-      userId:       request.userId,
+      userId:       request.userId ?? null,
       brokerageId:  request.brokerageId,
       agentId:      request.agentId ?? null,
       model:        modelUsed,
@@ -680,7 +682,7 @@ export async function generateTextRouted(
   const { model: routedModel, fallback } = selectModelForTask(feature)
 
   // Fair-use pre-flight (skipped for background jobs without brokerageId)
-  const estTokens = estimateTokens((request.prompt ?? "") + (request.system ?? "")) + (request.maxTokens ?? 2000)
+  const estTokens = estimateTokens((request.prompt ?? "") + (request.system ?? "") + messagesTextForEstimate(request.messages)) + (request.maxTokens ?? 2000)
   const fairUse = await checkAIFairUse({ brokerageId: request.brokerageId, addTokens: estTokens })
   if (!fairUse.allowed) throw new Error(fairUse.message ?? "AI fair-use limit reached.")
 
@@ -740,9 +742,11 @@ export async function generateTextRouted(
     resultText   = result.text
   }
 
-  if (request.userId && request.brokerageId) {
+  // Cost keys on the TENANT alone — a turn with no staff seat is still the
+  // brokerage's spend (#187; null user = anonymous tenant traffic).
+  if (request.brokerageId) {
     await logAIUsage({
-      userId:       request.userId,
+      userId:       request.userId ?? null,
       brokerageId:  request.brokerageId,
       agentId:      request.agentId ?? null,
       model:        modelUsed,
@@ -770,6 +774,29 @@ export class AIFairUseError extends Error {
   }
 }
 
+/**
+ * Text the model will actually read out of a carried messages array — string
+ * content plus text parts (UIMessage/ModelMessage both land here). Feeds the
+ * SAME estimateTokens heuristic the prompt path uses; a second estimator is
+ * how two lanes drift. Estimating from the latest prompt alone let a long
+ * chat history stream past the cap (#187).
+ */
+function messagesTextForEstimate(messages: unknown[] | undefined): string {
+  if (!messages?.length) return ""
+  let out = ""
+  for (const m of messages as Array<{ content?: unknown; parts?: unknown }>) {
+    const content = m?.content ?? m?.parts
+    if (typeof content === "string") out += content
+    else if (Array.isArray(content)) {
+      for (const part of content) {
+        if (typeof part === "string") out += part
+        else if (typeof (part as { text?: unknown })?.text === "string") out += (part as { text: string }).text
+      }
+    }
+  }
+  return out
+}
+
 export interface RoutedStreamRequest {
   prompt?: string
   system?: string
@@ -783,7 +810,9 @@ export interface RoutedStreamRequest {
    *  Defaults to "unspecified" → claude-sonnet + gpt-4o fallback. */
   feature?: string
   /** Resolved SERVER-SIDE from the caller's session — never from a request
-   *  body. Used for the cost ledger (logAIUsage) and nothing else. */
+   *  body. Used for the cost ledger (logAIUsage) and nothing else. Null with a
+   *  brokerageId = anonymous tenant traffic (public widget visitor, D-ID
+   *  avatar turn): the row still lands, on the tenant. */
   userId?: string | null
   /** The tenant the fair-use cap and ledger bill against. Null/undefined =
    *  background job → uncapped (handled inside checkAIFairUse). */
@@ -831,9 +860,13 @@ export async function streamTextRouted(
   const { model: routedModel } = selectModelForTask(feature)
 
   // Fair-use PRE-FLIGHT (skipped for background jobs without brokerageId).
-  // Same estimate shape as generateTextRouted: prompt + system + the output
-  // budget, so one more stream cannot start once the tenant is at the cap.
-  const estTokens = estimateTokens((request.prompt ?? "") + (request.system ?? "")) + (request.maxTokens ?? 2000)
+  // prompt + system + EVERY carried message + the output budget — the chat
+  // lanes send their history as `messages`, and a prompt-only estimate let a
+  // long conversation stream past the cap. One estimator (estimateTokens),
+  // one heuristic.
+  const estTokens = estimateTokens(
+    (request.prompt ?? "") + (request.system ?? "") + messagesTextForEstimate(request.messages)
+  ) + (request.maxTokens ?? 2000)
   const fairUse = await checkAIFairUse({ brokerageId: request.brokerageId, addTokens: estTokens })
   if (!fairUse.allowed) {
     throw new AIFairUseError(fairUse.message ?? "AI fair-use limit reached for this billing period.")
@@ -868,16 +901,18 @@ export async function streamTextRouted(
     stopWhen,
     onFinish: async (event) => {
       // THE LEDGER — first, so a throwing caller callback can never lose the
-      // usage row. Same userId&&brokerageId contract as generateTextRouted:
-      // both come from the route's own session resolution, never a body.
+      // usage row. Keyed on the TENANT alone: AI cost always belongs to the
+      // brokerage, staff seat or not, so an anonymous turn (widget visitor,
+      // D-ID avatar) lands with a null user rather than not landing at all.
+      // Both ids come from the route's own session resolution, never a body.
       // totalUsage spans every step of a tool-calling stream; usage is the
       // final step only — prefer the total so tool turns are billed too.
       const usage: any = (event as any).totalUsage ?? (event as any).usage ?? {}
       const inputTokens  = usage.inputTokens  ?? usage.promptTokens     ?? estimateTokens((request.prompt ?? "") + (request.system ?? ""))
       const outputTokens = usage.outputTokens ?? usage.completionTokens ?? estimateTokens(event.text ?? "")
-      if (userId && brokerageId) {
+      if (brokerageId) {
         await logAIUsage({
-          userId,
+          userId: userId ?? null,
           brokerageId,
           agentId: agentId ?? null,
           model: routedModel,

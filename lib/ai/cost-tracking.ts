@@ -120,7 +120,13 @@ export function estimateTokens(text: string): number {
  * Log AI usage to database and update monthly aggregates
  */
 export async function logAIUsage(params: {
-  userId: string
+  /**
+   * Nullable BY DESIGN (#187): null = anonymous tenant traffic — a public
+   * widget visitor or a D-ID avatar turn with no authenticated staff seat.
+   * The cost still belongs to the tenant, so a null-user row MUST carry
+   * brokerage_id (enforced by ai_tool_usage_anon_rows_carry_tenant, m476).
+   */
+  userId: string | null
   /**
    * Nullable BY DESIGN. Callers used to coerce a missing tenant to `""`, which
    * Postgres rejects for a uuid column (22P02) — so the whole usage row was
@@ -145,7 +151,16 @@ export async function logAIUsage(params: {
   success?: boolean
 }): Promise<void> {
   try {
-    const supabase = await createClient()
+    // SERVICE CLIENT, like every other usage writer (log-media-usage,
+    // incrementUsage). The ledger's identity fields are server-resolved by the
+    // caller (streamTextRouted's contract), and the rows it writes are not the
+    // caller's own: the anonymous lanes (widget visitor, D-ID avatar turn)
+    // have no session at all, and the widget attributes to the ASSIGNED
+    // AGENT's user while auth.uid() is null. Under the cookie client every
+    // ai_tool_usage insert policy (user_id = auth.uid(); tenant insert
+    // TO authenticated) refused those rows and the refusal was swallowed
+    // below — unbilled, uncapped spend.
+    const supabase = createServiceClient()
     const totalTokens = params.inputTokens + params.outputTokens
     const costCents = calculateCost(params.model, params.inputTokens, params.outputTokens)
     const pricing = getModelPricing()[params.model]

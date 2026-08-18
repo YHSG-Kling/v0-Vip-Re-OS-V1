@@ -18,6 +18,9 @@
  *   - load contact + transaction + visible milestones (same data the portal
  *     ai-chat exposes) and inject as a SYSTEM message in front of D-ID's
  *     existing system prompt
+ *   - REFUSE (400/403) any turn whose marker is missing or whose contact/
+ *     tenant does not resolve — an unresolvable tenant is never served
+ *     uncapped (#187)
  *
  * Once contactId is known, this route mirrors /api/portal/ai-chat semantics:
  *   - same client-visible-only data gate (no internal notes)
@@ -259,45 +262,49 @@ export async function POST(request: NextRequest) {
 
   const { contactId, cleaned } = extractContactId(body.messages)
 
-  // ── Build context-aware system message ────────────────────────────────────
-  let systemPrompt = "You are a helpful real estate assistant. Keep replies short and natural for a video conversation."
+  // FAIL CLOSED (#187): a turn whose tenant cannot be resolved is refused,
+  // never served uncapped. D-ID sends no metadata of its own — the CTX marker
+  // our widget prefixes is the ONLY tenant handle in the payload, and every
+  // turn carries the full history so the marker rides along on all of them.
+  // A turn without it, or naming a contact this database does not know, or a
+  // contact with no brokerage, has nothing to cap or bill against.
+  if (!contactId) {
+    return NextResponse.json({ error: "context marker required" }, { status: 400 })
+  }
+
+  const ctx = await loadContactContext(contactId)
+  if (!ctx || !ctx.brokerageId) {
+    return NextResponse.json({ error: "unresolvable tenant" }, { status: 403 })
+  }
 
   // Ledger identity — resolved from the CONTACT's row (the assigned agent's
-  // user + the contact's tenant), never from anything D-ID sends. A turn with
-  // no context marker has no tenant → uncapped and unledgered by contract,
-  // same as any background call through the routed entries.
-  let ledgerUserId: string | null = null
-  let ledgerBrokerageId: string | null = null
-  let ledgerAgentId: string | null = null
+  // user + the contact's tenant), never from anything D-ID sends. The user
+  // may be null (no assigned agent): anonymous tenant traffic — the cost
+  // still lands on the brokerage.
+  const ledgerUserId = ctx.agentUserId
+  const ledgerBrokerageId = ctx.brokerageId
+  const ledgerAgentId = ctx.agentId
 
-  if (contactId) {
-    const ctx = await loadContactContext(contactId)
-    if (ctx) {
-      ledgerUserId = ctx.agentUserId
-      ledgerBrokerageId = ctx.brokerageId
-      ledgerAgentId = ctx.agentId
-      // Brand voice guidance — runs the same multi-tier resolver as the rest
-      // of the kernel pipeline. Notes-only (advisory) on the live conversation.
-      const latestUserText = [...cleaned].reverse()
-        .find((m) => m.role === "user")?.content ?? ""
+  // Brand voice guidance — runs the same multi-tier resolver as the rest
+  // of the kernel pipeline. Notes-only (advisory) on the live conversation.
+  const latestUserText = [...cleaned].reverse()
+    .find((m) => m.role === "user")?.content ?? ""
 
-      const brand = await applyBrandVoice({
-        brokerageId: ctx.brokerageId ?? "",
-        actorUserId: ctx.agentUserId ?? undefined,
-        actorRole: "agent",
-        journeyType: ctx.contactType === "seller" ? "seller" : "buyer",
-        persona: ctx.buyerStage ?? "other",
-        messageType: "ai",
-        content: latestUserText,
-      }).catch(() => ({ notes: [] as string[] }))
+  const brand = await applyBrandVoice({
+    brokerageId: ctx.brokerageId,
+    actorUserId: ctx.agentUserId ?? undefined,
+    actorRole: "agent",
+    journeyType: ctx.contactType === "seller" ? "seller" : "buyer",
+    persona: ctx.buyerStage ?? "other",
+    messageType: "ai",
+    content: latestUserText,
+  }).catch(() => ({ notes: [] as string[] }))
 
-      systemPrompt = buildSystemPrompt(ctx, brand.notes ?? [])
+  const systemPrompt = buildSystemPrompt(ctx, brand.notes ?? [])
 
-      // Fire escalation if the latest user message has an urgency keyword.
-      if (latestUserText && detectsEscalation(latestUserText)) {
-        notifyAgentOfEscalation(ctx, latestUserText).catch(() => {})
-      }
-    }
+  // Fire escalation if the latest user message has an urgency keyword.
+  if (latestUserText && detectsEscalation(latestUserText)) {
+    notifyAgentOfEscalation(ctx, latestUserText).catch(() => {})
   }
 
   // ── Stream via the routed entry ─────────────────────────────────────────

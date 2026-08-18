@@ -37,8 +37,8 @@ const check = (n: string, c: boolean) => {
 }
 const read = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 
-/** Occurrences of `needle` as CODE — comments and string literals masked. */
-function codeHits(src: string, needle: string): number {
+/** true at every index inside a comment or string literal. */
+function codeMask(src: string): boolean[] {
   const mask = new Array<boolean>(src.length).fill(false)
   let i = 0
   while (i < src.length) {
@@ -48,12 +48,30 @@ function codeHits(src: string, needle: string): number {
     else if (c === '"' || c === "'" || c === "`") { const q = c; mask[i++] = true; while (i < src.length) { if (src[i] === "\\") { mask[i++] = true; if (i < src.length) mask[i++] = true; continue } if (src[i] === q) { mask[i++] = true; break } if (q !== "`" && src[i] === "\n") break; mask[i++] = true } }
     else i++
   }
+  return mask
+}
+
+/** Occurrences of `needle` as CODE — comments and string literals masked. */
+function codeHits(src: string, needle: string): number {
+  const mask = codeMask(src)
   let n = 0, from = 0
   for (;;) {
     const at = src.indexOf(needle, from)
     if (at === -1) return n
     from = at + needle.length
     if (!mask[at]) n++
+  }
+}
+
+/** Index of the FIRST occurrence of `needle` as CODE, or -1 — same masking. */
+function firstCodeHit(src: string, needle: string): number {
+  const mask = codeMask(src)
+  let from = 0
+  for (;;) {
+    const at = src.indexOf(needle, from)
+    if (at === -1) return -1
+    if (!mask[at]) return at
+    from = at + needle.length
   }
 }
 
@@ -149,6 +167,70 @@ for (const rel of FORMER_CALL_SITES) {
 check("chat/stream: no userId is read off the request body (session ctx only)",
   !/const \{[^}]*userId[^}]*\} = await req\.json\(\)/.test(read("app/api/chat/stream/route.ts")))
 
+console.log("\n[(d) #187 closures — anonymous turns metered, history estimated, DID fails closed]")
+{
+  const MODELS = read(CHOKEPOINT)
+  const start = MODELS.indexOf("export async function streamTextRouted")
+  const end = MODELS.indexOf("export async function generateSimpleText")
+  const body = start !== -1 && end > start ? MODELS.slice(start, end) : ""
+
+  // GAP 1 — the cost of a turn ALWAYS lands on the tenant. A staff seat is
+  // attribution on the row, never the condition for the row to exist.
+  check("streamTextRouted: the ledger gate is the TENANT alone — no userId && brokerageId gate survives",
+    codeHits(body, "if (brokerageId)") === 1 && codeHits(body, "userId && brokerageId") === 0)
+
+  const COST = read("lib/ai/cost-tracking.ts")
+  const logStart = COST.indexOf("export async function logAIUsage")
+  const logEnd = COST.indexOf("export async function getCurrentMonthUsage")
+  const logBody = logStart !== -1 && logEnd > logStart ? COST.slice(logStart, logEnd) : ""
+  check("logAIUsage accepts a null user — anonymous tenant traffic lands in the ledger, not on the floor",
+    codeHits(logBody, "userId: string | null") === 1)
+  check("logAIUsage writes on the service client — the anonymous lanes have no session for RLS to pass",
+    codeHits(logBody, "createServiceClient(") === 1 && codeHits(logBody, "await createClient(") === 0)
+
+  const USAGE = read("lib/usage.ts")
+  const incStart = USAGE.indexOf("export async function incrementUsage")
+  const incEnd = USAGE.indexOf("export async function checkLimit")
+  const incBody = incStart !== -1 && incEnd > incStart ? USAGE.slice(incStart, incEnd) : ""
+  check("incrementUsage (the ai_tokens_monthly writer the cap reads) writes on the service client too",
+    codeHits(incBody, "createServiceClient(") === 1 && codeHits(incBody, "await createClient(") === 0)
+
+  const widget = read("app/api/widget/message/route.ts")
+  check("widget/message: the ONLY brokerageId handed to the stream is the session row's — never the body's",
+    codeHits(widget, "brokerageId:") === 1 && codeHits(widget, "brokerageId: session.brokerage_id") === 1)
+
+  // GAP 2 — the pre-flight estimate must see the whole conversation, through
+  // the ONE estimator, before checkAIFairUse decides.
+  check("streamTextRouted: the pre-flight estimate folds the carried messages into estimateTokens, before the cap check",
+    (() => {
+      const est = body.indexOf("estimateTokens(")
+      const msgs = body.indexOf("messagesTextForEstimate(request.messages)")
+      const cap = body.indexOf("checkAIFairUse(")
+      return est !== -1 && msgs !== -1 && cap !== -1 && est < msgs && msgs < cap
+    })())
+  check("messagesTextForEstimate returns TEXT for estimateTokens — it is not a second token heuristic",
+    codeHits(MODELS, "function messagesTextForEstimate(") === 1 &&
+    (() => {
+      const h = MODELS.indexOf("function messagesTextForEstimate(")
+      const hb = MODELS.slice(h, MODELS.indexOf("\n}", h))
+      return codeHits(hb, "/ 4") === 0 && codeHits(hb, "Math.ceil(") === 0 && codeHits(hb, "estimateTokens(") === 0
+    })())
+
+  // GAP 3 — did/custom-llm fails CLOSED: no resolvable tenant, no stream.
+  const did = read("app/api/did/custom-llm/route.ts")
+  const callAt = firstCodeHit(did, "streamTextRouted(")
+  const markerGate = firstCodeHit(did, "if (!contactId)")
+  const tenantGate = firstCodeHit(did, "if (!ctx || !ctx.brokerageId)")
+  check("did/custom-llm: a turn without the context marker is refused with a 4xx BEFORE the stream call",
+    markerGate !== -1 && callAt !== -1 && markerGate < callAt &&
+    /status: 400/.test(did.slice(markerGate, markerGate + 220)))
+  check("did/custom-llm: an unresolvable contact or tenant is refused with a 4xx BEFORE the stream call",
+    tenantGate !== -1 && callAt !== -1 && tenantGate < callAt &&
+    /status: 403/.test(did.slice(tenantGate, tenantGate + 220)))
+  check("did/custom-llm: the fail-open lane is gone — no mutable null ledger identity can reach the stream",
+    codeHits(did, "let ledgerBrokerageId") === 0 && codeHits(did, "let ledgerUserId") === 0)
+}
+
 console.log("\n[negative controls — each scan must be able to fail]")
 check("NEGATIVE — the code-hit scanner sees through neither comments nor strings",
   codeHits('// streamText(\nconst s = "streamText("', "streamText(") === 0 &&
@@ -161,6 +243,23 @@ check("NEGATIVE — the raw-import scan trips on streamText but NOT on streamTex
   !RAW_IMPORT_RE.test('import { convertToModelMessages } from "ai"'))
 check("NEGATIVE — the order comparator would flag a cap check placed AFTER the stream",
   (() => { const s = "streamText({}); checkAIFairUse("; const c = s.indexOf("checkAIFairUse("); const t = s.indexOf("streamText({"); return !(c !== -1 && t !== -1 && c < t) })())
+check("NEGATIVE — the tenant-gate scan WOULD flag a resurrected userId && brokerageId ledger gate",
+  codeHits("if (userId && brokerageId) { logAIUsage({}) }", "userId && brokerageId") === 1)
+check("NEGATIVE — the estimate scan fails on the old prompt-only estimate",
+  'const estTokens = estimateTokens((request.prompt ?? "") + (request.system ?? "")) + 2000'
+    .indexOf("messagesTextForEstimate(request.messages)") === -1)
+check("NEGATIVE — firstCodeHit skips commented and quoted mentions but finds real code",
+  (() => {
+    const s = '// streamTextRouted(\nconst x = "streamTextRouted("\nstreamTextRouted('
+    return firstCodeHit(s, "streamTextRouted(") === s.lastIndexOf("streamTextRouted(") &&
+      firstCodeHit('// only a comment mention', "streamTextRouted(") === -1
+  })())
+check("NEGATIVE — the DID order comparator flags a refusal placed AFTER the stream call",
+  (() => {
+    const s = "streamTextRouted({}); if (!contactId) return refuse()"
+    const g = firstCodeHit(s, "if (!contactId)"); const c = firstCodeHit(s, "streamTextRouted(")
+    return !(g !== -1 && c !== -1 && g < c)
+  })())
 
 console.log("\n" + "─".repeat(78))
 console.log(`${pass} passed, ${fail} failed`)

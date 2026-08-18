@@ -137,11 +137,11 @@ Do NOT make up property listings. Do NOT discuss competitor brokerages.${faqBloc
     // ── Stream response ───────────────────────────────────────────────────
     const recentMessages = messages.slice(-MAX_HISTORY)
 
-    // Ledger identity for this anonymous lane: the visitor has no account, so
-    // the usage bills to the ASSIGNED AGENT's user — resolved off the session
-    // row (the only identity this route accepts), never off the body. No
-    // assigned agent → the cap still pre-flights on the tenant, but the ledger
-    // row is skipped (same userId&&brokerageId contract as generateTextRouted).
+    // Ledger identity for this anonymous lane: the cost lands on the TENANT
+    // (the session row's brokerage — the only identity this route accepts,
+    // never the body), attributed to the ASSIGNED AGENT's user when one
+    // exists. No assigned agent → the row still lands, with a null user =
+    // anonymous tenant traffic (#187). Metered and capped either way.
     let ledgerUserId: string | null = null
     if (session.agent_id) {
       const { data: agentRow, error: agentErr } = await supabase

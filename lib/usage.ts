@@ -1,6 +1,7 @@
 
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { currentUsagePeriod } from "@/lib/usage/period"
 
 export interface UsageLimit {
@@ -16,7 +17,12 @@ export interface UsageLimit {
  * Upserts into the current billing period (month-based)
  */
 export async function incrementUsage(brokerageId: string, metric: string, amount = 1): Promise<void> {
-  const supabase = await createClient()
+  // SERVICE CLIENT, like the other usage_counters writer (log-media-usage).
+  // Every usage_counters policy is TO authenticated; on the anonymous AI lanes
+  // (widget visitor, D-ID avatar turn — #187) the cookie client is the anon
+  // role, so the increment was refused, the refusal swallowed below, and the
+  // spend never reached the ai_tokens_monthly counter the cap reads.
+  const supabase = createServiceClient()
 
   // ONE period vocabulary (#190). This function used to compute LOCAL month
   // boundaries with an INCLUSIVE end while every reader — including the
