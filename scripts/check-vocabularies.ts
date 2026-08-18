@@ -760,9 +760,15 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   lead_sla_tracking: {
     sla_type: ["appointment", "assignment", "first_contact", "qualification"],
   },
+  // m484 narrowed both. `revenue` left because this board is PEER-VISIBLE and the
+  // standing money rulings keep commission off agent-facing display — a colleague
+  // sees what you DID, not what you were paid — and nothing ever wrote it anyway.
+  // `agent` left because every row is already per-agent: it was the row GRAIN
+  // restated as a comparison group, and three readers sent it to a writer that
+  // never wrote it, which is why the board returned zero rows in every filter.
   leaderboard_rankings: {
-    metric_type: ["points", "referrals", "revenue", "transactions"],
-    scope: ["agent", "brokerage", "team"],
+    metric_type: ["points", "referrals", "transactions"],
+    scope: ["brokerage", "team"],
   },
   leads: {
     lead_temperature: ["cold", "hot", "warm"],

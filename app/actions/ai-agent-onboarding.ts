@@ -445,11 +445,27 @@ export async function completeAISessionStep(params: {
         })
         .eq("id", session.agent_id)
 
-      // Award gamification points
-      await supabase
-        .from("agents")
-        .update({ gamification_points: 100 })
-        .eq("id", session.agent_id)
+      // AWARD GAMIFICATION POINTS — AN INCREMENT, NOT AN OVERWRITE.
+      //
+      // This read `gamification_points: 100`. Not "+100": the agent's total was SET
+      // to 100, so an agent who finished onboarding after earning 2,400 points was
+      // silently reset to 100 — dropped from Silver back below Bronze, with their
+      // ledger still showing every award they had earned. The total and the ledger
+      // could not be reconciled afterwards because nothing recorded the loss.
+      //
+      // It now rides the one atomic award path (m484: public.award_agent_points),
+      // which adds the points and writes the ledger row in one transaction.
+      const { awardAgentPoints, POINT_VALUES } = await import("@/lib/gamification/award-points")
+      const awarded = await awardAgentPoints(supabase, {
+        agentId: session.agent_id,
+        points: POINT_VALUES.ONBOARDING_COMPLETED,
+        reason: "ONBOARDING_COMPLETED",
+        referenceType: "agent_onboarding_session",
+        referenceId: params.sessionId,
+      })
+      if (!awarded.ok) {
+        console.error(`[completeAISessionStep] onboarding completion points not awarded: ${awarded.error}`)
+      }
     }
 
     revalidatePath("/dashboard/admin/users")

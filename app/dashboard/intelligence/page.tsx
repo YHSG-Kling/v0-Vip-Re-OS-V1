@@ -3,7 +3,10 @@ import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { loadValueDrivenDashboard, calculateTrustCapital } from "@/app/actions/analytics"
 import { getActivePatterns, getPatternAccuracyStats } from "@/app/actions/pattern-actions"
-import { getLeaderboard, getAgentPointsAndTier, getAgentBadges, POINT_VALUES } from "@/app/actions/gamification"
+import { getLeaderboard, getAgentPointsAndTier, getAgentBadges } from "@/app/actions/gamification"
+import { POINT_VALUES } from "@/lib/gamification/award-points"
+import { tierLabelForPoints } from "@/lib/gamification/tiers"
+import { defaultPeriodLabel, periodWindows } from "@/lib/gamification/leaderboard-vocabulary"
 import { getWeeklyMetrics } from "@/lib/intelligence/feedback-aggregator"
 import { IntelligenceOSClient } from "./intelligence-os-client"
 import { AiCitationVisibilityCard, type CitationObservationRow } from "./components/ai-citation-visibility-card"
@@ -31,9 +34,14 @@ export default async function IntelligencePage() {
   const agentId = agentContext.agentId!
   const brokerageId = agentContext.brokerageId!
 
-  // Calculate period labels
+  // THE PERIOD LABEL COMES FROM THE SHARED VOCABULARY, not from a format string
+  // written out again here. This page hand-rolled the same month label the
+  // populator writes — the format happened to match, but it was a second copy of a
+  // rule that only works while both copies agree.
   const now = new Date()
-  const periodLabel = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+  const periodLabel = defaultPeriodLabel(now)
+  // What the rail PRINTS. The stored label is "2026-08"; a person reads "This month".
+  const periodDisplayLabel = periodWindows(now).find((w) => w.value === periodLabel)?.label ?? periodLabel
   
   // Calculate this week's start for AI metrics
   const dayOfWeek = now.getDay()
@@ -61,21 +69,26 @@ export default async function IntelligencePage() {
     calculateTrustCapital(agentId, 30).catch(() => ({ trust_capital_score: 50, metrics: {}, insights: {} })),
     getActivePatterns("all").catch(() => []),
     getPatternAccuracyStats().catch(() => ({ correct: 0, incorrect: 0, pending: 0, accuracy_rate: 0 })),
+    // scope was "agent" — a value the populator has never written and the scope
+    // CHECK no longer admits, so this board was empty by construction. The
+    // comparison group is the BROKERAGE.
     getLeaderboard({
-      scope: "agent",
+      scope: "brokerage",
       metricType: "points",
       periodLabel,
       limit: 10,
-    }).catch(() => ({ rankings: [], currentAgentId: null, brokerageId: null })),
+    }).catch(() => ({ ok: false, rankings: [], currentAgentId: null, brokerageId: "", scope: "brokerage", metricType: "points", periodLabel })),
     getAgentPointsAndTier(agentId).catch(() => ({
       agentId,
       agentName: "",
       points: 0,
-      currentTier: "none",
-      nextTier: "Bronze",
+      currentTierId: "unranked" as const,
+      currentTier: "Unranked",
+      nextTier: "Bronze" as string | null,
       pointsToNextTier: 500,
+      progressPercent: 0,
     })),
-    getAgentBadges(agentId).catch(() => ({ earned: [], all: [], earnedBadgeIds: new Set() })),
+    getAgentBadges(agentId).catch(() => ({ ok: false as const, badges: [] })),
     getWeeklyMetrics(brokerageId, thisWeekStart).catch(() => ({
       totalFeedback: 0,
       positiveCount: 0,
@@ -134,16 +147,18 @@ export default async function IntelligencePage() {
     probability: p.probability,
   }))
 
-  // Process leaderboard for component props
+  // The action returns rows already flattened (lib/gamification/leaderboard-vocabulary:
+  // LeaderboardRow), so this no longer digs three levels into a PostgREST embed to
+  // find a name — the shape is the same one every other board reader consumes.
   const processedRankings = leaderboardData.rankings.map(r => ({
-    rank: r.rank_position,
-    agentId: r.agent_id,
-    agentName: r.agents ? `${(r.agents as any).users?.first_name || ""} ${(r.agents as any).users?.last_name || ""}`.trim() || "Unknown" : "Unknown",
-    avatarUrl: (r.agents as any)?.profile_image_url,
-    points: (r.agents as any)?.gamification_points || 0,
-    tier: getTierFromPoints((r.agents as any)?.gamification_points || 0),
-    metricValue: r.metric_value,
-    isCurrentUser: r.agent_id === leaderboardData.currentAgentId,
+    rank: r.rank,
+    agentId: r.agentId,
+    agentName: r.agentName,
+    avatarUrl: r.avatarUrl ?? undefined,
+    points: r.lifetimePoints,
+    tier: tierLabelForPoints(r.lifetimePoints),
+    metricValue: r.score,
+    isCurrentUser: r.isCurrentAgent,
   }))
 
   // Process AI quality metrics
@@ -177,7 +192,7 @@ export default async function IntelligencePage() {
     id: agent.id,
     name: [(agent.users as any)?.first_name, (agent.users as any)?.last_name].filter(Boolean).join(" ") || "Unknown",
     points: agent.gamification_points || 0,
-    tier: getTierFromPoints(agent.gamification_points || 0),
+    tier: tierLabelForPoints(agent.gamification_points || 0),
     activityScore: Math.min(100, Math.round(((agent.gamification_points || 0) / 500) * 100)),
     trend: "stable" as const,
     alertCount: 0,
@@ -187,30 +202,33 @@ export default async function IntelligencePage() {
     ? Math.round(teamMembers.reduce((sum, m) => sum + m.activityScore, 0) / teamMembers.length)
     : 0
 
-  // Process badges for motivation rail
-  const recentBadges = (badgesData.earned || []).slice(0, 3).map((eb: any) => ({
-    id: eb.id,
-    name: eb.gamification_badges?.badge_name || "Badge",
-    awardedAt: eb.awarded_at,
-    tier: eb.gamification_badges?.badge_tier || "bronze",
-  }))
+  // getAgentBadges returns ONE list, each row carrying whether it is earned — it
+  // used to return { earned, all, earnedBadgeIds } with a Set in it, which is not
+  // serialisable across the server-action boundary.
+  const allBadges = badgesData.badges ?? []
+  const recentBadges = allBadges
+    .filter((b) => b.earned)
+    .slice(0, 3)
+    .map((b) => ({
+      id: b.id,
+      name: b.name,
+      awardedAt: b.earnedAt ?? "",
+      tier: b.tier || "bronze",
+    }))
 
-  // Find next badge to earn
-  const unearnedBadges = (badgesData.all || []).filter(
-    (b: any) => !badgesData.earnedBadgeIds.has(b.id)
-  )
-  const nextBadge = unearnedBadges.length > 0 ? unearnedBadges[0] : null
+  // Next badge to earn — the catalog is ordered by required_points ascending.
+  const nextBadge = allBadges.find((b) => !b.earned) ?? null
   const nextBadgeProgress = nextBadge ? {
     id: nextBadge.id,
-    name: nextBadge.badge_name,
-    description: nextBadge.badge_description || "",
-    icon: nextBadge.badge_icon || "star",
-    requiredPoints: nextBadge.required_points,
+    name: nextBadge.name,
+    description: nextBadge.description || "",
+    icon: nextBadge.icon || "star",
+    requiredPoints: nextBadge.requiredPoints,
     currentProgress: pointsData.points,
     isEarned: false,
   } : null
 
-  // Point drivers from POINT_VALUES
+  // Point drivers from the ONE point table.
   const pointDrivers = [
     { action: "Close a listing", points: POINT_VALUES.LISTING_CLOSED, description: "Earn points for closed deals" },
     { action: "Submit an offer", points: POINT_VALUES.OFFER_SUBMITTED, description: "Earn points for submitted offers" },
@@ -237,7 +255,7 @@ export default async function IntelligencePage() {
       patterns={processedPatterns}
       leaderboardRankings={processedRankings}
       currentUserRank={processedRankings.find(r => r.isCurrentUser) || null}
-      periodLabel={periodLabel}
+      periodLabel={periodDisplayLabel}
       aiQualityMetrics={aiQualityMetrics}
       teamMembers={teamMembers}
       totalAgents={teamMembers.length}
@@ -258,14 +276,6 @@ export default async function IntelligencePage() {
     )}
     </>
   )
-}
-
-function getTierFromPoints(points: number): string {
-  if (points >= 25000) return "Platinum"
-  if (points >= 10000) return "Gold"
-  if (points >= 2500) return "Silver"
-  if (points >= 500) return "Bronze"
-  return "none"
 }
 
 function generateOperationalInsights(

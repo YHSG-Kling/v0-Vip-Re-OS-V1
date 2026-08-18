@@ -37,12 +37,22 @@ export async function logMentorSession(input: {
   }).select("id").single()
   if (error || !row) return { ok: false, error: error?.message ?? "insert failed" }
 
-  // Award consolidated-ledger points to both parties (best-effort).
+  // Award to both parties through the ONE atomic award path (m484's
+  // public.award_agent_points). A raw ledger insert stood here, which advanced the
+  // ledger and left agents.gamification_points untouched — so a mentor could hold
+  // ten sessions, earn 750 points on the board, and see no change to their tier.
   if (brokerageId) {
-    await svc.from("agent_points_log").insert([
-      { agent_id: input.mentorAgentId, brokerage_id: brokerageId, points: 75, reason: "MENTOR_SESSION_HELD", reference_type: "mentor_session", reference_id: (row as any).id },
-      { agent_id: input.menteeAgentId, brokerage_id: brokerageId, points: 75, reason: "MENTOR_SESSION_HELD", reference_type: "mentor_session", reference_id: (row as any).id },
-    ]).then(undefined, () => {})
+    const { awardAgentPoints, POINT_VALUES } = await import("@/lib/gamification/award-points")
+    for (const agentId of [input.mentorAgentId, input.menteeAgentId]) {
+      const awarded = await awardAgentPoints(svc, {
+        agentId,
+        points: POINT_VALUES.MENTOR_SESSION_HELD,
+        reason: "MENTOR_SESSION_HELD",
+        referenceType: "mentor_session",
+        referenceId: (row as any).id,
+      })
+      if (!awarded.ok) console.error(`[logMentorSession] ${awarded.error}`)
+    }
   }
 
   // Low rating → surface a possible-mismatch flag to the broker.

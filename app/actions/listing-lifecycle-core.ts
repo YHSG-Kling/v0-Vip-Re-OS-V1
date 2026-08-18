@@ -782,28 +782,27 @@ async function handleSellerToLifetimeTransition(
     )
   }
 
-  // 4. Increment agent gamification points (agents.gamification_points).
+  // 4. Award the agent their points for the transition.
   //    agentRecordId is an agents.id — the correct key for this table.
+  //
+  //    THIS WROTE THE TOTAL AND NO LEDGER ROW. It read gamification_points, added
+  //    50, and wrote it back: a lost update against every other award path, and
+  //    fifty points that appeared on the agent's tier with nothing in
+  //    agent_points_log to explain where they came from — so the leaderboard, which
+  //    is built from the ledger, never saw them at all. It goes through the one
+  //    atomic award path now (m484: public.award_agent_points), which does the
+  //    increment and the ledger row in a single transaction.
   if (agentRecordId) {
-    const { data: agentRow, error: agentReadError } = await supabase
-      .from("agents")
-      .select("id, gamification_points")
-      .eq("id", agentRecordId)
-      .eq("brokerage_id", brokerageId)
-      .maybeSingle()
-
-    if (agentReadError) {
-      console.error("[handleSellerToLifetimeTransition] agent read failed, points not awarded:", agentReadError.message)
-    } else if (agentRow) {
-      const { error: pointsError } = await supabase
-        .from("agents")
-        .update({ gamification_points: (agentRow.gamification_points ?? 0) + 50 })
-        .eq("id", agentRecordId)
-        .eq("brokerage_id", brokerageId)
-
-      if (pointsError) {
-        console.error("[handleSellerToLifetimeTransition] points not awarded:", pointsError.message)
-      }
+    const { awardAgentPoints, POINT_VALUES } = await import("@/lib/gamification/award-points")
+    const awarded = await awardAgentPoints(supabase, {
+      agentId: agentRecordId,
+      points: POINT_VALUES.SELLER_LIFETIME_TRANSITION,
+      reason: "SELLER_LIFETIME_TRANSITION",
+      referenceType: "contact",
+      referenceId: contactId,
+    })
+    if (!awarded.ok) {
+      console.error("[handleSellerToLifetimeTransition] points not awarded:", awarded.error)
     }
   }
 }

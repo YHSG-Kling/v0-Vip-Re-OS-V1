@@ -90,6 +90,17 @@ const VARIABLE_TABLE_WRITERS: Record<string, string> = {
   social_cadence_policy: "app/actions/marketing-cadence-policy.ts (CHANNEL_TABLE upsert)",
 }
 
+/** Tables whose writer is a DATABASE FUNCTION the app calls through .rpc(), which
+ *  a `.from("x").insert(` scan cannot see by construction. Each entry names both
+ *  the function and the module that calls it, so the exemption stays auditable. */
+const DB_FUNCTION_WRITERS: Record<string, string> = {
+  // m484 moved the points award into ONE transaction inside the database, because
+  // six app writers advancing agents.gamification_points by read-modify-write could
+  // never keep the total and the ledger in agreement. The app no longer inserts into
+  // this table anywhere — that is the fix, not a missing writer.
+  agent_points_log: "public.award_agent_points() (m484), called via lib/gamification/award-points.ts",
+}
+
 function walk(dir: string, acc: string[]) {
   for (const name of readdirSync(dir)) {
     if (name === "node_modules" || name === ".next" || name === ".git") continue
@@ -124,7 +135,7 @@ function main() {
   }
 
   const offenders = [...readers.keys()]
-    .filter((t) => !writers.has(t) && !SEEDED_REFERENCE.has(t) && !DB_VIEWS.has(t) && !(t in VARIABLE_TABLE_WRITERS))
+    .filter((t) => !writers.has(t) && !SEEDED_REFERENCE.has(t) && !DB_VIEWS.has(t) && !(t in VARIABLE_TABLE_WRITERS) && !(t in DB_FUNCTION_WRITERS))
     .sort()
 
   if (process.env.GUARD_WRITE_BASELINE === "1") {

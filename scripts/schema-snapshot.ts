@@ -13,12 +13,12 @@
  * REGENERATE after any schema change (see header for the SQL):
  *   cat schema.json | npx tsx scripts/generate-schema-snapshot.ts
  *
- * Last synced: 2026-06-18.
+ * Last synced: 2026-08-18 (m484: gamification_badges.badge_category added; achievements +
+ * agent_achievements dropped as the duplicate reward ledger).
  */
 export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   storage_orphaned_objects: ["brokerage_id", "bucket", "cleaned_at", "cleanup_attempts", "cleanup_error", "detail", "detected_at", "id", "last_attempt_at", "object_path", "reason"],
   accounting_sync_log: ["brokerage_id", "completed_at", "error_summary", "id", "provider", "records_failed", "records_synced", "started_at", "status", "sync_type"],
-  achievements: ["badge_url", "category", "created_at", "description", "id", "is_active", "name", "points_required"],
   activities: ["activity_type", "agent_id", "agent_user_id", "brokerage_id", "channel", "completed_at", "contact_id", "created_at", "description", "duration_minutes", "entity_id", "entity_type", "id", "listing_id", "metadata", "notes", "outcome", "priority", "scheduled_at", "scheduled_for", "status", "title", "transaction_id", "updated_at"],
   ad_campaigns: ["agent_user_id", "brokerage_id", "campaign_name", "created_at", "created_by", "daily_budget", "end_date", "id", "kernel_event_id", "lifetime_budget", "marketing_campaign_id", "objective", "platform", "start_date", "status", "targeting_config", "team_id", "updated_at", "visibility_scope"],
   ad_creative_variations: ["ad_campaign_id", "approval_status", "brokerage_id", "call_to_action", "competitor_ad_id", "created_at", "description", "destination_url", "generated_from", "headline", "id", "media_asset_url", "primary_text", "source_marketing_asset_id", "updated_at", "variation_name"],
@@ -27,7 +27,6 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   ad_performance: ["ad_campaign_id", "brokerage_id", "captured_at", "clicks", "conversions", "cost_per_lead", "creative_variation_id", "ctr", "id", "impressions", "leads", "revenue_attributed", "spend"],
   ad_performance_history: ["ad_campaign_id", "ad_creative_id", "brokerage_id", "captured_at", "clicks", "cost_per_lead", "created_at", "ctr", "id", "impressions", "leads"],
   ad_retarget_presets: ["ad_body", "ad_cta", "ad_headline", "ad_image_url", "ad_landing_url", "ad_video_url", "brokerage_id", "compliance_event_id", "created_at", "created_by", "daily_budget_cents", "facebook_audience_id", "id", "is_active", "name", "scope_id", "scope_type", "updated_at"],
-  agent_achievements: ["achievement_id", "agent_id", "brokerage_id", "id", "unlocked_at"],
   agent_api_credentials: ["access_token", "agent_id", "api_key", "api_secret", "brokerage_id", "config", "created_at", "error_message", "id", "is_active", "is_verified", "last_verified_at", "refresh_token", "service_name", "service_type", "token_expires_at", "updated_at"],
   agent_assistant_sessions: ["agent_id", "brokerage_id", "context_contact_id", "context_listing_id", "context_transaction_id", "context_url", "conversation_id", "duration_seconds", "ended_at", "ended_reason", "id", "message_count", "metadata", "started_at", "tool_call_count", "user_id"],
   agent_assistant_tool_calls: ["brokerage_id", "error_message", "id", "latency_ms", "session_id", "success", "tool_input", "tool_name", "tool_output", "ts"],
@@ -321,7 +320,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   financial_reports: ["agent_id", "ai_analysis", "brokerage_id", "created_at", "deductible_expenses", "expenses_by_category", "generated_at", "id", "net_profit", "period_end", "period_start", "report_type", "total_expenses", "total_income"],
   form_field_maps: ["field_position_map", "form_id", "form_pdf_url", "intake_field_to_form_field", "learned_from_count", "packet_type", "state", "updated_at"],
   form_submissions: ["agent_id", "brokerage_id", "contact_id", "context_id", "context_type", "created_at", "form_id", "form_name", "id", "ip_address", "source", "status", "submission_data", "submitted_at", "tcpa_consent_given", "updated_at", "user_agent"],
-  gamification_badges: ["badge_description", "badge_icon", "badge_name", "badge_tier", "brokerage_id", "created_at", "id", "is_active", "required_points", "trigger_event"],
+  gamification_badges: ["badge_category", "badge_description", "badge_icon", "badge_name", "badge_tier", "brokerage_id", "created_at", "id", "is_active", "required_points", "trigger_event"],
   generated_content: ["agent_id", "agent_percentage", "brokerage_id", "contact_id", "content", "content_type", "created_at", "id", "metadata", "prospect_id", "quality_score", "them_percentage"],
   generated_documents: ["agent_id", "blob_id", "blob_url", "brokerage_id", "contact_id", "created_at", "document_type", "file_name", "file_size", "id", "listing_id", "metadata", "transaction_id"],
   gift_vendors: ["agent_id", "brokerage_id", "category", "contact_name", "created_at", "email", "id", "is_active", "name", "notes", "phone", "updated_at", "website"],

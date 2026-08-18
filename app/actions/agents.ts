@@ -9,15 +9,6 @@ import { resolveUserOffice, pickUserOffice } from "@/lib/kernel/resolve-user-off
 import { ensureAgentCapWindow } from "@/lib/commission/cap-resolver"
 import { isAdminOrBroker, isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
-interface AchievementRow {
-  id: string
-  name: string
-  description: string | null
-  points_required: number
-  badge_url: string | null
-  category: string | null
-}
-
 /** Roles allowed to administer OTHER people's agent records / brokerage rollups. */
 // ==================== AGENT CRUD ====================
 
@@ -148,7 +139,7 @@ export async function getAgentById(agentId: string) {
       user:users(id, first_name, last_name, email, phone),
       commissions:agent_commissions(*),
       expenses:business_expenses(*),
-      achievements:agent_achievements(*, achievement:achievements(*)),
+      badges:agent_badges(*, badge:gamification_badges(*)),
       goals:agent_goals(*)
     `)
     .eq("id", agentId)
@@ -455,201 +446,113 @@ export async function updateAgent(
 
 // ==================== GAMIFICATION ====================
 
+/**
+ * ONE ATOMIC AWARD PATH — public.award_agent_points() (m484). Three things were
+ * wrong here and all three are structural:
+ *
+ *   · READ-MODIFY-WRITE. SELECT the total, add, UPDATE it back. Two awards landing
+ *     between the same select and update kept only one, and the ledger row was
+ *     written separately, so a failure between them left the total and the ledger
+ *     permanently disagreeing with no way to tell which was right.
+ *   · THE LEDGER ROW CARRIED NO TENANT. `brokerage_id` was simply never supplied,
+ *     and the leaderboard populator filters on exactly that column — so every point
+ *     this function ever awarded was invisible to the board it was supposed to feed.
+ *   · IT AWARDED ACHIEVEMENTS. `checkAndAwardAchievements` is gone with the
+ *     duplicate reward ledger it wrote to (see the note below); badges are the one
+ *     survivor, and `addPoints` in app/actions/gamification.ts is the path that
+ *     checks them.
+ */
 export async function awardPoints(agentId: string, points: number, reason: string, category: string) {
   const supabase = await createClient()
+  const { awardAgentPoints } = await import("@/lib/gamification/award-points")
 
-  // Get current points
-  const { data: agent } = await supabase.from("agents").select("gamification_points").eq("id", agentId).single()
-
-  const currentPoints = agent?.gamification_points || 0
-  const newPoints = currentPoints + points
-
-  // Update agent points
-  const { error: updateError } = await supabase
-    .from("agents")
-    .update({
-      gamification_points: newPoints,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", agentId)
-
-  if (updateError) {
-    console.error("Error awarding points:", updateError)
-    return { error: updateError.message }
-  }
-
-  // Log the points transaction
-  const { error: logError } = await supabase.from("agent_points_log").insert({
-    agent_id: agentId,
+  const awarded = await awardAgentPoints(supabase, {
+    agentId,
     points,
     reason,
-    reference_type: category, // real column; running balance lives on agents.gamification_points
+    referenceType: category,
   })
-
-  if (logError) {
-    console.error("Error logging points:", logError)
+  if (!awarded.ok) {
+    console.error("[awardPoints]", awarded.error)
+    return { error: awarded.error }
   }
 
-  // Check for new achievements
-  await checkAndAwardAchievements(agentId, newPoints)
+  // Badges are threshold-awarded against the total the database now holds.
+  try {
+    const { checkAndAwardBadges } = await import("@/app/actions/gamification")
+    await checkAndAwardBadges(agentId, awarded.newTotal)
+  } catch (err) {
+    console.error(
+      `[awardPoints] points landed for agent ${agentId} but the badge check failed: ${err instanceof Error ? err.message : "unknown error"}`,
+    )
+  }
 
   revalidatePath("/dashboard/admin/users")
-  return { data: { newPoints } }
-}
-
-export async function getLeaderboard(
-  brokerageId?: string,
-  period: "weekly" | "monthly" | "yearly" | "all_time" = "monthly",
-) {
-  const supabase = await createClient()
-
-  // Map period to period_label format used in leaderboard_rankings
-  let periodLabel: string | null = null
-  if (period !== "all_time") {
-    const now = new Date()
-    if (period === "monthly") {
-      periodLabel = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
-    } else if (period === "weekly") {
-      // ISO week number
-      const weekNum = Math.ceil((now.getDate() - now.getDay() + 1) / 7)
-      periodLabel = `${now.getFullYear()}-W${String(weekNum).padStart(2, "0")}`
-    } else if (period === "yearly") {
-      periodLabel = `${now.getFullYear()}`
-    }
-  }
-
-  // `agents` HAS gamification_points / profile_image_url / ytd_gci /
-  // ytd_transactions but NO first_name / last_name — those are on `users`,
-  // reached through agents_user_id_fkey (a single FK, so an OBJECT embed).
-  // Naming them here made PostgREST reject the WHOLE query, so this leaderboard
-  // has only ever returned [].
-  let query = supabase
-    .from("leaderboard_rankings")
-    .select(`
-      id,
-      rank_position,
-      metric_value,
-      agent_id,
-      agents:agent_id(
-        id, gamification_points, photo_url, profile_image_url, ytd_gci, ytd_transactions,
-        users:user_id(first_name, last_name)
-      )
-    `)
-    .eq("scope", "agent")
-    .eq("metric_type", "points")
-    .order("rank_position", { ascending: true })
-    .limit(20)
-
-  if (brokerageId) {
-    query = query.eq("brokerage_id", brokerageId)
-  }
-
-  if (periodLabel) {
-    query = query.eq("period_label", periodLabel)
-  }
-
-  const { data, error } = await query
-
-  if (error) {
-    console.error("Error fetching leaderboard:", error)
-    return []
-  }
-
-  // Flattened back to first_name / last_name, the shape every agent-name reader
-  // in the app already uses, so the row keeps its declared shape.
-  return (data ?? []).map((row: any) => {
-    const a = row?.agents ?? null
-    const u = a?.users ?? null
-    return {
-      ...row,
-      agents: a
-        ? {
-            id: a.id,
-            first_name: u?.first_name ?? null,
-            last_name: u?.last_name ?? null,
-            gamification_points: a.gamification_points ?? null,
-            profile_image_url: a.photo_url ?? a.profile_image_url ?? null,
-            ytd_gci: a.ytd_gci ?? null,
-            ytd_transactions: a.ytd_transactions ?? null,
-          }
-        : null,
-    }
-  })
+  return { data: { newPoints: awarded.newTotal } }
 }
 
 /**
- * The achievement CATALOG — every rung an agent can climb, ordered by the points
- * that unlock it. `achievements` is a global table (no brokerage_id column) and
- * its RLS SELECT policy is `true`, so it is readable by any signed-in user.
+ * THE SECOND LEADERBOARD READER IS GONE.
  *
- * Returning a bare [] on a failed read would render a refused query as "there are
- * no achievements", so the verdict is reported instead of being flattened away.
+ * `getLeaderboard(brokerageId?, period?)` used to live here alongside
+ * app/actions/gamification.ts:getLeaderboard — two readers of one table with two
+ * different vocabularies over the same three columns. This one asked for
+ * scope 'agent' (a value the populator has never written and the scope CHECK no
+ * longer admits), invented its own period labels — a bare year "2026" for
+ * 'yearly', and a week number computed as `ceil((date - day + 1) / 7)`, which is a
+ * week-of-MONTH, not the ISO week the writer stamps — and took `brokerageId` as an
+ * optional caller argument, so omitting it dropped the tenant filter entirely.
+ *
+ * It had ZERO callers (verified across the tree before removal). The survivor is
+ * app/actions/gamification.ts:getLeaderboard, which validates scope / metric /
+ * period against lib/gamification/leaderboard-vocabulary.ts — the same module the
+ * populator writes from — and resolves the tenant from the session.
+ *
+ * ── AND SO IS THE SECOND REWARD LEDGER ──────────────────────────────────────
+ *
+ * `achievements` + `agent_achievements` and `gamification_badges` + `agent_badges`
+ * were the same idea twice: a catalog of named rewards unlocked at a points
+ * threshold, plus a per-agent award ledger. Both catalogs held ZERO live rows, so
+ * nothing had ever been awarded from either. m484 keeps the badges pair — it is
+ * tenant-scoped (brokerage_id, with platform defaults at brokerage_id IS NULL),
+ * tiered against the live badge_tier CHECK, and already read by Agent 360 — merges
+ * the achievements pair's one distinct idea onto it (`category`, now
+ * gamification_badges.badge_category), migrates any rows, and drops the duplicate
+ * tables.
+ *
+ * `checkAndAwardAchievements` went with them, and it could never have worked:
+ * it passed a SQL subquery string to a PostgREST `.not("id", "in", ...)` filter,
+ * which PostgREST does not parse as SQL, and it raw-interpolated `agentId` into
+ * that string. Badges are awarded by app/actions/gamification.ts:checkAndAwardBadges.
  */
-export async function getAchievements(): Promise<{
-  ok: boolean
-  achievements: AchievementRow[]
-  error?: string
-}> {
-  const supabase = await createClient()
 
-  const { data, error } = await supabase
-    .from("achievements")
-    .select("id, name, description, points_required, badge_url, category")
-    .eq("is_active", true)
-    .order("points_required", { ascending: true })
-
-  if (error) {
-    console.error("Error fetching achievements:", error)
-    return { ok: false, achievements: [], error: error.message }
-  }
-
-  return { ok: true, achievements: (data ?? []) as unknown as AchievementRow[] }
-}
-
+/**
+ * COMPATIBILITY ALIAS over the survivor ledger. `agent_achievements` no longer
+ * exists; an agent's unlocked rewards are `agent_badges` rows. The name is kept
+ * only because app/actions/index.ts re-exports it and that barrel is not this
+ * lane's to edit — the rows and the table underneath are the badge ledger.
+ */
 export async function getAgentAchievements(agentId: string) {
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("agent_achievements")
+    .from("agent_badges")
     .select(`
-      *,
-      achievement:achievements(*)
+      id,
+      badge_id,
+      awarded_at,
+      awarded_reason,
+      badge:gamification_badges(id, badge_name, badge_description, badge_icon, badge_tier, badge_category, required_points)
     `)
     .eq("agent_id", agentId)
-    .order("unlocked_at", { ascending: false })
+    .order("awarded_at", { ascending: false })
 
   if (error) {
-    console.error("Error fetching agent achievements:", error)
+    console.error("[getAgentAchievements] awarded-badge read refused:", error.message)
     return []
   }
 
   return data || []
-}
-
-async function checkAndAwardAchievements(agentId: string, currentPoints: number) {
-  const supabase = await createClient()
-
-  // Get all achievements agent doesn't have yet
-  const { data: unearned } = await supabase
-    .from("achievements")
-    .select("*")
-    .lte("points_required", currentPoints)
-    .not("id", "in", `(SELECT achievement_id FROM agent_achievements WHERE agent_id = '${agentId}')`)
-
-  if (!unearned || unearned.length === 0) return
-
-  // Award new achievements
-  for (const achievement of unearned) {
-    await supabase.from("agent_achievements").insert({
-      agent_id: agentId,
-      achievement_id: achievement.id,
-      // unlocked_at has default now()
-    })
-
-    // Achievement is recorded in agent_achievements (above). The agents.badges array was a phantom
-    // denormalization (column never existed, read nowhere else); badge awards live in agent_badges,
-    // owned by the gamification path — no duplicate copy on agents.
-  }
 }
 
 // ==================== COMMISSION TRACKING ====================
@@ -779,8 +682,10 @@ export async function addAgentCommission(commissionData: {
   // Update agent YTD stats
   await updateAgentYTDStats(commissionData.agent_id)
 
-  // Award points for closing
-  await awardPoints(commissionData.agent_id, 100, "Closed transaction", "transaction")
+  // Award points for closing — the value comes from the ONE point table, not a
+  // literal typed here, and the reason is the canonical ledger key.
+  const { POINT_VALUES } = await import("@/lib/gamification/award-points")
+  await awardPoints(commissionData.agent_id, POINT_VALUES.LISTING_CLOSED, "LISTING_CLOSED", "transaction")
 
   revalidatePath("/dashboard/admin/users")
   return { data }
@@ -1315,7 +1220,8 @@ export async function assignAgentToContact(contactId: string, agentId: string) {
   }
 
   // Award points for new contact assignment
-  await awardPoints(agentId, 10, "New contact assigned", "lead")
+  const { POINT_VALUES: PV } = await import("@/lib/gamification/award-points")
+  await awardPoints(agentId, PV.CONTACT_ASSIGNED, "CONTACT_ASSIGNED", "lead")
 
   revalidatePath("/crm/contacts")
   return { data: data?.[0] ?? null }

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import Link from "next/link"
 import { Trophy, Medal, Award, ArrowRight, TrendingUp, Star } from "lucide-react"
+import { METRIC_LABEL, type LeaderboardMetric } from "@/lib/gamification/leaderboard-vocabulary"
 
 interface LeaderboardEntry {
   rank: number
@@ -21,7 +22,10 @@ interface LeaderboardEntry {
 interface LeaderboardPanelProps {
   rankings: LeaderboardEntry[]
   currentUserRank?: LeaderboardEntry | null
-  metricType: "points" | "revenue" | "transactions" | "referrals"
+  // THE ONE LEADERBOARD VOCABULARY. This union carried "revenue", which nothing has
+  // ever written to leaderboard_rankings and which a peer-visible board must not
+  // carry anyway (#185, #57 — commission is off agent-facing display).
+  metricType: LeaderboardMetric
   periodLabel: string
 }
 
@@ -48,10 +52,9 @@ export function LeaderboardPanel({
     }
   }
 
-  const formatMetric = (value: number, type: string) => {
-    if (type === "revenue") return `$${(value / 1000).toFixed(0)}k`
+  const formatMetric = (value: number, type: LeaderboardMetric) => {
     if (type === "points") return `${value.toLocaleString()} pts`
-    return value.toString()
+    return `${value.toLocaleString()} ${METRIC_LABEL[type].toLowerCase()}`
   }
 
   const getInitials = (name: string) => {

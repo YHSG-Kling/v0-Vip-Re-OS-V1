@@ -676,21 +676,31 @@ const CHECKS: Check[] = [
     },
   },
   {
-    id: "A6-getAchievements-honest-failure",
-    desc: "getAchievements reports a refused read instead of returning an empty catalog",
+    // RETARGETED BY m484's LANE. This asserted `getAchievements`, a reader of the
+    // DUPLICATE reward ledger. `achievements` + `agent_achievements` and
+    // `gamification_badges` + `agent_badges` were the same idea twice — a catalog of
+    // named rewards unlocked at a points threshold plus a per-agent award ledger —
+    // and both duplicate tables held zero live rows, so nothing had ever been awarded
+    // from either. The badges pair survives (tenant-scoped, tiered, already read by
+    // Agent 360); m484 merges the `category` idea onto it, migrates any rows and drops
+    // the duplicate. The honest-failure property the old check guarded is asserted
+    // here against the surviving reader instead of being dropped.
+    id: "A6-reward-ledger-reader-reports-a-refused-read",
+    desc: "the surviving reward-ledger reader reads agent_badges and reports a refused read instead of an empty ledger",
     run: () => {
-      const b = body("agents", "getAchievements")
+      const b = body("agents", "getAgentAchievements")
+      if (!/agent_badges/.test(b.text)) return "the reader does not read the surviving ledger (agent_badges)"
       if (!/const\s*\{[^}]*\berror\b[^}]*\}\s*=\s*await/.test(b.text)) {
-        return "getAchievements does not destructure error"
+        return "the reader does not destructure error"
       }
-      return refusingBranch(b.text, "if (error)") && /ok:\s*false/.test(b.text)
+      return /if \(error\)/.test(b.text) && /console\.error/.test(b.text)
         ? true
-        : "getAchievements does not return ok:false on a failed read"
+        : "a refused read is swallowed as an empty ledger"
     },
     neg: {
       file: "agents",
-      find: "    return { ok: false, achievements: [], error: error.message }",
-      replace: "    return { ok: true, achievements: [] }",
+      find: '    console.error("[getAgentAchievements] awarded-badge read refused:", error.message)',
+      replace: "    void 0",
     },
   },
   {
@@ -1545,38 +1555,30 @@ const CHECKS: Check[] = [
     },
   },
   {
-    id: "S7-achievements-surfaced-honestly",
-    desc: "the motivation page renders the achievement ladder and reports a refused catalog read",
+    // RETARGETED BY m484's LANE — see A6 above. S7 and S8 asserted that the Motivation
+    // page rendered the SECOND reward ladder (`achievements`) alongside the badges
+    // panel that renders the first. That page now carries one ladder, from the
+    // surviving tables, so the property worth guarding here is that it stays one — and
+    // that the page's URL filters are validated against the ONE leaderboard vocabulary
+    // rather than a local copy that admitted values (scope 'agent', metric 'revenue')
+    // no writer has ever produced. The badges surface itself is proved by
+    // scripts/leaderboard-simulator.ts.
+    id: "S7-one-reward-ladder-and-one-filter-vocabulary",
+    desc: "the motivation page validates its filters against the shared leaderboard vocabulary and carries no second reward ladder",
     run: () => {
       const s = S("motivationPage")
-      if (!s.includes("getAchievements")) return "the achievement catalog still has no surface"
-      if (!/catalogResult\.ok/.test(s)) return "the catalog verdict is not read"
-      const i = s.indexOf("!catalogResult.ok")
-      return s.slice(i, i + 400).includes("catalogResult.error")
+      if (/getAchievements|agent_achievements/.test(s)) return "the duplicate achievements ladder is still surfaced"
+      if (!/isLeaderboardScope\(/.test(s) || !/isLeaderboardMetric\(/.test(s)) {
+        return "scope/metric are not validated against the shared vocabulary"
+      }
+      return /isCanonicalPeriodLabel\(/.test(s)
         ? true
-        : "a refused catalog read renders as an empty ladder"
+        : "the period param is not checked against the labels the populator writes"
     },
     neg: {
       file: "motivationPage",
-      find: "          {!catalogResult.ok ? (",
-      replace: "          {false ? (",
-    },
-  },
-  {
-    id: "S8-achievements-locked-state-is-real",
-    desc: "an achievement's unlocked state comes from the agent's earned ledger, not from points alone",
-    run: () => {
-      const s = S("motivationPage")
-      if (!/const\s+earnedIds\s*=/.test(s)) return "the earned ledger is not read"
-      if (!/earnedIds\.has\(a\.id\)/.test(s)) return "unlocked state is not derived from the earned ledger"
-      return /getAgentAchievements\(agentId\)/.test(s)
-        ? true
-        : "agent_achievements is never queried for this agent"
-    },
-    neg: {
-      file: "motivationPage",
-      find: "                const unlocked = earnedIds.has(a.id)",
-      replace: "                const unlocked = currentPoints >= a.points_required",
+      find: "  const scope: LeaderboardScope | null = isLeaderboardScope(params.scope) ? params.scope : null",
+      replace: "  const scope = (params.scope ?? null) as LeaderboardScope | null",
     },
   },
 ]

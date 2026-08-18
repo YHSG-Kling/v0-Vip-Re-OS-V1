@@ -56,6 +56,7 @@ import {
   type CapSource,
 } from "@/lib/commission/cap-resolver"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { tierLabelForPoints } from "@/lib/gamification/tiers"
 
 export interface Agent360Goal {
   goalType: string
@@ -161,14 +162,16 @@ export interface Agent360 {
   }
 }
 
-/** Same tier ladder getAgentPointsAndTier computes (thresholds in code, no table). */
-function tierFor(points: number): string {
-  if (points >= 25000) return "Platinum"
-  if (points >= 10000) return "Gold"
-  if (points >= 2500) return "Silver"
-  if (points >= 500) return "Bronze"
-  return "Rookie"
-}
+/**
+ * THE ONE POINTS-TIER LADDER — lib/gamification/tiers.ts. This was a fourth
+ * hand-written copy of the thresholds: three sites agreed on 500/2500/10000/25000
+ * and the Motivation page used 0/1000/5000/15000, so a manager and the agent
+ * themselves could be shown different tiers for the same number. The base rung was
+ * also spelled three ways across those copies ("Rookie" here, "none" in
+ * getAgentPointsAndTier and on /dashboard/intelligence); it is "Unranked" now, in
+ * one place.
+ */
+const tierFor = tierLabelForPoints
 
 export async function getAgent360Action(
   targetUserId: string,

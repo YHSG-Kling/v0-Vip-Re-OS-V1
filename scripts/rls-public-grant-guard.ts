@@ -70,8 +70,15 @@ const RUN_NEGATIVE = !process.argv.includes("--no-negative")
 const APPLIED_DIR = "supabase/migrations"
 const LEGACY_DIR = "scripts"
 
-/** The legacy corpus ratchet. Lower it when the count genuinely falls. */
-const LEGACY_BASELINE = 173
+/** The legacy corpus ratchet. Lower it when the count genuinely falls.
+ *  173 -> 170: scripts/335-create-agents-table.sql's gamification block was
+ *  removed with m484. It defined three tables that do not exist in the live
+ *  database (agent_points_history, agent_earned_badges, and an `agent_badges`
+ *  with a shape that COLLIDES with the live join table), each guarded by
+ *  `FOR ALL USING (true) WITH CHECK (true)`. Slack in this ratchet is not
+ *  harmless: it is exactly what let the negative control add a defect and still
+ *  pass, so the number has to follow the corpus down. */
+const LEGACY_BASELINE = 170
 
 const failures: string[] = []
 function check(label: string, ok: boolean, detail = ""): boolean {

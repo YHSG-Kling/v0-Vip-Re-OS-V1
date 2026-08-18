@@ -113,8 +113,10 @@ interface IntelligenceOSClientProps {
   pointsData: {
     points: number
     currentTier: string
-    nextTier: string
+    /** Null at the top of the threshold ladder — Diamond is conferred by a broker. */
+    nextTier: string | null
     pointsToNextTier: number
+    progressPercent: number
   }
   recentBadges: Array<{
     id: string
@@ -241,6 +243,7 @@ export function IntelligenceOSClient({
                 currentTier={pointsData.currentTier}
                 nextTier={pointsData.nextTier}
                 pointsToNextTier={pointsData.pointsToNextTier}
+                tierProgress={pointsData.progressPercent}
                 recentBadges={recentBadges}
                 nextBadgeProgress={nextBadgeProgress}
                 pointDrivers={pointDrivers}
