@@ -91,7 +91,7 @@ export async function GET(request: NextRequest) {
         // isTenancyPrincipal for the solo/team shapes (the exact
         // intelligence-report gate idiom).
         const { data: members } = await svc.from("users")
-          .select("id, role, user_type").eq("brokerage_id", b.id).is("deleted_at", null).limit(25)
+          .select("id, user_type").eq("brokerage_id", b.id).is("deleted_at", null).limit(25)
 
         // Dedupe against the notifications ledger: this quarter's invitations.
         //
@@ -112,12 +112,13 @@ export async function GET(request: NextRequest) {
         const invitedIds = new Set(((sent ?? []) as Array<{ user_id: string | null }>).map((n) => n.user_id).filter(Boolean))
 
         const principals: string[] = []
-        for (const u of (members ?? []) as Array<{ id: string; role: string | null; user_type: string | null }>) {
+        for (const u of (members ?? []) as Array<{ id: string; user_type: string | null }>) {
           if (invitedIds.has(u.id)) { summary.alreadyInvited += 1; continue }
           if (principals.length >= 5) break
+          // user_type, never legacy users.role — PRINCIPAL_ROLES is user_type vocabulary.
           const isPrincipal =
             PRINCIPAL_ROLES.has(String(u.user_type ?? "")) ||
-            (await isTenancyPrincipal(svc, { userId: u.id, brokerageId: b.id, role: String(u.role ?? "") }))
+            (await isTenancyPrincipal(svc, { userId: u.id, brokerageId: b.id, role: String(u.user_type ?? "") }))
           if (isPrincipal) principals.push(u.id)
         }
         if (principals.length === 0) continue

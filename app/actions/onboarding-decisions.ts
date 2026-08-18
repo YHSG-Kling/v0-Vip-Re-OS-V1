@@ -29,13 +29,14 @@ async function loadMember(): Promise<
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Not authenticated" }
   const { data: row } = await supabase
-    .from("users").select("brokerage_id, user_type, role").eq("id", user.id).maybeSingle()
+    .from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
   if (!row?.brokerage_id) return { ok: false, error: "No brokerage" }
   return {
     ok: true,
     userId: user.id,
     brokerageId: (row as any).brokerage_id,
-    role: String((row as any).role ?? (row as any).user_type ?? "agent"),
+    // user_type, never legacy users.role — the principal gate is user_type vocabulary.
+    role: String((row as any).user_type ?? "agent"),
   }
 }
 

@@ -64,12 +64,13 @@ async function requireTeammatePrincipal(): Promise<Principal | { error: string }
   if (!user) return { error: "Not authenticated" }
   const { data: me } = await supabase
     .from("users")
-    .select("brokerage_id, role, user_type")
+    .select("brokerage_id, user_type")
     .eq("id", user.id)
     .maybeSingle()
   const brokerageId = (me as any)?.brokerage_id as string | null
   if (!brokerageId) return { error: "No brokerage on your account — contact your admin" }
-  const role = String((me as any)?.role ?? (me as any)?.user_type ?? "")
+  // user_type, never legacy users.role — PRINCIPAL_ROLES is user_type vocabulary.
+  const role = String((me as any)?.user_type ?? "")
   const svc = createServiceClient()
   const principal = await isTenancyPrincipal(svc, { userId: user.id, brokerageId, role })
   if (!principal) return { error: "Only the tenancy principal (broker/admin, solo agent, or team lead) can manage AI teammates" }

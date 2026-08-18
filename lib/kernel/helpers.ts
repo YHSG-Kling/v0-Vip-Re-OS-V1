@@ -59,7 +59,7 @@ export interface EmitEventParams {
 // ─── STAFF ROLES ─────────────────────────────────────────────────────────────
 // Roles that get the internal AI assistant and full dashboard navigation.
   const STAFF_ROLES = new Set([
-  "agent", "broker", "broker_admin", "admin", "tc", "transaction_coordinator",
+  "agent", "broker", "broker_admin", "broker_owner", "admin", "tc", "transaction_coordinator",
   "compliance_officer", "team_lead", "team_member", "lender", "vendor",
   "title", "superadmin", "isa",
   ])
@@ -67,18 +67,21 @@ export interface EmitEventParams {
 // ─── ROUTE → REQUIRED ROLE MAP ───────────────────────────────────────────────
 // Maps route prefix → minimum required role (checked against userContext.roles).
 // This is a coarse guard — fine-grained RLS lives in Supabase.
+// CLIENT-METADATA vocabulary, not users.user_type: UserContext.roles mixes demo
+// and auth-metadata fallbacks, which can carry "superadmin" — it stays here even
+// though it is dead as a user_type, or platform demo seats lose their nav.
 const ROUTE_ROLE_REQUIREMENTS: Record<string, string[]> = {
   "/admin":                  ["superadmin", "admin"],
-  "/dashboard/admin":        ["superadmin", "admin", "broker", "broker_admin"],
-  "/dashboard/financials":   ["agent", "broker", "broker_admin", "admin", "superadmin"],
-  "/dashboard/brokerage":    ["broker", "broker_admin", "admin", "superadmin"],
-  "/dashboard/recruiting":   ["broker", "broker_admin", "admin", "superadmin"],
-  "/dashboard/compliance":   ["broker", "broker_admin", "admin", "compliance_officer", "superadmin"],
-  "/dashboard/transactions": ["agent", "tc", "transaction_coordinator", "broker", "broker_admin", "admin", "superadmin"],
-  "/dashboard/isa":          ["isa", "broker", "broker_admin", "admin", "superadmin"],
+  "/dashboard/admin":        ["superadmin", "admin", "broker", "broker_admin", "broker_owner"],
+  "/dashboard/financials":   ["agent", "broker", "broker_admin", "broker_owner", "admin", "superadmin"],
+  "/dashboard/brokerage":    ["broker", "broker_admin", "broker_owner", "admin", "superadmin"],
+  "/dashboard/recruiting":   ["broker", "broker_admin", "broker_owner", "admin", "superadmin"],
+  "/dashboard/compliance":   ["broker", "broker_admin", "broker_owner", "admin", "compliance_officer", "superadmin"],
+  "/dashboard/transactions": ["agent", "tc", "transaction_coordinator", "broker", "broker_admin", "broker_owner", "admin", "superadmin"],
+  "/dashboard/isa":          ["isa", "broker", "broker_admin", "broker_owner", "admin", "superadmin"],
   "/dashboard":              [...STAFF_ROLES],
-  "/crm":                    ["agent", "broker", "broker_admin", "admin", "superadmin"],
-  "/leads":                  ["isa", "broker", "broker_admin", "admin", "superadmin"],
+  "/crm":                    ["agent", "broker", "broker_admin", "broker_owner", "admin", "superadmin"],
+  "/leads":                  ["isa", "broker", "broker_admin", "broker_owner", "admin", "superadmin"],
   "/portal":                 ["contact", "buyer", "seller", "lifetime"],
 }
 
@@ -305,7 +308,7 @@ export function resolvePageCapability(
 
   // Role-based capability matrix
   const isSuperadmin    = roles.includes("superadmin")
-  const isBrokerOrAdmin = roles.some(r => ["broker", "broker_admin", "admin"].includes(r))
+  const isBrokerOrAdmin = roles.some(r => ["broker", "broker_admin", "broker_owner", "admin"].includes(r))
   const isAgent         = roles.some(r => ["agent", "team_lead", "team_member"].includes(r))
   const isCompliance    = roles.includes("compliance_officer")
   const isTC            = roles.some(r => ["tc", "transaction_coordinator"].includes(r))

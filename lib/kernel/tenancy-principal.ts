@@ -5,7 +5,7 @@
  * every tenancy shape gets the same trust system; governance never
  * belongs to an org chart the tenant doesn't have):
  *
- *   · broker / admin / super_admin — always principals.
+ *   · broker / broker_admin / broker_owner / admin — always principals.
  *   · solo_agent tier — the agent IS the principal (their own shop).
  *   · team tier — the team lead (teams.team_lead_id → their agents row).
  *   · brokerage / multi_location tiers — broker/admin only.
@@ -19,13 +19,20 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 
 type Svc = SupabaseClient<any, any, any>
 
-export const PRINCIPAL_ROLES = new Set(["broker", "admin", "super_admin", "superadmin"])
+// Role input must be users.user_type (case-insensitive): the legacy users.role
+// column holds title-cased junk live ('Admin', 'Lender') and never feeds this.
+// broker_admin is a legacy INPUT spelling (canonicalizes to broker, never stored).
+// super_admin/superadmin are dropped — neither is storable as users.user_type
+// (0 live rows), and platform staff is a platform_role question, not a tenancy one.
+// team_lead is deliberately NOT here: team-tier leads pass via the
+// teams.team_lead_id FK fallback below (tenancy grain, m472/m473).
+export const PRINCIPAL_ROLES = new Set(["broker", "broker_admin", "broker_owner", "admin"])
 
 export async function isTenancyPrincipal(
   svc: Svc,
   input: { userId: string; brokerageId: string; role: string },
 ): Promise<boolean> {
-  if (PRINCIPAL_ROLES.has(input.role)) return true
+  if (PRINCIPAL_ROLES.has(String(input.role ?? "").toLowerCase())) return true
   const { data: brk } = await svc.from("brokerages").select("plan_tier").eq("id", input.brokerageId).maybeSingle()
   const tier = String((brk as any)?.plan_tier ?? "solo_agent")
   if (tier === "solo_agent") return true

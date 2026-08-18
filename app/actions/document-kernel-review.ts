@@ -37,10 +37,12 @@ async function loadActor(allowed: Set<string>): Promise<
   if (!user) return { ok: false, error: "Not authenticated" }
   const { data: row } = await supabase
     .from("users")
-    .select("brokerage_id, user_type, role")
+    .select("brokerage_id, user_type")
     .eq("id", user.id)
     .maybeSingle()
-  const role = String((row as any)?.role ?? (row as any)?.user_type ?? "")
+  // user_type, never legacy users.role — both the local sets and the principal
+  // gate are user_type vocabulary; live users.role holds title-cased junk.
+  const role = String((row as any)?.user_type ?? "")
   if (!row?.brokerage_id) return { ok: false, error: "No brokerage" }
   if (allowed.has(role)) return { ok: true, userId: user.id, brokerageId: (row as any).brokerage_id }
 

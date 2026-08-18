@@ -38,7 +38,7 @@ export default async function IntelligenceReportPage({
 
   const { data: me } = await supabase
     .from("users")
-    .select("brokerage_id, role, user_type")
+    .select("brokerage_id, user_type")
     .eq("id", user.id)
     .maybeSingle()
   const brokerageId = (me as any)?.brokerage_id as string | null
@@ -52,7 +52,8 @@ export default async function IntelligenceReportPage({
     (await isTenancyPrincipal(svc, {
       userId: user.id,
       brokerageId,
-      role: String((me as any)?.role ?? ""),
+      // user_type, never legacy users.role — PRINCIPAL_ROLES is user_type vocabulary.
+      role: String((me as any)?.user_type ?? ""),
     }))
   if (!principal) redirect("/dashboard")
 

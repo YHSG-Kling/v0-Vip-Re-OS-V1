@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
-import { getAgentContext } from "@/lib/identity"
+import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
 
 const FEATURE_FLAGS = [
   {
@@ -103,15 +103,23 @@ const FEATURE_FLAGS = [
 
 export async function POST() {
   try {
-    const ctx = await getAgentContext()
-    if (!ctx.isAuthenticated) {
+    const supabase = await createClient()
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
-    if (!["superadmin", "admin"].includes(ctx.role)) {
-      return NextResponse.json({ error: "Forbidden — superadmin/admin only" }, { status: 403 })
-    }
 
-    const supabase = await createClient()
+    // feature_flags is the GLOBAL plan-tier catalogue (rows carry no brokerage_id)
+    // — platform infrastructure, so PLATFORM STAFF only. The prior gate tested
+    // ctx.role (user_type priority), which admitted any tenant admin.
+    const { data: me, error: meError } = await supabase
+      .from("users")
+      .select("user_type, platform_role")
+      .eq("id", user.id)
+      .maybeSingle()
+    if (meError || !isPlatformStaffIdentity(me?.user_type, me?.platform_role)) {
+      return NextResponse.json({ error: "Forbidden — platform staff only" }, { status: 403 })
+    }
 
     const rows = FEATURE_FLAGS.map((f) => ({
       ...f,

@@ -10,7 +10,7 @@ import { createClient } from "@/lib/supabase/server"
 // TRUE ADMIN GATES (operational: license/onboarding) — the two user_type role
 // arrays below are repointed to the ONE tenant roster. 'superadmin'/'super_admin'
 // were dead there: 0 live rows store either users.user_type spelling.
-import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isAdminOrBroker, resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
 import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
@@ -647,14 +647,24 @@ export async function markContractSignedManually(
       return { success: false, error: "Unauthorized" }
     }
 
-    // Verify user is admin
-    const { data: userData } = await supabase
+    // TENANT gate (the body pins the contract to the caller's brokerage) — the old
+    // gate tested a tenant roster against platform_role and so admitted only platform staff.
+    const { data: userData, error: userError } = await supabase
       .from("users")
-      .select("platform_role, brokerage_id")
+      .select("user_type, brokerage_id")
       .eq("id", user.id)
       .single()
 
-    if (!userData || !["admin", "broker", "superadmin"].includes(userData.platform_role || "")) {
+    if (userError || !userData) {
+      return { success: false, error: "Only admins can manually mark contracts as signed" }
+    }
+
+    // Guards a WRITE → resolveTenantAdmin, so a tenant role GRANT passes too (m466 parity).
+    const adminResult = await resolveTenantAdmin(supabase, user.id, userData)
+    if (!adminResult.ok) {
+      return { success: false, error: adminResult.error }
+    }
+    if (!adminResult.isTenantAdmin) {
       return { success: false, error: "Only admins can manually mark contracts as signed" }
     }
 

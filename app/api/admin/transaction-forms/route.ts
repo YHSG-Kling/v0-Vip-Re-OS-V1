@@ -13,26 +13,31 @@
  * PATCH  update fields (name, description, field_schema, is_active)
  * DELETE soft-delete (is_active=false)
  *
- * Auth: requires admin/broker/superadmin role on the user's brokerage.
+ * Auth: tenant admin (users.user_type) or platform staff (platform_role) on the
+ * user's brokerage — the forms library is tenant-admin config, and platform
+ * staff administer tenants.
  */
 
 import { NextRequest, NextResponse } from "next/server"
 import { put } from "@vercel/blob"
 import { createClient } from "@/lib/supabase/server"
-
-const ALLOWED_ROLES = new Set(["admin", "superadmin", "broker", "broker_admin"])
+import { isTenantAdminOrPlatformStaff } from "@/lib/auth/resolve-user-role"
 
 async function authAdmin(): Promise<{ userId: string; brokerageId: string } | NextResponse> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
-  const { data: userRow } = await supabase
+  // `error` destructured: supabase-js resolves a refused read, and a refusal must
+  // not be reported as "no brokerage on user".
+  const { data: userRow, error: userError } = await supabase
     .from("users").select("brokerage_id, user_type, platform_role").eq("id", user.id).maybeSingle()
+  if (userError) return NextResponse.json({ error: "Role lookup failed" }, { status: 500 })
   if (!userRow?.brokerage_id) return NextResponse.json({ error: "No brokerage on user" }, { status: 422 })
 
-  const role = userRow.user_type ?? userRow.platform_role
-  if (!role || !ALLOWED_ROLES.has(role)) {
+  // ONE vocabulary per column: user_type answers the tenant half, platform_role
+  // the staff half — never coalesced into a single mixed value.
+  if (!isTenantAdminOrPlatformStaff(userRow)) {
     return NextResponse.json({ error: "Admin role required" }, { status: 403 })
   }
   return { userId: user.id, brokerageId: userRow.brokerage_id }

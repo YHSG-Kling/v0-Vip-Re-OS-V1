@@ -37,14 +37,15 @@ async function principalGate(): Promise<{ svc: Svc; brokerageId: string; userId:
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return null
-  const { data: me } = await supabase.from("users").select("brokerage_id, role").eq("id", user.id).maybeSingle()
+  // user_type, never legacy users.role — PRINCIPAL_ROLES is user_type vocabulary.
+  const { data: me } = await supabase.from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
   const brokerageId = (me as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
   if (!brokerageId) return null
   const svc = createServiceClient()
   const principal = await isTenancyPrincipal(svc, {
     userId: user.id,
     brokerageId,
-    role: String((me as { role?: string | null } | null)?.role ?? ""),
+    role: String((me as { user_type?: string | null } | null)?.user_type ?? ""),
   })
   return principal ? { svc, brokerageId, userId: user.id } : null
 }
