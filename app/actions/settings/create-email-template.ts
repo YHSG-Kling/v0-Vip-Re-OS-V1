@@ -1,22 +1,19 @@
 'use server';
 
-import { createClient } from '@/lib/supabase/server';
 import { createServiceClient } from '@/lib/supabase/service';
+// ★ ACT-AS WRITE SEAM ★ — effective (impersonated) identity for the gate;
+// read_only impersonation refused before the service-client insert, which this
+// gate alone protects. Role predicate (user_type) unchanged.
+import { resolveWriteContext } from '@/lib/platform/acting-context';
 
 const CREATE_ROLES = ['broker', 'broker_owner', 'broker_admin', 'admin', 'super_admin', 'superadmin'];
 
 export async function createEmailTemplate(template: any) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
-
-  const { data: u } = await supabase
-    .from('users')
-    .select('brokerage_id, user_type')
-    .eq('id', user.id)
-    .maybeSingle();
-  if (!u?.brokerage_id) return { error: 'Unauthorized' };
-  if (!CREATE_ROLES.includes(u.user_type ?? '')) return { error: 'Forbidden' };
+  const ctx = await resolveWriteContext();
+  if (!ctx.ok) return { error: ctx.error };
+  if (!ctx.brokerageId) return { error: 'Unauthorized' };
+  if (!CREATE_ROLES.includes(ctx.userType ?? '')) return { error: 'Forbidden' };
+  const u = { brokerage_id: ctx.brokerageId };
 
   // Strip any caller-supplied id / brokerage_id / slug from the payload so we
   // can't forge rows into other brokerages; the slug is derived server-side.

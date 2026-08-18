@@ -1,7 +1,17 @@
 "use server"
 
-import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
+// ★ ACT-AS WRITE SEAM ★ — every export resolves the acting db through the seam:
+// writers via resolveWriteContext (read_only impersonation refused, grant
+// re-validated at call time), readers via resolveActingContext. The role gate
+// (getBrokerageId, below) evaluates the EFFECTIVE identity — the impersonated
+// seat when platform staff act as the tenant — through that same db, so the
+// investigator holds exactly the seat's authority. Before this, the gate read
+// the RAW auth user's row (the staff row, NULL brokerage → refused) and the
+// writes rode the cookie client, which tenant RLS silently zero-rowed under
+// act-as.
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
 import { CONNECTOR_PROVIDERS, domainsForScope, candidateProvider } from "@/lib/connections/scope"
 import { canonicalProvider } from "@/lib/integrations/connection-manager"
 
@@ -72,14 +82,20 @@ const CREDENTIAL_ADMIN_ROLES = ["admin", "broker", "broker_owner", "broker_admin
  * `role` is read alongside `user_type` because user_type is canonical but older rows
  * carry the value in role — matching how the rest of the codebase resolves this.
  */
-async function getBrokerageId(supabase: Awaited<ReturnType<typeof createClient>>) {
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
-  const { data: profile } = await supabase
+async function getBrokerageId(supabase: { from: (table: string) => any }) {
+  // The EFFECTIVE identity — getAgentContext re-validates any impersonation
+  // grant on this call, and returns the impersonated seat's userId when
+  // acting-as. The row read rides the caller's ACTING db (`supabase`): cookie
+  // for a normal user (their own row, RLS-permitted), service under act-as so
+  // the impersonated seat's row is readable.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.userId) throw new Error("Not authenticated")
+  const { data: profile, error: profileError } = await supabase
     .from("users")
     .select("brokerage_id, user_type, role")
-    .eq("id", user.id)
+    .eq("id", ctx.userId)
     .maybeSingle()
+  if (profileError) throw new Error(`Could not resolve your profile: ${profileError.message}`)
   if (!profile?.brokerage_id) throw new Error("No brokerage found")
 
   const resolvedRole = String(
@@ -91,11 +107,13 @@ async function getBrokerageId(supabase: Awaited<ReturnType<typeof createClient>>
     throw new Error("Forbidden: provider credentials are managed by your broker or admin")
   }
 
-  return { userId: user.id, brokerageId: profile.brokerage_id as string }
+  return { userId: ctx.userId, brokerageId: profile.brokerage_id as string }
 }
 
 export async function getPlatformCredentials(): Promise<PlatformCredential[]> {
-  const supabase = await createClient()
+  const acting = await resolveActingContext()
+  if (!acting.ok) throw new Error(acting.error)
+  const supabase = acting.db
   const { brokerageId } = await getBrokerageId(supabase)
 
   const { data, error } = await supabase
@@ -110,7 +128,9 @@ export async function getPlatformCredentials(): Promise<PlatformCredential[]> {
 }
 
 export async function getProviderOverrides(): Promise<ProviderOverride[]> {
-  const supabase = await createClient()
+  const acting = await resolveActingContext()
+  if (!acting.ok) throw new Error(acting.error)
+  const supabase = acting.db
   const { brokerageId } = await getBrokerageId(supabase)
 
   const { data, error } = await supabase
@@ -130,7 +150,10 @@ export async function upsertProviderOverride(params: {
   config?: Record<string, unknown>
   enabled?: boolean
 }): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
+  // ACT-AS WRITE SEAM — read_only refused; the write rides the acting db.
+  const ctx = await resolveWriteContext()
+  if (!ctx.ok) return { success: false, error: ctx.error }
+  const supabase = ctx.db
   const { brokerageId } = await getBrokerageId(supabase)
 
   const { error } = await supabase
@@ -162,7 +185,10 @@ export async function upsertPlatformCredential(params: {
   account_name?: string
   config?: Record<string, unknown>
 }): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
+  // ACT-AS WRITE SEAM — read_only refused; the credential write rides the acting db.
+  const ctx = await resolveWriteContext()
+  if (!ctx.ok) return { success: false, error: ctx.error }
+  const supabase = ctx.db
   const { brokerageId } = await getBrokerageId(supabase)
 
   // The form takes `platform` as FREE TEXT and wrote it straight into a
@@ -228,17 +254,25 @@ export async function togglePlatformCredential(
   id: string,
   isActive: boolean
 ): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
+  // ACT-AS WRITE SEAM — read_only refused; the toggle rides the acting db.
+  const ctx = await resolveWriteContext()
+  if (!ctx.ok) return { success: false, error: ctx.error }
+  const supabase = ctx.db
   const { brokerageId } = await getBrokerageId(supabase)
 
-  const { error } = await supabase
+  // Zero rows toggled is a refusal (wrong id / other tenant), not success.
+  const { data: toggled, error } = await supabase
     .from("platform_credentials")
     .update({ is_active: isActive, updated_at: new Date().toISOString() })
     .eq("id", id)
     .eq("owner_type", "brokerage")
     .eq("owner_id", brokerageId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if (!toggled || toggled.length === 0) {
+    return { success: false, error: "That credential is not in your brokerage" }
+  }
   revalidatePath("/dashboard/settings/integrations")
   return { success: true }
 }

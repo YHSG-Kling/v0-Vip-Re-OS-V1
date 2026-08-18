@@ -1,8 +1,14 @@
 "use server"
 
-import { getAgentContext } from "@/lib/identity"
-import { resolveWriteContext } from "@/lib/kernel/identity"
-import { createClient } from "@/lib/supabase/server"
+// ★ ACT-AS WRITE SEAM ★ — resolveWriteContext now comes from the PLATFORM seam
+// (lib/platform/acting-context), not the kernel homonym in lib/kernel/identity:
+// the kernel version never checked the impersonation MODE, so a read_only
+// act-as grant could create notifications through the service client below.
+// The seam refuses read_only outright (re-validated on the call) and hands the
+// writers an acting db, so the mark-read updates — which rode the bare cookie
+// client keyed on the EFFECTIVE userId and silently zero-rowed under act-as —
+// now land, with row counts as the proof.
+import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
@@ -35,12 +41,12 @@ export interface Notification {
 export async function getNotifications(
   limit = 20,
 ): Promise<{ success: boolean; notifications: Notification[] }> {
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated) {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok) {
     return { success: false, notifications: [] }
   }
 
-  const supabase = await createClient()
+  const supabase = ctx.db
 
   const { data, error } = await supabase
     .from("notifications")
@@ -56,7 +62,7 @@ export async function getNotifications(
     return { success: false, notifications: [] }
   }
 
-  const notifications: Notification[] = (data ?? []).map((row) => ({
+  const notifications: Notification[] = (data ?? []).map((row: Record<string, unknown>) => ({
     id: String(row.id),
     title: String(row.title ?? ""),
     body: row.body != null ? String(row.body) : null,
@@ -77,22 +83,27 @@ export async function getNotifications(
 export async function markNotificationRead(
   notificationId: string,
 ): Promise<{ success: boolean; error?: string }> {
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated) {
-    return { success: false, error: "Unauthorized" }
+  // ACT-AS WRITE SEAM — read_only refused; the update rides the acting db and
+  // stays pinned to the EFFECTIVE user's own rows.
+  const ctx = await resolveWriteContext()
+  if (!ctx.ok) {
+    return { success: false, error: ctx.error }
   }
 
-  const supabase = await createClient()
-
-  const { error } = await supabase
+  // Zero rows is a refusal (not this user's notification), not success.
+  const { data: marked, error } = await ctx.db
     .from("notifications")
     .update({ is_read: true, read_at: new Date().toISOString() })
     .eq("id", notificationId)
     .eq("user_id", ctx.userId)
+    .select("id")
 
   if (error) {
     console.warn("[notifications] markNotificationRead failed:", error.message)
     return { success: false, error: error.message }
+  }
+  if (!marked || marked.length === 0) {
+    return { success: false, error: "Notification not found" }
   }
 
   return { success: true }
@@ -104,14 +115,14 @@ export async function markAllRead(): Promise<{
   success: boolean
   error?: string
 }> {
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated) {
-    return { success: false, error: "Unauthorized" }
+  // ACT-AS WRITE SEAM — read_only refused. Zero rows here is legitimate
+  // (nothing unread), so no row-count assertion.
+  const ctx = await resolveWriteContext()
+  if (!ctx.ok) {
+    return { success: false, error: ctx.error }
   }
 
-  const supabase = await createClient()
-
-  const { error } = await supabase
+  const { error } = await ctx.db
     .from("notifications")
     .update({ is_read: true, read_at: new Date().toISOString() })
     .eq("user_id", ctx.userId)
@@ -143,11 +154,14 @@ export async function createNotification(params: {
 
   const supabase = createServiceClient()
 
-  // Caller authorization: use resolveWriteContext (kernel mandate for all write actions).
-  // Provides FK-safe agentId, superadmin brokerage fallback, and non-null brokerageId guarantee.
+  // Caller authorization: the PLATFORM act-as write seam. Refuses read_only
+  // impersonation before this service-client write (the kernel homonym it
+  // replaced never checked the mode, so a read_only grant could write here).
+  // Under act-as, ctx.userId/agentId/brokerageId are the IMPERSONATED seat's —
+  // the tenant checks below evaluate that seat's authority, never more.
   const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) {
-    return { success: false, error: "Unauthorized" }
+  if (!ctx.ok) {
+    return { success: false, error: ctx.error }
   }
 
   // Deny authenticated callers who have no agent identity and are not a
@@ -189,7 +203,8 @@ export async function createNotification(params: {
     }
     targetAgent = ta
     // Broker/admin callers (no agentId) must stay within their own brokerage.
-    // resolveWriteContext guarantees brokerageId is non-null, so only compare values.
+    // ctx.brokerageId may be null (untenanted staff seat): NULL matches no
+    // tenant, so the mismatch branch fires and only a superadmin passes it.
     //
     // The superadmin exemption reads BOTH identity columns. WriteContext carries
     // only user_type, and `ctx.userType !== "superadmin"` was true for the

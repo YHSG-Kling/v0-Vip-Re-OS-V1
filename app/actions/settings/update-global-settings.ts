@@ -1,6 +1,11 @@
 'use server';
 
-import { createClient } from '@/lib/supabase/server';
+// ★ ACT-AS WRITE SEAM ★ — this writer gates through resolveWriteContext(): a
+// read_only impersonation grant is refused BEFORE the kernel is reached, and
+// under an active FULL grant the kernel's admin gate is handed the EFFECTIVE
+// (impersonated) identity plus the acting db, so the tenant resolves from the
+// impersonated seat's own users row instead of the staff row (NULL brokerage).
+import { resolveWriteContext } from '@/lib/platform/acting-context';
 import { updateGlobalSettings as kernelUpdateGlobalSettings } from '@/lib/kernel';
 
 // Non-secret fields the settings forms are allowed to write. SMTP + API keys are
@@ -35,16 +40,17 @@ const ALLOWED_FIELDS = [
 // ignored — the row is always resolved from the caller's brokerage.
 export async function updateGlobalSettings(updates: Record<string, unknown>) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user?.id) return { error: 'Unauthorized' };
+    // ACT-AS WRITE SEAM — refuses read_only impersonation outright; ctx.userId
+    // is the EFFECTIVE user (the impersonated tenant identity when acting-as).
+    const ctx = await resolveWriteContext();
+    if (!ctx.ok) return { error: ctx.error };
 
     const clean: Record<string, unknown> = {};
     for (const key of ALLOWED_FIELDS) {
       if (updates[key] !== undefined) clean[key] = updates[key];
     }
 
-    await kernelUpdateGlobalSettings({ userId: user.id, updates: clean as any });
+    await kernelUpdateGlobalSettings({ userId: ctx.userId, db: ctx.db, updates: clean as any });
     return { data: true };
   } catch (error) {
     console.error('[settings] Error updating global settings:', error);

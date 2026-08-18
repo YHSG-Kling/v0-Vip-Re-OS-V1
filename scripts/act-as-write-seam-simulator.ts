@@ -187,6 +187,139 @@ function main() {
       return s !== -1 && !/readOnly/.test(seg)
     })())
 
+  // ── W2. RULING WAVE — global-settings kernel gate rides the seam ──────────
+  console.log("\n[closure 1 — lib/kernel/global-settings.ts requireBrokerAdmin]")
+  const gsk = read("lib/kernel/global-settings.ts")
+  check("requireBrokerAdmin accepts an injected ctx-resolved db (act-as tenant resolution)",
+    /async function requireBrokerAdmin\(\s*userId: string,\s*db\?: SupabaseLike/.test(gsk) &&
+    /const supabase = db \?\? \(await createClient\(\)\)/.test(gsk))
+  check("admin predicate itself unchanged (roster + platform-superadmin both-columns test)",
+    /BROKERAGE_ADMIN_USER_TYPES = new Set\(\["admin", "broker", "broker_owner"\]\)/.test(gsk) &&
+    /userType === "superadmin" \|\| platformRole === "superadmin"/.test(gsk) &&
+    /if \(!BROKERAGE_ADMIN_USER_TYPES\.has\(userType\) && !isPlatformSuperadmin\)/.test(gsk))
+  check("both kernel entry points thread the db into the gate",
+    (gsk.match(/requireBrokerAdmin\(params\.userId, params\.db\)/g) ?? []).length === 2)
+  const ugs = read("app/actions/settings/update-global-settings.ts")
+  check("update-global-settings action gates through the seam (import-pinned) and passes ctx.userId + ctx.db",
+    /import \{ resolveWriteContext \} from '@\/lib\/platform\/acting-context'/.test(ugs) &&
+    /const ctx = await resolveWriteContext\(\)/.test(ugs) &&
+    /if \(!ctx\.ok\) return \{ error: ctx\.error \}/.test(ugs) &&
+    /kernelUpdateGlobalSettings\(\{ userId: ctx\.userId, db: ctx\.db/.test(ugs) &&
+    !/auth\.getUser\(\)/.test(ugs))
+  const ggs = read("app/actions/settings/get-global-settings.ts")
+  check("get-global-settings (read) rides resolveActingContext — read_only may still SEE",
+    /resolveActingContext/.test(ggs) && /userId: ctx\.userId, db: ctx\.db/.test(ggs) && !/resolveWriteContext/.test(ggs))
+
+  // ── W2. RULING WAVE — brokerage identity (finance-gated) ──────────────────
+  console.log("\n[closure 2 — brokerage-identity.ts: full grant walks it, gate on the IMPERSONATED identity]")
+  const bi = read("app/actions/settings/brokerage-identity.ts")
+  check("writes gate through resolveWriteContext (import-pinned, refusal destructured)",
+    /import \{ resolveActingContext, resolveWriteContext \} from '@\/lib\/platform\/acting-context'/.test(bi) &&
+    /const seam = await resolveWriteContext\(\)\s*\n\s*if \(!seam\.ok\) return \{ data: null, error: seam\.error \}/.test(bi))
+  check("the SAME finance gate, evaluated against the IMPERSONATED identity (acting.userId/userType)",
+    /resolveBrokerageFinanceAdmin\(\s*supabase,\s*acting\.userId,\s*\{ user_type: acting\.userType, brokerage_id: brokerageId \},?\s*\)/.test(bi))
+  check("canEdit is authority-of-the-seat AND not read_only (never exceeds; read_only never writes)",
+    /canEdit: admin\.isFinanceAdmin && !acting\.readOnly/.test(bi))
+  check("zero-rows-as-refusal survives on the identity write (.select('id') + length check)",
+    /\.select\('id'\)/.test(bi) && /if \(!saved \|\| saved\.length === 0\)/.test(bi))
+  check("negative control: tenant still resolves from the session context, never a payload field",
+    !/brokerageId = \(?input/.test(bi))
+
+  // ── W2. RULING WAVE — assertCanActOnContact closure ───────────────────────
+  console.log("\n[closure 3 — lib/auth/contact-access.ts: staff write only under FULL, read_only never writes]")
+  const ca = read("lib/auth/contact-access.ts")
+  check("identity resolves through getAgentContext (grant re-validated on the call, import-pinned)",
+    /import \{ getAgentContext \} from "@\/lib\/identity\/get-agent-context"/.test(ca) &&
+    /const ctx = await getAgentContext\(\)/.test(ca))
+  check("intent defaults to WRITE (fail closed); read surfaces opt in",
+    /const intent = opts\?\.intent \?\? "write"/.test(ca))
+  check("read_only impersonation refused for writes BEFORE the contact lookup, standard error",
+    /if \(intent === "write" && ctx\.isImpersonating && ctx\.impersonationMode !== "full"\)/.test(ca) &&
+    /READ_ONLY_ACTING_ERROR/.test(ca) &&
+    ca.indexOf('ctx.impersonationMode !== "full"') < ca.indexOf('.from("contacts")'))
+  check("non-impersonating staff: READ passes, WRITE refused (no raw-staff write lane)",
+    /if \(isStaff\) \{\s*\n\s*if \(intent === "read"\) return \{ ok: true/.test(ca) &&
+    /acting as the tenant with full access/.test(ca))
+  check("the tenant tree is evaluated on the EFFECTIVE identity (ctx.*, i.e. the impersonated seat)",
+    /ctx\.userType === "agent"/.test(ca) &&
+    /c\.agent_id === agentId/.test(ca) &&
+    /BROKERAGE_ROLES\.has\(ctx\.userType\) && ctx\.brokerageId && ctx\.brokerageId === c\.brokerage_id/.test(ca))
+  check("negative control: the old unconditional staff pass is gone",
+    !/profile\?\.user_type === "superadmin" \|\| isPlatformStaffRole\(profile\?\.platform_role\)\) \{\s*\n\s*return \{ ok: true/.test(ca))
+  check("real actor surfaced for audit (actorUserId = impersonator ?? user)",
+    /actorUserId = ctx\.impersonatorUserId \?\? ctx\.userId/.test(ca))
+  check("read callers pass intent:'read' (contact page + strategy-session getter)",
+    /assertCanActOnContact\(contactId, \{ intent: "read" \}\)/.test(read("app/crm/contacts/[contactId]/page.tsx")) &&
+    /assertCanActOnContact\(input\.contactId, \{ intent: "read" \}\)/.test(read("app/actions/strategy-session.ts")))
+  check("write callers keep the fail-closed default (no intent:'read' in the write lanes)",
+    !/intent: "read"/.test(read("app/actions/contacts/update-addressing.ts")) &&
+    !/intent: "read"/.test(read("app/actions/contacts/last-promise.ts")) &&
+    !/intent: "read"/.test(read("app/actions/contact-quick-actions.ts")))
+
+  // ── W2. ADOPTION TRANCHE ──────────────────────────────────────────────────
+  console.log("\n[adoption tranche — settings/* + user-profile + notifications ride the seam]")
+  const SEAM_IMPORT = /import \{[^}]*resolveWriteContext[^}]*\} from ["']@\/lib\/platform\/acting-context["']/
+  const WRITERS: Array<[string, string]> = [
+    ["app/actions/settings/global-settings-actions.ts", "updateWidgetScope"],
+    ["app/actions/settings/create-commission-structure.ts", "createCommissionStructure"],
+    ["app/actions/settings/delete-commission-structure.ts", "deleteCommissionStructure"],
+    ["app/actions/settings/create-email-template.ts", "createEmailTemplate"],
+    ["app/actions/settings/update-email-template.ts", "updateEmailTemplate"],
+    ["app/actions/settings/integrations.ts", "upsertPlatformCredential"],
+    ["app/actions/settings/listing-task-templates.ts", "updateListingTaskTemplate"],
+    ["app/actions/settings/manage-notification-rules.ts", "createRule"],
+    ["app/actions/settings/update-notification-rules.ts", "updateNotificationRules"],
+    ["app/actions/settings/provider-settings-actions.ts", "saveProviderOverride"],
+    ["app/actions/settings/reputation-preferences.ts", "saveReputationPreferences"],
+    ["app/actions/settings/revenue-share-setting.ts", "setRevenueShareEnabled"],
+    ["app/actions/settings/showing-financial-gate-setting.ts", "setShowingFinancialGateRequired"],
+    ["app/actions/user-profile.ts", "updateMyAgentIdentity"],
+    ["app/actions/notifications.ts", "createNotification"],
+  ]
+  for (const [file, fn] of WRITERS) {
+    const s = read(file)
+    check(`${file.split("/").pop()} — writer ${fn} import-pinned to the seam + resolveWriteContext gate`,
+      SEAM_IMPORT.test(s) && /await resolveWriteContext\(\)/.test(s) && s.includes(fn))
+    check(`${file.split("/").pop()} — no raw auth.getUser() tenant resolution left on the gate path`,
+      !/supabase\.auth\.getUser\(\)/.test(s))
+  }
+  check("gates evaluate the IMPERSONATED identity (ctx.userType / ctx.userId), not the staff row",
+    /CREATE_ROLES\.includes\(ctx\.userType/.test(read("app/actions/settings/create-commission-structure.ts")) &&
+    /DELETE_ROLES\.includes\(ctx\.userType/.test(read("app/actions/settings/delete-commission-structure.ts")) &&
+    /resolveTenantAdmin\(ctx\.db, ctx\.userId/.test(read("app/actions/settings/update-email-template.ts")) &&
+    /isBrokerageFinanceAdmin\(\{ user_type: acting\.userType \}\)/.test(read("app/actions/settings/revenue-share-setting.ts")))
+  const integ = read("app/actions/settings/integrations.ts")
+  check("integrations gate reads the EFFECTIVE user's row through the acting db",
+    /const ctx = await getAgentContext\(\)/.test(integ) &&
+    /\.eq\("id", ctx\.userId\)/.test(integ) &&
+    (integ.match(/await getBrokerageId\(supabase\)/g) ?? []).length >= 5)
+  check("integrations toggle counts rows (zero rows toggled = refusal)",
+    /if \(!toggled \|\| toggled\.length === 0\)/.test(integ))
+  const notif = read("app/actions/notifications.ts")
+  check("notifications no longer rides the kernel homonym (mode-blind resolveWriteContext)",
+    !/from "@\/lib\/kernel\/identity"/.test(notif) && SEAM_IMPORT.test(notif))
+  check("mark-read counts rows; markAll legitimately does not",
+    /if \(!marked \|\| marked\.length === 0\)/.test(notif))
+  const up = read("app/actions/user-profile.ts")
+  check("user-profile users-row writes count rows (zero rows = refusal, not success)",
+    (up.match(/\.select\("id"\)/g) ?? []).length >= 3 &&
+    /if \(!savedUser \|\| savedUser\.length === 0\)/.test(up))
+  const rep = read("app/actions/settings/reputation-preferences.ts")
+  check("reputation-preferences pins the tenant on every agents query",
+    (rep.match(/\.eq\("brokerage_id", ctx\.brokerageId\)/g) ?? []).length >= 3 &&
+    /if \(!saved \|\| saved\.length === 0\)/.test(rep))
+  const READERS: string[] = [
+    "app/actions/settings/get-global-settings.ts",
+    "app/actions/settings/list-commission-structures.ts",
+    "app/actions/settings/list-email-templates.ts",
+    "app/actions/settings/list-notification-rules.ts",
+  ]
+  for (const file of READERS) {
+    const s = read(file)
+    check(`${file.split("/").pop()} — reader rides resolveActingContext (read_only may look)`,
+      /resolveActingContext/.test(s))
+  }
+
   // ── 4. Seam discoverability + no read_only service leak in acting-context ──
   console.log("\n[seam shape + barrel]")
   const barrel = read("lib/identity/index.ts")

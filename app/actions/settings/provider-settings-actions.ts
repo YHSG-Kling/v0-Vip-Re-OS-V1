@@ -1,8 +1,13 @@
 'use server'
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireBrokerageAdmin } from "@/lib/auth/require-brokerage-admin"
+// ★ ACT-AS WRITE SEAM ★ — every export resolves the EFFECTIVE identity through
+// the seam (the impersonated seat when platform staff act as the tenant), so
+// requireBrokerAdmin below evaluates the IMPERSONATED user's row instead of the
+// raw staff row (NULL brokerage → refused). Writers refuse read_only grants and
+// write through the acting db; readers ride resolveActingContext.
+import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -79,11 +84,11 @@ export async function getProviderSettings(): Promise<{
   isSuperadmin: boolean
   brokerageId: string
 }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user?.id) throw new Error("Unauthorized")
+  const ctx = await resolveActingContext()
+  if (!ctx.ok) throw new Error(ctx.error)
+  const supabase = ctx.db
 
-  const { brokerageId, userType, platformRole } = await requireBrokerAdmin(user.id)
+  const { brokerageId, userType, platformRole } = await requireBrokerAdmin(ctx.userId)
   const isSuperadmin = isSuperadminIdentity(userType, platformRole)
 
   const { data: rows, error } = await supabase
@@ -105,9 +110,9 @@ export async function getSystemProviderStatus(): Promise<{
   directMailEnabled: boolean
   videoEnabled: boolean
 }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user?.id) throw new Error("Unauthorized")
+  const ctx = await resolveActingContext()
+  if (!ctx.ok) throw new Error(ctx.error)
+  const supabase = ctx.db
 
   // Check if superadmin has enabled direct_mail / video overrides
   const { data: rows } = await supabase
@@ -116,8 +121,8 @@ export async function getSystemProviderStatus(): Promise<{
     .eq("scope_type", "superadmin")
     .in("provider_type", ["direct_mail", "video"])
 
-  const directMailRow = rows?.find((r) => r.provider_type === "direct_mail")
-  const videoRow = rows?.find((r) => r.provider_type === "video")
+  const directMailRow = rows?.find((r: { provider_type: string }) => r.provider_type === "direct_mail")
+  const videoRow = rows?.find((r: { provider_type: string }) => r.provider_type === "video")
 
   return {
     directMailEnabled: directMailRow?.enabled ?? false,
@@ -130,11 +135,14 @@ export async function getSystemProviderStatus(): Promise<{
 export async function saveProviderOverride(
   payload: ProviderSettingsPayload
 ): Promise<void> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user?.id) throw new Error("Unauthorized")
+  // ACT-AS WRITE SEAM — read_only impersonation refused before any write; the
+  // upsert below rides the acting db (cookie normally, service under a FULL
+  // grant re-validated on this call).
+  const ctx = await resolveWriteContext()
+  if (!ctx.ok) throw new Error(ctx.error)
+  const supabase = ctx.db
 
-  const { brokerageId, userType, platformRole } = await requireBrokerAdmin(user.id)
+  const { brokerageId, userType, platformRole } = await requireBrokerAdmin(ctx.userId)
 
   // Brokerages cannot override system-only types
   if (SYSTEM_ONLY_TYPES.has(payload.provider_type) && !isSuperadminIdentity(userType, platformRole)) {

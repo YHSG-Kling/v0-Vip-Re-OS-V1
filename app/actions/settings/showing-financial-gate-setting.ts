@@ -22,23 +22,22 @@
  * their whole firm's showing policy.
  */
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
+// ★ ACT-AS WRITE SEAM ★ — the gate resolves the EFFECTIVE identity (the
+// impersonated seat under act-as, never the raw staff row with its NULL
+// brokerage). The finance predicate is unchanged and is evaluated on that
+// impersonated identity; the setter refuses read_only grants before the
+// service-client write, which this gate alone protects.
+import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
 
-async function resolveBrokerAdmin(): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthenticated" }
-
-  const { data: profile, error: profileError } = await supabase
-    .from("users")
-    .select("user_type, brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (profileError) return { ok: false, error: profileError.message }
-  if (!profile?.brokerage_id) return { ok: false, error: "No brokerage" }
+async function resolveBrokerAdmin(
+  mode: "read" | "write",
+): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {
+  const acting = mode === "write" ? await resolveWriteContext() : await resolveActingContext()
+  if (!acting.ok) return { ok: false, error: acting.error ?? "Unauthenticated" }
+  if (!acting.brokerageId) return { ok: false, error: "No brokerage" }
 
   // A solo agent IS their own brokerage, so they set their own showing policy —
   // same carve-out the revenue-share setting makes, for the same reason.
@@ -46,7 +45,7 @@ async function resolveBrokerAdmin(): Promise<{ ok: true; brokerageId: string } |
   const { data: brk, error: brkError } = await svc
     .from("brokerages")
     .select("plan_tier")
-    .eq("id", profile.brokerage_id)
+    .eq("id", acting.brokerageId)
     .maybeSingle()
   if (brkError) return { ok: false, error: brkError.message }
 
@@ -56,10 +55,11 @@ async function resolveBrokerAdmin(): Promise<{ ok: true; brokerageId: string } |
   // RLS refuses. It EXCLUDES team_lead by the owner's ruling, and it ADDS
   // broker_owner, which the local literal omitted: the person who OWNS the
   // brokerage was refused by the gate guarding their own brokerage's setting.
-  if (!isSolo && !isBrokerageFinanceAdmin(profile as { user_type?: string | null })) {
+  // Evaluated on the IMPERSONATED identity's user_type when acting-as.
+  if (!isSolo && !isBrokerageFinanceAdmin({ user_type: acting.userType })) {
     return { ok: false, error: "Only a broker or admin can change how showings are gated." }
   }
-  return { ok: true, brokerageId: profile.brokerage_id }
+  return { ok: true, brokerageId: acting.brokerageId }
 }
 
 export async function getShowingFinancialGateSetting(): Promise<{
@@ -67,7 +67,7 @@ export async function getShowingFinancialGateSetting(): Promise<{
   required: boolean
   error?: string
 }> {
-  const ctx = await resolveBrokerAdmin()
+  const ctx = await resolveBrokerAdmin("read")
   if (!ctx.ok) return { ok: false, required: false, error: ctx.error }
 
   const svc = createServiceClient()
@@ -92,7 +92,7 @@ export async function getShowingFinancialGateSetting(): Promise<{
 export async function setShowingFinancialGateRequired(
   required: boolean,
 ): Promise<{ ok: boolean; error?: string }> {
-  const ctx = await resolveBrokerAdmin()
+  const ctx = await resolveBrokerAdmin("write")
   if (!ctx.ok) return { ok: false, error: ctx.error }
 
   const svc = createServiceClient()

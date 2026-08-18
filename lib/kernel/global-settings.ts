@@ -35,6 +35,10 @@ export type GlobalSettingsRow = {
 
 // ─── INTERNAL HELPER ─────────────────────────────────────────────────────────
 
+/** Minimal client shape this module needs — lets the actions inject the
+ *  ctx-resolved acting db without importing supabase types here. */
+type SupabaseLike = { from: (table: string) => any }
+
 // The tenant roster, MIRRORING public.is_brokerage_admin() exactly:
 //
 //   SELECT user_type IN ('admin', 'broker', 'broker_owner') …
@@ -48,10 +52,22 @@ export type GlobalSettingsRow = {
 // the app up to the database; it does not go past it.
 const BROKERAGE_ADMIN_USER_TYPES = new Set(["admin", "broker", "broker_owner"])
 
+// ★ ACT-AS WRITE SEAM ★ — the users-row read rides an INJECTED, ctx-resolved
+// client when the caller provides one (lib/platform/acting-context.ts:
+// resolveWriteContext / resolveActingContext hand their `db` through the
+// actions). Before this, the row was always read through the caller's COOKIE
+// client keyed on the RAW auth user: under act-as that is the platform-staff
+// row (brokerage_id NULL), so every settings read/write while acting-as died
+// on "User not found"/NULL tenant. The actions now pass the EFFECTIVE user id
+// (the impersonated identity) plus the acting db, so this gate evaluates the
+// SAME admin predicate against the IMPERSONATED identity's own row — the
+// investigator inherits that seat's authority and never exceeds it. The
+// predicate itself is unchanged.
 async function requireBrokerAdmin(
-  userId: string
+  userId: string,
+  db?: SupabaseLike
 ): Promise<{ brokerageId: string; userType: string; platformRole: string | null }> {
-  const supabase = await createClient()
+  const supabase = db ?? (await createClient())
 
   const { data: user, error } = await supabase
     .from("users")
@@ -165,13 +181,21 @@ async function ensureGlobalSettingsRow(
 
 export async function getGlobalSettings(params: {
   userId: string
+  /** Optional ctx-resolved client (acting-context db) for the gate's users-row
+   *  read — required for act-as, harmless otherwise. Row I/O stays on the
+   *  service client regardless (see ensureGlobalSettingsRow). */
+  db?: SupabaseLike
 }): Promise<GlobalSettingsRow> {
-  const { brokerageId } = await requireBrokerAdmin(params.userId)
+  const { brokerageId } = await requireBrokerAdmin(params.userId, params.db)
   return ensureGlobalSettingsRow(brokerageId, params.userId)
 }
 
 export async function updateGlobalSettings(params: {
   userId: string
+  /** Optional ctx-resolved client (acting-context db) for the gate's users-row
+   *  read. The WRITE below stays on the service client either way; callers must
+   *  gate through resolveWriteContext so a read_only grant never reaches here. */
+  db?: SupabaseLike
   updates: Partial<
     Pick<
       GlobalSettingsRow,
@@ -192,7 +216,7 @@ export async function updateGlobalSettings(params: {
 }): Promise<void> {
   // Note: SMTP + API keys are secrets — do NOT update via this function.
   // A separate hardened update function will handle those fields.
-  const { brokerageId } = await requireBrokerAdmin(params.userId)
+  const { brokerageId } = await requireBrokerAdmin(params.userId, params.db)
   // Guarantee a row exists first so saving on a fresh brokerage creates it
   // instead of silently updating zero rows.
   await ensureGlobalSettingsRow(brokerageId, params.userId)

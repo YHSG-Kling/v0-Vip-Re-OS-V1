@@ -40,6 +40,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 
 export interface ActingContext {
   ok: boolean
+  /** Set when ok is false — the seam's own refusal message, for callers to relay. */
+  error?: string
   userId: string
   brokerageId: string | null
   userType: string
@@ -75,6 +77,7 @@ export async function resolveActingContext(): Promise<ActingContext> {
   const isImpersonating = !!ctx.isImpersonating
   return {
     ok: ctx.isAuthenticated,
+    error: ctx.isAuthenticated ? undefined : "Not authenticated",
     userId: ctx.userId,
     brokerageId: ctx.brokerageId,
     userType: ctx.userType,

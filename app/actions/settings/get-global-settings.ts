@@ -1,6 +1,11 @@
 'use server';
 
-import { createClient } from '@/lib/supabase/server';
+// ACT-AS SEAM (read side) — resolveActingContext hands back the EFFECTIVE user
+// (the impersonated identity when a platform-staff member is acting as the
+// tenant) plus the acting db, so the kernel's admin gate evaluates the
+// impersonated seat's own users row instead of the staff row (NULL brokerage).
+// A read_only grant still reads — writers are gated separately.
+import { resolveActingContext } from '@/lib/platform/acting-context';
 import { getGlobalSettings as kernelGetGlobalSettings } from '@/lib/kernel';
 
 // Default settings returned when the caller cannot load a real, brokerage-scoped
@@ -26,11 +31,10 @@ const DEFAULT_GLOBAL_SETTINGS = {
 // real row with an id instead of the old un-saveable defaults.
 export async function getGlobalSettings() {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user?.id) return DEFAULT_GLOBAL_SETTINGS;
+    const ctx = await resolveActingContext();
+    if (!ctx.ok) return DEFAULT_GLOBAL_SETTINGS;
 
-    return await kernelGetGlobalSettings({ userId: user.id });
+    return await kernelGetGlobalSettings({ userId: ctx.userId, db: ctx.db });
   } catch (error) {
     console.error('[settings] Error fetching global settings:', error);
     return DEFAULT_GLOBAL_SETTINGS;

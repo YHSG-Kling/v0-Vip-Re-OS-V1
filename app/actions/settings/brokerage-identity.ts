@@ -1,7 +1,16 @@
 'use server'
 
-import { createClient } from '@/lib/supabase/server'
 import { resolveBrokerageFinanceAdmin } from '@/lib/auth/resolve-user-role'
+// ★ ACT-AS WRITE SEAM ★ — OWNER RULING: a FULL impersonation grant walks what
+// the user's account can walk, including this finance-gated surface. The gates
+// below resolve the EFFECTIVE identity (the impersonated seat when platform
+// staff act as the tenant) through the acting-context seam, and the SAME
+// finance predicate (resolveBrokerageFinanceAdmin) is evaluated against that
+// IMPERSONATED identity — the investigator inherits the seat's authority,
+// never exceeds it: if the impersonated seat would be refused, so is the
+// investigator. resolveWriteContext refuses a read_only grant outright,
+// re-validated against the live session row on the very call.
+import { resolveActingContext, resolveWriteContext } from '@/lib/platform/acting-context'
 import { STATE_CODES } from '@/lib/constants/us-states'
 import {
   CAP_ANNIVERSARY_BASES,
@@ -222,43 +231,31 @@ const ZIP_PATTERN = /^\d{5}(-\d{4})?$/
  * readable message, never to grant anything RLS would deny.
  */
 async function resolveSessionBrokerage(): Promise<{
-  supabase: Awaited<ReturnType<typeof createClient>>
+  /** The acting db: the caller's RLS-scoped cookie client normally; the service
+   *  client under an ACTIVE impersonation grant (re-validated on this call). */
+  supabase: any
   brokerageId: string | null
   canEdit: boolean
   error: string | null
 }> {
-  const supabase = await createClient()
-
-  const { data: auth, error: authError } = await supabase.auth.getUser()
-  if (authError || !auth?.user?.id) {
+  // ACT-AS SEAM — the EFFECTIVE identity: the impersonated tenant seat when a
+  // platform-staff member is acting as the tenant, the caller themselves
+  // otherwise. Under act-as, the raw auth user's row is the STAFF row
+  // (brokerage_id NULL) and used to refuse every call here.
+  const acting = await resolveActingContext()
+  const supabase = acting.db
+  if (!acting.ok) {
     return { supabase, brokerageId: null, canEdit: false, error: 'Unauthorized' }
   }
 
-  // supabase-js RESOLVES a failed query — a permission denial arrives as
-  // `data: null` and is indistinguishable from "no such user" unless `error` is
-  // destructured and checked. "We could not look" and "there is nothing there"
-  // mean opposite things to the caller, so they are reported separately.
-  const { data: profile, error: profileError } = await supabase
-    .from('users')
-    .select('brokerage_id, user_type')
-    .eq('id', auth.user.id)
-    .maybeSingle()
-
-  if (profileError) {
-    return { supabase, brokerageId: null, canEdit: false, error: `Could not read your profile: ${profileError.message}` }
-  }
-  if (!profile) {
-    return { supabase, brokerageId: null, canEdit: false, error: 'Your user profile could not be found.' }
-  }
-
-  const brokerageId = (profile as { brokerage_id: string | null }).brokerage_id ?? null
+  const brokerageId = acting.brokerageId ?? null
   if (!brokerageId) {
     return { supabase, brokerageId: null, canEdit: false, error: 'Your account is not attached to a brokerage.' }
   }
 
-  // Same discipline as the profile read above: "we could not look" and "you may
-  // not edit" are opposite answers, so a refused grant read is reported as an
-  // error rather than collapsing into canEdit:false.
+  // "We could not look" and "you may not edit" are opposite answers, so a
+  // refused grant read is reported as an error rather than collapsing into
+  // canEdit:false.
   //
   // BROKERAGE-WIDE MONEY (m472), and this one is easy to misread as branding.
   // The writable field list below includes default_cap_amount and
@@ -269,10 +266,14 @@ async function resolveSessionBrokerage(): Promise<{
   // the WIDER tenant roster would admit a team lead the database then refuses:
   // supabase-js resolves that refusal as zero rows with `error: null`, and this
   // surface would report a saved cap that was never stored.
+  //
+  // Evaluated against the EFFECTIVE (impersonated) identity: acting.userId /
+  // acting.userType are the impersonated seat's own when acting-as, so the
+  // investigator holds exactly that seat's finance authority.
   const admin = await resolveBrokerageFinanceAdmin(
     supabase,
-    auth.user.id,
-    profile as { user_type?: string | null; brokerage_id?: string | null },
+    acting.userId,
+    { user_type: acting.userType, brokerage_id: brokerageId },
   )
   if (!admin.ok) {
     return { supabase, brokerageId, canEdit: false, error: `Could not resolve your permissions: ${admin.error}` }
@@ -281,7 +282,9 @@ async function resolveSessionBrokerage(): Promise<{
   return {
     supabase,
     brokerageId,
-    canEdit: admin.isFinanceAdmin,
+    // A read_only grant may SEE the card but never save it — the Save button
+    // stays hidden rather than offering a write resolveWriteContext will refuse.
+    canEdit: admin.isFinanceAdmin && !acting.readOnly,
     error: null,
   }
 }
@@ -382,6 +385,12 @@ export type UpdateBrokerageIdentityInput = Partial<Record<IdentityField, string>
 export async function updateBrokerageIdentity(
   input: UpdateBrokerageIdentityInput,
 ): Promise<ActionResult<{ saved: true }>> {
+  // ★ ACT-AS WRITE SEAM ★ — a read_only impersonation grant is refused HERE,
+  // before any tenant resolution or write; the grant is re-validated against
+  // the live session row on this very call, never trusted from a stale flag.
+  const seam = await resolveWriteContext()
+  if (!seam.ok) return { data: null, error: seam.error }
+
   const { supabase, brokerageId, canEdit, error: sessionError } = await resolveSessionBrokerage()
   if (sessionError || !brokerageId) return { data: null, error: sessionError ?? 'Unauthorized' }
   if (!canEdit) {
@@ -480,13 +489,16 @@ export async function updateBrokerageIdentity(
     return { data: null, error: 'Nothing to save.' }
   }
 
-  // RLS-respecting user client, so the database applies
-  // `is_brokerage_admin() AND id = current_user_brokerage_id()` itself. A refusal
-  // is therefore a ZERO-ROW result with `error: null` — supabase-js does not
-  // raise on it — so `.select("id")` is mandatory and the row count is what
-  // proves the save happened. Reporting success on a resolved promise (what this
-  // card used to do with `{ data: true }`) would tell a broker their licence
-  // number was saved when the database had silently refused it.
+  // The ACTING db: the RLS-respecting user client for a normal tenant user, so
+  // the database applies its own finance-admin policy; the service client only
+  // under an active FULL impersonation grant, where the app-layer finance gate
+  // above (evaluated on the IMPERSONATED identity) plus the `.eq('id',
+  // brokerageId)` tenant pin are the gate. Either way a refusal is a ZERO-ROW
+  // result with `error: null` — supabase-js does not raise on it — so
+  // `.select("id")` is mandatory and the row count is what proves the save
+  // happened. Reporting success on a resolved promise (what this card used to
+  // do with `{ data: true }`) would tell a broker their licence number was
+  // saved when the database had silently refused it.
   const { data: saved, error: updateError } = await supabase
     .from('brokerages')
     .update({ ...updates, updated_at: new Date().toISOString() })

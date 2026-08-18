@@ -1,7 +1,14 @@
 "use server"
 
-import { createClient } from "@/lib/supabase/server"
-import { getAgentContext } from "@/lib/identity"
+// ★ ACT-AS WRITE SEAM ★ — every write below gates through resolveWriteContext()
+// and writes through its `db`: cookie (RLS) client for a normal user, service
+// client ONLY under an active FULL impersonation grant re-validated at call
+// time (read_only refused). Before this, the writes rode the cookie client
+// keyed on the EFFECTIVE userId — under act-as, the staff session's RLS
+// matched zero rows on the impersonated user's row and supabase-js resolved
+// the refusal as success-over-nothing. Every users-row update now counts its
+// rows. Reads ride resolveActingContext for the same reason.
+import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
 
 /**
  * Save the calling user's personal email signature to users.email_signature.
@@ -10,16 +17,20 @@ import { getAgentContext } from "@/lib/identity"
 export async function saveAgentEmailSignature(
   signature: string
 ): Promise<{ success: boolean; error?: string }> {
-  const { userId } = await getAgentContext()
-  const supabase = await createClient()
+  const ctx = await resolveWriteContext()
+  if (!ctx.ok) return { success: false, error: ctx.error }
 
-  const { error } = await supabase
+  const { data: saved, error } = await ctx.db
     .from("users")
     .update({ email_signature: signature.trim() || null })
-    .eq("id", userId)
+    .eq("id", ctx.userId)
+    .select("id")
 
   if (error) {
     return { success: false, error: error.message }
+  }
+  if (!saved || saved.length === 0) {
+    return { success: false, error: "The signature was not saved — the database refused the change." }
   }
 
   return { success: true }
@@ -47,13 +58,12 @@ export interface UserProfileRow {
 }
 
 export async function getMyProfile(): Promise<{ success: boolean; error?: string; profile?: UserProfileRow }> {
-  const { userId, isAuthenticated } = await getAgentContext()
-  if (!isAuthenticated || !userId) return { success: false, error: "Unauthorized" }
-  const supabase = await createClient()
-  const { data, error } = await supabase
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.userId) return { success: false, error: "Unauthorized" }
+  const { data, error } = await ctx.db
     .from("users")
     .select("personal_website_url")
-    .eq("id", userId)
+    .eq("id", ctx.userId)
     .maybeSingle()
   if (error) return { success: false, error: error.message }
   return { success: true, profile: (data as UserProfileRow | null) ?? { personal_website_url: null } }
@@ -64,8 +74,10 @@ const URL_RE = /^https?:\/\/\S+$/
 export async function updateMyProfile(input: {
   personalWebsiteUrl?: string | null
 }): Promise<{ success: boolean; error?: string }> {
-  const { userId, isAuthenticated } = await getAgentContext()
-  if (!isAuthenticated || !userId) return { success: false, error: "Unauthorized" }
+  // ACT-AS WRITE SEAM — read_only refused before the write.
+  const ctx = await resolveWriteContext()
+  if (!ctx.ok) return { success: false, error: ctx.error }
+  const userId = ctx.userId
 
   // Normalize empty-string to null so the DB CHECK accepts "clear".
   const cleaned: string | null =
@@ -77,11 +89,14 @@ export async function updateMyProfile(input: {
     if (!URL_RE.test(cleaned)) return { success: false, error: "Website must start with http:// or https://" }
   }
 
-  const supabase = await createClient()
-  const { error } = await supabase.from("users")
+  const { data: saved, error } = await ctx.db.from("users")
     .update({ personal_website_url: cleaned })
     .eq("id", userId)
+    .select("id")
   if (error) return { success: false, error: error.message }
+  if (!saved || saved.length === 0) {
+    return { success: false, error: "The website was not saved — the database refused the change." }
+  }
   return { success: true }
 }
 
@@ -121,10 +136,11 @@ export interface AgentIdentity {
 export async function getMyAgentIdentity(): Promise<
   { success: true; identity: AgentIdentity } | { success: false; error: string }
 > {
-  const { userId, isAuthenticated } = await getAgentContext()
-  if (!isAuthenticated || !userId) return { success: false, error: "Unauthorized" }
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.userId) return { success: false, error: "Unauthorized" }
+  const userId = ctx.userId
 
-  const supabase = await createClient()
+  const supabase = ctx.db
   const [{ data: u }, { data: a }] = await Promise.all([
     supabase.from("users").select("first_name, last_name, phone").eq("id", userId).maybeSingle(),
     supabase
@@ -170,8 +186,10 @@ export async function updateMyAgentIdentity(input: {
   phoneOffice?: string | null
   yearsExperience?: number | null
 }): Promise<{ success: boolean; error?: string }> {
-  const { userId, isAuthenticated } = await getAgentContext()
-  if (!isAuthenticated || !userId) return { success: false, error: "Unauthorized" }
+  // ACT-AS WRITE SEAM — read_only refused before either write.
+  const ctx = await resolveWriteContext()
+  if (!ctx.ok) return { success: false, error: ctx.error }
+  const userId = ctx.userId
 
   const bio = trimOrNull(input.bio)
   if (bio && bio.length > 2000) return { success: false, error: "Bio is too long (max 2000 characters)" }
@@ -193,9 +211,9 @@ export async function updateMyAgentIdentity(input: {
     return { success: false, error: "Years of experience must be between 0 and 80" }
   }
 
-  const supabase = await createClient()
+  const supabase = ctx.db
 
-  const { error: uErr } = await supabase
+  const { data: savedUser, error: uErr } = await supabase
     .from("users")
     .update({
       first_name: trimOrNull(input.firstName),
@@ -203,7 +221,11 @@ export async function updateMyAgentIdentity(input: {
       phone: trimOrNull(input.phone),
     })
     .eq("id", userId)
+    .select("id")
   if (uErr) return { success: false, error: uErr.message }
+  if (!savedUser || savedUser.length === 0) {
+    return { success: false, error: "Your profile was not saved — the database refused the change." }
+  }
 
   // The agents row is scoped by user_id, so this can only ever touch the caller's own
   // record. A staff user with no agents row simply updates nothing here.
