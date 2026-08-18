@@ -5,6 +5,8 @@ import { Brain, Zap, TrendingUp, Users, AlertTriangle, Gauge, DollarSign } from 
 import { getCurrentMonthUsage } from "@/lib/ai/cost-tracking"
 import { getAgentAICostRanking } from "@/app/actions/pl-truth-engine"
 import { getBrokerageAIQuotaStatus } from "@/lib/ai/fair-use"
+import { getAIOverageStatus } from "@/lib/billing/ai-overage"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 
@@ -61,10 +63,15 @@ export default async function AIUsagePage() {
     profile?.user_type === "superadmin" || (profile as any)?.platform_role === "superadmin"
   const brokerageId  = profile?.brokerage_id as string | null
 
-  const [usage, agentRankingResult, quota] = await Promise.all([
+  // Money (the projected overage bill) is finance-admin territory; tokens are
+  // not. Superadmin keeps its platform-wide dollar view.
+  const isFinanceAdmin = isSuperadmin || isBrokerageFinanceAdmin({ user_type: profile?.user_type })
+
+  const [usage, agentRankingResult, quota, overage] = await Promise.all([
     getCurrentMonthUsage({ brokerageId: brokerageId ?? undefined }),
     getAgentAICostRanking(),
     brokerageId ? getBrokerageAIQuotaStatus(brokerageId) : Promise.resolve(null),
+    brokerageId ? getAIOverageStatus(brokerageId) : Promise.resolve(null),
   ])
 
   if (!usage) {
@@ -89,6 +96,12 @@ export default async function AIUsagePage() {
   const agentRows = agentRankingResult.ok ? agentRankingResult.rows : []
   const maxAgentTokens = agentRows[0]?.token_count ?? 1
   const totalAgentTokens = agentRows.reduce((s, r) => s + (r.token_count ?? 0), 0) || 1
+
+  // Overage (m479): over the included quota AI is SERVED and billed, not
+  // refused — when the tier's terms allow it. Derived at read time from
+  // usage_counters; nothing here accrues.
+  const overageOk = overage && overage.ok ? overage : null
+  const overageActive = !!(overageOk && overageOk.overageAllowed && overageOk.overageTokens > 0)
 
   // ROI is still meaningful even though brokers don't see dollar cost — it's
   // token efficiency: agent X's GCI ÷ tokens consumed. We render it as the
@@ -121,7 +134,9 @@ export default async function AIUsagePage() {
               </CardTitle>
               <div className="flex items-center gap-2">
                 <Badge variant="outline">{tierLabel(quota.planTier)} plan</Badge>
-                {quotaBadge(quota.quotaStatus)}
+                {overageActive
+                  ? <Badge className="bg-blue-100 text-blue-800">Over included — billed as overage</Badge>
+                  : quotaBadge(quota.quotaStatus)}
               </div>
             </div>
           </CardHeader>
@@ -141,7 +156,12 @@ export default async function AIUsagePage() {
               }
             />
             <p className="text-xs text-muted-foreground">
-              {quota.quotaStatus === "blocked" && (
+              {quota.quotaStatus === "blocked" && overageActive && (
+                <span className="text-blue-700 font-medium">
+                  You&apos;ve used your plan&apos;s included AI allowance — AI keeps working, and additional usage is billed as overage at period close.
+                </span>
+              )}
+              {quota.quotaStatus === "blocked" && !overageActive && (
                 <span className="text-red-700 font-medium">
                   Your plan has reached its monthly AI allowance. AI features will resume next month, or upgrade to continue immediately.
                 </span>
@@ -157,6 +177,60 @@ export default async function AIUsagePage() {
               {quota.quotaStatus === "unlimited" && (
                 <span>Your plan has no AI usage limit.</span>
               )}
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Overage card (m479) — included vs used vs overage for the current
+          period. The projected DOLLAR figure is money → finance admins only
+          (isBrokerageFinanceAdmin) / superadmin; tokens show to everyone the
+          page already admits. A refused overage read renders nothing rather
+          than a fake zero. */}
+      {overageOk && overageOk.includedTokens >= 0 && (
+        <Card className={overageActive ? "border-blue-300 bg-blue-50/40" : ""}>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <DollarSign className="h-4 w-4 text-primary" />
+              Overage this period
+              {overageOk.overageAllowed
+                ? <Badge variant="outline" className="ml-2">Served &amp; billed over quota</Badge>
+                : <Badge variant="outline" className="ml-2">Overage not enabled for your plan</Badge>}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Included quota</p>
+                <p className="text-xl font-bold">{formatTokens(overageOk.includedTokens)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Used</p>
+                <p className="text-xl font-bold">{formatTokens(overageOk.usedTokens)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Overage tokens</p>
+                <p className={`text-xl font-bold ${overageOk.overageTokens > 0 ? "text-blue-700" : ""}`}>
+                  {formatTokens(overageOk.overageTokens)}
+                </p>
+              </div>
+              {isFinanceAdmin && (
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1">Projected overage cost</p>
+                  <p className={`text-xl font-bold ${overageOk.overageAmountCents > 0 ? "text-blue-700" : ""}`}>
+                    {formatCost(overageOk.overageAmountCents)}
+                  </p>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                    at {formatCost(overageOk.overageRateCents)}/1K tokens
+                  </p>
+                </div>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground mt-3">
+              AI is included in your subscription up to your plan&apos;s quota
+              {overageOk.overageAllowed
+                ? "; usage past it keeps working and is invoiced as overage when the billing period closes."
+                : ". Your plan does not include overage billing — AI pauses at the quota until next period or an approved quota increase."}
             </p>
           </CardContent>
         </Card>
