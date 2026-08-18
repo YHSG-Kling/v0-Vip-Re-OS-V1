@@ -6,12 +6,12 @@
     "app/actions/admin/billing.ts": 2,
     "app/actions/admin/commission-agreement.ts": 1,
     "app/actions/agents.ts": 5,
-    "app/actions/ai-auto-response.ts": 4,
+    "app/actions/ai-auto-response.ts": 2,
     "app/actions/ai-calendar-management.ts": 1,
     "app/actions/ai-client-portal.ts": 3,
     "app/actions/ai-closing-workflow.ts": 1,
     "app/actions/ai-cma.ts": 1,
-    "app/actions/ai-content-generation.tsx": 4,
+    "app/actions/ai-content-generation.tsx": 3,
     "app/actions/ai-contract-review.ts": 1,
     "app/actions/ai-document-intelligence.ts": 1,
     "app/actions/ai-isa/initiate-engagement.ts": 1,
@@ -78,12 +78,10 @@
     "app/actions/newsletter/approve-template.ts": 2,
     "app/actions/onboarding/mentor-session.ts": 1,
     "app/actions/open-house-automation.ts": 1,
-    "app/actions/photo-management.ts": 2,
     "app/actions/podcast-generation.ts": 2,
-    "app/actions/portal-lifetime.ts": 1,
     "app/actions/portal-stream.ts": 2,
     "app/actions/privacy/data-subject-requests.ts": 1,
-    "app/actions/property-buyer-matching.ts": 2,
+    "app/actions/property-buyer-matching.ts": 1,
     "app/actions/reputation-kernel.ts": 3,
     "app/actions/seller-listing/execution-engine.ts": 1,
     "app/actions/smart-insights.ts": 1,
@@ -199,10 +197,8 @@
     "lib/commission/cda-discrepancy.ts": 3,
     "lib/commission/finalization.ts": 1,
     "lib/commission/ledger-sync.ts": 5,
-    "lib/communication/call-compliance.ts": 3,
+    "lib/communication/call-compliance.ts": 2,
     "lib/communication/phone-reachability.ts": 1,
-    "lib/communication/tcpa-gate.ts": 1,
-    "lib/communications/vendor-communications.tsx": 1,
     "lib/competitive-intel/content-intel-scan.ts": 2,
     "lib/compliance/federal-holidays.ts": 1,
     "lib/compliance/phone-scrub-runner.ts": 1,
@@ -228,7 +224,6 @@
     "lib/did/avatar-completion.ts": 3,
     "lib/did/consent.ts": 1,
     "lib/direct-mail/orchestrate-bundle-send.ts": 1,
-    "lib/direct-mail/render-postcard.ts": 1,
     "lib/documents/auto-filer.ts": 1,
     "lib/documents/autonomy-ratchet.ts": 3,
     "lib/documents/client-pdf.ts": 2,
@@ -251,7 +246,6 @@
     "lib/education/skill-freshness-radar.ts": 1,
     "lib/education/skill-freshness.ts": 1,
     "lib/embed/widget-modes.ts": 1,
-    "lib/errors/auto-retry.ts": 1,
     "lib/errors/collect-error.ts": 1,
     "lib/errors/index.ts": 7,
     "lib/external/apify-actors.ts": 1,
@@ -272,21 +266,19 @@
     "lib/finance/tax-planning.ts": 3,
     "lib/finance/team-pl-writer.ts": 1,
     "lib/financials/revenue-projection.ts": 2,
-    "lib/forms/esign-anchor-eval.ts": 2,
+    "lib/forms/esign-anchor-eval.ts": 1,
     "lib/geo/citation-scope.ts": 1,
     "lib/geo/citation-share.ts": 1,
     "lib/geo/video-landing.ts": 1,
-    "lib/goals/goal-types.ts": 1,
     "lib/inbound-mail/resolve-user-provider.ts": 1,
     "lib/integrations/integration-status.ts": 1,
-    "lib/integrations/providers/catalog.ts": 2,
-    "lib/integrations/resolve-esign-provider.ts": 1,
+    "lib/integrations/providers/catalog.ts": 1,
     "lib/intelligence/agent-registry.ts": 3,
     "lib/intelligence/agent-scorecard.ts": 1,
     "lib/intelligence/appointment-whisper.ts": 1,
     "lib/intelligence/brokerage-pnl.ts": 2,
     "lib/intelligence/career-architect.ts": 4,
-    "lib/intelligence/conversation-insights.ts": 2,
+    "lib/intelligence/conversation-insights.ts": 1,
     "lib/intelligence/curriculum-board.ts": 1,
     "lib/intelligence/decision-velocity.ts": 1,
     "lib/intelligence/deliverables-summary.ts": 2,
@@ -296,7 +288,7 @@
     "lib/intelligence/loan-milestone-sync-runner.ts": 1,
     "lib/intelligence/manager-touch-provenance.ts": 2,
     "lib/intelligence/manager-weekly-exec-plan.ts": 5,
-    "lib/intelligence/negotiation-bands.ts": 3,
+    "lib/intelligence/negotiation-bands.ts": 2,
     "lib/intelligence/offer-property-prefill-runner.ts": 1,
     "lib/intelligence/partners-meeting-reel-props.ts": 1,
     "lib/intelligence/partners-meeting.ts": 1,
@@ -335,7 +327,7 @@
     "lib/kernel/client-pulse.ts": 2,
     "lib/kernel/client-story-drafts.ts": 14,
     "lib/kernel/client-welcome.ts": 1,
-    "lib/kernel/closing-war-room.ts": 3,
+    "lib/kernel/closing-war-room.ts": 2,
     "lib/kernel/commission-forecaster.ts": 6,
     "lib/kernel/compliance-ledger.ts": 2,
     "lib/kernel/consent-recovery.ts": 2,
@@ -346,7 +338,6 @@
     "lib/kernel/cron-dispatch.ts": 3,
     "lib/kernel/db.ts": 2,
     "lib/kernel/deal-autopsy.ts": 2,
-    "lib/kernel/deal-confidence-runner.ts": 1,
     "lib/kernel/deal-play-outcomes.ts": 1,
     "lib/kernel/deal-play.ts": 1,
     "lib/kernel/deal-room-reel.ts": 2,
@@ -355,7 +346,7 @@
     "lib/kernel/document-compliance-audit.ts": 6,
     "lib/kernel/document-custody.ts": 3,
     "lib/kernel/dual-intent-linker.ts": 3,
-    "lib/kernel/education.ts": 2,
+    "lib/kernel/education.ts": 1,
     "lib/kernel/equity-trigger.ts": 4,
     "lib/kernel/farm-play.ts": 2,
     "lib/kernel/financial.ts": 3,
@@ -368,7 +359,6 @@
     "lib/kernel/intent-campaign.ts": 4,
     "lib/kernel/launch-war-room.ts": 2,
     "lib/kernel/lead-intake-cockpit.ts": 4,
-    "lib/kernel/lead-magnets.ts": 1,
     "lib/kernel/listing-inventory-radar.ts": 5,
     "lib/kernel/listing-marketing-week.ts": 2,
     "lib/kernel/listing-propensity.ts": 2,
@@ -379,7 +369,6 @@
     "lib/kernel/marketing/real-estate-compliance-gate.ts": 1,
     "lib/kernel/morning-standup.ts": 2,
     "lib/kernel/neighbor-farm.ts": 1,
-    "lib/kernel/newsletter/section-types.ts": 1,
     "lib/kernel/nothing-dropped-runner.ts": 1,
     "lib/kernel/objection-library.ts": 3,
     "lib/kernel/office-hours.ts": 1,
@@ -434,7 +423,6 @@
     "lib/lead-assignment/default-assignment.ts": 1,
     "lib/lead-assignment/rule-matcher.ts": 2,
     "lib/lead-pipeline/ai-intent-classifier.ts": 3,
-    "lib/lead-pipeline/contact-signal-rescrape.ts": 1,
     "lib/lead-pipeline/enrichment-column-map.ts": 1,
     "lib/lead-pipeline/exa-sourcer.ts": 1,
     "lib/lead-pipeline/osint-sourcer.ts": 1,
@@ -444,7 +432,6 @@
     "lib/lead-pipeline/processing-status.ts": 2,
     "lib/lead-pipeline/promotion-gate-health.ts": 1,
     "lib/lead-pipeline/raw-record-types.ts": 1,
-    "lib/lead-pipeline/relisting-detector.ts": 1,
     "lib/lead-pipeline/schedule-followup.ts": 1,
     "lib/lead-pipeline/scrape-territories.ts": 1,
     "lib/lead-pipeline/scraper-health.ts": 3,
@@ -468,7 +455,6 @@
     "lib/listings/photo-intelligence.ts": 6,
     "lib/listings/relist-recovery.ts": 1,
     "lib/listings/seller-weekly-report.ts": 2,
-    "lib/listings/tier-assigner.ts": 1,
     "lib/managers/accuracy-gate.ts": 7,
     "lib/managers/cross-referral.ts": 4,
     "lib/managers/deliberation.ts": 9,
@@ -495,7 +481,6 @@
     "lib/net-sheet/net-sheet-reconciler.ts": 1,
     "lib/newsletter/seo-score.ts": 2,
     "lib/notifications/brokerage-admins.ts": 1,
-    "lib/notifications/buyer-preferences.ts": 1,
     "lib/notifications/platform-staff.ts": 1,
     "lib/offers/closing-cost-accuracy.ts": 9,
     "lib/offers/net-sheet-calc.ts": 2,
@@ -652,7 +637,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 9065,
+  "census": 9059,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -962,7 +947,7 @@
     "app/actions/marketing-campaigns-admin.ts": 2,
     "app/actions/marketing-intelligence.ts": 3,
     "app/actions/marketing-ops.ts": 2,
-    "app/actions/marketing-package-automation.ts": 8,
+    "app/actions/marketing-package-automation.ts": 9,
     "app/actions/marketing-studio.ts": 20,
     "app/actions/multi-persona.ts": 28,
     "app/actions/negotiation-copilot.ts": 2,
@@ -1698,6 +1683,7 @@
     "app/components/dashboard/listings/lifecycle/coming-soon-command-card.tsx": 1,
     "app/components/dashboard/listings/lifecycle/completed-documents-panel.tsx": 1,
     "app/components/dashboard/listings/lifecycle/decision-history-panel.tsx": 1,
+    "app/components/dashboard/listings/lifecycle/description-approval-card.tsx": 1,
     "app/components/dashboard/listings/lifecycle/listing-description-composer.tsx": 1,
     "app/components/dashboard/listings/lifecycle/listing-forms-panel.tsx": 1,
     "app/components/dashboard/listings/lifecycle/listing-gates-panel.tsx": 1,
@@ -1938,6 +1924,7 @@
     "app/crm/contacts/[contactId]/components/fatigue-panel.tsx": 1,
     "app/crm/contacts/[contactId]/components/fatigue-widget.tsx": 1,
     "app/crm/contacts/[contactId]/components/financial-verification-panel.tsx": 1,
+    "app/crm/contacts/[contactId]/components/lifetime-segment-selector.tsx": 1,
     "app/crm/contacts/[contactId]/components/workflow-runs-panel.tsx": 1,
     "app/crm/contacts/[contactId]/listings/new/new-listing-page-client.tsx": 1,
     "app/crm/contacts/[contactId]/offers/[offerId]/offer-actions-bar.tsx": 1,
@@ -2278,6 +2265,7 @@
     "app/dashboard/listings/[id]/marketing-tier/marketing-package-panel.tsx": 1,
     "app/dashboard/listings/[id]/marketing-tier/marketing-tier-client.tsx": 1,
     "app/dashboard/listings/[id]/media/components/media-grid.tsx": 1,
+    "app/dashboard/listings/[id]/media/components/photo-ordering-rules-card.tsx": 1,
     "app/dashboard/listings/[id]/media/components/social-panel.tsx": 1,
     "app/dashboard/listings/[id]/media/components/video-panel.tsx": 1,
     "app/dashboard/listings/[id]/media/media-manager-client.tsx": 1,
@@ -2380,6 +2368,7 @@
     "app/dashboard/referrals/components/os/review-request-panel.tsx": 1,
     "app/dashboard/reporting/reporting-client.tsx": 1,
     "app/dashboard/reports/reports-client.tsx": 1,
+    "app/dashboard/settings/assistant/auto-response-panel.tsx": 1,
     "app/dashboard/settings/assistant/listening-preferences-panel.tsx": 1,
     "app/dashboard/settings/assistant/reply-style-panel.tsx": 1,
     "app/dashboard/settings/calendar/CopyToClipboardButton.tsx": 1,
@@ -3022,7 +3011,7 @@
     "lib/commission/waterfall/09-revenue-share.ts": 1,
     "lib/commission/waterfall/10-fees.ts": 1,
     "lib/commission/waterfall/11-validate-persist.ts": 1,
-    "lib/communication/call-compliance.ts": 5,
+    "lib/communication/call-compliance.ts": 4,
     "lib/communication/call-disclosures.ts": 4,
     "lib/communication/phone-reachability.ts": 2,
     "lib/communication/tcpa-gate.ts": 2,
@@ -3137,7 +3126,7 @@
     "lib/direct-mail/orchestrate-send.ts": 1,
     "lib/direct-mail/render-letter-audio.ts": 1,
     "lib/direct-mail/render-letter.ts": 1,
-    "lib/direct-mail/render-postcard.ts": 3,
+    "lib/direct-mail/render-postcard.ts": 2,
     "lib/direct-mail/resolve-size-pref.ts": 2,
     "lib/direct-mail/variant-bandit.ts": 2,
     "lib/documents/auto-filer.ts": 3,
@@ -3238,7 +3227,7 @@
     "lib/financing/rate-lock-watch-runner.ts": 1,
     "lib/financing/rate-lock-watch.ts": 1,
     "lib/forms/esign-anchor-adapters.ts": 4,
-    "lib/forms/esign-anchor-eval.ts": 3,
+    "lib/forms/esign-anchor-eval.ts": 2,
     "lib/forms/esign-anchor-plan.ts": 1,
     "lib/forms/esign-anchors.ts": 2,
     "lib/forms/pdf-form-fill.ts": 2,
@@ -3271,9 +3260,9 @@
     "lib/integrations/connection-manager.ts": 4,
     "lib/integrations/integration-status.ts": 1,
     "lib/integrations/providers/brokerage-authority.ts": 7,
-    "lib/integrations/providers/catalog.ts": 7,
+    "lib/integrations/providers/catalog.ts": 6,
     "lib/integrations/providers/provider-resolver.ts": 4,
-    "lib/integrations/resolve-esign-provider.ts": 2,
+    "lib/integrations/resolve-esign-provider.ts": 1,
     "lib/integrations/transaction-providers/embed-url.ts": 1,
     "lib/integrations/transaction-providers/resolve-transaction-provider.ts": 1,
     "lib/integrations/widget/resolve-notification-target.ts": 1,
@@ -3327,7 +3316,7 @@
     "lib/intelligence/market-insight-generator.ts": 6,
     "lib/intelligence/mobile-approval-queue.ts": 3,
     "lib/intelligence/multi-agent-router.ts": 7,
-    "lib/intelligence/negotiation-bands.ts": 7,
+    "lib/intelligence/negotiation-bands.ts": 6,
     "lib/intelligence/neighborhood-future-lens.ts": 3,
     "lib/intelligence/offer-doc-completeness-runner.ts": 1,
     "lib/intelligence/offer-doc-completeness.ts": 1,
@@ -3456,7 +3445,6 @@
     "lib/kernel/cron-logging.ts": 5,
     "lib/kernel/db.ts": 2,
     "lib/kernel/deal-autopsy.ts": 3,
-    "lib/kernel/deal-confidence-runner.ts": 1,
     "lib/kernel/deal-confidence.ts": 1,
     "lib/kernel/deal-play-outcomes.ts": 3,
     "lib/kernel/deal-play.ts": 2,
@@ -3470,7 +3458,7 @@
     "lib/kernel/document-custody.ts": 5,
     "lib/kernel/draft-quality.ts": 3,
     "lib/kernel/dual-intent-linker.ts": 4,
-    "lib/kernel/education.ts": 13,
+    "lib/kernel/education.ts": 12,
     "lib/kernel/egress-scope.ts": 3,
     "lib/kernel/email-deliverability.ts": 2,
     "lib/kernel/emit.ts": 1,
@@ -3496,7 +3484,7 @@
     "lib/kernel/launch-war-room.ts": 3,
     "lib/kernel/lead-acquisition-handlers.ts": 8,
     "lib/kernel/lead-intake-cockpit.ts": 6,
-    "lib/kernel/lead-magnets.ts": 8,
+    "lib/kernel/lead-magnets.ts": 7,
     "lib/kernel/lender-linkage.ts": 6,
     "lib/kernel/lifecycle-promo-policy.ts": 2,
     "lib/kernel/lifecycle.ts": 1,
@@ -3518,7 +3506,7 @@
     "lib/kernel/morning-standup.ts": 3,
     "lib/kernel/neighbor-farm.ts": 3,
     "lib/kernel/newsletter/assemble.ts": 2,
-    "lib/kernel/newsletter/section-types.ts": 3,
+    "lib/kernel/newsletter/section-types.ts": 2,
     "lib/kernel/newsletter/template-blueprint.ts": 1,
     "lib/kernel/nothing-dropped-runner.ts": 1,
     "lib/kernel/nothing-dropped.ts": 2,
@@ -3733,7 +3721,7 @@
     "lib/listings/seller-team-activity.ts": 2,
     "lib/listings/seller-weekly-report-runner.ts": 1,
     "lib/listings/seller-weekly-report.ts": 4,
-    "lib/listings/tier-assigner.ts": 11,
+    "lib/listings/tier-assigner.ts": 10,
     "lib/managers/accuracy-gate.ts": 12,
     "lib/managers/autonomy-gate.ts": 5,
     "lib/managers/cross-referral.ts": 8,
@@ -6355,7 +6343,8 @@
       "getSyndicationStatus",
       "generateListingOptimizations",
       "getMarketingPackageStatus",
-      "getMarketingPackageServices"
+      "getMarketingPackageServices",
+      "sendServiceReminderToVendor"
     ],
     "app/actions/marketing-studio.ts": [
       "createCampaign",
@@ -9543,6 +9532,9 @@
     "app/components/dashboard/listings/lifecycle/decision-history-panel.tsx": [
       "DecisionHistoryPanel"
     ],
+    "app/components/dashboard/listings/lifecycle/description-approval-card.tsx": [
+      "DescriptionApprovalCard"
+    ],
     "app/components/dashboard/listings/lifecycle/listing-description-composer.tsx": [
       "ListingDescriptionComposer"
     ],
@@ -10272,6 +10264,9 @@
     ],
     "app/crm/contacts/[contactId]/components/financial-verification-panel.tsx": [
       "FinancialVerificationPanel"
+    ],
+    "app/crm/contacts/[contactId]/components/lifetime-segment-selector.tsx": [
+      "LifetimeSegmentSelector"
     ],
     "app/crm/contacts/[contactId]/components/workflow-runs-panel.tsx": [
       "WorkflowRunsPanel"
@@ -11302,6 +11297,9 @@
     "app/dashboard/listings/[id]/media/components/media-grid.tsx": [
       "MediaGrid"
     ],
+    "app/dashboard/listings/[id]/media/components/photo-ordering-rules-card.tsx": [
+      "PhotoOrderingRulesCard"
+    ],
     "app/dashboard/listings/[id]/media/components/social-panel.tsx": [
       "SocialPanel"
     ],
@@ -11622,6 +11620,9 @@
     ],
     "app/dashboard/reports/reports-client.tsx": [
       "ReportsClient"
+    ],
+    "app/dashboard/settings/assistant/auto-response-panel.tsx": [
+      "AutoResponsePanel"
     ],
     "app/dashboard/settings/assistant/listening-preferences-panel.tsx": [
       "ListeningPreferencesPanel"
@@ -14294,8 +14295,7 @@
       "parseAreaCode",
       "stateFromPhone",
       "checkQuietHours",
-      "getRecordingDisclosure",
-      "withRecordingDisclosure"
+      "getRecordingDisclosure"
     ],
     "lib/communication/call-disclosures.ts": [
       "hasAiDisclosure",
@@ -14833,7 +14833,6 @@
       "renderLetterHtml"
     ],
     "lib/direct-mail/render-postcard.ts": [
-      "renderPostcardFront4x6",
       "renderPostcardBothSides4x6",
       "renderPostcardBothSides6x9"
     ],
@@ -15325,8 +15324,7 @@
     ],
     "lib/forms/esign-anchor-eval.ts": [
       "evalAnchorPlacement",
-      "evalAnchorExecution",
-      "anchorsForRole"
+      "evalAnchorExecution"
     ],
     "lib/forms/esign-anchor-plan.ts": [
       "buildEsignAnchorPlan"
@@ -15471,7 +15469,6 @@
       "isKnownProvider",
       "getCatalogEntry",
       "providerPortalMode",
-      "isProviderImplemented",
       "getImplementedProviders",
       "getTransactionFormProviders",
       "getEsignProviders"
@@ -15483,8 +15480,7 @@
       "isProviderSupported"
     ],
     "lib/integrations/resolve-esign-provider.ts": [
-      "resolveESignProviderForActor",
-      "resolveESignProviderForBrokerage"
+      "resolveESignProviderForActor"
     ],
     "lib/integrations/transaction-providers/embed-url.ts": [
       "getTransactionProviderEmbedUrl"
@@ -15704,7 +15700,6 @@
     "lib/intelligence/negotiation-bands.ts": [
       "zipFromAddress",
       "computeNegotiationBand",
-      "loadNegotiationBand",
       "loadNegotiationContext",
       "computeZipMomentum",
       "composeMomentumLine",
@@ -16367,9 +16362,6 @@
       "runDealAutopsy",
       "composeAutopsyCoachingBrief"
     ],
-    "lib/kernel/deal-confidence-runner.ts": [
-      "runDealConfidence"
-    ],
     "lib/kernel/deal-confidence.ts": [
       "distillDealConfidence"
     ],
@@ -16460,7 +16452,6 @@
       "createEducationalResource",
       "assignResource",
       "recordCompletion",
-      "getPersonalizedLearningPath",
       "generateAIEducation",
       "getProgressDashboard",
       "bulkAssignResources",
@@ -16647,7 +16638,6 @@
       "generateQRCode",
       "trackMagnetEvent",
       "getMagnetPerformance",
-      "updateMagnetSettings",
       "listLeadMagnets"
     ],
     "lib/kernel/lender-linkage.ts": [
@@ -16781,8 +16771,7 @@
     ],
     "lib/kernel/newsletter/section-types.ts": [
       "normalizeSectionType",
-      "defaultOrderFor",
-      "displayLabelFor"
+      "defaultOrderFor"
     ],
     "lib/kernel/newsletter/template-blueprint.ts": [
       "parseTemplateBlueprint"
@@ -17926,7 +17915,6 @@
     "lib/listings/tier-assigner.ts": [
       "assignTierToListing",
       "getTierForListing",
-      "getRequiredDistributions",
       "getTierBudgets",
       "getTiersForBrokerage",
       "createTier",
@@ -20513,5 +20501,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 208
+  "trulyDead": 183
 }

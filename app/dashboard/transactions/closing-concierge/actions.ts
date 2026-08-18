@@ -33,9 +33,21 @@ export interface ConciergeAction {
   createdAt:          string
 }
 
+/** One deal in the brokerage's closing window, distilled from its war room. */
+export interface ConciergeClosing {
+  transactionId: string
+  label:         string
+  closingDate:   string | null
+  daysToClose:   number | null
+  ready:         boolean
+  blockers:      number
+}
+
 export interface ConciergeBoard {
   actions: ConciergeAction[]
   summary: { urgent: number; high: number; medium: number; low: number }
+  /** Deals closing in the next 14 days with their war-room readiness verdicts. */
+  closings: ConciergeClosing[]
 }
 
 const SEV_ORDER: Record<Severity, number> = { urgent: 0, high: 1, medium: 2, low: 3 }
@@ -93,7 +105,29 @@ export async function loadClosingConciergeBoard(): Promise<ConciergeBoard | { er
     { urgent: 0, high: 0, medium: 0, low: 0 } as Record<Severity, number>
   )
 
-  return { actions: rows, summary }
+  // CLOSING WINDOW — the brokerage's deals closing in the next 14 days,
+  // distilled through the read-only war-room fan-out (loadBrokerageClosingWarRooms,
+  // the "all closings" surface it was written for). Best-effort: a failure here
+  // leaves the strip empty and never blocks the action board.
+  let closings: ConciergeClosing[] = []
+  try {
+    const { loadBrokerageClosingWarRooms } = await import("@/lib/kernel/closing-war-room")
+    const { warRooms } = await loadBrokerageClosingWarRooms(
+      agentRow.brokerage_id, { windowDays: 14, limit: 20 }, svc,
+    )
+    closings = warRooms.map((w) => ({
+      transactionId: w.transactionId,
+      label:         w.dealName || w.propertyAddress || "Transaction",
+      closingDate:   w.closingDate,
+      daysToClose:   w.daysToClose,
+      ready:         w.readiness.ready,
+      blockers:      w.readiness.blockers.length,
+    }))
+  } catch (err) {
+    console.error("[closing-concierge] war-room fan-out failed (non-fatal):", err)
+  }
+
+  return { actions: rows, summary, closings }
 }
 
 export async function resolveConciergeAction(

@@ -10,6 +10,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import Link from "next/link"
 import { ExternalLink } from "lucide-react"
+import { LifetimeSegmentSelector } from "./components/lifetime-segment-selector"
+import { normalizeLifetimeSegment } from "@/lib/portal/lifetime-segment"
 
 interface Props {
   contactId:    string
@@ -96,6 +98,13 @@ export async function SellerLifetimeOverview({ contactId, contact, brokerageId }
             <span className="text-muted-foreground">Address </span>
             {[contact.mailing_address, contact.mailing_city, contact.mailing_state, contact.mailing_zip].filter(Boolean).join(", ") || "—"}
           </div>
+          {/* Staff-only writer of contacts.lifetime_segment — the column the
+              lifetime portal's card plan branches on. The action itself refuses
+              a contact-self session (requireContactAccess + !isContactSelf). */}
+          <LifetimeSegmentSelector
+            contactId={contactId}
+            initialSegment={normalizeLifetimeSegment(contact.lifetime_segment)}
+          />
           <div className="col-span-2 pt-1">
             <Link href={`/crm?contact=${contactId}`}
                   className="text-xs underline inline-flex items-center gap-1">

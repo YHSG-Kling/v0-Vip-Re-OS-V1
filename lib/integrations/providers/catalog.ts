@@ -85,9 +85,9 @@ export function providerPortalMode(name?: string | null): { url: string; label: 
   }
 }
 
-export function isProviderImplemented(name?: string | null): boolean {
-  return getCatalogEntry(name)?.implemented === true
-}
+// TOMBSTONE (orphan tranche 4): isProviderImplemented deleted. The survivor is
+// getCatalogEntry above — `getCatalogEntry(name)?.implemented === true` is the
+// whole body it held — plus getImplementedProviders below for the set form.
 
 /** All providers that have a working class (instantiable, dispatchable). */
 export function getImplementedProviders(): ProviderCatalogEntry[] {

@@ -20,6 +20,7 @@ import {
   getMarketingPackageServices,
   getSyndicationStatus,
   getVendorRecommendations,
+  sendServiceReminderToVendor,
   syncListingToPlatforms,
 } from "@/app/actions/marketing-package-automation"
 import {
@@ -60,6 +61,7 @@ interface BookedService {
   service_type: string | null
   status: string | null
   scheduled_date: string | null
+  completed_at: string | null
   estimated_cost: number | null
   vendor: { company_name: string | null } | null
 }
@@ -104,6 +106,26 @@ export function MarketingPackagePanel({ transactionId, activePackage }: Marketin
   const [servicesLoading, setServicesLoading] = useState(false)
   const [bookingService, setBookingService] = useState<string | null>(null)
   const [bookError, setBookError] = useState<string | null>(null)
+
+  // "Remind vendor" — one in flight at a time; verdict shown through bookError /
+  // syncMessage-style inline text rather than a silent no-op.
+  const [remindingId, setRemindingId] = useState<string | null>(null)
+  const [remindMessage, setRemindMessage] = useState<string | null>(null)
+
+  const handleRemindVendor = (serviceId: string) => {
+    setRemindingId(serviceId)
+    setRemindMessage(null)
+    void (async () => {
+      try {
+        const res = await sendServiceReminderToVendor({ serviceId })
+        setRemindMessage(res.success ? "Reminder emailed to the vendor." : (res.error ?? "Reminder failed"))
+      } catch {
+        setRemindMessage("Reminder failed")
+      } finally {
+        setRemindingId(null)
+      }
+    })()
+  }
 
   // The ranked bench behind a Book button, per service type. An agent used to
   // click Book and receive whoever the automation chose, with no sight of who
@@ -333,9 +355,28 @@ export function MarketingPackagePanel({ transactionId, activePackage }: Marketin
                             <Badge variant="outline">{formatCurrency(s.estimated_cost)}</Badge>
                           )}
                           <Badge variant="secondary">{s.status ?? "scheduled"}</Badge>
+                          {/* Vendor nudge — sendServiceReminderToVendor delegates to the
+                              canonical reminder (real email + delivery ledger). Only for a
+                              booked, scheduled, not-yet-completed service. */}
+                          {s.vendor && s.scheduled_date && !s.completed_at && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 px-2 text-xs"
+                              disabled={remindingId === s.id}
+                              onClick={() => handleRemindVendor(s.id)}
+                            >
+                              {remindingId === s.id
+                                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                : "Remind vendor"}
+                            </Button>
+                          )}
                         </div>
                       </div>
                     ))}
+                    {remindMessage && (
+                      <p className="text-xs text-muted-foreground">{remindMessage}</p>
+                    )}
                   </div>
                 )}
 

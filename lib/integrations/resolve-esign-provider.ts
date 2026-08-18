@@ -121,10 +121,9 @@ function buildResolved(
   }
 }
 
-/** Backwards-compat wrapper for callers without userId/teamId. */
-export async function resolveESignProviderForBrokerage(
-  brokerageId: string,
-): Promise<ResolvedESignProvider> {
-  return resolveESignProviderForActor({ brokerageId })
-}
+// TOMBSTONE (orphan tranche 4): resolveESignProviderForBrokerage deleted. It was
+// a pure delegation to the survivor resolveESignProviderForActor({ brokerageId })
+// above — the live cascade with callers across buyer-broker agreements,
+// commission acknowledgement, the assistant tool rail and the e-sign webhooks.
+// A brokerage-only caller passes { brokerageId } to the actor resolver directly.
 

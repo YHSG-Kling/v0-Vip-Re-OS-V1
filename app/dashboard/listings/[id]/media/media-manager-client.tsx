@@ -5,6 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { MediaGrid } from "./components/media-grid"
+import { PhotoOrderingRulesCard } from "./components/photo-ordering-rules-card"
 import { VideoPanel } from "./components/video-panel"
 import { SocialPanel } from "./components/social-panel"
 import { ImageIcon, VideoIcon, Share2Icon, Sparkles, Loader2, Sofa, Sunset, Wand2, ListOrdered, Download, ShieldCheck, AlertTriangle } from "lucide-react"
@@ -318,6 +319,9 @@ export function MediaManagerClient({
                 </Button>
               </div>
             </div>
+
+            {/* The rule "Optimize order" applies — savable at last (see card). */}
+            <PhotoOrderingRulesCard />
 
             {photoQuality && photoSet.length > 0 && (
               <div className="mt-3 rounded border bg-muted/40 p-3 text-xs">

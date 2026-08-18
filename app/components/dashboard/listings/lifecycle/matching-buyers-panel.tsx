@@ -5,8 +5,8 @@ import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Users, Loader2, ArrowRight, AlertTriangle } from "lucide-react"
-import { matchBuyersForListing } from "@/app/actions/property-buyer-matching"
+import { Users, Loader2, ArrowRight, AlertTriangle, UserSearch } from "lucide-react"
+import { matchBuyersForListing, scoreSingleBuyerForListing } from "@/app/actions/property-buyer-matching"
 
 interface BuyerMatch {
   contact_id: string
@@ -27,11 +27,41 @@ const CONFIDENCE_STYLE: Record<string, string> = {
  * Listing → Buyer smart match (System 5.1A). On-demand: runs only when the agent
  * clicks, so no match runs (or activity signals) fire on every listing page load.
  */
-export function MatchingBuyersPanel({ listingId }: { listingId: string }) {
+export function MatchingBuyersPanel({ listingId, buyerOptions = [] }: {
+  listingId: string
+  /** Eligible buyer/lead contacts (server-resolved, caller's brokerage) for the
+   *  on-demand single-buyer check — the bulk run only surfaces pairs at or above
+   *  its threshold, so a below-threshold "how well does THIS buyer fit?" question
+   *  was unanswerable until scoreSingleBuyerForListing got this control. */
+  buyerOptions?: Array<{ id: string; name: string }>
+}) {
   const [loading, setLoading] = useState(false)
   const [matches, setMatches] = useState<BuyerMatch[] | null>(null)
   const [meta, setMeta] = useState<{ evaluated: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [checkContactId, setCheckContactId] = useState("")
+  const [checking, setChecking] = useState(false)
+  const [single, setSingle] = useState<BuyerMatch | null>(null)
+  const [singleError, setSingleError] = useState<string | null>(null)
+
+  async function checkOne() {
+    if (!checkContactId) return
+    setChecking(true)
+    setSingle(null)
+    setSingleError(null)
+    try {
+      const res = await scoreSingleBuyerForListing({ listingId, contactId: checkContactId })
+      if ((res as { success: boolean }).success) {
+        setSingle((res as { match: BuyerMatch }).match)
+      } else {
+        setSingleError((res as { error?: string }).error ?? "Could not score this buyer.")
+      }
+    } catch {
+      setSingleError("Could not score this buyer.")
+    } finally {
+      setChecking(false)
+    }
+  }
 
   async function run() {
     setLoading(true)
@@ -69,7 +99,7 @@ export function MatchingBuyersPanel({ listingId }: { listingId: string }) {
           </Button>
         </div>
       </CardHeader>
-      {(matches || error) && (
+      {(matches || error || buyerOptions.length > 0) && (
         <CardContent className="space-y-2">
           {error && <p className="text-sm text-red-600">{error}</p>}
           {matches && matches.length === 0 && !error && (
@@ -102,6 +132,47 @@ export function MatchingBuyersPanel({ listingId }: { listingId: string }) {
                 </div>
               ))}
             </>
+          )}
+
+          {/* On-demand single-buyer fit check (scoreSingleBuyerForListing) */}
+          {buyerOptions.length > 0 && (
+            <div className="pt-2 border-t space-y-2">
+              <p className="text-xs font-medium flex items-center gap-1.5">
+                <UserSearch className="h-3.5 w-3.5" /> Check a specific buyer's fit
+              </p>
+              <div className="flex gap-2">
+                <select
+                  className="flex-1 rounded border bg-background px-2 py-1 text-sm"
+                  value={checkContactId}
+                  onChange={(e) => { setCheckContactId(e.target.value); setSingle(null); setSingleError(null) }}
+                >
+                  <option value="">Choose a buyer or lead…</option>
+                  {buyerOptions.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                </select>
+                <Button size="sm" variant="outline" onClick={checkOne} disabled={checking || !checkContactId}>
+                  {checking ? <Loader2 className="h-4 w-4 animate-spin" /> : "Check fit"}
+                </Button>
+              </div>
+              {singleError && <p className="text-sm text-red-600">{singleError}</p>}
+              {single && (
+                <div className="p-3 rounded-lg border">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-medium">{single.buyer_name}</span>
+                    <Badge className={CONFIDENCE_STYLE[single.match_confidence] ?? CONFIDENCE_STYLE.low}>
+                      {single.score}% · {single.match_confidence}
+                    </Badge>
+                  </div>
+                  {single.match_factors && single.match_factors.length > 0 && (
+                    <p className="text-xs text-muted-foreground mt-1">{single.match_factors.join(" · ")}</p>
+                  )}
+                  {single.caution_notes && single.caution_notes.length > 0 && (
+                    <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
+                      <AlertTriangle className="h-3 w-3" />{single.caution_notes.join(" · ")}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
           )}
         </CardContent>
       )}

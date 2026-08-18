@@ -208,5 +208,16 @@ export async function resolveConsentIdForAvatar(
 ): Promise<string | null> {
   if (!consentRequiredFor(sourceType)) return null
   const existing = await findVerifiedConsent(svc, agentId)
-  return existing?.didConsentId ?? null
+  if (!existing) return null
+  // CONFIRM the stored consent still exists D-ID-side before reusing it — this
+  // is what getConsent is for. A consent deleted on the D-ID account would
+  // otherwise ride into the avatar submission and fail there with an opaque
+  // provider error. Only a definite 404 discards; a transient provider failure
+  // must NOT throw away a verified consent, so anything else returns the stored
+  // id and lets the submission's own error handling speak.
+  const check = await getConsent(existing.didConsentId)
+  if (!check.ok && !check.exists && check.failure?.kind === "NotFoundError") {
+    return null
+  }
+  return existing.didConsentId
 }

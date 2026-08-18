@@ -131,26 +131,6 @@ export interface GetMagnetPerformanceOutput {
   error?: string
 }
 
-export interface UpdateMagnetSettingsInput {
-  magnetId: string
-  brokerageId: string
-  actorUserId: string
-  updates: {
-    name?: string
-    fields?: Array<{ name: string; label: string; type: string; required: boolean }>
-    tcpaDisclosureText?: string
-    thankYouMessage?: string
-    redirectUrl?: string
-    isActive?: boolean
-  }
-}
-
-export interface UpdateMagnetSettingsOutput {
-  success: boolean
-  updatedAt?: string
-  error?: string
-}
-
 export interface ListLeadMagnetsInput {
   brokerageId: string
   agentId?: string
@@ -892,51 +872,14 @@ export async function getMagnetPerformance(
 }
 
 // ============================================================================
-// KERNEL COMMAND 7: updateMagnetSettings
+// KERNEL COMMAND 7: updateMagnetSettings — MERGED INTO THE SURVIVOR, THEN DELETED
 // ============================================================================
-
-export async function updateMagnetSettings(
-  input: UpdateMagnetSettingsInput
-): Promise<UpdateMagnetSettingsOutput> {
-  if (!input.magnetId || !input.brokerageId || !input.actorUserId) {
-    return { success: false, error: "Missing required fields: magnetId, brokerageId, actorUserId" }
-  }
-
-  if (!input.updates || Object.keys(input.updates).length === 0) {
-    return { success: false, error: "No updates provided" }
-  }
-
-  const supabase = createServiceClient()
-
-  const updatePayload: Record<string, unknown> = { updated_at: new Date().toISOString() }
-  if (input.updates.name              !== undefined) updatePayload.name                = input.updates.name
-  if (input.updates.fields            !== undefined) updatePayload.fields              = input.updates.fields
-  if (input.updates.tcpaDisclosureText !== undefined) updatePayload.tcpa_disclosure_text = input.updates.tcpaDisclosureText
-  if (input.updates.thankYouMessage   !== undefined) updatePayload.thank_you_message   = input.updates.thankYouMessage
-  if (input.updates.redirectUrl       !== undefined) updatePayload.redirect_url        = input.updates.redirectUrl
-  if (input.updates.isActive          !== undefined) updatePayload.is_active           = input.updates.isActive
-
-  const { error } = await supabase
-    .from("lead_capture_forms")
-    .update(updatePayload)
-    .eq("id", input.magnetId)
-    .eq("brokerage_id", input.brokerageId)
-
-  if (error) {
-    return { success: false, error: error.message }
-  }
-
-  await supabase.from("lifecycle_events").insert({
-    entity_type: "lead_capture_form",
-    entity_id: input.magnetId,
-    event_type: "lead_magnet_updated",
-    actor_user_id: input.actorUserId,
-    brokerage_id: input.brokerageId,
-    metadata: { updatedFields: Object.keys(input.updates) },
-  })
-
-  return { success: true, updatedAt: new Date().toISOString() }
-}
+// TOMBSTONE (orphan tranche 4). The live writer is
+// app/actions/lead-magnets-actions.ts:updateMagnetSettingsAction — wired from the
+// MagnetLibrary UI, session-resolved tenant (never caller-supplied brokerageId /
+// actorUserId, which this command took as inputs). Before deletion its two extra
+// capabilities were ADDED to that survivor: the `fields` (capture-form field list)
+// update and the lifecycle_events `lead_magnet_updated` audit row.
 
 // ============================================================================
 // KERNEL COMMAND 8: listLeadMagnets

@@ -852,36 +852,14 @@ export async function recordCompletion(
   }
 }
 
-export interface GetPersonalizedLearningPathInput {
-  contactId: string
-  brokerageId: string
-}
-
-export interface GetPersonalizedLearningPathOutput {
-  nextResource?: { id: string; title: string; estimatedMinutes: number }
-  completionPercentage: number
-  estimatedTimeRemaining: number
-}
-
-export async function getPersonalizedLearningPath(
-  supabase: any,
-  input: GetPersonalizedLearningPathInput
-): Promise<GetPersonalizedLearningPathOutput> {
-  // Post-1043: completed modules come from learning_assignments.
-  const { data: progress } = await supabase
-    .from("learning_assignments")
-    .select("module_id")
-    .eq("contact_id", input.contactId)
-    .eq("status", "completed")
-
-  const completedIds = new Set(progress?.map((p: { module_id: string }) => p.module_id) || [])
-
-  return {
-    nextResource: undefined,
-    completionPercentage:   completedIds.size,
-    estimatedTimeRemaining: 0,
-  }
-}
+// TOMBSTONE (orphan tranche 4): getPersonalizedLearningPath deleted. It was a
+// stub that reported a raw completed-count as "completionPercentage", never a
+// next resource, and 0 time remaining — fabricated shape, no honest signal. The
+// survivors that do this job for real:
+//   · getEducationPlan (this file, exported via lib/kernel/index.ts) — the
+//     contact-side plan the portal renders (stage-aware lessons + progress);
+//   · app/actions/ai-training-coaching.ts:generateLearningPath — the agent-side
+//     personalized path, wired to the academy's learning-path panel.
 
 export interface GenerateAIEducationInput {
   topic: string

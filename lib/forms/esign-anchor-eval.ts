@@ -69,7 +69,9 @@ export function evalAnchorExecution(forms: FormAnchorStatus[]): AnchorExecutionR
   return { allExecuted: incomplete.length === 0, incomplete, reasons }
 }
 
-/** Convenience: only the anchors a given party is responsible for. Pure. */
-export function anchorsForRole(anchors: EsignAnchor[], role: EsignAnchor["role"]): EsignAnchor[] {
-  return (anchors ?? []).filter((a) => a.role === role)
-}
+// TOMBSTONE (orphan tranche 4): anchorsForRole deleted. Partitioning anchors per
+// party is done more completely by the live provider adapters —
+// lib/forms/esign-anchor-adapters.ts groups tags per CANONICAL role for the
+// actual send (docusignTabsByRecipient / tabsByCanonicalRole) and
+// recipientRolesForProvider derives the recipient list; the one-line
+// `.filter((a) => a.role === role)` this wrapper held needs no named home.

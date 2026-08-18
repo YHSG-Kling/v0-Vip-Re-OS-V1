@@ -15,8 +15,10 @@ import { listMyTwins } from "@/app/actions/twin-studio"
 import { GENERIC_VOICES } from "@/lib/voice/voice-resolver"
 import { ListeningPreferencesPanel } from "./listening-preferences-panel"
 import { ReplyStylePanel } from "./reply-style-panel"
+import { AutoResponsePanel, type AutoResponseSettings } from "./auto-response-panel"
 import { getAgentContext } from "@/lib/identity"
 import { getAgentChatPreferences } from "@/app/actions/ai-chat"
+import { getAutoResponseSettings } from "@/app/actions/ai-auto-response"
 
 export const metadata = {
   title: "Assistant Voice | Settings",
@@ -52,6 +54,7 @@ async function AssistantContent() {
   // drafts replies. The old early-return hid the whole page behind twin setup,
   // so each panel now states its own prerequisite.
   const replyPrefs = ctx.agentId ? await getAgentChatPreferences(ctx.agentId) : null
+  const autoResponse = await getAutoResponseSettings()
 
   return (
     <div className="container mx-auto px-4 py-6 max-w-3xl">
@@ -88,6 +91,13 @@ async function AssistantContent() {
           Reply style is set per agent. Your account isn't linked to an agent record yet, so there's
           nothing to configure here.
         </div>
+      )}
+
+      {/* Auto-response settings — same "how my AI writes to contacts" family as
+          Reply Style. Read + write both live in app/actions/ai-auto-response.ts;
+          the settings row is keyed by the session-resolved agent. */}
+      {ctx.agentId && autoResponse.success && autoResponse.settings && (
+        <AutoResponsePanel initial={autoResponse.settings as AutoResponseSettings} />
       )}
     </div>
   )

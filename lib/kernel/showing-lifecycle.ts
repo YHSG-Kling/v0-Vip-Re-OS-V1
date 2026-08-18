@@ -23,6 +23,7 @@
 // wiring requires a ShowingTime partnership; nothing pretends otherwise.
 
 import { randomUUID } from "node:crypto"
+import { getBuyerNotificationPreferences, buyerWantsNotification } from "@/lib/notifications/buyer-preferences"
 
 export interface ShowingLifecycleResult {
   feedbackRequested: number
@@ -101,6 +102,15 @@ export async function runShowingLifecycle(svc: any, now: Date = new Date()): Pro
         .select("id").eq("contact_id", s.contact_id)
         .contains("metadata", { kind: "showing_reminder", showing_id: s.id }).limit(1).maybeSingle()
       if (already) { r.skipped += 1; continue }
+      // THE BUYER'S OWN SETTINGS, HONORED. The portal settings panel writes
+      // notification_preferences; this is a send path consulting it before an
+      // automated touch (consent gates still run separately at dispatch). An
+      // explicit showing_reminders opt-out suppresses both legs; the SMS leg
+      // additionally honors the wholesale SMS channel mute. Read failures
+      // resolve to the safe defaults (service updates on), never a dropped
+      // reminder.
+      const prefs = await getBuyerNotificationPreferences(s.contact_id, svc)
+      if (!buyerWantsNotification(prefs, "showing_reminders")) { r.skipped += 1; continue }
       const address = s.listings?.address ?? "your showing"
       // No tour link: `listings` has neither virtual_tour_url nor matterport_url —
       // selecting them made PostgREST reject this whole query, so the reminder job
@@ -128,7 +138,7 @@ export async function runShowingLifecycle(svc: any, now: Date = new Date()): Pro
       // signed agreement / live offer) has this SMS leg refused by the dispatch
       // compliance gate. The portal reminder above is the primary channel and
       // always lands; the refusal is audited to compliance_events.
-      if (s.contacts?.phone) {
+      if (s.contacts?.phone && buyerWantsNotification(prefs, "showing_reminders", "sms")) {
         try {
           const { dispatchSms } = await import("@/lib/providers/dispatch")
           const sent = await dispatchSms({

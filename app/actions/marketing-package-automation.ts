@@ -695,3 +695,39 @@ export async function getMarketingPackageServices(packageId: string) {
 
   return data || []
 }
+
+/**
+ * Nudge a booked service's vendor about its upcoming date. Delegates to the
+ * canonical reminder (lib/communications/vendor-communications:
+ * sendVendorServiceReminder — real dispatchEmail + vendor_communications
+ * delivery ledger, tenant read from the service row itself). This wrapper only
+ * verifies the caller may act on the service and derives daysUntilDue from the
+ * stored scheduled_date — never from the client.
+ */
+export async function sendServiceReminderToVendor(params: { serviceId: string }) {
+  if (!isValidUUID(params.serviceId)) return { success: false as const, error: "Invalid service ID" }
+  const auth = await requireBrokerage()
+  if (!auth.ok) return { success: false as const, error: auth.error }
+
+  const svc = createServiceClient()
+  const { data: service, error: readError } = await svc
+    .from("listing_marketing_services")
+    .select("id, vendor_id, scheduled_date, brokerage_id")
+    .eq("id", params.serviceId)
+    .eq("brokerage_id", auth.brokerageId)
+    .maybeSingle()
+  if (readError) return { success: false as const, error: readError.message }
+  if (!service?.vendor_id) return { success: false as const, error: "No vendor booked on this service" }
+  if (!service.scheduled_date) return { success: false as const, error: "This service has no scheduled date to remind about" }
+
+  const daysUntilDue = Math.max(
+    0,
+    Math.ceil((new Date(service.scheduled_date as string).getTime() - Date.now()) / 86_400_000),
+  )
+  const { sendVendorServiceReminder } = await import("@/lib/communications/vendor-communications")
+  return sendVendorServiceReminder({
+    vendorId: service.vendor_id as string,
+    serviceId: params.serviceId,
+    daysUntilDue,
+  })
+}

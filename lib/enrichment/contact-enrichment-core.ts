@@ -495,6 +495,23 @@ export async function enrichContactRecord(params: {
           .eq("id", contactId)
           .eq("brokerage_id", brokerageId)
       }
+      // Stamp the TCPA gate's columns too (phone_status / phone_validated_at) —
+      // the gate's 90-day RND-staleness check reads them and, until this call,
+      // NOTHING wrote them, so every consented contact eventually read as stale.
+      // Only a REAL verdict stamps: type "unknown" means the Twilio Lookup fell
+      // back to format-only, and resetting the staleness clock on a fallback
+      // would fake a validation that never ran. Best-effort: a refused stamp is
+      // logged and never fails the enrichment.
+      if (phoneValidation && (!phoneValidation.valid || phoneValidation.type !== "unknown")) {
+        const { recordPhoneValidation } = await import("@/lib/communication/tcpa-gate")
+        const stamp = await recordPhoneValidation({
+          contactId,
+          status: phoneValidation.valid ? "valid" : "invalid",
+        })
+        if (!stamp.ok) {
+          console.error("[contact-enrichment] phone_status stamp refused:", stamp.error)
+        }
+      }
     }
 
     // 3. PeopleData — paid, one record.

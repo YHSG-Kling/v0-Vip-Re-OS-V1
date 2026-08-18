@@ -73,7 +73,10 @@ export default async function ContactDetailPage({ params }: PageProps) {
   // cross-brokerage reads, but routing the access decision through the canonical helper means a
   // future refactor that swaps to createServiceClient (RLS bypass) can't silently expose every
   // contact in the DB. Same gate the write-side quick-action server actions run.
-  const gate = await assertCanActOnContact(contactId)
+  // intent:"read" — this is the read path; the gate's default is "write"
+  // (fail-closed), which would wrongly refuse a read_only act-as investigator
+  // and non-impersonating platform staff from VIEWING the page.
+  const gate = await assertCanActOnContact(contactId, { intent: "read" })
   if (!gate.ok) {
     return (
       <div className="flex items-center justify-center h-64">

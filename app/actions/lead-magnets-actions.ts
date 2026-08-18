@@ -136,20 +136,34 @@ export async function updateMagnetSettingsAction(magnetId: string, settings: Rec
     // old `{ settings }` write silently errored (every settings update failed). isActive may arrive as
     // the 3rd arg OR inside the settings bag (the MagnetLibrary toggle passes { isActive }).
     const s = (settings ?? {}) as Record<string, unknown>
-    const updatePayload: Record<string, unknown> = {}
+    const updatePayload: Record<string, unknown> = { updated_at: new Date().toISOString() }
     if (typeof s.name === "string") updatePayload.name = s.name
     if (typeof s.thankYouMessage === "string") updatePayload.thank_you_message = s.thankYouMessage
     if (typeof s.redirectUrl === "string") updatePayload.redirect_url = s.redirectUrl
     if (typeof s.tcpaDisclosureText === "string") updatePayload.tcpa_disclosure_text = s.tcpaDisclosureText
+    // Merged from the deleted kernel command updateMagnetSettings (lib/kernel/lead-magnets.ts):
+    // the capture-form FIELD LIST is a legitimate setting too.
+    if (Array.isArray(s.fields)) updatePayload.fields = s.fields
     const active = isActive !== undefined ? isActive : (typeof s.isActive === "boolean" ? s.isActive : undefined)
     if (active !== undefined) updatePayload.is_active = active
-    if (Object.keys(updatePayload).length === 0) return { success: false as const, error: "No recognized settings to update" }
+    if (Object.keys(updatePayload).length === 1) return { success: false as const, error: "No recognized settings to update" }
     const { error } = await supabase
       .from("lead_capture_forms")
       .update(updatePayload)
       .eq("id", magnetId)
       .eq("brokerage_id", ctx.brokerageId)
     if (error) return { success: false as const, error: error.message }
+    // Audit trail (merged from the kernel command): who changed which settings.
+    // Best-effort — the settings write above already succeeded.
+    const { error: auditError } = await supabase.from("lifecycle_events").insert({
+      entity_type: "lead_capture_form",
+      entity_id: magnetId,
+      event_type: "lead_magnet_updated",
+      actor_user_id: ctx.userId ?? null,
+      brokerage_id: ctx.brokerageId,
+      metadata: { updatedFields: Object.keys(updatePayload).filter((k) => k !== "updated_at") },
+    })
+    if (auditError) console.warn("[lead-magnets] settings updated but audit event refused:", auditError.message)
     return { success: true as const }
   } catch (err: any) {
     return { success: false as const, error: err?.message ?? "Failed to update settings" }

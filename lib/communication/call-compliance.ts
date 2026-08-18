@@ -145,15 +145,14 @@ export function getRecordingDisclosure(
   return ""
 }
 
-export function withRecordingDisclosure(
-  firstMessage: string,
-  recipientPhone: string,
-  options?: { onlyTwoPartyStates?: boolean }
-): string {
-  const disclosure = getRecordingDisclosure(recipientPhone, options)
-  if (!disclosure) return firstMessage
-  return `${disclosure}${firstMessage}`
-}
+// TOMBSTONE (orphan tranche 4): withRecordingDisclosure deleted. Its job —
+// prepend the recording announcement to a call's first message — is done more
+// completely by lib/communication/call-disclosures.ts:withAiCallDisclosures
+// (re-exported below), which is IDEMPOTENT (never stacks a second disclosure)
+// and is the documented single composer both inbound and outbound call paths
+// use. The state-aware half this wrapper offered (skip in 1-party-consent
+// states) survives as getRecordingDisclosure above; the platform's settled
+// posture is always-announce, so no live path wants the skip.
 
 // ─── AI + recording disclosures ──────────────────────────────────────────────
 // Pure composers live in ./call-disclosures (no server-only guard — simulators

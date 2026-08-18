@@ -76,10 +76,10 @@ export function computeNegotiationBand(rows: ClosedDealRow[], scope: "zip" | "br
   }
 }
 
-/** Load the band for a property: its ZIP first, brokerage-wide fallback. */
-export async function loadNegotiationBand(svc: Svc, brokerageId: string, propertyAddress: string | null): Promise<NegotiationBand | null> {
-  return (await loadNegotiationContext(svc, brokerageId, propertyAddress)).band
-}
+// TOMBSTONE (orphan tranche 4): loadNegotiationBand deleted. It returned
+// `(await loadNegotiationContext(...)).band` and nothing more; the survivor is
+// loadNegotiationContext below — one fetch serving band + momentum, wired live
+// on the seller portal offer view (app/portal/[contactId]/offers/page.tsx).
 
 /** ONE fetch → band + momentum (the Future Lens rides the same closed-deal rows). */
 export async function loadNegotiationContext(svc: Svc, brokerageId: string, propertyAddress: string | null): Promise<{ band: NegotiationBand | null; momentum: ZipMomentum | null }> {

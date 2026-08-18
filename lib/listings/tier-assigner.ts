@@ -370,37 +370,15 @@ export async function getTierForListing(listingId: string) {
 }
 
 // ============================================
-// 3. GET REQUIRED DISTRIBUTIONS FOR TIER
+// 3. GET REQUIRED DISTRIBUTIONS FOR TIER — DELETED
 // ============================================
-
-export async function getRequiredDistributions(tierId: string) {
-  try {
-    if (!isValidUUID(tierId)) {
-      return { success: false, error: "Invalid tier ID" }
-    }
-
-    const reader = await resolveTierReader()
-    if (!reader.ok) return { success: false, error: reader.error }
-
-    const supabase = await createClient()
-
-    const { data, error } = await supabase
-      .from("tier_distributions")
-      .select("*")
-      .eq("tier_id", tierId)
-      .eq("brokerage_id", reader.actor.brokerageId)
-      .eq("is_required", true)
-
-    if (error) throw error
-
-    return {
-      success: true,
-      distributions: (data ?? []) as TierDistribution[],
-    }
-  } catch (error) {
-    return handleError(error, "getRequiredDistributions")
-  }
-}
+// TOMBSTONE (orphan tranche 4): getRequiredDistributions deleted. The one surface
+// that renders distributions (app/dashboard/listings/[id]/marketing-tier/page.tsx)
+// documented WHY it does not use this reader: it needs the FULL set and badges
+// each row required/optional, while this returned only `is_required = true` rows —
+// swapping it in would silently hide the optional distributions. That page's
+// tenant-scoped tier_distributions read is the survivor; a required-only view is
+// one `.eq("is_required", true)` (or an in-memory filter) on top of it.
 
 // ============================================
 // 4. GET TIER BUDGETS

@@ -112,6 +112,21 @@ export async function generateAIResponse(params: {
   // Get auto-response settings
   const { settings } = await getAutoResponseSettings()
 
+  // CONTACT MEMORY — the conversation-insights ledger distilled to ~400 tokens
+  // (topics, objections, buying signals, open questions) so the auto-reply
+  // speaks from what this contact has actually said across channels, not just
+  // the last 10 messages of one thread. buildContextWindow was written for
+  // exactly this injection point and had no caller. Best-effort: no insights
+  // (or a read failure) yields an empty string and the prompt simply omits it.
+  const { agentId: memoryAgentId, brokerageId: memoryBrokerageId } = await getAgentContext()
+  let contactMemory = ""
+  if (memoryAgentId && memoryBrokerageId) {
+    try {
+      const { buildContextWindow } = await import("@/lib/intelligence/conversation-insights")
+      contactMemory = await buildContextWindow(params.contactId, memoryAgentId, memoryBrokerageId)
+    } catch { /* memory is an enhancement, never a blocker */ }
+  }
+
   // Build context for AI
   const context = {
     contactName: contact?.first_name
@@ -122,6 +137,7 @@ export async function generateAIResponse(params: {
     conversationHistory: messages || [],
     tone: settings?.tone || "professional",
     agentName: user.user_metadata?.full_name || "our team",
+    contactMemory,
   }
 
   // Generate AI response — real call: generateSmartReply rides generateTextRouted
@@ -169,6 +185,8 @@ async function generateSmartReply(context: {
   conversationHistory: any[]
   tone: string
   agentName: string
+  /** Distilled conversation-insights memory (buildContextWindow) — may be "". */
+  contactMemory?: string
 }): Promise<string> {
   const recentHistory = context.conversationHistory
     .slice(0, 5)
@@ -183,7 +201,7 @@ async function generateSmartReply(context: {
     prompt: `You are ${context.agentName}, a professional real estate agent. Write a ${context.tone} reply.
 
 Contact: ${context.contactName} (${context.contactType || "prospect"})
-${recentHistory ? `Recent conversation:\n${recentHistory}\n` : ""}Their latest message: "${context.lastMessage}"
+${context.contactMemory ? `${context.contactMemory}\n` : ""}${recentHistory ? `Recent conversation:\n${recentHistory}\n` : ""}Their latest message: "${context.lastMessage}"
 
 Rules:
 - 1–3 sentences, no bullet lists

@@ -179,6 +179,29 @@ export async function advanceTransactionStage(params: {
       console.error("[transaction-stage-machine] calculateDealHealth failed:", error)
     })
 
+    // LIFECYCLE RE-SCRAPE SIGNAL — a deal going under contract is one of the
+    // named moments contact-signal-rescrape exists for (refresh the property's
+    // AVM now that a price is real, instead of waiting for the daily sweep).
+    // Best-effort + fire-and-forget: enrichment cost/failure never touches the
+    // stage transition. Contact resolved from the transaction row, never params.
+    if (params.targetStage === TRANSACTION_STAGES.UNDER_CONTRACT) {
+      void (async () => {
+        try {
+          const svcClient = createServiceClient()
+          const { data: txn } = await svcClient.from("transactions")
+            .select("contact_id, buyer_contact_id, seller_contact_id")
+            .eq("id", params.transactionId).eq("brokerage_id", auth.brokerageId).maybeSingle()
+          const contactId = (txn as any)?.seller_contact_id ?? (txn as any)?.contact_id ?? (txn as any)?.buyer_contact_id ?? null
+          if (contactId) {
+            const { triggerSignalRescrape } = await import("@/lib/lead-pipeline/contact-signal-rescrape")
+            await triggerSignalRescrape({ contactId, signal: "deal_under_contract" })
+          }
+        } catch (err) {
+          console.error("[transaction-stage-machine] under-contract rescrape failed (non-fatal):", err)
+        }
+      })()
+    }
+
     // SPHERE MANAGER referral closing loop — when the deal CLOSES, close any matching
     // open referral, credit the partner, and propose a partner thank-you into the gate.
     // Best-effort: never fails the stage transition.

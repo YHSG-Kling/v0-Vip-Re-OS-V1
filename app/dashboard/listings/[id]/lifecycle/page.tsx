@@ -25,6 +25,7 @@ import { RecordEventCard } from "@/app/components/dashboard/listings/lifecycle/r
 import { ListingIntelligenceCard } from "@/app/components/dashboard/listings/lifecycle/listing-intelligence-card"
 import { getListingCopyComplianceGate } from "@/app/actions/ai-listing-intake"
 import { MatchingBuyersPanel } from "@/app/components/dashboard/listings/lifecycle/matching-buyers-panel"
+import { DescriptionApprovalCard } from "@/app/components/dashboard/listings/lifecycle/description-approval-card"
 import { PriceReductionSheet } from "../components/price-reduction-sheet"
 import { NeighborNotificationCard } from "../components/neighbor-notification-card"
 import { ListingPacketPanel } from "@/app/components/dashboard/listings/lifecycle/listing-packet-panel"
@@ -283,6 +284,52 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
     openHouseData?.socialPosts?.some((p: any) => p.status === "scheduled") ? "scheduled" : "not_started"
   const rsvpCount = openHouseData?.invitations?.filter((i: any) => i.rsvp_response === "yes").length ?? 0
 
+// Eligible buyer/lead contacts for the single-buyer fit check — the SAME filter
+// the bulk matcher applies server-side, so the picker offers exactly the pool
+// scoreSingleBuyerForListing will accept. Names only; scoring stays on demand.
+const { data: buyerContacts } = await supabase
+  .from("contacts")
+  .select("id, first_name, last_name")
+  .eq("brokerage_id", userRow.brokerage_id)
+  .in("contact_type", ["buyer", "lead"])
+  .in("status", ["active", "qualified", "nurture"])
+  .is("deleted_at", null)
+  .order("first_name", { ascending: true })
+  .limit(200)
+const buyerOptions = (buyerContacts ?? []).map((c: any) => ({
+  id: c.id as string,
+  name: [c.first_name, c.last_name].filter(Boolean).join(" ") || "(unnamed)",
+}))
+
+// The newest unapproved AI-drafted listing description, if the content engine
+// has produced one for this listing (ai_generated_content, property_id-keyed).
+// generated_content is the parsed model JSON; medium_description is the
+// MLS-length cut, with the longer/shorter cuts as fallbacks.
+const { data: pendingDescRow } = await supabase
+  .from("ai_generated_content")
+  .select("id, generated_content, compliance_status, created_at")
+  .eq("property_id", listingId)
+  .eq("content_type", "listing_description")
+  .eq("compliance_approved", false)
+  .order("created_at", { ascending: false })
+  .limit(1)
+  .maybeSingle()
+const pendingDescContent = (pendingDescRow?.generated_content ?? null) as Record<string, unknown> | null
+const pendingDescText = [
+  pendingDescContent?.medium_description,
+  pendingDescContent?.long_description,
+  pendingDescContent?.description,
+  pendingDescContent?.short_description,
+].find((v): v is string => typeof v === "string" && v.trim().length > 0) ?? null
+const pendingDescription = pendingDescRow && pendingDescText
+  ? {
+      id: pendingDescRow.id as string,
+      text: pendingDescText,
+      createdAt: (pendingDescRow.created_at as string | null) ?? null,
+      complianceStatus: (pendingDescRow.compliance_status as string | null) ?? null,
+    }
+  : null
+
 // Fetch vendors for the "Assign Vendor" modal
 const { data: listingVendors } = await supabase
   .from("vendors")
@@ -467,8 +514,15 @@ const { data: listingVendorBookings } = await supabase
 
         {/* Matching Buyers — on-demand listing→buyer smart match (System 5.1A) */}
         <div className="mb-4">
-          <MatchingBuyersPanel listingId={listingId} />
+          <MatchingBuyersPanel listingId={listingId} buyerOptions={buyerOptions} />
         </div>
+
+        {/* AI-drafted description awaiting the agent's Approve & Publish
+            (saveDescriptionToListing over ai_generated_content — the composer
+            in the intelligence card below covers only the public_remarks half). */}
+        {pendingDescription && (
+          <DescriptionApprovalCard listingId={listingId} draft={pendingDescription} />
+        )}
 
         {/* Listing Health Radar — daily-scored health for this active listing */}
         <div className="mb-4">

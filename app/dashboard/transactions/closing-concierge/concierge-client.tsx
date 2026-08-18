@@ -181,6 +181,31 @@ export function ClosingConciergeClient({ board }: Props) {
         })}
       </div>
 
+      {/* ── Closing window — war-room readiness per deal (next 14 days) ──── */}
+      {board.closings.length > 0 && (
+        <Card className="mb-6">
+          <CardContent className="py-3 px-4 space-y-1.5">
+            <p className="text-xs uppercase tracking-wide font-medium text-muted-foreground">
+              Closing window · next 14 days
+            </p>
+            {board.closings.map((c) => (
+              <Link
+                key={c.transactionId}
+                href={`/dashboard/transactions/${c.transactionId}`}
+                className="flex flex-wrap items-center justify-between gap-2 text-sm hover:underline"
+              >
+                <span className="truncate">{c.label}</span>
+                <span className={cn("text-xs shrink-0", c.ready ? "text-emerald-700" : "text-amber-700")}>
+                  {c.daysToClose !== null ? `${c.daysToClose}d` : "—"}
+                  {" · "}
+                  {c.ready ? "ready to close" : `${c.blockers} blocker${c.blockers === 1 ? "" : "s"}`}
+                </span>
+              </Link>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
       {/* ── Empty state ─────────────────────────────────────────────────── */}
       {board.actions.length === 0 && (
         <Card className="border-dashed">
