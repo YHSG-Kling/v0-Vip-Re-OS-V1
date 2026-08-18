@@ -24,6 +24,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { deriveAIOverage, runAIOverageBilling } from "../lib/billing/ai-overage"
+import { validateAIOverageTermsInput } from "../lib/billing/plan-catalog"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -153,6 +154,51 @@ console.log("\n[the cron + the surface]")
   check("a refused overage read renders nothing, not a fake zero", /overage && overage\.ok \? overage : null/.test(p))
 }
 
+console.log("\n[the admin lane — overage terms administrable like the tier price]")
+{
+  // Owner ruling (verbatim): "the billing for overage needs to be coded so
+  // that we can pass in the cent per limit so the same as how we are handling
+  // the subscription tier amount." The terms are configured through the
+  // plan-catalog action lane — same superadmin gate, same pure-validator
+  // discipline, same audit trail — never hardcoded, never edited raw.
+
+  // Pure validator, EXECUTED (not scanned):
+  const good = validateAIOverageTermsInput({ planTier: "team", overageAllowed: true, overageRateCentsPer1k: 2 })
+  check("valid terms normalize — metric pinned to ai_tokens_monthly, rate kept as integer cents", good.ok && good.value.metric === "ai_tokens_monthly" && good.value.overageRateCentsPer1k === 2)
+  const off = validateAIOverageTermsInput({ planTier: "brokerage", overageAllowed: false, overageRateCentsPer1k: 0 })
+  check("terms OFF with a 0 rate is valid (the disabled state)", off.ok && !off.value.overageAllowed)
+  check("negative rate → refused", !validateAIOverageTermsInput({ planTier: "team", overageAllowed: true, overageRateCentsPer1k: -1 }).ok)
+  check("non-integer rate → refused (money is never silently rounded here)", !validateAIOverageTermsInput({ planTier: "team", overageAllowed: true, overageRateCentsPer1k: 2.5 }).ok)
+  check("NaN/Infinity rate → refused", !validateAIOverageTermsInput({ planTier: "team", overageAllowed: true, overageRateCentsPer1k: NaN }).ok && !validateAIOverageTermsInput({ planTier: "team", overageAllowed: true, overageRateCentsPer1k: Infinity }).ok)
+  check("non-canonical tier → refused", !validateAIOverageTermsInput({ planTier: "enterprise", overageAllowed: true, overageRateCentsPer1k: 2 }).ok)
+  check("any metric other than ai_tokens_monthly → refused (m479 postcondition BY CONSTRUCTION)", !validateAIOverageTermsInput({ planTier: "team", overageAllowed: true, overageRateCentsPer1k: 2, metric: "emails_sent" }).ok)
+  check("enabled with a 0 rate → refused (never serve unlimited AI unbilled by accident)", !validateAIOverageTermsInput({ planTier: "team", overageAllowed: true, overageRateCentsPer1k: 0 }).ok)
+
+  // The action lane — same gate + validator as the tier-price upsert:
+  const ACT = read("app/actions/superadmin/plan-catalog.ts")
+  const a = code(ACT)
+  check("listAIOverageTermsAction + upsertAIOverageTermsAction exist in the plan-catalog action module", /export async function listAIOverageTermsAction/.test(a) && /export async function upsertAIOverageTermsAction/.test(a))
+  check("both are behind the SAME superadmin gate as upsertPlanTierAction", /listAIOverageTermsAction[\s\S]{0,200}?requireSuperadmin\(\)/.test(a) && /upsertAIOverageTermsAction[\s\S]{0,200}?requireSuperadmin\(\)/.test(a))
+  check("the upsert goes through the pure validator, import-pinned to lib/billing/plan-catalog", /validateAIOverageTermsInput/.test(a) && /from "@\/lib\/billing\/plan-catalog"/.test(ACT.replace(/\/\/[^\n]*/g, "")))
+  check("...and refuses BEFORE any write (validator result gates the update)", /const v = validateAIOverageTermsInput\(input\)\s*\n\s*if \(!v\.ok\) return \{ ok: false, error: v\.error \}/.test(a))
+  check("the metric is pinned to the ONE constant on both read and write (.eq(\"metric\", AI_OVERAGE_METRIC))", (a.match(/\.eq\("metric", AI_OVERAGE_METRIC\)/g) ?? []).length >= 2)
+  check("UPDATE-only: the action can never mint a plan_limits row (no insert/upsert on plan_limits)", !/from\("plan_limits"\)[\s\S]{0,400}?\.(insert|upsert)\(/.test(a))
+  check("a missing (tier, metric) row is a REFUSAL, not a silent create", /seed the included limit first/.test(a))
+  check("supabase errors are destructured + refusals are refusals in the terms lane", /listAIOverageTermsAction[\s\S]*?\{ data, error \}[\s\S]*?if \(error\) return \{ ok: false, error: error\.message \}/.test(a))
+  check("the terms upsert AUDITS like the tier upsert (superadmin_audit_log via the same helper)", /audit\(auth\.userId, "plan_limits\.ai_overage_terms_updated"/.test(a))
+
+  // The surface — the UI reads/writes THROUGH the action, never the table:
+  const PLANS = read("app/dashboard/superadmin/plans/page.tsx")
+  const CARDSRC = read("app/dashboard/superadmin/plans/ai-overage-terms-card.tsx")
+  const pp = code(PLANS)
+  const cc = code(CARDSRC)
+  check("the plans page loads terms through listAIOverageTermsAction and renders the card", /listAIOverageTermsAction\(\)/.test(pp) && /AIOverageTermsCard/.test(pp))
+  check("the card saves through upsertAIOverageTermsAction (no raw supabase in the surface)", /upsertAIOverageTermsAction\(/.test(cc) && !/createClient|createServiceClient|from\(["']plan_limits["']\)/.test(cc) && !/supabase/.test(cc))
+  check("each tier row shows the INCLUDED tokens (limit_value) beside the terms", /limit_value/.test(cc) && /Included/.test(cc))
+  check("the rate is presented as integer CENTS per 1K (tier-price presentation discipline; $/1M is display-only)", /¢ per 1K/.test(CARDSRC) && /overage_rate_cents_per_1k/.test(cc) && /perMillion/.test(cc))
+  check("a failed terms load is surfaced on the page, not a fake empty state", /Failed to load AI overage terms/.test(PLANS))
+}
+
 console.log("\n[negative controls — the scans can fail]")
 {
   check("NEGATIVE — the comment mask hides code-shaped prose", !/stripe\.invoiceItems\.create\(/.test(code('// stripe.invoiceItems.create(...)')))
@@ -167,6 +213,12 @@ console.log("\n[negative controls — the scans can fail]")
     /from\("usage_counters"\)\s*\.\s*(insert|update|upsert)/.test('svc.from("usage_counters").insert({ metric: "ai_overage" })'))
   check("NEGATIVE — the derivation would catch an off-by-inclusion bug (at-quota is NOT overage)",
     deriveAIOverage({ usedTokens: 100, includedLimit: 100, overrideTokens: 0, overageAllowed: true, overageRateCentsPer1k: 1 }).overageTokens !== 1)
+  check("NEGATIVE — the comment mask hides a masked terms-upsert call (prose can't satisfy the UI scan)",
+    !/upsertAIOverageTermsAction\(/.test(code('// upsertAIOverageTermsAction({ planTier })')))
+  check("NEGATIVE — the UPDATE-only scan trips on a plan_limits insert (a minted row would fail the run)",
+    /from\("plan_limits"\)[\s\S]{0,400}?\.(insert|upsert)\(/.test('svc.from("plan_limits")\n  .insert({ plan_tier: "team", metric: "emails_sent", overage_allowed: true })'))
+  check("NEGATIVE — the validator refuses even a plausible-looking near-metric spelling",
+    !validateAIOverageTermsInput({ planTier: "team", overageAllowed: true, overageRateCentsPer1k: 2, metric: "ai_tokens" }).ok)
 }
 
 console.log("\n" + "─".repeat(78))

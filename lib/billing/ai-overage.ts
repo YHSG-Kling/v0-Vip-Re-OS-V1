@@ -27,7 +27,9 @@
 import { currentUsagePeriod } from "@/lib/usage/period"
 import { isStripeConfigured } from "@/lib/billing/stripe-subscription-ops"
 
-export const AI_OVERAGE_METRIC = "ai_tokens_monthly" as const
+// One metric vocabulary — declared in the PURE plan-catalog module (client-safe)
+export { AI_OVERAGE_METRIC } from "./plan-catalog"
+import { AI_OVERAGE_METRIC } from "./plan-catalog"
 
 // ── PURE: the overage math contract ──────────────────────────────────────────
 

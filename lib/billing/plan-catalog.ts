@@ -5,6 +5,13 @@
 // superadmin CRUD action + any importer share this ONE validator so a tier can't
 // be saved malformed (negative price, empty name, non-canonical tier).
 
+// THE one metric vocabulary for AI overage. Declared HERE (the pure module) and
+// imported by the server-side ai-overage reader — not the other way around:
+// this module is reachable from CLIENT chains (coupons manager -> platform
+// coupons -> here), and importing the reader would drag the service client
+// into a client bundle (caught by the client-server-only guard).
+export const AI_OVERAGE_METRIC = "ai_tokens_monthly" as const
+
 export const CANONICAL_TIERS = ["solo_agent", "team", "brokerage", "multi_location"] as const
 
 export interface PlanTierInput {
@@ -71,6 +78,81 @@ export function comparePlanPriceToStripe(
   if (!price.active) return { drifted: true, reason: "price_inactive", field, dbCents, stripeCents }
   if (stripeCents !== dbCents) return { drifted: true, reason: "amount_mismatch", field, dbCents, stripeCents }
   return { drifted: false, reason: null, field, dbCents, stripeCents }
+}
+
+// ── AI OVERAGE TERMS (pure) ──────────────────────────────────────────────────
+// The m479 overage terms (plan_limits.overage_allowed + overage_rate_cents_per_1k)
+// are PLATFORM-CONFIGURABLE the same way tier pricing is — this is the ONE
+// validator the superadmin upsert action goes through, so malformed terms can
+// never be saved: non-canonical tier, negative / non-integer rate, and — the
+// m479 postcondition doctrine, kept true BY CONSTRUCTION — any metric other
+// than ai_tokens_monthly is REFUSED outright. Rate is integer CENTS per 1K
+// tokens (the same integer-cents discipline as monthly_price_cents).
+
+export interface AIOverageTermsInput {
+  planTier: string
+  overageAllowed: boolean
+  /** Integer CENTS per 1,000 tokens (m479 column contract). */
+  overageRateCentsPer1k: number
+  /** Optional; anything other than ai_tokens_monthly is refused. */
+  metric?: string
+}
+
+export interface NormalizedAIOverageTerms {
+  planTier: (typeof CANONICAL_TIERS)[number]
+  metric: typeof AI_OVERAGE_METRIC
+  overageAllowed: boolean
+  overageRateCentsPer1k: number
+}
+
+export type AIOverageTermsValidation =
+  | { ok: true; value: NormalizedAIOverageTerms }
+  | { ok: false; error: string }
+
+/** PURE: validate + normalize per-tier AI overage terms. */
+export function validateAIOverageTermsInput(input: AIOverageTermsInput): AIOverageTermsValidation {
+  // Metric: overage exists ONLY for ai_tokens_monthly. No other metric may be
+  // overage-enabled (m479 postcondition), so any other spelling is a refusal —
+  // not a normalization.
+  const metric = (input.metric ?? AI_OVERAGE_METRIC).trim()
+  if (metric !== AI_OVERAGE_METRIC) {
+    return { ok: false, error: `overage terms exist only for the '${AI_OVERAGE_METRIC}' metric — no other metric may be overage-enabled (m479)` }
+  }
+
+  const planTier = (input.planTier ?? "").trim()
+  if (!(CANONICAL_TIERS as readonly string[]).includes(planTier)) {
+    return { ok: false, error: `plan_tier must be one of: ${CANONICAL_TIERS.join(", ")}` }
+  }
+
+  if (typeof input.overageAllowed !== "boolean") {
+    return { ok: false, error: "overage_allowed must be a boolean" }
+  }
+
+  // Rate: integer cents, never negative, never silently rounded — money terms
+  // are refused when malformed, not repaired.
+  const rate = input.overageRateCentsPer1k
+  if (typeof rate !== "number" || !Number.isFinite(rate) || !Number.isInteger(rate)) {
+    return { ok: false, error: "overage_rate_cents_per_1k must be an integer (cents per 1K tokens)" }
+  }
+  if (rate < 0) {
+    return { ok: false, error: "overage_rate_cents_per_1k must be >= 0" }
+  }
+  // Enabled terms need a real rate: allowed with a 0 rate would SERVE overage
+  // that bills nothing (the writethrough skips zero_amount) — free unlimited
+  // AI by accident. Turning overage on is agreeing to a price.
+  if (input.overageAllowed && rate === 0) {
+    return { ok: false, error: "overage_allowed requires a rate > 0 — enabling overage with a 0 rate would serve unlimited AI unbilled" }
+  }
+
+  return {
+    ok: true,
+    value: {
+      planTier: planTier as (typeof CANONICAL_TIERS)[number],
+      metric: AI_OVERAGE_METRIC,
+      overageAllowed: input.overageAllowed,
+      overageRateCentsPer1k: rate,
+    },
+  }
 }
 
 const nonNeg = (n: unknown): number => {
