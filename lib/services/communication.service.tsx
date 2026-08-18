@@ -1,5 +1,14 @@
 
-import { createClient } from "@/lib/supabase/server"
+// SERVICE CLIENT for the audit writes, on purpose (m483): this shared service
+// is reachable from CONSUMER sessions (app/actions/calculators.ts
+// sendCalculatorResults, app/actions/collaborative-search.ts
+// sendCollaborativeSearchInvite), and the message_provider_logs /
+// communication_audit_log / activities rows it appends are post-send AUDIT
+// records — the calling route/action's own gate is the authorization, and the
+// audit row must not depend on the caller's RLS seat (the staff-seat-tightened
+// INSERT policies rightly refuse a consumer seat). The provider SEND itself is
+// unchanged.
+import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import {
@@ -96,12 +105,12 @@ export async function sendEmail(params: SendEmailParams) {
     // Audit. Skip entirely if we can't resolve a brokerage — the table's
     // brokerage_id is NOT NULL and fabricating a value would corrupt
     // tenancy. The provider send already happened above.
-    const supabase = await createClient()
+    const supabase = createServiceClient()
     const brokerageId = await resolveAuditBrokerageId(
       supabase, params.brokerageId, params.contactId,
     )
     if (brokerageId) {
-      await supabase.from("message_provider_logs").insert({
+      const { error: auditError } = await supabase.from("message_provider_logs").insert({
         brokerage_id: brokerageId,
         channel: "email",
         direction: "outbound",
@@ -111,6 +120,9 @@ export async function sendEmail(params: SendEmailParams) {
         sent_at: result.success ? new Date().toISOString() : null,
         provider_response: { recipient: params.to, subject: params.subject, ...(params.metadata ?? {}) },
       })
+      if (auditError) {
+        console.error("[CommunicationService] message_provider_logs (email) audit row refused:", auditError.message)
+      }
     }
 
     return result
@@ -131,13 +143,13 @@ export async function sendSMS(params: SendSMSParams) {
       message: params.message,
     })
 
-    const supabase = await createClient()
+    const supabase = createServiceClient()
     const brokerageId = await resolveAuditBrokerageId(
       supabase, params.brokerageId, params.contactId,
     )
     if (brokerageId) {
       const providerKey = ((result as any)?.provider as string | undefined) ?? "twilio"
-      await supabase.from("message_provider_logs").insert({
+      const { error: auditError } = await supabase.from("message_provider_logs").insert({
         brokerage_id: brokerageId,
         channel: "sms",
         direction: "outbound",
@@ -147,6 +159,9 @@ export async function sendSMS(params: SendSMSParams) {
         sent_at: result.success ? new Date().toISOString() : null,
         provider_response: { recipient: params.to, message_excerpt: params.message.slice(0, 200), ...(params.metadata ?? {}) },
       })
+      if (auditError) {
+        console.error("[CommunicationService] message_provider_logs (sms) audit row refused:", auditError.message)
+      }
     }
 
     return result
@@ -167,7 +182,8 @@ export async function sendSMS(params: SendSMSParams) {
  */
 export async function logCommunication(params: LogCommunicationParams) {
   try {
-    const supabase = await createClient()
+    // Audit-only function — same service-client rationale as the header note.
+    const supabase = createServiceClient()
 
     // Write to communication_audit_log (the canonical communication content
     // audit table — carries subject/body_snippet/channel/compliance state).
@@ -191,7 +207,7 @@ export async function logCommunication(params: LogCommunicationParams) {
       // message_provider_logs.channel CHECK.
       const channel =
         params.communicationType === "notification" ? "in_app" : params.communicationType
-      await supabase.from("communication_audit_log").insert({
+      const { error: auditLogError } = await supabase.from("communication_audit_log").insert({
         brokerage_id: auditBrokerageId,
         contact_id: params.contactId ?? null,
         agent_id: params.agentId ?? contactRow?.agent_id ?? null,
@@ -202,6 +218,9 @@ export async function logCommunication(params: LogCommunicationParams) {
         compliance_passed: params.status === "sent" ? true : null,
         sent_at: params.status === "sent" ? new Date().toISOString() : null,
       })
+      if (auditLogError) {
+        console.error("[CommunicationService] communication_audit_log row refused:", auditLogError.message)
+      }
     }
 
     // Also log as an activity (the agent-facing communication-event log)
@@ -217,7 +236,7 @@ export async function logCommunication(params: LogCommunicationParams) {
       const notes = params.subject || params.content.substring(0, 100)
 
       if (agentId && brokerageId) {
-        await supabase.from("activities").insert({
+        const { error: activityError } = await supabase.from("activities").insert({
           contact_id: params.contactId,
           agent_id: agentId,
           brokerage_id: brokerageId,
@@ -229,6 +248,9 @@ export async function logCommunication(params: LogCommunicationParams) {
           outcome: params.status === "sent" ? "completed" : "failed",
           status: params.status === "sent" ? "completed" : "failed",
         })
+        if (activityError) {
+          console.error("[CommunicationService] communication activity row refused:", activityError.message)
+        }
       }
     }
 

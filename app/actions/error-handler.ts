@@ -59,7 +59,16 @@ export async function getErrorGroupDetails(groupId: string) {
     throw new Error("Failed to fetch group details")
   }
 
-  return data
+  // AUTO-RETRY STATE — the Retry button schedules through the auto-retry engine
+  // (error_resolution_log), but the panel never showed what the engine had done:
+  // attempts, last result, next scheduled retry, escalation. getRetryStatus is
+  // the engine's own reader; safe to attach AFTER the tenant-scoped read above
+  // proved the row belongs to the caller's brokerage. Best-effort: a failure
+  // returns the zero-state, never blocks the details.
+  const { getRetryStatus } = await import("@/lib/errors/auto-retry")
+  const retry = await getRetryStatus(groupId)
+
+  return { ...data, retry }
 }
 
 export async function dismissErrorGroup(groupId: string, reason: string) {

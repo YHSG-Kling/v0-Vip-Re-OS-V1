@@ -160,18 +160,29 @@ Provide detailed analysis including document type classification, key informatio
       processed_at: new Date().toISOString(),
     })
 
-    // Log activity (fire-and-forget, never throw on audit failure)
-    supabase.from("activities").insert({
-      brokerage_id: document.brokerage_id,
-      agent_id: document.brokerage_id, // best-effort; no agent_id on transaction_documents
-      activity_type: "document_action",
-      title: "Document analyzed",
-      description: `AI analysis of document: ${document.doc_label ?? documentId}`,
-      notes: JSON.stringify({ action: "analyzed", document_source: "transaction_documents", performed_by_type: "ai" }),
-      status: "completed",
-      entity_type: "transaction",
-      transaction_id: document.transaction_id ?? null,
-    }).then(() => {}, () => {})
+    // Log activity — POST-AUTHORIZATION AUDIT WRITE, service client on purpose
+    // (m483): the gate above (getAgentContext + tenant check on the document) is
+    // the authorization; the caller may be a portal CONSUMER session whose RLS
+    // seat the tightened activities policies rightly refuse, and an audit row
+    // must not depend on the caller's own RLS. The old shape also stuffed a
+    // brokerages.id into agent_id (FK → agents.id), so the insert was REFUSED
+    // 23503 on every analysis and `.then(() => {}, () => {})` swallowed it.
+    {
+      const svcAudit = createServiceClient()
+      const { error: activityError } = await svcAudit.from("activities").insert({
+        brokerage_id: document.brokerage_id,
+        activity_type: "document_action",
+        title: "Document analyzed",
+        description: `AI analysis of document: ${document.doc_label ?? documentId}`,
+        notes: JSON.stringify({ action: "analyzed", document_source: "transaction_documents", performed_by_type: "ai" }),
+        status: "completed",
+        entity_type: "transaction",
+        transaction_id: document.transaction_id ?? null,
+      })
+      if (activityError) {
+        console.error(`[documents] document_action (analyzed) NOT logged for ${documentId}:`, activityError.message)
+      }
+    }
 
     return { success: true, analysis }
   } catch (error) {
@@ -284,18 +295,29 @@ export async function uploadDocument(
     throw new Error("Failed to create document record")
   }
 
-  // Log activity (fire-and-forget)
-  supabase.from("activities").insert({
-    brokerage_id: document.brokerage_id ?? null,
-    agent_id: document.brokerage_id ?? null, // best-effort; no direct agent_id on client_documents
-    contact_id: contactId ?? null,
-    activity_type: "document_action",
-    title: `Document uploaded: ${file.name}`,
-    description: `Uploaded via portal: ${file.name}`,
-    notes: JSON.stringify({ action: "uploaded", document_source: "client_documents", performed_by_type: "client" }),
-    status: "completed",
-    entity_type: "contact",
-  }).then(() => {}, () => {})
+  // Log activity — POST-AUTHORIZATION AUDIT WRITE, service client on purpose
+  // (m483): the auth gate + brokerage checks at the top of this action are the
+  // authorization, and the caller can be a portal CONSUMER session whose seat
+  // the tightened activities policies refuse. The document write above keeps
+  // the caller's own client; only this audit row rides service. The old shape
+  // stuffed a brokerages.id into agent_id (FK → agents.id) — refused 23503,
+  // swallowed by `.then(() => {}, () => {})`.
+  {
+    const { error: activityError } = await svc.from("activities").insert({
+      brokerage_id: document.brokerage_id ?? ctx.brokerageId,
+      contact_id: contactId || null,
+      transaction_id: transactionId || null,
+      activity_type: "document_action",
+      title: `Document uploaded: ${file.name}`,
+      description: `Uploaded via portal: ${file.name}`,
+      notes: JSON.stringify({ action: "uploaded", document_source: "client_documents", performed_by_type: "client" }),
+      status: "completed",
+      entity_type: "contact",
+    })
+    if (activityError) {
+      console.error(`[documents] document_action (uploaded) NOT logged for ${document.id}:`, activityError.message)
+    }
+  }
 
   // Queue for AI processing (async)
   processDocumentWithAI(document.id, publicUrl, file.type).catch(console.error)
@@ -502,28 +524,42 @@ Set overallStatus to "blocking_issues" only if missing signatures would invalida
           })
           .then(() => {}, (err) => console.error("[v0] compliance_checks insert error:", err))
 
-        // Activity log entry — surfaces issues to agent
+        // Activity log entry — surfaces issues to agent. POST-AUTHORIZATION
+        // AUDIT WRITE, service client on purpose (m483): this function runs in
+        // the uploading caller's request context, and uploadDocument is
+        // portal-reachable, so `supabase` here can be a CONSUMER seat the
+        // tightened activities policies refuse. The old shape also stuffed a
+        // brokerages.id into agent_id (FK → agents.id) — refused 23503,
+        // swallowed by `.then(() => {}, () => {})`. brokerage_id is NOT NULL
+        // on activities: no tenant on the document, no row, said out loud.
         const issueCount =
           scan.signatureCompleteness.missingSignatures.length +
           scan.signatureCompleteness.missingInitials.length +
           scan.stateComplianceIssues.filter((i: any) => i.status === "fail").length
-        supabase
-          .from("activities")
-          .insert({
-            brokerage_id: docRecord?.brokerage_id ?? null,
-            agent_id: docRecord?.brokerage_id ?? null,
-            contact_id: docRecord?.contact_id ?? null,
-            activity_type: "compliance_scan",
-            title:
-              scan.overallStatus === "pass"
-                ? `Compliance scan passed: ${classification.document_type}`
-                : `Compliance scan found ${issueCount} issue(s): ${classification.document_type}`,
-            description: `State-specific signature/initial scan ran on uploaded document.`,
-            notes: JSON.stringify({ scan_status: scan.overallStatus, issue_count: issueCount }),
-            status: scan.overallStatus === "pass" ? "completed" : "needs_review",
-            entity_type: "document",
-          })
-          .then(() => {}, () => {})
+        if (!docRecord?.brokerage_id) {
+          console.error(
+            `[documents] compliance_scan activity NOT logged for document ${documentId}: the document carries no brokerage_id, and activities.brokerage_id is NOT NULL`,
+          )
+        } else {
+          const { error: scanActivityError } = await createServiceClient()
+            .from("activities")
+            .insert({
+              brokerage_id: docRecord.brokerage_id,
+              contact_id: docRecord?.contact_id ?? null,
+              activity_type: "compliance_scan",
+              title:
+                scan.overallStatus === "pass"
+                  ? `Compliance scan passed: ${classification.document_type}`
+                  : `Compliance scan found ${issueCount} issue(s): ${classification.document_type}`,
+              description: `State-specific signature/initial scan ran on uploaded document.`,
+              notes: JSON.stringify({ scan_status: scan.overallStatus, issue_count: issueCount }),
+              status: scan.overallStatus === "pass" ? "completed" : "needs_review",
+              entity_type: "document",
+            })
+          if (scanActivityError) {
+            console.error(`[documents] compliance_scan activity NOT logged for document ${documentId}:`, scanActivityError.message)
+          }
+        }
       } catch (scanErr) {
         console.error("[v0] Signature compliance scan error:", scanErr)
       }
@@ -648,18 +684,30 @@ Set overallStatus to "blocking_issues" only if missing signatures would invalida
       }
     }
 
-    // Log activity (fire-and-forget)
-    supabase.from("activities").insert({
-      brokerage_id: docRecord?.brokerage_id ?? null,
-      agent_id: docRecord?.brokerage_id ?? null, // best-effort
-      contact_id: docRecord?.contact_id ?? null,
-      activity_type: "document_action",
-      title: `Document AI analysis: ${classification.document_type}`,
-      description: `AI analysis complete: ${classification.document_type} (${Math.round(classification.confidence * 100)}% confidence)`,
-      notes: JSON.stringify({ action: "analyzed", document_source: "client_documents", performed_by_type: "ai" }),
-      status: "completed",
-      entity_type: "contact",
-    }).then(() => {}, () => {})
+    // Log activity — POST-AUTHORIZATION AUDIT WRITE, service client on purpose
+    // (m483): same rationale as the compliance_scan row above — this runs in
+    // the (possibly consumer) uploader's request context, and the audit row
+    // must not depend on that seat. The old shape stuffed a brokerages.id into
+    // agent_id (FK → agents.id) — refused 23503, swallowed.
+    if (!docRecord?.brokerage_id) {
+      console.error(
+        `[documents] document_action (ai analysis) NOT logged for document ${documentId}: the document carries no brokerage_id, and activities.brokerage_id is NOT NULL`,
+      )
+    } else {
+      const { error: analysisActivityError } = await createServiceClient().from("activities").insert({
+        brokerage_id: docRecord.brokerage_id,
+        contact_id: docRecord?.contact_id ?? null,
+        activity_type: "document_action",
+        title: `Document AI analysis: ${classification.document_type}`,
+        description: `AI analysis complete: ${classification.document_type} (${Math.round(classification.confidence * 100)}% confidence)`,
+        notes: JSON.stringify({ action: "analyzed", document_source: "client_documents", performed_by_type: "ai" }),
+        status: "completed",
+        entity_type: "contact",
+      })
+      if (analysisActivityError) {
+        console.error(`[documents] document_action (ai analysis) NOT logged for document ${documentId}:`, analysisActivityError.message)
+      }
+    }
 
     return { success: true, classification, explanation: explanationResult.text, signatureScan }
   } catch (error) {
@@ -782,18 +830,34 @@ export async function getDocumentWithAnalysis(documentId: string) {
   const docType = document.doc_type ?? document.document_type ?? document.doc_category
   const educationalOverlay = await getEducationalOverlay(docType)
 
-  // Log view activity (fire-and-forget)
-  supabase.from("activities").insert({
-    brokerage_id: document.brokerage_id ?? null,
-    agent_id: document.brokerage_id ?? null, // best-effort
-    contact_id: document.contact_id ?? null,
-    activity_type: "document_action",
-    title: "Document viewed",
-    description: `Document viewed: ${document.doc_label ?? document.document_name ?? documentId}`,
-    notes: JSON.stringify({ action: "viewed", document_source: docSource, performed_by_type: "client" }),
-    status: "completed",
-    entity_type: "contact",
-  }).then(() => {}, () => {})
+  // Log view activity — POST-AUTHORIZATION AUDIT WRITE, service client on
+  // purpose (m483): the document itself was just read with the CALLER'S OWN RLS
+  // client, so reaching this line proves the caller can see the record — that
+  // read is the gate. The audit row must not additionally depend on the
+  // caller's seat passing the tightened activities policies (portal consumer
+  // sessions do not). The old shape stuffed a brokerages.id into agent_id
+  // (FK → agents.id) — refused 23503, swallowed by `.then(() => {}, () => {})`.
+  // activities.brokerage_id is NOT NULL: an untenanted document gets no row,
+  // said out loud, rather than a guessed tenant.
+  if (!document.brokerage_id) {
+    console.error(
+      `[documents] document_action (viewed) NOT logged for ${documentId}: the document carries no brokerage_id, and activities.brokerage_id is NOT NULL`,
+    )
+  } else {
+    const { error: viewActivityError } = await createServiceClient().from("activities").insert({
+      brokerage_id: document.brokerage_id,
+      contact_id: document.contact_id ?? null,
+      activity_type: "document_action",
+      title: "Document viewed",
+      description: `Document viewed: ${document.doc_label ?? document.document_name ?? documentId}`,
+      notes: JSON.stringify({ action: "viewed", document_source: docSource, performed_by_type: "client" }),
+      status: "completed",
+      entity_type: "contact",
+    })
+    if (viewActivityError) {
+      console.error(`[documents] document_action (viewed) NOT logged for ${documentId}:`, viewActivityError.message)
+    }
+  }
 
   return { document, extractionLog, educationalOverlay }
 }
@@ -1081,8 +1145,6 @@ export async function getDocumentFolders(contactId: string) {
 }
 
 export async function askDocumentQuestion(documentId: string, question: string) {
-  const supabase = await createClient()
-
   // Get document
   const { document, extractionLog } = await getDocumentWithAnalysis(documentId)
 
@@ -1126,8 +1188,17 @@ Provide a clear, helpful answer in plain English. If you're not sure about somet
       `[documents] document_action NOT logged for document ${documentId}: the document carries no brokerage_id, and activities.brokerage_id is NOT NULL`,
     )
   } else {
-    const { error: activityError } = await supabase.from("activities").insert({
+    // POST-AUTHORIZATION AUDIT WRITE, service client on purpose (m483): the
+    // document was fetched above with the CALLER'S OWN RLS client
+    // (getDocumentWithAnalysis) — that read is the gate; a caller who cannot
+    // see the document never reaches this line. The audit row itself must not
+    // depend on the caller's seat: portal consumer sessions fail the tightened
+    // activities policies, and this row is the record that the question was
+    // asked. contact_id is stamped where the flow knows it (client_documents
+    // rows carry it; transaction_documents rows do not).
+    const { error: activityError } = await createServiceClient().from("activities").insert({
       brokerage_id: documentBrokerageId,
+      contact_id: (document as { contact_id?: string | null }).contact_id ?? null,
       activity_type: "document_action",
       entity_type: "document",
       entity_id: documentId,

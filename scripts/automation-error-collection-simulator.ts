@@ -114,8 +114,14 @@ console.log("\n[the collector writes the vocabulary, and takes an injected clien
   check("writes status: 'open'", /status:\s*"open"/.test(c))
   check("anchors the row to a brokerage", /brokerage_id:\s*brokerageId \|\| null/.test(c))
   check("accepts an injected client for service-context callers", /client\?:/.test(c))
-  check("defaults to the RLS-scoped server client when none is passed",
-    /params\.client \?\? \(await createClient\(\)\)/.test(c))
+  // m483: the default moved from the RLS-scoped server client to the SERVICE
+  // client. Error intake is a post-authorization AUDIT write — every caller has
+  // already passed its own gate (route auth / action gate / cron secret), and
+  // the staff-seat-tightened INSERT policies on automation_errors /
+  // error_stack_traces / error_resolution_log would silently drop a consumer
+  // seat's report through an RLS-scoped default.
+  check("defaults to the SERVICE client when none is passed (post-authz audit intake)",
+    /params\.client \?\? createServiceClient\(\)/.test(c))
   check("still records the stack trace", c.includes("error_stack_traces"))
   check("still opens a resolution-log entry", c.includes("error_resolution_log"))
   check("still raises a kernel alert on critical", c.includes("SYSTEM_HEALTH_ALERT"))

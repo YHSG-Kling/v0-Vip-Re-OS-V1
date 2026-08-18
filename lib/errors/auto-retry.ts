@@ -9,7 +9,13 @@
  *   AND next_retry_at < NOW()
  */
 
-import { createClient } from "@/lib/supabase/server"
+// SERVICE CLIENT on purpose (m483): every write here is post-authorization
+// error-ops bookkeeping — the two callers gate themselves (/api/errors/retry
+// requires an admin/broker session; /api/cron/retry-errors requires cron auth
+// and has NO session at all, so an RLS-scoped client there was anon and every
+// read/write was refused silently). The retry ledger must not depend on the
+// caller's RLS seat.
+import { createServiceClient } from "@/lib/supabase/service"
 import { classifyError, getRetryDelay } from "./error-classifier"
 import { collectError } from "./collect-error"
 
@@ -30,7 +36,7 @@ export async function scheduleRetry(
   retryCallback?: () => Promise<void>
 ): Promise<RetryResult> {
   try {
-    const supabase = await createClient()
+    const supabase = createServiceClient()
 
     // Get the error record
     const { data: errorRecord, error: fetchError } = await supabase
@@ -231,7 +237,7 @@ export const RETRY_RESULT_FAILURE = "failure" as const
  */
 export async function getErrorsDueForRetry(): Promise<string[]> {
   try {
-    const supabase = await createClient()
+    const supabase = createServiceClient()
 
     // Find errors with scheduled retries that are due
     const { data: resolutionLogs } = await supabase
@@ -276,7 +282,7 @@ export async function getRetryStatus(errorId: string): Promise<{
   isEscalated: boolean
 }> {
   try {
-    const supabase = await createClient()
+    const supabase = createServiceClient()
 
     const { data: logs } = await supabase
       .from("error_resolution_log")

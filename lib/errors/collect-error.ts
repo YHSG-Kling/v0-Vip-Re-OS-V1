@@ -34,7 +34,7 @@
  *                        severity: 'medium', agentId, context: { scriptId, templateId } })
  */
 
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { classifyError } from "./error-classifier"
 import crypto from "crypto"
 
@@ -52,10 +52,14 @@ export interface CollectErrorParams {
   fileInfo?: { path: string; line: number; function: string }
   errorType?: string
   /**
-   * The Supabase client to write with. Defaults to the RLS-scoped server client,
-   * which is correct for a session-authenticated server action. Callers running
-   * without a session — crons, webhooks, the AI-ISA engines — must pass their
-   * service client, or the insert has no identity to satisfy RLS with.
+   * The Supabase client to write with. Defaults to the SERVICE client (m483):
+   * error intake is a post-authorization AUDIT write — every caller has already
+   * passed its own gate (route auth, action gate, cron secret) before reporting,
+   * and a consumer seat reporting an error is the product working. The previous
+   * RLS-scoped default silently dropped exactly those reports once the
+   * automation_errors / error_stack_traces / error_resolution_log INSERT
+   * policies were staff-seat-tightened. Callers may still inject a client
+   * (the AI-ISA engines pass their own service client through).
    */
   client?: { from: (table: string) => any }
 }
@@ -67,7 +71,7 @@ export interface CollectErrorParams {
  */
 export async function collectError(params: CollectErrorParams): Promise<string | null> {
   try {
-    const supabase = params.client ?? (await createClient())
+    const supabase = params.client ?? createServiceClient()
 
     const {
       workflowName,

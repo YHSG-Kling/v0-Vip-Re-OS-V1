@@ -134,6 +134,25 @@ export function ErrorDetailsPanel({
           </div>
         </div>
 
+        {/* Auto-retry state — attached by getErrorGroupDetails from the retry
+            engine's own ledger (error_resolution_log). Shows what the engine has
+            actually done with this error instead of leaving Retry a black box. */}
+        {details.retry && (
+          <div className="pt-4 space-y-1 border-t">
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Auto-retry</p>
+            {details.retry.totalAttempts === 0 && !details.retry.isEscalated ? (
+              <p className="text-xs text-muted-foreground">No retries scheduled yet.</p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                {details.retry.totalAttempts} attempt{details.retry.totalAttempts === 1 ? "" : "s"}
+                {details.retry.lastResult ? ` · last: ${details.retry.lastResult}` : ""}
+                {details.retry.nextRetryAt ? ` · next: ${new Date(details.retry.nextRetryAt).toLocaleString()}` : ""}
+                {details.retry.isEscalated ? " · escalated" : ""}
+              </p>
+            )}
+          </div>
+        )}
+
         {/* Assign */}
         <div className="pt-4 space-y-2 border-t">
           <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Owner</p>
