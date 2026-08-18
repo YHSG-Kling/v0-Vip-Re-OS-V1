@@ -3,11 +3,11 @@
 import { revalidatePath } from "next/cache"
 import { getListingsService, createListingService } from "@/lib/application/listings"
 import { getListingTimelineService } from "@/lib/application/listing-lifecycle"
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { handleError } from "@/lib/errors"
 import { assignTierToListing } from "@/lib/listings/tier-assigner"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { resolveActingContext, READ_ONLY_ACTING_ERROR } from "@/lib/platform/acting-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 /**
@@ -23,17 +23,29 @@ import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
  * could spoof anyone.
  */
 
+// ★ ACT-AS WRITE SEAM ★ — this gate used to read users.brokerage_id for the RAW
+// auth.uid(), so a platform-staff member acting-as a tenant (who has no
+// brokerage of their own) was refused "Unauthorized" even though getAgentContext
+// had already resolved the target tenant. It now resolves through the
+// impersonation-aware acting context: the effective tenant under an ACTIVE
+// grant (re-validated on this very call), the caller's own tenant otherwise.
+// `readOnly` is surfaced so WRITERS refuse a 'read_only' grant; the reads
+// (getListingById) stay available to it. `actorUserId` is the REAL actor for
+// every audit lane. New tenant writers: adopt resolveWriteContext/-ActingContext.
 async function requireCaller(): Promise<
-  | { ok: true; userId: string; brokerageId: string }
+  | { ok: true; userId: string; actorUserId: string; brokerageId: string; readOnly: boolean }
   | { ok: false; error: string }
 > {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
-  const { data: u } = await supabase
-    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.userId) return { ok: false, error: "Unauthorized" }
+  if (!ctx.brokerageId) return { ok: false, error: "Unauthorized" }
+  return {
+    ok: true,
+    userId: ctx.userId,
+    actorUserId: ctx.actorUserId,
+    brokerageId: ctx.brokerageId,
+    readOnly: ctx.readOnly,
+  }
 }
 
 /**
@@ -170,7 +182,11 @@ export async function updateListing(listingId: string, updates: any, _actorUserI
 
     const auth = await requireCaller()
     if (!auth.ok) return { success: false, error: auth.error }
-    const actorUserId = auth.userId
+    // ACT-AS WRITE SEAM — a read_only grant never writes.
+    if (auth.readOnly) return { success: false, error: READ_ONLY_ACTING_ERROR }
+    // The REAL actor (the staff member under act-as) — this id feeds the
+    // tier-assignment audit lane below, so the trail names who really acted.
+    const actorUserId = auth.actorUserId
 
     const supabase = createServiceClient()
 
@@ -240,6 +256,8 @@ export async function deleteListing(listingId: string) {
 
     const auth = await requireCaller()
     if (!auth.ok) return { success: false, error: auth.error }
+    // ACT-AS WRITE SEAM — a read_only grant never writes.
+    if (auth.readOnly) return { success: false, error: READ_ONLY_ACTING_ERROR }
 
     const supabase = createServiceClient()
 

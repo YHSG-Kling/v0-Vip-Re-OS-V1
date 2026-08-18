@@ -5,6 +5,14 @@ import { revalidatePath } from "next/cache"
 import { handleError } from "@/lib/errors"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+// ★ ACT-AS WRITE SEAM ★ — every WRITE below gates through resolveWriteContext()
+// and writes through its `db`. Cookie (RLS) client for normal tenant users;
+// service client ONLY under an active FULL impersonation grant re-validated at
+// call time (read_only is refused). Before this, all four writers here used the
+// cookie client bare: under act-as the staff auth.uid() has no tenant, tenant
+// RLS matched zero rows, and supabase-js RESOLVED the refusal — delete reported
+// success over nothing. New tenant-writing actions should adopt this seam.
+import { resolveWriteContext } from "@/lib/platform/acting-context"
 
 /**
  * Get all tasks for a user or filtered by parameters.
@@ -101,7 +109,10 @@ export async function updateTask(params: {
   status?: "pending" | "in_progress" | "completed" | "cancelled"
 }) {
   try {
-    const supabase = await createClient()
+    const ctx = await resolveWriteContext()
+    if (!ctx.ok) return { success: false, error: ctx.error }
+    if (!ctx.brokerageId) return { success: false, error: "Your account is not linked to a brokerage yet." }
+    const supabase = ctx.db
 
     const updates: any = {}
     if (params.title !== undefined) updates.title = params.title
@@ -111,14 +122,19 @@ export async function updateTask(params: {
     if (params.priority !== undefined) updates.priority = params.priority
     if (params.status !== undefined) updates.status = params.status
 
+    // Tenant predicate in app code (gate-then-service): the seam's service client
+    // bypasses RLS, so the brokerage scope must be carried here. Zero rows is a
+    // REFUSAL (wrong tenant / no such task), reported as one — never a success.
     const { data, error } = await supabase
       .from("tasks")
       .update(updates)
       .eq("id", params.taskId)
+      .eq("brokerage_id", ctx.brokerageId)
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
+    if (!data) return { success: false, error: "Task not found in your brokerage" }
 
     revalidatePath("/dashboard")
     revalidatePath("/tasks")
@@ -134,7 +150,10 @@ export async function updateTask(params: {
  */
 export async function completeTask(taskId: string) {
   try {
-    const supabase = await createClient()
+    const ctx = await resolveWriteContext() // ACT-AS WRITE SEAM — see header
+    if (!ctx.ok) return { success: false, error: ctx.error }
+    if (!ctx.brokerageId) return { success: false, error: "Your account is not linked to a brokerage yet." }
+    const supabase = ctx.db
 
     const { data, error } = await supabase
       .from("tasks")
@@ -143,10 +162,12 @@ export async function completeTask(taskId: string) {
         completed_at: new Date().toISOString(),
       })
       .eq("id", taskId)
+      .eq("brokerage_id", ctx.brokerageId)
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
+    if (!data) return { success: false, error: "Task not found in your brokerage" }
 
     revalidatePath("/dashboard")
     revalidatePath("/tasks")
@@ -162,11 +183,24 @@ export async function completeTask(taskId: string) {
  */
 export async function deleteTask(taskId: string) {
   try {
-    const supabase = await createClient()
+    const ctx = await resolveWriteContext() // ACT-AS WRITE SEAM — see header
+    if (!ctx.ok) return { success: false, error: ctx.error }
+    if (!ctx.brokerageId) return { success: false, error: "Your account is not linked to a brokerage yet." }
+    const supabase = ctx.db
 
-    const { error } = await supabase.from("tasks").delete().eq("id", taskId)
+    // `.select("id")` makes the affected rows observable: a zero-row DELETE
+    // resolves with `error: null`, and this action used to report success on it.
+    const { data: deleted, error } = await supabase
+      .from("tasks")
+      .delete()
+      .eq("id", taskId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .select("id")
 
     if (error) throw error
+    if (!deleted || deleted.length === 0) {
+      return { success: false, error: "Task not found in your brokerage" }
+    }
 
     revalidatePath("/dashboard")
     revalidatePath("/tasks")
@@ -188,21 +222,20 @@ export async function createTask(params: {
   priority?: "low" | "medium" | "high" | "urgent"
 }) {
   try {
-    const supabase = await createClient()
+    // ACT-AS WRITE SEAM — see header. Identity comes from the seam's context
+    // (the IMPERSONATED tenant identity under act-as), not from a bare cookie
+    // read of the caller's own agents row, which for acting staff has no row
+    // at all and refused every create.
+    const ctx = await resolveWriteContext()
+    if (!ctx.ok) return { success: false, error: ctx.error }
+    const supabase = ctx.db
 
     // tasks.brokerage_id + assigned_to_agent_id are NOT NULL (pass 5 live
     // catch — this hub action failed for EVERY caller that omitted an
     // assignee, and always missed brokerage_id). Resolve both from the
-    // session: the caller's own agent row is the default assignee.
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return { success: false, error: "Unauthorized" }
-    const { data: callerAgent } = await supabase
-      .from("agents")
-      .select("id, brokerage_id")
-      .eq("user_id", user.id)
-      .maybeSingle()
-    const assignee = params.assignedTo ?? callerAgent?.id
-    const brokerageId = callerAgent?.brokerage_id
+    // session context: the effective identity's agent row is the default assignee.
+    const assignee = params.assignedTo ?? ctx.agentId
+    const brokerageId = ctx.brokerageId
     if (!assignee || !brokerageId) {
       return { success: false, error: "No agent profile for this user — cannot create the task" }
     }

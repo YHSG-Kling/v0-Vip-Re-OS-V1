@@ -20,6 +20,14 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
+// ★ ACT-AS WRITE SEAM ★ — every WRITE below gates through resolveWriteContext():
+// it re-validates any impersonation grant at call time, REFUSES 'read_only'
+// grants (the kernel's service-client writes would otherwise let a read-only
+// act-as session mutate tenant data), and hands back the client to write
+// through (cookie/RLS normally; service only under an active FULL grant).
+// `actorUserId` is the REAL staff actor when impersonating — stamp it wherever
+// the written table carries an audit column. New tenant writers: adopt this seam.
+import { resolveWriteContext } from "@/lib/platform/acting-context"
 import { syncContactToCRM } from "@/lib/crm/sync"
 import { revalidatePath } from "next/cache"
 import {
@@ -169,9 +177,13 @@ export async function createContact(contactData: {
   source_subtype?: string
   }) {
   try {
-    const { agentId, brokerageId, isAuthenticated, userId } = await getAgentContext()
-    
-    if (!isAuthenticated || !userId) {
+    // ACT-AS WRITE SEAM — refuses read_only impersonation before the kernel's
+    // service-client write can ride an unwritable grant.
+    const ctx = await resolveWriteContext()
+    if (!ctx.ok) return { success: false, error: ctx.error }
+    const { agentId, brokerageId, userId } = ctx
+
+    if (!userId) {
       return { success: false, error: "Not authenticated" }
     }
     if (!brokerageId) {
@@ -257,7 +269,10 @@ export async function updateContact(contactId: string, updates: Partial<{
   tcpa_consent: boolean
 }>) {
   try {
-    const { agentId, brokerageId, userType } = await getAgentContext()
+    // ACT-AS WRITE SEAM — see createContact.
+    const ctx = await resolveWriteContext()
+    if (!ctx.ok) return { success: false, error: ctx.error }
+    const { agentId, brokerageId, userType } = ctx
 
     if (!brokerageId) {
       return { success: false, error: "No brokerage context" }
@@ -268,6 +283,8 @@ export async function updateContact(contactId: string, updates: Partial<{
       brokerageId,
       agentId: agentId ?? undefined,
       userType: userType ?? undefined,
+      // lifecycle_events.actor_user_id — the REAL actor (staff when acting-as).
+      actorUserId: ctx.actorUserId,
       updates,
     })
 
@@ -314,9 +331,12 @@ export async function updateContact(contactId: string, updates: Partial<{
  */
 export async function archiveContact(contactId: string) {
   try {
-    const { agentId, brokerageId, userType, isAuthenticated } = await getAgentContext()
+    // ACT-AS WRITE SEAM — see createContact.
+    const ctx = await resolveWriteContext()
+    if (!ctx.ok) return { success: false, error: ctx.error }
+    const { agentId, brokerageId, userType } = ctx
 
-    if (!isAuthenticated || !brokerageId) {
+    if (!brokerageId) {
       return { success: false, error: "Not authenticated" }
     }
     if (!contactId) {
@@ -328,6 +348,8 @@ export async function archiveContact(contactId: string) {
       brokerageId,
       agentId: agentId ?? undefined,
       userType: userType ?? undefined,
+      // lifecycle_events.actor_user_id — the REAL actor (staff when acting-as).
+      actorUserId: ctx.actorUserId,
     })
 
     if (!result.success) {
@@ -359,10 +381,17 @@ export async function archiveContact(contactId: string) {
  */
 export async function addContactNote(contactId: string, noteText: string, isPrivate = false) {
   try {
-    const { userId, brokerageId, isAuthenticated } = await getAgentContext()
-    const supabase = await createClient()
+    // ACT-AS WRITE SEAM — this was a bare cookie-client insert: under act-as the
+    // staff auth.uid() has no tenant, RLS refused the row, and the refusal
+    // surfaced as an error (or worse, nothing). The seam yields the right client;
+    // author_user_id is stamped with the REAL actor (the staff member when
+    // impersonating) so a note is never attributed to someone who didn't write it.
+    const ctx = await resolveWriteContext()
+    if (!ctx.ok) return { success: false, error: ctx.error }
+    const { brokerageId } = ctx
+    const supabase = ctx.db
 
-    if (!isAuthenticated || !brokerageId) {
+    if (!brokerageId) {
       return { success: false, error: "Not authenticated" }
     }
     if (!noteText?.trim()) {
@@ -374,7 +403,7 @@ export async function addContactNote(contactId: string, noteText: string, isPriv
       .insert({
         brokerage_id:   brokerageId,
         contact_id:     contactId,
-        author_user_id: userId,
+        author_user_id: ctx.actorUserId,
         body:           noteText.trim(),
         is_private:     isPrivate,
       })

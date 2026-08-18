@@ -757,6 +757,9 @@ export async function updateContactRecord(params: {
   brokerageId: string
   agentId?: string
   userType?: string
+  /** The REAL accountable actor (users.id) — under staff act-as this is the
+   *  impersonator, so lifecycle_events.actor_user_id names who really wrote. */
+  actorUserId?: string | null
   updates: Partial<{
     first_name: string
     last_name: string
@@ -804,12 +807,14 @@ export async function updateContactRecord(params: {
     return { success: false, error: error?.message ?? "Update failed or contact not found" }
   }
 
-  // Lifecycle event
+  // Lifecycle event — actor_user_id names the REAL actor (act-as seam: the
+  // impersonating staff member, never the tenant identity they act as).
   await supabase.from("lifecycle_events").insert({
     entity_type:  "contact",
     entity_id:    params.contactId,
     event_type:   KernelEvent.CONTACT_UPDATED,
     brokerage_id: params.brokerageId,
+    actor_user_id: params.actorUserId ?? null,
     created_at:   now,
     metadata:     { updated_fields: Object.keys(params.updates) },
   })
@@ -831,6 +836,9 @@ export async function archiveContactRecord(params: {
   brokerageId: string
   agentId?: string
   userType?: string
+  /** The REAL accountable actor (users.id) — under staff act-as this is the
+   *  impersonator, so lifecycle_events.actor_user_id names who really archived. */
+  actorUserId?: string | null
   reason?: string
 }): Promise<CRMResult> {
   const supabase = createServiceClient()
@@ -872,6 +880,7 @@ export async function archiveContactRecord(params: {
     entity_id:    params.contactId,
     event_type:   KernelEvent.CONTACT_ARCHIVED,
     brokerage_id: params.brokerageId,
+    actor_user_id: params.actorUserId ?? null,
     created_at:   now,
     metadata:     { reason: params.reason ?? "manual" },
   })
