@@ -259,39 +259,11 @@ export async function handleHighEngagement(payload: any) {
   return { success: true }
 }
 
-export async function createShortClip(params: {
-  long_form_video_id: string
-  clip_start_sec: number
-  clip_end_sec: number
-  caption_text?: string
-  target_platform: string
-}) {
-  const supabase = await createServerClient()
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
-
-  // Create short clip record
-  // Canonical video_snippets columns (matches video-repurposing.ts):
-  // long_form_video_id→video_project_id, clip_*_sec→*_seconds, target_platform→
-  // platform_target, status→approval_status ('draft'), snippet_title is NOT NULL.
-  const { data: clip, error } = await supabase
-    .from("video_snippets")
-    .insert({
-      video_project_id: params.long_form_video_id,
-      start_seconds: params.clip_start_sec,
-      end_seconds: params.clip_end_sec,
-      snippet_title: params.caption_text?.slice(0, 80) || `Clip ${params.clip_start_sec}-${params.clip_end_sec}s`,
-      caption_text: params.caption_text,
-      platform_target: params.target_platform,
-      approval_status: "draft",
-    })
-    .select()
-    .single()
-
-  if (error) throw error
-
-  return { success: true, clip }
-}
+// TOMBSTONE (orphan tranche 3): createShortClip deleted — a video_snippets
+// writer no surface called. The live survivor is
+// app/actions/video-repurposing.ts:createVideoSnippet, wired from the snippet
+// wizard and repurpose dashboard, and strictly more complete: it stamps the
+// caller's brokerage after verifying the source project/asset belongs to it
+// (this one wrote no tenant at all), validates platform_target against
+// PLATFORM_CONFIGS, enforces end > start and per-platform duration limits,
+// and auto-derives the aspect ratio.

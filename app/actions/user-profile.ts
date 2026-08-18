@@ -28,35 +28,12 @@ export async function saveAgentEmailSignature(
 /**
  * Load the calling user's personal email signature.
  */
-export async function getAgentEmailSignature(): Promise<string | null> {
-  // `getAgentContext()` never throws — for an unauthenticated caller it returns
-  // its safe default, whose `userId` is the EMPTY STRING. That went straight into
-  // `.eq("id", userId)`, and `SELECT … WHERE id = ''::uuid` raises 22P02
-  // (invalid input syntax for type uuid). Because the result was destructured as
-  // `const { data }` with no `error`, the failure was swallowed and the action
-  // returned `null` — indistinguishable from "this user has no signature".
-  //
-  // Harmless in its outcome here, but it is the exact shape that becomes a
-  // silent no-op on a write and a fail-open on a gate, so it is closed rather
-  // than tolerated: refuse before the query, and read `error`.
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.userId) return null
-
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("users")
-    .select("email_signature")
-    .eq("id", ctx.userId)
-    .maybeSingle()
-
-  if (error) {
-    console.error("[user-profile] getAgentEmailSignature read failed:", error.message)
-    return null
-  }
-
-  return data?.email_signature ?? null
-}
+// TOMBSTONE (orphan tranche 3): getAgentEmailSignature deleted — a one-column
+// read wrapper no surface called. The live survivor is
+// app/dashboard/profile/page.tsx, which selects users.email_signature directly
+// (under RLS, alongside the rest of the profile row) and feeds it to
+// AgentSignaturePanel — the panel that also owns the save path. One read, one
+// surface, no second vocabulary over the same column.
 
 /**
  * Wave 33 — personal website actions. Distinct from brokerage.website

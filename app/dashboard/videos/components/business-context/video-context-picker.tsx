@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useRef } from "react"
+import { useClickOutside } from "@/hooks/use-click-outside"
 import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -120,16 +121,9 @@ export function VideoContextPicker({
     else setSelectedListing(null)
   }, [selectedContextId, selectedContextType, listings])
 
-  // Close combobox on outside click
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (comboRef.current && !comboRef.current.contains(e.target as Node)) {
-        setComboOpen(false)
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside)
-    return () => document.removeEventListener("mousedown", handleClickOutside)
-  }, [])
+  // Close combobox on outside click — the shared hook (also covers touch,
+  // which the inline mousedown-only listener it replaces did not).
+  useClickOutside(comboRef, () => setComboOpen(false))
 
   // Filter listings by query (address + city + state)
   const filteredListings = listings.filter((l) => {

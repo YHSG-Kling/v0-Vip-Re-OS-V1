@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import {
   Card,
   CardHeader,
@@ -16,6 +16,8 @@ import {
   createNeighborNotificationCampaign,
   grantSellerPermission,
   launchNeighborNotification,
+  listNeighborCampaignsForListing,
+  type NeighborNotificationCampaign,
 } from "@/app/actions/neighbor-notifications"
 
 interface Props {
@@ -60,6 +62,28 @@ export function NeighborNotificationCard({
   const [campaignId, setCampaignId] = useState<string | null>(null)
   const [identified, setIdentified] = useState<number | null>(null)
   const [sent, setSent] = useState<number | null>(null)
+
+  // The phase used to live ONLY in React state, so a reload showed "Not
+  // started" over a campaign that was mid-flight (or already sent) and the
+  // agent could create a second one. Initialize from the server's per-listing
+  // campaign history instead — listNeighborCampaignsForListing is the read
+  // this card always lacked.
+  useEffect(() => {
+    listNeighborCampaignsForListing(listingId).then((campaigns: NeighborNotificationCampaign[]) => {
+      const live = campaigns.find((c) => c.status !== "cancelled")
+      if (!live) return
+      setCampaignId(live.id)
+      setIdentified(live.recipientsIdentified ?? null)
+      if (live.status === "sending" || live.status === "sent") {
+        setSent(live.recipientsSent ?? null)
+        setPhase("sent")
+      } else if (live.status === "approved" || live.sellerPermissionGranted) {
+        setPhase("approved")
+      } else if (live.status === "awaiting_seller_permission") {
+        setPhase("identified")
+      }
+    }).catch(() => { /* history read is best-effort — the card still works forward */ })
+  }, [listingId])
 
   function handleIdentify() {
     startTransition(async () => {

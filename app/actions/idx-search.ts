@@ -232,6 +232,36 @@ export async function saveProperty(data: {
       return { success: false, error: insertErr.message }
     }
 
+    // BEHAVIOURAL EVENT LOG — a favorite is a scored intent signal
+    // (property_save, 12 points in lib/lead-scoring/behavioral-events). The
+    // recorder runs on the service client, so the tenant is NOT taken from the
+    // body or the contact row this action read under RLS: it goes through
+    // requireContactAccess, which proves the caller is the contact themselves
+    // (session/invite) or same-brokerage staff and yields the contact's real
+    // brokerage. A caller the gate refuses still saved the property under RLS
+    // above — they just don't move a lead score. Best-effort.
+    try {
+      const { requireContactAccess } = await import("@/lib/portal/require-contact-access")
+      const access = await requireContactAccess(data.contactId)
+      if (access.ok) {
+        const { recordBehavioralEvent } = await import("@/lib/lead-scoring/record-behavioral-event")
+        await recordBehavioralEvent({
+          brokerageId: access.brokerageId,
+          contactId: data.contactId,
+          eventType: "property_save",
+          eventData: {
+            source: resolvedSource,
+            mls_number: data.mlsNumber ?? null,
+            listing_id: data.listingId ?? null,
+          },
+        })
+      } else {
+        console.error("[idx-search] property_save behavioural event NOT recorded — caller is not on this contact:", access.error)
+      }
+    } catch (e) {
+      console.error("[idx-search] property_save behavioural event NOT recorded:", e)
+    }
+
     revalidatePath("/properties/saved")
     return { success: true, message: "Property saved successfully" }
   } catch (error: any) {
@@ -323,6 +353,20 @@ export async function trackPropertyView(data: {
       console.error("Track view error:", viewError.message)
       return { success: false, error: viewError.message }
     }
+
+    // BEHAVIOURAL EVENT LOG — the stream the canonical scorer's 30% behavioural
+    // refinement actually reads (lead_behavioral_data, folded by
+    // lib/lead-scoring/behavioral-events). property_views feeds the analytics
+    // surface; without this second write a buyer could view a hundred homes and
+    // their lead_score would never move. Identity/tenant are the gate's, never
+    // the body's. Best-effort: the recorder logs its own refusals.
+    const { recordBehavioralEvent } = await import("@/lib/lead-scoring/record-behavioral-event")
+    await recordBehavioralEvent({
+      brokerageId: access.brokerageId,
+      contactId: data.contactId,
+      eventType: "property_view",
+      eventData: { mls_number: data.mlsNumber, time_spent_seconds: data.timeSpent },
+    })
 
     if (data.timeSpent > 120) {
       // `error` is destructured: a refused read used to arrive as `data: null`, which

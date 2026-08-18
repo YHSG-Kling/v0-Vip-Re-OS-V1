@@ -89,6 +89,7 @@ import { predictDealCloseProbability } from "@/app/actions/ai-predictions"
 import {
   logTransactionDelay,
   getTransactionDelays,
+  markDelaysCommunicated,
 } from "@/app/actions/transaction-transparency"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Slider } from "@/components/ui/slider"
@@ -2219,6 +2220,29 @@ export function TransactionDetailClient({
                       >
                         {isLoggingDelay ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
                         Notify Client Now
+                      </Button>
+                    ) : null}
+                    {/* Already told them by phone / in person? Record the
+                        disclosure WITHOUT re-sending a portal notice —
+                        markDelaysCommunicated flips only the flag, and refuses
+                        (rather than claiming success) when no delay row exists. */}
+                    {!delays.communicated_to_client ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="mt-1 text-xs text-amber-700 dark:text-amber-300"
+                        disabled={isLoggingDelay}
+                        onClick={async () => {
+                          const res = await markDelaysCommunicated(transaction.id)
+                          if (res.success) {
+                            toast.success("Marked as communicated to client")
+                            setDelays({ ...delays, communicated_to_client: true })
+                          } else {
+                            toast.error(res.error ?? "Could not mark as communicated")
+                          }
+                        }}
+                      >
+                        Already communicated outside the app — mark as told
                       </Button>
                     ) : (
                       <p className="text-xs text-green-600 dark:text-green-400">Client has been notified</p>

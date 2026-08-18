@@ -342,34 +342,10 @@ export async function markTransactionLost(params: {
 /**
  * Get the current stage and allowed next stages for a transaction.
  */
-export async function getTransactionStageInfo(params: {
-  transactionId: string
-  brokerageId: string
-}): Promise<{
-  currentStage: TransactionStage | null
-  allowedNextStages: TransactionStage[]
-  status: string | null
-} | null> {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
-  if (!auth.ok) return null
-
-  const orchestrator = new TransactionOrchestrator({
-    transactionId: params.transactionId,
-    brokerageId:   auth.brokerageId,
-    userId:        auth.userId,
-    userRole:      auth.userRole,
-  })
-
-  const current = await orchestrator.getCurrentStage()
-  if (!current) return null
-
-  // Import allowed transitions
-  const { STAGE_TRANSITIONS } = await import("@/lib/transactions/transaction-stages")
-  const allowedNextStages = STAGE_TRANSITIONS[current.stage] || []
-
-  return {
-    currentStage:      current.stage,
-    allowedNextStages: allowedNextStages as TransactionStage[],
-    status:            current.status,
-  }
-}
+// TOMBSTONE (orphan tranche 3): getTransactionStageInfo deleted — a read
+// combination no surface called. The live survivor is the transaction detail
+// surface itself: app/dashboard/transactions/[id]/transaction-detail-client.tsx
+// derives allowedNextStages from lib/transactions/transaction-stages.ts:
+// STAGE_TRANSITIONS over the stage it already renders, and asks the server the
+// stronger question through checkStageAdvancement above (which validates
+// blockers, not just the transition table) before advanceTransactionStage.

@@ -59,7 +59,9 @@ const EXEMPT: Record<string, string> = {
   // Each page is a pure redirect() to its canonical successor. They are kept
   // (not deleted) because NOTHING routes old URLs at runtime: ROUTE_ALIASES
   // in app/routes-compatibility.ts is imported by no middleware or catch-all
-  // (verified — no middleware.ts exists, resolveRoute has zero consumers), so
+  // (verified — no middleware.ts exists; resolveRoute had zero consumers and
+  // was deleted in orphan tranche 3, the literal stub pages being the named
+  // survivors), so
   // the stub page IS the only thing keeping old bookmarks/external links from
   // 404ing. In-app links to them are zero BY DESIGN — that is the exemption.
   "/admin/audit-trail": "legacy redirect stub (bookmark compatibility) → /dashboard/superadmin/audit-trail",
@@ -82,6 +84,7 @@ const EXEMPT: Record<string, string> = {
   "/settings/profile": "legacy redirect stub (bookmark compatibility) → /dashboard/profile (Profile consolidation — the lone personal-website editor was folded into the My Profile hub; settings_profile_consolidation)",
   "/portal/[contactId]/dashboard/[persona]": "legacy redirect stub (bookmark compatibility) → /portal/[contactId] — persona routing is now kernel-decided; portal links were sent to clients externally, so old deep links must not 404",
   "/auth/error": "legacy redirect stub (bookmark compatibility) → /login?message=… — possible OAuth error-redirect target in hosted Supabase auth config (not verifiable in-repo)",
+  "/dashboard/leaderboard": "legacy redirect stub (bookmark compatibility) → /dashboard/motivation with scope/metric/period carried across — brokers/team leads had this path in nav; its only in-code self-reference left with the deleted LeaderboardClient (orphan tranche 3)",
 }
 
 /** Files whose ENTIRE content is route configuration — every "/..." string

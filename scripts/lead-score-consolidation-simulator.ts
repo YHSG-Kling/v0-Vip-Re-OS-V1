@@ -64,6 +64,7 @@ import {
   priorityTier,
   type BehavioralEvent,
 } from "../lib/lead-scoring/behavioral-events"
+import { recordBehavioralEvent, isScoredEventType } from "../lib/lead-scoring/record-behavioral-event"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -298,6 +299,88 @@ console.log("\n[there is exactly ONE calculateLeadScore implementation left]")
   check("…and the orchestrator DELEGATES to the authority rather than competing",
     /multi-factor-scorer/.test(src("lib/services/lead-management.service.ts")))
   check("package.json wires this proof", /test:lead-score-consolidation/.test(src("package.json")))
+}
+
+console.log("\n[the recorder — the event source the behavioural 30% never had]")
+{
+  // ONE writer. Before this, trackBehavioralEvent (agent-session-gated) was the
+  // only insert into lead_behavioral_data, so portal contacts and provider
+  // webhooks — the people who actually generate behaviour — could write nothing.
+  const recorder = code("lib/lead-scoring/record-behavioral-event.ts")
+  check("the recorder exists in lib/lead-scoring", recorder.length > 0)
+  check("…and is the ONE module that inserts into lead_behavioral_data",
+    /from\("lead_behavioral_data"\)\.insert|from\("lead_behavioral_data"\)\s*\n?\s*\.insert/.test(recorder))
+
+  // Every OTHER writer is gone: the wrapper delegates instead of inserting.
+  const auto = code("app/actions/ai-auto-response.ts")
+  check("the legacy action no longer writes the table directly",
+    !/from\("lead_behavioral_data"\)/.test(auto))
+  check("…it DELEGATES to the lib recorder", /record-behavioral-event/.test(auto))
+  check("…and keeps its agent-session gate (auth user + agent context)",
+    /getUser\(\)/.test(auto) && /getAgentContext\(\)/.test(auto))
+
+  // The recorder writes ONLY columns the live table has (measured schema).
+  const LIVE_COLUMNS = new Set([
+    "id", "lead_id", "event_type", "event_data", "page_url", "referrer",
+    "device_type", "session_id", "ip_address", "user_agent", "occurred_at",
+    "created_at", "brokerage_id",
+  ])
+  const insertBlock = recorder.match(/\.insert\(\{([\s\S]*?)\}\)/)?.[1] ?? ""
+  const writtenCols = [...insertBlock.matchAll(/^\s*([a-z_]+):/gm)].map((m) => m[1])
+  check("every column the recorder writes exists on the live table",
+    writtenCols.length > 0 && writtenCols.every((c) => LIVE_COLUMNS.has(c)),
+    writtenCols.filter((c) => !LIVE_COLUMNS.has(c)).join(","))
+  check("…including the two the scorer's query needs (lead_id, occurred_at)",
+    writtenCols.includes("lead_id") && writtenCols.includes("occurred_at") &&
+    writtenCols.includes("event_type") && writtenCols.includes("brokerage_id"))
+
+  // SHAPE PARITY: a row as the recorder writes it, read back as the scorer reads
+  // it (event_type, event_data, occurred_at), earns points in the summariser.
+  for (const t of ["property_view", "property_save", "email_open", "email_click", "sms_reply"]) {
+    check(`call-site event '${t}' is in the scored vocabulary and earns points`,
+      isScoredEventType(t) && summarizeBehavioralEvents([ev(t, 1)], NOW).totalPoints === EVENT_POINTS[t])
+  }
+
+  // The four real behavioural moments are wired.
+  const idx = code("app/actions/idx-search.ts")
+  check("trackPropertyView records property_view through the recorder",
+    /recordBehavioralEvent/.test(idx) && /eventType: "property_view"/.test(idx))
+  check("saveProperty records property_save through the recorder",
+    /eventType: "property_save"/.test(idx))
+  const sg = code("app/api/webhooks/sendgrid-events/route.ts")
+  check("the SendGrid webhook records email_open / email_click",
+    /recordBehavioralEvent/.test(sg) && /"email_open" : "email_click"/.test(sg))
+  const inboundRoute = code("app/api/providers/inbound/route.ts")
+  check("the inbound SMS router records sms_reply",
+    /recordBehavioralEvent/.test(inboundRoute) && /eventType: "sms_reply"/.test(inboundRoute))
+
+  // PORTAL CALLERS NEVER PASS IDENTITY FROM THE BODY: tenant comes from the
+  // gate (requireContactAccess) or the provider-resolved match, never a
+  // caller-supplied brokerageId.
+  check("trackPropertyView + saveProperty resolve tenant via requireContactAccess",
+    (idx.match(/requireContactAccess\(/g) ?? []).length >= 2 &&
+    (idx.match(/brokerageId: access\.brokerageId/g) ?? []).length >= 2)
+  check("…and no idx-search recorder call takes brokerageId from the body",
+    !/brokerageId: data\.propertyData\.brokerageId/.test(idx.split("recordBehavioralEvent")[1] ?? ""))
+  check("the SendGrid site stamps the tenant the provider correlation proved",
+    /brokerageId: trackContact\.brokerage_id/.test(sg))
+  check("the inbound router stamps the tenant its signature-verified ingress resolved",
+    /brokerageId: inbound\.brokerageId/.test(inboundRoute))
+
+  // NEGATIVE CONTROLS — run the real function.
+  check("recorder refuses a call with no tenant (fails closed, reports why)",
+    await recordBehavioralEvent({ brokerageId: "", contactId: "c-1", eventType: "sms_reply" })
+      .then((r) => r.recorded === false && !!r.reason))
+  check("…and a call with no contact",
+    await recordBehavioralEvent({ brokerageId: "b-1", contactId: "", eventType: "sms_reply" })
+      .then((r) => r.recorded === false))
+  check("…and a call with no event type",
+    await recordBehavioralEvent({ brokerageId: "b-1", contactId: "c-1", eventType: "" })
+      .then((r) => r.recorded === false))
+  check("a refused write is DESTRUCTURED and reported, never swallowed",
+    /const \{ error \} = await svc/.test(recorder) && /NOT recorded/.test(src("lib/lead-scoring/record-behavioral-event.ts")))
+  check("the recorder never throws at a call site — refusals return { recorded: false }",
+    /recorded: false/.test(recorder) && !/throw /.test(recorder))
 }
 
 console.log("\n──────────────────────────────────────────────────")

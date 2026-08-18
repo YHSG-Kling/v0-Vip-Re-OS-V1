@@ -199,6 +199,31 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     },
   })
 
+  // ── Step 6b: Behavioural event log — sms_reply ─────────────────────────────
+  // The contact texting back is a scored responsiveness signal (sms_reply,
+  // 10 pts in lib/lead-scoring/behavioral-events), read by the canonical
+  // scorer's behavioural 30% from lead_behavioral_data. This ingress is the
+  // only place that knows the reply happened, and it can never hold the agent
+  // session the old tracker action demanded. Identity/tenant are the ones THIS
+  // route already resolved server-side: the signature-verified provider event's
+  // sender matched within inbound.brokerageId (Steps 1–5) — never the body.
+  // entityId is a contact id or a scraped-lead id; both are the id class the
+  // scorer queries lead_behavioral_data.lead_id with. Best-effort: the recorder
+  // logs a refused write as not-recorded and never breaks ingress.
+  if (inbound.providerType === "twilio" && (inbound.text ?? "").trim()) {
+    const { recordBehavioralEvent } = await import("@/lib/lead-scoring/record-behavioral-event")
+    await recordBehavioralEvent({
+      brokerageId: inbound.brokerageId,
+      contactId: entityId,
+      eventType: "sms_reply",
+      eventData: {
+        channel: inbound.channel === "whatsapp" ? "whatsapp" : "sms",
+        provider_message_id: inbound.messageId ?? null,
+        entity_type: entityType,
+      },
+    })
+  }
+
   // ── Step 7: Update last activity timestamps ─────────────────────────────────
   const now = new Date().toISOString()
 

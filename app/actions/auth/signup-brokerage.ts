@@ -198,6 +198,21 @@ export async function signupBrokerageAction(
     updated_at:          new Date().toISOString(),
   })
 
+  // AI-ISA SYSTEM ACTOR — provision the tenant's ISA identity at birth.
+  // Idempotent (returns the cached ai_isa_system_user_id when present). Without
+  // this call nothing in the tree ever provisioned the actor, so
+  // getIsaSystemUserId returned null for every brokerage forever and each
+  // ISA audit write fell back to the admin's user_id. Best-effort — an actor
+  // provisioning problem must never cost the signup.
+  try {
+    const { provisionIsaActorForBrokerage } = await import("@/lib/auth/provision-isa-actor")
+    await provisionIsaActorForBrokerage({
+      brokerageId: brokerage.id,
+      brokerageName: input.brokerageName.trim(),
+      brokerageSlug: (brokerage as { slug?: string | null }).slug ?? null,
+    })
+  } catch (err) { console.warn("[signupBrokerage] ISA actor provisioning failed (non-fatal):", (err as any)?.message) }
+
   // AFFILIATE ATTRIBUTION (external MRR-commission rail — NOT the rev-share tree).
   // Explicit param wins; else the 90-day /api/ref cookie. One insert, first-wins
   // per tenant (UNIQUE(brokerage_id)); best-effort — never fails the signup.

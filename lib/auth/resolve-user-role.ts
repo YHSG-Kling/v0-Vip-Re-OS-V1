@@ -94,12 +94,13 @@ export function resolveUserRole(profile: {
   return (profile.user_type || "agent") as UserRole
 }
 
-export function requireRole(
-  profile: { user_type?: string | null; role?: string | null },
-  allowedRoles: UserRole[]
-): boolean {
-  return allowedRoles.includes(resolveUserRole(profile))
-}
+// TOMBSTONE (orphan tranche 3): requireRole deleted — a one-line membership
+// wrapper with zero callers. The live survivors are the NAMED role predicates
+// below (isAdminOrBroker, isTenantAdminGrantRole, isBrokerageFinanceAdmin,
+// isTenantAdminOrPlatformStaff …), which are exactly the "one vocab per
+// function" rosters the owner ruling in this file demands — an ad-hoc
+// allowedRoles array at every call site is the vocabulary drift they exist to
+// prevent.
 
 // ─── TENANT ADMIN — THE ONE ANSWER ───────────────────────────────────────────
 //

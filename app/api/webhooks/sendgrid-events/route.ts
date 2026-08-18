@@ -116,6 +116,27 @@ export async function POST(request: NextRequest) {
           metadata: { sg_message_id: sgId || null, sg_event_id: String(ev?.sg_event_id ?? "") || null },
           event_at: ev?.timestamp ? new Date(Number(ev.timestamp) * 1000).toISOString() : new Date().toISOString(),
         })
+
+        // BEHAVIOURAL EVENT LOG — email_open (3 pts) / email_click (10 pts) in the
+        // scored vocabulary (lib/lead-scoring/behavioral-events). This is the lane
+        // the old agent-session-gated tracker could never serve: a webhook holds no
+        // session, so opens and clicks previously never reached the canonical
+        // scorer's behavioural 30%. Identity is trackContact — resolved above from
+        // the provider event's recipient, unambiguous-tenant rule applied — never
+        // from the request body. The recorder logs refused writes as not-recorded.
+        if ((kind === "open" || kind === "click") && trackContact.brokerage_id) {
+          const { recordBehavioralEvent } = await import("@/lib/lead-scoring/record-behavioral-event")
+          await recordBehavioralEvent({
+            brokerageId: trackContact.brokerage_id,
+            contactId: trackContact.id,
+            eventType: kind === "open" ? "email_open" : "email_click",
+            eventData: {
+              sg_message_id: sgId || null,
+              url: kind === "click" ? (String(ev?.url ?? "") || null) : null,
+            },
+            occurredAt: ev?.timestamp ? new Date(Number(ev.timestamp) * 1000).toISOString() : undefined,
+          })
+        }
       }
 
       // Fallback: the recipient's most recent outbound email within 72h.

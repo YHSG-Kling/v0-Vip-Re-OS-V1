@@ -36,6 +36,7 @@ import {
   ledgerMechanismForReason,
   recipientTypeForReason,
   commissionAdjustmentReasonLabel,
+  isCommissionAdjustmentReason,
 } from "@/lib/commission/adjustment-vocabulary"
 
 // ============================================================================
@@ -689,6 +690,17 @@ export async function markAgreementSigned(params: {
   }
 
   // ── 3+4. INSERT listing_agreements ───────────────────────────────────────
+  // adjustmentType is typed `string` at the boundary; the reason CHECK on
+  // listing_agreements.adjustment_type refuses anything outside the vocabulary,
+  // and supabase-js reports that by RESOLVING, not throwing. Validate with the
+  // vocabulary's own guard BEFORE writing, so an unknown reason is refused with
+  // a message instead of surfacing as a bare constraint violation.
+  if (commissionTerms?.adjustmentType && !isCommissionAdjustmentReason(commissionTerms.adjustmentType)) {
+    return {
+      success: false,
+      error: `Unknown commission adjustment reason "${commissionTerms.adjustmentType}" — pick one of the offered reasons (or "custom").`,
+    }
+  }
   const hasAdjustment = !!(commissionTerms?.adjustmentType && commissionTerms?.adjustmentValue !== undefined)
 
   const { data: agreement, error: agreementError } = await supabase

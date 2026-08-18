@@ -155,28 +155,16 @@ export async function dismissStrategyAction(
 }
 
 // ─── Record outcome (learning loop) ─────────────────────────────────────────
-export async function recordStrategyOutcomeAction(
-  strategyId: string,
-  outcome:    "accepted" | "countered" | "rejected" | "withdrawn" | "closed" | "lost",
-): Promise<{ ok: true } | { ok: false; error: string }> {
-  const auth = await requireAgentOrAdmin()
-  if (!auth.ok) return auth
-
-  const svc = createServiceClient()
-  const { error } = await svc
-    .from("negotiation_strategies")
-    .update({
-      status:              "outcome_recorded",
-      outcome,
-      outcome_recorded_at: new Date().toISOString(),
-      updated_at:          new Date().toISOString(),
-    })
-    .eq("id", strategyId)
-    .eq("brokerage_id", auth.brokerageId)
-  if (error) return { ok: false, error: error.message }
-
-  return { ok: true }
-}
+// TOMBSTONE (orphan tranche 3): recordStrategyOutcomeAction deleted — a manual
+// per-strategyId variant of outcome recording that no surface ever called. The
+// live survivor is lib/negotiation/auto-trigger.ts:recordOutcomeForOfferSafe,
+// wired from lib/kernel/offers.ts on the offer lifecycle itself, which writes
+// the IDENTICAL update (status 'outcome_recorded' + outcome +
+// outcome_recorded_at) at the moment the offer actually resolves — no agent
+// data entry required. lib/strategy-learning/close-strategy-loop.ts closes the
+// remaining open strategies at transaction close. Nothing is lost: every
+// outcome vocabulary member this action accepted is produced by those two
+// automated writers.
 
 // ─── Fetch (UI) ─────────────────────────────────────────────────────────────
 export interface NegotiationStrategyView {

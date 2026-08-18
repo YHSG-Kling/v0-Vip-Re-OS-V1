@@ -176,74 +176,11 @@ function SellerOfferCardSkeleton() {
   )
 }
 
-// Offer comparison table for offers page
-interface OfferComparisonTableProps {
-  offers: OfferData[]
-  listPrice: number | null
-}
-
-export function OfferComparisonTable({ offers, listPrice }: OfferComparisonTableProps) {
-  if (offers.length === 0) {
-    return null
-  }
-
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b">
-            <th className="text-left py-3 px-4 font-medium">Buyer</th>
-            <th className="text-right py-3 px-4 font-medium">Amount</th>
-            <th className="text-center py-3 px-4 font-medium">vs List</th>
-            <th className="text-center py-3 px-4 font-medium">Status</th>
-            <th className="text-right py-3 px-4 font-medium">Date</th>
-          </tr>
-        </thead>
-        <tbody>
-          {offers.map((offer) => {
-            const status = OFFER_STATUS_CONFIG[offer.status] ?? OFFER_STATUS_CONFIG.pending
-            const vsList = listPrice && offer.offer_amount
-              ? ((offer.offer_amount / listPrice) * 100).toFixed(1)
-              : null
-
-            return (
-              <tr key={offer.id} className="border-b hover:bg-muted/50">
-                <td className="py-3 px-4">
-                  {offer.buyer?.first_name || "Buyer"} {offer.buyer?.last_name?.charAt(0) || ""}.
-                </td>
-                <td className="text-right py-3 px-4 font-medium">
-                  {formatPrice(offer.offer_amount)}
-                </td>
-                <td className="text-center py-3 px-4">
-                  {vsList && (
-                    <span className={cn(
-                      "font-medium",
-                      Number(vsList) >= 100 ? "text-green-600" : "text-amber-600"
-                    )}>
-                      {vsList}%
-                    </span>
-                  )}
-                </td>
-                <td className="text-center py-3 px-4">
-                  <Badge variant="secondary" className={cn("text-xs", status.color)}>
-                    {status.label}
-                  </Badge>
-                </td>
-                <td className="text-right py-3 px-4 text-muted-foreground">
-                  {offer.offer_date
-                    ? new Date(offer.offer_date).toLocaleDateString("en-US", {
-                        month: "short",
-                        day: "numeric",
-                      })
-                    : "N/A"}
-                </td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-    </div>
-  )
-}
+// TOMBSTONE (orphan tranche 3): OfferComparisonTable deleted — a comparison
+// table no surface rendered. The live survivor is the portal offers page
+// itself, app/portal/[contactId]/offers/page.tsx, whose comparison section
+// covers everything this table showed (per-offer buyer/amount/status/date
+// rows, best-offer highlight) plus the persisted agent-authored comparison
+// rows this static table could not display.
 
 export { SellerOfferCardSkeleton }

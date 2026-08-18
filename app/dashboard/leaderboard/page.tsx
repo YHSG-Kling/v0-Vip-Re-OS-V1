@@ -15,6 +15,13 @@ export const dynamic = "force-dynamic"
 // path in their nav, so it is in browser histories and bookmarks. The filter
 // params ride across, so an existing link to a specific board still lands on
 // that same board.
+//
+// TOMBSTONE (orphan tranche 3): the leftover leaderboard-client.tsx
+// (LeaderboardClient) is deleted — this page stopped rendering it at the merge
+// above and nothing else ever did. The survivor is
+// app/dashboard/motivation/motivation-client.tsx:MotivationClient, the richer
+// board this page's header already names as the keeper, which carries the
+// ported initialScope/initialMetric/initialPeriod URL filters.
 export default async function LeaderboardPage({
   searchParams,
 }: {

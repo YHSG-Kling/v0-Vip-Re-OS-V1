@@ -215,9 +215,11 @@ export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = 
  */
 export const UNDECLARED_REQUIREMENTS: readonly AppCapability[] = [] as const
 
-export function getAppCapability(capability: AppCapability): AppCapabilityDef {
-  return APP_CAPABILITY_REGISTRY[capability]
-}
+// TOMBSTONE (orphan tranche 3): getAppCapability deleted — a one-line accessor
+// with zero callers. The live survivors are the direct, type-safe
+// APP_CAPABILITY_REGISTRY[cap] indexes every real consumer already uses
+// (lib/voice-admin/kernel-command-surface.ts, lib/agentic-os/
+// capability-ownership.ts); the Record type makes the accessor add nothing.
 
 // Intent weight by verb — reads low, writes high (planning/confirmation hint).
 const VERB_WEIGHT: Partial<Record<AgisVerb, number>> = {

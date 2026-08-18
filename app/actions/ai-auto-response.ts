@@ -198,7 +198,17 @@ Reply:`,
   return text.trim()
 }
 
-// Track behavioral event for lead scoring
+// Track behavioral event for lead scoring.
+//
+// GATED WRAPPER around the one shared recorder,
+// lib/lead-scoring/record-behavioral-event.ts. This action's agent-session gate
+// (auth user + getAgentContext) is right for agent-surface callers and
+// structurally wrong for everyone else — a portal contact or a provider webhook
+// can never hold an agent session, which is why this being the ONLY writer left
+// the canonical scorer's behavioural 30% with no event source. The write itself
+// now lives in the lib recorder so the portal/webhook call sites and this action
+// land the identical row shape; identity and tenant here stay SERVER-RESOLVED
+// (session + getAgentContext), never taken from the params.
 export async function trackBehavioralEvent(params: {
   contactId: string
   eventType: string
@@ -217,20 +227,22 @@ export async function trackBehavioralEvent(params: {
   // behavioral_patterns is a brokerage pattern-definition CATALOG, not an event log.
   // Per-entity events belong in lead_behavioral_data (keyed by lead_id, event_type NOT NULL).
   const { brokerageId } = await getAgentContext()
-  const { error } = await supabase.from("lead_behavioral_data").insert({
-    lead_id: params.contactId,
-    event_type: params.eventType,
-    event_data: {
-      ...(params.eventData || {}),
-      points_awarded: params.pointsAwarded || 0,
-    },
-    brokerage_id: brokerageId,
-    occurred_at: new Date().toISOString(),
+  // The recorder keys cost and score on the tenant — a session with no resolvable
+  // brokerage cannot record, and saying so beats a null sailing into NOT NULL.
+  if (!brokerageId) {
+    return { success: false, error: "no tenant context — event not recorded" }
+  }
+  const { recordBehavioralEvent } = await import("@/lib/lead-scoring/record-behavioral-event")
+  const result = await recordBehavioralEvent({
+    brokerageId,
+    contactId: params.contactId,
+    eventType: params.eventType,
+    eventData: params.eventData || {},
+    pointsAwarded: params.pointsAwarded || 0,
   })
 
-  if (error) {
-    console.error("Error tracking behavioral event:", error)
-    return { success: false, error: error.message }
+  if (!result.recorded) {
+    return { success: false, error: result.reason ?? "not recorded" }
   }
 
   // Recalculate lead score through the CANONICAL scorer (multi-factor baseline +

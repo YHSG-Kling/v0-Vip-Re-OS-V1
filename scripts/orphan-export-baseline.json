@@ -75,14 +75,9 @@
     "app/actions/marketing-intelligence.ts": 1,
     "app/actions/marketing-studio.ts": 2,
     "app/actions/multi-persona.ts": 2,
-    "app/actions/negotiation-strategy.ts": 1,
-    "app/actions/neighbor-notifications.ts": 1,
     "app/actions/newsletter/approve-template.ts": 2,
-    "app/actions/onboarding/agent-onboarding-actions.ts": 1,
     "app/actions/onboarding/mentor-session.ts": 1,
-    "app/actions/onboarding/training.ts": 1,
     "app/actions/open-house-automation.ts": 1,
-    "app/actions/open-house.ts": 1,
     "app/actions/photo-management.ts": 2,
     "app/actions/podcast-generation.ts": 2,
     "app/actions/portal-lifetime.ts": 1,
@@ -96,30 +91,21 @@
     "app/actions/social-media-automation.ts": 1,
     "app/actions/social-publishing.ts": 1,
     "app/actions/social-share.ts": 2,
-    "app/actions/superadmin/parked-retention.ts": 2,
+    "app/actions/superadmin/parked-retention.ts": 1,
     "app/actions/transaction-document-signatures.ts": 2,
     "app/actions/transaction-inspections.ts": 2,
-    "app/actions/transaction-stage-machine.ts": 1,
-    "app/actions/transaction-transparency.ts": 1,
-    "app/actions/user-profile.ts": 1,
     "app/actions/vendor-marketplace.ts": 2,
     "app/actions/vendor-payments.ts": 1,
     "app/actions/vendor-verification.ts": 1,
     "app/actions/video/create-video-project.ts": 5,
-    "app/actions/video-content.ts": 1,
     "app/actions/video-repurposing.ts": 3,
     "app/components/heartbeat/heartbeat-card.tsx": 1,
     "app/components/portal/FitBadge.tsx": 1,
-    "app/components/portal/SellerOfferCard.tsx": 1,
     "app/config/navigation-config.ts": 1,
     "app/dashboard/admin/lead-lineage/lead-lineage-client.tsx": 1,
     "app/dashboard/intelligence-report/trust-receipts-card.tsx": 1,
-    "app/dashboard/leaderboard/leaderboard-client.tsx": 1,
-    "app/dashboard/settings/branding/agent-branding-client.tsx": 1,
     "app/dashboard/videos/components/BackgroundPicker.tsx": 1,
-    "app/routes-compatibility.ts": 1,
     "app/settings/email-templates/template-preview.tsx": 1,
-    "hooks/use-click-outside.ts": 1,
     "hooks/use-debounce.ts": 1,
     "hooks/use-local-storage.ts": 1,
     "hooks/use-toast.ts": 1,
@@ -136,7 +122,7 @@
     "lib/ads/ctv-campaign.ts": 3,
     "lib/ads/facebook-audience-sync.ts": 4,
     "lib/agentic-os/agent-credentials.ts": 2,
-    "lib/agentic-os/app-capability-registry.ts": 2,
+    "lib/agentic-os/app-capability-registry.ts": 1,
     "lib/agentic-os/capability-ownership.ts": 1,
     "lib/agentic-os/connection-nudge.ts": 2,
     "lib/agentic-os/connector-gateway.ts": 1,
@@ -188,8 +174,7 @@
     "lib/analytics/territory-roi.ts": 3,
     "lib/auth/isa-actor.ts": 1,
     "lib/auth/permissions.ts": 2,
-    "lib/auth/provision-isa-actor.ts": 1,
-    "lib/auth/resolve-user-role.ts": 2,
+    "lib/auth/resolve-user-role.ts": 1,
     "lib/billing/ai-overage.ts": 1,
     "lib/billing/billing-access.ts": 1,
     "lib/billing/dunning.ts": 3,
@@ -200,7 +185,6 @@
     "lib/branding/resolve-brokerage-brand.ts": 1,
     "lib/brokerage-intelligence/miners.ts": 6,
     "lib/brokerage-intelligence/offer-term-outcomes.ts": 3,
-    "lib/buyer-broker/gate.ts": 1,
     "lib/buyer-search/external-match.ts": 2,
     "lib/buyer-search/fair-housing.ts": 2,
     "lib/buyer-search/investor-offmarket-match.ts": 3,
@@ -212,7 +196,6 @@
     "lib/charts/explainer-diagram.ts": 3,
     "lib/charts/geometry.ts": 3,
     "lib/cma/customer-facing-guard.ts": 3,
-    "lib/commission/adjustment-vocabulary.ts": 1,
     "lib/commission/cda-discrepancy.ts": 3,
     "lib/commission/finalization.ts": 1,
     "lib/commission/ledger-sync.ts": 5,
@@ -472,6 +455,7 @@
     "lib/lead-pipeline/subscription-gate.ts": 1,
     "lib/lead-pipeline/tavily-sourcer.ts": 1,
     "lib/lead-scoring/behavioral-events.ts": 1,
+    "lib/lead-scoring/record-behavioral-event.ts": 1,
     "lib/lifetime-customer-npv/current.ts": 1,
     "lib/listing-lifecycle/recordable-events.ts": 1,
     "lib/listing-presentation/prelisting-delivery.ts": 3,
@@ -527,6 +511,7 @@
     "lib/onboarding/state-license-registry.ts": 1,
     "lib/osint-client.ts": 1,
     "lib/outcomes/reconciliation.ts": 1,
+    "lib/platform/acting-context.ts": 1,
     "lib/platform/affiliates.ts": 3,
     "lib/platform/ai-ops.ts": 1,
     "lib/platform/changelog.ts": 1,
@@ -667,7 +652,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 9073,
+  "census": 9065,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -981,7 +966,7 @@
     "app/actions/marketing-studio.ts": 20,
     "app/actions/multi-persona.ts": 28,
     "app/actions/negotiation-copilot.ts": 2,
-    "app/actions/negotiation-strategy.ts": 7,
+    "app/actions/negotiation-strategy.ts": 6,
     "app/actions/neighbor-notifications.ts": 4,
     "app/actions/neighborhood-reports.ts": 3,
     "app/actions/newsletter/approve-template.ts": 3,
@@ -999,7 +984,7 @@
     "app/actions/observability/observability-actions.ts": 3,
     "app/actions/offer-kernel-actions.ts": 3,
     "app/actions/offers/present-to-seller.ts": 3,
-    "app/actions/onboarding/agent-onboarding-actions.ts": 2,
+    "app/actions/onboarding/agent-onboarding-actions.ts": 1,
     "app/actions/onboarding/brand.ts": 7,
     "app/actions/onboarding/daily-plan.ts": 1,
     "app/actions/onboarding/ensure-agent-brokerage.ts": 1,
@@ -1011,7 +996,7 @@
     "app/actions/onboarding/onboarding-steps-admin-actions.ts": 3,
     "app/actions/onboarding/progress.ts": 8,
     "app/actions/onboarding/tech-stack.ts": 5,
-    "app/actions/onboarding/training.ts": 5,
+    "app/actions/onboarding/training.ts": 4,
     "app/actions/onboarding-decisions.ts": 2,
     "app/actions/open-house-automation.ts": 18,
     "app/actions/open-house-kernel.ts": 6,
@@ -1129,8 +1114,8 @@
     "app/actions/superadmin/manual-subscriber.ts": 1,
     "app/actions/superadmin/number-provisioning.ts": 3,
     "app/actions/superadmin/os-sentinel.ts": 1,
-    "app/actions/superadmin/parked-retention.ts": 3,
-    "app/actions/superadmin/plan-catalog.ts": 5,
+    "app/actions/superadmin/parked-retention.ts": 2,
+    "app/actions/superadmin/plan-catalog.ts": 7,
     "app/actions/superadmin/platform-announcements.ts": 1,
     "app/actions/superadmin/platform-brand.ts": 6,
     "app/actions/superadmin/platform-content.ts": 5,
@@ -1173,14 +1158,14 @@
     "app/actions/transaction-hazard-insurance.ts": 2,
     "app/actions/transaction-inspections.ts": 11,
     "app/actions/transaction-milestones.ts": 8,
-    "app/actions/transaction-stage-machine.ts": 4,
+    "app/actions/transaction-stage-machine.ts": 3,
     "app/actions/transaction-tasks.ts": 1,
     "app/actions/transaction-transparency.ts": 3,
     "app/actions/transactions.ts": 58,
     "app/actions/twin-studio-upload.ts": 3,
     "app/actions/twin-studio.ts": 11,
     "app/actions/usage-overview.ts": 1,
-    "app/actions/user-profile.ts": 6,
+    "app/actions/user-profile.ts": 5,
     "app/actions/vendor-billing.ts": 3,
     "app/actions/vendor-budget.ts": 5,
     "app/actions/vendor-contact-access.ts": 4,
@@ -1199,7 +1184,7 @@
     "app/actions/video/create-video-project.ts": 10,
     "app/actions/video/distribute-video.ts": 1,
     "app/actions/video/generate-script.ts": 1,
-    "app/actions/video-content.ts": 6,
+    "app/actions/video-content.ts": 5,
     "app/actions/video-generation.ts": 18,
     "app/actions/video-landing.ts": 3,
     "app/actions/video-repurposing.ts": 13,
@@ -1784,8 +1769,6 @@
     "app/components/forms/SmartSearchWidget.tsx": 1,
     "app/components/forms/form-field-renderer.tsx": 1,
     "app/components/forms/form-selector-step.tsx": 1,
-    "app/components/gamification/BadgeGrid.tsx": 1,
-    "app/components/gamification/PointsBadge.tsx": 1,
     "app/components/heartbeat/heartbeat-card.tsx": 2,
     "app/components/heartbeat/smart-queue.tsx": 1,
     "app/components/heartbeat/sphere-resonance-card.tsx": 1,
@@ -1857,7 +1840,7 @@
     "app/components/portal/OfferStatusCard.tsx": 1,
     "app/components/portal/PortalLiveFeed.tsx": 1,
     "app/components/portal/PropertyDetailsView.tsx": 1,
-    "app/components/portal/SellerOfferCard.tsx": 2,
+    "app/components/portal/SellerOfferCard.tsx": 1,
     "app/components/portal/ShowingsFeedCard.tsx": 2,
     "app/components/portal/ShowingsManager.tsx": 1,
     "app/components/portal/buyer-closing-costs-card.tsx": 1,
@@ -2273,7 +2256,6 @@
     "app/dashboard/isa/components/qualification-os.tsx": 6,
     "app/dashboard/isa/components/speed-to-lead-panel.tsx": 1,
     "app/dashboard/jobs/jobs-client.tsx": 1,
-    "app/dashboard/leaderboard/leaderboard-client.tsx": 1,
     "app/dashboard/listings/[id]/cma/cma-client.tsx": 1,
     "app/dashboard/listings/[id]/cma/tabs/cma-report-tab.tsx": 1,
     "app/dashboard/listings/[id]/cma/tabs/net-sheet-tab.tsx": 1,
@@ -2400,7 +2382,6 @@
     "app/dashboard/reports/reports-client.tsx": 1,
     "app/dashboard/settings/assistant/listening-preferences-panel.tsx": 1,
     "app/dashboard/settings/assistant/reply-style-panel.tsx": 1,
-    "app/dashboard/settings/branding/agent-branding-client.tsx": 1,
     "app/dashboard/settings/calendar/CopyToClipboardButton.tsx": 1,
     "app/dashboard/settings/components/lead-routing-panel.tsx": 1,
     "app/dashboard/settings/components/os/accounting-commission-panel.tsx": 1,
@@ -2492,6 +2473,7 @@
     "app/dashboard/superadmin/home/announcement-composer.tsx": 1,
     "app/dashboard/superadmin/message-admin-composer.tsx": 1,
     "app/dashboard/superadmin/numbers/numbers-client.tsx": 2,
+    "app/dashboard/superadmin/plans/ai-overage-terms-card.tsx": 1,
     "app/dashboard/superadmin/plans/plan-catalog-manager.tsx": 1,
     "app/dashboard/superadmin/platform/budget-warning-toggle.tsx": 1,
     "app/dashboard/superadmin/platform/platform-controls-panel.tsx": 1,
@@ -2671,7 +2653,6 @@
     "app/referrals/pipeline/appreciation-panel.tsx": 1,
     "app/referrals/pipeline/pipeline-os-client.tsx": 1,
     "app/referrals/referrals-os-client.tsx": 1,
-    "app/routes-compatibility.ts": 1,
     "app/seed/seed-page-client.tsx": 1,
     "app/settings/accounting/error-log-table.tsx": 1,
     "app/settings/accounting/provider-connection-card.tsx": 1,
@@ -2762,7 +2743,7 @@
     "lib/agent-orchestration/agent-activity-monitor.ts": 1,
     "lib/agentic-os/agent-credentials.ts": 5,
     "lib/agentic-os/agent-scopes.ts": 2,
-    "lib/agentic-os/app-capability-registry.ts": 4,
+    "lib/agentic-os/app-capability-registry.ts": 3,
     "lib/agentic-os/capability-ownership.ts": 3,
     "lib/agentic-os/connected-vendor-registry.ts": 3,
     "lib/agentic-os/connection-impact.ts": 2,
@@ -2914,7 +2895,7 @@
     "lib/auth/provision-isa-actor.ts": 1,
     "lib/auth/require-admin-maintenance-access.ts": 1,
     "lib/auth/require-brokerage-admin.ts": 2,
-    "lib/auth/resolve-user-role.ts": 10,
+    "lib/auth/resolve-user-role.ts": 9,
     "lib/auth/role-grants.ts": 9,
     "lib/auth/useAuth.ts": 1,
     "lib/avm/provider-chain.ts": 3,
@@ -2926,7 +2907,7 @@
     "lib/billing/dunning.ts": 5,
     "lib/billing/phone-plan-resolve.ts": 3,
     "lib/billing/phone-plan.ts": 3,
-    "lib/billing/plan-catalog.ts": 2,
+    "lib/billing/plan-catalog.ts": 3,
     "lib/billing/plan-tier.ts": 3,
     "lib/billing/stripe-portal.ts": 1,
     "lib/billing/stripe-status.ts": 4,
@@ -2947,7 +2928,7 @@
     "lib/brokerage/get-required-state.ts": 2,
     "lib/brokerage-intelligence/miners.ts": 7,
     "lib/brokerage-intelligence/offer-term-outcomes.ts": 4,
-    "lib/buyer-broker/gate.ts": 2,
+    "lib/buyer-broker/gate.ts": 1,
     "lib/buyer-execution/buyer-execution-engine.ts": 4,
     "lib/buyer-execution/governance-guards.ts": 5,
     "lib/buyer-execution/multi-party-updates.ts": 6,
@@ -3707,6 +3688,7 @@
     "lib/lead-readiness/readiness-evaluator.ts": 2,
     "lib/lead-readiness/readiness-logger.ts": 2,
     "lib/lead-scoring/behavioral-events.ts": 3,
+    "lib/lead-scoring/record-behavioral-event.ts": 2,
     "lib/learning-router/composer.ts": 1,
     "lib/learning-router/milestone-gated-modules.ts": 1,
     "lib/learning-router/resolve-agent-learning-context.ts": 1,
@@ -3852,7 +3834,7 @@
     "lib/outcomes/reconciliation-ledger.ts": 3,
     "lib/outcomes/reconciliation.ts": 4,
     "lib/permissions/offer-permissions.ts": 5,
-    "lib/platform/acting-context.ts": 1,
+    "lib/platform/acting-context.ts": 3,
     "lib/platform/affiliate-ref-capture.ts": 2,
     "lib/platform/affiliates.ts": 9,
     "lib/platform/ai-ops.ts": 3,
@@ -6435,7 +6417,6 @@
       "generateAndPersistNegotiationStrategyAction",
       "acceptStrategyAction",
       "dismissStrategyAction",
-      "recordStrategyOutcomeAction",
       "getNegotiationStrategyForOfferAction",
       "listOpenNegotiationStrategiesForAgentAction",
       "getNegotiationStrategyForContactAction"
@@ -6517,7 +6498,6 @@
       "getOfferPresentationStates"
     ],
     "app/actions/onboarding/agent-onboarding-actions.ts": [
-      "fetchMyOnboardingDashboard",
       "completeMyOnboardingStep"
     ],
     "app/actions/onboarding/brand.ts": [
@@ -6584,7 +6564,6 @@
     "app/actions/onboarding/training.ts": [
       "getTrainingVideos",
       "getVideoWithProgress",
-      "recordVideoProgress",
       "markVideoStarted",
       "checkRequiredVideoGating"
     ],
@@ -7351,7 +7330,6 @@
       "getOsHealthAction"
     ],
     "app/actions/superadmin/parked-retention.ts": [
-      "getParkedRetentionAction",
       "purgeStaleParkedLeadsAction",
       "purgeStaleParkedLeadsFormAction"
     ],
@@ -7360,7 +7338,9 @@
       "upsertPlanTierAction",
       "removePlanTierAction",
       "syncPlanTierFromStripeAction",
-      "publishTierToStripeAction"
+      "publishTierToStripeAction",
+      "listAIOverageTermsAction",
+      "upsertAIOverageTermsAction"
     ],
     "app/actions/superadmin/platform-announcements.ts": [
       "postPlatformAnnouncementAction"
@@ -7651,8 +7631,7 @@
     "app/actions/transaction-stage-machine.ts": [
       "checkStageAdvancement",
       "advanceTransactionStage",
-      "markTransactionLost",
-      "getTransactionStageInfo"
+      "markTransactionLost"
     ],
     "app/actions/transaction-tasks.ts": [
       "completeTransactionTask"
@@ -7745,7 +7724,6 @@
     ],
     "app/actions/user-profile.ts": [
       "saveAgentEmailSignature",
-      "getAgentEmailSignature",
       "getMyProfile",
       "updateMyProfile",
       "getMyAgentIdentity",
@@ -7888,8 +7866,7 @@
       "handleVideoGenerated",
       "approveAndGenerateVideo",
       "handleVideoPublished",
-      "handleHighEngagement",
-      "createShortClip"
+      "handleHighEngagement"
     ],
     "app/actions/video-generation.ts": [
       "getVideoScriptLibrary",
@@ -9779,12 +9756,6 @@
     "app/components/forms/form-selector-step.tsx": [
       "FormSelectorStep"
     ],
-    "app/components/gamification/BadgeGrid.tsx": [
-      "BadgeGrid"
-    ],
-    "app/components/gamification/PointsBadge.tsx": [
-      "PointsBadge"
-    ],
     "app/components/heartbeat/heartbeat-card.tsx": [
       "HeartbeatCard",
       "HeartbeatChip"
@@ -10006,8 +9977,7 @@
       "PropertyDetailsView"
     ],
     "app/components/portal/SellerOfferCard.tsx": [
-      "SellerOfferCard",
-      "OfferComparisonTable"
+      "SellerOfferCard"
     ],
     "app/components/portal/ShowingsFeedCard.tsx": [
       "ShowingActivityStrip",
@@ -11266,9 +11236,6 @@
     "app/dashboard/jobs/jobs-client.tsx": [
       "JobsClient"
     ],
-    "app/dashboard/leaderboard/leaderboard-client.tsx": [
-      "LeaderboardClient"
-    ],
     "app/dashboard/listings/[id]/cma/cma-client.tsx": [
       "CMAClient"
     ],
@@ -11662,9 +11629,6 @@
     "app/dashboard/settings/assistant/reply-style-panel.tsx": [
       "ReplyStylePanel"
     ],
-    "app/dashboard/settings/branding/agent-branding-client.tsx": [
-      "AgentBrandingClient"
-    ],
     "app/dashboard/settings/calendar/CopyToClipboardButton.tsx": [
       "CopyToClipboardButton"
     ],
@@ -11963,6 +11927,9 @@
     "app/dashboard/superadmin/numbers/numbers-client.tsx": [
       "ProvisionPanel",
       "ReleaseCell"
+    ],
+    "app/dashboard/superadmin/plans/ai-overage-terms-card.tsx": [
+      "AIOverageTermsCard"
     ],
     "app/dashboard/superadmin/plans/plan-catalog-manager.tsx": [
       "PlanCatalogManager"
@@ -12514,9 +12481,6 @@
     "app/referrals/referrals-os-client.tsx": [
       "ReferralsOsClient"
     ],
-    "app/routes-compatibility.ts": [
-      "resolveRoute"
-    ],
     "app/seed/seed-page-client.tsx": [
       "SeedPageClient"
     ],
@@ -12846,7 +12810,6 @@
       "authorizedActions"
     ],
     "lib/agentic-os/app-capability-registry.ts": [
-      "getAppCapability",
       "buildAppActionManifest",
       "buildConnectedActionManifest",
       "buildFullActionManifest"
@@ -13634,7 +13597,6 @@
     "lib/auth/resolve-user-role.ts": [
       "isPlatformStaffIdentity",
       "resolveUserRole",
-      "requireRole",
       "isAdminOrBroker",
       "isTenantAdminGrantRole",
       "isBrokerageFinanceAdmin",
@@ -13703,6 +13665,7 @@
     ],
     "lib/billing/plan-catalog.ts": [
       "comparePlanPriceToStripe",
+      "validateAIOverageTermsInput",
       "validatePlanTierInput"
     ],
     "lib/billing/plan-tier.ts": [
@@ -13829,8 +13792,7 @@
       "mineOfferTermPatterns"
     ],
     "lib/buyer-broker/gate.ts": [
-      "requireActiveBBA",
-      "getActiveBBASummary"
+      "requireActiveBBA"
     ],
     "lib/buyer-execution/buyer-execution-engine.ts": [
       "getBuyerJourneyStatus",
@@ -17738,6 +17700,10 @@
       "summarizeBehavioralEvents",
       "priorityTier"
     ],
+    "lib/lead-scoring/record-behavioral-event.ts": [
+      "isScoredEventType",
+      "recordBehavioralEvent"
+    ],
     "lib/learning-router/composer.ts": [
       "pickLearningModulesForActor"
     ],
@@ -18474,7 +18440,9 @@
       "canWithdrawOffer"
     ],
     "lib/platform/acting-context.ts": [
-      "resolveActingContext"
+      "decideWriteChannel",
+      "resolveActingContext",
+      "resolveWriteContext"
     ],
     "lib/platform/affiliate-ref-capture.ts": [
       "isSafeRefReturn",
@@ -20545,5 +20513,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 227
+  "trulyDead": 208
 }

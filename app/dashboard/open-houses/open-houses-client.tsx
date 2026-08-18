@@ -43,6 +43,7 @@ import {
   getOpenHouseFeedback,
   sendOpenHouseInvites,
   cancelOpenHouse,
+  getAgentListings,
   type OpenHouseEvent,
   type OpenHouseAttendee,
   type OpenHouseFeedback,
@@ -857,6 +858,19 @@ export function OpenHousesClient({ initialEvents, fetchError }: Props) {
     agentNotes: "",
   })
 
+  // The dialog used to demand a pasted listing UUID ("Find the ID from your
+  // Listings page"). getAgentListings existed for exactly this picker and was
+  // never wired — load the agent's active listings when the dialog opens.
+  const [myListings, setMyListings] = useState<
+    Array<{ id: string; address: string; city: string | null; state: string | null; status: string }>
+  >([])
+  useEffect(() => {
+    if (!open) return
+    getAgentListings().then((res) => {
+      if (res.success && res.listings) setMyListings(res.listings)
+    }).catch(() => { /* picker degrades to manual entry below */ })
+  }, [open])
+
   const now = new Date().toLocaleDateString("en-CA") // YYYY-MM-DD in local timezone
   const upcoming = events.filter((e) => e.event_date >= now && e.status !== "cancelled" && e.status !== "completed")
   const past = events.filter((e) => e.event_date < now || e.status === "completed" || e.status === "cancelled")
@@ -939,14 +953,34 @@ export function OpenHousesClient({ initialEvents, fetchError }: Props) {
             </DialogHeader>
             <div className="space-y-4 pt-2">
               <div>
-                <Label className="text-xs">Listing ID</Label>
-                <Input
-                  placeholder="Paste listing UUID..."
-                  value={form.listingId}
-                  onChange={(e) => setForm((f) => ({ ...f, listingId: e.target.value }))}
-                  className="h-8 text-sm mt-1"
-                />
-                <p className="text-[10px] text-muted-foreground mt-1">Find the ID from your Listings page</p>
+                <Label className="text-xs">Listing</Label>
+                {myListings.length > 0 ? (
+                  <Select
+                    value={form.listingId}
+                    onValueChange={(v) => setForm((f) => ({ ...f, listingId: v }))}
+                  >
+                    <SelectTrigger className="h-8 text-sm mt-1">
+                      <SelectValue placeholder="Choose one of your listings..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {myListings.map((l) => (
+                        <SelectItem key={l.id} value={l.id}>
+                          {l.address}{l.city ? `, ${l.city}` : ""}{l.state ? `, ${l.state}` : ""} ({l.status})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <>
+                    <Input
+                      placeholder="Paste listing UUID..."
+                      value={form.listingId}
+                      onChange={(e) => setForm((f) => ({ ...f, listingId: e.target.value }))}
+                      className="h-8 text-sm mt-1"
+                    />
+                    <p className="text-[10px] text-muted-foreground mt-1">Find the ID from your Listings page</p>
+                  </>
+                )}
               </div>
               <div>
                 <Label className="text-xs">Event Date</Label>
