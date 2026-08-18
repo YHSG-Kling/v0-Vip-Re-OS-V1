@@ -167,6 +167,14 @@ Respond ONLY with valid JSON (no markdown):
     return { success: false, error: "Failed to save prediction" }
   }
 
+  // A fresh prediction can change the pricing rail's graded pairs (the rail takes the
+  // model's LAST pre-sale call per listing) — drop the accuracy-gate's cached verdicts
+  // so the gate reads current evidence without waiting out the TTL. Best-effort.
+  try {
+    const { __clearAccuracyGateCache } = await import("@/lib/managers/accuracy-gate")
+    __clearAccuracyGateCache()
+  } catch { /* cache invalidation is never load-bearing */ }
+
   // Record in pricing_history
   await supabase.from("pricing_history").insert({
     listing_id: listingId,

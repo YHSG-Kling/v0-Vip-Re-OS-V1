@@ -198,7 +198,15 @@ interface ExportRef { file: string; name: string }
 const exportsFound: ExportRef[] = []
 for (const f of files) {
   if (!SCANNED_ROOTS.some((r) => f.startsWith(r + "/"))) continue
-  const src = codeCache.get(f)!
+  // STRING-MASKED, not just comment-stripped. The comment-stripped text still
+  // carried string LITERALS, and the export regex matched inside them: the
+  // cross-referral sweep registry stores each sweep's grep marker as data —
+  // `marker: "export async function publishApprovalSlaReferrals"` — and every
+  // such row minted a PHANTOM export (five of them, all in
+  // lib/managers/cross-referral.ts), double-counting functions that exist once.
+  // callSites() blanks string contents but keeps the quotes, so a declaration's
+  // own name (never inside a string) still matches while quoted prose cannot.
+  const src = useCache.get(f)!
   for (const m of src.matchAll(/export\s+(?:async\s+)?function\s+([A-Za-z0-9_$]+)/g)) {
     exportsFound.push({ file: f, name: m[1] })
   }

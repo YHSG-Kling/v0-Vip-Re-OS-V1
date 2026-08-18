@@ -498,6 +498,14 @@ export async function advanceStage(params: {
         })
         .eq("id", closedTxn.listing_id)
         .eq("brokerage_id", params.brokerageId)
+
+      // A newly-closed listing grades the listing_price accuracy rail — drop the
+      // accuracy-gate's cached verdicts so autonomy reflects the new track record
+      // without waiting out the TTL or a process restart. Best-effort.
+      try {
+        const { __clearAccuracyGateCache } = await import("@/lib/managers/accuracy-gate")
+        __clearAccuracyGateCache()
+      } catch { /* cache invalidation is never load-bearing */ }
     }
 
     // 5. Auto-schedule review request draft (5 days post-close)

@@ -190,6 +190,7 @@
     "lib/auth/permissions.ts": 2,
     "lib/auth/provision-isa-actor.ts": 1,
     "lib/auth/resolve-user-role.ts": 2,
+    "lib/billing/ai-overage.ts": 1,
     "lib/billing/billing-access.ts": 1,
     "lib/billing/dunning.ts": 3,
     "lib/billing/phone-plan-resolve.ts": 2,
@@ -227,7 +228,7 @@
     "lib/compliance/trid-disclosure-clock-runner.ts": 1,
     "lib/compliance/trid-disclosure-clock.ts": 3,
     "lib/compliance/vendor-respa.ts": 7,
-    "lib/connections/accounting-scopes.ts": 5,
+    "lib/connections/accounting-scopes.ts": 4,
     "lib/connections/scope.ts": 2,
     "lib/connections/zoom-transcripts.ts": 1,
     "lib/connections/zoom.ts": 12,
@@ -358,7 +359,7 @@
     "lib/kernel/consistency-guardian.ts": 3,
     "lib/kernel/content-studio.ts": 5,
     "lib/kernel/continuity-receipt.ts": 2,
-    "lib/kernel/conversation-memory.ts": 4,
+    "lib/kernel/conversation-memory.ts": 3,
     "lib/kernel/cron-dispatch.ts": 3,
     "lib/kernel/db.ts": 2,
     "lib/kernel/deal-autopsy.ts": 2,
@@ -368,7 +369,7 @@
     "lib/kernel/deal-room-reel.ts": 2,
     "lib/kernel/deal-save-huddle.ts": 3,
     "lib/kernel/document-autofile.ts": 7,
-    "lib/kernel/document-compliance-audit.ts": 7,
+    "lib/kernel/document-compliance-audit.ts": 6,
     "lib/kernel/document-custody.ts": 3,
     "lib/kernel/dual-intent-linker.ts": 3,
     "lib/kernel/education.ts": 2,
@@ -484,8 +485,8 @@
     "lib/listings/relist-recovery.ts": 1,
     "lib/listings/seller-weekly-report.ts": 2,
     "lib/listings/tier-assigner.ts": 1,
-    "lib/managers/accuracy-gate.ts": 8,
-    "lib/managers/cross-referral.ts": 7,
+    "lib/managers/accuracy-gate.ts": 7,
+    "lib/managers/cross-referral.ts": 4,
     "lib/managers/deliberation.ts": 9,
     "lib/managers/eval-scoring.ts": 2,
     "lib/managers/learning-loop.ts": 1,
@@ -640,7 +641,7 @@
     "lib/video/video-plays.ts": 2,
     "lib/video/video-qr.ts": 1,
     "lib/video/video-status.ts": 2,
-    "lib/voice/call-recording.ts": 4,
+    "lib/voice/call-recording.ts": 3,
     "lib/voice/command-coverage.ts": 1,
     "lib/voice/conversation-relay.ts": 3,
     "lib/voice/deal-decision.ts": 2,
@@ -666,7 +667,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 9074,
+  "census": 9073,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -705,6 +706,7 @@
     "app/actions/admin/onboarding-steps.ts": 3,
     "app/actions/admin/run-scrape-test.ts": 1,
     "app/actions/admin/staff-360.ts": 2,
+    "app/actions/admin/subscription-agreement.ts": 2,
     "app/actions/admin/team-members.ts": 3,
     "app/actions/admin/update-user.ts": 1,
     "app/actions/agent-action-queue.ts": 1,
@@ -1036,6 +1038,7 @@
     "app/actions/portal-seller.ts": 10,
     "app/actions/portal-settings.ts": 3,
     "app/actions/portal-stream.ts": 5,
+    "app/actions/portal-tours.ts": 1,
     "app/actions/predictive-listing.ts": 5,
     "app/actions/predictive-surfaces.ts": 2,
     "app/actions/presentations-list.ts": 1,
@@ -1142,6 +1145,7 @@
     "app/actions/superadmin/portal-clients.ts": 2,
     "app/actions/superadmin/provider-posture.ts": 3,
     "app/actions/superadmin/subscriber-referrals.ts": 4,
+    "app/actions/superadmin/subscription-contracts.ts": 4,
     "app/actions/superadmin/subscription-oversight.ts": 1,
     "app/actions/superadmin/support-console.ts": 5,
     "app/actions/superadmin/suppression.ts": 3,
@@ -1297,6 +1301,7 @@
     "app/api/cron/affiliate-commissions/route.ts": 1,
     "app/api/cron/agent-coaching/route.ts": 1,
     "app/api/cron/agent-health-check/route.ts": 1,
+    "app/api/cron/ai-overage-billing/route.ts": 1,
     "app/api/cron/anniversary-equity/route.ts": 1,
     "app/api/cron/annual-home-value-reports/route.ts": 1,
     "app/api/cron/appointment-noshow/route.ts": 1,
@@ -1973,6 +1978,7 @@
     "app/dashboard/admin/asset-manager-actions/client.tsx": 1,
     "app/dashboard/admin/automations/automations-client.tsx": 1,
     "app/dashboard/admin/billing/manage-billing-button.tsx": 1,
+    "app/dashboard/admin/billing/subscription-agreement-card.tsx": 1,
     "app/dashboard/admin/brand/brand-client.tsx": 1,
     "app/dashboard/admin/campaign-center/actions.ts": 2,
     "app/dashboard/admin/campaign-center/approve-buttons.tsx": 2,
@@ -2472,6 +2478,7 @@
     "app/dashboard/superadmin/connectors/go-live-card.tsx": 2,
     "app/dashboard/superadmin/connectors/platform-reception-panel.tsx": 1,
     "app/dashboard/superadmin/connectors/provider-posture-cards.tsx": 3,
+    "app/dashboard/superadmin/contracts/subscription-contracts-manager.tsx": 1,
     "app/dashboard/superadmin/coupons/coupons-manager.tsx": 1,
     "app/dashboard/superadmin/demo-room/demo-room-client.tsx": 1,
     "app/dashboard/superadmin/env-providers/providers-client.tsx": 1,
@@ -2782,7 +2789,6 @@
     "lib/agents/agent-deactivation.ts": 3,
     "lib/agents/agent-for-user.ts": 1,
     "lib/agents/asset-manager-actions.ts": 2,
-    "lib/agents/asset-manager.ts": 1,
     "lib/agents/brokerage-context.ts": 2,
     "lib/agents/buyer-match-reel-producer.ts": 3,
     "lib/agents/buyer-reel-delivery.ts": 3,
@@ -2794,7 +2800,6 @@
     "lib/agents/deal-coordinator.ts": 1,
     "lib/agents/education-delivery-producer.ts": 4,
     "lib/agents/extract-client-messages.ts": 1,
-    "lib/agents/generate-client-message.ts": 1,
     "lib/agents/listing-concierge.ts": 1,
     "lib/agents/managed-agents-egress.ts": 4,
     "lib/agents/manager-outbound-eval.ts": 2,
@@ -2822,7 +2827,7 @@
     "lib/ai/cost-tracking.ts": 6,
     "lib/ai/fair-use.ts": 2,
     "lib/ai/gateway-chat.ts": 2,
-    "lib/ai/generate.ts": 5,
+    "lib/ai/generate.ts": 3,
     "lib/ai/get-message-text.ts": 1,
     "lib/ai/image-generation.ts": 1,
     "lib/ai/lead-analyzer.ts": 1,
@@ -2916,6 +2921,7 @@
     "lib/behavior-learning/prediction-engine.ts": 2,
     "lib/behavior-learning/preference-updater.ts": 2,
     "lib/behavior-learning/signal-mapping.ts": 3,
+    "lib/billing/ai-overage.ts": 3,
     "lib/billing/billing-access.ts": 2,
     "lib/billing/dunning.ts": 5,
     "lib/billing/phone-plan-resolve.ts": 3,
@@ -3144,7 +3150,6 @@
     "lib/did/index.ts": 1,
     "lib/did/webhook.ts": 3,
     "lib/direct-mail/campaign-drain.ts": 1,
-    "lib/direct-mail/draft-copy.ts": 2,
     "lib/direct-mail/listing-lifecycle-mail-reactor.ts": 1,
     "lib/direct-mail/orchestrate-bundle-send.ts": 1,
     "lib/direct-mail/orchestrate-preset-send.ts": 1,
@@ -3749,7 +3754,7 @@
     "lib/listings/tier-assigner.ts": 11,
     "lib/managers/accuracy-gate.ts": 12,
     "lib/managers/autonomy-gate.ts": 5,
-    "lib/managers/cross-referral.ts": 13,
+    "lib/managers/cross-referral.ts": 8,
     "lib/managers/deliberation.ts": 14,
     "lib/managers/eval-scoring.ts": 7,
     "lib/managers/learning-loop.ts": 5,
@@ -4150,7 +4155,7 @@
     "lib/vendors/w9.ts": 3,
     "lib/video/assistant-faces.ts": 1,
     "lib/video/assistant-options.ts": 1,
-    "lib/video/avatar-explainer.ts": 4,
+    "lib/video/avatar-explainer.ts": 2,
     "lib/video/avatar-render-orchestrator.ts": 2,
     "lib/video/broll-picker.ts": 2,
     "lib/video/caption-plan.ts": 2,
@@ -4229,7 +4234,6 @@
     "lib/voice/warm-transfer.ts": 7,
     "lib/voice-admin/kernel-command-surface.ts": 4,
     "lib/voice-admin/plan-voice-command.ts": 2,
-    "lib/voice-distiller/per-agent-voice.ts": 1,
     "lib/voice-engine/call-executor.ts": 2,
     "lib/voice-engine/transcript-ingestion.ts": 2,
     "lib/voice-engine/transcript-normalizer.ts": 3,
@@ -4446,6 +4450,10 @@
     "app/actions/admin/staff-360.ts": [
       "getStaff360Action",
       "assignAcademyModuleToStaffAction"
+    ],
+    "app/actions/admin/subscription-agreement.ts": [
+      "getSubscriptionAgreementAction",
+      "signSubscriptionAgreementAction"
     ],
     "app/actions/admin/team-members.ts": [
       "listTeamMembers",
@@ -6782,6 +6790,9 @@
       "dispositionPortalEventAction",
       "triggerPortalProjectionAction"
     ],
+    "app/actions/portal-tours.ts": [
+      "getPortalBuyerTours"
+    ],
     "app/actions/predictive-listing.ts": [
       "getTopPredictiveSellers",
       "dismissPredictiveSeller",
@@ -7436,6 +7447,12 @@
       "recordSubscriberReferralAction",
       "linkReferralConversionAction",
       "markReferralFeePaidAction"
+    ],
+    "app/actions/superadmin/subscription-contracts.ts": [
+      "listSubscriptionContractTemplatesAction",
+      "upsertSubscriptionContractTemplateAction",
+      "setSubscriptionContractTemplateActiveAction",
+      "listTenantContractSignaturesAction"
     ],
     "app/actions/superadmin/subscription-oversight.ts": [
       "getSubscriptionOversightAction"
@@ -8269,6 +8286,9 @@
       "GET"
     ],
     "app/api/cron/agent-health-check/route.ts": [
+      "GET"
+    ],
+    "app/api/cron/ai-overage-billing/route.ts": [
       "GET"
     ],
     "app/api/cron/anniversary-equity/route.ts": [
@@ -10352,6 +10372,9 @@
     "app/dashboard/admin/billing/manage-billing-button.tsx": [
       "ManageBillingButton"
     ],
+    "app/dashboard/admin/billing/subscription-agreement-card.tsx": [
+      "SubscriptionAgreementCard"
+    ],
     "app/dashboard/admin/brand/brand-client.tsx": [
       "BrandComplianceClient"
     ],
@@ -11898,6 +11921,9 @@
       "TwilioFleetPostureCard",
       "SendgridPostureCard"
     ],
+    "app/dashboard/superadmin/contracts/subscription-contracts-manager.tsx": [
+      "SubscriptionContractsManager"
+    ],
     "app/dashboard/superadmin/coupons/coupons-manager.tsx": [
       "CouponsManager"
     ],
@@ -12938,9 +12964,6 @@
       "recordProposedAssetActions",
       "executeAssetManagerAction"
     ],
-    "lib/agents/asset-manager.ts": [
-      "spawnAssetManager"
-    ],
     "lib/agents/brokerage-context.ts": [
       "resolveBrokerageContext",
       "renderBrokerageContextForKickoff"
@@ -12985,9 +13008,6 @@
     ],
     "lib/agents/extract-client-messages.ts": [
       "extractClientMessages"
-    ],
-    "lib/agents/generate-client-message.ts": [
-      "generateClientMessage"
     ],
     "lib/agents/listing-concierge.ts": [
       "spawnListingConciergeForSeller"
@@ -13107,8 +13127,6 @@
     ],
     "lib/ai/generate.ts": [
       "generateAIJSON",
-      "generateAIText",
-      "generateChatResponse",
       "generateObject",
       "generateAIObject"
     ],
@@ -13656,6 +13674,11 @@
       "interestLevelToLearningSignal",
       "showingInterestToLearningSignal",
       "portalInterestToShowingLevel"
+    ],
+    "lib/billing/ai-overage.ts": [
+      "deriveAIOverage",
+      "getAIOverageStatus",
+      "runAIOverageBilling"
     ],
     "lib/billing/billing-access.ts": [
       "resolveBillingAccess",
@@ -14828,10 +14851,6 @@
     ],
     "lib/direct-mail/campaign-drain.ts": [
       "runDirectMailCampaignDrain"
-    ],
-    "lib/direct-mail/draft-copy.ts": [
-      "draftPostcardCopy",
-      "draftLetterCopy"
     ],
     "lib/direct-mail/listing-lifecycle-mail-reactor.ts": [
       "dispatchLifecycleMail"
@@ -17979,11 +17998,6 @@
       "publishApprovalSlaReferrals",
       "publishLeadQualityReferrals",
       "publishRecruitOfferReferrals",
-      "publishApprovalSlaReferrals",
-      "publishLeadQualityReferrals",
-      "publishRecruitOfferReferrals",
-      "publishAssignmentPolicyReferrals",
-      "publishTerritoryRoiReferrals",
       "emittersForDomain",
       "runReferralSweeps"
     ],
@@ -19952,8 +19966,6 @@
     ],
     "lib/video/avatar-explainer.ts": [
       "getAvatarExplainerReadiness",
-      "authorExplainerContent",
-      "commissionAvatarExplainer",
       "resumeAwaitingProviderExplainers"
     ],
     "lib/video/avatar-render-orchestrator.ts": [
@@ -20372,9 +20384,6 @@
       "planVoiceCommand",
       "planLines"
     ],
-    "lib/voice-distiller/per-agent-voice.ts": [
-      "distillVoiceForAgent"
-    ],
     "lib/voice-engine/call-executor.ts": [
       "initiateVoiceCall",
       "completeVoiceCall"
@@ -20536,5 +20545,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 232
+  "trulyDead": 227
 }

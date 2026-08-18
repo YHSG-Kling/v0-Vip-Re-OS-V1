@@ -330,6 +330,14 @@ export async function logActualPerformance(
     return { success: false, error: insertError.message }
   }
 
+  // A new graded outcome moves the content_performance accuracy rail — drop the
+  // accuracy-gate's cached verdicts so earned/supervised autonomy reflects this
+  // write without waiting out the TTL or a process restart. Best-effort.
+  try {
+    const { __clearAccuracyGateCache } = await import("@/lib/managers/accuracy-gate")
+    __clearAccuracyGateCache()
+  } catch { /* cache invalidation is never load-bearing */ }
+
   return { success: true }
 }
 

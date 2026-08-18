@@ -37,6 +37,12 @@ import {
   connectionScopeForUserType,
   selfConnectableDomains,
 } from "@/lib/connections/field-spec"
+import {
+  ACCOUNTING_SCOPES,
+  accountingOfferingsForScope,
+  type AccountingConnector,
+  type AccountingScope,
+} from "@/lib/connections/accounting-scopes"
 
 /** A vendor/contact portal passes this so the center acts on their owner scope (verified server-side). */
 export type OwnerHint = { scope: "vendor" | "contact"; id: string }
@@ -50,6 +56,9 @@ export interface ProviderStatus {
   oauthStartPath: string | null
   available: boolean
   unavailableReason: string | null
+  /** For financial rows managed elsewhere (per-scope offering matrix): the surface that
+   *  actually manages the capability — rendered as a "Manage" link, never a dead button. */
+  managePath: string | null
 }
 
 export interface ConnectionCenter {
@@ -175,6 +184,16 @@ export async function getConnectionCenter(owner?: OwnerHint): Promise<Connection
     for (const provider of CONNECTOR_PROVIDERS[domain]) {
       const status = await isProviderConnected(actor, domain, provider)
       const support = isConnectSupported(domain, provider, caps)
+      // FINANCIAL rows additionally defer to the per-scope offering matrix
+      // (lib/connections/accounting-scopes.ts — the single source of truth for WHY and
+      // WHERE accounting connects at each level). A managed-elsewhere / not-offered row
+      // renders its documented verdict and, when one exists, the surface that manages it —
+      // instead of a Connect button that would mint a dead credential (e.g. agent Stripe).
+      const offering =
+        domain === "financial" && (ACCOUNTING_SCOPES as readonly string[]).includes(actor.scope)
+          ? accountingOfferingsForScope(actor.scope as AccountingScope)[provider as AccountingConnector]
+          : null
+      const offered = !offering || offering.status === "connectable"
       providers.push({
         domain,
         provider,
@@ -182,8 +201,9 @@ export async function getConnectionCenter(owner?: OwnerHint): Promise<Connection
         detail: status.detail,
         auth: isOAuthConnection(domain, provider) ? "oauth" : "api_key",
         oauthStartPath: oauthStartPath(domain, provider),
-        available: support.available,
-        unavailableReason: support.reason ?? null,
+        available: support.available && offered,
+        unavailableReason: !offered ? offering!.verdict : (support.reason ?? null),
+        managePath: offering && offering.status === "managed-elsewhere" ? offering.connectPath : null,
       })
     }
     domains.push({ domain, method: spec.method, fields: spec.fields, providers })

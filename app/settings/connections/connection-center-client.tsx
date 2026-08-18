@@ -157,11 +157,19 @@ function ProviderRow({ domain, provider, fields, owner }: { domain: Domain["doma
         </div>
         <div className="flex items-center gap-2">
           {!provider.available ? (
-            // Not a control — there is nothing to click and no capability behind
-            // it. It was a permanently-disabled <Button>, which reads as an
-            // affordance; the reason is already spelled out to the left. Render
-            // it as the status it actually is.
-            <Badge variant="outline" className="text-xs font-normal text-muted-foreground">Unavailable</Badge>
+            provider.managePath ? (
+              // Managed elsewhere (per-scope accounting offering matrix): the capability is
+              // real but lives on another surface — link there instead of a dead badge.
+              <Button asChild size="sm" variant="outline">
+                <Link href={provider.managePath}>Manage</Link>
+              </Button>
+            ) : (
+              // Not a control — there is nothing to click and no capability behind
+              // it. It was a permanently-disabled <Button>, which reads as an
+              // affordance; the reason is already spelled out to the left. Render
+              // it as the status it actually is.
+              <Badge variant="outline" className="text-xs font-normal text-muted-foreground">Unavailable</Badge>
+            )
           ) : isStripeConnect ? (
             <Button size="sm" variant={provider.connected ? "outline" : "default"} disabled={pending} onClick={onStripeConnect}>
               {provider.connected ? "Reconnect" : "Connect"}
