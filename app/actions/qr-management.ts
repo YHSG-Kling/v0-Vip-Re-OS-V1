@@ -49,8 +49,17 @@ const BROKERAGE_SCOPE_ROLES = new Set(['broker', 'broker_owner', 'broker_admin',
  * and only ever show a bare key if the subject row has since been deleted —
  * in which case the key is genuinely all that is left, and saying so beats
  * inventing a title.
+ *
+ * NOT EXPORTED. This file carries "use server", and Next.js requires every
+ * export of such a module to be an async Server Action — a non-async export
+ * fails the production build (it compiles fine under tsc, which is why the
+ * type-check missed it). Making it async to satisfy that rule would be worse
+ * than wrong: it is a pure naming function called once per row, and turning it
+ * into a Server Action would put a network round-trip behind a string. Its only
+ * caller is loadQrCodesForCaller below, so module-private is both the fix and
+ * the honest shape.
  */
-export function qrDisplayName(input: {
+function qrDisplayName(input: {
   label: string
   listingLine: string | null
   campaignName: string | null

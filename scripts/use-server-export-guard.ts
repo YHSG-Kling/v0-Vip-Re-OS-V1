@@ -58,6 +58,20 @@ for (const f of files) {
     if (m && !/=\s*async\b/.test(line)) {
       violations.push(`${f}:${i + 1}  export ${m[1]} ${m[2]} — move to a non-"use server" lib`)
     }
+    // A NON-ASYNC `export function`. This was the guard's blind spot and it cost a
+    // red CI build: the rule above only ever matched const/class/let/var/enum, so a
+    // plain `export function qrDisplayName(...)` in a "use server" module sailed
+    // past a guard whose whole job is this build-breaker, and tsc cannot see it
+    // either (the constraint is Next's, not TypeScript's). `export default` and
+    // type-only exports are erased and stay legal.
+    const fn = /^export\s+function\s+([A-Za-z0-9_]+)/.exec(line)
+    if (fn) {
+      violations.push(
+        `${f}:${i + 1}  export function ${fn[1]} — a "use server" export must be ` +
+        `async; make it a Server Action, or (if it is a pure helper) drop the ` +
+        `export or move it to a non-"use server" lib`,
+      )
+    }
   })
 }
 

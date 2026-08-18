@@ -81,7 +81,6 @@
     "app/actions/portal-stream.ts": 2,
     "app/actions/privacy/data-subject-requests.ts": 1,
     "app/actions/property-buyer-matching.ts": 1,
-    "app/actions/qr-management.ts": 1,
     "app/actions/reputation-kernel.ts": 3,
     "app/actions/seller-listing/execution-engine.ts": 1,
     "app/actions/smart-insights.ts": 1,
@@ -634,7 +633,7 @@
     "lib/workflow/variables.ts": 1,
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1
   },
-  "census": 9048,
+  "census": 9047,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1017,7 +1016,7 @@
     "app/actions/public/tos-acceptance.ts": 2,
     "app/actions/push-listing-to-seller-portal.ts": 1,
     "app/actions/push-subscriptions.ts": 3,
-    "app/actions/qr-management.ts": 3,
+    "app/actions/qr-management.ts": 2,
     "app/actions/quarterly-review.ts": 1,
     "app/actions/recruiting-roi.ts": 6,
     "app/actions/referrals/agent-referral-actions.ts": 2,
@@ -6821,7 +6820,6 @@
       "unsubscribePush"
     ],
     "app/actions/qr-management.ts": [
-      "qrDisplayName",
       "loadQrCodesForCaller",
       "setQrCodeActive"
     ],
