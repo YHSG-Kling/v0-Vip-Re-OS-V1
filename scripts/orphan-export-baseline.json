@@ -6,7 +6,7 @@
     "app/actions/admin/billing.ts": 2,
     "app/actions/admin/commission-agreement.ts": 1,
     "app/actions/agents.ts": 5,
-    "app/actions/ai-auto-response.ts": 2,
+    "app/actions/ai-auto-response.ts": 1,
     "app/actions/ai-calendar-management.ts": 1,
     "app/actions/ai-client-portal.ts": 3,
     "app/actions/ai-closing-workflow.ts": 1,
@@ -29,7 +29,7 @@
     "app/actions/ai-voice-transcription.ts": 1,
     "app/actions/assistant.ts": 3,
     "app/actions/billing.ts": 3,
-    "app/actions/blog.ts": 3,
+    "app/actions/blog.ts": 2,
     "app/actions/brand-template-registry.ts": 2,
     "app/actions/brokerage-cda-setup.ts": 1,
     "app/actions/buyer-broker-agreements.ts": 1,
@@ -56,7 +56,6 @@
     "app/actions/email-campaigns.ts": 1,
     "app/actions/fb-audience-templates.ts": 1,
     "app/actions/forms-kernel.ts": 1,
-    "app/actions/gamification.ts": 1,
     "app/actions/inbox.ts": 1,
     "app/actions/journey-tasks.ts": 1,
     "app/actions/lead-assignment/assign-lead.ts": 1,
@@ -82,6 +81,7 @@
     "app/actions/portal-stream.ts": 2,
     "app/actions/privacy/data-subject-requests.ts": 1,
     "app/actions/property-buyer-matching.ts": 1,
+    "app/actions/qr-management.ts": 1,
     "app/actions/reputation-kernel.ts": 3,
     "app/actions/seller-listing/execution-engine.ts": 1,
     "app/actions/smart-insights.ts": 1,
@@ -247,7 +247,7 @@
     "lib/education/skill-freshness.ts": 1,
     "lib/embed/widget-modes.ts": 1,
     "lib/errors/collect-error.ts": 1,
-    "lib/errors/index.ts": 7,
+    "lib/errors/index.ts": 2,
     "lib/external/apify-actors.ts": 1,
     "lib/external/batchdata-client.ts": 2,
     "lib/external/email-verifier.ts": 1,
@@ -273,7 +273,6 @@
     "lib/inbound-mail/resolve-user-provider.ts": 1,
     "lib/integrations/integration-status.ts": 1,
     "lib/integrations/providers/catalog.ts": 1,
-    "lib/intelligence/agent-registry.ts": 3,
     "lib/intelligence/agent-scorecard.ts": 1,
     "lib/intelligence/appointment-whisper.ts": 1,
     "lib/intelligence/brokerage-pnl.ts": 2,
@@ -307,7 +306,7 @@
     "lib/intelligence/time-to-value-radar.ts": 1,
     "lib/kernel/ads.ts": 2,
     "lib/kernel/agent-coaching.ts": 4,
-    "lib/kernel/agent-identity-resolver.ts": 3,
+    "lib/kernel/agent-identity-resolver.ts": 1,
     "lib/kernel/agent-identity.ts": 1,
     "lib/kernel/ai-search-citation-monitor.ts": 8,
     "lib/kernel/ai-sentinel.ts": 1,
@@ -359,6 +358,7 @@
     "lib/kernel/intent-campaign.ts": 4,
     "lib/kernel/launch-war-room.ts": 2,
     "lib/kernel/lead-intake-cockpit.ts": 4,
+    "lib/kernel/lead-magnets.ts": 1,
     "lib/kernel/listing-inventory-radar.ts": 5,
     "lib/kernel/listing-marketing-week.ts": 2,
     "lib/kernel/listing-propensity.ts": 2,
@@ -538,7 +538,7 @@
     "lib/providers/email/personal-email-adapter.ts": 1,
     "lib/providers/messaging/sms-adapters.ts": 2,
     "lib/providers/outbound-sender.ts": 3,
-    "lib/providers/payment/index.ts": 3,
+    "lib/providers/payment/index.ts": 1,
     "lib/recruiting/career-tier.ts": 4,
     "lib/recruiting/challenge-runner.ts": 1,
     "lib/recruiting/leaderboard.ts": 3,
@@ -587,10 +587,8 @@
     "lib/transactions/sync-from-provider.ts": 1,
     "lib/transactions/transaction-status.ts": 3,
     "lib/usage.ts": 3,
-    "lib/validations/index.ts": 11,
+    "lib/validations/index.ts": 4,
     "lib/vendor-governance/vendor-policy.ts": 1,
-    "lib/vendors/billing-calculator.ts": 3,
-    "lib/vendors/credit-calculator.ts": 3,
     "lib/vendors/rank.ts": 1,
     "lib/vendors/vendor-scope.ts": 1,
     "lib/vendors/vendor-validators.ts": 1,
@@ -634,10 +632,9 @@
     "lib/workflow/intelligence/proactive-checks.ts": 4,
     "lib/workflow/step-palette.ts": 1,
     "lib/workflow/variables.ts": 1,
-    "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
-    "services/goHighLevelService.ts": 8
+    "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1
   },
-  "census": 9059,
+  "census": 9048,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -686,7 +683,7 @@
     "app/actions/agent-public-profile.ts": 1,
     "app/actions/agent-settings.ts": 2,
     "app/actions/agentic-tokens.ts": 3,
-    "app/actions/agents.ts": 21,
+    "app/actions/agents.ts": 19,
     "app/actions/ai-agent-goals.ts": 6,
     "app/actions/ai-agent-onboarding.ts": 7,
     "app/actions/ai-auto-response.ts": 6,
@@ -751,7 +748,7 @@
     "app/actions/avatar-voice-catalog.ts": 3,
     "app/actions/billing.ts": 12,
     "app/actions/blog-cadence-policy.ts": 2,
-    "app/actions/blog.ts": 13,
+    "app/actions/blog.ts": 12,
     "app/actions/brand-template-registry.ts": 12,
     "app/actions/brand-voice.ts": 2,
     "app/actions/brief-audio.ts": 1,
@@ -948,7 +945,7 @@
     "app/actions/marketing-intelligence.ts": 3,
     "app/actions/marketing-ops.ts": 2,
     "app/actions/marketing-package-automation.ts": 9,
-    "app/actions/marketing-studio.ts": 20,
+    "app/actions/marketing-studio.ts": 21,
     "app/actions/multi-persona.ts": 28,
     "app/actions/negotiation-copilot.ts": 2,
     "app/actions/negotiation-strategy.ts": 6,
@@ -1020,6 +1017,7 @@
     "app/actions/public/tos-acceptance.ts": 2,
     "app/actions/push-listing-to-seller-portal.ts": 1,
     "app/actions/push-subscriptions.ts": 3,
+    "app/actions/qr-management.ts": 3,
     "app/actions/quarterly-review.ts": 1,
     "app/actions/recruiting-roi.ts": 6,
     "app/actions/referrals/agent-referral-actions.ts": 2,
@@ -3177,7 +3175,7 @@
     "lib/errors/auto-retry.ts": 3,
     "lib/errors/collect-error.ts": 2,
     "lib/errors/error-classifier.ts": 4,
-    "lib/errors/index.ts": 10,
+    "lib/errors/index.ts": 6,
     "lib/esign-webhooks/download-signed-package.ts": 1,
     "lib/esign-webhooks/finalize-packet.ts": 2,
     "lib/events/event-helpers.ts": 6,
@@ -3232,6 +3230,9 @@
     "lib/forms/esign-anchors.ts": 2,
     "lib/forms/pdf-form-fill.ts": 2,
     "lib/forms/prefill-property-into-pdf.ts": 1,
+    "lib/gamification/award-points.ts": 1,
+    "lib/gamification/leaderboard-vocabulary.ts": 7,
+    "lib/gamification/tiers.ts": 4,
     "lib/geo/citation-scope.ts": 4,
     "lib/geo/citation-share.ts": 3,
     "lib/geo/publish-video-landing.ts": 3,
@@ -3375,7 +3376,7 @@
     "lib/kernel/addressing.ts": 1,
     "lib/kernel/ads.ts": 7,
     "lib/kernel/agent-coaching.ts": 8,
-    "lib/kernel/agent-identity-resolver.ts": 5,
+    "lib/kernel/agent-identity-resolver.ts": 3,
     "lib/kernel/agent-identity.ts": 4,
     "lib/kernel/agent-onboarding.ts": 8,
     "lib/kernel/ai-copy.ts": 3,
@@ -3484,7 +3485,7 @@
     "lib/kernel/launch-war-room.ts": 3,
     "lib/kernel/lead-acquisition-handlers.ts": 8,
     "lib/kernel/lead-intake-cockpit.ts": 6,
-    "lib/kernel/lead-magnets.ts": 7,
+    "lib/kernel/lead-magnets.ts": 8,
     "lib/kernel/lender-linkage.ts": 6,
     "lib/kernel/lifecycle-promo-policy.ts": 2,
     "lib/kernel/lifecycle.ts": 1,
@@ -3501,7 +3502,7 @@
     "lib/kernel/manager-signals.ts": 5,
     "lib/kernel/marketing/real-estate-compliance-gate.ts": 2,
     "lib/kernel/marketing-bench.ts": 1,
-    "lib/kernel/marketing.ts": 21,
+    "lib/kernel/marketing.ts": 20,
     "lib/kernel/milestone-calendar-bridge.ts": 1,
     "lib/kernel/morning-standup.ts": 3,
     "lib/kernel/neighbor-farm.ts": 3,
@@ -3767,7 +3768,7 @@
     "lib/marketing/stuck-social-post-policy.ts": 1,
     "lib/marketing/stuck-social-post-reaper.ts": 1,
     "lib/marketing/touchpoint-recorder.ts": 2,
-    "lib/marketing/tracked-qr.ts": 2,
+    "lib/marketing/tracked-qr.ts": 7,
     "lib/marketing/trigger-match.ts": 2,
     "lib/marketing/vendor-ranking.ts": 5,
     "lib/marketing/video-content-kit.ts": 4,
@@ -3936,7 +3937,7 @@
     "lib/providers/messaging/resolve-sms-provider.ts": 1,
     "lib/providers/messaging/sms-adapters.ts": 4,
     "lib/providers/outbound-sender.ts": 7,
-    "lib/providers/payment/index.ts": 7,
+    "lib/providers/payment/index.ts": 5,
     "lib/providers/tenancy-matrix.ts": 1,
     "lib/providers/vibe.ts": 2,
     "lib/providers/web-push.ts": 2,
@@ -3946,7 +3947,7 @@
     "lib/recruiting/career-tier.ts": 7,
     "lib/recruiting/challenge-runner.ts": 3,
     "lib/recruiting/challenges.ts": 2,
-    "lib/recruiting/leaderboard.ts": 5,
+    "lib/recruiting/leaderboard.ts": 4,
     "lib/recruiting/license-readiness-sweep.ts": 3,
     "lib/recruiting/mentor-lift.ts": 1,
     "lib/recruiting/mentor-match.ts": 3,
@@ -4101,7 +4102,7 @@
     "lib/usage/period.ts": 1,
     "lib/usage.ts": 4,
     "lib/utils.ts": 1,
-    "lib/validations/index.ts": 14,
+    "lib/validations/index.ts": 8,
     "lib/vendor/assignment-access.ts": 1,
     "lib/vendor-governance/attribution.ts": 2,
     "lib/vendor-governance/budget-eval.ts": 3,
@@ -4114,8 +4115,6 @@
     "lib/vendor-governance/vendor-policy.ts": 2,
     "lib/vendor-marketplace/resolve-contact-vendors.ts": 2,
     "lib/vendor-tracking.ts": 1,
-    "lib/vendors/billing-calculator.ts": 3,
-    "lib/vendors/credit-calculator.ts": 3,
     "lib/vendors/insurance-posture.ts": 2,
     "lib/vendors/premium-placement.ts": 3,
     "lib/vendors/rank.ts": 3,
@@ -4237,7 +4236,7 @@
     "lib/workflow-orchestrator/run-dedupe.ts": 1,
     "lib/workflow-orchestrator/stale-run-policy.ts": 1,
     "lib/workflow-orchestrator/stale-run-reaper.ts": 1,
-    "services/goHighLevelService.ts": 12,
+    "services/goHighLevelService.ts": 4,
     "services/supabase.ts": 3
   },
   "fileExports": {
@@ -4464,8 +4463,6 @@
       "createAgent",
       "updateAgent",
       "awardPoints",
-      "getLeaderboard",
-      "getAchievements",
       "getAgentAchievements",
       "getAgentCommissions",
       "addAgentCommission",
@@ -5016,7 +5013,6 @@
       "publishBlogPost",
       "publishToWordPress",
       "getBlogPosts",
-      "getBlogPostById",
       "addSeoKeyword",
       "getSeoKeywords",
       "discoverKeywordsAI",
@@ -5875,9 +5871,9 @@
     "app/actions/gamification.ts": [
       "getAgentBadges",
       "getAgentPointsAndTier",
-      "awardBadge",
       "checkAndAwardBadges",
       "addPoints",
+      "getAgentPointsHistory",
       "getLeaderboard",
       "getLeaderboardWidget"
     ],
@@ -6366,6 +6362,7 @@
       "updateTaskStatus",
       "generateCampaignContent",
       "createQrCodeAction",
+      "renderQrImageAction",
       "getMarketingStudioDashboard"
     ],
     "app/actions/multi-persona.ts": [
@@ -6822,6 +6819,11 @@
       "getVapidPublicKey",
       "subscribePush",
       "unsubscribePush"
+    ],
+    "app/actions/qr-management.ts": [
+      "qrDisplayName",
+      "loadQrCodesForCaller",
+      "setQrCodeActive"
     ],
     "app/actions/quarterly-review.ts": [
       "getQuarterlyReviewAction"
@@ -15096,10 +15098,6 @@
       "createErrorResponse",
       "createSuccessResponse",
       "handleAction",
-      "throwIfInvalidUUID",
-      "throwIfEmpty",
-      "throwIfNotInArray",
-      "asyncErrorBoundary",
       "retryAsync",
       "handleError"
     ],
@@ -15339,6 +15337,24 @@
     ],
     "lib/forms/prefill-property-into-pdf.ts": [
       "prefillPropertyIntoPdf"
+    ],
+    "lib/gamification/award-points.ts": [
+      "awardAgentPoints"
+    ],
+    "lib/gamification/leaderboard-vocabulary.ts": [
+      "isLeaderboardScope",
+      "isLeaderboardMetric",
+      "isoWeekLabel",
+      "monthLabel",
+      "periodWindows",
+      "isCanonicalPeriodLabel",
+      "defaultPeriodLabel"
+    ],
+    "lib/gamification/tiers.ts": [
+      "tierForPoints",
+      "tierLabelForPoints",
+      "nextTierForPoints",
+      "tierProgressPercent"
     ],
     "lib/geo/citation-scope.ts": [
       "allowedScopes",
@@ -15949,8 +15965,6 @@
       "runAgentCoachingForAgent"
     ],
     "lib/kernel/agent-identity-resolver.ts": [
-      "asAgentRecordId",
-      "asUserAgentId",
       "resolveAgentRecordToUserId",
       "resolveUserIdToAgentRecord",
       "_resetAgentIdentityCaches"
@@ -16632,6 +16646,7 @@
       "loadLeadIntakeCockpit"
     ],
     "lib/kernel/lead-magnets.ts": [
+      "leadMagnetQrLabel",
       "createLeadMagnet",
       "publishLeadMagnet",
       "captureFormSubmission",
@@ -16749,7 +16764,6 @@
       "publishPodcastEpisode",
       "createMarketingCampaign",
       "repurposeContentAsset",
-      "createQrAsset",
       "previewQrAsset"
     ],
     "lib/kernel/milestone-calendar-bridge.ts": [
@@ -18156,6 +18170,11 @@
     ],
     "lib/marketing/tracked-qr.ts": [
       "normalizeOrigin",
+      "isQrDestinationType",
+      "isQrPurpose",
+      "listingQrLabel",
+      "openHouseQrLabel",
+      "renderQrPng",
       "mintTrackedQr"
     ],
     "lib/marketing/trigger-match.ts": [
@@ -19041,9 +19060,7 @@
       "createPaymentIntent",
       "createConnectedAccount",
       "createAccountLink",
-      "getStripeAccountStatus",
-      "getStripeBalance",
-      "createPayout"
+      "getStripeBalance"
     ],
     "lib/providers/tenancy-matrix.ts": [
       "providerTenancy"
@@ -19084,9 +19101,8 @@
       "rankParticipants"
     ],
     "lib/recruiting/leaderboard.ts": [
-      "isoWeekLabel",
-      "monthLabel",
       "rankPoints",
+      "partitionByTeam",
       "runLeaderboardSnapshot",
       "runLeaderboardSnapshotAll"
     ],
@@ -19807,17 +19823,11 @@
       "isValidUUID",
       "isValidEmail",
       "isValidPhone",
-      "isValidURL",
       "isValidPrice",
-      "isValidDate",
       "isValidZipcode",
       "validateContact",
       "validateProperty",
-      "validateTransaction",
-      "validateContentLength",
-      "validateHashtags",
-      "validateArray",
-      "validateUUIDArray"
+      "validateTransaction"
     ],
     "lib/vendor/assignment-access.ts": [
       "assertVendorAssignedToContact"
@@ -19867,16 +19877,6 @@
     ],
     "lib/vendor-tracking.ts": [
       "trackVendorUsage"
-    ],
-    "lib/vendors/billing-calculator.ts": [
-      "calculateMonthlyBilling",
-      "calculateVendorRevenue",
-      "calculateAnnualDiscount"
-    ],
-    "lib/vendors/credit-calculator.ts": [
-      "calculateCreditsForOperation",
-      "calculateMonthlyUsageEstimate",
-      "recommendPlanByUsage"
     ],
     "lib/vendors/insurance-posture.ts": [
       "daysUntil",
@@ -20483,17 +20483,9 @@
     ],
     "services/goHighLevelService.ts": [
       "syncContactToGHL",
-      "getGHLContact",
-      "searchGHLContacts",
-      "getGHLConversations",
-      "getGHLMessages",
       "getContactConversationHistory",
       "logGHLCall",
-      "addGHLContactTags",
-      "removeGHLContactTags",
-      "addGHLContactNote",
-      "getGHLContactNotes",
-      "bulkSyncContactsToGHL"
+      "addGHLContactNote"
     ],
     "services/supabase.ts": [
       "getSupabase",
@@ -20501,5 +20493,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 183
+  "trulyDead": 147
 }

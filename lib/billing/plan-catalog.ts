@@ -4,6 +4,41 @@
 // plain module (no "use server") so it can be unit-tested without a request. The
 // superadmin CRUD action + any importer share this ONE validator so a tier can't
 // be saved malformed (negative price, empty name, non-canonical tier).
+//
+// ─── REMOVED in the orphan burn-down (lane O) ────────────────────────────────
+//
+// `lib/vendors/billing-calculator.ts` — the whole file — DELETED
+// (calculateMonthlyBilling, calculateVendorRevenue, calculateAnnualDiscount).
+// `lib/vendors/credit-calculator.ts` — the whole file — DELETED
+// (CREDIT_COSTS, calculateCreditsForOperation, calculateMonthlyUsageEstimate,
+// recommendPlanByUsage). Neither file was imported by anything, anywhere.
+//
+// The tombstone is HERE, on the survivor, because this is where someone
+// tempted to re-add a hardcoded price table will be standing. SURVIVORS:
+//   · plan price → `subscription_tiers.monthly_price_cents` /
+//     `annual_price_cents`, administered through this module and read at
+//     lib/kernel/billing.ts:318. The deleted `recommendPlanByUsage` returned
+//     literal 29 and 99 — the exact numbers this catalog exists so that nobody
+//     hardcodes — and `calculateAnnualDiscount` DERIVED the annual price as
+//     "monthly × 12 less 10%", when annual_price_cents is an administered field
+//     that a tier may set to anything.
+//   · overage → `plan_limits.overage_allowed` + `overage_rate_cents_per_1k`,
+//     computed by lib/billing/ai-overage.ts. The deleted `calculateMonthlyBilling`
+//     re-derived overage against a caller-passed per-credit price and added a
+//     flat 8% "tax" that no invoice in this system charges.
+//   · usage → `vendor_usage_tracking` (lib/vendor-tracking.ts) and
+//     `usage_events` (lib/finance/usage-metering.ts), which record what was
+//     ACTUALLY spent. The deleted CREDIT_COSTS table asserted invented per-
+//     operation credit prices for operations that meter their real vendor cost.
+//   · vendor revenue share → `vendors.default_revenue_share_percent` through
+//     lib/commission/waterfall/09-revenue-share.ts, gated on
+//     `brokerages.revenue_share_enabled` (see lib/vendors/vendor-validators.ts:16).
+//
+// Nothing needed merging: every number in both files was a literal invented at
+// authoring time, and all of them are administered rows here. MONEY IN THIS
+// SYSTEM IS INTEGER CENTS; both deleted files did float dollar arithmetic with
+// `Math.round(x * 100) / 100`, which is the other reason neither could be
+// adopted as-is.
 
 // THE one metric vocabulary for AI overage. Declared HERE (the pure module) and
 // imported by the server-side ai-overage reader — not the other way around:

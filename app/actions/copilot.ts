@@ -35,6 +35,17 @@ import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenan
 // client, register THAT in `EVENT_HANDLERS`, and leave these exports as the gated
 // human-facing wrappers. That refactor is deliberately not done here — a half-moved handler
 // is worse than a gated one.
+//
+// ORPHAN BURN-DOWN (lane O) — RECORDED AS A BUILD LINE, still not done, and the
+// blocker is now narrower and nameable: the refactor above has to EDIT
+// lib/orchestrator/internal.ts to register the lifted handlers in EVENT_HANDLERS,
+// and that file is owned by another lane in this wave. Registering these three
+// exports as they stand would be the wrong fix regardless — `emitEventFromCron`
+// carries a service credential and no session, so `authorizeForUser` would refuse
+// every unattended dispatch. Deleting them would be wrong too: they are not
+// duplicates of anything (grep for a second suggestion-accept, coaching-booking
+// or morning-kickoff writer finds none), so removing them removes capability.
+// Build, blocked — not keep-by-default.
 
 export async function handleSuggestionAccepted(payload: any) {
   const { suggestion_id, user_id, action_type } = payload
@@ -282,6 +293,19 @@ export async function generate7DayPlan(payload: any) {
  * Finished: the listing is resolved to its transaction IN THE CALLER'S BROKERAGE, and the
  * milestone is attached to it. A listing with no transaction is a refusal, not a silent
  * orphan — you cannot put a milestone on a deal that does not exist yet.
+ *
+ * ORPHAN BURN-DOWN (lane O) — RECORDED AS A BUILD LINE. It has no caller and, checked
+ * against every other milestone writer in the tree, no duplicate: lib/transactions/
+ * milestone-service.ts SEEDS a template set, lib/application/transactions.ts:1422 writes
+ * an AI-generated client timeline, and app/actions/lender-portal-actions.ts:203 stamps a
+ * lender event. This is the only lane for an agent to add ONE ad-hoc milestone by hand.
+ *
+ * THE BLOCKER: there is no "add milestone" affordance on any transaction surface, so
+ * wiring it means designing that control — a product decision, not a wiring one — and the
+ * deal surfaces it would live on are being edited by other lanes this wave. Do not delete
+ * it to move the number: the capability is real and the repair recorded above (resolving
+ * the listing to its transaction, in the caller's brokerage) is exactly the work that
+ * would otherwise have to be redone.
  */
 export async function createTransactionMilestone(params: {
   listing_id: string

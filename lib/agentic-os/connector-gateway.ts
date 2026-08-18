@@ -8,6 +8,7 @@
 // The auth-header builder is pure + exported so it is unit-tested without a network.
 
 import { adaptResponse, type ConnectorShapeSpec, type ShapeDrift } from "./connector-shape"
+import { retryAsync } from "@/lib/errors"
 
 export type GatewayAuth =
   | { style: "bearer"; token: string }                       // Authorization: Bearer <token>
@@ -116,12 +117,71 @@ export function buildAuthedRequest(req: GatewayRequest): { url: string; headers:
  * best-effort api_response_logs row (the System Health SLA panel read that
  * table for months with no writer). Fire-and-forget; telemetry never delays or
  * fails a vendor call.
+ *
+ * TRANSIENT RETRY (orphan burn-down, lane O — retryAsync WIRED). This gateway
+ * already CLASSIFIED a failure as rate_limited (429) / provider_error (5xx) /
+ * network_or_timeout for the SLA panel, and then did nothing about any of them:
+ * one blip on one vendor call failed the whole feature. `retryAsync`
+ * (lib/errors) is the in-process backoff ladder that was written for exactly
+ * this and had no caller.
+ *
+ * SCOPED TO GET, DELIBERATELY. Replaying a POST through this gateway is
+ * replaying a Stripe charge, an SMS send, a CRM contact create or a social
+ * publish — the gateway cannot know which of its connectors treat a repeated
+ * POST as idempotent, and guessing wrong duplicates money or messages. GET is
+ * idempotent by definition, so it is the only method retried here. Anything
+ * else keeps today's exact behaviour: one attempt, structured result.
+ *
+ * A retried attempt is a REAL attempt and gets its own api_response_logs row,
+ * so the SLA panel still sees the 429 that was recovered from rather than a
+ * silently-healed gap.
  */
+
+/** Carries a transient GatewayResponse out through retryAsync's throw protocol. */
+class TransientGatewayFailure extends Error {
+  constructor(public readonly result: GatewayResponse<any>) {
+    super(result.error ?? "transient gateway failure")
+    this.name = "TransientGatewayFailure"
+  }
+}
+
+/** 429, any 5xx, or a null status (thrown fetch / AbortSignal timeout). */
+function isTransient(result: GatewayResponse<any>): boolean {
+  if (result.ok) return false
+  return result.status === null || result.status === 429 || result.status >= 500
+}
+
 export async function callConnector<T = any>(req: GatewayRequest): Promise<GatewayResponse<T>> {
-  const startedAt = Date.now()
-  const result = await executeConnector<T>(req)
-  void logApiResponse(req, result, Date.now() - startedAt)
-  return result
+  const attempt = async (): Promise<GatewayResponse<T>> => {
+    const startedAt = Date.now()
+    const result = await executeConnector<T>(req)
+    void logApiResponse(req, result, Date.now() - startedAt)
+    return result
+  }
+
+  const method = req.method ?? (req.body !== undefined ? "POST" : "GET")
+  if (method !== "GET") return attempt()
+
+  try {
+    // maxRetries 2 = two attempts total, one 400ms retry. Bounded on purpose:
+    // the per-attempt timeout defaults to 15s, and a serverless invocation that
+    // spends a minute laddering a dead vendor is a worse failure than the one
+    // it is trying to hide.
+    return await retryAsync(async () => {
+      const result = await attempt()
+      if (isTransient(result)) throw new TransientGatewayFailure(result)
+      return result
+    }, { maxRetries: 2, delayMs: 400, backoff: true })
+  } catch (err) {
+    // Honor this function's "never throws" contract: hand back the LAST real
+    // response rather than an invented one, so the caller still sees the
+    // vendor's own status and message.
+    if (err instanceof TransientGatewayFailure) return err.result as GatewayResponse<T>
+    return {
+      ok: false, status: null, data: null, headers: {}, drift: null,
+      error: err instanceof Error ? err.message : String(err),
+    } as GatewayResponse<T>
+  }
 }
 
 async function logApiResponse(req: GatewayRequest, result: GatewayResponse<any>, elapsedMs: number): Promise<void> {

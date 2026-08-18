@@ -9,6 +9,16 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 // They originally had zero auth and would accept arbitrary payloads (any
 // authenticated user could delegate any task to anyone, log queries as any
 // user, etc.). Hardened: caller must own the relevant user_id, OR be admin.
+//
+// ORPHAN BURN-DOWN (lane O) — handleAssistantQuery / handleTaskDelegated /
+// handleAutomationTriggered are RECORDED AS A BUILD LINE, same blocker as their
+// three siblings in app/actions/copilot.ts (see that file's header for the full
+// reasoning): the registry they were written for is
+// lib/orchestrator/internal.ts:EVENT_HANDLERS, which is owned by another lane in
+// this wave, and registering these session-gated exports there directly would be
+// the wrong fix anyway — the unattended dispatcher has a service credential and
+// no session, so `authorizeForUser` would refuse every call. They are not
+// duplicates of anything, so they are not deletions.
 // =====================================================
 
 // The gate this file grew privately now lives in ONE place and is shared with

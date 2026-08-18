@@ -614,6 +614,19 @@ export async function publishToWordPress(
 // entire blog inventory — including unpublished drafts — for anyone who could
 // guess a brokerage uuid. The page it duplicates always scoped to the signed-in
 // user's brokerage; this one now does the same, the same way.
+//
+// ORPHAN BURN-DOWN (lane O) — RECORDED AS A BUILD LINE. The blocker is precise:
+// the surface that needs it is the filter/refresh control on
+// the app/dashboard/marketing/blog directory, owned by another lane this wave,
+// (written without a trailing glob on purpose: a slash followed by a star, even
+//  inside a line comment, opens a BLOCK comment for any tool that strips block
+//  comments BEFORE it drops line comments — and this file's own guard does
+//  exactly that, so the glob swallowed ~670 lines of real code from its view,
+//  including the query this file's projection check anchors on),
+// so wiring it from here would collide. Not deleted, because unlike
+// getBlogPostById (removed above) this one is NOT covered by the page — the page
+// loads the unfiltered first list only, and publish-status / agent / date-range
+// filtering exists nowhere else.
 
 export async function getBlogPosts(
   filters?: {
@@ -674,114 +687,24 @@ export async function getBlogPosts(
   return { success: true, posts: data || [] }
 }
 
-// ─── getBlogPostById ──────────────────────────────────────────────────────────
+// ─── REMOVED in the orphan burn-down (lane O) ─────────────────────────────────
 //
-// Action-layer twin of the inline read in app/dashboard/marketing/blog/[id]/page.tsx
-// (BlogEditorPage). That page is the survivor and it was ALWAYS correct:
-// `.eq("id", postId).eq("brokerage_id", userData.brokerage_id)`.
+// `getBlogPostById(postId)` — DELETED.
+// SURVIVOR: app/dashboard/marketing/blog/[id]/page.tsx (BlogEditorPage), which
+// loads the same three things inline and always did: the post scoped
+// `.eq("id", postId).eq("brokerage_id", …)` (line 40-ish), its linked keywords
+// through blog_post_keywords → seo_keywords (line 59-76), and the latest
+// seo_optimization_log row (line 87). Nothing this action returned is missing
+// there, so nothing needed merging.
 //
-// This copy had `.eq("id", postId)` and NOTHING ELSE — no auth gate, no tenant
-// predicate — while returning the post's FULL BODY, its keyword strategy and its
-// SEO audit log. As a "use server" export that is a public endpoint, so any post
-// uuid read any brokerage's unpublished content. The missing `.eq("brokerage_id",
-// …)` is restored below, derived from the session exactly as the page derives it.
-
-export async function getBlogPostById(postId: string): Promise<{
-  success: boolean
-  post?: {
-    id: string
-    brokerage_id: string
-    title: string
-    slug: string
-    excerpt: string
-    content: string
-    featured_image_url: string | null
-    publish_status: string
-    seo_score: number | null
-    wordpress_post_id: string | null
-    created_at: string
-    published_at: string | null
-    keywords: Array<{
-      id: string
-      keyword: string
-      is_primary: boolean
-    }>
-    latestSeoLog: {
-      score: number
-      issues: string[]
-      recommendations: string[]
-    } | null
-  }
-  error?: string
-}> {
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
-    return { success: false, error: "Not authenticated" }
-  }
-
-  const supabase = await createClient()
-
-  // Fetch post — scoped to the caller's brokerage, like the editor page.
-  const { data: post, error: postError } = await supabase
-    .from("blog_posts")
-    .select(
-      "id, brokerage_id, title, slug, excerpt, content, featured_image_url, publish_status, seo_score, wordpress_post_id, created_at, published_at"
-    )
-    .eq("id", postId)
-    .eq("brokerage_id", ctx.brokerageId)
-    .maybeSingle()
-
-  if (postError || !post) {
-    return { success: false, error: "Blog post not found" }
-  }
-
-  // Fetch linked keywords
-  const { data: keywordLinks } = await supabase
-    .from("blog_post_keywords")
-    .select("is_primary, seo_keyword_id")
-    .eq("blog_post_id", postId)
-
-  const keywords: Array<{ id: string; keyword: string; is_primary: boolean }> = []
-  if (keywordLinks?.length) {
-    const keywordIds = keywordLinks.map((kl) => kl.seo_keyword_id)
-    const { data: keywordData } = await supabase.from("seo_keywords").select("id, keyword").in("id", keywordIds)
-
-    if (keywordData) {
-      for (const kd of keywordData) {
-        const link = keywordLinks.find((kl) => kl.seo_keyword_id === kd.id)
-        keywords.push({
-          id: kd.id,
-          keyword: kd.keyword,
-          is_primary: link?.is_primary || false,
-        })
-      }
-    }
-  }
-
-  // Fetch latest SEO log
-  const { data: seoLog } = await supabase
-    .from("seo_optimization_log")
-    .select("score, issues, recommendations")
-    .eq("blog_post_id", postId)
-    .order("optimized_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
-  return {
-    success: true,
-    post: {
-      ...post,
-      keywords,
-      latestSeoLog: seoLog
-        ? {
-            score: seoLog.score,
-            issues: (seoLog.issues as { items?: string[] })?.items || [],
-            recommendations: (seoLog.recommendations as { items?: string[] })?.items || [],
-          }
-        : null,
-    },
-  }
-}
+// Its own header, written by the wave that repaired it, already named that page
+// as the survivor and recorded that the page "was ALWAYS correct" while this
+// copy shipped `.eq("id", postId)` and nothing else — no auth gate and no
+// tenant predicate — returning any brokerage's unpublished body, keyword
+// strategy and SEO audit to anyone holding a post uuid. It was gated then
+// rather than removed. It has gained no caller since, and a second door onto a
+// page's own data is a door that has to be re-audited every time the page's
+// scoping changes. It is closed.
 
 // ─── addSeoKeyword ────────────────────────────────────────────────────────────
 
@@ -852,6 +775,13 @@ export async function addSeoKeyword(
 // targets it is spending on — readable by anyone with the uuid. Derived from the
 // session now, matching how the agent-scoped sibling gets its scope from
 // requireContentActor().
+//
+// ORPHAN BURN-DOWN (lane O) — RECORDED AS A BUILD LINE, same blocker as
+// getBlogPosts above: its surface is app/dashboard/marketing/seo/
+// seo-keywords-client.tsx (which already imports addSeoKeyword and
+// discoverKeywordsAI from this file but not this reader), and that directory is
+// owned by another lane this wave. The keep verdict recorded above still holds —
+// the agent-scoped sibling is a different axis, not a survivor.
 
 export async function getSeoKeywords(): Promise<{
   success: boolean

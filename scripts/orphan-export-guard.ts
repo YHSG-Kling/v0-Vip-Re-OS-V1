@@ -89,14 +89,21 @@ const SKIP_TOP_LEVEL = new Set([
  * ADDING THIS ROOT RAISED THE BASELINE (8876 → 8891 scanned, 1499 → 1508
  * unreferenced, category C 367 → 376) and that increase is a MEASUREMENT
  * EXPANSION, not a regression: nothing was added, a directory that was always
- * unreferenced simply became visible. The ~9 that landed in C are the
+ * unreferenced simply became visible. The ~9 that landed in C were the
  * zero-caller GoHighLevel reads and bulk sync — getGHLContact,
  * searchGHLContacts, getGHLConversations, getGHLMessages, getGHLContactNotes,
- * addGHLContactTags, removeGHLContactTags, bulkSyncContactsToGHL. They are
- * kept, not deleted: GHL sync-out is a sanctioned capability and the read side
- * is the platform-staff book-import direction, so these are a backlog to
- * finish. The three that ARE wired (syncContactToGHL, logGHLCall,
- * addGHLContactNote, getContactConversationHistory) prove the file is live.
+ * addGHLContactTags, removeGHLContactTags, bulkSyncContactsToGHL.
+ *
+ * THAT BACKLOG LINE IS RETIRED (orphan burn-down, lane O). It said the GHL read
+ * side "is the platform-staff book-import direction, so these are a backlog to
+ * finish" — and it HAS since been finished, but in lib/crm/import-pull.ts, not
+ * in services/. `pullGoHighLevel` (import-pull.ts:142, dispatched by
+ * pullCrmPage and called from app/actions/lead-import/crm-pull-actions.ts) is
+ * the tenant-credentialed, cursor-paginated, gate-routed read those two were
+ * a weaker second copy of. All eight are now gone, each with a tombstone in
+ * services/goHighLevelService.ts naming its survivor. The four that ARE wired
+ * (syncContactToGHL, logGHLCall, addGHLContactNote,
+ * getContactConversationHistory) prove the file is live.
  */
 // `hooks` added after the use-server guard was found reporting green over a
 // directory it never opened. Auditing every sweep's file walk for the same

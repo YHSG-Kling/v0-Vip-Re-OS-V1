@@ -138,28 +138,29 @@ export async function syncContactToGHL(contact: GHLContact, credentialOverride?:
   }
 }
 
-export async function getGHLContact(contactId: string) {
-  try {
-    const result = await ghlFetch(`/contacts/${contactId}`)
-    return { success: true, contact: result.contact }
-  } catch (error: any) {
-    return { success: false, error: error.message }
-  }
-}
-
-export async function searchGHLContacts(query: string) {
-  const config = getGHLConfig()
-  if (!config) {
-    return { success: false, error: "GHL not configured", contacts: [] }
-  }
-
-  try {
-    const result = await ghlFetch(`/contacts/?locationId=${config.locationId}&query=${encodeURIComponent(query)}`)
-    return { success: true, contacts: result.contacts || [] }
-  } catch (error: any) {
-    return { success: false, error: error.message, contacts: [] }
-  }
-}
+// ─── REMOVED in the orphan burn-down (lane O) ───────────────────────────────
+//
+// `getGHLContact(contactId)` and `searchGHLContacts(query)` — DELETED.
+// SURVIVOR: lib/crm/import-pull.ts:142 `pullGoHighLevel` (dispatched through
+// `pullCrmPage`, lib/crm/import-pull.ts:159, called by
+// app/actions/lead-import/crm-pull-actions.ts and surfaced on the superadmin
+// tenant CRM-pull panel).
+//
+// These two WERE the "GHL read side is a backlog to finish" note recorded in
+// this guard's own header (scripts/orphan-export-guard.ts, the SCANNED_ROOTS
+// comment). That backlog HAS since been finished — but by import-pull.ts, not
+// here, and the note was never retired. `pullGoHighLevel` is the more complete
+// read on every axis that matters: it takes the TENANT's own apiKey +
+// locationId (resolved from platform_credentials) instead of reading only the
+// platform-wide `GHL_API_KEY`/`GHL_LOCATION_ID` env pair, it paginates with a
+// resumable cursor instead of returning one un-paged page, and its rows land
+// through the ONE gated import pipeline (processImportRows → field steward →
+// captureContact) rather than being handed to a caller raw.
+//
+// Nothing needed merging: neither deleted function did anything
+// `pullGoHighLevel` does not do better, and keeping an env-credentialed,
+// ungated second read path is how a tenant ends up reading the platform's GHL
+// book instead of its own.
 
 // =====================================================
 // SMS MESSAGING (via GHL)
@@ -179,36 +180,44 @@ export interface GHLMessage {
 // CONVERSATIONS / MESSAGE HISTORY
 // =====================================================
 
-export async function getGHLConversations(params?: {
-  contactId?: string
-  limit?: number
-  startAfter?: string
-}) {
-  const config = getGHLConfig()
-  if (!config) {
-    return { success: false, error: "GHL not configured", conversations: [] }
-  }
+// ─── MERGED in the orphan burn-down (lane O) ────────────────────────────────
+//
+// `getGHLConversations(params)` and `getGHLMessages(conversationId, limit)` —
+// MERGED-THEN-DELETED as exports.
+// SURVIVOR: `getContactConversationHistory` immediately below (this file), the
+// one GHL conversation read with a live caller —
+// app/actions/communications.ts:236 `getContactHistory`.
+//
+// The survivor already did both jobs, inline and verbatim: the same
+// `/conversations/?locationId=…&contactId=…` fetch and the same
+// `/conversations/{id}/messages?limit=…` fetch, hand-written a second time.
+// Rather than delete two working fetchers and leave the duplicate copies
+// embedded in the survivor, the fetchers ARE now the survivor's body — kept as
+// module-private helpers, so the capability survives and stops being a second
+// public door onto the same endpoints.
+//
+// What was merged ONTO them from the survivor's inline copies: nothing was
+// lost, and their `{ success, error }` wrappers were dropped in favour of
+// throwing, because the survivor's own try/catch is what turns a GHL failure
+// into `{ success: false, error }` for its caller. A helper that swallowed the
+// error would have handed the caller an empty history that read as success.
 
-  try {
-    let url = `/conversations/?locationId=${config.locationId}`
-    if (params?.contactId) url += `&contactId=${params.contactId}`
-    if (params?.limit) url += `&limit=${params.limit}`
-    if (params?.startAfter) url += `&startAfter=${params.startAfter}`
+async function fetchGHLConversations(
+  locationId: string,
+  params?: { contactId?: string; limit?: number; startAfter?: string },
+): Promise<any[]> {
+  let url = `/conversations/?locationId=${locationId}`
+  if (params?.contactId) url += `&contactId=${params.contactId}`
+  if (params?.limit) url += `&limit=${params.limit}`
+  if (params?.startAfter) url += `&startAfter=${params.startAfter}`
 
-    const result = await ghlFetch(url)
-    return { success: true, conversations: result.conversations || [] }
-  } catch (error: any) {
-    return { success: false, error: error.message, conversations: [] }
-  }
+  const result = await ghlFetch(url)
+  return result.conversations || []
 }
 
-export async function getGHLMessages(conversationId: string, limit = 50) {
-  try {
-    const result = await ghlFetch(`/conversations/${conversationId}/messages?limit=${limit}`)
-    return { success: true, messages: result.messages || [] }
-  } catch (error: any) {
-    return { success: false, error: error.message, messages: [] }
-  }
+async function fetchGHLMessages(conversationId: string, limit = 50): Promise<any[]> {
+  const result = await ghlFetch(`/conversations/${conversationId}/messages?limit=${limit}`)
+  return result.messages || []
 }
 
 export async function getContactConversationHistory(contactId: string) {
@@ -224,19 +233,18 @@ export async function getContactConversationHistory(contactId: string) {
 
   try {
     // Get all conversations for this contact
-    const convResult = await ghlFetch(`/conversations/?locationId=${config.locationId}&contactId=${contactId}`)
-    const conversations = convResult.conversations || []
+    const conversations = await fetchGHLConversations(config.locationId, { contactId })
 
     // Get messages from each conversation
     const history: any[] = []
     for (const conv of conversations.slice(0, 5)) {
       // Limit to last 5 conversations
-      const msgResult = await ghlFetch(`/conversations/${conv.id}/messages?limit=20`)
+      const messages = await fetchGHLMessages(conv.id, 20)
       history.push({
         conversationId: conv.id,
         type: conv.type,
         lastMessageDate: conv.lastMessageDate,
-        messages: msgResult.messages || [],
+        messages,
       })
     }
 
@@ -307,29 +315,25 @@ export async function logGHLCall(params: {
 // TAGS MANAGEMENT
 // =====================================================
 
-export async function addGHLContactTags(contactId: string, tags: string[]) {
-  try {
-    const result = await ghlFetch(`/contacts/${contactId}/tags`, {
-      method: "POST",
-      body: JSON.stringify({ tags }),
-    })
-    return { success: true, data: result }
-  } catch (error: any) {
-    return { success: false, error: error.message }
-  }
-}
-
-export async function removeGHLContactTags(contactId: string, tags: string[]) {
-  try {
-    const result = await ghlFetch(`/contacts/${contactId}/tags`, {
-      method: "DELETE",
-      body: JSON.stringify({ tags }),
-    })
-    return { success: true, data: result }
-  } catch (error: any) {
-    return { success: false, error: error.message }
-  }
-}
+// ─── REMOVED in the orphan burn-down (lane O) ───────────────────────────────
+//
+// `addGHLContactTags(contactId, tags)` and
+// `removeGHLContactTags(contactId, tags)` — DELETED.
+// SURVIVOR: lib/crm/sync.ts:43 `syncContactToCRM`, which passes `tags` on every
+// push and reaches GHL through `syncContactToGHL` above — whose update branch
+// PUTs the whole contact (`{ ...contact, locationId }`), so the tag ARRAY is
+// authored wholesale on each sync. The OS derives that array from the contact
+// itself (app/actions/contacts.ts:231 — `[contact_type, status]`), so there is
+// no OS-side incremental "tag added" event for these two to have been wired to:
+// a tag change in the OS is a contact change, and a contact change already
+// re-authors the GHL tag set.
+//
+// Nothing needed merging. Deleting them also closes a bypass: both called
+// `ghlFetch` with no credential override, i.e. the platform-wide env key rather
+// than the tenant's own resolved credential, and skipped the egress gate
+// (`validateEgress` / CRM_CONTACT_EGRESS_CONTRACT) that lib/crm/sync.ts:51
+// applies to every outbound contact. lib/crm/sync.ts:7 states the rule they
+// broke: never call goHighLevelService directly from feature code.
 
 // =====================================================
 // NOTES
@@ -347,40 +351,41 @@ export async function addGHLContactNote(contactId: string, note: string) {
   }
 }
 
-export async function getGHLContactNotes(contactId: string) {
-  try {
-    const result = await ghlFetch(`/contacts/${contactId}/notes`)
-    return { success: true, notes: result.notes || [] }
-  } catch (error: any) {
-    return { success: false, error: error.message, notes: [] }
-  }
-}
+// ─── REMOVED in the orphan burn-down (lane O) ───────────────────────────────
+//
+// `getGHLContactNotes(contactId)` — DELETED.
+// SURVIVOR: the `contact_notes` table is the OS's store of record for notes —
+// app/actions/contacts.ts:374 is the canonical writer (its own header says so)
+// and app/crm/page.tsx:605 reads it for the contact timeline
+// (app/actions/crm.ts:221 reads it too).
+//
+// `addGHLContactNote` above stays because it MIRRORS an OS note outward
+// (app/actions/communications.ts:358 writes locally and mirrors). Reading notes
+// back the other way would make GHL an authority over a table the OS owns, and
+// no surface asked for it. Nothing needed merging — the read that exists reads
+// the store of record.
 
 // =====================================================
 // BULK SYNC UTILITY
 // =====================================================
 
-export async function bulkSyncContactsToGHL(contacts: GHLContact[]) {
-  const results = {
-    success: 0,
-    failed: 0,
-    errors: [] as string[],
-  }
-
-  for (const contact of contacts) {
-    try {
-      const result = await syncContactToGHL(contact)
-      if (result.success) {
-        results.success++
-      } else {
-        results.failed++
-        results.errors.push(`${contact.email}: ${result.error}`)
-      }
-    } catch (error: any) {
-      results.failed++
-      results.errors.push(`${contact.email}: ${error.message}`)
-    }
-  }
-
-  return results
-}
+// ─── REMOVED in the orphan burn-down (lane O) ───────────────────────────────
+//
+// `bulkSyncContactsToGHL(contacts)` — DELETED.
+// SURVIVOR: lib/crm/sync.ts:43 `syncContactToCRM` — the single sanctioned
+// sync-out lane, already called per contact by app/actions/contacts.ts:226,
+// app/actions/lead-lifecycle.ts:205 and app/actions/crm-connect.ts:146.
+//
+// Nothing needed merging: the deleted function's entire body was a for-loop
+// with a success/failed tally, and looping is the caller's job — the three live
+// callers each loop over their own scope with their own tenant context.
+//
+// It was deleted rather than wired because it was a THREE-WAY BYPASS of that
+// lane, and every bypass was silent. It called `syncContactToGHL` with no
+// credential override, so a bulk run pushed a tenant's whole book through the
+// PLATFORM's `GHL_API_KEY`/`GHL_LOCATION_ID` — into the wrong GHL location. It
+// skipped the provider cascade in lib/crm/sync.ts:67, so a brokerage that had
+// connected Follow Up Boss, Lofty or HubSpot would still have had its contacts
+// shipped to GoHighLevel. And it skipped the egress gate at lib/crm/sync.ts:51,
+// so nameless/unreachable rows went out unrefused and unledgered. Doing that
+// once, in bulk, is the worst possible scale for all three faults.

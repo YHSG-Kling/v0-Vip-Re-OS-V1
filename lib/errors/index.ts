@@ -8,35 +8,59 @@
 // handleError is the workhorse; AppError and its subclasses, logError,
 // createErrorResponse / createSuccessResponse and handleAction are all in use.
 //
-// Four exports have no callers and show up on the category-C burn-down list:
-// asyncErrorBoundary, retryAsync, throwIfEmpty, throwIfNotInArray. They were
-// audited before being left alone, and the finding is that NONE has a named
-// duplicate and none has an adoption site waiting for it:
+// Five exports had no callers and sat on the category-C burn-down list:
+// asyncErrorBoundary, retryAsync, throwIfInvalidUUID, throwIfEmpty,
+// throwIfNotInArray. A prior wave audited them and left them alone. Resolved in
+// the orphan burn-down (lane O) — one build, four deletions:
 //
-//   · retryAsync is an IN-PROCESS retry (sleep + exponential backoff on a single
-//     call). lib/errors/auto-retry.ts looks like its twin and is NOT: it is a
-//     durable, DB-backed retry ledger for automation errors, and its own header
-//     explains why — Vercel serverless cannot sleep across a long delay, so it
-//     stores next_retry_at for the retry-errors cron to pick up. Different
-//     problem, different lifetime. A sweep for hand-rolled in-process backoff
-//     (Math.pow(2, attempt) and friends) found only that durable ladder and the
-//     webhook delivery ladder, both also DB-backed. So there is nothing for
-//     retryAsync to consolidate today.
-//   · asyncErrorBoundary duplicates what handleAction already does for the
-//     call sites that need it; it wraps rather than being wrapped, so adopting
-//     it would mean rewriting call sites that are already correct.
-//   · throwIfEmpty / throwIfNotInArray are generic and unclaimed.
+//   · retryAsync — KEPT and WIRED. It is an IN-PROCESS retry (sleep +
+//     exponential backoff on a single call). lib/errors/auto-retry.ts looks
+//     like its twin and is NOT: that one is a durable, DB-backed retry ledger
+//     for automation errors, and its own header explains why — Vercel
+//     serverless cannot sleep across a long delay, so it stores next_retry_at
+//     for the retry-errors cron. Different problem, different lifetime, and
+//     nothing in between covered a provider blip inside one request. Its
+//     adoption site is lib/agentic-os/connector-gateway.ts `callConnector`, the
+//     single egress choke point, which classified 429 / 5xx / timeout as error
+//     types and then never retried any of them. Deliberately scoped to GET —
+//     see the tombstone-adjacent note there: replaying a POST is replaying a
+//     charge or a text message.
+//   · throwIfInvalidUUID, throwIfEmpty, throwIfNotInArray — DELETED. These are
+//     a THROW-style validation idiom, and this codebase settled on the opposite
+//     convention: a refusal is RETURNED as `{ success: false, error }` from the
+//     kernel command or server action that detected it. The evidence is in the
+//     history of throwIfInvalidUUID itself — a prior keep-one merge deleted
+//     lib/validations `requireValidUUID` in its favour, and the survivor STILL
+//     never gained a caller. What was unused was never the particular copy; it
+//     was the throw. Survivors, all live:
+//       – UUID → `isValidUUID` (lib/validations/index.ts:42, 116 call sites),
+//         used as `if (!isValidUUID(x)) return { success:false, error:… }`.
+//       – required string → the inline `!value?.trim()` refusal, e.g.
+//         lib/kernel/listings.ts `createListingRecord` ("Address is required").
+//       – membership → the `VALID_*.includes(...)` guards, e.g.
+//         lib/kernel/financial.ts:1112, lib/kernel/reputation.ts:458,
+//         app/actions/blog-cadence-policy.ts:86.
+//     Each survivor names the field it rejected, which is what the deleted
+//     throwers did too — nothing was lost, only the control-flow style.
+//   · asyncErrorBoundary — DELETED. SURVIVOR: `handleAction` below in this
+//     file. Their catch blocks are the same two lines (logError, then
+//     createErrorResponse); handleAction additionally wraps the success path in
+//     createSuccessResponse, so it is the more complete of the two, and it
+//     takes the thunk rather than re-wrapping an existing function — which is
+//     the shape that fits a server action. Stated plainly: handleAction is
+//     itself thinly adopted, so this is a keep-one between two forms of the
+//     same idea rather than a busy survivor absorbing a dead one. Keeping both
+//     would leave two answers to one question and no reason to pick either.
 //
-// So these are speculative utilities. Under the standing rule they are NOT
-// deleted — the orphan count is never by itself a reason to remove code — but
-// they are also not something to adopt on sight. If one is genuinely needed,
-// take it AND keep whatever extra strictness the caller already had.
+// The standing rule that produced the prior wave's caution still holds and is
+// why the deletions above each name a survivor rather than citing the count:
+// the orphan number is never by itself a reason to remove code.
 
 import { ERROR_MESSAGES } from "../constants"
-// The canonical UUID pattern lives in lib/validations, which owns UUID checking
-// (isValidUUID is on 116 call sites). This file used to declare an 11th copy of
-// the same regex inline.
-import { UUID_REGEX } from "../validations"
+// The UUID_REGEX import that used to sit here went out with throwIfInvalidUUID
+// (orphan burn-down, lane O). The canonical pattern still lives in
+// lib/validations, which owns UUID checking (isValidUUID, 116 call sites) —
+// nothing in this file needs it any more.
 
 // ============================================
 // CUSTOM ERROR CLASSES
@@ -246,66 +270,23 @@ export async function handleAction<T>(
 }
 
 // ============================================
-// VALIDATION ERROR HELPERS
+// VALIDATION ERROR HELPERS — REMOVED (orphan burn-down, lane O)
 // ============================================
-
-/**
- * KEEP-ONE (this is the survivor). lib/validations/index.ts previously exported
- * requireValidUUID doing the same job with the same signature; both were unwired.
- * This one wins because it throws a typed ValidationError carrying the offending
- * value and field name, which createErrorResponse and handleError already know
- * how to render — requireValidUUID threw a bare Error, losing that. Nothing it
- * did is missing here, so it was removed rather than left as a second answer to
- * the same question.
- *
- * The regex is IMPORTED, not re-declared. This file used to inline its own copy;
- * lib/validations owns the canonical one.
- */
-export function throwIfInvalidUUID(value: string | null | undefined, fieldName = "ID"): string {
-  if (!value || !UUID_REGEX.test(value)) {
-    throw new ValidationError(`Invalid ${fieldName} format. Expected UUID.`, { value, fieldName })
-  }
-
-  return value
-}
-
-export function throwIfEmpty(value: string | null | undefined, fieldName: string): string {
-  if (!value || value.trim().length === 0) {
-    throw new ValidationError(`${fieldName} is required.`, { fieldName })
-  }
-
-  return value
-}
-
-export function throwIfNotInArray<T>(value: T, allowedValues: readonly T[], fieldName: string): T {
-  if (!allowedValues.includes(value)) {
-    throw new ValidationError(`Invalid ${fieldName}. Must be one of: ${allowedValues.join(", ")}`, {
-      value,
-      allowedValues,
-      fieldName,
-    })
-  }
-
-  return value
-}
+//
+// `throwIfInvalidUUID`, `throwIfEmpty` and `throwIfNotInArray` all died here.
+// See the header for the survivors; the short version is that this codebase
+// RETURNS refusals (`{ success: false, error }`) rather than throwing them, so
+// the throw idiom — not any one of these three — is what had no adopter.
+// `ValidationError` above is untouched and still the right class to raise when
+// a genuine exception is warranted. Do not reintroduce a thrower here.
 
 // ============================================
-// ASYNC ERROR BOUNDARY
+// ASYNC ERROR BOUNDARY — REMOVED (orphan burn-down, lane O)
 // ============================================
-
-export function asyncErrorBoundary<T extends (...args: any[]) => Promise<any>>(
-  fn: T,
-  context: string
-): (...args: Parameters<T>) => Promise<ReturnType<T> | ErrorResponse> {
-  return async (...args: Parameters<T>) => {
-    try {
-      return await fn(...args)
-    } catch (error) {
-      logError(error as Error, { context })
-      return createErrorResponse(error as Error)
-    }
-  }
-}
+//
+// `asyncErrorBoundary(fn, context)` died here. SURVIVOR: `handleAction` above —
+// same catch (logError → createErrorResponse), plus the success envelope, and
+// it takes the thunk instead of re-wrapping an existing function.
 
 // ============================================
 // RETRY LOGIC

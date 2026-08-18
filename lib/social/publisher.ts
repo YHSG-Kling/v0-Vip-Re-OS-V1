@@ -38,6 +38,28 @@ export async function publishToSocialPlatform(
   params: PublishParams
 ): Promise<PublishResult> {
   try {
+    // ── PRE-FLIGHT (orphan burn-down, lane O — validateContentForPlatform WIRED) ──
+    // This function is the single door every social publish goes through
+    // (app/api/cron/publish-social-posts/route.ts:188 and :240,
+    // app/actions/superadmin/platform-social.ts:202), and until now it handed
+    // the provider whatever it was given. A 400-character caption on Twitter or
+    // an Instagram post with no media reached the network, failed there, and
+    // came back as an opaque provider error on a scheduled post nobody was
+    // watching. validateContentForPlatform (below in this file) held the exact
+    // per-platform limits needed to catch that locally and had no caller at all;
+    // this is the check it was written for. Its message names the limit that was
+    // actually exceeded, or the media that is actually required.
+    //
+    // The "unknown platform" verdict is deliberately NOT consumed here — the
+    // switch below owns that refusal, so adding a platform to the switch without
+    // adding it to the limits table degrades to today's behaviour (published,
+    // unchecked) instead of a false "unknown platform" on a platform that IS
+    // supported.
+    const preflight = validateContentForPlatform(platform, params.content, params.mediaUrls)
+    if (!preflight.valid && !preflight.error?.startsWith("Unknown platform")) {
+      return { success: false, error: preflight.error, platform }
+    }
+
     switch (platform.toLowerCase()) {
       case "facebook":
         return await publishToFacebook(params)

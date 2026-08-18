@@ -178,38 +178,44 @@ export async function createAccountLink(
 
 // ─── Account health / balance / payouts ─────────────────────────────────────────
 
-export interface StripeAccountStatus {
-  success: boolean
-  accountId?: string
-  chargesEnabled?: boolean
-  payoutsEnabled?: boolean
-  detailsSubmitted?: boolean
-  /** Requirements still owed before the account is fully enabled. */
-  currentlyDue?: string[]
-  error?: string
-}
+// ─── REMOVED in the orphan burn-down (lane O) ────────────────────────────────
+//
+// `getStripeAccountStatus(accountId?)` + its StripeAccountStatus interface —
+// DELETED.
+// SURVIVOR: lib/agentic-os/connector-probe.ts:84 — the `stripe` probe spec,
+// which hits the SAME endpoint (https://api.stripe.com/v1/account) and reads the
+// same fields (`id`, `charges_enabled`).
+//
+// Its own doc-comment claimed "Used by the connector probe". It was not: the
+// probe is spec-driven and declares its own health URL, auth style and tolerant
+// response shape, so it never imported this. That stale claim is the reason
+// this sat unreferenced without anyone noticing.
+//
+// The probe is the more complete of the two on the axis that matters here: it
+// classifies the result into the connector-health status vocabulary and reports
+// SHAPE DRIFT when Stripe renames a field, which this bare mapper could not do
+// — it would have silently produced `chargesEnabled: false` on a rename and
+// read as a disabled account rather than a vendor change. Nothing needed
+// merging; the two extra fields this returned (`details_submitted`,
+// `requirements.currently_due`) have no reader, and a probe spec gains a field
+// by declaring it, not by growing a second function.
 
-/** Liveness + auth + onboarding-state probe. With no accountId, reads the platform account
- *  (GET /v1/account); with one, reads that connected account. Used by the connector probe. */
-export async function getStripeAccountStatus(accountId?: string): Promise<StripeAccountStatus> {
-  const secretKey = getStripeKey()
-  if (!secretKey) return { success: false, error: "Stripe not configured." }
-
-  const path = accountId ? `v1/accounts/${encodeURIComponent(accountId)}` : "v1/account"
-  const res = await stripeReq<any>(secretKey, path)
-  if (!res.ok || !res.data) {
-    return { success: false, error: res.error || `Stripe account error (${res.status ?? "—"})` }
-  }
-  const data = res.data
-  return {
-    success: true,
-    accountId: data.id,
-    chargesEnabled: !!data.charges_enabled,
-    payoutsEnabled: !!data.payouts_enabled,
-    detailsSubmitted: !!data.details_submitted,
-    currentlyDue: data.requirements?.currently_due ?? [],
-  }
-}
+// ─── KEPT, RECORDED AS A BUILD LINE (orphan burn-down, lane O) ───────────────
+//
+// `getStripeBalance()` has no caller and, unlike the two functions deleted
+// around it, no survivor either — nothing else in this repo reads the platform
+// Stripe balance. It is NOT deleted, because deleting it would remove a real
+// capability rather than a duplicate.
+//
+// THE BLOCKER, precisely: there is no platform-treasury surface to hang it on,
+// and choosing one is an owner decision, not a wiring decision. Every financial
+// surface in this product deliberately reads OS LEDGERS (see
+// lib/finance/qb-reconciliation.ts, whose whole contract is "OS ledgers vs
+// OS-recorded exports, never a live provider pull"), so a live balance read is
+// a new KIND of number here, not a missing caller. When it is wired: it is a
+// superadmin-only read, and it must not become a `"use server"` export — the
+// balance belongs to the platform, so no tenant-facing action should be able to
+// ask for it.
 
 export interface StripeBalanceResult {
   success: boolean
@@ -236,37 +242,26 @@ export async function getStripeBalance(): Promise<StripeBalanceResult> {
   return { success: true, available: sum(data.available), pending: sum(data.pending) }
 }
 
-export interface CreatePayoutParams {
-  amount: number
-  currency?: string
-  /** Connected account to pay out FROM (Stripe-Account header), when applicable. */
-  stripeAccountId?: string
-  description?: string
-}
-
-export interface CreatePayoutResult {
-  success: boolean
-  payoutId?: string
-  amount?: number
-  error?: string
-}
-
-export async function createPayout(params: CreatePayoutParams): Promise<CreatePayoutResult> {
-  const secretKey = getStripeKey()
-  if (!secretKey) return { success: false, error: "Stripe not configured." }
-
-  const form: Record<string, string> = {
-    amount: Math.round(params.amount * 100).toString(),
-    currency: params.currency || "usd",
-  }
-  if (params.description) form.description = params.description
-
-  const res = await stripeReq<{ id: string; amount: number }>(secretKey, "v1/payouts", {
-    form,
-    stripeAccount: params.stripeAccountId,
-  })
-  if (!res.ok || !res.data) {
-    return { success: false, error: res.error || `Stripe payout error (${res.status ?? "—"})` }
-  }
-  return { success: true, payoutId: res.data.id, amount: res.data.amount / 100 }
-}
+// ─── REMOVED in the orphan burn-down (lane O) ────────────────────────────────
+//
+// `createPayout(params)` + CreatePayoutParams / CreatePayoutResult — DELETED.
+// SURVIVOR: `createTransfer` at the top of this file — exported through
+// lib/providers/index.ts:37 and reached from app/actions/external-services.ts,
+// i.e. the lane the Agent Payouts surface
+// (app/config/navigation-config.ts:418 → /dashboard/financials/payouts) and the
+// vendor payments flow (app/actions/vendor-payments.ts) actually run on.
+//
+// These are NOT the same Stripe operation and only one of them is this
+// product's. `createTransfer` moves platform money TO a connected account —
+// paying an agent or a vendor, which is what this system does. `v1/payouts`
+// moves a Stripe BALANCE to a BANK ACCOUNT; with no `destination` in the form
+// it targets the account's default external account, so on the platform key it
+// was "sweep the platform's Stripe balance to the platform's bank". No surface
+// in this repo asks for that, and it is the last function that should be one
+// import away from a `"use server"` boundary that takes a caller-supplied
+// amount.
+//
+// Nothing was lost: paying someone still works, through the transfer that is
+// already wired. If a treasury sweep is ever genuinely wanted it is an
+// operator/admin decision with its own gate and its own ledger row, not a
+// revival of this.

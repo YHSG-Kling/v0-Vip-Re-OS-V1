@@ -224,6 +224,41 @@ export async function logCall(params: {
         recording_url: params.recordingUrl,
       },
     })
+
+    // ── BEHAVIOURAL EVENT (orphan burn-down, lane O — trackBehavioralEvent WIRED) ──
+    // `call_answered` is worth 20 points in the scored vocabulary
+    // (lib/lead-scoring/behavioral-events.ts:60) and is one of the four REPLY
+    // events that drive the responsiveness factor — and NOTHING in the tree
+    // produced one. The recorder's live call sites are all machine-side (IDX
+    // views, the SendGrid event webhook, the inbound SMS/email router); a
+    // contact picking up the phone is the one high-value signal that only an
+    // AGENT can witness, which is precisely the caller
+    // app/actions/ai-auto-response.ts:trackBehavioralEvent was written to serve
+    // — its own header says so, and it had none.
+    //
+    // Routed through that action rather than the lib recorder ON PURPOSE: the
+    // recorder is unauthenticated by contract and requires the caller to have
+    // resolved tenant server-side, and `logCall` has no gate of its own. The
+    // action resolves user + brokerage from the SESSION (never from these
+    // params) and refuses when there is no tenant, so the behavioural write is
+    // gated even though the call log around it is not.
+    //
+    // Only "answered" is recorded. A voicemail, a busy signal or a no-answer is
+    // the agent acting, not the contact engaging, and scoring those would
+    // reward dialling instead of reaching someone. Best-effort: this is
+    // telemetry and must never fail the call log.
+    if ((params.outcome ?? "answered") === "answered") {
+      try {
+        const { trackBehavioralEvent } = await import("@/app/actions/ai-auto-response")
+        await trackBehavioralEvent({
+          contactId: params.contactId,
+          eventType: "call_answered",
+          eventData: { direction: params.direction, duration_seconds: params.duration ?? null },
+        })
+      } catch (behaviouralErr) {
+        console.error("[communications] behavioural call_answered event failed:", behaviouralErr)
+      }
+    }
   }
 
   return result

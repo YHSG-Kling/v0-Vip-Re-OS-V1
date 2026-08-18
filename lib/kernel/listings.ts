@@ -15,7 +15,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { isValidUUID } from "@/lib/validations"
+import { isValidUUID, validateProperty } from "@/lib/validations"
 // NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
 // not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
 // `server-only` (it holds the service client and the paid PeopleData/OSINT
@@ -158,7 +158,8 @@ export interface ListingFormPrefill {
  * Input: CreateListingInput
  * Output: { listing }
  * Writes: listings (INSERT) + lifecycle_events (LISTING_AGREEMENT_INITIATED stage entry)
- * Validates: agentId UUID, sellerContactId UUID, brokerageId UUID, address required
+ * Validates: agentId UUID, sellerContactId UUID, brokerageId UUID, address required,
+ *            and the PROPERTY FACTS (list price, zip, bedrooms, bathrooms)
  */
 export async function createListingRecord(
   input: CreateListingInput
@@ -169,6 +170,25 @@ export async function createListingRecord(
   if (!input.address?.trim())               return { success: false, error: "Address is required" }
   if (!input.city?.trim())                  return { success: false, error: "City is required" }
   if (!input.state?.trim())                 return { success: false, error: "State is required" }
+
+  // ── PROPERTY FACTS (orphan burn-down, lane O — validateProperty WIRED) ──────
+  // The six checks above all guard IDENTITY; the numbers a listing is actually
+  // sold on had no gate at all. A negative or NaN `list_price`, a zip that is
+  // not a zip, or a 300-bedroom house all inserted cleanly and then propagated —
+  // list_price feeds the CMA, the seller net sheet and the commission forecast;
+  // zip is the market key for comps. validateProperty (lib/validations/index.ts)
+  // is the only property-fact validator in the tree and had zero callers; this
+  // is the entrance it was written for. It is ADDITIVE by construction — each
+  // field is checked only when the caller supplied it, so every existing
+  // partial-input path is unchanged. The joined message names the field that
+  // actually failed.
+  const propertyFacts = validateProperty({
+    zip: input.zip,
+    price: input.listPrice,
+    bedrooms: input.bedrooms,
+    bathrooms: input.bathrooms,
+  })
+  if (!propertyFacts.valid) return { success: false, error: propertyFacts.errors.join("; ") }
 
   try {
     const supabase = await createClient()

@@ -27,7 +27,12 @@ import {
   XCircle,
 } from "lucide-react"
 import { toast } from "sonner"
-import { AGENT_REGISTRY, type AgentType } from "@/lib/intelligence/agent-registry"
+// getAgentConfig / getAgentColor / getAgentDisplayName ADOPTED here in the
+// orphan burn-down (lane O). All three were written for this screen — the
+// `AgentType` union in that module is commented "short aliases used in
+// coordination dashboard" — and all three had zero callers while this file
+// hand-rolled weaker copies of each. See getAgentIcon below for what that cost.
+import { getAgentColor, getAgentConfig, getAgentDisplayName, type AgentType } from "@/lib/intelligence/agent-registry"
 import { clearHumanOverride, endAgentSession } from "@/lib/intelligence/multi-agent-router"
 
 interface Session {
@@ -159,16 +164,37 @@ export function CoordinationDashboardClient({
     }
   }
   
+  // Registry colour name → the Tailwind class this table draws with. The
+  // registry owns WHICH colour an agent is; this screen owns how a colour is
+  // painted.
+  const AGENT_ICON_COLOR: Record<string, string> = {
+    blue: "text-blue-500",
+    green: "text-green-500",
+    purple: "text-purple-500",
+    orange: "text-orange-500",
+  }
+
   const getAgentIcon = (agentType: AgentType) => {
-    const config = (AGENT_REGISTRY as Record<string, { name: string } | undefined>)[agentType as string]
+    // WAS: a raw `AGENT_REGISTRY[agentType]` index for the existence check, then
+    // a switch on 'isa' / 'tc' / 'coach' / 'coordinator'. Both halves were
+    // wrong together and hid each other. The canonical vocabulary is
+    // VALID_AGENT_TYPES — 'isa_agent', 'tc_agent', 'coaching_agent',
+    // 'content_agent', 'router', 'human', 'none' — so a real session's
+    // agent_type failed the raw index AND missed every switch case: the
+    // coloured icons below were unreachable and every row drew a plain grey
+    // Bot. getAgentConfig is the alias-tolerant lookup (it maps 'isa'/'tc'/
+    // 'coach'/'coordinator' onto their canonical entries) and getAgentColor
+    // reads the colour off the registry entry, so the icon now follows the
+    // registry instead of a second, stale spelling of it.
+    const config = getAgentConfig(agentType)
     if (!config) return <Bot className="h-4 w-4" />
-    
-    switch (agentType) {
-      case 'isa': return <Zap className="h-4 w-4 text-blue-500" />
-      case 'tc': return <CheckCircle className="h-4 w-4 text-green-500" />
-      case 'coach': return <TrendingUp className="h-4 w-4 text-purple-500" />
-      case 'coordinator': return <Bot className="h-4 w-4 text-orange-500" />
-      default: return <Bot className="h-4 w-4" />
+
+    const colorClass = AGENT_ICON_COLOR[getAgentColor(agentType)] ?? ""
+    switch (config.icon) {
+      case 'UserCheck': return <Zap className={`h-4 w-4 ${colorClass}`} />
+      case 'ClipboardList': return <CheckCircle className={`h-4 w-4 ${colorClass}`} />
+      case 'GraduationCap': return <TrendingUp className={`h-4 w-4 ${colorClass}`} />
+      default: return <Bot className={`h-4 w-4 ${colorClass}`} />
     }
   }
   
@@ -297,7 +323,7 @@ export function CoordinationDashboardClient({
                           <div className="flex items-center gap-2">
                             {getAgentIcon(session.agent_type)}
                             <span className="font-medium capitalize">
-                              {(AGENT_REGISTRY as Record<string, { name: string } | undefined>)[session.agent_type as string]?.name || session.agent_type}
+                              {getAgentDisplayName(session.agent_type)}
                             </span>
                             {session.human_override && (
                               <Badge variant="outline" className="text-orange-600 border-orange-300">
@@ -477,7 +503,7 @@ export function CoordinationDashboardClient({
                           <div className="flex items-center gap-2">
                             {getAgentIcon(type as AgentType)}
                             <span className="font-medium">
-                              {(AGENT_REGISTRY as Record<string, { name: string } | undefined>)[type as string]?.name || type}
+                              {getAgentDisplayName(type as AgentType)}
                             </span>
                           </div>
                         </TableCell>

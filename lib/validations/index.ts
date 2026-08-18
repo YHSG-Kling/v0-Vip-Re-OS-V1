@@ -4,37 +4,65 @@
 // Central validation module for consistent data validation across all actions
 // ============================================
 //
-// WHAT IS ACTUALLY ADOPTED, AND WHY THE REST SHOULD NOT BE (audited, not assumed)
+// WHAT IS ACTUALLY ADOPTED, AND WHAT HAPPENED TO THE REST (audited, not assumed)
 //
 // isValidUUID is the workhorse — 116 call sites — with validatePhone,
 // validateEmail, validateContact and validateTransactionData also in use.
 //
-// The remaining exports (isValidDate, isValidURL, validateArray,
-// validateContentLength, validateHashtags, validateProperty,
-// validateUUIDArray) have no callers. They show up on the category-C
-// burn-down list, so the tempting move is to "wire them" by replacing the
-// hand-rolled checks scattered through the codebase. DO NOT. Those inline
-// checks are STRICTER, and swapping them for these would be a regression
-// dressed up as consolidation:
+// A prior wave audited the seven that had no callers (isValidDate, isValidURL,
+// validateArray, validateContentLength, validateHashtags, validateProperty,
+// validateUUIDArray) and ruled them "speculative utilities with no named
+// duplicate — not deleted, but not to be adopted on sight". That audit did the
+// hard half of the work and then stopped one step short: for six of the seven
+// it had ALREADY NAMED the survivor, and a weaker copy of a check that lives
+// somewhere better is exactly the case the burn-down rule calls a duplicate.
+// The seventh had no survivor because it had never been wired, which makes it a
+// build, not a keep. Resolved in the orphan burn-down (lane O):
 //
-//   · lib/transactions/earnest-terms.ts pairs an ISO_DATE regex WITH
-//     Date.parse. isValidDate would accept "12/31/2025" — V8 parses it
-//     happily — and a contract date is not a place to widen the accepted
-//     format.
-//   · lib/transactions/buyer-move.ts normalises to UTC midnight before
-//     parsing, so a timezone cannot shift a closing date across a day.
-//   · app/actions/tenant-webhooks.ts returns the REASON a URL was rejected;
-//     isValidURL returns a bare boolean, so the operator would lose the
-//     message that tells them what to fix.
-//   · lib/kernel/regulatory-watcher.ts and content-intel-scan.ts are not
-//     validating at all — they extract a hostname for dedup and happen to
-//     use the same try/catch shape.
+//   · isValidDate — DELETED. SURVIVORS: lib/transactions/earnest-terms.ts pairs
+//     an ISO_DATE regex WITH Date.parse (isValidDate would accept "12/31/2025",
+//     which V8 parses happily, and a contract date is not a place to widen the
+//     accepted format); lib/transactions/buyer-move.ts normalises to UTC
+//     midnight before parsing, so a timezone cannot shift a closing date across
+//     a day. Both are STRICTER; adopting this one would have been a regression
+//     dressed up as consolidation.
+//   · isValidURL — DELETED. SURVIVOR: app/actions/tenant-webhooks.ts, which
+//     returns the REASON a URL was rejected; this returned a bare boolean, so
+//     the operator lost the message that tells them what to fix. (The try/catch
+//     `new URL()` shape in lib/kernel/regulatory-watcher.ts and
+//     content-intel-scan.ts is not validation at all — they extract a hostname
+//     for dedup.)
+//   · validateHashtags — DELETED. SURVIVOR:
+//     app/actions/video-repurposing.utils.ts `validateSnippetForPlatform`
+//     (live via app/actions/video-repurposing.ts:11), which enforces a
+//     PER-PLATFORM hashtagLimit — 5 on Twitter, 10 on TikTok and LinkedIn, 30
+//     on the Meta surfaces. This one enforced a flat 30 everywhere, i.e. it
+//     passed a caption that TikTok rejects.
+//   · validateContentLength — DELETED. SURVIVOR: lib/social/publisher.ts:307
+//     `validateContentForPlatform`, which carries the real per-platform limits
+//     (280 / 500 / 2200 / 3000 / 63206) and the requires-media rule, and is now
+//     wired as the pre-flight inside `publishToSocialPlatform`. A caller of the
+//     deleted function had to supply the min/max itself — i.e. had to already
+//     know the answer the survivor knows.
+//   · validateUUIDArray — DELETED. SURVIVOR: `isValidUUID` in this same file.
+//     Its whole body was a loop over isValidUUID, and the codebase's idiom for
+//     a batch is `.every(isValidUUID)` / `.filter(isValidUUID)` at the call
+//     site, where the caller can say WHICH id was bad in its own vocabulary.
+//   · validateArray — DELETED. No survivor is needed and none was ever found:
+//     it bounds an array's length with no domain attached, and every array
+//     bound in this tree is a domain rule stated where the array is used (batch
+//     sizes, hashtag counts, recipient caps). It was a shape, not a check.
+//   · validateProperty — KEPT and WIRED (the one build in the cluster). It is
+//     the only property-fact validator in the tree, and lib/kernel/listings.ts
+//     `createListingRecord` — which validated three UUIDs and three address
+//     strings — had no gate on list price, zip, bedrooms or bathrooms at all.
+//     That is now its caller. Do not delete it: it has one, and it is load
+//     bearing.
 //
-// So these are speculative utilities with no named duplicate. Under the
-// standing rule they are NOT deleted (an unwired capability is work to
-// finish, and the orphan number alone is never the reason to remove code) —
-// but they are also not something to adopt on sight. If one is ever genuinely
-// needed, take it AND keep the caller's extra strictness.
+// The rule that produced the prior wave's caution still stands and is why five
+// of the six above are deletions rather than adoptions: when a caller's inline
+// check is stricter than the shared helper, the CALLER wins. Take a shared
+// helper only if you also keep the caller's extra strictness.
 
 // UUID Validation
 export const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -45,12 +73,12 @@ export function isValidUUID(value: string | null | undefined): value is string {
 }
 
 // requireValidUUID lived here and was REMOVED as a duplicate of
-// lib/errors/index.ts throwIfInvalidUUID (keep-one). Both were unwired and had
-// the same signature; the survivor throws a typed ValidationError carrying the
-// value and field name, which createErrorResponse and handleError already
-// render, whereas this one threw a bare Error and lost that context. Nothing it
-// did is missing there. Do not reintroduce a second thrower here — import
-// throwIfInvalidUUID from lib/errors.
+// lib/errors/index.ts throwIfInvalidUUID (keep-one). That survivor has SINCE
+// been deleted too (orphan burn-down, lane O): it never gained a caller either,
+// because what this codebase does not use is the THROW, not either copy of it.
+// The answer to "is this a UUID?" is isValidUUID below, used as
+// `if (!isValidUUID(x)) return { success: false, error: "Invalid agent ID" }`.
+// Do not reintroduce a thrower in either file.
 
 // Email Validation
 export function isValidEmail(email: string | null | undefined): boolean {
@@ -72,28 +100,17 @@ export function isValidPhone(phone: string | null | undefined): boolean {
 // Alias for consistency with imports
 export const validatePhone = isValidPhone
 
-// URL Validation
-export function isValidURL(url: string | null | undefined): boolean {
-  if (!url) return false
-  try {
-    new URL(url)
-    return true
-  } catch {
-    return false
-  }
-}
+// URL Validation — isValidURL REMOVED (orphan burn-down, lane O). See the
+// header: app/actions/tenant-webhooks.ts is the survivor and returns the reason.
 
 // Price Validation
 export function isValidPrice(price: number | null | undefined): boolean {
   return typeof price === "number" && price >= 0 && !isNaN(price)
 }
 
-// Date Validation
-export function isValidDate(date: string | Date | null | undefined): boolean {
-  if (!date) return false
-  const parsedDate = new Date(date)
-  return !isNaN(parsedDate.getTime())
-}
+// Date Validation — isValidDate REMOVED (orphan burn-down, lane O). See the
+// header: lib/transactions/earnest-terms.ts and lib/transactions/buyer-move.ts
+// are the survivors and are both stricter than a bare `new Date()` parse.
 
 // Zipcode Validation (US)
 export function isValidZipcode(zip: string | null | undefined): boolean {
@@ -204,94 +221,29 @@ export function validateTransaction(data: TransactionValidation): { valid: boole
 }
 
 // ============================================
-// CONTENT VALIDATORS
+// CONTENT VALIDATORS — REMOVED (orphan burn-down, lane O)
 // ============================================
-
-export function validateContentLength(
-  content: string | null | undefined,
-  minLength: number,
-  maxLength: number
-): { valid: boolean; error?: string } {
-  if (!content) {
-    return { valid: false, error: "Content is required" }
-  }
-
-  if (content.length < minLength) {
-    return { valid: false, error: `Content must be at least ${minLength} characters` }
-  }
-
-  if (content.length > maxLength) {
-    return { valid: false, error: `Content must not exceed ${maxLength} characters` }
-  }
-
-  return { valid: true }
-}
-
-export function validateHashtags(hashtags: string[]): { valid: boolean; errors: string[] } {
-  const errors: string[] = []
-
-  if (hashtags.length > 30) {
-    errors.push("Maximum 30 hashtags allowed")
-  }
-
-  for (const tag of hashtags) {
-    if (!tag.startsWith("#")) {
-      errors.push(`Invalid hashtag format: ${tag}`)
-    }
-
-    if (tag.length > 50) {
-      errors.push(`Hashtag too long: ${tag}`)
-    }
-  }
-
-  return {
-    valid: errors.length === 0,
-    errors,
-  }
-}
+//
+// `validateContentLength(content, min, max)` and `validateHashtags(hashtags)`
+// both died here. See the header for the full reasoning; in one line each:
+//   · length  → lib/social/publisher.ts:307 validateContentForPlatform knows the
+//     per-platform limit instead of asking the caller to pass it, and is now the
+//     pre-flight inside publishToSocialPlatform.
+//   · hashtags → app/actions/video-repurposing.utils.ts validateSnippetForPlatform
+//     enforces a per-platform hashtagLimit; the flat 30 here passed captions
+//     that TikTok (10) and Twitter (5) reject.
+// Do not reintroduce a platform-blind copy of either.
 
 // ============================================
-// ARRAY VALIDATORS
+// ARRAY VALIDATORS — REMOVED (orphan burn-down, lane O)
 // ============================================
-
-export function validateArray<T>(
-  arr: T[] | null | undefined,
-  minLength = 0,
-  maxLength = Number.POSITIVE_INFINITY
-): { valid: boolean; error?: string } {
-  if (!arr) {
-    return { valid: false, error: "Array is required" }
-  }
-
-  if (arr.length < minLength) {
-    return { valid: false, error: `Array must have at least ${minLength} items` }
-  }
-
-  if (arr.length > maxLength) {
-    return { valid: false, error: `Array must not exceed ${maxLength} items` }
-  }
-
-  return { valid: true }
-}
-
-export function validateUUIDArray(uuids: string[] | null | undefined): { valid: boolean; errors: string[] } {
-  const errors: string[] = []
-
-  if (!uuids || !Array.isArray(uuids)) {
-    return { valid: false, errors: ["Invalid UUID array"] }
-  }
-
-  for (const uuid of uuids) {
-    if (!isValidUUID(uuid)) {
-      errors.push(`Invalid UUID: ${uuid}`)
-    }
-  }
-
-  return {
-    valid: errors.length === 0,
-    errors,
-  }
-}
+//
+// `validateArray(arr, min, max)` and `validateUUIDArray(uuids)` both died here.
+// validateUUIDArray's survivor is `isValidUUID` above — its body was a loop over
+// it, and `.every(isValidUUID)` at the call site lets the caller name which id
+// was bad in its own vocabulary. validateArray bounded a length with no domain
+// attached; every array bound in this tree is a domain rule stated where the
+// array is used.
 
 // Alias for backward compatibility
 export const validateTransactionData = validateTransaction

@@ -103,7 +103,12 @@ export function getAgentColor(agentType: AgentType): string {
 export function getAgentDisplayName(agentType: AgentType): string {
   if (agentType === 'human') return 'Human Agent'
   if (agentType === 'none') return 'Unassigned'
-  return (AGENT_REGISTRY as Record<string, { name: string }>)[agentType]?.name || agentType
+  // Through getAgentConfig, not a raw index (orphan burn-down, lane O). The raw
+  // lookup could not resolve the four short aliases this type exists to admit —
+  // 'isa', 'tc', 'coach', 'coordinator' — and returned the bare enum value for
+  // each. That is exactly what the coordination dashboard was rendering before
+  // it adopted this function.
+  return getAgentConfig(agentType)?.name || agentType
 }
 
 /**
