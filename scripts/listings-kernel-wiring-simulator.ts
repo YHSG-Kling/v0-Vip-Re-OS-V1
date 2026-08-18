@@ -243,11 +243,17 @@ const WIRED: Array<{ action: string; module: string }> = [
   { action: "getListingLifecycleHistory",       module: "listing-lifecycle-core" },
 ]
 
-/** Actions deliberately left unwired — they must still EXIST (never deleted). */
+/** Actions deliberately left unwired — they must still EXIST (never deleted).
+ *
+ * attachMediaAction and createTransactionFromOfferAction are NOT in this list
+ * any more: both were deleted under the owner's merge-then-delete ruling, each
+ * with a named, wired, strictly-more-complete survivor —
+ * app/actions/listing-media.ts:uploadListingMedia and
+ * lib/transactions/offer-bridge.ts:createTransactionFromOffer respectively
+ * (see the tombstone notes in listings-kernel.ts). That is a collapse into a
+ * duplicate, not a capability loss. */
 const PRESERVED = [
-  "attachMediaAction",
   "closeListingAction",
-  "createTransactionFromOfferAction",
   "updateListingStageAction",
   "loadListingWorkspaceAction",
 ]

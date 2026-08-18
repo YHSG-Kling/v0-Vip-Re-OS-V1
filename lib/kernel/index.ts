@@ -73,9 +73,7 @@ export {
   validateListingLaunchReadiness,
   launchListing,
   updateListingStage,
-  attachMediaToListing,
   generateListingDescription,
-  createTransactionShellFromAcceptedOffer,
   closeListingLifecycle,
   prefillListingFormFromRecord,
 } from "./listings"
@@ -84,7 +82,6 @@ export type {
   SellerContactInput,
   ListingUpdate,
   ListingFormPrefill,
-  MediaAttachmentInput,
   ListingStage,
   KernelResult,
 } from "./listings"

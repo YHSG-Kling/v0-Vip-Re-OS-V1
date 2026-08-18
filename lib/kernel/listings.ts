@@ -25,7 +25,6 @@ import { isValidUUID } from "@/lib/validations"
 // already used the dynamic form for exactly this reason; these call sites were
 // the inconsistency. The queue call is best-effort and already awaited/voided,
 // so deferring the import costs nothing.
-import { resolveDealType } from "@/lib/transactions/deal-type-resolver"
 import { KernelEvent } from "./events"
 import type { ListingStage as LifecycleListingStage } from "@/lib/listing-lifecycle/lifecycle-definitions"
 
@@ -146,16 +145,11 @@ export interface ListingFormPrefill {
   brokerageLicense?: string
 }
 
-export interface MediaAttachmentInput {
-  listingId: string
-  brokerageId: string
-  fileUrl: string
-  mediaType: "photo" | "video" | "document" | "virtual_tour"
-  uploadedBy: string
-  isPrimary?: boolean
-  caption?: string
-  sort_order?: number
-}
+// MediaAttachmentInput + attachMediaToListing were REMOVED as duplicates
+// (merge-then-delete, owner-sanctioned). SURVIVOR:
+// app/actions/listing-media.ts:uploadListingMedia — wired and strictly more
+// complete (MLS branding rule, attribution flags, brand compliance check,
+// hero-photo fan-out; expresses all eight admitted media types, not four).
 
 // ─── 1. createListingRecord ───────────────────────────────────────────────────
 
@@ -683,44 +677,7 @@ export async function updateListingStage(input: {
   }
 }
 
-// ─── 8. attachMediaToListing ─────────────────────────────────────────────────
-
-/**
- * Attach a media asset to a listing.
- * Input: MediaAttachmentInput
- * Output: { mediaId: string }
- * Writes: listing_media (INSERT)
- */
-export async function attachMediaToListing(
-  input: MediaAttachmentInput
-): Promise<KernelResult<{ mediaId: string }>> {
-  if (!isValidUUID(input.listingId))   return { success: false, error: "Invalid listing ID" }
-  if (!input.fileUrl?.trim())          return { success: false, error: "File URL is required" }
-
-  try {
-    const supabase = await createClient()
-
-    const { data: media, error } = await supabase
-      .from("listing_media")
-      .insert({
-        listing_id:   input.listingId,
-        brokerage_id: input.brokerageId,
-        file_url:     input.fileUrl.trim(),
-        media_type:   input.mediaType,
-        uploaded_by:  input.uploadedBy,
-        is_primary:   input.isPrimary ?? false,
-        caption:      input.caption   ?? null,
-        sort_order:   input.sort_order ?? 0,
-      })
-      .select("id")
-      .single()
-
-    if (error) return { success: false, error: error.message }
-    return { success: true, mediaId: media.id }
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : "attachMediaToListing failed" }
-  }
-}
+// ─── 8. (attachMediaToListing removed — see note above MediaAttachmentInput) ──
 
 // ─── 9. generateListingDescription ───────────────────────────────────────────
 
@@ -804,96 +761,16 @@ Write 2-3 paragraphs (150-250 words). No address in the first sentence. Lead wit
   }
 }
 
-// ─── 10. createTransactionShellFromAcceptedOffer ─────────────────────────────
-
-/**
- * Create a transaction shell when an offer is accepted.
- * Input: { listingId, offerId, agentId, brokerageId }
- * Output: { transactionId: string }
- * Validates: offer.status === 'accepted', listing.seller_contact_id present
- * Writes: transactions (INSERT)
- */
-export async function createTransactionShellFromAcceptedOffer(input: {
-  listingId:   string
-  offerId:     string
-  agentId:     string
-  brokerageId: string
-}): Promise<KernelResult<{ transactionId: string }>> {
-  if (!isValidUUID(input.listingId))   return { success: false, error: "Invalid listing ID" }
-  if (!isValidUUID(input.offerId))     return { success: false, error: "Invalid offer ID" }
-  if (!isValidUUID(input.agentId))     return { success: false, error: "Invalid agent ID" }
-  if (!isValidUUID(input.brokerageId)) return { success: false, error: "Invalid brokerage ID" }
-
-  try {
-    const supabase = await createClient()
-
-    // Validate offer is accepted. An unchecked read here would report a
-    // refused query as "Offer not found" — a different and misleading verdict.
-    const { data: offer, error: offerError } = await supabase
-      .from("offers")
-      .select("id, status, offer_price, contact_id")
-      .eq("id", input.offerId)
-      .maybeSingle()
-
-    if (offerError)                   return { success: false, error: `Could not read the offer: ${offerError.message}` }
-    if (!offer)                       return { success: false, error: "Offer not found" }
-    if (offer.status !== "accepted")  return { success: false, error: "Offer is not in accepted status" }
-
-    // Get listing seller contact
-    const { data: listing, error: listingError } = await supabase
-      .from("listings")
-      .select("id, seller_contact_id, address, city, state, zip, list_price")
-      .eq("id", input.listingId)
-      .maybeSingle()
-
-    if (listingError)                    return { success: false, error: `Could not read the listing: ${listingError.message}` }
-    if (!listing)                        return { success: false, error: "Listing not found" }
-    if (!listing.seller_contact_id)      return { success: false, error: "Listing has no seller contact" }
-
-    // This shell is always created from OUR listing (seller side). It's DUAL when the buyer is also our
-    // client (in our buyer pipeline → buyer_stage); else seller-only (outside buyer). Mirrors offer-bridge.
-    // A REFUSED read here would silently answer "not our buyer" and file a DUAL
-    // deal as seller-only — a commission-side classification made by a query
-    // failure. It is a hard stop, not a default.
-    let ourBuyer = false
-    if (offer.contact_id) {
-      const { data: bc, error: buyerError } = await supabase.from("contacts").select("buyer_stage").eq("id", offer.contact_id).maybeSingle()
-      if (buyerError) return { success: false, error: `Could not determine whether the buyer is our client: ${buyerError.message}` }
-      ourBuyer = !!(bc as { buyer_stage?: string | null } | null)?.buyer_stage
-    }
-
-    const { data: transaction, error } = await supabase
-      .from("transactions")
-      .insert({
-        agent_id:          input.agentId,
-        brokerage_id:      input.brokerageId,
-        listing_id:        input.listingId,
-        offer_id:          input.offerId,
-        // contact_id = primary in-house client; this transaction is created from
-        // OUR listing, so the in-house client is the seller. Live column is
-        // deal_type (buyer|seller|dual) — "transaction_type"/"seller_side" did
-        // not exist / failed the CHECK, so the insert silently errored.
-        contact_id:        listing.seller_contact_id,
-        seller_contact_id: listing.seller_contact_id,
-        buyer_contact_id:  offer.contact_id ?? null,
-        // Our listing → 'seller', UNLESS the buyer is also our client → 'dual' (covers single- AND
-        // two-agent dual). Mirrors offer-bridge's deal-type-resolver.
-        deal_type:         resolveDealType({ ourListing: true, ourBuyer }),
-        status:            "under_contract",
-        stage:             "UNDER_CONTRACT",
-        purchase_price:    offer.offer_price ?? listing.list_price,
-        deal_name:         [listing.address, listing.city, listing.state].filter(Boolean).join(", ") || `Transaction ${input.offerId.slice(0, 8)}`,
-        property_address:  [listing.address, listing.city, listing.state].filter(Boolean).join(", "),
-      })
-      .select("id")
-      .single()
-
-    if (error) return { success: false, error: error.message }
-    return { success: true, transactionId: transaction.id }
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : "createTransactionShellFromAcceptedOffer failed" }
-  }
-}
+// ─── 10. (createTransactionShellFromAcceptedOffer removed) ───────────────────
+//
+// REMOVED as a duplicate (merge-then-delete, owner-sanctioned). SURVIVOR:
+// lib/transactions/offer-bridge.ts:createTransactionFromOffer — the documented
+// single source of truth for transaction creation, live on three paths
+// (seller-offers.ts acceptOffer, buyer-offer/convert-to-transaction.ts,
+// buyer-offer/submit-to-compliance.ts). The shell omitted the readiness gate,
+// contract facts, milestone seeding, the offers.transaction_id back-link and
+// the cost breakdown, and stamped buyer_contact_id unconditionally — a defect
+// the bridge already fixed. Nothing it did is missing on the survivor.
 
 // ─── 11. closeListingLifecycle ────────────────────────────────────────────────
 

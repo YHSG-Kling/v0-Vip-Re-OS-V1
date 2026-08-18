@@ -30,15 +30,12 @@ import {
   validateListingLaunchReadiness,
   launchListing,
   updateListingStage,
-  attachMediaToListing,
   generateListingDescription,
-  createTransactionShellFromAcceptedOffer,
   closeListingLifecycle,
   prefillListingFormFromRecord,
   type CreateListingInput,
   type SellerContactInput,
   type ListingUpdate,
-  type MediaAttachmentInput,
   type ListingStage,
 } from "@/lib/kernel/listings"
 
@@ -711,61 +708,15 @@ export async function updateListingStageAction(params: {
   return result
 }
 
-// ─── Action: attachMediaAction ────────────────────────────────────────────────
-
-/**
- * DELIBERATELY NOT WIRED — DO NOT DELETE.
- *
- * SECOND-WRITER HAZARD, and the existing writer is strictly more complete.
- *
- * NAMED DUPLICATE: app/actions/listing-media.ts:uploadListingMedia — wired, in use
- * from app/dashboard/listings/[id]/media/media-manager-client.tsx and media-grid.tsx.
- * Read both before touching either. uploadListingMedia additionally handles:
- *
- *   · usage_intent (mls | public_marketing | both) and the MLS branding rule that
- *     forces the three attribution flags false on MLS-bound assets regardless of
- *     what the caller asserted — a legal requirement, not a preference;
- *   · has_logo_overlay / has_brokerage_attribution / has_eho_mark;
- *   · thumbnail_url, alt_text, tags, approval_required;
- *   · checkBrandCompliance() on the new row;
- *   · the image.generated fan-out that drafts a hero photo into marketing.
- *
- * attachMediaToListing writes a bare row with none of that. Both target
- * listing_media, whose media_type CHECK admits photo, video, reel, story, graphic,
- * floorplan, virtual_tour, document — this action's union names only four of the
- * eight, so it cannot even express a floorplan or a reel.
- *
- * Every condition for deletion is met (a named duplicate that does the same job more
- * completely, no functionality lost, the capability genuinely moved) EXCEPT that the
- * duplicate lives in lib/kernel/listings.ts:attachMediaToListing, which is out of
- * scope for this pass. Left exported and unwired; flagged for the kernel owner.
- */
-export async function attachMediaAction(params: {
-  listingId: string
-  fileUrl: string
-  mediaType: "photo" | "video" | "document" | "virtual_tour"
-  isPrimary?: boolean
-  caption?: string
-}) {
-  const ctx = await resolveCallerContext()
-  if ("error" in ctx) return { success: false, error: ctx.error }
-
-  const result = await attachMediaToListing({
-    listingId:   params.listingId,
-    brokerageId: ctx.brokerageId,
-    fileUrl:     params.fileUrl,
-    mediaType:   params.mediaType,
-    uploadedBy:  ctx.userId,
-    isPrimary:   params.isPrimary,
-    caption:     params.caption,
-  })
-
-  if (result.success) {
-    revalidatePath(`/dashboard/listings/${params.listingId}`)
-  }
-
-  return result
-}
+// attachMediaAction was REMOVED as a duplicate (merge-then-delete, owner-sanctioned).
+// SURVIVOR: app/actions/listing-media.ts:uploadListingMedia — wired from
+// app/dashboard/listings/[id]/media/components/media-grid.tsx — which does the same
+// job strictly more completely: usage_intent + the MLS branding rule (a legal
+// requirement), the attribution flags, thumbnail/alt_text/tags/approval_required,
+// checkBrandCompliance(), and the image.generated hero-photo fan-out. This wrapper
+// (and lib/kernel/listings.ts:attachMediaToListing beneath it) wrote a bare
+// listing_media row expressing only four of the eight admitted media types.
+// Nothing it did is missing on the survivor. Do not reintroduce a second writer.
 
 // ─── Action: generateListingDescriptionAction ────────────────────────────────
 
@@ -802,59 +753,17 @@ export async function generateListingDescriptionAction(params: {
   })
 }
 
-// ─── Action: createTransactionFromOfferAction ────────────────────────────────
-
-/**
- * DELIBERATELY NOT WIRED — DO NOT DELETE.
- *
- * SECOND-WRITER HAZARD on `transactions`, on the exact same trigger (an offer on
- * one of our listings being accepted).
- *
- * NAMED DUPLICATE: lib/transactions/offer-bridge.ts:createTransactionFromOffer —
- * documented in-tree as "single source of truth for transaction creation"
- * (app/actions/buyer-offer/convert-to-transaction.ts:14) and reached from three live
- * paths: app/actions/seller-offers.ts:200 (acceptOffer, the seller-side accept the
- * offers screen uses), buyer-offer/convert-to-transaction.ts:122, and
- * buyer-offer/submit-to-compliance.ts:284.
- *
- * Read both. createTransactionShellFromAcceptedOffer omits, relative to the bridge:
- * the assertOfferReadyForTransaction gate; contract_date and compliance_passed_at
- * (both NOT-NULL-in-practice contract facts); earnest_money; the external provider
- * columns; the transitionLifecycle contract-date event; seedJourneyMilestones +
- * ensureRequiredMilestones; the offers.transaction_id back-link; and the
- * transaction_cost_breakdown the client portal renders.
- *
- * It is also WRONG where the bridge is right: it stamps
- * `buyer_contact_id: offer.contact_id` unconditionally. On a seller-side deal the
- * buyer is another brokerage's client, and the bridge documents at length what that
- * costs — portal cards and drip enrollment firing "your offer was accepted!" at
- * someone we do not represent. Wiring this would reintroduce a defect that has
- * already been found and fixed once.
- *
- * Deletion conditions are met but the duplicate's target lives in lib/kernel/, out
- * of scope here. Left exported and unwired; flagged for the kernel owner.
- */
-export async function createTransactionFromOfferAction(params: {
-  listingId: string
-  offerId: string
-}) {
-  const ctx = await resolveCallerContext()
-  if ("error" in ctx) return { success: false, error: ctx.error }
-
-  const result = await createTransactionShellFromAcceptedOffer({
-    listingId:   params.listingId,
-    offerId:     params.offerId,
-    agentId:     ctx.agentId,
-    brokerageId: ctx.brokerageId,
-  })
-
-  if (result.success) {
-    revalidatePath(`/dashboard/listings/${params.listingId}`)
-    revalidatePath("/dashboard/transactions")
-  }
-
-  return result
-}
+// createTransactionFromOfferAction was REMOVED as a duplicate (merge-then-delete,
+// owner-sanctioned). SURVIVOR: lib/transactions/offer-bridge.ts:createTransactionFromOffer
+// — the documented "single source of truth for transaction creation", reached from
+// three live paths: app/actions/seller-offers.ts (acceptOffer), buyer-offer/
+// convert-to-transaction.ts and buyer-offer/submit-to-compliance.ts. The deleted
+// shell (and lib/kernel/listings.ts:createTransactionShellFromAcceptedOffer beneath
+// it) omitted the assertOfferReadyForTransaction gate, contract_date /
+// compliance_passed_at, earnest_money, milestone seeding, the offers.transaction_id
+// back-link and the cost breakdown — and stamped buyer_contact_id unconditionally,
+// a defect the bridge already fixed. Nothing it did is missing on the survivor.
+// Do not reintroduce a second transactions writer on the offer-accepted trigger.
 
 // ─── Action: closeListingAction ───────────────────────────────────────────────
 

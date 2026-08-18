@@ -70,7 +70,7 @@
     "app/actions/link-to-video.ts": 2,
     "app/actions/listing-lifecycle.ts": 2,
     "app/actions/listing-video.ts": 1,
-    "app/actions/listings-kernel.ts": 5,
+    "app/actions/listings-kernel.ts": 3,
     "app/actions/marketing-cadence-policy.ts": 1,
     "app/actions/marketing-intelligence.ts": 1,
     "app/actions/marketing-studio.ts": 2,
@@ -666,7 +666,7 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "services/goHighLevelService.ts": 8
   },
-  "census": 9068,
+  "census": 9074,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -962,7 +962,7 @@
     "app/actions/listing-promo-manual-trigger.ts": 1,
     "app/actions/listing-risk-agent.ts": 1,
     "app/actions/listing-video.ts": 3,
-    "app/actions/listings-kernel.ts": 14,
+    "app/actions/listings-kernel.ts": 12,
     "app/actions/listings.ts": 6,
     "app/actions/market-insight-actions.ts": 10,
     "app/actions/market-insights.ts": 1,
@@ -2826,7 +2826,7 @@
     "lib/ai/get-message-text.ts": 1,
     "lib/ai/image-generation.ts": 1,
     "lib/ai/lead-analyzer.ts": 1,
-    "lib/ai/models.ts": 7,
+    "lib/ai/models.ts": 8,
     "lib/ai/pipeline.ts": 4,
     "lib/ai/reply-style.ts": 3,
     "lib/ai/resolve-model.ts": 1,
@@ -2909,7 +2909,7 @@
     "lib/auth/provision-isa-actor.ts": 1,
     "lib/auth/require-admin-maintenance-access.ts": 1,
     "lib/auth/require-brokerage-admin.ts": 2,
-    "lib/auth/resolve-user-role.ts": 4,
+    "lib/auth/resolve-user-role.ts": 10,
     "lib/auth/role-grants.ts": 9,
     "lib/auth/useAuth.ts": 1,
     "lib/avm/provider-chain.ts": 3,
@@ -3518,7 +3518,7 @@
     "lib/kernel/listing-marketing-week.ts": 3,
     "lib/kernel/listing-price-advisor.ts": 1,
     "lib/kernel/listing-propensity.ts": 3,
-    "lib/kernel/listings.ts": 12,
+    "lib/kernel/listings.ts": 10,
     "lib/kernel/local-lifestyle.ts": 1,
     "lib/kernel/lookalike-audience.ts": 2,
     "lib/kernel/manager-activity.ts": 1,
@@ -4072,6 +4072,7 @@
     "lib/support/support-thread.ts": 3,
     "lib/support/ticket-constants.ts": 2,
     "lib/teams/membership.ts": 3,
+    "lib/teams/team-scope.ts": 2,
     "lib/territory/metrics-aggregator.ts": 3,
     "lib/testimonials/testimonial-policy.ts": 1,
     "lib/them-first/empathy-library.ts": 3,
@@ -4122,6 +4123,7 @@
     "lib/transactions/walkthrough-outcome.ts": 2,
     "lib/usage/check-cap.ts": 1,
     "lib/usage/log-media-usage.ts": 1,
+    "lib/usage/period.ts": 1,
     "lib/usage.ts": 4,
     "lib/utils.ts": 1,
     "lib/validations/index.ts": 14,
@@ -6286,9 +6288,7 @@
       "verifyMlsSyndicationAction",
       "launchListingAction",
       "updateListingStageAction",
-      "attachMediaAction",
       "generateListingDescriptionAction",
-      "createTransactionFromOfferAction",
       "closeListingAction",
       "prefillListingFormAction",
       "loadListingWorkspaceAction",
@@ -13126,6 +13126,7 @@
       "generateAIResponse",
       "generateObjectRouted",
       "generateTextRouted",
+      "streamTextRouted",
       "generateSimpleText",
       "generatePublicContent",
       "generateOutboundMessage"
@@ -13616,7 +13617,13 @@
       "isPlatformStaffIdentity",
       "resolveUserRole",
       "requireRole",
-      "isAdminOrBroker"
+      "isAdminOrBroker",
+      "isTenantAdminGrantRole",
+      "isBrokerageFinanceAdmin",
+      "isBrokerageFinanceAdminGrantRole",
+      "isTenantAdminOrPlatformStaff",
+      "resolveTenantAdmin",
+      "resolveBrokerageFinanceAdmin"
     ],
     "lib/auth/role-grants.ts": [
       "readRoleGrants",
@@ -16707,9 +16714,7 @@
       "validateListingLaunchReadiness",
       "launchListing",
       "updateListingStage",
-      "attachMediaToListing",
       "generateListingDescription",
-      "createTransactionShellFromAcceptedOffer",
       "closeListingLifecycle",
       "prefillListingFormFromRecord"
     ],
@@ -19603,6 +19608,10 @@
       "validateTeamMember",
       "agentFundedTotal"
     ],
+    "lib/teams/team-scope.ts": [
+      "resolveLedTeamId",
+      "leadsAgentsTeam"
+    ],
     "lib/territory/metrics-aggregator.ts": [
       "aggregateMetrics",
       "seedTerritoriesFromServiceArea",
@@ -19811,6 +19820,9 @@
     ],
     "lib/usage/log-media-usage.ts": [
       "logMediaUsage"
+    ],
+    "lib/usage/period.ts": [
+      "currentUsagePeriod"
     ],
     "lib/usage.ts": [
       "incrementUsage",
