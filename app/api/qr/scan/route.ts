@@ -82,14 +82,31 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const referrer = req.headers.get('referer') ?? null
 
     // ── Step 1b: Attribute scan to direct mail campaign if applicable ─────────
+    // m491 — the campaign's OWN recipient anchor comes back with it. A QR code is
+    // minted PER CAMPAIGN (qr_codes.slug → direct_mail_campaigns.qr_code_id), so a
+    // scan can never identify an individual recipient row — which is exactly why
+    // `direct_mail_responses.lead_id` had to be a real column rather than a join
+    // through `recipient_id`. For a 1:1 lead mailing (the shape
+    // lib/direct-mail/campaign-drain.ts dispatches) `lead_id` on the campaign IS
+    // the person holding the postcard.
     let campaignId: string | null = null
+    let campaignLeadId: string | null = null
+    let campaignContactId: string | null = null
     if (qr.purpose === 'campaign') {
-      const { data: dm } = await supabase
+      const { data: dm, error: dmError } = await supabase
         .from('direct_mail_campaigns')
-        .select('id')
+        .select('id, lead_id, contact_id')
         .eq('qr_code_id', qr.id)
         .maybeSingle()
-      campaignId = dm?.id ?? null
+      // A refused read is not "this QR belongs to no campaign". Log it — the
+      // scanner still gets their redirect, but attribution silently vanishing is
+      // how a campaign's response count stays at zero while people are scanning.
+      if (dmError) {
+        console.error('[qr/scan] campaign attribution read refused:', dmError.message)
+      }
+      campaignId = (dm as { id?: string } | null)?.id ?? null
+      campaignLeadId = (dm as { lead_id?: string | null } | null)?.lead_id ?? null
+      campaignContactId = (dm as { contact_id?: string | null } | null)?.contact_id ?? null
     }
 
     // ── Step 2: Insert qr_scan_events (audit row only) ────────────────────────
@@ -120,23 +137,88 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // resolved from the qr_codes row above, and campaignId from the campaign that
     // owns that QR. Best-effort: an attribution write must never break the redirect
     // the prospect is waiting on.
+    //
+    // m491 — AND THE SCAN NOW REACHES THE LEAD IT CAME FROM. Before m491 the two
+    // rows below could name a contact and nothing else, so a LEAD scanning the QR
+    // on a postcard the product had deliberately mailed them (dispatchDirectMail
+    // permits mailing a lead row) was recorded as nobody: contact_id NULL,
+    // recipient_id NULL, and no third column that could hold an identity. The
+    // scan is still not a sentence and still does not convert anyone — see the
+    // ingest call below — but it now lands on the right person's timeline instead
+    // of on no one's.
     if (campaignId) {
       try {
         const responseRow = {
           brokerage_id: qr.brokerage_id,
           campaign_id: campaignId,
+          contact_id: campaignContactId,
+          lead_id: campaignLeadId,
           response_type: 'qr_scan' as const, // in direct_mail_responses' CHECK set
           response_metadata: { slug, source: 'qr_scan_route', referrer, user_agent: userAgent },
         }
         // Both tables, matching logResponse: the first feeds the Responses tab, the
-        // second feeds ROI aggregation.
-        await supabase.from('direct_mail_responses').insert(responseRow)
-        await supabase.from('mail_response_tracking').insert({
+        // second feeds ROI aggregation. Both refusals are now destructured — an
+        // insert whose error is discarded is indistinguishable from one that landed.
+        const { data: inserted, error: responseError } = await supabase
+          .from('direct_mail_responses')
+          .insert(responseRow)
+          .select('id')
+          .maybeSingle()
+        if (responseError) {
+          console.error('[qr/scan] direct_mail_responses insert refused:', responseError.message)
+        }
+        const { error: roiError } = await supabase.from('mail_response_tracking').insert({
           brokerage_id: responseRow.brokerage_id,
           campaign_id: responseRow.campaign_id,
+          contact_id: responseRow.contact_id,
+          lead_id: responseRow.lead_id,
           response_type: responseRow.response_type,
           response_metadata: responseRow.response_metadata,
         })
+        if (roiError) {
+          console.error('[qr/scan] mail_response_tracking insert refused:', roiError.message)
+        }
+
+        // ── THE EVALUATION DOOR ───────────────────────────────────────────────
+        // One evaluator for every inbound lead signal:
+        // app/actions/lead-signal-ingest.ts ingestDirectMailResponseSignalAction.
+        // It records the touch on the lead, and — for a `qr_scan` — deliberately
+        // does NOT classify it or convert anyone: a page load is not a hand-raise,
+        // and inventing an intent from one is exactly the ambiguity the owner's
+        // ruling says must not convert. Passing through it anyway is what keeps
+        // the mail lane on ONE path instead of growing a second, quieter one.
+        //
+        // internalSecret: the scanner is an anonymous prospect with no session, so
+        // the door's session-based tenant proof cannot apply. The tenant is not
+        // taken from anything the scanner controls — qr.brokerage_id came off the
+        // qr_codes row and lead_id off the campaign that owns that QR.
+        // providerRef: the response row's own id — the natural idempotency key.
+        const responseId = (inserted as { id?: string } | null)?.id ?? null
+        if (campaignLeadId && responseId) {
+          const { ingestDirectMailResponseSignalAction } = await import(
+            '@/app/actions/lead-signal-ingest'
+          )
+          const outcome = await ingestDirectMailResponseSignalAction({
+            brokerageId: qr.brokerage_id,
+            leadId: campaignLeadId,
+            responseType: 'qr_scan',
+            campaignId,
+            providerRef: responseId,
+            internalSecret: process.env.CRON_SECRET,
+          })
+          if (outcome.error) {
+            console.error('[qr/scan] lead signal evaluation reported an error:', outcome.error)
+          }
+          // A scanner has no session, so an 'unauthorized' skip means CRON_SECRET
+          // is unset and the door fell back to the session path. That is a
+          // MISCONFIGURATION, not a quiet no-op: every lead's mail response would
+          // be silently dropped at the door while the response row still lands.
+          if (outcome.outcome === 'skipped' && outcome.reason === 'unauthorized') {
+            console.error(
+              '[qr/scan] lead signal REFUSED as unauthorized — CRON_SECRET is unset, so anonymous mail responses cannot reach the evaluation door.',
+            )
+          }
+        }
       } catch (err) {
         console.error('[qr/scan] direct-mail response attribution failed (non-blocking):', err)
       }

@@ -47,6 +47,15 @@ export interface AddRecipientsParams {
   campaignId: string
   recipients: Array<{
     contactId?: string
+    /**
+     * m491 — the audience member when they are an unconverted LEAD rather than a
+     * contact. `dispatchDirectMail` explicitly permits mailing a lead row ("leads
+     * are unconsented for most channels; the only outbound touches permitted to a
+     * lead row are direct_mail and email"), so a mailing list that could only name
+     * contacts could not say who half its pieces were addressed to. Nullable and
+     * NOT exclusive with contactId — a converted lead legitimately carries both.
+     */
+    leadId?: string
     firstName: string
     lastName: string
     addressLine1: string
@@ -69,7 +78,20 @@ export interface LogResponseParams {
   campaignId: string
   recipientId?: string
   contactId?: string
+  /**
+   * m491 — the LEAD who answered, when one is known to the caller. Usually left
+   * unset: `logResponse` resolves it itself from the recipient row and then from
+   * the campaign row (see the doc block on the action).
+   */
+  leadId?: string
   responseType: "qr_scan" | "landing_visit" | "call" | "form_submit" | "reply" | "appointment"
+  /**
+   * Anything the responder ACTUALLY WROTE — the text on a returned reply card,
+   * the message field of a mailer form, the note an agent transcribes from a
+   * call. This is what gets classified for intent and what an opt-out is read
+   * out of, so it must be the consumer's own words and not a summary.
+   */
+  message?: string
   responseMetadata?: Record<string, unknown>
 }
 
@@ -289,21 +311,37 @@ export async function addRecipients(params: AddRecipientsParams) {
 
     const supabase = await createClient()
 
-    // Get brokerage_id from campaign
-    const { data: campaign } = await supabase
+    // Get brokerage_id from campaign — and, m491, the campaign's own recipient
+    // anchor. A refused read is not "no such campaign": destructure it, or a
+    // blocked query silently becomes a NULL-tenant insert.
+    const { data: campaign, error: campaignError } = await supabase
       .from("direct_mail_campaigns")
-      .select("brokerage_id")
+      .select("brokerage_id, lead_id, contact_id")
       .eq("id", params.campaignId)
       .maybeSingle()
 
+    if (campaignError) {
+      return { success: false, error: `Could not read the campaign: ${campaignError.message}` }
+    }
     if (!campaign) {
       return { success: false, error: "Campaign not found" }
     }
 
+    // m491 — the audience member is anchored to whichever entity it actually is.
+    // A LEAD recipient used to be written with contact_id NULL and nothing else,
+    // i.e. an address with no identity: when that person answered the mailer there
+    // was no row that could say who they were, and the conversion door
+    // (ingestDirectMailResponseSignalAction) could never be called for them.
+    // Falls back to the campaign's own lead_id/contact_id when the caller named
+    // neither — a 1:1 campaign already knows exactly who it is addressed to.
+    const campaignLeadId    = (campaign as { lead_id?: string | null }).lead_id ?? null
+    const campaignContactId = (campaign as { contact_id?: string | null }).contact_id ?? null
+
     const recipientRows = params.recipients.map((r) => ({
       brokerage_id: campaign.brokerage_id,
       campaign_id: params.campaignId,
-      contact_id: r.contactId ?? null,
+      contact_id: r.contactId ?? (r.leadId ? null : campaignContactId),
+      lead_id: r.leadId ?? (r.contactId ? null : campaignLeadId),
       first_name: r.firstName,
       last_name: r.lastName,
       address_line1: r.addressLine1,
@@ -500,6 +538,44 @@ export async function getTrackingRecords(campaignId: string) {
 /**
  * Logs a response to a direct mail piece.
  * Also inserts into mail_response_tracking for L9-S12 ROI aggregation.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * m491 — THIS IS NOW THE MAIL LANE'S CONVERSION DOOR, not just a ledger write.
+ *
+ * The owner's ruling: "leads converting should be automatic as soon as positive
+ * feedback is returned or a positive response from inbound calls/texts, email or
+ * direct mail." Email, SMS and voice each already reach the evaluation door.
+ * Direct mail did not, and could not, for a structural reason: neither
+ * `direct_mail_responses` nor `direct_mail_recipients` had a `lead_id`, so a lead
+ * who answered a mailer was written attached to NOBODY. m491 added the column.
+ * This action now (a) writes it and (b) hands the answer to the ONE evaluator —
+ * `app/actions/lead-signal-ingest.ts ingestDirectMailResponseSignalAction`, which
+ * owns opt-out detection, intent classification, the already-converted guard, and
+ * the canonical `classifyAndRouteInbound → … → createContactFromLead` chain.
+ * NOTHING is re-implemented here; a second classifier is how two thresholds end
+ * up disagreeing about the same sentence.
+ *
+ * HOW THE LEAD IS RESOLVED, most specific first:
+ *   1. `params.leadId` — the caller already knows (rare).
+ *   2. the RECIPIENT row's `lead_id` — the mailing-list entry this response names.
+ *   3. the CAMPAIGN row's `lead_id` — `direct_mail_campaigns.lead_id` is how the
+ *      1:1 lead path (lib/direct-mail/campaign-drain.ts) names its addressee, and
+ *      that path writes no recipient row at all, so this arm is the one that
+ *      actually fires for drain-dispatched lead mail.
+ * If none of the three yields a lead, the response is recorded and stops there —
+ * which is correct for a contact's response and for an audience campaign.
+ *
+ * THE TENANT IS RESOLVED, NOT ACCEPTED. `brokerageId` is still a parameter (the
+ * live caller, ai-direct-mail.ts trackCampaignResponse, already derives it from
+ * the campaign and cross-checks the session), but the campaign is now re-read
+ * under that predicate through the COOKIE client, so RLS applies to the proof and
+ * a response cannot be recorded against another brokerage's paid campaign.
+ *
+ * IDEMPOTENCY. `providerRef` is the inserted `direct_mail_responses.id` — the
+ * natural key, unique by construction. A retried call inserts a new response row
+ * and therefore a new ref, which is the honest reading: two logged responses are
+ * two responses. The door's own guard stops the SAME response being evaluated
+ * twice.
  */
 export async function logResponse(params: LogResponseParams) {
   try {
@@ -509,6 +585,50 @@ export async function logResponse(params: LogResponseParams) {
 
     const supabase = await createClient()
 
+    // ── WHO ANSWERED — resolved before anything is written ────────────────────
+    // A refused read is not "no such campaign". supabase-js RESOLVES a refusal;
+    // destructuring it is the only thing separating "blocked" from "absent".
+    const { data: campaign, error: campaignError } = await supabase
+      .from("direct_mail_campaigns")
+      .select("id, brokerage_id, lead_id, contact_id")
+      .eq("id", params.campaignId)
+      .eq("brokerage_id", params.brokerageId)
+      .maybeSingle()
+
+    if (campaignError) {
+      return { success: false, error: `Could not verify campaign tenancy: ${campaignError.message}` }
+    }
+    if (!campaign) {
+      return {
+        success: false,
+        error: "Campaign not found in this brokerage — refusing to record a response against it",
+      }
+    }
+
+    let recipientLeadId: string | null = null
+    let recipientContactId: string | null = null
+    if (params.recipientId && isValidUUID(params.recipientId)) {
+      const { data: recipient, error: recipientError } = await supabase
+        .from("direct_mail_recipients")
+        .select("id, lead_id, contact_id")
+        .eq("id", params.recipientId)
+        .eq("brokerage_id", params.brokerageId)
+        .maybeSingle()
+      if (recipientError) {
+        return {
+          success: false,
+          error: `Could not read the recipient this response names: ${recipientError.message}`,
+        }
+      }
+      recipientLeadId = (recipient as { lead_id?: string | null } | null)?.lead_id ?? null
+      recipientContactId = (recipient as { contact_id?: string | null } | null)?.contact_id ?? null
+    }
+
+    const leadId =
+      params.leadId ?? recipientLeadId ?? ((campaign as { lead_id?: string | null }).lead_id ?? null)
+    const contactId =
+      params.contactId ?? recipientContactId ?? ((campaign as { contact_id?: string | null }).contact_id ?? null)
+
     // Insert into direct_mail_responses
     const { data: response, error: responseError } = await supabase
       .from("direct_mail_responses")
@@ -516,7 +636,8 @@ export async function logResponse(params: LogResponseParams) {
         brokerage_id: params.brokerageId,
         campaign_id: params.campaignId,
         recipient_id: params.recipientId ?? null,
-        contact_id: params.contactId ?? null,
+        contact_id: contactId,
+        lead_id: leadId,
         response_type: params.responseType,
         response_metadata: params.responseMetadata ?? null,
       })
@@ -525,16 +646,66 @@ export async function logResponse(params: LogResponseParams) {
 
     if (responseError) throw responseError
 
-    // Also insert into mail_response_tracking for ROI aggregation
-    await supabase.from("mail_response_tracking").insert({
+    // Also insert into mail_response_tracking for ROI aggregation. The refusal
+    // used to be discarded entirely — a swallowed refusal here is how a campaign's
+    // cost-per-response silently disagrees with its Responses tab.
+    const { error: roiError } = await supabase.from("mail_response_tracking").insert({
       brokerage_id: params.brokerageId,
       campaign_id: params.campaignId,
-      contact_id: params.contactId ?? null,
+      contact_id: contactId,
+      lead_id: leadId,
       response_type: params.responseType,
       response_metadata: params.responseMetadata ?? null,
     })
+    if (roiError) {
+      console.error("[DirectMail] ROI ledger write refused:", roiError.message)
+    }
 
-    return { success: true, response }
+    // ── THE DOOR ──────────────────────────────────────────────────────────────
+    // Only for a LEAD. A contact's mail response already lives in the CRM the
+    // contact belongs to; there is nothing to convert.
+    let leadSignal:
+      | { outcome: string; reason?: string; contactId?: string; optOutChannels?: string[]; error?: string }
+      | null = null
+    if (leadId && (response as { id?: string } | null)?.id) {
+      try {
+        const { ingestDirectMailResponseSignalAction } = await import("@/app/actions/lead-signal-ingest")
+        const written = (params.message ?? "").trim()
+        const fromMeta =
+          typeof params.responseMetadata?.message === "string"
+            ? (params.responseMetadata.message as string)
+            : undefined
+        const outcome = await ingestDirectMailResponseSignalAction({
+          brokerageId: params.brokerageId,
+          leadId,
+          responseType: params.responseType,
+          message: written || fromMeta,
+          campaignId: params.campaignId,
+          providerRef: (response as { id: string }).id,
+          internalSecret: process.env.CRON_SECRET,
+        })
+        leadSignal = {
+          outcome: outcome.outcome,
+          reason: outcome.reason,
+          contactId: outcome.contactId,
+          optOutChannels: outcome.optOutChannels,
+          error: outcome.error,
+        }
+        if (outcome.error) {
+          console.error(
+            `[DirectMail] lead signal evaluation reported an error for lead ${leadId}: ${outcome.error}`,
+          )
+        }
+      } catch (err) {
+        // The response IS recorded; only the evaluation failed. Say so loudly —
+        // a silently unevaluated hand-raise is the defect this whole lane exists
+        // to close.
+        console.error("[DirectMail] lead signal evaluation threw:", err)
+        leadSignal = { outcome: "skipped", reason: "ingest_threw", error: String(err) }
+      }
+    }
+
+    return { success: true, response, leadSignal }
   } catch (error) {
     return handleError(error, "logResponse")
   }
@@ -551,9 +722,13 @@ export async function getResponses(campaignId: string) {
 
     const supabase = await createClient()
 
+    // m491 — the LEAD embed alongside the contact embed. A response from a lead
+    // has contact_id NULL, so the Responses tab rendered a nameless row for every
+    // mail piece the product sent to a lead. Unambiguous: `direct_mail_responses`
+    // has exactly one FK onto `leads` (direct_mail_responses_lead_id_fkey).
     const { data, error } = await supabase
       .from("direct_mail_responses")
-      .select("*, contacts(first_name, last_name, email, phone)")
+      .select("*, contacts(first_name, last_name, email, phone), leads(first_name, last_name, email, phone)")
       .eq("campaign_id", campaignId)
       .order("created_at", { ascending: false })
 
@@ -643,6 +818,12 @@ export async function sendCampaign(params: SendCampaignParams) {
           userId: params.actorUserId,
           teamId: params.teamId,
           contactId: recipient.contact_id ?? undefined,
+          // m491 — carry the LEAD through to the dispatcher. Without this a
+          // lead-anchored recipient was dispatched with neither contactId nor
+          // leadId, so dispatchDirectMail's lead consent gate, its mail
+          // suppression gate ("stop mailing me") and its over-touch de-confliction
+          // all saw an anonymous piece and every one of them passed vacuously.
+          leadId: recipient.lead_id ?? undefined,
           systemSource: "direct_mail_campaign",
           recipientName: `${recipient.first_name} ${recipient.last_name}`.trim(),
           mailingAddress: recipient.address_line1,

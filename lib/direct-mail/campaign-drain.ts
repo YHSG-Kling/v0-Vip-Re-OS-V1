@@ -21,6 +21,17 @@
  * AUDIENCE rows (no recipient link — 'farm' etc.) are the farm/lifecycle
  * dispatchers' domain and are skipped with an honest reason, never a
  * simulated send. NOT server-only (simulator-driven).
+ *
+ * m491 — THE MAILING-LIST ROW. This drain is the path that actually mails a
+ * LEAD, and it wrote no `direct_mail_recipients` row: neither here, nor in
+ * orchestrateRenderAndSend, nor in dispatchDirectMail. A lead's piece existed
+ * only as a campaign row, so the mailing list could not say who was mailed and
+ * the Recipients surface was empty for every 1:1 send. m491 gave that table a
+ * `lead_id`; the drain now stages the row before spending and stamps it
+ * mailed/failed alongside the campaign. Best-effort — the refusal is reported,
+ * never swallowed, but it does not withhold a legitimate piece, because the
+ * RESPONSE path does not depend on this row (both response writers fall back to
+ * `direct_mail_campaigns.lead_id`).
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
@@ -109,6 +120,47 @@ export async function runDirectMailCampaignDrain(
       continue
     }
 
+    // ── m491: STAGE THE MAILING-LIST ROW BEFORE SPENDING ─────────────────────
+    // This drain is the path that ACTUALLY MAILS A LEAD, and it wrote no
+    // `direct_mail_recipients` row at all — neither here, nor in
+    // orchestrateRenderAndSend, nor in dispatchDirectMail. So a lead's mail piece
+    // existed only as a campaign row: the mailing list could not say who was
+    // mailed, the Recipients surface showed nothing for the piece, and a returned
+    // reply card had no recipient row to point at. m491 gave the table a
+    // `lead_id`; this is the writer that fills it.
+    //
+    // BEST-EFFORT, deliberately: the refusal is REPORTED, never swallowed, but it
+    // does not withhold the piece. The response path does not depend on this row
+    // (logResponse and the QR route both fall back to `direct_mail_campaigns.lead_id`,
+    // which is where a 1:1 campaign names its addressee), so a ledger gap here is
+    // a defect to surface, not a reason to cancel a legitimate marketing send.
+    let recipientRowId: string | null = null
+    {
+      const { data: recRow, error: recErr } = await svc
+        .from("direct_mail_recipients")
+        .insert({
+          brokerage_id:   input.brokerageId,
+          campaign_id:    row.id,
+          contact_id:     row.contact_id ?? null,
+          lead_id:        row.lead_id ?? null,
+          first_name:     name.split(" ")[0] ?? name,
+          last_name:      name.split(" ").slice(1).join(" "),
+          address_line1:  addr.street,
+          city:           addr.city,
+          state:          addr.state,
+          zip:            addr.zip,
+          delivery_status: "pending",
+        })
+        .select("id")
+        .maybeSingle()
+      if (recErr) {
+        console.error(
+          `[campaign-drain] direct_mail_recipients insert refused for campaign ${row.id}: ${recErr.message}`,
+        )
+      }
+      recipientRowId = ((recRow as { id?: string } | null)?.id) ?? null
+    }
+
     // ONE real dispatch through the shared rail — every gate applies.
     try {
       // The staged play resolved the agent as agents.id on the row; the
@@ -148,10 +200,32 @@ export async function runDirectMailCampaignDrain(
         pieces_mailed: result.success ? 1 : 0,
       }).eq("id", row.id)
 
+      // m491 — the mailing-list row tells the same truth as the campaign row.
+      // `mailed_at` matters beyond reporting: it is what the mail over-touch cap
+      // counts on (lib/kernel/deconflict countMailTouches).
+      if (recipientRowId) {
+        const { error: recStatusErr } = await svc
+          .from("direct_mail_recipients")
+          .update(
+            result.success
+              ? { delivery_status: "mailed", mailed_at: new Date().toISOString() }
+              : { delivery_status: "failed" },
+          )
+          .eq("id", recipientRowId)
+        if (recStatusErr) {
+          console.error(
+            `[campaign-drain] recipient status update refused for ${recipientRowId}: ${recStatusErr.message}`,
+          )
+        }
+      }
+
       if (result.success) out.sent++
       else out.failed++
     } catch {
       await svc.from("direct_mail_campaigns").update({ status: "failed" }).eq("id", row.id)
+      if (recipientRowId) {
+        await svc.from("direct_mail_recipients").update({ delivery_status: "failed" }).eq("id", recipientRowId)
+      }
       out.failed++
     }
   }
