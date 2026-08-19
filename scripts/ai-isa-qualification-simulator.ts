@@ -30,13 +30,12 @@ import {
   signalTemperature,
   deriveQualificationSignals,
   qualificationScoreFor,
-  engine2GatePasses,
   voiceSignalFor,
 } from "../lib/ai-isa/qualification-core"
 import { buildIsaOvernightSection, isaPriorityActions } from "../lib/intelligence/isa-overnight"
 import {
   previewRuleRouting, evaluateRuleConditions, pickRoundRobinAgent,
-  effectiveAgentPool, teamScopeAllows,
+  effectiveAgentPool, teamScopeAllows, evaluateAssignmentEligibility,
 } from "../lib/lead-assignment/rule-matcher"
 import { MANAGERS } from "../lib/kernel/manager-registry"
 
@@ -114,10 +113,24 @@ function testScoreAndGate() {
   check("urgency only → 45", qualificationScoreFor({ ...base, confirmedIntent: false, urgency: "high", readinessForAgent: false }) === 45)
   check("neither → 25", qualificationScoreFor({ ...base, confirmedIntent: false, urgency: "medium", readinessForAgent: false }) === 25)
 
-  check("gate: qualified + consented → assignable", engine2GatePasses("qualified", "consented"))
-  check("gate: qualified + unconsented → BLOCKED", !engine2GatePasses("qualified", "unconsented"))
-  check("gate: new + consented → BLOCKED (ISA hasn't qualified)", !engine2GatePasses("new", "consented"))
-  check("gate: null state → BLOCKED", !engine2GatePasses(null, null))
+  // THE GATE MOVED, AND ITS RULE CHANGED. lib/ai-isa/qualification-core.ts
+  // engine2GatePasses is deleted: it was a third copy that CONTRADICTED the owner's
+  // ruling ("qualified OR positive intent" — it was an AND). The survivor is
+  // lib/lead-assignment/rule-matcher.ts evaluateAssignmentEligibility, which both
+  // assignment doors call.
+  //
+  // The second assertion below is INVERTED from what it used to say. It read
+  // "qualified + unconsented → BLOCKED"; under the ruling, qualified ALONE assigns,
+  // so that expectation was the old rule and had to flip rather than be re-pointed.
+  check("gate: qualified + consented → assignable",
+    evaluateAssignmentEligibility("qualified", "consented").ok)
+  check("gate: qualified + unconsented → ASSIGNABLE (qualified is its own arm, per the ruling)",
+    evaluateAssignmentEligibility("qualified", "unconsented").ok)
+  check("gate: not qualified + consented → assignable on the POSITIVE-INTENT arm",
+    evaluateAssignmentEligibility("new", "consented").ok)
+  check("gate: neither arm → BLOCKED",
+    !evaluateAssignmentEligibility("new", "raw").ok)
+  check("gate: null state → BLOCKED", !evaluateAssignmentEligibility(null, null).ok)
 }
 
 function testIsaOvernightBriefing() {
@@ -288,7 +301,7 @@ async function testLiveChain() {
     await svc.from("leads").update({ lead_stage: "qualified", ai_isa_owner: false }).eq("id", leadId)
     const { data: after } = await svc.from("leads").select("lead_stage, lifecycle_state, lead_score, lead_temperature").eq("id", leadId).single()
     check("Engine 2 gate passes after qualification + consent",
-      engine2GatePasses((after as any)?.lead_stage, (after as any)?.lifecycle_state))
+      evaluateAssignmentEligibility((after as any)?.lead_stage, (after as any)?.lifecycle_state).ok)
     check("rolling state intact end-to-end",
       (after as any)?.lead_score === 90 && (after as any)?.lead_temperature === "hot")
   } catch (err) {

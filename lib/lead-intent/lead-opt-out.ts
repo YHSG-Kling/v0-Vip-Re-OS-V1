@@ -409,6 +409,334 @@ async function writeSuppressionBridge(
   return written
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// THE OTHER DIRECTION — REOPENING A LEAD WHO CAME BACK
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * OWNER RULING (this lane): "A positive reply from an opted-out lead REOPENS them
+ * automatically." The inbound message IS the consent signal — the person
+ * re-initiated contact — and the reopen must be RECORDED, not silent.
+ *
+ * ── WHAT GUARDS THIS, ABOVE ─────────────────────────────────────────────────
+ *
+ * This function does NOT decide that a message is positive. It is called from
+ * lib/lead-intent/inbound-lead-intent.ts ONLY after:
+ *   1. `detectOptOutIntent` has already run and did NOT fire (opt-out detection
+ *      is Step 2 and still wins — a message saying "stop" can never reach here);
+ *   2. the ONE existing classifier (lib/ai-isa/inbound-intent-classifier.ts
+ *      classifyAndRouteInbound) returned a CLEAR POSITIVE. Ambiguous stays held.
+ *
+ * ── WHAT IT UNDOES: EXACTLY WHAT applyLeadOptOut WROTE, AND NOTHING ELSE ────
+ *
+ * The mirror image of the three writes above, in the same order and with the same
+ * failure discipline:
+ *
+ *   1. `leads` flags + provenance — cleared. CHECKED; a refused clear is returned,
+ *      never reported as a reopen. This is the write that makes the reopen real:
+ *      `evaluateOutboundCompliance` Rule 1 hard-blocks EVERY channel on
+ *      dnc_status alone, so a reopen that does not clear it is a no-op.
+ *   2. the converted twin's `contacts` flags — mirrored back (best-effort; the
+ *      lead row and the list rows are what bind a lead).
+ *   3. `contact_suppression_list` — the rows THIS module wrote are removed. That
+ *      table has no `removed_at`/`is_active` column (live schema: id,
+ *      brokerage_id, contact_id, email, phone, channel, suppression_reason,
+ *      source, created_at) and `checkSuppression` matches any row it finds, so
+ *      "un-suppress" can only be a delete. The removed rows are captured VERBATIM
+ *      into the audit event below, so the ledger keeps the record the table can
+ *      no longer hold. Only rows whose `source` is one of the four lead inbound
+ *      sources are touched — an email-footer unsubscribe or an admin-entered
+ *      suppression is somebody else's record and survives.
+ *   4. `lifecycle_events` — the SAME audit ledger applyLeadOptOut writes
+ *      (LEAD_DNC_SET / LEAD_CHANNEL_OPT_OUT); this is its counterpart,
+ *      LEAD_REOPENED_ON_INBOUND_INTENT. NOT best-effort, unlike the opt-out side:
+ *      the ruling says the reopen must be recorded, so a refused audit write is
+ *      surfaced in the result rather than swallowed.
+ *
+ * ── WHAT IT DELIBERATELY DOES **NOT** TOUCH ─────────────────────────────────
+ *
+ *   `tcpa_consent` — never set true here. TCPA express consent is a thing the
+ *   person gives on a form, not something an inbound "yes" back-fills. Rule 7 of
+ *   evaluateOutboundCompliance still gates sms/phone/voicemail on it after a
+ *   reopen, which is the point.
+ *   `email_unsubscribed` / `sms_unsubscribed` on the contact — those are the
+ *   email-footer/carrier lane's columns; applyLeadOptOut never wrote them, so
+ *   this must not clear them.
+ */
+export interface ReopenLeadOnInboundConsentParams {
+  brokerageId: string
+  leadId: string
+  /** The transport the person re-initiated on. Recorded; the reopen itself is global. */
+  source: LeadOptOutSource
+  /** The lead's own words — the consent signal that justifies the reopen. REQUIRED. */
+  rawMessage: string
+  /** What decided this was a clear positive, from the ONE classifier. */
+  intent?: { side?: string | null; reason?: string | null }
+  /** Provider message id of the message that justified it, when the channel has one. */
+  providerRef?: string | null
+}
+
+export interface ReopenLeadResult {
+  reopened: boolean
+  /** Channels no longer suppressed on the lead row. */
+  channelsReopened: string[]
+  /** Was a global DNC standing before this? */
+  clearedGlobalDNC: boolean
+  /** contact_suppression_list rows removed (and captured into the audit event). */
+  suppressionRowsRemoved: number
+  /** Did the compliance/audit event actually land? A reopen must not be silent. */
+  recorded: boolean
+  error?: string
+}
+
+/** The four sources applyLeadOptOut stamps. Only rows carrying one of these are
+ *  ours to remove — anything else on the suppression list is another lane's record. */
+const LEAD_INBOUND_SOURCES: LeadOptOutSource[] = [
+  "inbound_sms",
+  "inbound_email",
+  "inbound_call",
+  "inbound_direct_mail",
+]
+
+export async function reopenLeadOnInboundConsent(
+  params: ReopenLeadOnInboundConsentParams,
+): Promise<ReopenLeadResult> {
+  const supabase = createServiceClient()
+  const now = new Date().toISOString()
+
+  const fail = (error: string): ReopenLeadResult => ({
+    reopened: false,
+    channelsReopened: [],
+    clearedGlobalDNC: false,
+    suppressionRowsRemoved: 0,
+    recorded: false,
+    error,
+  })
+
+  const message = (params.rawMessage ?? "").trim()
+  if (!message) {
+    // The message IS the consent signal. Without it there is nothing to record and
+    // therefore nothing that justifies lifting a consent stop.
+    return fail("reopen refused: no message text to justify it")
+  }
+
+  // ── Read the lead. TENANT in the predicate — the service client bypasses RLS.
+  // A refused read resolves as { data: null, error }; a swallowed one would be
+  // indistinguishable from "no such lead" and would lift a stop on a row we never saw.
+  const { data: lead, error: leadError } = await supabase
+    .from("leads")
+    .select(
+      "id, brokerage_id, email, phone, phone_digits, contact_id, dnc_status, opt_out_channels, " +
+        "opt_out_source, opt_out_reason, opted_out_at, email_opt_out, sms_opt_out, phone_opt_out, " +
+        "direct_mail_opt_out, call_stop_flag, reengagement_status",
+    )
+    .eq("id", params.leadId)
+    .eq("brokerage_id", params.brokerageId)
+    .maybeSingle()
+
+  if (leadError) return fail(`lead read refused: ${leadError.message}`)
+  if (!lead) return fail("lead not found in this brokerage")
+
+  // The generated Supabase types predate m488's three columns, so the select
+  // resolves to an error shape rather than a row. Cast through `unknown` — the
+  // columns are live-verified (m488) and the values are read defensively below.
+  const row = lead as unknown as Record<string, unknown>
+  const before = {
+    dnc_status: row.dnc_status ?? null,
+    opt_out_channels: (row.opt_out_channels as string[] | null) ?? [],
+    opt_out_source: row.opt_out_source ?? null,
+    opt_out_reason: row.opt_out_reason ?? null,
+    opted_out_at: row.opted_out_at ?? null,
+    email_opt_out: row.email_opt_out ?? null,
+    sms_opt_out: row.sms_opt_out ?? null,
+    phone_opt_out: row.phone_opt_out ?? null,
+    direct_mail_opt_out: row.direct_mail_opt_out ?? null,
+    call_stop_flag: row.call_stop_flag ?? null,
+    reengagement_status: row.reengagement_status ?? null,
+  }
+
+  // ── 1. THE LEAD ROW — clear every flag applyLeadOptOut can set ─────────────
+  // A GLOBAL stop is ONE request, and it is that one request the person has just
+  // retracted, so the reopen is global too. Leaving three of four channels
+  // standing would produce a lead the OS calls "reopened" and still cannot reach.
+  const updates: Record<string, unknown> = {
+    dnc_status: false,
+    call_stop_flag: false,
+    opt_out_channels: [],
+    opted_out_at: null,
+    opt_out_reason: null,
+    opt_out_source: null,
+    // The ISA went dormant with reengagement_status='opted_out' (the terminal value
+    // shouldResurrectReengagement deliberately excludes). Re-arm it here, because
+    // that resurrection path is the one thing that can NEVER re-arm it itself.
+    reengagement_status: "active",
+    reengagement_attempt_count: 0,
+    updated_at: now,
+  }
+  for (const ch of ALL_CHANNELS) updates[CHANNEL_FLAG_COLUMN[ch]] = false
+
+  const { error: updateError } = await supabase
+    .from("leads")
+    .update(updates)
+    .eq("id", params.leadId)
+    .eq("brokerage_id", params.brokerageId)
+
+  if (updateError) {
+    // NOT best-effort, exactly as on the opt-out side: reporting a reopen the
+    // database refused is the same class of lie m488 exists to end.
+    console.error("[lead-opt-out] reopen update refused:", updateError.message)
+    return fail(`leads reopen update refused: ${updateError.message}`)
+  }
+
+  // ── 2. THE CONVERTED TWIN ──────────────────────────────────────────────────
+  const linkedContactId = (row.contact_id as string | null) ?? null
+  if (linkedContactId) {
+    const contactUpdates: Record<string, unknown> = {
+      dnc_status: false,
+      call_stop_flag: false,
+      opt_out_channels: [],
+      opted_out_at: null,
+      opt_out_reason: null,
+      opt_out_source: null,
+      isa_reengage_allowed: true,
+      updated_at: now,
+    }
+    for (const ch of ALL_CHANNELS) contactUpdates[CHANNEL_FLAG_COLUMN[ch]] = false
+
+    await bestEffort(
+      supabase
+        .from("contacts")
+        .update(contactUpdates)
+        .eq("id", linkedContactId)
+        .eq("brokerage_id", params.brokerageId),
+      "mirroring a lead's reopen onto its converted contact — the lead row has already been cleared, so a failed mirror leaves the person MORE suppressed than intended, which is the safe direction",
+    )
+  }
+
+  // ── 3. THE BRIDGE ROWS — capture, then remove ──────────────────────────────
+  const removed = await removeSuppressionBridge(supabase, {
+    brokerageId: params.brokerageId,
+    contactId: linkedContactId,
+    email: (row.email as string | null) ?? null,
+    phone: (row.phone as string | null) ?? null,
+    phoneDigits: (row.phone_digits as string | null) ?? null,
+  })
+
+  // ── 4. THE RECORD — same ledger as the opt-out, and NOT best-effort ────────
+  const { error: auditError } = await supabase.from("lifecycle_events").insert({
+    brokerage_id: params.brokerageId,
+    entity_type: "lead",
+    entity_id: params.leadId,
+    event_type: "LEAD_REOPENED_ON_INBOUND_INTENT",
+    metadata: {
+      // WHAT justified it — the person's own words, which are the consent signal.
+      message: message.slice(0, 2000),
+      source: params.source,
+      provider_ref: params.providerRef ?? null,
+      intent_side: params.intent?.side ?? null,
+      intent_reason: params.intent?.reason ?? null,
+      // WHO/WHAT reopened. No human is in this loop by design; say so plainly
+      // rather than leaving the actor blank.
+      reopened_by: "system:lib/lead-intent/inbound-lead-intent.ts",
+      reopened_by_kind: "automatic_on_positive_inbound_intent",
+      // WHEN.
+      reopened_at: now,
+      // WHAT WAS LIFTED — the exact prior state, so the ledger can reconstruct
+      // the suppression that stood before this message arrived.
+      previous_state: before,
+      channels_reopened: ALL_CHANNELS,
+      cleared_global_dnc: before.dnc_status === true,
+      suppression_rows_removed: removed.rows,
+      suppression_rows_removed_count: removed.rows.length,
+      suppression_removal_error: removed.error ?? null,
+      // Stated for the auditor: a reopen restores REACHABILITY, never consent.
+      tcpa_consent_untouched: true,
+    },
+    created_at: now,
+  })
+
+  if (auditError) {
+    console.error("[lead-opt-out] reopen audit row refused:", auditError.message)
+  }
+
+  return {
+    reopened: true,
+    channelsReopened: [...ALL_CHANNELS],
+    clearedGlobalDNC: before.dnc_status === true,
+    suppressionRowsRemoved: removed.rows.length,
+    recorded: !auditError,
+    error: auditError
+      ? `reopen applied but the compliance record was refused: ${auditError.message}`
+      : removed.error,
+  }
+}
+
+/**
+ * removeSuppressionBridge — take the address-keyed rows back off the list, and
+ * hand the caller what was removed so the ledger can keep it.
+ *
+ * Matching mirrors writeSuppressionBridge: every identifier spelling this lead
+ * holds, plus the contact id when there is one. Restricted to the four inbound
+ * lead sources so only rows THIS module wrote are removed.
+ */
+async function removeSuppressionBridge(
+  supabase: ReturnType<typeof createServiceClient>,
+  params: {
+    brokerageId: string
+    contactId: string | null
+    email: string | null
+    phone: string | null
+    phoneDigits: string | null
+  },
+): Promise<{ rows: Array<Record<string, unknown>>; error?: string }> {
+  const emailForms = distinct([params.email, params.email?.toLowerCase() ?? null])
+  const phoneForms = distinct([
+    params.phone,
+    params.phoneDigits ? `+${params.phoneDigits.length === 10 ? "1" : ""}${params.phoneDigits}` : null,
+  ])
+
+  const orClauses: string[] = []
+  if (params.contactId) orClauses.push(`contact_id.eq.${params.contactId}`)
+  for (const e of emailForms) orClauses.push(`email.eq.${e}`)
+  for (const p of phoneForms) orClauses.push(`phone.eq.${p}`)
+  if (orClauses.length === 0) return { rows: [] }
+
+  // CAPTURE FIRST. The table has no soft-delete column, so the audit event is the
+  // only place these rows can survive; deleting before reading them would destroy
+  // the record the ruling requires.
+  const { data: doomed, error: readError } = await supabase
+    .from("contact_suppression_list")
+    .select("id, channel, email, phone, contact_id, suppression_reason, source, created_at")
+    .eq("brokerage_id", params.brokerageId)
+    .in("source", LEAD_INBOUND_SOURCES)
+    .or(orClauses.join(","))
+
+  if (readError) {
+    console.error("[lead-opt-out] suppression rows unreadable, none removed:", readError.message)
+    return { rows: [], error: `suppression rows unreadable, none removed: ${readError.message}` }
+  }
+
+  const rows = (doomed ?? []) as Array<Record<string, unknown>>
+  if (rows.length === 0) return { rows: [] }
+
+  const ids = rows.map((r) => r.id as string)
+  const { error: deleteError } = await supabase
+    .from("contact_suppression_list")
+    .delete()
+    .eq("brokerage_id", params.brokerageId)
+    .in("id", ids)
+
+  if (deleteError) {
+    // The lead-row flags are already cleared; the list rows are not. The person
+    // stays suppressed on the address-keyed arm, which is the safe direction —
+    // but the caller must be told, or the reopen reads as complete when it is not.
+    console.error("[lead-opt-out] suppression row removal refused:", deleteError.message)
+    return { rows: [], error: `suppression row removal refused: ${deleteError.message}` }
+  }
+
+  return { rows }
+}
+
 function distinct(values: (string | null | undefined)[]): string[] {
   const out: string[] = []
   for (const v of values) {

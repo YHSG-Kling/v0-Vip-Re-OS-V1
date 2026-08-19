@@ -50,6 +50,119 @@ export function isRuleType(v: string | null | undefined): v is RuleType {
   return !!v && (RULE_TYPES as readonly string[]).includes(v)
 }
 
+// ─── THE ASSIGNMENT GATE ─────────────────────────────────────────────────────
+//
+// OWNER RULING: "The only way to assign a lead to an agent is if the lead has
+// been qualified OR positive intent."
+//
+// It was an AND in both places that enforce it — `autoAssignLead`
+// (lib/lead-assignment/tier-routing.ts) for every AUTOMATIC path and
+// `manualAssignLead` (app/actions/lead-assignment/assign-lead.ts) for the admin's
+// hand-placement — and the two carried SEPARATE copies of the same expression, so
+// they could drift. The gate now lives here, PURE, and both call it. (A third,
+// simulator-only copy still exists at lib/ai-isa/qualification-core.ts:116
+// `engine2GatePasses`; it has no production caller and now contradicts the
+// ruling — see the lane report.)
+//
+// ── WHICH lifecycle_state VALUES ARE "POSITIVE INTENT", AND WHY ──────────────
+//
+// leads_lifecycle_state_check admits EXACTLY eight values (read live):
+//   appointment · assigned · consented · isa_qualifying · long_term_nurture ·
+//   raw · representation · unconsented
+//
+// A state counts as positive intent when the ROW ITSELF records that the person
+// said yes — not that the OS hoped they would:
+//
+//   consented       ✓ THE positive-intent state. lib/kernel/lead-acquisition-handlers.ts
+//                     handleConsentReceived is its only writer, and its only callers
+//                     are positive-reply paths (accept-handoff.ts:70 on a positive ISA
+//                     conversation, the qualification evaluator on readiness). The
+//                     person replied yes.
+//   appointment     ✓ They booked a meeting. Strictly downstream of consented and a
+//                     stronger signal than the consent that preceded it.
+//   representation  ✓ They signed. The strongest signal the schema can carry.
+//   assigned        ✓ Downstream of consented as well; kept so a lead whose agent_id
+//                     was cleared (agent offboarded, mis-assignment undone) can be
+//                     re-placed without being re-qualified. Both callers already
+//                     refuse a lead that still HAS an agent_id, so this can never
+//                     become a second assignment.
+//
+//   raw             ✗ The pipeline birth state. Nothing has been said at all.
+//   unconsented     ✗ The row explicitly records the ABSENCE of consent.
+//   isa_qualifying  ✗ The ISA is still ASKING. The attempt is not the answer — this
+//                     is precisely the state that must not reach an agent.
+//   long_term_nurture ✗ The ISA wound them down after silence. The opposite of positive.
+
+/** leads.lifecycle_state values that record a POSITIVE signal FROM the person. */
+export const POSITIVE_INTENT_LIFECYCLE_STATES = [
+  'consented',
+  'appointment',
+  'representation',
+  'assigned',
+] as const
+
+export type PositiveIntentLifecycleState = (typeof POSITIVE_INTENT_LIFECYCLE_STATES)[number]
+
+/** PURE — does this lifecycle_state record positive intent from the lead?
+ *  NOT exported: `evaluateAssignmentEligibility` below is the ONE door, so no
+ *  caller can gate on half the rule. */
+function leadHasPositiveIntent(lifecycleState: string | null | undefined): boolean {
+  return !!lifecycleState &&
+    (POSITIVE_INTENT_LIFECYCLE_STATES as readonly string[]).includes(lifecycleState)
+}
+
+export interface AssignmentEligibility {
+  /** May this lead be handed to an agent at all? */
+  ok: boolean
+  /** WHICH arm of the OR opened the gate — null when it stayed shut. */
+  via: 'qualified' | 'positive_intent' | null
+  /** Why, in words a surface can show the admin verbatim. */
+  reason: string
+}
+
+/**
+ * PURE — THE assignment gate. Qualified OR positive intent, never AND.
+ *
+ * `lead_stage === 'qualified'` is the ISA's verdict; `lifecycle_state` in
+ * POSITIVE_INTENT_LIFECYCLE_STATES is the person's own. Either one alone is
+ * enough: a lead the ISA qualified without a lifecycle stamp is assignable, and
+ * so is a lead who replied "yes" before the ISA ever finished its script.
+ *
+ * NOTE the value that is deliberately NOT here: 'qualified' is NOT a legal
+ * lifecycle_state (the CHECK does not admit it), so a gate that tested
+ * lifecycle_state === 'qualified' could never fire. Only lead_stage carries it.
+ */
+export function evaluateAssignmentEligibility(
+  leadStage: string | null | undefined,
+  lifecycleState: string | null | undefined,
+): AssignmentEligibility {
+  const qualified = leadStage === 'qualified'
+  const positive = leadHasPositiveIntent(lifecycleState)
+
+  if (qualified) {
+    return {
+      ok: true,
+      via: 'qualified',
+      reason: `lead_stage='qualified' — the AI ISA qualified this lead`,
+    }
+  }
+  if (positive) {
+    return {
+      ok: true,
+      via: 'positive_intent',
+      reason: `lifecycle_state='${lifecycleState}' — the lead gave a positive signal`,
+    }
+  }
+  return {
+    ok: false,
+    via: null,
+    reason:
+      "Assignment requires lead_stage='qualified' OR a positive-intent lifecycle_state " +
+      `(${POSITIVE_INTENT_LIFECYCLE_STATES.join('|')}). ` +
+      `Got lead_stage='${leadStage ?? 'null'}', lifecycle_state='${lifecycleState ?? 'null'}'.`,
+  }
+}
+
 export interface MatchableRule {
   id: string
   name?: string

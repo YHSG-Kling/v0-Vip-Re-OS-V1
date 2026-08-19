@@ -70,6 +70,18 @@
  *   NEUTRAL  → nothing happens. No conversion, no suppression. The classifier
  *              records a nurture touch and the lead keeps being nurtured.
  *
+ *   REOPEN   → OWNER RULING, settled: a CLEAR POSITIVE from a lead already under
+ *              a consent stop REOPENS them automatically. The inbound message is
+ *              the consent signal — they re-initiated contact. Three things keep
+ *              it honest: opt-out detection above still runs first and still wins
+ *              (a "stop" can never be read as a reopen); only a clear positive
+ *              from the ONE classifier qualifies (ambiguous stays held); and the
+ *              reopen is written to the SAME lifecycle_events ledger the opt-out
+ *              is, carrying the message text that justified it, what/who reopened
+ *              and when (lib/lead-intent/lead-opt-out.ts reopenLeadOnInboundConsent).
+ *              A reopen restores REACHABILITY, never TCPA consent — tcpa_consent
+ *              is deliberately untouched, so sms/phone stay gated by Rule 7.
+ *
  * ─────────────────────────────────────────────────────────────────────────────
  * IDEMPOTENCE — three independent guards, none of them assumed
  *
@@ -96,7 +108,12 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { bestEffort } from "@/lib/db/best-effort"
 import { detectOptOutIntent } from "@/lib/ai-isa/opt-out-utils"
-import { applyLeadOptOut, type LeadOptOutChannel, type LeadOptOutSource } from "./lead-opt-out"
+import {
+  applyLeadOptOut,
+  reopenLeadOnInboundConsent,
+  type LeadOptOutChannel,
+  type LeadOptOutSource,
+} from "./lead-opt-out"
 
 /** The transport an inbound lead message arrived on — the four the ruling names. */
 export type InboundLeadChannel = "email" | "sms" | "voice" | "direct_mail"
@@ -139,6 +156,9 @@ export type InboundLeadOutcome =
   | "halted"
   /** Ambiguous / no clear intent — nurture touch recorded, nothing else. */
   | "nurtured"
+  /** An opted-out lead came back with CLEAR positive intent: suppression lifted,
+   *  the reopen recorded on the compliance ledger, and the lead converted. */
+  | "reopened"
   /** Nothing to do (no body, lead not found, classification deferred to the caller). */
   | "skipped"
 
@@ -239,14 +259,80 @@ export async function evaluateInboundLeadSignal(
       return { outcome: "held_for_review", reason: `possible_opt_out_${optOut.channel}` }
     }
 
-    // ── 3. A lead already under a consent stop is never auto-converted ───────
-    // The ruling says a positive response converts. It does not say a positive
-    // response overrides a consent stop, and a DNC lead is one the OS has been
-    // told to leave alone. Recorded above, surfaced here, no automated action.
-    // OWNER RULING NEEDED: should "actually yes, I'm interested" from an
-    // opted-out lead re-open them automatically, or wait for a human?
-    if ((lead as { dnc_status?: boolean | null }).dnc_status === true) {
-      return { outcome: "held_for_review", reason: "lead_is_dnc" }
+    // ── 3. AN OPTED-OUT LEAD WHO CAME BACK ───────────────────────────────────
+    //
+    // OWNER RULING: a positive reply from an opted-out lead REOPENS them
+    // automatically. The inbound message is the consent signal — the person
+    // re-initiated contact — and the reopen is RECORDED on the same ledger the
+    // opt-out is, never silent.
+    //
+    // THREE THINGS GUARD IT, IN THIS ORDER:
+    //   • Step 2 above already ran and did not fire. Opt-out detection still wins:
+    //     a message saying "stop" is suppressed there and never reaches this line.
+    //   • Only a CLEAR POSITIVE reopens. "Clear positive" is not redefined here —
+    //     it is whatever the ONE existing classifier
+    //     (lib/ai-isa/inbound-intent-classifier.ts) converts on. Ambiguous and
+    //     negative both leave the lead held, exactly as before.
+    //   • The reopen write is CHECKED. A refused reopen is reported, never
+    //     reported as honoured.
+    //
+    // ORDER, STATED HONESTLY: the classifier is the only entry point that both
+    // classifies and routes — it converts as part of saying "this was positive" —
+    // so the conversion lands a moment BEFORE the suppression is lifted. That is
+    // the safe direction: if the reopen write then fails, the lead is a contact
+    // whose sends are still blocked by every gate. The reverse order (lift first,
+    // classify second) would un-suppress a person on a message that turns out to
+    // be ambiguous. See the lane report for the one-line export in the classifier
+    // module that would let this decide before it acts.
+    const isDNC = (lead as { dnc_status?: boolean | null }).dnc_status === true
+
+    if (isDNC && signal.intentAlreadyRouted) {
+      // The caller (the email lane) already classified and routed this message and
+      // did not tell us its verdict. We cannot claim a clear positive we never saw,
+      // and a consent stop is not lifted on an assumption.
+      return { outcome: "held_for_review", reason: "lead_is_dnc_verdict_not_visible" }
+    }
+
+    if (isDNC) {
+      const routed = await routeInboundIntent(supabase, signal, body)
+      if (routed.outcome !== "converted" || !routed.classified) {
+        // Ambiguous, negative, or a failed conversion — the stop stands.
+        return {
+          outcome: "held_for_review",
+          reason: `lead_is_dnc_no_clear_positive_intent (classifier: ${routed.outcome}${routed.reason ? `/${routed.reason}` : ""})`,
+          error: routed.error,
+        }
+      }
+
+      const reopened = await reopenLeadOnInboundConsent({
+        brokerageId: signal.brokerageId,
+        leadId: signal.leadId,
+        source: OPT_OUT_SOURCE[signal.channel],
+        rawMessage: body,
+        intent: { side: routed.classified.side, reason: routed.classified.reason },
+        providerRef: signal.providerRef ?? null,
+      })
+
+      if (!reopened.reopened) {
+        // The lead converted but the suppression could NOT be lifted. Say so —
+        // the person is still suppressed on every gate, which is the safe state,
+        // and the caller logs a reopen that needs a human.
+        return {
+          outcome: "held_for_review",
+          contactId: routed.contactId,
+          reason: "reopen_write_failed",
+          error: reopened.error,
+        }
+      }
+
+      return {
+        outcome: "reopened",
+        contactId: routed.contactId,
+        reason: reopened.recorded
+          ? "positive_intent_from_opted_out_lead — suppression lifted and recorded"
+          : "positive_intent_from_opted_out_lead — suppression lifted, compliance record REFUSED",
+        error: reopened.error,
+      }
     }
 
     // ── 4. Already a contact — record, don't re-convert, don't spend a model call ─
@@ -265,49 +351,19 @@ export async function evaluateInboundLeadSignal(
     }
 
     // ── 6. INTENT — the existing classifier, unchanged ───────────────────────
-    // Positive → the canonical lane converts. Negative → halted. Ambiguous →
-    // nurtured. This module adds no scoring of its own; a second scorer is how
-    // two thresholds end up disagreeing about the same sentence.
-    const { classifyAndRouteInbound } = await import("@/lib/ai-isa/inbound-intent-classifier")
-    const routed = await classifyAndRouteInbound({
-      leadId: signal.leadId,
-      brokerageId: signal.brokerageId,
-      message: body,
-    })
-
-    const outcome: InboundLeadOutcome =
-      routed.outcome === "converted"
-        ? routed.alreadyConverted
-          ? "already_converted"
-          : "converted"
-        : routed.outcome === "halted"
-        ? "halted"
-        : routed.outcome === "nurtured"
-        ? "nurtured"
-        : "skipped"
-
-    if (outcome === "converted") {
-      await bestEffort(
-        supabase.from("lifecycle_events").insert({
-          brokerage_id: signal.brokerageId,
-          entity_type: "lead",
-          entity_id: signal.leadId,
-          event_type: "LEAD_CONVERTED_ON_INBOUND_INTENT",
-          metadata: {
-            channel: signal.channel,
-            provider_ref: signal.providerRef ?? null,
-            side: routed.classified?.side ?? null,
-            intent_reason: routed.classified?.reason ?? null,
-            contact_id: routed.contactId ?? null,
-          },
-          created_at: new Date().toISOString(),
-        }),
-        "inbound-intent conversion audit row — the conversion lane already wrote LEAD_ASSIGNED + LEAD_CONVERTED_TO_CONTACT; this one records WHICH inbound message caused it and must not unwind the conversion",
-      )
-    }
+    const routed = await routeInboundIntent(supabase, signal, body)
 
     return {
-      outcome,
+      outcome:
+        routed.outcome === "converted"
+          ? routed.alreadyConverted
+            ? "already_converted"
+            : "converted"
+          : routed.outcome === "halted"
+          ? "halted"
+          : routed.outcome === "nurtured"
+          ? "nurtured"
+          : "skipped",
       contactId: routed.contactId,
       reason: routed.reason,
       error: routed.error,
@@ -322,6 +378,51 @@ export async function evaluateInboundLeadSignal(
       error: err instanceof Error ? err.message : "evaluation failed",
     }
   }
+}
+
+/**
+ * routeInboundIntent — run THE classifier and write the "which message caused it"
+ * audit row. Extracted so the ordinary path (step 6) and the opted-out-lead reopen
+ * path (step 3) run the SAME classification with the SAME audit; a second call
+ * site with its own copy is how two thresholds end up disagreeing about one
+ * sentence.
+ *
+ * Positive → the canonical lane converts. Negative → halted. Ambiguous →
+ * nurtured. This module adds no scoring of its own.
+ */
+async function routeInboundIntent(
+  supabase: ReturnType<typeof createServiceClient>,
+  signal: InboundLeadSignal,
+  body: string,
+) {
+  const { classifyAndRouteInbound } = await import("@/lib/ai-isa/inbound-intent-classifier")
+  const routed = await classifyAndRouteInbound({
+    leadId: signal.leadId,
+    brokerageId: signal.brokerageId,
+    message: body,
+  })
+
+  if (routed.outcome === "converted" && !routed.alreadyConverted) {
+    await bestEffort(
+      supabase.from("lifecycle_events").insert({
+        brokerage_id: signal.brokerageId,
+        entity_type: "lead",
+        entity_id: signal.leadId,
+        event_type: "LEAD_CONVERTED_ON_INBOUND_INTENT",
+        metadata: {
+          channel: signal.channel,
+          provider_ref: signal.providerRef ?? null,
+          side: routed.classified?.side ?? null,
+          intent_reason: routed.classified?.reason ?? null,
+          contact_id: routed.contactId ?? null,
+        },
+        created_at: new Date().toISOString(),
+      }),
+      "inbound-intent conversion audit row — the conversion lane already wrote LEAD_ASSIGNED + LEAD_CONVERTED_TO_CONTACT; this one records WHICH inbound message caused it and must not unwind the conversion",
+    )
+  }
+
+  return routed
 }
 
 /**

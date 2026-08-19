@@ -71,7 +71,7 @@ import type { createServiceClient } from "@/lib/supabase/service"
 import { resolvePlanTier, FALLBACK_TIER, type PlanTier } from "@/lib/billing/plan-tier"
 import { resolveSoloAgentOwner } from "./solo-agent"
 import { assignByDefaultMethod } from "./default-assignment"
-import type { LeadRoutingHints } from "./rule-matcher"
+import { evaluateAssignmentEligibility, type LeadRoutingHints } from "./rule-matcher"
 import { handleLeadAssigned } from "@/lib/kernel/lead-acquisition-handlers"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -413,19 +413,25 @@ export interface AutoAssignResult {
  *
  * ── THE CONTRACT A CALLER MUST MEET ─────────────────────────────────────────
  *
- * The lead must ALREADY be qualified and consented before this is called:
- *   leads.lead_stage      = 'qualified'
- *   leads.lifecycle_state ∈ ('consented','assigned')   (the two live values that
- *                            mean consent has been given; 'qualified' is NOT a
- *                            legal lifecycle_state — leads_lifecycle_state_check
- *                            admits raw | unconsented | isa_qualifying |
- *                            consented | assigned | appointment | representation
- *                            | long_term_nurture)
+ * OWNER RULING: "The only way to assign a lead to an agent is if the lead has
+ * been qualified OR positive intent." So the gate is an OR, not an AND:
+ *
+ *   leads.lead_stage      = 'qualified'                     ← the ISA's verdict
+ *                        OR
+ *   leads.lifecycle_state ∈ POSITIVE_INTENT_LIFECYCLE_STATES ← the person's own
+ *
+ * It WAS an AND (`qualified` AND `consented|assigned`), which meant a lead who
+ * replied "yes, I'm interested" — stamped `consented` by handleConsentReceived —
+ * was refused assignment until something else also stamped lead_stage, and a lead
+ * the ISA had qualified was refused until a lifecycle stamp caught up. The
+ * predicate is PURE and lives in ONE place (rule-matcher.ts
+ * evaluateAssignmentEligibility) so this automatic path and manualAssignLead
+ * cannot disagree about the same lead.
  *
  * There is deliberately NO bypass parameter. Assignment converts the lead into a
- * contact owned by a named agent and starts their clock; a caller that could
- * skip the gate could start that clock on an unconsented person. A caller that
- * has just decided the lead is qualified must STAMP it, then call.
+ * contact owned by a named agent and starts their clock; a caller that could skip
+ * the gate could start that clock on someone who never said anything at all. A
+ * caller that has just decided the lead is qualified must STAMP it, then call.
  *
  * IDEMPOTENT. A second positive signal on the same lead is a no-op, not a second
  * assignment — without this the same lead would be handed out twice and
@@ -480,16 +486,15 @@ export async function autoAssignLead(params: {
     }
   }
 
-  const isQualified = lead.lead_stage === "qualified"
-  const isConsented = lead.lifecycle_state === "consented" || lead.lifecycle_state === "assigned"
-  if (!isQualified || !isConsented) {
+  // THE GATE — qualified OR positive intent (owner ruling), one pure predicate
+  // shared with manualAssignLead so the automatic and the by-hand path can never
+  // disagree about whether the same lead may reach an agent.
+  const eligibility = evaluateAssignmentEligibility(lead.lead_stage, lead.lifecycle_state)
+  if (!eligibility.ok) {
     const tier = await resolvePlanTier(supabase, brokerageId)
     return {
       assigned: false, tier,
-      reason:
-        "Assignment requires lead_stage='qualified' AND lifecycle_state in (consented|assigned). " +
-        `Got lead_stage='${lead.lead_stage}', lifecycle_state='${lead.lifecycle_state}'. ` +
-        "Stamp the lead before calling — there is no bypass.",
+      reason: `${eligibility.reason} Stamp the lead before calling — there is no bypass.`,
     }
   }
 
@@ -515,7 +520,10 @@ export async function autoAssignLead(params: {
     }
   }
 
-  const routingReason = `[${trigger}] ${decision.routingReason}${coverageNote}`
+  // WHICH ARM OF THE OR opened the gate is part of the attribution: a brokerage
+  // auditing "why did this person reach an agent" must be able to tell an ISA
+  // qualification apart from the lead's own positive reply.
+  const routingReason = `[${trigger}][gate:${eligibility.via}] ${decision.routingReason}${coverageNote}`
 
   // Commits the whole handoff: leads.agent_id + handed_to_agent_at, lifecycle
   // advance, assignment_log row, SLA close, contact conversion, agent notify.

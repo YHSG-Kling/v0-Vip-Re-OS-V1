@@ -32,6 +32,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { autoAssignLead } from "@/lib/lead-assignment/tier-routing"
+import { evaluateAssignmentEligibility } from "@/lib/lead-assignment/rule-matcher"
 import { handleLeadAssigned } from "@/lib/kernel/lead-acquisition-handlers"
 import { resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
 
@@ -123,9 +124,12 @@ export async function assignLead(
  * agent or team lead. Explicitly allowed by the ruling, and the ONLY way a
  * specific person is chosen by hand.
  *
- * It enforces the SAME gate as the automated resolver — a lead must be qualified
- * and consented — because assignment converts the lead into a contact and starts
- * that person's clock. Manual must not be a side door around qualification.
+ * It enforces the SAME gate as the automated resolver — OWNER RULING: a lead must
+ * have been QUALIFIED **OR** have POSITIVE INTENT (it was an AND until this lane;
+ * see lib/lead-assignment/rule-matcher.ts evaluateAssignmentEligibility for which
+ * of the eight legal lifecycle_state values count as positive intent, and why).
+ * Assignment converts the lead into a contact and starts that person's clock, so
+ * manual must not be a side door around the gate — nor a narrower one.
  *
  * `agentId` IS AN agents.id AND IS PROVED TO BE ONE, in this tenant. It arrives
  * from the browser, and `leads.agent_id` / `assignment_log.agent_id` both FK
@@ -168,17 +172,13 @@ export async function manualAssignLead(
   if (recipientError) throw new Error("Could not verify that agent")
   if (!recipient) throw new Error("That agent is not an active agent of your brokerage")
 
-  // leads_lifecycle_state_check admits raw | unconsented | isa_qualifying |
-  // consented | assigned | appointment | representation | long_term_nurture.
-  // 'qualified' is NOT a legal lifecycle_state — the old gate tested for it and
-  // that branch could never fire.
-  const isQualified = lead.lead_stage === "qualified"
-  const isConsented = lead.lifecycle_state === "consented" || lead.lifecycle_state === "assigned"
-  if (!isQualified || !isConsented) {
-    throw new Error(
-      "Lead must be qualified by the AI ISA (and consented) before assignment — " +
-        `currently lead_stage='${lead.lead_stage}', lifecycle_state='${lead.lifecycle_state}'.`,
-    )
+  // THE GATE — the SAME pure predicate autoAssignLead runs, so pressing "Assign"
+  // by hand can never admit (or refuse) a lead the automatic path would decide
+  // differently about. Two copies of this expression is exactly how the manual
+  // door became a side entrance the last time.
+  const eligibility = evaluateAssignmentEligibility(lead.lead_stage, lead.lifecycle_state)
+  if (!eligibility.ok) {
+    throw new Error(eligibility.reason)
   }
 
   await handleLeadAssigned({
@@ -193,7 +193,10 @@ export async function manualAssignLead(
   // in routing_reason, which nothing wrote before this lane.
   const { error: reasonError } = await supabase
     .from("assignment_log")
-    .update({ routing_reason: `[admin_manual] assigned by hand by user ${gate.userId}` })
+    .update({
+      routing_reason:
+        `[admin_manual][gate:${eligibility.via}] assigned by hand by user ${gate.userId} — ${eligibility.reason}`.slice(0, 2000),
+    })
     .eq("lead_id", leadId)
     .eq("brokerage_id", gate.brokerageId)
     .is("routing_reason", null)

@@ -7,6 +7,10 @@
  * clear positive intent to the EXISTING conversion lane — it does not contain a
  * converter, a scorer or an assignment rule of its own.
  *
+ * It also runs the ONE reverse door: `reopenLeadOnInboundConsent` lifts a consent
+ * stop when an opted-out lead comes back with clear positive intent (owner
+ * ruling), writing the reopen to the same ledger the opt-out is written to.
+ *
  * Assignment (WHICH agent receives the converted contact) is decided downstream
  * by lib/lead-assignment/assignment-engine.ts `evaluateAndAssignLead`, reached
  * through `acceptAIISAHandoff`. Nothing in this directory picks an agent.
@@ -22,8 +26,11 @@ export {
 
 export {
   applyLeadOptOut,
+  reopenLeadOnInboundConsent,
   type LeadOptOutChannel,
   type LeadOptOutSource,
   type ApplyLeadOptOutParams,
   type ApplyLeadOptOutResult,
+  type ReopenLeadOnInboundConsentParams,
+  type ReopenLeadResult,
 } from "./lead-opt-out"
