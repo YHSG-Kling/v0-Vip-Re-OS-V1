@@ -160,6 +160,20 @@ interface AdsDashboardClientProps {
   /** Streaming-TV lane (Vibe.co): honest connector posture + TV-eligible creative. */
   vibeConnected?: boolean
   ctvEligibleVideos?: CtvEligibleVideo[]
+  /**
+   * Paid-vs-organic CTR per platform, from loadAdsWorkspace. The organic side
+   * comes from the brokerage's own trailing-28d social results — this is the
+   * floor paid spend has to beat. `hasBaseline: false` means the brokerage has
+   * no measured organic activity on that platform, which is a real answer and
+   * is rendered as such rather than as a zero.
+   */
+  organicLift?: Array<{
+    platform: string
+    hasBaseline: boolean
+    organicCtr: number | null
+    paidCtr: number
+    liftRatio: number | null
+  }>
 }
 
 // ─── AUDIENCE-TEMPLATE CATEGORY STYLING ─────────────────────────────────────
@@ -256,6 +270,7 @@ export function AdsDashboardClient({
   audienceTemplates = [],
   vibeConnected = false,
   ctvEligibleVideos = [],
+  organicLift = [],
 }: AdsDashboardClientProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -1132,6 +1147,65 @@ export function AdsDashboardClient({
           {/* PERFORMANCE TAB */}
           {/* ═══════════════════════════════════════════════════════════════════ */}
           <TabsContent value="performance" className="space-y-4">
+            {/* ── Paid vs. organic floor ────────────────────────────────────
+                A campaign CTR on its own says nothing about whether the spend
+                was worth it. This row is the brokerage's OWN trailing-28d
+                organic click-through on the same platform — the result it gets
+                for free — so "0.9% CTR" can be read as beating or trailing it.
+                Rendered only where there is paid data to compare; a platform
+                with no measured organic history says so instead of showing a
+                lift computed against zero. */}
+            {organicLift.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Paid vs. Organic</CardTitle>
+                  <CardDescription>
+                    Your paid click-through against your own organic click-through on the same
+                    platform over the last 28 days
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {organicLift.map((lift) => (
+                      <div key={lift.platform} className="rounded-lg border p-3">
+                        <Badge
+                          className={PLATFORM_COLORS[lift.platform] || "bg-gray-100 text-gray-700"}
+                        >
+                          {lift.platform}
+                        </Badge>
+                        <div className="mt-2 flex items-baseline gap-2">
+                          <span className="text-2xl font-semibold">
+                            {(lift.paidCtr * 100).toFixed(2)}%
+                          </span>
+                          <span className="text-xs text-muted-foreground">paid CTR</span>
+                        </div>
+                        {!lift.hasBaseline ? (
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            No organic posts measured on {lift.platform} in the last 28 days — no
+                            floor to compare against yet.
+                          </p>
+                        ) : lift.liftRatio === null ? (
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            Organic posts were measured but recorded no clicks, so there is no rate
+                            to divide by.
+                          </p>
+                        ) : (
+                          <p
+                            className={`mt-1 text-xs font-medium ${
+                              lift.liftRatio >= 1 ? "text-green-600" : "text-amber-600"
+                            }`}
+                          >
+                            {lift.liftRatio.toFixed(2)}x organic (
+                            {((lift.organicCtr || 0) * 100).toFixed(2)}%)
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
             <Card>
               <CardHeader>
                 <CardTitle>Campaign Performance</CardTitle>

@@ -13,6 +13,9 @@ import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 // RLS matched zero rows, and supabase-js RESOLVED the refusal — delete reported
 // success over nothing. New tenant-writing actions should adopt this seam.
 import { resolveWriteContext } from "@/lib/platform/acting-context"
+// The ONE way a notifications row gets its tenant — the recipient's users.brokerage_id,
+// which is the exact value the badge-count reader compares against.
+import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenant"
 
 /**
  * Get all tasks for a user or filtered by parameters.
@@ -97,6 +100,64 @@ export async function getTasks(params?: {
 }
 
 /**
+ * Tell the person who just inherited a task that they have it.
+ *
+ * MODULE-PRIVATE ON PURPOSE — this file is `"use server"`, so every export is a public
+ * HTTP endpoint. A notification writer that anyone could call by name would let a caller
+ * post an arbitrary "New Task Assigned" notice to any user.
+ *
+ * Returns a warning STRING when the notice could not be written, and undefined when it
+ * was. The reassignment itself has already landed by then, so a failure here must not be
+ * reported as a failed reassignment — nor swallowed, which is how the predecessor's
+ * phantom insert stayed invisible for its whole life.
+ */
+async function notifyNewAssignee(
+  supabase: any,
+  newAgentId: string,
+  task: { id: string; title?: string | null },
+): Promise<string | undefined> {
+  // tasks.assigned_to_agent_id is an agents.id; notifications.user_id is a users.id.
+  // The two spaces are DISJOINT — the translation is not optional.
+  const { data: agent, error: agentError } = await supabase
+    .from("agents")
+    .select("user_id")
+    .eq("id", newAgentId)
+    .maybeSingle()
+  if (agentError || !agent?.user_id) {
+    console.error(
+      `[tasks] updateTask: could not resolve a user for agent ${newAgentId} (${agentError?.message ?? "no user_id"}) — assignment notice NOT written`,
+    )
+    return "Task reassigned, but the new assignee could not be notified"
+  }
+
+  // TENANT — the RECIPIENT's users.brokerage_id, which is the value the badge-count
+  // reader ANDs against. Unstamped or stamped from the actor, the row exists and the
+  // bell stays dark. See lib/notifications/recipient-tenant.ts.
+  const tenant = await resolveRecipientBrokerageId(supabase, agent.user_id)
+  if (!tenant.ok || !tenant.brokerageId) {
+    console.error(
+      `[tasks] updateTask: ${tenant.ok ? `recipient ${agent.user_id} has no brokerage` : tenant.reason} — assignment notice NOT written rather than written where the bell cannot count it`,
+    )
+    return "Task reassigned, but the new assignee could not be notified"
+  }
+
+  const { error: notifyError } = await supabase.from("notifications").insert({
+    user_id: agent.user_id,
+    brokerage_id: tenant.brokerageId,
+    type: "task_delegated",
+    title: "New Task Assigned",
+    body: `You've been assigned: ${task.title ?? "a task"}`,
+    entity_type: "task",
+    entity_id: task.id,
+  })
+  if (notifyError) {
+    console.error("[tasks] task_delegated notification insert refused:", notifyError.message)
+    return "Task reassigned, but the new assignee could not be notified"
+  }
+  return undefined
+}
+
+/**
  * Update a task
  */
 export async function updateTask(params: {
@@ -122,9 +183,38 @@ export async function updateTask(params: {
     if (params.priority !== undefined) updates.priority = params.priority
     if (params.status !== undefined) updates.status = params.status
 
-    // Tenant predicate in app code (gate-then-service): the seam's service client
-    // bypasses RLS, so the brokerage scope must be carried here. Zero rows is a
-    // REFUSAL (wrong tenant / no such task), reported as one — never a success.
+    // ── MERGED FROM app/actions/assistant.ts:handleTaskDelegated (now deleted) ──
+    // That duplicate wrote the same column (assigned_to_agent_id) and held two things
+    // this survivor did not: an OWNERSHIP TEST before a reassignment, and a notice to
+    // the person who inherits the task. Both are carried here; the tenant predicate
+    // this function already had is what the duplicate lacked.
+    //
+    // The read is scoped by brokerage too, so "not found" means the same thing at both
+    // steps and a cross-tenant task id cannot even be probed for its assignee.
+    const { data: before, error: beforeError } = await supabase
+      .from("tasks")
+      .select("id, title, assigned_to_agent_id, created_by_agent_id")
+      .eq("id", params.taskId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    if (beforeError) throw beforeError
+    if (!before) return { success: false, error: "Task not found in your brokerage" }
+
+    const reassigning =
+      params.assignedTo !== undefined && params.assignedTo !== before.assigned_to_agent_id
+    if (reassigning) {
+      // Scoped to REASSIGNMENT alone, which is the write the duplicate performed.
+      // Editing a task's own fields stays a tenant-level permission; handing it to
+      // someone else is the act that needs standing, exactly as the duplicate had it:
+      // the current assignee, the creator, or a broker/admin.
+      const isOwner =
+        !!ctx.agentId &&
+        (before.assigned_to_agent_id === ctx.agentId || before.created_by_agent_id === ctx.agentId)
+      if (!isOwner && !isAdminOrBroker({ user_type: ctx.userType })) {
+        return { success: false, error: "Forbidden: not your task to reassign" }
+      }
+    }
+
     const { data, error } = await supabase
       .from("tasks")
       .update(updates)
@@ -136,10 +226,13 @@ export async function updateTask(params: {
     if (error) throw error
     if (!data) return { success: false, error: "Task not found in your brokerage" }
 
+    let warning: string | undefined
+    if (reassigning) warning = await notifyNewAssignee(supabase, params.assignedTo!, data)
+
     revalidatePath("/dashboard")
     revalidatePath("/tasks")
 
-    return { success: true, task: data }
+    return warning ? { success: true, task: data, warning } : { success: true, task: data }
   } catch (error) {
     return handleError(error, "updateTask")
   }

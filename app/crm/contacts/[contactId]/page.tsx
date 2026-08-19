@@ -14,7 +14,7 @@ import { WorkflowRunsPanel }         from "./components/workflow-runs-panel"
 import { EnrichmentPanel }          from "./components/enrichment-panel"
 import { assertCanActOnContact }    from "@/lib/auth/contact-access"
 import { getBuyerTours }             from "@/app/actions/tour-planner"
-import { getBuyerJourney }           from "@/app/actions/buyer-execution"
+import { getBuyerJourney, getBuyerUpdateHistory } from "@/app/actions/buyer-execution"
 import { getCollaborativeSearches, getConsensus } from "@/app/actions/collaborative-search"
 import { loadConversationDrafts }    from "@/app/actions/ai-reply-coach"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -148,9 +148,20 @@ export default async function ContactDetailPage({ params }: PageProps) {
   let collabSearches: any[] = []
   let activeCollabSearch: any = null
   let collabConsensus: any = null
+  // Multi-party update trail: the lender/agent/admin actions that moved this
+  // buyer's gates. Loaded with the rest of the buyer block so a seller or sphere
+  // contact does not pay for it.
+  let buyerUpdates: Array<{
+    eventType: string
+    actorId: string
+    actorRole: string
+    timestamp: Date
+    metadata: Record<string, unknown>
+  }> = []
+  let buyerUpdatesError: string | null = null
 
   if (contact.buyer_stage) {
-    const [toursRes, journeyRes, finProfileRes, searchesRes, convRes] = await Promise.all([
+    const [toursRes, journeyRes, finProfileRes, searchesRes, convRes, updatesRes] = await Promise.all([
       getBuyerTours(contactId),
       getBuyerJourney({ contactId, userId: user.id, source: "agent_action" }),
       supabase
@@ -168,9 +179,26 @@ export default async function ContactDetailPage({ params }: PageProps) {
         .order("last_message_at", { ascending: false, nullsFirst: false })
         .limit(1)
         .maybeSingle(),
+      // Who moved this buyer's gates, and when. The lender confirmation, the
+      // admin override, the agent advance and the search reconfiguration each
+      // write a `buyer.*` row to `activities` at the moment they happen — and
+      // nothing had ever read them back. An agent looking at a buyer whose
+      // financing gate had been OVERRIDDEN could not see that it had been, by
+      // whom, or on what grounds. This is that trail.
+      getBuyerUpdateHistory({ contactId, limit: 25 }),
     ])
 
     buyerTours = toursRes.success ? (toursRes.tours ?? []) : []
+
+    // A refused or failed read is NOT "no activity". getBuyerUpdateHistory
+    // returns {success:false,error} for both, and an empty trail rendered for a
+    // refusal would tell the agent nobody has touched this buyer's gates when
+    // the truth is we could not look.
+    if ((updatesRes as any)?.success) {
+      buyerUpdates = ((updatesRes as any).updates ?? []) as typeof buyerUpdates
+    } else {
+      buyerUpdatesError = ((updatesRes as any)?.error as string) || "Could not load the update trail"
+    }
 
     // NEXT TOUR is derived, not separately queried — one source, so the count and
     // the "next tour" line can never disagree. Soonest tour still ahead of today
@@ -396,6 +424,42 @@ export default async function ContactDetailPage({ params }: PageProps) {
             </CardContent>
           </Card>
         </div>
+      )}
+
+      {/* ── Gate-change trail ──────────────────────────────────────────────
+          Rendered only when there is something to say: a real trail, or a real
+          failure to read one. Silence here means "nothing has moved this
+          buyer's gates", which is a true and useful answer on its own. */}
+      {contact.buyer_stage && (buyerUpdates.length > 0 || buyerUpdatesError) && (
+        <Card className="mb-4">
+          <CardHeader>
+            <CardTitle className="text-base">Gate changes</CardTitle>
+            <CardDescription>
+              Lender confirmations, admin overrides and stage advances recorded against this buyer
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {buyerUpdatesError ? (
+              <p className="text-sm text-destructive">{buyerUpdatesError}</p>
+            ) : (
+              <ol className="space-y-2">
+                {buyerUpdates.map((u, i) => (
+                  <li key={`${u.eventType}-${i}`} className="flex flex-wrap items-baseline gap-2 text-sm">
+                    <Badge variant="outline" className="font-mono text-[11px]">
+                      {u.eventType.replace(/^buyer\./, "")}
+                    </Badge>
+                    <span className="text-muted-foreground">
+                      {u.actorRole !== "unknown" ? u.actorRole : "actor unrecorded"}
+                    </span>
+                    <span className="ml-auto text-xs text-muted-foreground">
+                      {u.timestamp.toLocaleDateString()}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </CardContent>
+        </Card>
       )}
 
       {contact.buyer_stage ? (

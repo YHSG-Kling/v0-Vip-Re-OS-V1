@@ -40,6 +40,7 @@ import { useAuth } from "@/lib/auth/client"
 import { createClient } from "@/lib/supabase/client"
 import {
   VIDEO_FINISHED_STATUSES,
+  normalizeVideoStatus,
   VIDEO_IN_PROGRESS_STATUSES,
   VIDEO_TERMINAL_STATUSES,
 } from "@/lib/video/video-status"
@@ -96,13 +97,21 @@ const COLUMNS = [
   { id: "failed", title: "Failed", icon: AlertCircle, color: "bg-red-500" },
 ]
 
-function mapStatusToColumn(status: string, providerStatus?: string): string {
+function mapStatusToColumn(rawStatus: string, providerStatus?: string): string {
   // Column ids are DISPLAY BUCKETS, not statuses. `status` is the canonical
   // vocabulary (lib/video/video-status) and every one of its nine values is
   // named here, because the catch-all below is a trap: it used to swallow
   // `completed`, `distributed`, `ready`, `uploaded` and `error`, so a finished
   // video and a failed render both sat in the Queued column and the red failure
   // UI further down never rendered.
+  //
+  // Normalised first so the catch-all cannot reopen that trap from the other
+  // side: a row still carrying a RETIRED spelling — `ready`, `uploaded`,
+  // `distributed`, `error`, `rendering` — is not in the nine, so every one of
+  // them would fall through to "pending" and a finished or failed video would
+  // reappear in the Queued column. The m374 CHECK stops NEW ones being written;
+  // it does not rewrite an export, a mirror, or a row that predates it.
+  const status = normalizeVideoStatus(rawStatus)
   if (status === "failed" || providerStatus === "failed") return "failed"
   if (status === "published") return "published"
   // A finished asset is previewable: this column is where the Play button lives.

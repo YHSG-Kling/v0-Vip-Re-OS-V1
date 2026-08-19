@@ -25,6 +25,11 @@ import {
   isConnectableAdPlatform,
 } from "@/lib/integrations/ad-campaign-vocabulary"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import {
+  listSocialBaselines,
+  computeOrganicLift,
+  type SocialBaseline,
+} from "@/lib/marketing/social-baselines"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -156,6 +161,36 @@ export interface AdsWorkspaceData {
    * can say which it means.
    */
   unconnectableAdPlatforms: readonly string[]
+  /**
+   * The brokerage's ORGANIC social baselines over the trailing 28 days, one row
+   * per (platform, post_type) with measurable activity — read from the
+   * `social_post_baselines_28d` view (m167).
+   *
+   * This is the floor paid spend has to beat. Empty array is a real and common
+   * answer ("no measurable organic activity yet"), NOT a failure: a brokerage
+   * that has never posted organically has no floor, and the surface must say
+   * that rather than render a zero.
+   */
+  organicBaselines: SocialBaseline[]
+  /**
+   * Paid-vs-organic click-through comparison, one entry per ad platform that
+   * actually has `ad_performance` rows in this workspace.
+   *
+   * `paidCtr` is the fraction clicks/impressions for that platform's ad rows
+   * (NOT the percentage in performanceSummary.avgCtr — the organic view stores a
+   * fraction, and comparing a percentage against a fraction would report a 100x
+   * lift). `liftRatio` is paid/organic, so 1.5 means paid beats organic by half
+   * again. It is null when there is no baseline to divide by, or when the
+   * organic rate is zero — a missing comparison is reported as missing, never as
+   * a lift of zero or infinity.
+   */
+  organicLift: Array<{
+    platform: string
+    hasBaseline: boolean
+    organicCtr: number | null
+    paidCtr: number
+    liftRatio: number | null
+  }>
 }
 
 // Input types
@@ -352,6 +387,74 @@ export async function loadAdsWorkspace(input: LoadAdsWorkspaceInput): Promise<Ke
       .eq("brokerage_id", ctx.brokerageId)
       .in("platform", [...CONNECTABLE_AD_PLATFORMS])
 
+    // ── Organic floor (Wave 38 → Wave 40) ────────────────────────────────────
+    // Business rule 4 says ad_performance is the single source of truth for
+    // spend and ROI. It is — but a CTR with nothing to compare it to is not
+    // ROI visibility, it is a number. m167 built `social_post_baselines_28d`
+    // precisely so paid could be measured against the brokerage's own free
+    // result, and the helper over it had sat unreached since.
+    //
+    // Brokerage-scoped by construction: listSocialBaselines takes the
+    // brokerage id and filters on it, the same explicit boundary every other
+    // service-client read in this function states. It logs and returns [] on a
+    // view error rather than throwing, so a missing baseline can never take
+    // the campaigns tab down with it.
+    const organicBaselines = await listSocialBaselines(ctx.brokerageId)
+
+    // One comparison per platform that has paid rows. Campaign id → platform,
+    // because ad_performance carries the campaign, not the platform.
+    const platformByCampaign = new Map<string, string>(
+      (campaigns || []).map((c): [string, string] => [c.id as string, c.platform as string]),
+    )
+    const paidByPlatform = new Map<string, { impressions: number; clicks: number }>()
+    for (const row of performanceData) {
+      const platform = platformByCampaign.get(row.ad_campaign_id)
+      if (!platform) continue
+      const acc = paidByPlatform.get(platform) ?? { impressions: 0, clicks: 0 }
+      acc.impressions += row.impressions || 0
+      acc.clicks += row.clicks || 0
+      paidByPlatform.set(platform, acc)
+    }
+
+    const organicLift = [...paidByPlatform.entries()].map(([platform, paid]) => {
+      // The organic view is keyed (platform, post_type); an ad has no
+      // post_type, so the platform's whole organic volume is the floor. Summed
+      // across post types rather than averaging the per-type rates, so a single
+      // high-rate post with 12 impressions cannot outvote the real traffic.
+      const cells = organicBaselines.filter((b) => b.platform === platform)
+      const organicImpressions = cells.reduce((s, b) => s + b.totalImpressions, 0)
+      const organicClicks = cells.reduce((s, b) => s + b.totalClicks, 0)
+      const merged: SocialBaseline | null =
+        cells.length === 0
+          ? null
+          : {
+              ...cells[0],
+              postType: "*",
+              postsMeasured: cells.reduce((s, b) => s + b.postsMeasured, 0),
+              totalImpressions: organicImpressions,
+              totalEngagements: cells.reduce((s, b) => s + b.totalEngagements, 0),
+              totalClicks: organicClicks,
+              engagementRate:
+                organicImpressions > 0
+                  ? cells.reduce((s, b) => s + b.totalEngagements, 0) / organicImpressions
+                  : null,
+              clickThroughRate: organicImpressions > 0 ? organicClicks / organicImpressions : null,
+            }
+      const paidCtr = paid.impressions > 0 ? paid.clicks / paid.impressions : 0
+      const lift = computeOrganicLift({
+        baseline: merged,
+        paidRate: paidCtr,
+        metric: "click_through_rate",
+      })
+      return {
+        platform,
+        hasBaseline: lift.hasBaseline,
+        organicCtr: lift.organicRate,
+        paidCtr: lift.paidRate,
+        liftRatio: lift.liftRatio,
+      }
+    })
+
     const workspaceData: AdsWorkspaceData = {
       campaigns: campaigns || [],
       audiences: audiences || [],
@@ -366,6 +469,8 @@ export async function loadAdsWorkspace(input: LoadAdsWorkspaceInput): Promise<Ke
       },
       accountConnections: accountConnections || [],
       unconnectableAdPlatforms: AD_PLATFORMS_WITHOUT_CONNECTIONS,
+      organicBaselines,
+      organicLift,
     }
 
     return { success: true, workspace: workspaceData }

@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Search, Phone, User } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
+import { useDebounce } from "@/hooks/use-debounce"
 
 interface Contact {
   id: string
@@ -22,10 +23,18 @@ export function QuickDialSearch({ agentId, brokerageId }: QuickDialSearchProps) 
   const [query, setQuery] = useState("")
   const [results, setResults] = useState<Contact[]>([])
   const [isSearching, setIsSearching] = useState(false)
+  // The hand-rolled `setTimeout(searchContacts, 300)` this replaces debounced the
+  // EFFECT rather than the value, which left `isSearching` lying: it was set true
+  // only once the timer fired, so for the first 300ms of every keystroke the box
+  // showed the PREVIOUS results with no pending indicator. Debouncing the value
+  // instead lets the component compare `query` against `debouncedQuery` and say
+  // truthfully that a search is pending.
+  const debouncedQuery = useDebounce(query, 300)
 
   useEffect(() => {
+    let cancelled = false
     const searchContacts = async () => {
-      if (query.length < 2) {
+      if (debouncedQuery.length < 2) {
         setResults([])
         return
       }
@@ -33,21 +42,31 @@ export function QuickDialSearch({ agentId, brokerageId }: QuickDialSearchProps) 
       setIsSearching(true)
       const supabase = createClient()
 
-      const { data } = await supabase
+      // `error` destructured: supabase-js RESOLVES a refused read, so `data:null`
+      // alone would have shown an RLS denial as "no contacts match".
+      const { data, error } = await supabase
         .from("contacts")
         .select("id, first_name, last_name, phone")
         .eq("brokerage_id", brokerageId)
-        .or(`first_name.ilike.%${query}%,last_name.ilike.%${query}%,phone.ilike.%${query}%`)
+        .or(`first_name.ilike.%${debouncedQuery}%,last_name.ilike.%${debouncedQuery}%,phone.ilike.%${debouncedQuery}%`)
         .not("phone", "is", null)
         .limit(5)
 
-      setResults(data || [])
+      if (cancelled) return
+      if (error) {
+        console.error("[quick-dial-search] contact search failed:", error.message)
+        setResults([])
+      } else {
+        setResults(data || [])
+      }
       setIsSearching(false)
     }
 
-    const debounce = setTimeout(searchContacts, 300)
-    return () => clearTimeout(debounce)
-  }, [query, brokerageId])
+    void searchContacts()
+    return () => {
+      cancelled = true
+    }
+  }, [debouncedQuery, brokerageId])
 
   const handleCall = (phone: string) => {
     // Open native dialer
@@ -95,9 +114,15 @@ export function QuickDialSearch({ agentId, brokerageId }: QuickDialSearchProps) 
         </div>
       )}
 
-      {query.length >= 2 && results.length === 0 && !isSearching && (
+      {/* "No contacts found" is a CLAIM ABOUT A COMPLETED SEARCH. While the
+          debounce is still settling, `query !== debouncedQuery` and no search
+          for the current text has run yet — saying "no contacts found" then
+          would be reporting a result nobody has looked for. The name it quotes
+          is `debouncedQuery` for the same reason: it is the string that was
+          actually searched. */}
+      {query.length >= 2 && query === debouncedQuery && results.length === 0 && !isSearching && (
         <p className="text-sm text-center text-muted-foreground py-4">
-          No contacts found matching &quot;{query}&quot;
+          No contacts found matching &quot;{debouncedQuery}&quot;
         </p>
       )}
     </div>

@@ -208,6 +208,7 @@ export default async function AdsCampaignsPage() {
       audienceTemplates={audienceTemplates}
       vibeConnected={vibeConnected}
       ctvEligibleVideos={(ctvVideos || []) as CtvEligibleVideo[]}
+      organicLift={workspace.organicLift}
     />
   )
 }

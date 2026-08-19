@@ -151,3 +151,72 @@ export const SOURCE_LABELS: Record<StandardSource, string> = {
   past_client: "Past Client",
   other: "Other",
 }
+
+export const PERSONA_DESCRIPTIONS: Record<StandardContactPersona, string> = {
+  first_time_buyer: "Never owned before, needs education and guidance",
+  luxury_buyer: "High-end purchase, expects premium service",
+  luxury_seller: "High-end property sale, sophisticated needs",
+  investor: "Investment focused, ROI driven",
+  first_time_seller: "First time selling, needs process guidance",
+  motivated_seller: "Needs to sell quickly, time-sensitive",
+  relocating: "Moving for job/life change, dual market needs",
+  empty_nester: "Downsizing after children leave",
+  probate: "Inherited property, legal complexities",
+  remote_seller: "Selling from distance, remote management",
+  divorce: "Divorce-related sale, sensitive situation",
+  upsizers: "Buying larger property, growing family",
+  senior: "Senior citizen with age-specific needs",
+  expired: "Previous listing expired, needs new strategy",
+  fsbo: "For Sale By Owner, considering agent representation",
+  other: "Other type of contact",
+}
+
+// `lib/contact-utils.ts` — WHOLE FILE DELETED (orphan burn-down, category C).
+//
+// It was a second, older copy of this file. It had ZERO importers anywhere in
+// the tree — `grep -rn "contact-utils" --include=*.ts --include=*.tsx` matched
+// nothing outside its own body; the only mentions left were tsconfig.tsbuildinfo,
+// scripts/orphan-export-baseline.json and docs/wave44-audit.md, all prose or
+// build residue.
+//
+// MERGED IN BEFORE DELETION: `getPersonaDescription()`'s 16-entry description
+// map. It was the one thing that file had and this one lacked, and it is the
+// block directly above (`PERSONA_DESCRIPTIONS`) — re-keyed to
+// `StandardContactPersona`, which has exactly the same 16 members. Nothing was
+// lost.
+//
+// The rest each collapse into a NAMED, MORE COMPLETE survivor:
+//   CONTACT_TYPE_LABELS  → constants/crm-standards.ts:118 (this file)
+//   CONTACT_PERSONA_LABELS → PERSONA_LABELS, constants/crm-standards.ts:99
+//   STATUS_LABELS        → constants/crm-standards.ts:85
+//   TIMELINE_LABELS      → constants/crm-standards.ts:130
+//   getStatusColor()     → app/leads/page.tsx:671 and
+//                          app/(external-portal)/components/os/external-active-files-panel.tsx:32,
+//                          both LIVE and both already rendering the badge the
+//                          lib copy was written for.
+//   getUrgencyColor() / calculateDaysUntilTimeline() →
+//                          app/dashboard/agent/components/conversion/newly-converted-contacts-panel.tsx:121
+//                          and app/dashboard/communications/components/os/response-pressure-panel.tsx:44,
+//                          again both LIVE.
+//
+// `getTimelineColor()` and `getTimelineUrgency()` had no survivor because they
+// had no subject. They switch on `ContactTimeline` = "0-3_months" | "3-6_months"
+// | "6-12_months" | "12+_months" (types/contact.ts:43), and NO WRITER IN THIS
+// REPOSITORY PRODUCES THAT VOCABULARY on a row anyone reads. Every live consumer
+// of a timeline tests the vocabulary in STANDARD_TIMELINES above, or free text:
+//   lib/lead-promotion/initial-scorer.ts:69      `lead.timeline === 'immediate'`
+//   lib/lead-governance/multi-factor-scorer.ts:100  same
+//   lib/ai-isa/qualification-core.ts:59          same
+//   lib/services/lead-management.service.ts:455  same
+//   app/actions/lead-intelligence.ts:1311        assigns "immediate"
+// Both functions were total switches with no default, so on any value the live
+// scorers actually see they fell off the end and returned `undefined` — a badge
+// class of `undefined`, an urgency of `undefined`. They could not have worked.
+//
+// OPEN, DELIBERATELY NOT DECIDED HERE: the vocabulary itself is still split two
+// ways. This file (and every live scorer) says `immediate | 30_days | … |
+// 12_plus_months`; `services/aiMappingService.ts:57` — which IS live, imported by
+// services/supabaseService.ts:5 and normalizing values on the write path —
+// declares its own `STANDARD_TIMELINES` as `0-3_months | … | 12+_months`, and
+// types/contact.ts:43 plus lib/domain/types.ts:131 agree with IT. Reconciling
+// them is a write-path change against a live normalizer, not a burn-down edit.

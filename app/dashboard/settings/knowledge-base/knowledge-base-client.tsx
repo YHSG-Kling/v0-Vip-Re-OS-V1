@@ -1,6 +1,13 @@
 'use client'
 
 import { useState, useCallback } from 'react'
+// The help-topic vocabulary owns its own display labels. `.replace(/_/g,' ')`
+// renders "tech_stack" as "tech stack"; the module renders it as "Tech Stack",
+// which is what the admin picked from and what the CHECK constraint stores.
+// Client-safe by design (no `server-only`), so the picker imports it rather
+// than keeping a private copy — a hand-maintained vocabulary beside a CHECK is
+// how the drift this module documents got in.
+import { helpTopicCategoryLabel } from '@/lib/knowledge/help-topic-categories'
 import useSWR, { mutate } from 'swr'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -558,7 +565,11 @@ export function KnowledgeBaseClient({
                   : 'hover:bg-muted'
               }`}
             >
-              {category === 'all' ? 'All Articles' : category.replace(/_/g, ' ')}
+              {category === 'all'
+                ? 'All Articles'
+                : source === 'articles'
+                  ? category.replace(/_/g, ' ')
+                  : helpTopicCategoryLabel(category)}
             </button>
           ))}
         </div>
@@ -904,7 +915,7 @@ export function KnowledgeBaseClient({
                     .filter((c) => c !== 'all')
                     .map((category) => (
                       <SelectItem key={category} value={category}>
-                        {category.replace(/_/g, ' ')}
+                        {helpTopicCategoryLabel(category)}
                       </SelectItem>
                     ))}
                 </SelectContent>

@@ -3,61 +3,24 @@
 import { createClient } from "@/lib/supabase/server"
 import { computeDaysOnMarket } from "@/lib/listings/compute-dom"
 
-// Get education resources for a contact based on their persona
-export async function getEducationResources(params: {
-  contactId: string
-  personaType?: string
-  brokerageId?: string
-}) {
-  const supabase = await createClient()
-  
-  try {
-    // Get contact's brokerage if not provided
-    let brokerageId = params.brokerageId
-    if (!brokerageId) {
-      const { data: contact } = await supabase
-        .from("contacts")
-        .select("brokerage_id")
-        .eq("id", params.contactId)
-        .single()
-      brokerageId = contact?.brokerage_id
-    }
-
-    // Post-1043: completion lives on learning_assignments keyed by module_id.
-    const { data: progress } = await supabase
-      .from("learning_assignments")
-      .select("module_id")
-      .eq("contact_id", params.contactId)
-      .eq("status", "completed")
-
-    const completedIds = new Set(((progress as Array<{ module_id: string }> | null) ?? []).map(p => p.module_id))
-
-    // Catalog comes from learning_modules (canonical store). Persona filter
-    // hits audience_personas; brokerage scope is enforced.
-    let query = supabase
-      .from("learning_modules")
-      .select("id, title, summary, body, channels, audience_personas, cover_image_url, estimated_minutes, display_priority, created_at")
-      .eq("status", "published")
-      .order("display_priority", { ascending: false })
-    if (brokerageId) query = query.eq("brokerage_id", brokerageId)
-    if (params.personaType) {
-      query = query.contains("audience_personas", [params.personaType])
-    }
-
-    const { data: resources, error } = await query
-    if (error) throw error
-
-    const mappedResources = ((resources as Array<{ id: string }> | null) ?? []).map(r => ({
-      ...r,
-      completed: completedIds.has(r.id),
-    }))
-
-    return { success: true, resources: mappedResources }
-  } catch (error) {
-    console.error("[getEducationResources] Error:", error)
-    return { success: false, error: "Failed to fetch education resources", resources: [] }
-  }
-}
+// `getEducationResources({ contactId, personaType?, brokerageId? })` — DELETED
+// (orphan burn-down, category C).
+//
+// SURVIVOR: `app/actions/portal-education.ts:176 getLessonFeed(contactId)`, which
+// is what the portal's Learn tab actually calls
+// (app/portal/[contactId]/learn/page.tsx:4). It is a strict superset of this:
+// same published learning_modules catalog, same learning_assignments completion
+// join, PLUS the education context (portal view, current milestone, age segment)
+// and the kernel education plan that order the feed.
+//
+// It is also the only one of the two that GATES. `getLessonFeed` opens with
+// `requireContactAccess(contactId)` and returns EMPTY_FEED when the caller is not
+// that contact. This function did not: it was a `"use server"` endpoint that took
+// a `contactId` AND an optional `brokerageId` straight off the wire and, when
+// `brokerageId` was supplied, skipped the contact lookup entirely — so any
+// authenticated caller could enumerate another brokerage's published curriculum
+// by posting its id. The caller-supplied tenant id was the whole tenant boundary,
+// which is exactly the shape this audit removes.
 
 // Get recommended properties for a contact
 export async function getRecommendedProperties(params: {
@@ -166,113 +129,44 @@ export async function markResourceCompleted(params: {
   }
 }
 
-// Get client journey milestones
-export async function getJourneyMilestones(params: {
-  contactId: string
-  transactionId?: string
-}) {
-  const supabase = await createClient()
-  
-  try {
-    let query = supabase
-      .from("transaction_milestones")
-      // due_date is target_date; alias keeps any downstream .due_date read working.
-      .select("*, transactions(*), due_date:target_date")
-      .order("target_date", { ascending: true })
+// `getJourneyMilestones({ contactId, transactionId? })` — DELETED (orphan
+// burn-down, category C).
+//
+// SURVIVOR: `lib/kernel/portal.ts:723 getPortalJourneyMilestones(supabase, {
+// contactId, transactionId? })`, called by the portal's Journey page
+// (app/portal/[contactId]/journey/page.tsx:3). Same table, same ordering, same
+// optional-transaction fallback — and one thing this never had.
+//
+// THE MISSING THING WAS THE CLIENT-VISIBILITY GATE. `transaction_milestones`
+// carries `is_client_visible`, which is how an agent decides what the client is
+// shown; the kernel reader selects that column and honours it (and layers the
+// contact's own `contact_portal_preferences.milestone_overrides` on top). This
+// function did `select("*, transactions(*)")` with no such filter, from a
+// `"use server"` endpoint that trusted a caller-supplied `contactId`. Wiring it
+// to any portal surface would have published every internal milestone — and,
+// through the unbounded `transactions(*)` embed, the whole transaction row
+// including price fields — to the client the agent had deliberately hidden them
+// from. Nothing about it was salvageable onto the survivor.
 
-    if (params.transactionId) {
-      query = query.eq("transaction_id", params.transactionId)
-    } else {
-      // Get milestones for contact's active transaction
-      const { data: transactions } = await supabase
-        .from("transactions")
-        .select("id")
-        .eq("contact_id", params.contactId)
-        .eq("status", "active")
-        .limit(1)
-
-      if (transactions && transactions.length > 0) {
-        query = query.eq("transaction_id", transactions[0].id)
-      } else {
-        return { success: true, milestones: [] }
-      }
-    }
-
-    const { data: milestones, error } = await query
-
-    if (error) throw error
-
-    return { success: true, milestones: milestones || [] }
-  } catch (error) {
-    console.error("[getJourneyMilestones] Error:", error)
-    return { success: false, error: "Failed to fetch milestones", milestones: [] }
-  }
-}
-
-// Get agent info for a contact
-export async function getContactAgent(params: { contactId: string }) {
-  const supabase = await createClient()
-  
-  try {
-    // FIVE OF THESE COLUMNS DID NOT EXIST, so PostgREST rejected the WHOLE query
-    // and this card has never once rendered. Verified against
-    // information_schema: `agents` has no `full_name`, `email` or `phone` — those
-    // are on the joined `users` row — and no `avg_days_to_sell` or
-    // `transactions_closed` at all.
-    //
-    // It survived because the schema-drift guard STRIPPED embedded relations
-    // before checking columns, so an embed could name anything. W47 taught the
-    // guard to resolve embeds (scripts/schema-fk-map.ts) and this was the first
-    // thing it found. The tracked note for this card blamed an id class, then a
-    // select/render shape mismatch; both were wrong. It was a dead embed.
-    //
-    // agents.user_id -> users.id is a single FK, so the embed returns an OBJECT,
-    // and name/email/phone are read off it the way every other portal reader
-    // does (app/portal/[contactId]/listing/page.tsx:155).
-    const { data: contact, error } = await supabase
-      .from("contacts")
-      .select(`
-        agent_id,
-        agents:agent_id (
-          id,
-          photo_url,
-          profile_image_url,
-          bio,
-          specializations,
-          years_experience,
-          phone_mobile,
-          phone_office,
-          users:user_id ( first_name, last_name, email, phone )
-        )
-      `)
-      .eq("id", params.contactId)
-      .single()
-
-    if (error) throw error
-
-    // Flattened to the shape the caller already expects (`full_name`, `email`,
-    // `phone`), so no consumer changes — but the values are now real. Photo
-    // prefers photo_url, which is the column the agent's own profile editor
-    // writes (app/actions/user-profile.ts:155); profile_image_url is the older
-    // one and stays as the fallback.
-    const a = contact?.agents as Record<string, any> | null
-    const u = (a?.users ?? null) as Record<string, any> | null
-    const agent = a
-      ? {
-          id: a.id,
-          full_name: [u?.first_name, u?.last_name].filter(Boolean).join(" ") || null,
-          email: u?.email ?? null,
-          phone: a.phone_mobile ?? a.phone_office ?? u?.phone ?? null,
-          photo_url: a.photo_url ?? a.profile_image_url ?? null,
-          bio: a.bio ?? null,
-          specializations: a.specializations ?? null,
-          years_experience: a.years_experience ?? null,
-        }
-      : null
-
-    return { success: true, agent }
-  } catch (error) {
-    console.error("[getContactAgent] Error:", error)
-    return { success: false, error: "Failed to fetch agent info", agent: null }
-  }
-}
+// `getContactAgent({ contactId })` — DELETED (orphan burn-down, category C).
+//
+// SURVIVOR: the primary-agent read in `app/portal/[contactId]/team/page.tsx:61`,
+// which is the "Your Agent" card this function was written to feed and which has
+// been rendering the same `agents` row (with the same `users:user_id` embed, the
+// same photo_url→profile_image_url fallback and the same
+// phone_mobile→phone_office→users.phone fallback) all along.
+//
+// MERGED IN BEFORE DELETION: `specializations` and `years_experience`. They were
+// the two fields this function selected that the survivor did not, so they were
+// added to the team page's select and are now rendered as chips beside the
+// agent's name. `specializations` is `character varying` on `agents`, not
+// `text[]` — this function passed it through raw; the survivor splits it.
+//
+// Why the survivor and not this: it destructures `{ data, error }` and renders a
+// failed read as a failed read (`agentError`), where this collapsed everything
+// into `{ success: false, agent: null }` from a catch — a client whose agent
+// lookup was REFUSED would have been told they have no agent. And it is reached
+// through a page that has already resolved the portal session, rather than being
+// a `"use server"` endpoint that took a bare `contactId` off the wire and
+// returned that contact's agent's name, email, phone and bio to anyone who
+// guessed a uuid.

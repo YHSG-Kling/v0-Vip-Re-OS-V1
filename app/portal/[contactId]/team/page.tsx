@@ -58,11 +58,21 @@ export default async function TeamPage({
     // own messages page (app/portal/[contactId]/messages/page.tsx:137) already prefers
     // those two, so the Call button here now resolves the same way instead of going
     // missing whenever users.phone is unset.
+    //
+    // specializations / years_experience MERGED IN from the deleted
+    // app/actions/ai-client-portal.ts:getContactAgent — see the tombstone in that
+    // file. They are the two credibility fields this card was missing, and they
+    // are what a client actually wants to know about the person representing
+    // them. (Kept OUT of the query chain below deliberately: tenant-scope-guard
+    // reads a 500-char window after `.from("agents")` looking for the scope
+    // evidence, and a comment sitting between the .from() and the .eq("id", …)
+    // pushes that evidence past the window and reports a scoped query as
+    // unscoped. The chain stays compact so the guard can see it.)
     contact.agent_id
       ? supabase
           .from("agents")
           .select(
-            "id, photo_url, profile_image_url, bio, phone_mobile, phone_office, users(first_name, last_name, phone, email)"
+            "id, photo_url, profile_image_url, bio, specializations, years_experience, phone_mobile, phone_office, users(first_name, last_name, phone, email)"
           )
           .eq("id", contact.agent_id)
           .single()
@@ -113,6 +123,17 @@ export default async function TeamPage({
         // Business numbers first — this card is what a CLIENT dials.
         phone: (agentRow.phone_mobile ?? agentRow.phone_office ?? agentUser?.phone ?? null) as string | null,
         email: (agentUser?.email ?? null) as string | null,
+        // `agents.specializations` is `character varying`, NOT `text[]` (verified
+        // against information_schema — the deleted getContactAgent passed it
+        // through raw and would have handed a client component a bare string
+        // where the shape implied a list). Split on commas so a single value and
+        // a "Luxury, Relocation" value both render as chips, and so null and ""
+        // both render as nothing.
+        specializations: String(agentRow.specializations ?? "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+        years_experience: (agentRow.years_experience ?? null) as number | null,
       }
     : null
 
@@ -198,6 +219,22 @@ export default async function TeamPage({
               <div className="flex-1 space-y-3">
                 <div>
                   <h3 className="text-xl font-semibold">{agentDisplayName}</h3>
+                  {(primaryAgent.years_experience !== null ||
+                    primaryAgent.specializations.length > 0) && (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      {primaryAgent.years_experience !== null && (
+                        <Badge variant="outline">
+                          {primaryAgent.years_experience}{" "}
+                          {primaryAgent.years_experience === 1 ? "year" : "years"} in real estate
+                        </Badge>
+                      )}
+                      {primaryAgent.specializations.map((s) => (
+                        <Badge key={s} variant="secondary">
+                          {s}
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
                   {primaryAgent.bio && (
                     <p className="text-sm text-muted-foreground mt-2 line-clamp-3">
                       {primaryAgent.bio}

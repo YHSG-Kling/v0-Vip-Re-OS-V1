@@ -13,6 +13,7 @@ import {
 } from '@/lib/knowledge/embedding-service'
 import { embedAndStore } from '@/lib/intelligence/kb-search'
 import { isPlatformStaffIdentity } from '@/lib/auth/resolve-user-role'
+import { isStorableHelpTopicCategory, HELP_TOPIC_CATEGORIES } from '@/lib/knowledge/help-topic-categories'
 import { revalidatePath } from 'next/cache'
 
 // ============================================================================
@@ -555,6 +556,17 @@ export async function createHelpTopic(input: {
     return { success: false as const, error: 'No brokerage is attached to this account' }
   }
 
+  // `help_topics_kb.category` carries a live CHECK constraint. A value outside it
+  // comes back as a bare Postgres 23514 whose message names a constraint, not a
+  // field the admin can act on — so the refusal is made here, in the vocabulary's
+  // own terms, and it names the values that ARE storable.
+  if (!isStorableHelpTopicCategory(input.category)) {
+    return {
+      success: false as const,
+      error: `"${input.category}" is not a storable help-topic category. Choose one of: ${HELP_TOPIC_CATEGORIES.join(', ')}`,
+    }
+  }
+
   const { data, error } = await supabase
     .from('help_topics_kb')
     .insert({
@@ -598,6 +610,15 @@ export async function updateHelpTopic(
   const supabase = await createClient()
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) return { success: false as const, error: 'Not signed in' }
+
+  // Same CHECK, same refusal. `category` is optional on update, so only a
+  // supplied one is tested — omitting it leaves the stored value alone.
+  if (input.category !== undefined && !isStorableHelpTopicCategory(input.category)) {
+    return {
+      success: false as const,
+      error: `"${input.category}" is not a storable help-topic category. Choose one of: ${HELP_TOPIC_CATEGORIES.join(', ')}`,
+    }
+  }
 
   const staff = await callerIsPlatformStaff()
 

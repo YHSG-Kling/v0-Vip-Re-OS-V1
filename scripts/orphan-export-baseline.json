@@ -2,13 +2,12 @@
   "files": {
     "app/actions/academy.ts": 2,
     "app/actions/accounting-sync.ts": 1,
-    "app/actions/activities.ts": 2,
+    "app/actions/activities.ts": 1,
     "app/actions/admin/billing.ts": 2,
     "app/actions/admin/commission-agreement.ts": 1,
     "app/actions/agents.ts": 5,
     "app/actions/ai-auto-response.ts": 1,
     "app/actions/ai-calendar-management.ts": 1,
-    "app/actions/ai-client-portal.ts": 3,
     "app/actions/ai-closing-workflow.ts": 1,
     "app/actions/ai-cma.ts": 1,
     "app/actions/ai-content-generation.tsx": 3,
@@ -27,13 +26,12 @@
     "app/actions/ai-transaction-coordinator.ts": 2,
     "app/actions/ai-vendor-management.ts": 1,
     "app/actions/ai-voice-transcription.ts": 1,
-    "app/actions/assistant.ts": 3,
+    "app/actions/assistant.ts": 2,
     "app/actions/billing.ts": 3,
-    "app/actions/blog.ts": 2,
     "app/actions/brand-template-registry.ts": 2,
     "app/actions/brokerage-cda-setup.ts": 1,
     "app/actions/buyer-broker-agreements.ts": 1,
-    "app/actions/buyer-execution.ts": 3,
+    "app/actions/buyer-execution.ts": 1,
     "app/actions/buyer-financial.ts": 1,
     "app/actions/buyer-offer/handle-multi-offer.ts": 1,
     "app/actions/buyer-offer/track-offer-lifecycle.ts": 1,
@@ -103,7 +101,6 @@
     "app/dashboard/intelligence-report/trust-receipts-card.tsx": 1,
     "app/dashboard/videos/components/BackgroundPicker.tsx": 1,
     "app/settings/email-templates/template-preview.tsx": 1,
-    "hooks/use-debounce.ts": 1,
     "hooks/use-local-storage.ts": 1,
     "hooks/use-toast.ts": 1,
     "lib/ads/ad-creative-engine.ts": 3,
@@ -212,7 +209,6 @@
     "lib/connections/zoom.ts": 12,
     "lib/constants/index.ts": 1,
     "lib/contact-promotion/contact-creator.ts": 1,
-    "lib/contact-utils.ts": 4,
     "lib/contacts/buyer-stage.ts": 1,
     "lib/contacts/contact-brief.ts": 1,
     "lib/contacts/persona-builder.ts": 5,
@@ -305,7 +301,6 @@
     "lib/intelligence/time-to-value-radar.ts": 1,
     "lib/kernel/ads.ts": 2,
     "lib/kernel/agent-coaching.ts": 4,
-    "lib/kernel/agent-identity-resolver.ts": 1,
     "lib/kernel/agent-identity.ts": 1,
     "lib/kernel/ai-search-citation-monitor.ts": 8,
     "lib/kernel/ai-sentinel.ts": 1,
@@ -417,7 +412,6 @@
     "lib/kernel/week-in-review.ts": 2,
     "lib/kernel/write-sentinel.ts": 1,
     "lib/knowledge/embedding-service.ts": 2,
-    "lib/knowledge/help-topic-categories.ts": 2,
     "lib/lead-assignment/capacity-pick.ts": 1,
     "lib/lead-assignment/default-assignment.ts": 1,
     "lib/lead-assignment/rule-matcher.ts": 2,
@@ -469,7 +463,6 @@
     "lib/marketing/marketing-autonomy-ratchet.ts": 3,
     "lib/marketing/marketing-qr.ts": 1,
     "lib/marketing/package-catalog.ts": 1,
-    "lib/marketing/social-baselines.ts": 3,
     "lib/marketing/social-cadence.ts": 1,
     "lib/marketing/social-carousel.ts": 2,
     "lib/marketing/social-media-pairing.ts": 2,
@@ -552,7 +545,6 @@
     "lib/recruiting/vendor-recruitment-propensity.ts": 1,
     "lib/recruiting/vendor-recruitment-scout.ts": 2,
     "lib/referrals/partner-agreement-watch.ts": 1,
-    "lib/referrals/partner-vocabulary.ts": 2,
     "lib/referrals/referral-reciprocity.ts": 1,
     "lib/remotion/code-revision.ts": 1,
     "lib/remotion/composition-cache.ts": 1,
@@ -607,7 +599,6 @@
     "lib/video/video-director.ts": 8,
     "lib/video/video-plays.ts": 2,
     "lib/video/video-qr.ts": 1,
-    "lib/video/video-status.ts": 2,
     "lib/voice/call-recording.ts": 3,
     "lib/voice/command-coverage.ts": 1,
     "lib/voice/conversation-relay.ts": 3,
@@ -633,7 +624,7 @@
     "lib/workflow/variables.ts": 1,
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1
   },
-  "census": 9047,
+  "census": 9035,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -690,7 +681,7 @@
     "app/actions/ai-calendar-management.ts": 13,
     "app/actions/ai-chat.ts": 17,
     "app/actions/ai-client-gifting.ts": 7,
-    "app/actions/ai-client-portal.ts": 5,
+    "app/actions/ai-client-portal.ts": 2,
     "app/actions/ai-closing-workflow.ts": 5,
     "app/actions/ai-cma.ts": 4,
     "app/actions/ai-communication-hub.ts": 9,
@@ -739,7 +730,7 @@
     "app/actions/appraisal-defense.ts": 1,
     "app/actions/approval-sla.ts": 1,
     "app/actions/asset-manager-resolutions.ts": 2,
-    "app/actions/assistant.ts": 8,
+    "app/actions/assistant.ts": 7,
     "app/actions/auth/signup-brokerage.ts": 1,
     "app/actions/auth.ts": 3,
     "app/actions/autonomy-halt.ts": 1,
@@ -759,7 +750,7 @@
     "app/actions/buyer-broker-agreements.ts": 7,
     "app/actions/buyer-closing-costs.ts": 1,
     "app/actions/buyer-coaching.ts": 1,
-    "app/actions/buyer-execution.ts": 9,
+    "app/actions/buyer-execution.ts": 8,
     "app/actions/buyer-fatigue.ts": 9,
     "app/actions/buyer-financial.ts": 7,
     "app/actions/buyer-insights.ts": 2,
@@ -3067,7 +3058,6 @@
     "lib/contact-promotion/promotion-eligibility.ts": 1,
     "lib/contact-promotion/promotion-logger.ts": 1,
     "lib/contact-types.ts": 1,
-    "lib/contact-utils.ts": 6,
     "lib/contact-validation.ts": 3,
     "lib/contacts/buyer-stage.ts": 1,
     "lib/contacts/card-classifier.ts": 1,
@@ -3758,7 +3748,7 @@
     "lib/marketing/newsletter-cadence.ts": 1,
     "lib/marketing/package-catalog.ts": 5,
     "lib/marketing/qr-asset-linker.ts": 5,
-    "lib/marketing/social-baselines.ts": 3,
+    "lib/marketing/social-baselines.ts": 2,
     "lib/marketing/social-cadence.ts": 2,
     "lib/marketing/social-carousel.ts": 3,
     "lib/marketing/social-media-pairing.ts": 4,
@@ -4549,11 +4539,8 @@
       "createVendor"
     ],
     "app/actions/ai-client-portal.ts": [
-      "getEducationResources",
       "getRecommendedProperties",
-      "markResourceCompleted",
-      "getJourneyMilestones",
-      "getContactAgent"
+      "markResourceCompleted"
     ],
     "app/actions/ai-closing-workflow.ts": [
       "aiGenerateClosingChecklist",
@@ -4960,7 +4947,6 @@
     ],
     "app/actions/assistant.ts": [
       "handleAssistantQuery",
-      "handleTaskDelegated",
       "handleAutomationTriggered",
       "generateSmartSuggestion",
       "dismissSuggestion",
@@ -5104,8 +5090,7 @@
       "agentConfigureBuyerSearch",
       "adminOverrideFinancialVerification",
       "agentAdvanceBuyer",
-      "getBuyerUpdateHistory",
-      "logBuyerAction"
+      "getBuyerUpdateHistory"
     ],
     "app/actions/buyer-fatigue.ts": [
       "getBuyerFatigueScore",
@@ -14588,14 +14573,6 @@
     "lib/contact-types.ts": [
       "isLifetimeCustomerType"
     ],
-    "lib/contact-utils.ts": [
-      "getTimelineColor",
-      "getTimelineUrgency",
-      "getPersonaDescription",
-      "getUrgencyColor",
-      "calculateDaysUntilTimeline",
-      "getStatusColor"
-    ],
     "lib/contact-validation.ts": [
       "validateEmail",
       "validatePhone",
@@ -15965,7 +15942,7 @@
     "lib/kernel/agent-identity-resolver.ts": [
       "resolveAgentRecordToUserId",
       "resolveUserIdToAgentRecord",
-      "_resetAgentIdentityCaches"
+      "invalidateAgentIdentity"
     ],
     "lib/kernel/agent-identity.ts": [
       "resolveAgentId",
@@ -18130,7 +18107,6 @@
     ],
     "lib/marketing/social-baselines.ts": [
       "listSocialBaselines",
-      "getSocialBaseline",
       "computeOrganicLift"
     ],
     "lib/marketing/social-cadence.ts": [
@@ -20491,5 +20467,5 @@
       "isSupabaseConfigured"
     ]
   },
-  "trulyDead": 147
+  "trulyDead": 124
 }

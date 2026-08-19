@@ -542,55 +542,29 @@ export async function getBuyerUpdateHistory(params: {
   }
 }
 
-/**
- * Log custom buyer action
- * Generic logging for buyer interactions
- *
- * GATED (was not). This was an **unauthenticated audit-log writer**: caller chose
- * the contact, the event type (a free string), the acting `userId`, the source
- * and the metadata blob. That is log forgery against any tenant — you could
- * write `buyer.financial.gate_overridden` attributed to someone else's broker
- * into someone else's activity feed, which is the same feed
- * `getBuyerUpdateHistory` above reads back as an audit trail.
- *
- * Now: caller must be able to act on the contact, the actor is the session's user
- * (never the caller's claim), and `actionType` must be a bounded `buyer.*` event
- * name so this generic logger cannot be used to counterfeit another subsystem's
- * events.
- */
-export async function logBuyerAction(params: {
-  contactId: string
-  actionType: string
-  /** Ignored — the actor is derived from the session. */
-  userId?: string
-  source: 'buyer_portal' | 'voice_assistant' | 'agent_action' | 'automation'
-  metadata?: Record<string, unknown>
-}) {
-  const { contactId, actionType, source, metadata } = params
-
-  if (!isValidUUID(contactId)) {
-    return { success: false, error: 'Invalid contact ID' }
-  }
-
-  // A generic logger that accepts any event name can counterfeit every other
-  // subsystem's events. Keep it inside its own namespace and its own vocabulary.
-  if (typeof actionType !== 'string' || !/^buyer\.[a-z0-9_.]{1,60}$/.test(actionType)) {
-    return { success: false, error: 'actionType must be a buyer.* event name' }
-  }
-
-  const access = await requireContactAccess(contactId)
-  if (!access.ok) return { success: false, error: access.error }
-
-  try {
-    return await logBuyerExecutionEvent({
-      contactId,
-      eventType: actionType,
-      userId: access.userId,
-      source,
-      metadata
-    })
-  } catch (error) {
-    console.error('[buyer-execution] Error in logBuyerAction:', error)
-    return handleError(error, 'logBuyerAction')
-  }
-}
+// `logBuyerAction({ contactId, actionType, source, metadata })` — DELETED
+// (orphan burn-down, category C).
+//
+// SURVIVOR: `lib/buyer-execution/buyer-execution-engine.ts:317
+// logBuyerExecutionEvent(...)`, which is the function this delegated to
+// unchanged and which is LIVE at three call sites that write the buyer trail as
+// it actually happens:
+//   lib/buyer-execution/voice-assistant-integration.ts:48
+//   lib/buyer-execution/showing-financial-policy.ts:157
+//   lib/buyer-execution/multi-party-updates.ts (each gate transition)
+// It resolves the tenant off the contact and returns {success,error} — nothing
+// this wrapper added was carried in the write itself.
+//
+// What the wrapper added was a `"use server"` DOOR onto the audit log, and no
+// caller ever walked through it. A generic event writer reachable over HTTP is
+// worth having only if something needs to reach it from a browser; nothing does.
+// The events an agent can trigger are each written by the action that performs
+// them — lenderConfirmBuyerFinancials, adminOverrideFinancialVerification,
+// agentAdvanceBuyer, agentConfigureBuyerSearch, all in this file — and those are
+// the rows `getBuyerUpdateHistory` reads back on the contact page. There is no
+// buyer event whose only route to `activities` was this endpoint.
+//
+// NOTE: the gate and the `^buyer\.` vocabulary clamp this carried are NOT lost
+// capability — they existed solely to make the door safe. With the door closed
+// the writes all originate server-side from actions that have already resolved
+// their own actor, which is the stronger position.

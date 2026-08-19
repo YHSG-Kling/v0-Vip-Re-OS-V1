@@ -1,7 +1,6 @@
 "use server"
 
 import { createServerClient } from "@/lib/supabase/server"
-import { agentIdForUser } from "@/lib/agents/agent-for-user"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 
 // =====================================================
@@ -10,15 +9,42 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 // authenticated user could delegate any task to anyone, log queries as any
 // user, etc.). Hardened: caller must own the relevant user_id, OR be admin.
 //
-// ORPHAN BURN-DOWN (lane O) — handleAssistantQuery / handleTaskDelegated /
-// handleAutomationTriggered are RECORDED AS A BUILD LINE, same blocker as their
-// three siblings in app/actions/copilot.ts (see that file's header for the full
-// reasoning): the registry they were written for is
-// lib/orchestrator/internal.ts:EVENT_HANDLERS, which is owned by another lane in
-// this wave, and registering these session-gated exports there directly would be
-// the wrong fix anyway — the unattended dispatcher has a service credential and
-// no session, so `authorizeForUser` would refuse every call. They are not
-// duplicates of anything, so they are not deletions.
+// ORPHAN BURN-DOWN — SETTLED, AS AN OWNER DECISION. They are NOT event handlers,
+// and the earlier note that they were "a build line blocked on the orchestrator
+// lane" rested on a premise that does not survive reading the orchestrator.
+//
+// THE DISPROOF, in three checks anyone can repeat:
+//   1. `lib/orchestrator/internal.ts:EVENT_HANDLERS` IS NOT A DISPATCH PATH.
+//      `orchestrateEvent` routes through `switch (event.event_type)` (internal.ts
+//      :158-202); the map is never read at runtime and its own header says so.
+//      Adding a name to it changes nothing that runs.
+//   2. THERE IS NO EVENT. `lib/events/types.ts:29-54` is the whole EVENT_TYPES
+//      vocabulary. It has no member for an assistant query, a task delegation or an
+//      automation firing — and no member for the copilot three either. The closest,
+//      `AI_SUGGESTION_ACTIONED`, has ZERO emitters repo-wide.
+//   3. So the recorded blocker (a service-credentialed dispatcher versus a session
+//      gate) is real but MOOT: an internal-caller seam would gate a dispatch that
+//      never occurs. Building it would put a door on a wall and make six functions
+//      look wired while firing exactly as often as they do now, which is never.
+//
+// WHAT THEY ARE INSTEAD — each is user-initiated, not event-driven:
+//   · handleAssistantQuery / handleAutomationTriggered — TELEMETRY. Each is the SOLE
+//     writer of its table (`assistant_queries`, `automation_logs`) and NEITHER table
+//     has a reader anywhere in the repo; scripts/orphan-write-sweep.ts:38 already
+//     classifies assistant_queries as "assistant usage telemetry". They are kept as
+//     the write half of a telemetry pair whose read half was never built. Not
+//     deleted (no duplicate, and deleting the only writer of a live table loses the
+//     column), not registered (nothing emits an event for them).
+//   · handleTaskDelegated — MERGED, THEN DELETED. It was a TASK REASSIGNMENT, and
+//     app/actions/tasks.ts:updateTask (`params.assignedTo` → `assigned_to_agent_id`)
+//     is the wired survivor of that write. The cross-lane merge this note named is
+//     now done: the survivor carries BOTH items this copy held and it did not — the
+//     ownership test before a reassignment (current assignee, creator, or
+//     broker/admin) and the notice to the new assignee, tenant-stamped through
+//     lib/notifications/recipient-tenant.ts. It carries them WITH the tenant
+//     predicate this copy never had: handleTaskDelegated read and updated `tasks` by
+//     id with NO brokerage scope, so a delegator could probe and reassign a task in
+//     another brokerage as long as they happened to be its assignee there.
 // =====================================================
 
 // The gate this file grew privately now lives in ONE place and is shared with
@@ -31,10 +57,6 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 // See lib/auth/authorize-for-user.ts for why it is a plain module (server-only would break
 // any plain-tsx guard that transitively imports it).
 import { authorizeForUser } from "@/lib/auth/authorize-for-user"
-// The ONE way a notifications row gets its tenant — the recipient's
-// users.brokerage_id, which is the exact value the badge-count reader compares
-// against. See lib/notifications/recipient-tenant.ts for why nothing else works.
-import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenant"
 
 export async function handleAssistantQuery(payload: any) {
   const { user_id, query, context } = payload
@@ -48,76 +70,6 @@ export async function handleAssistantQuery(payload: any) {
     context,
     timestamp: new Date().toISOString(),
   })
-
-  return { success: true }
-}
-
-export async function handleTaskDelegated(payload: any) {
-  const { task_id, from_user_id, to_user_id, task_title } = payload
-  // Caller must be the delegator (from_user_id) or an admin. Without this
-  // any agent could reassign any task to any user.
-  const auth = await authorizeForUser(from_user_id)
-  if (!auth.ok) return { success: false, error: auth.error }
-
-  const supabase = await createServerClient()
-  // Task assignment keys on agents.id; the webhook payload carries users.id —
-  // translate both sides before the ownership check and the reassignment.
-  const [fromAgentId, toAgentId] = await Promise.all([
-    agentIdForUser(supabase, from_user_id),
-    agentIdForUser(supabase, to_user_id),
-  ])
-  if (!fromAgentId) return { success: false, error: "Delegator has no agent record" }
-  if (!toAgentId)   return { success: false, error: "Recipient has no agent record" }
-  // Verify the task actually belongs to the delegator before reassigning.
-  const { data: task } = await supabase
-    .from("tasks")
-    .select("id, assigned_to_agent_id, created_by_agent_id")
-    .eq("id", task_id)
-    .maybeSingle()
-  if (!task) return { success: false, error: "Task not found" }
-  if (task.assigned_to_agent_id !== fromAgentId && task.created_by_agent_id !== fromAgentId) {
-    return { success: false, error: "Forbidden: not your task to delegate" }
-  }
-
-  await supabase
-    .from("tasks")
-    .update({ assigned_to_agent_id: toAgentId })
-    .eq("id", task_id)
-
-  // Real notifications shape (user_id/type/body/entity_*) — the phantom insert
-  // failed silently, so delegated-task recipients were never notified.
-  //
-  // TENANT — the RECIPIENT's `users.brokerage_id`, resolved once through the
-  // person this row is filed against. `to_user_id` is a users.id (it was already
-  // translated to `toAgentId` above for the tasks table, and the two spaces are
-  // DISJOINT — the agents.id is never reused here). Unstamped, the delegation
-  // notice is invisible to badge-counts, which ANDs
-  // `.eq("brokerage_id", <recipient's users.brokerage_id>)`: the row exists, the
-  // bell stays dark, and "the phantom insert failed silently" repeats with a
-  // real row instead of a rejected one.
-  const delegateTenant = await resolveRecipientBrokerageId(supabase, to_user_id)
-  if (!delegateTenant.ok) {
-    console.error(`[assistant] handleTaskDelegated: ${delegateTenant.reason} — delegation notification NOT written`)
-    return { success: true, warning: "Task reassigned, but the recipient could not be notified" }
-  }
-  if (!delegateTenant.brokerageId) {
-    console.error(
-      `[assistant] handleTaskDelegated: recipient ${to_user_id} has no brokerage — delegation notification NOT written rather than written where the bell cannot count it`,
-    )
-    return { success: true, warning: "Task reassigned, but the recipient could not be notified" }
-  }
-  const { error: delegateNotifyError } = await supabase.from("notifications").insert({
-    user_id: to_user_id,
-    brokerage_id: delegateTenant.brokerageId,
-    type: "task_delegated",
-    title: "New Task Assigned",
-    body: `You've been assigned: ${task_title}`,
-    entity_type: "task",
-    entity_id: task_id,
-  })
-  if (delegateNotifyError) {
-    console.error("[assistant] task_delegated notification insert refused:", delegateNotifyError.message)
-  }
 
   return { success: true }
 }
@@ -200,21 +152,35 @@ export async function generateSmartSuggestion(input: SuggestionInput): Promise<v
  */
 type SuggestionResult = { success: true } | { success: false; error: string }
 
+/**
+ * The suggestion-status writer for the two points THIS file's exports move a card to.
+ * `accepted` is a third, distinct point — scripts/1082-broaden-smart-assistant-
+ * suggestions-status-check.sql:9-14 defines it as "agent agreed but hasn't completed
+ * the action yet" — and its writer is app/actions/copilot.ts:handleSuggestionAccepted.
+ * It is deliberately NOT folded in here: doing so meant adding a fourth exported
+ * server action with no caller, which is a rename of an orphan and not a burn-down.
+ */
 async function setSuggestionStatus(
   suggestionId: string,
   status: "dismissed" | "actioned",
 ): Promise<SuggestionResult> {
   const supabase = await createServerClient()
 
-  const { error } = await supabase
+  const { data: updated, error } = await supabase
     .from("smart_assistant_suggestions")
     // no actioned_at column — status is the canonical action record
     .update({ status })
     .eq("id", suggestionId)
+    .select("id")
 
   if (error) {
     console.error(`[assistant] suggestion ${suggestionId} → ${status} failed:`, error.message)
     return { success: false, error: error.message }
+  }
+  if (!updated?.length) {
+    // supabase-js resolves an update that matched nothing exactly like one that
+    // matched a row. Without this the card silently reappears on the next load.
+    return { success: false, error: `No suggestion ${suggestionId} is visible to you to mark ${status}` }
   }
   return { success: true }
 }

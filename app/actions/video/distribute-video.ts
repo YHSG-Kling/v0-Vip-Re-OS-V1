@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { isValidUUID } from "@/lib/validations"
 import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-pipeline-reaper-policy"
+import { normalizeVideoStatus, isCanonicalVideoStatus } from "@/lib/video/video-status"
 
 export type DistributeVideoAction =
   | "post_now"
@@ -58,13 +59,32 @@ export async function distributeVideo(
     return { success: false, error: "Video project not found" }
   }
 
-  // `distributed` belongs here: without it a video could never be distributed
-  // a SECOND time, because the first success rewrote its own status out of the
-  // accepted set. `uploaded` belongs here too — an agent's own finished upload
-  // was refused with "wait for generation to complete".
-  const readyStatuses = [...VIDEO_FINISHED_STATUSES, "preview_ready"] as string[]
-  if (!readyStatuses.includes(project.status)) {
-    return { success: false, error: "Video is not ready for distribution. Please wait for generation to complete." }
+  // The stored value is normalised FIRST. `distributed`, `uploaded`, `ready` and
+  // `preview_ready` are all retired spellings of a finished video
+  // (lib/video/video-status.ts:RETIRED_VIDEO_STATUS), and this gate used to
+  // enumerate one of them by hand — so a row written under any of the others was
+  // refused with "wait for generation to complete" for a video that had finished,
+  // and a video that had already been distributed once could never be distributed
+  // again, because its own success rewrote its status out of the accepted set.
+  // One normaliser replaces the hand-list.
+  const rawStatus = String(project.status ?? "")
+  const status = normalizeVideoStatus(rawStatus)
+
+  // A value that survives normalisation and is still not in the vocabulary is
+  // DRIFT, not progress. Saying "wait for generation to complete" about it would
+  // name a condition nobody is waiting on.
+  if (!isCanonicalVideoStatus(status)) {
+    return {
+      success: false,
+      error: `This video's status is "${rawStatus}", which is not a status this system recognises, so it cannot be distributed.`,
+    }
+  }
+
+  if (!(VIDEO_FINISHED_STATUSES as readonly string[]).includes(status)) {
+    return {
+      success: false,
+      error: `This video is "${status}". Only a finished video (${VIDEO_FINISHED_STATUSES.join(" or ")}) can be distributed.`,
+    }
   }
 
   if (!project.video_url) {

@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react"
 import { createClient } from "@/lib/supabase/client"
 // Actions
 import { getAgentStats } from "@/app/actions/agents"
+import { getPendingFollowups } from "@/app/actions/activities"
 import {
   generateDailyGameplan,
   executeCopilotTask,
@@ -281,7 +282,46 @@ export default function AgentDashboard() {
           }
         }
 
-        setActionPlans([...(plans || []), ...autopilotPlans])
+        // 5c. Pending FOLLOW-UPS from the same `activities` table — the half of
+        // it this feed had never read. Step 5 above filters
+        // activity_type='agent_action_plan'; every followup / callback / reminder
+        // / task row that logActivity (app/actions/activities.ts) writes is a
+        // DISJOINT activity_type, so those rows were being written and never
+        // shown anywhere. An agent who scheduled a callback saw it nowhere.
+        //
+        // Read through the gated action rather than a fourth inline query: it
+        // resolves the agent from the SESSION and refuses a mismatch, and it
+        // brings the contact along so the card can say who the callback is with.
+        let followupPlans: any[] = []
+        // agentRow.id, NOT user.id. `activities.agent_id` is AGENTS-class (the
+        // same id steps 5 and 5b filter on) and getPendingFollowups compares the
+        // argument against the session's resolved agents.id — handing it a
+        // users.id would come back "Forbidden" for the agent's own follow-ups.
+        if (agentRow?.id) {
+          const followupRes = await getPendingFollowups(agentRow.id, 5)
+          if (followupRes.error) {
+            // Same posture as the insights feed below: this page has no error
+            // surface for its dashboard reads, so a refusal is logged rather
+            // than rendered as an empty "you are all caught up".
+            console.error("[v0] pending follow-ups read refused:", followupRes.error)
+          } else {
+            followupPlans = (followupRes.followups || []).map((f: any) => ({
+              id: f.id,
+              title:
+                f.title ||
+                [f.activity_type?.replace(/_/g, " "), f.contacts?.first_name, f.contacts?.last_name]
+                  .filter(Boolean)
+                  .join(" ") ||
+                "Follow-up",
+              description: f.description || undefined,
+              priority: f.priority || undefined,
+              contact_id: f.contact_id ?? null,
+              source: "Follow-up",
+            }))
+          }
+        }
+
+        setActionPlans([...(plans || []), ...autopilotPlans, ...followupPlans])
 
         // 5c. AI Insights feed — writers (app/actions/ai-predictions.ts) insert
         // insight_title/insight_description and almost always leave agent_id

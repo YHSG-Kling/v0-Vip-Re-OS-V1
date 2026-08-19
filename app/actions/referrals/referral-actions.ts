@@ -10,6 +10,12 @@ import {
   isReferralStatus,
   type ReferralStatus,
 } from "@/lib/referrals/referral-status"
+import {
+  isReferralPartnerType,
+  isReferralAgreementType,
+  REFERRAL_PARTNER_TYPES,
+  REFERRAL_AGREEMENT_TYPES,
+} from "@/lib/referrals/partner-vocabulary"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -327,6 +333,31 @@ export async function createPartner(params: CreatePartnerParams): Promise<{ id: 
 
   const { agentId, brokerageId, userId } = await getAgentContext()
   const db = createServiceClient()
+
+  // VOCABULARY GATE — before anything else, because a value the CHECK refuses
+  // takes the whole flow down at the INSERT below with
+  // `violates check constraint "referral_partners_partner_type_check"`, and the
+  // two surfaces that call this have both shipped values it refuses: the
+  // referrals screen once sent Title-Case display labels, and the business-card
+  // scanner sent agreement_type 'referral_fee'. Every one of those adds failed,
+  // forever, and the agent was shown "Please try again" — a message about a
+  // transient problem for a permanent one.
+  //
+  // Refused HERE, in the vocabulary's own terms, naming the values that are
+  // storable. The RESPA gate below runs after, so a malformed partner_type can
+  // never reach guardVendorReferralFee's `category` and be classified.
+  if (!isReferralPartnerType(params.partnerType)) {
+    throw new Error(
+      `"${params.partnerType}" is not a storable partner type. Choose one of: ` +
+        REFERRAL_PARTNER_TYPES.map((t) => t.value).join(", "),
+    )
+  }
+  if (!isReferralAgreementType(params.agreementType)) {
+    throw new Error(
+      `"${params.agreementType}" is not a storable agreement type. Choose one of: ` +
+        REFERRAL_AGREEMENT_TYPES.map((t) => t.value).join(", "),
+    )
+  }
 
   // RESPA GATE — the platform structurally blocks a referral/kickback fee against a settlement-service
   // partner (lender, title, attorney, appraiser, inspector, surveyor). The refusal is recorded on the
