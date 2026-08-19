@@ -19,9 +19,10 @@
  *
  * Both inputs are now derived from the repo instead of typed into it:
  *
- *   RETIRED  = every table named in a `DROP TABLE` across the migrations, minus any
- *              table still present in the live-schema snapshot (that difference is
- *              what makes a drop-then-recreate a non-event, automatically).
+ *   RETIRED  = every table named in a `DROP TABLE` across the SQL we ship, minus every
+ *              relation the LIVE DATABASE still has (scripts/live-tables.ts). That
+ *              difference is what makes a drop-then-recreate — or a DROP that was
+ *              written and never run — a non-event, automatically.
  *   ROOTS    = every top-level directory that contains TypeScript, minus the
  *              non-shipping ones named below.
  *
@@ -30,6 +31,7 @@
  */
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs"
 import { join } from "node:path"
+import { LIVE_TABLES } from "./live-tables"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 
 let pass = 0, fail = 0
@@ -75,6 +77,13 @@ function walk(dir: string, out: string[] = []): string[] {
 
 /** Table names from every `DROP TABLE [IF EXISTS] x [CASCADE]` in the SQL we ship. */
 function droppedTables(): string[] {
+  // BOTH directories, deliberately — and I tried restricting this to supabase/migrations first,
+  // which the live database disproved. Some scripts/*.sql WERE executed by hand: training_courses,
+  // agent_courses and training_course_steps are gone from the live schema and their only DROP is in
+  // scripts/L60-S02-retire-legacy-dead-tables.sql. Meanwhile long_form_videos is STILL LIVE and its
+  // only DROP is in scripts/050-enhance-video-content-studio.sql. Same directory, opposite
+  // outcomes: where a DROP is written says nothing about whether it ran. Only the database knows,
+  // which is what LIVE_TABLES below is.
   const sqlDirs = ["supabase/migrations", "scripts"]
   const found = new Set<string>()
   for (const dir of sqlDirs) {
@@ -94,15 +103,19 @@ function droppedTables(): string[] {
   return [...found].sort()
 }
 
-const live = new Set(Object.keys(SCHEMA_SNAPSHOT))
+// THE ORACLE IS THE DATABASE, NOT THE SNAPSHOT. This filter read SCHEMA_SNAPSHOT for most of its
+// life, which is `referenced ∩ live` — so a table that EXISTS but is queried nowhere is absent from
+// it and looked dropped. long_form_videos is exactly that: live, unqueried, DROPped only by a
+// scripts/*.sql that was never run. It was classified retired, and the ownership check below then
+// failed on a row that is correct. scripts/live-tables.ts is the whole live relation list, from the
+// same read as the snapshot, so absence from it now means what this guard always assumed it meant.
+const live = new Set(LIVE_TABLES)
 const allDropped = droppedTables()
-// A table that was dropped but is back in the live snapshot was re-created later —
-// it is not retired, and referencing it is correct.
 const RETIRED = allDropped.filter((t) => !live.has(t))
 const ROOTS = runtimeRoots()
 
 console.log(`\n── derivation ──`)
-console.log(`  · ${allDropped.length} tables named in a DROP TABLE; ${RETIRED.length} of them are absent from the live snapshot (retired)`)
+console.log(`  · ${allDropped.length} tables named in a DROP TABLE; ${RETIRED.length} of them are absent from the ${LIVE_TABLES.length} live relations (retired)`)
 console.log(`  · runtime roots walked: ${ROOTS.join(", ")}`)
 
 // A DERIVED list can silently become an EMPTY list — a parser regression would make

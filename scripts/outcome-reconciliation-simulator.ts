@@ -288,9 +288,15 @@ console.log("\n[the ledger holds ONE row per touch and never walks backwards]")
     !!vocab?.verdict &&
     [...vocab.verdict].sort().join(",") === "confirmed,contradicted,pending,unverifiable",
     (vocab?.verdict ?? []).join(","))
-  check("…and exactly the five channels",
+  // WAS "exactly the five channels … direct_mail,email,sms,social,video". That
+  // asserted a fiction: the live CHECK has never admitted `video` and does admit
+  // `in_app` and `voice_drop` (m-wave "video is a payload, voice_drop + in_app
+  // are the missing channels"). The assertion passed only because the vocabulary
+  // cache it reads was hand-maintained and stale — regenerating that cache from
+  // the database is what exposed it.
+  check("…and exactly the six channels the database admits",
     !!vocab?.channel &&
-    [...vocab.channel].sort().join(",") === "direct_mail,email,sms,social,video",
+    [...vocab.channel].sort().join(",") === "direct_mail,email,in_app,sms,social,voice_drop",
     (vocab?.channel ?? []).join(","))
 }
 

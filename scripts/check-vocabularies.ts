@@ -1,22 +1,35 @@
-// scripts/check-vocabularies.ts — GENERATED from the live database. Do not hand-edit.
-//
-// Every single-column CHECK constraint in public that admits a fixed set of text
-// values, snapshotted so a pure guard can compare source literals against what
-// the database will actually accept. Nullable variants
-// (`col IS NULL OR col = ANY (...)`) are included — the NULL case is not a value,
-// so it does not widen the vocabulary.
-//
-// WHY THIS EXISTS. supabase-js resolves with `{ error }` rather than throwing, and
-// most writes here are best-effort, so a literal the CHECK rejects loses the row in
-// silence. Four shipped defects in one sweep came from exactly this: a "stalled"
-// onboarding status the CHECK forbids (a permanently-zero metric), "watch"/"warning"
-// fatigue levels (the whole middle band of scores vanished), a "fatigue_critical"
-// alert type (critical alerts rendered as warnings), and a listing sweep filtering
-// lifecycle_stage="active" and status="closed" — neither of which exists — so it
-// matched zero rows on every run since it shipped.
-//
-// Snapshot: 428 tables, 730 columns.
-
+/**
+ * scripts/check-vocabularies.ts
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Every single-column CHECK constraint in public that admits a fixed set of text values,
+ * snapshotted so a pure guard can compare source literals against what the database will actually
+ * accept. Nullable variants (`col IS NULL OR col = ANY (…)`) are included — the NULL case is not
+ * a value, so it does not widen the vocabulary. CHECKs over numbers, ranges, lengths or several
+ * columns are not vocabularies of source literals and are left out.
+ *
+ * WHY THIS EXISTS. supabase-js resolves with `{ error }` rather than throwing, and most writes
+ * here are best-effort, so a literal the CHECK rejects loses the row in silence. Four shipped
+ * defects in one sweep came from exactly this: a "stalled" onboarding status the CHECK forbids
+ * (a permanently-zero metric), "watch"/"warning" fatigue levels (the whole middle band of scores
+ * vanished), a "fatigue_critical" alert type (critical alerts rendered as warnings), and a listing
+ * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
+ * matched zero rows on every run since it shipped.
+ *
+ * MEASURED AT GENERATION: 430 tables, 745 columns.
+ *
+ * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
+ * generated: 2026-08-19
+ * source: public.live_check_constraints_json()
+ * body-sha256: 558529409d5a002049aa0f2415d6d72defe3cd70ef064fbca9fc5442be35ced4
+ *
+ * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
+ * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
+ * a schema change the cache has not absorbed fails the second wherever credentials exist.
+ * To update: regenerate (`npm run schema:regen`), review the diff, commit it.
+ * `generated:` is carried forward when a regeneration changes nothing, so a no-op regen writes
+ * no bytes.
+ */
+// ─── BODY — body-sha256 covers every byte from the next line to EOF ─────────
 export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   accounting_sync_log: {
     provider: ["quickbooks", "xero"],
@@ -49,6 +62,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   agent_avatar_assets: {
     approval_status: ["approved", "pending", "rejected"],
+    greeting_sentiment: ["empathetic", "excited", "friendly", "frustrated", "professional"],
     source_type: ["photo", "video"],
     status: ["failed", "pending", "processing", "ready"],
   },
@@ -81,6 +95,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     action_type: ["context_updated", "escalated_to_human", "goal_achieved", "handoff_accepted", "handoff_initiated", "handoff_rejected", "session_ended", "session_started", "task_completed", "task_dispatched", "task_failed"],
     agent_type: ["coaching_agent", "content_agent", "human", "isa_agent", "none", "router", "tc_agent"],
     entity_type: ["contact", "lead", "listing", "transaction"],
+  },
+  agent_did_consents: {
+    status: ["failed", "pending", "verified"],
   },
   agent_earnings: {
     cap_status: ["at_cap", "below_cap", "post_cap"],
@@ -193,6 +210,10 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["accepted", "dismissed", "edited", "pending", "sent"],
     suggested_tone: ["informational", "professional", "urgent", "warm"],
   },
+  ai_overage_invoices: {
+    metric: ["ai_tokens_monthly"],
+    status: ["billed", "pending"],
+  },
   ai_quota_overrides: {
     status: ["approved", "denied", "expired", "pending"],
   },
@@ -208,9 +229,6 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     approval_status: ["approved", "draft", "pending_review", "published", "rejected"],
     audience_type: ["customer_facing", "in_house"],
     compliance_status: ["failed", "needs_review", "not_evaluated", "passed"],
-    // m374. Source of truth: CANONICAL_VIDEO_STATUSES in lib/video/video-status.ts.
-    // Before m374 this column had NO CHECK and 22 spellings — five of them read
-    // by filters nothing wrote, so the panels behind them were structurally empty.
     status: ["awaiting_presenter_setup", "completed", "draft", "failed", "generating", "published", "queued", "script_ready", "scripting"],
     usage_intent: ["both", "mls", "public_marketing"],
     video_provider: ["did", "upload"],
@@ -302,6 +320,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   brokerages: {
     default_assignment_method: ["geo_based", "load_balance", "manual", "round_robin", "specialization"],
+    default_cap_anniversary_basis: ["agent_start_date", "brokerage_fiscal_year", "calendar_year"],
     non_cda_payout_default: ["check", "direct_deposit"],
     onboarding_status: ["abandoned", "completed", "in_progress", "pending"],
     plan_tier: ["brokerage", "multi_location", "solo_agent", "team"],
@@ -341,9 +360,6 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     recommended_mode: ["contact_assisted_guided_diy", "handoff"],
     service_mode: ["contact_assisted_guided_diy", "handoff"],
   },
-  buyer_tours: {
-    status: ["cancelled", "completed", "in_progress", "scheduled"],
-  },
   calendar_provider_accounts: {
     provider_type: ["google_calendar", "outlook"],
     sync_direction: ["bidirectional", "inbound", "outbound"],
@@ -378,6 +394,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   campaign_sequence_steps: {
     ab_variant: ["A", "B"],
     channel: ["ad_campaign", "add_to_segment", "ai_call", "ai_image", "assign_task", "avm_cma", "commission_video", "condition", "direct_mail", "draft_document", "email", "in_app", "listing_landing_page", "newsletter", "remove_from_campaign", "schedule_showing", "schedule_tour", "send_for_esign", "send_gift", "sms", "social_post", "video", "voice_drop", "wait"],
+    video_situation_kind: ["anniversary", "cma", "coming_soon", "explainer", "just_sold", "market_update", "neighborhood", "new_listing", "open_house", "presentation", "price_drop", "testimonial"],
   },
   campaign_sequences: {
     contact_type: ["both", "buyer", "lifetime", "seller"],
@@ -696,13 +713,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     category: ["brand", "certification", "general", "license", "tech_stack", "training"],
   },
   home_value_estimates: {
-    // m378 added "unknown": no market_data row covers the property's ZIP/city,
-    // so the direction is genuinely not known. The lane used to default to
-    // "stable" — an assertion the seller cannot check.
     market_trend: ["appreciating", "depreciating", "stable", "unknown"],
-    // m378 added "sqft_regional_average": no comparable sale could be sourced,
-    // so the range is sqft × a regional rate. That is not a CMA, and it used to
-    // be stamped "ai_cma" anyway.
     methodology: ["ai_cma", "attom", "housecanary", "manual", "sqft_regional_average"],
   },
   inbound_call_classifications: {
@@ -760,12 +771,6 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   lead_sla_tracking: {
     sla_type: ["appointment", "assignment", "first_contact", "qualification"],
   },
-  // m484 narrowed both. `revenue` left because this board is PEER-VISIBLE and the
-  // standing money rulings keep commission off agent-facing display — a colleague
-  // sees what you DID, not what you were paid — and nothing ever wrote it anyway.
-  // `agent` left because every row is already per-agent: it was the row GRAIN
-  // restated as a comparison group, and three readers sent it to a writer that
-  // never wrote it, which is why the board returned zero rows in every filter.
   leaderboard_rankings: {
     metric_type: ["points", "referrals", "transactions"],
     scope: ["brokerage", "team"],
@@ -975,10 +980,6 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   newsletter_sections: {
     section_type: ["agent_intro", "community_eats", "cta", "custom", "local_event", "local_news", "market_update", "mortgage_rates", "neighborhood_spotlight", "new_listings", "property_highlight", "testimonial", "tips"],
   },
-  outcome_reconciliations: {
-    channel: ["direct_mail", "email", "sms", "social", "video"],
-    verdict: ["confirmed", "contradicted", "pending", "unverifiable"],
-  },
   newsletter_sends: {
     status: ["bounced", "clicked", "failed", "opened", "queued", "sent", "suppressed"],
   },
@@ -1056,6 +1057,10 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     channel: ["call", "email", "sms"],
     decision: ["allowed", "blocked", "warning_logged"],
   },
+  outcome_reconciliations: {
+    channel: ["direct_mail", "email", "in_app", "sms", "social", "voice_drop"],
+    verdict: ["confirmed", "contradicted", "pending", "unverifiable"],
+  },
   pattern_adoptions: {
     status: ["applied", "failed", "reverted"],
   },
@@ -1074,7 +1079,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["cancelled", "completed", "failed", "processing", "queued"],
   },
   plan_limits: {
-    metric: ["active_transactions", "active_users", "ai_tokens_monthly", "avatars_created", "contacts_count", "emails_sent", "live_assistant_minutes", "live_assistant_sessions", "live_avatar_minutes", "live_avatar_sessions", "llm_calls", "sms_sent", "storage_gb", "tts_characters", "ai_voice_minutes", "video_minutes", "voice_clones_created"],
+    metric: ["active_transactions", "active_users", "ai_tokens_monthly", "ai_voice_minutes", "avatars_created", "contacts_count", "emails_sent", "live_assistant_minutes", "live_assistant_sessions", "live_avatar_minutes", "live_avatar_sessions", "llm_calls", "sms_sent", "storage_gb", "tts_characters", "video_minutes", "voice_clones_created"],
     plan_tier: ["brokerage", "multi_location", "solo_agent", "team"],
   },
   platform_affiliates: {
@@ -1083,6 +1088,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   platform_content_topics: {
     source: ["competitor", "manual", "trend"],
     status: ["dismissed", "new", "used"],
+  },
+  platform_contract_templates: {
+    contract_type: ["subscription_agreement"],
   },
   platform_coupons: {
     applies_to_tier: ["brokerage", "multi_location", "solo_agent", "team"],
@@ -1235,6 +1243,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["completed", "failed", "in_progress", "partial"],
   },
   raw_scraped_leads: {
+    processing_status: ["duplicate_post_enrich", "duplicate_pre_enrich", "enriching", "error", "insufficient_contact_data", "insufficient_identity", "insufficient_identity_for_promotion", "pending", "processing", "promoted", "queued_for_enrichment", "territory_mismatch", "unassigned_no_market"],
     source_family: ["contact_direct", "lead", "raw"],
     source_origin: ["brokerage", "platform"],
   },
@@ -1277,15 +1286,14 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   revenue_protection_snapshots: {
     snapshot_type: ["daily", "lifetime", "monthly", "quarterly", "weekly", "ytd"],
   },
+  saved_properties: {
+    source: ["brokerage_listing", "idx", "manual", "mls", "rentcast"],
+  },
   scheduled_touchpoints: {
     status: ["completed", "failed", "scheduled", "sent", "skipped"],
   },
   scripts: {
     status: ["approved", "archived", "draft"],
-    // m429. The AUDIENCE, deliberately separate from `status` (which is the
-    // editorial lifecycle above): private = the author's own, brokerage = shared
-    // with the whole brokerage by the owner's viral rule, platform = the
-    // catalogue, tied to brokerage_id IS NULL by a CHECK.
     visibility: ["brokerage", "platform", "private"],
   },
   self_heal_events: {
@@ -1323,6 +1331,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     price_opinion: ["good_value", "priced_right", "too_high"],
   },
   showing_requests: {
+    source: ["agent_input", "buyer_portal", "external_agent", "message", "tour_planner"],
     status: ["approved", "cancelled", "denied", "needs_reschedule", "pending"],
   },
   showings: {
@@ -1386,7 +1395,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     author_kind: ["staff", "tenant"],
   },
   support_tickets: {
-    lane: ["user_to_brokerage", "tenant_to_platform"],
+    lane: ["tenant_to_platform", "user_to_brokerage"],
     priority: ["high", "low", "medium", "urgent"],
     status: ["closed", "in_progress", "open", "resolved"],
   },
@@ -1420,6 +1429,10 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   tenant_custom_domains: {
     status: ["active", "error", "pending_dns", "removed", "verifying"],
+  },
+  tenant_phone_numbers: {
+    number_source: ["byoc_twilio", "ported"],
+    scope_type: ["agent", "brokerage", "platform", "team"],
   },
   tenant_safety_findings: {
     finding_type: ["cross_tenant_join_risk", "listing_missing_agreement", "rows_missing_brokerage_id", "table_missing_brokerage_id", "table_missing_rls_policy"],
@@ -1486,8 +1499,6 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["cancelled", "completed", "in_progress", "pending"],
   },
   transaction_vendor_services: {
-    // "bound" (m385) — the buyer's hazard policy is actually in force, which is
-    // NOT the same as "approved" (client accepted a quote). A lender will not fund on the latter.
     status: ["approved", "bound", "cancelled", "completed", "in_progress", "ordered", "pending_approval", "quote_requested", "scheduled"],
   },
   transactions: {
@@ -1505,7 +1516,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     compliance_status: ["at_risk", "closed", "compliant", "in_progress", "violation"],
   },
   usage_counters: {
-    metric: ["active_transactions", "active_users", "ai_tokens_monthly", "avatars_created", "contacts_count", "emails_sent", "live_assistant_minutes", "live_assistant_sessions", "live_avatar_minutes", "live_avatar_sessions", "llm_calls", "sms_sent", "storage_gb", "tts_characters", "ai_voice_minutes", "video_minutes", "voice_clones_created"],
+    metric: ["active_transactions", "active_users", "ai_tokens_monthly", "ai_voice_minutes", "avatars_created", "contacts_count", "emails_sent", "live_assistant_minutes", "live_assistant_sessions", "live_avatar_minutes", "live_avatar_sessions", "llm_calls", "sms_sent", "storage_gb", "tts_characters", "video_minutes", "voice_clones_created"],
   },
   usage_logs: {
     usage_type: ["ai_call", "email", "scraper_call", "sms", "storage", "video", "voice_call"],
@@ -1515,19 +1526,10 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   users: {
     platform_role: ["admin", "ai_isa_system", "marketing", "superadmin", "support"],
-    // m469 added a 15th value, "member"; m470 removed it again on the owner's
-    // ruling that the user_type IS the seat and a role grant only adds
-    // capability on top of it. Back to the original 14. NOTE: team_members.role
-    // and organization_members.role each carry their own "member" value — those
-    // are TEAM memberships, unrelated to this column, and they stay.
     user_type: ["admin", "agent", "broker", "broker_owner", "compliance_officer", "contact", "isa", "lender", "superadmin", "support", "system", "tc", "team_lead", "vendor"],
   },
   valuation_requests: {
     condition: ["excellent", "fair", "good", "poor"],
-  },
-  tenant_phone_numbers: {
-    number_source: ["byoc_twilio", "ported"],
-    scope_type: ["agent", "brokerage", "platform", "team"],
   },
   vendor_assignments: {
     assignment_type: ["cleaner", "contractor", "inspector", "insurance", "lender", "mover", "other", "photographer", "stager", "title"],
@@ -1584,7 +1586,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   vendors: {
     access_level: ["brokerage_full_access", "team_full_access", "transaction_only"],
-    category: ["3d_tour", "appliance_repair", "attorney", "cleaner", "contractor", "drone_pilot", "electrician", "estate_sale", "financial_advisor", "flooring", "garage_door", "handyman", "home_warranty", "hvac", "insurance", "interior_design", "inspector", "landscaping", "lender", "mover", "organizer", "other", "painter", "pest_control", "photographer", "plumber", "pool_service", "property_management", "refinance_lender", "roofer", "security", "smart_home", "solar", "stager", "tax_pro", "title", "videographer", "window_treatment"],
+    category: ["3d_tour", "appliance_repair", "attorney", "cleaner", "contractor", "drone_pilot", "electrician", "estate_sale", "financial_advisor", "flooring", "garage_door", "handyman", "home_warranty", "hvac", "inspector", "insurance", "interior_design", "landscaping", "lender", "mover", "organizer", "other", "painter", "pest_control", "photographer", "plumber", "pool_service", "property_management", "refinance_lender", "roofer", "security", "smart_home", "solar", "stager", "tax_pro", "title", "videographer", "window_treatment"],
     status: ["active", "archived", "inactive", "pending"],
   },
   video_assets: {
@@ -1604,7 +1606,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     stream_status: ["failed", "pending", "preview_ready", "processing", "ready"],
   },
   voice_calls: {
-    call_type: ["agent_call", "ai_isa_call", "ai_inbound", "warm_transfer", "zoom_meeting"],
+    call_type: ["agent_call", "ai_inbound", "ai_isa_call", "warm_transfer", "zoom_meeting"],
     direction: ["inbound", "outbound"],
     outcome: ["appointment_set", "authority_blocked", "busy", "callback_requested", "canceled", "completed", "failed", "no_answer", "not_interested", "opt_out", "transferred", "voicemail", "voicemail_left", "warm_bridge_missed", "warm_bridge_ringing", "warm_transferred"],
     sentiment: ["negative", "neutral", "positive"],

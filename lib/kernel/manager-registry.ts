@@ -1675,6 +1675,9 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   social_intelligence: "marketing_agent",
   social_media_accounts: "marketing_agent",
   social_media_analytics: "marketing_agent",
+  // Guarded for the first time when the schema cache was regenerated from the
+  // live database — hand-maintenance had never listed it, so it had no owner.
+  social_post_analytics: "marketing_agent",
   social_post_baselines_28d: "marketing_agent",
   social_post_presets: "marketing_agent",
   social_posts: "marketing_agent",

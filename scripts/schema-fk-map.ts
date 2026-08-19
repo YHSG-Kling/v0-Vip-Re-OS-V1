@@ -1,8 +1,7 @@
 /**
  * scripts/schema-fk-map.ts
  * ─────────────────────────────────────────────────────────────────────────────
- * GENERATED from the live Postgres schema (public) — the FOREIGN-KEY half of the
- * schema-drift guard's static picture of the database.
+ * The FOREIGN-KEY half of the schema cache — `SCHEMA_FK_MAP[sourceTable][fkColumn] = targetTable`.
  *
  * WHY THIS FILE EXISTS
  * scripts/schema-snapshot.ts answers "does table T have column C?". It cannot answer
@@ -22,32 +21,61 @@
  * A missing or stale entry can only cause the guard to SKIP an embed (reported on the
  * "unresolved embeds" line), never to fail one. Staleness costs coverage, not trust.
  *
- * MEASURED WHEN GENERATED: 1792 foreign keys in `public`, every one single-column, and
- * NO (table, column) pair carries FKs to two different targets — so this map is total
- * and unambiguous. No FK column name in the schema collides with a table name, so the
- * table-name and FK-column resolution paths cannot disagree.
+ * ── FK CARDINALITY PER TABLE PAIR ───────────────────────────────────────────────────
+ * Generated from the same scan, in the same pass, because it answers the question the map
+ * cannot: "how many different ways can these two tables be joined?" — which is what produces
+ * PostgREST's PGRST201:
  *
- * REGENERATE after any schema change that adds/drops/renames a foreign key:
+ *     "Could not embed because more than one relationship was found for 'contacts' and
+ *      'transactions'" — hint: use `!<constraint>` to disambiguate
  *
- *   WITH fk AS (
- *     SELECT DISTINCT src.relname AS src_table, a.attname AS src_col, tgt.relname AS tgt_table
- *     FROM pg_constraint c
- *     JOIN pg_class src ON src.oid = c.conrelid
- *     JOIN pg_namespace sn ON sn.oid = src.relnamespace
- *     JOIN pg_class tgt ON tgt.oid = c.confrelid
- *     JOIN pg_namespace tn ON tn.oid = tgt.relnamespace
- *     JOIN unnest(c.conkey) AS k(attnum) ON true
- *     JOIN pg_attribute a ON a.attrelid = src.oid AND a.attnum = k.attnum
- *     WHERE c.contype='f' AND sn.nspname='public' AND tn.nspname='public'
- *   ), per AS (
- *     SELECT src_table, json_object_agg(src_col, tgt_table ORDER BY src_col) AS cols
- *     FROM fk GROUP BY src_table
- *   )
- *   SELECT json_object_agg(src_table, cols ORDER BY src_table) FROM per;
+ * `transactions` carries THREE foreign keys to `contacts` (contact_id, buyer_contact_id,
+ * seller_contact_id). A `.from("contacts").select("transactions(id)")` names a relation that
+ * genuinely exists and columns that genuinely exist, and PostgREST still refuses the WHOLE
+ * request — the same silent-dead-read outcome as a phantom column, out of a schema that is
+ * entirely valid. Neither SCHEMA_FK_MAP nor SCHEMA_SNAPSHOT can see it: both are keyed by a
+ * single table, and ambiguity is a property of the PAIR.
  *
- * Last synced: 2026-08-15.
+ * THE KEY IS AN UNORDERED PAIR, and that is the whole point. PostgREST resolves an embed by
+ * collecting every relationship between the two tables REGARDLESS OF DIRECTION — the M2O side
+ * of each FK the parent holds AND the O2M side of each FK the target holds. So
+ * `contacts.select("transactions(…)")` and `transactions.select("contacts(…)")` are ambiguous
+ * for the same reason and by the same count. Sorting the two names and joining with "|" makes
+ * that symmetry structural instead of something every caller has to remember. `|` is safe as a
+ * separator: every relname in this schema matches /^[a-z0-9_]+$/.
+ *
+ * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
+ * overwhelming majority (1647 of 1703 pairs) — storing them would be
+ * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
+ * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
+ * included: two self-FKs on one table are ambiguous exactly like two FKs between different
+ * tables. One self-FK is a pair count of 1 and is correctly absent.
+ *
+ * DELIBERATELY NOT COUNTED — each of these makes the number an UNDER-estimate, never an over-
+ * estimate, so the failure mode stays "missed detection" and never "false alarm":
+ *   • many-to-many relationships PostgREST infers THROUGH a junction table. Those add further
+ *     candidate relationships to a pair, so a pair recorded here as 1 can still be ambiguous.
+ *   • foreign keys crossing out of `public` (a reference to auth.users cannot be embedded from
+ *     the REST surface anyway).
+ *
+ * MEASURED AT GENERATION: 1778 edges across 706 source tables — every foreign key
+ * single-column, and no (table, column) pair carrying FKs to two different targets, so the map is
+ * total and unambiguous. 1703 unordered table pairs carry at least one FK; 56
+ * carry more than one and are listed below. 12 of the edges are self-referential.
+ *
+ * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
+ * generated: 2026-08-19
+ * source: public.live_foreign_keys_json()
+ * body-sha256: aa856d0fdabe1f01642c5742aa5e9d942b048ece0e2333001873378e37e4b5b0
+ *
+ * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
+ * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
+ * a schema change the cache has not absorbed fails the second wherever credentials exist.
+ * To update: regenerate (`npm run schema:regen`), review the diff, commit it.
+ * `generated:` is carried forward when a regeneration changes nothing, so a no-op regen writes
+ * no bytes.
  */
-
+// ─── BODY — body-sha256 covers every byte from the next line to EOF ─────────
 /** `SCHEMA_FK_MAP[sourceTable][fkColumn] = targetTable` */
 export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "accounting_sync_log": { "brokerage_id": "brokerages" },
@@ -61,7 +89,6 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "ad_retarget_presets": { "brokerage_id": "brokerages", "compliance_event_id": "compliance_events", "facebook_audience_id": "facebook_custom_audiences" },
   "affiliate_commission_events": { "affiliate_id": "platform_affiliates", "brokerage_id": "brokerages", "referral_id": "affiliate_referrals" },
   "affiliate_referrals": { "affiliate_id": "platform_affiliates", "brokerage_id": "brokerages" },
-  "agent_achievements": { "achievement_id": "achievements", "agent_id": "agents", "brokerage_id": "brokerages" },
   "agent_api_credentials": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "agent_assistant_sessions": { "agent_id": "agents", "brokerage_id": "brokerages", "context_contact_id": "contacts", "context_listing_id": "listings", "context_transaction_id": "transactions", "user_id": "users" },
   "agent_assistant_tool_calls": { "brokerage_id": "brokerages", "session_id": "agent_assistant_sessions" },
@@ -126,6 +153,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "ai_isa_settings": { "brokerage_id": "brokerages" },
   "ai_listing_optimizations": { "transaction_id": "transactions" },
   "ai_message_drafts": { "agent_user_id": "users", "brokerage_id": "brokerages", "contact_id": "contacts", "conversation_id": "conversations", "listing_id": "listings", "sent_message_id": "messages", "source_message_id": "messages" },
+  "ai_overage_invoices": { "brokerage_id": "brokerages" },
   "ai_predictions": { "brokerage_id": "brokerages" },
   "ai_quota_overrides": { "approved_by": "users", "brokerage_id": "brokerages", "requested_by": "users" },
   "ai_search_citation_observations": { "agent_id": "agents", "brokerage_id": "brokerages", "project_id": "ai_video_projects", "team_id": "teams" },
@@ -186,7 +214,6 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "buyer_financial_profiles": { "agent_user_id": "users", "brokerage_id": "brokerages", "contact_id": "contacts", "lender_referred_partner_id": "referral_partners", "verified_by": "users" },
   "buyer_intake_tokens": { "agent_user_id": "users", "brokerage_id": "brokerages", "contact_id": "contacts" },
   "buyer_stage_coaching": { "brokerage_id": "brokerages" },
-  "buyer_tours": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts" },
   "calculator_history": { "brokerage_id": "brokerages", "contact_id": "contacts", "lead_id": "leads" },
   "calendar_blocks": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "calendar_provider_accounts": { "brokerage_id": "brokerages", "user_id": "users" },
@@ -275,7 +302,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "content_topic_sources": { "brokerage_id": "brokerages" },
   "content_topic_uses": { "agent_id": "agents", "brokerage_id": "brokerages", "topic_id": "content_topic_bank" },
   "contract_reviews": { "agent_id": "agents", "brokerage_id": "brokerages", "document_id": "transaction_documents", "transaction_id": "transactions" },
-  "contract_signatures": { "agent_id": "agents", "brokerage_id": "brokerages" },
+  "contract_signatures": { "agent_id": "agents", "brokerage_id": "brokerages", "team_id": "teams" },
   "conversation_audit_flags": { "conversation_id": "conversation_logs", "reviewed_by": "users" },
   "conversation_insights": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "conversation_id": "conversations" },
   "conversation_intelligence": { "agent_id": "agents", "brokerage_id": "brokerages", "lead_id": "leads" },
@@ -512,6 +539,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "plan_tasks": { "brokerage_id": "brokerages", "plan_id": "copilot_plans" },
   "platform_affiliates": { "created_by": "users" },
   "platform_config_snapshots": { "captured_by": "users", "source_brokerage_id": "brokerages" },
+  "platform_contract_templates": { "created_by": "users" },
   "platform_coupon_redemptions": { "brokerage_id": "brokerages", "coupon_id": "platform_coupons", "redeemed_by": "users" },
   "platform_coupons": { "created_by": "users" },
   "platform_credentials": { "agent_user_id": "users", "brokerage_id": "brokerages" },
@@ -644,6 +672,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "tasks": { "assigned_to_agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "created_by_agent_id": "agents", "listing_id": "listings", "transaction_id": "transactions" },
   "tax_categories": { "brokerage_id": "brokerages" },
   "team_activity_snapshots": { "brokerage_id": "brokerages" },
+  "team_cap_tracking": { "agent_id": "agents", "brokerage_id": "brokerages", "team_id": "teams" },
   "team_commission_profiles": { "brokerage_id": "brokerages", "team_id": "teams" },
   "team_earnings": { "brokerage_id": "brokerages", "team_id": "teams", "top_agent_id": "agents" },
   "team_heatmap_snapshots": { "agent_id": "agents", "brokerage_id": "brokerages" },
@@ -653,13 +682,13 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "template_feedback": { "template_id": "template_marketplace" },
   "template_marketplace": { "brokerage_id": "brokerages" },
   "tenant_ai_teammates": { "brokerage_id": "brokerages", "created_by": "users" },
+  "tenant_contract_signatures": { "brokerage_id": "brokerages", "signed_by": "users", "template_id": "platform_contract_templates" },
   "tenant_custom_domains": { "added_by": "users", "brokerage_id": "brokerages" },
   "tenant_phone_numbers": { "brokerage_id": "brokerages" },
   "tenant_safety_findings": { "resolved_by": "users" },
   "tenant_sso_connections": { "brokerage_id": "brokerages", "created_by": "users" },
   "tenant_webhook_deliveries": { "brokerage_id": "brokerages", "subscription_id": "tenant_webhook_subscriptions" },
   "tenant_webhook_subscriptions": { "brokerage_id": "brokerages", "created_by": "users" },
-  "team_cap_tracking": { "brokerage_id": "brokerages", "team_id": "teams", "agent_id": "agents" },
   "territory_metrics": { "brokerage_id": "brokerages" },
   "thank_you_note_templates": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "thank_you_notes": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "email_queue_id": "email_queue", "template_id": "thank_you_note_templates", "transaction_id": "transactions" },
@@ -756,77 +785,6 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "workflow_webhook_events": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "zenrows_property_search_raw": { "brokerage_id": "brokerages", "lead_id": "leads" },
 }
-
-/**
- * ── FK CARDINALITY PER TABLE PAIR ───────────────────────────────────────────────────
- * GENERATED from the same live schema, by the same rule, in the same pass as the map above.
- *
- * WHY A SECOND STRUCTURE
- * SCHEMA_FK_MAP answers "where does this FK column point?". It cannot answer "how many
- * different ways can these two tables be joined?", and that is the question behind PostgREST's
- * PGRST201:
- *
- *     "Could not embed because more than one relationship was found for 'contacts' and
- *      'transactions'" — hint: use `!<constraint>` to disambiguate
- *
- * `transactions` carries THREE foreign keys to `contacts` (contact_id, buyer_contact_id,
- * seller_contact_id). A `.from("contacts").select("transactions(id)")` names a relation that
- * genuinely exists and columns that genuinely exist, and PostgREST still refuses the WHOLE
- * request — the same silent-dead-read outcome as a phantom column, out of a schema that is
- * entirely valid. Nothing in SCHEMA_FK_MAP or SCHEMA_SNAPSHOT can see it: both are keyed by
- * a single table, and ambiguity is a property of the PAIR.
- *
- * THE KEY IS AN UNORDERED PAIR, and that is the whole point. PostgREST resolves an embed by
- * collecting every relationship between the two tables REGARDLESS OF DIRECTION — the M2O side
- * of each FK the parent holds AND the O2M side of each FK the target holds. So
- * `contacts.select("transactions(…)")` and `transactions.select("contacts(…)")` are ambiguous
- * for the same reason and by the same count. Sorting the two names and joining with "|" makes
- * that symmetry structural instead of something every caller has to remember. `|` is safe as a
- * separator: every relname in this schema matches /^[a-z0-9_]+$/.
- *
- * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1642 of 1698 pairs) — storing them would be 30× the bytes to encode
- * "nothing to see here". An absent key therefore means "one FK or none", i.e. NOT ambiguous.
- * A self-referential pair (a === b) is stored under "t|t" and is included: two self-FKs on one
- * table are ambiguous exactly like two FKs between different tables (remotion_composition_renders
- * is the live instance). One self-FK is a pair count of 1 and is correctly absent.
- *
- * SAFETY PROPERTY (the mirror of the map's, and the reason for the > 1 filter)
- * A missing or stale entry can only cause a check to SKIP a pair, never to invent an ambiguity.
- * Staleness costs coverage, not trust — the same bargain SCHEMA_FK_MAP makes.
- *
- * DELIBERATELY NOT COUNTED — each of these makes the number an UNDER-estimate, never an over-
- * estimate, so the failure mode stays "missed detection" and never "false alarm":
- *   • many-to-many relationships PostgREST infers THROUGH a junction table. Those add further
- *     candidate relationships to a pair, so a pair recorded here as 1 can still be ambiguous.
- *   • foreign keys crossing out of `public` (there are none in the guarded surface).
- *
- * MEASURED WHEN GENERATED: 1773 foreign-key constraints in `public`, every one single-column,
- * and no two constraints sharing a (source table, source column, target table) triple — so a
- * pair's count is exactly its number of distinct join paths. 1698 unordered table pairs carry
- * at least one FK; 56 carry more than one and are listed below. 12 of the 1773 are self-
- * referential. (This re-measurement also supersedes the "1792 foreign keys" figure in the
- * header above: the committed SCHEMA_FK_MAP holds exactly 1773 entries, which agrees with the
- * count here and not with that line.)
- *
- * REGENERATE alongside SCHEMA_FK_MAP, from the same `pg_constraint` scan:
- *
- *   WITH fk AS (
- *     SELECT c.oid, src.relname AS src_table, a.attname AS src_col, tgt.relname AS tgt_table
- *     FROM pg_constraint c
- *     JOIN pg_class src ON src.oid = c.conrelid
- *     JOIN pg_namespace sn ON sn.oid = src.relnamespace
- *     JOIN pg_class tgt ON tgt.oid = c.confrelid
- *     JOIN pg_namespace tn ON tn.oid = tgt.relnamespace
- *     JOIN unnest(c.conkey) AS k(attnum) ON true
- *     JOIN pg_attribute a ON a.attrelid = src.oid AND a.attnum = k.attnum
- *     WHERE c.contype='f' AND sn.nspname='public' AND tn.nspname='public'
- *   )
- *   SELECT LEAST(src_table, tgt_table) AS a, GREATEST(src_table, tgt_table) AS b, count(*) AS n
- *   FROM fk GROUP BY 1, 2 HAVING count(*) > 1 ORDER BY 1, 2;
- *
- * Last synced: 2026-08-15.
- */
 
 /** `SCHEMA_FK_PAIR_CARDINALITY["a|b"] = n` for the SORTED pair (a <= b), n > 1 only.
  *  Read it through fkPairCount() — the key encoding is this file's business, not its callers'. */
