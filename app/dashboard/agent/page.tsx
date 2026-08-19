@@ -47,6 +47,7 @@ import { AgentFinancialIntelligence } from "./components/agent-financial-intelli
 import { AgentSystemReadiness } from "./components/agent-system-readiness"
 import { ThisWeekPreview } from "@/app/dashboard/calendar/components/os"
 import { NewlyConvertedContactsPanel } from "./components/conversion"
+import { NewContactHandoffPanel } from "./components/handoff"
 import { PredictiveListingCard } from "./components/predictive-listing-card"
 import { getTopPredictiveSellers, listQueuedAutoTouches, type PredictiveSellerRow } from "@/app/actions/predictive-listing"
 import { DealRiskWidget } from "./components/deal-risk-widget"
@@ -888,6 +889,20 @@ export default function AgentDashboard() {
         {atRiskListings.length > 0 && <ListingRiskWidget atRisk={atRiskListings} />}
 
         {upcomingListingPreps.length > 0 && <ListingApptPrepWidget preps={upcomingListingPreps} />}
+
+        {/* FIRST-TOUCH ACKNOWLEDGEMENT — owner ruling: "their needs to be an
+            agent side first touch acknolegement becaue the agent needs a heads
+            up that a new contact has been added and contact welcome package
+            sent." Sits ABOVE SmartQueue because it is a HEADS-UP, not a work
+            queue: a contact that arrived without the agent asking for it, and
+            the verified state of its welcome package. It is the only caller of
+            acknowledgeLeadHandoffAction — the sole writer of
+            assignment_log.claimed, which daily-briefing-generator,
+            isa-overnight (handoffs_unclaimed) and user-type-briefs/team-lead all
+            read as "still awaiting first touch". Self-scoping: it resolves the
+            caller's own agents row server-side and needs no props. Auto-hides
+            (empty state) when nothing is pending. */}
+        <NewContactHandoffPanel />
 
         {/* Smart Queue — single segmented list (🔥 Hot · ⚠ At-risk · 🆕 New ·
             💎 Likely seller). Aggregates lead_score_history +
