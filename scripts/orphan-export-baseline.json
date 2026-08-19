@@ -31,6 +31,7 @@
     "app/actions/fb-audience-templates.ts": 1,
     "app/actions/forms-kernel.ts": 1,
     "app/actions/journey-tasks.ts": 1,
+    "app/actions/lead-assignment/assign-lead.ts": 1,
     "app/actions/lead-import/import-actions.ts": 1,
     "app/actions/lead-intelligence.ts": 6,
     "app/actions/listings-kernel.ts": 3,
@@ -194,10 +195,10 @@
     "lib/external/batchdata-client.ts": 2,
     "lib/external/email-verifier.ts": 1,
     "lib/external/exa-client.ts": 1,
-    "lib/external/llm-html-extractor.ts": 1,
+    "lib/external/nextdoor-extract.ts": 1,
     "lib/external/nominatim-geocode.ts": 2,
-    "lib/external/socrata-client.ts": 2,
-    "lib/external/socrata-market-registry.ts": 2,
+    "lib/external/permit-signals.ts": 9,
+    "lib/external/socrata-client.ts": 1,
     "lib/external/tavily-client.ts": 1,
     "lib/external/vision-property.ts": 1,
     "lib/fatigue/fatigue-display.ts": 1,
@@ -358,6 +359,7 @@
     "lib/lead-assignment/capacity-pick.ts": 1,
     "lib/lead-assignment/default-assignment.ts": 1,
     "lib/lead-assignment/rule-matcher.ts": 2,
+    "lib/lead-assignment/tier-routing.ts": 3,
     "lib/lead-pipeline/ai-intent-classifier.ts": 3,
     "lib/lead-pipeline/enrichment-column-map.ts": 1,
     "lib/lead-pipeline/exa-sourcer.ts": 1,
@@ -518,7 +520,6 @@
     "lib/vendor-governance/vendor-policy.ts": 1,
     "lib/vendors/rank.ts": 1,
     "lib/vendors/vendor-scope.ts": 1,
-    "lib/vendors/vendor-validators.ts": 1,
     "lib/video/assistant-options.ts": 1,
     "lib/video/avatar-render-orchestrator.ts": 1,
     "lib/video/broll-picker.ts": 1,
@@ -560,7 +561,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9074,
+  "census": 9105,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -829,7 +830,7 @@
     "app/actions/lead-import/crm-pull-actions.ts": 3,
     "app/actions/lead-import/import-actions.ts": 4,
     "app/actions/lead-intelligence.ts": 17,
-    "app/actions/lead-lifecycle.ts": 3,
+    "app/actions/lead-lifecycle.ts": 2,
     "app/actions/lead-magnet-capture.ts": 1,
     "app/actions/lead-magnets-actions.ts": 8,
     "app/actions/lead-management.ts": 4,
@@ -837,7 +838,7 @@
     "app/actions/lead-quick-actions.ts": 3,
     "app/actions/lead-readiness/evaluate-readiness.ts": 2,
     "app/actions/lead-scraping-config.ts": 15,
-    "app/actions/lead-signal-ingest.ts": 3,
+    "app/actions/lead-signal-ingest.ts": 5,
     "app/actions/leads.ts": 12,
     "app/actions/learning-modules-approvals.ts": 3,
     "app/actions/learning-modules.ts": 5,
@@ -1091,6 +1092,8 @@
     "app/actions/vendor-respa.ts": 1,
     "app/actions/vendor-verification.ts": 7,
     "app/actions/vendor-w9.ts": 2,
+    "app/actions/vendors/vendor-plan-subscriptions.ts": 3,
+    "app/actions/vendors/vendor-plans.ts": 6,
     "app/actions/vendors-kernel.ts": 6,
     "app/actions/video/create-video-project.ts": 10,
     "app/actions/video/distribute-video.ts": 1,
@@ -1309,6 +1312,7 @@
     "app/api/cron/overnight-digest/route.ts": 1,
     "app/api/cron/partners-meeting/route.ts": 1,
     "app/api/cron/pattern-scan/route.ts": 1,
+    "app/api/cron/permit-signal-scan/route.ts": 1,
     "app/api/cron/photo-intelligence/route.ts": 1,
     "app/api/cron/platform-lead-distribution/route.ts": 1,
     "app/api/cron/platform-prospect-followup/route.ts": 1,
@@ -1707,7 +1711,6 @@
     "app/components/lead-magnet-forms/GenericCaptureForm.tsx": 1,
     "app/components/lead-magnet-forms/HomeValueForm.tsx": 1,
     "app/components/leads/AdminAssignmentPanel.tsx": 1,
-    "app/components/leads/AvailableLeadsSheet.tsx": 1,
     "app/components/leads/LeadStatusBadge.tsx": 1,
     "app/components/learning/learn-this-week-card.tsx": 1,
     "app/components/lender/loan-list.tsx": 1,
@@ -2461,6 +2464,7 @@
     "app/dashboard/vendors/vendor-bills-panel.tsx": 1,
     "app/dashboard/vendors/vendor-charges-panel.tsx": 1,
     "app/dashboard/vendors/vendor-directory-client.tsx": 1,
+    "app/dashboard/vendors/vendor-plan-catalogue-panel.tsx": 1,
     "app/dashboard/vendors/vendor-portal-invite-panel.tsx": 1,
     "app/dashboard/videos/board/video-studio-dialog.tsx": 1,
     "app/dashboard/videos/components/BackgroundPicker.tsx": 1,
@@ -2629,6 +2633,7 @@
     "app/vendor/invoices/invoices-client.tsx": 1,
     "app/vendor/jobs/jobs-client.tsx": 1,
     "app/vendor/jobs/vendor-request-dialog.tsx": 1,
+    "app/vendor/plans/plans-client.tsx": 1,
     "app/vendor/reviews/reviews-client.tsx": 1,
     "app/vendor-invite/[token]/accept-form.tsx": 1,
     "app/widget/[brokerageSlug]/widget-chat-client.tsx": 1,
@@ -3138,10 +3143,12 @@
     "lib/external/geoapify-client.ts": 2,
     "lib/external/llm-html-extractor.ts": 1,
     "lib/external/lob-address-verify.ts": 1,
+    "lib/external/nextdoor-extract.ts": 3,
     "lib/external/nominatim-geocode.ts": 5,
     "lib/external/osint-free.ts": 3,
     "lib/external/osint-neighborhood.ts": 3,
     "lib/external/peopledata-client.ts": 2,
+    "lib/external/permit-signals.ts": 10,
     "lib/external/rentcast-typed.ts": 1,
     "lib/external/socrata-client.ts": 2,
     "lib/external/socrata-market-registry.ts": 2,
@@ -3564,6 +3571,7 @@
     "lib/lead-assignment/rule-matcher.ts": 9,
     "lib/lead-assignment/solo-agent.ts": 1,
     "lib/lead-assignment/stale-lead-detector.ts": 1,
+    "lib/lead-assignment/tier-routing.ts": 4,
     "lib/lead-assignment/unassigned-escalation.ts": 1,
     "lib/lead-governance/multi-factor-scorer.ts": 1,
     "lib/lead-governance/promotion-readiness.ts": 1,
@@ -3573,6 +3581,8 @@
     "lib/lead-governance/stale-lead-processor.ts": 1,
     "lib/lead-intelligence/interest-level.ts": 1,
     "lib/lead-intelligence/signal-extensions.ts": 4,
+    "lib/lead-intent/inbound-lead-intent.ts": 1,
+    "lib/lead-intent/lead-opt-out.ts": 1,
     "lib/lead-pipeline/ai-intent-classifier.ts": 7,
     "lib/lead-pipeline/canonical-lead-eligibility.ts": 1,
     "lib/lead-pipeline/contact-signal-rescrape.ts": 1,
@@ -5973,7 +5983,7 @@
     "app/actions/lead-assignment/assign-lead.ts": [
       "assignLead",
       "manualAssignLead",
-      "claimLeadAction"
+      "acknowledgeLeadHandoffAction"
     ],
     "app/actions/lead-governance/govern-lead.ts": [
       "governLead"
@@ -6010,7 +6020,6 @@
     ],
     "app/actions/lead-lifecycle.ts": [
       "listUnassignedLeads",
-      "claimLead",
       "convertLeadToContact"
     ],
     "app/actions/lead-magnet-capture.ts": [
@@ -6064,7 +6073,9 @@
     "app/actions/lead-signal-ingest.ts": [
       "ingestOfferLostSignalAction",
       "ingestOpenHouseAttendeeSignalAction",
-      "ingestPredictiveSellerSignalAction"
+      "ingestPredictiveSellerSignalAction",
+      "ingestInboundLeadSignalAction",
+      "ingestDirectMailResponseSignalAction"
     ],
     "app/actions/leads.ts": [
       "getLeads",
@@ -7801,6 +7812,19 @@
       "uploadVendorW9Action",
       "getMyVendorW9Action"
     ],
+    "app/actions/vendors/vendor-plan-subscriptions.ts": [
+      "listVendorPlanCatalogueAction",
+      "subscribeToVendorPlanAction",
+      "cancelVendorPlanSubscriptionAction"
+    ],
+    "app/actions/vendors/vendor-plans.ts": [
+      "listVendorPlansAction",
+      "createVendorPlanAction",
+      "updateVendorPlanAction",
+      "setVendorPlanStatusAction",
+      "setDefaultVendorPlanAction",
+      "deleteVendorPlanAction"
+    ],
     "app/actions/vendors-kernel.ts": [
       "createVendorRecordAction",
       "updateVendorRecordAction",
@@ -8575,6 +8599,9 @@
       "GET"
     ],
     "app/api/cron/pattern-scan/route.ts": [
+      "GET"
+    ],
+    "app/api/cron/permit-signal-scan/route.ts": [
       "GET"
     ],
     "app/api/cron/photo-intelligence/route.ts": [
@@ -9803,9 +9830,6 @@
     ],
     "app/components/leads/AdminAssignmentPanel.tsx": [
       "AdminAssignmentPanel"
-    ],
-    "app/components/leads/AvailableLeadsSheet.tsx": [
-      "AvailableLeadsSheet"
     ],
     "app/components/leads/LeadStatusBadge.tsx": [
       "LeadStatusBadge"
@@ -12129,6 +12153,9 @@
     "app/dashboard/vendors/vendor-directory-client.tsx": [
       "VendorDirectoryClient"
     ],
+    "app/dashboard/vendors/vendor-plan-catalogue-panel.tsx": [
+      "VendorPlanCataloguePanel"
+    ],
     "app/dashboard/vendors/vendor-portal-invite-panel.tsx": [
       "VendorPortalInvitePanel"
     ],
@@ -12641,6 +12668,9 @@
     ],
     "app/vendor/jobs/vendor-request-dialog.tsx": [
       "VendorRequestDialog"
+    ],
+    "app/vendor/plans/plans-client.tsx": [
+      "VendorPlansClient"
     ],
     "app/vendor/reviews/reviews-client.tsx": [
       "VendorReviewsClient"
@@ -15197,6 +15227,11 @@
     "lib/external/lob-address-verify.ts": [
       "verifyAddressViaLob"
     ],
+    "lib/external/nextdoor-extract.ts": [
+      "scoreNextdoorPost",
+      "normalizeExtractedPosts",
+      "regexFallbackPosts"
+    ],
     "lib/external/nominatim-geocode.ts": [
       "buildGeocodeQuery",
       "parseNominatimRow",
@@ -15217,6 +15252,18 @@
     "lib/external/peopledata-client.ts": [
       "skipTraceWithPeopleData",
       "validateEmailViaPeopleData"
+    ],
+    "lib/external/permit-signals.ts": [
+      "normalizeStreetAddress",
+      "readPermitAddress",
+      "readPermitId",
+      "readPermitDescription",
+      "readPermitValuation",
+      "classifyPermitStrength",
+      "matchPermitsToLeads",
+      "buildPermitSignalRow",
+      "permitDedupeKey",
+      "ingestPermitSignals"
     ],
     "lib/external/rentcast-typed.ts": [
       "callRentcastGet"
@@ -17473,6 +17520,12 @@
     "lib/lead-assignment/stale-lead-detector.ts": [
       "detectStaleLeads"
     ],
+    "lib/lead-assignment/tier-routing.ts": [
+      "isAssignmentLogMethod",
+      "normalizeAssignmentMethod",
+      "resolveTierRouting",
+      "autoAssignLead"
+    ],
     "lib/lead-assignment/unassigned-escalation.ts": [
       "escalateUnassignedQualifiedLead"
     ],
@@ -17503,6 +17556,12 @@
       "buildOpenHouseAttendeeSignal",
       "buildPredictiveSellerSignal",
       "applySignalDelta"
+    ],
+    "lib/lead-intent/inbound-lead-intent.ts": [
+      "evaluateInboundLeadSignal"
+    ],
+    "lib/lead-intent/lead-opt-out.ts": [
+      "applyLeadOptOut"
     ],
     "lib/lead-pipeline/ai-intent-classifier.ts": [
       "intentToType",
@@ -20634,5 +20693,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 17
+  "trulyDead": 15
 }

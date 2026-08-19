@@ -746,8 +746,14 @@ async function main() {
       coverageRedirect({ coveringAgentId: "a-2", coverageUntil: "2026-07-20T00:00:00Z" }, now2) === "a-2"
       && coverageRedirect({ coveringAgentId: "a-2", coverageUntil: "2026-07-10T00:00:00Z" }, now2) === null
       && coverageRedirect({ coveringAgentId: null, coverageUntil: "2026-07-20T00:00:00Z" }, now2) === null
-      && src("lib/lead-assignment/assignment-engine.ts").includes("redirectForCoverage")
-      && src("lib/lead-assignment/assignment-engine.ts").includes("_coverage")
+      // THE SINGLE TERMINAL MOVED, and "single" is the half worth asserting. The tier-aware
+      // pick now lives in lib/lead-assignment/tier-routing.ts and assignment-engine.ts
+      // delegates to it, so pointing these two greps at the new file is not enough: the
+      // property this check is named for is that coverage is enforced in ONE place. Hence
+      // the negative clause — the delegating engine must not carry a second copy.
+      && src("lib/lead-assignment/tier-routing.ts").includes("redirectForCoverage")
+      && src("lib/lead-assignment/tier-routing.ts").includes("_coverage")
+      && !src("lib/lead-assignment/assignment-engine.ts").includes("redirectForCoverage")
       && src("app/actions/coverage-mode.ts").includes("cannot cover themselves")
       && src("app/dashboard/admin/command-center/coverage-card.tsx").includes("They're back")
       && src("app/components/contact/StrategySessionCard.tsx").includes("Set the floor")

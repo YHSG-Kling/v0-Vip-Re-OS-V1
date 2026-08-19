@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1647 of 1703 pairs) — storing them would be
+ * overwhelming majority (1650 of 1706 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -58,15 +58,15 @@
  *   • foreign keys crossing out of `public` (a reference to auth.users cannot be embedded from
  *     the REST surface anyway).
  *
- * MEASURED AT GENERATION: 1778 edges across 706 source tables — every foreign key
+ * MEASURED AT GENERATION: 1781 edges across 706 source tables — every foreign key
  * single-column, and no (table, column) pair carrying FKs to two different targets, so the map is
- * total and unambiguous. 1703 unordered table pairs carry at least one FK; 56
+ * total and unambiguous. 1706 unordered table pairs carry at least one FK; 56
  * carry more than one and are listed below. 12 of the edges are self-referential.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-19
  * source: public.live_foreign_keys_json()
- * body-sha256: aa856d0fdabe1f01642c5742aa5e9d942b048ece0e2333001873378e37e4b5b0
+ * body-sha256: 36d0690f6dc8080f85f58e1c14e650e93748c37b34360440127d61922ad855e6
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -331,8 +331,8 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "deposits": { "agent_id": "agents", "brokerage_id": "brokerages", "created_by": "users", "transaction_id": "transactions" },
   "direct_mail_campaigns": { "agent_id": "agents", "brokerage_id": "brokerages", "bundle_dispatch_id": "campaign_bundle_dispatches", "compliance_event_id": "compliance_events", "created_by": "users", "lead_id": "leads", "marketing_campaign_id": "marketing_campaigns", "preset_id": "direct_mail_presets", "qr_code_id": "qr_codes", "variant_id": "direct_mail_variants" },
   "direct_mail_presets": { "brokerage_id": "brokerages", "compliance_event_id": "compliance_events" },
-  "direct_mail_recipients": { "brokerage_id": "brokerages", "campaign_id": "direct_mail_campaigns", "contact_id": "contacts" },
-  "direct_mail_responses": { "brokerage_id": "brokerages", "campaign_id": "direct_mail_campaigns", "contact_id": "contacts", "recipient_id": "direct_mail_recipients" },
+  "direct_mail_recipients": { "brokerage_id": "brokerages", "campaign_id": "direct_mail_campaigns", "contact_id": "contacts", "lead_id": "leads" },
+  "direct_mail_responses": { "brokerage_id": "brokerages", "campaign_id": "direct_mail_campaigns", "contact_id": "contacts", "lead_id": "leads", "recipient_id": "direct_mail_recipients" },
   "direct_mail_variant_outcomes": { "brokerage_id": "brokerages", "variant_id": "direct_mail_variants" },
   "direct_mail_variants": { "brokerage_id": "brokerages" },
   "document_checklist": { "brokerage_id": "brokerages", "transaction_id": "transactions", "verified_by_user_id": "users" },
@@ -453,7 +453,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "local_news_sources": { "brokerage_id": "brokerages" },
   "locations": { "brokerage_id": "brokerages" },
   "long_form_videos": { "script_id": "scripts" },
-  "mail_response_tracking": { "brokerage_id": "brokerages", "campaign_id": "direct_mail_campaigns", "contact_id": "contacts" },
+  "mail_response_tracking": { "brokerage_id": "brokerages", "campaign_id": "direct_mail_campaigns", "contact_id": "contacts", "lead_id": "leads" },
   "mail_tracking": { "brokerage_id": "brokerages", "campaign_id": "direct_mail_campaigns" },
   "managed_agent_sessions": { "brokerage_id": "brokerages", "managed_agent_id": "managed_agents" },
   "managed_agents": { "brokerage_id": "brokerages" },

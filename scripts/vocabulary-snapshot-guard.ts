@@ -55,9 +55,69 @@ export interface CheckDeclaration {
   migration: string
 }
 
-/** Strip SQL comments so a commented-out CHECK is never parsed as a declaration. */
+/**
+ * Strip SQL comments so a commented-out CHECK is never parsed as a declaration.
+ *
+ * WAS `.replace(/^[ \t]*--.*$/gm, "")` — anchored to the START of a line, so a
+ * TRAILING comment survived:
+ *
+ *     \'solo_agent\'::text,   -- solo tier: the tenant\'s one agent
+ *
+ * The apostrophe in "tenant\'s" then acted as a string delimiter for the ARRAY
+ * parser, which extracted `::text -- team cascade, s one agent` as a VALUE and
+ * reported a migration/snapshot disagreement that did not exist. The guard\'s own
+ * self-test used a trailing comment with NO apostrophe, so it passed and gave
+ * false confidence.
+ *
+ * That is the third time this session a parser here has been broken by a legal
+ * comment containing a character the parser treats as syntax (the TS block-first
+ * stripper, the template-literal masker, now this). Regexes cannot decide it —
+ * whether `--` opens a comment depends on whether you are inside a string, and
+ * whether a quote opens a string depends on whether you are inside a comment. So
+ * this is one left-to-right scan that tracks the state, including the `$$` dollar
+ * quoting every `do $$ … $$` migration block in this repo uses.
+ */
 export function stripSqlComments(sql: string): string {
-  return sql.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*--.*$/gm, "")
+  let out = ""
+  let i = 0
+  const n = sql.length
+  while (i < n) {
+    // Dollar-quoted body: $tag$ … $tag$ — copied verbatim, comments inside are data.
+    const dollar = /^\$([A-Za-z_]\w*)?\$/.exec(sql.slice(i))
+    if (dollar) {
+      const tag = dollar[0]
+      const end = sql.indexOf(tag, i + tag.length)
+      const stop = end === -1 ? n : end + tag.length
+      out += sql.slice(i, stop)
+      i = stop
+      continue
+    }
+    if (sql[i] === "\'") {
+      out += "\'"
+      i++
+      while (i < n) {
+        if (sql[i] === "\'" && sql[i + 1] === "\'") { out += "\'\'"; i += 2; continue } // escaped quote
+        if (sql[i] === "\'") { out += "\'"; i++; break }
+        out += sql[i]
+        i++
+      }
+      continue
+    }
+    if (sql[i] === "-" && sql[i + 1] === "-") {
+      while (i < n && sql[i] !== "\n") i++          // to end of line, wherever it started
+      continue
+    }
+    if (sql[i] === "/" && sql[i + 1] === "*") {
+      const end = sql.indexOf("*/", i + 2)
+      const stop = end === -1 ? n : end + 2
+      for (let k = i; k < stop; k++) if (sql[k] === "\n") out += "\n"  // keep line numbers
+      i = stop
+      continue
+    }
+    out += sql[i]
+    i++
+  }
+  return out
 }
 
 /**
@@ -116,7 +176,7 @@ console.log("\n[pure — the SQL parser]")
     ALTER TABLE public.widgets DROP CONSTRAINT IF EXISTS widgets_kind_check;
     ALTER TABLE public.widgets
       ADD CONSTRAINT widgets_kind_check CHECK (
-        kind = ANY (ARRAY['alpha', 'beta',  -- a trailing comment
+        kind = ANY (ARRAY['alpha', 'beta',  -- a trailing comment with the tenant's apostrophe
           'gamma'])
       );
     ALTER TABLE public.gadgets

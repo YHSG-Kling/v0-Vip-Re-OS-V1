@@ -20,7 +20,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-19
  * source: public.live_check_constraints_json()
- * body-sha256: a27ef3e04067724d0377c1b58042a3e33e5922c3f54939cb3b85b070ba3bbfd1
+ * body-sha256: 0458fc3fdfbbd04535d1124ad6abcf620b72a3d42b2a43a86820290cfeb45af6
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -249,7 +249,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["completed", "failed", "queued", "rendering", "skipped"],
   },
   assignment_log: {
-    assignment_method: ["ai_recommendation", "load_balance", "manual", "round_robin", "rule_match"],
+    assignment_method: ["ai_recommendation", "geo_based", "load_balance", "manual", "round_robin", "rule_match", "solo_agent", "specialization", "team_lead"],
   },
   assignment_rules: {
     rule_type: ["geo_based", "load_balance", "manual", "round_robin", "specialization"],
