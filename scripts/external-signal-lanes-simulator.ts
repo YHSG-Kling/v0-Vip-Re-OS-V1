@@ -26,10 +26,13 @@ import {
 } from "../lib/external/nextdoor-extract"
 import {
   normalizeStreetAddress, readPermitAddress, readPermitId, readPermitValuation,
-  classifyPermitStrength, matchPermitsToLeads, buildPermitSignalRow, permitDedupeKey,
+  readPermitEventDate, classifyPermitStrength, matchPermitsToLeads, buildPermitSignalRow,
+  permitDedupeKey, ingestPermitSignals,
   PERMIT_SIGNAL_TYPE, PERMIT_DETECTED_VIA,
 } from "../lib/external/permit-signals"
-import { getMarketDatasets } from "../lib/external/socrata-market-registry"
+import {
+  getMarketDatasets, listQueryablePermitDatasets, MARKETS,
+} from "../lib/external/socrata-market-registry"
 import { recentPermits } from "../lib/external/socrata-client"
 import { validateVendorPlan, VENDOR_PLAN_BILLING_CYCLES, VENDOR_PLAN_STATUSES } from "../lib/vendors/vendor-validators"
 import { CRON_REGISTRY } from "../lib/kernel/cron-dispatch"
@@ -204,12 +207,140 @@ check("every read destructures error and reports it",
 check("the lead read is tenant-scoped", /\.from\("leads"\)[\s\S]{0,200}\.eq\("brokerage_id"/.test(permitSrc))
 check("a duplicate (23505) is absorbed as already-recorded, other errors are reported", permitSrc.includes('"23505"'))
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 2b · THE REGISTRY ITSELF. Every claim below was read off a LIVE row on 2026-08-19 and is
+// pinned here with no network, because the failures it guards against are invisible failures:
+// a wrong dateColumn is an HTTP 400 the sweep swallows into `errors`, and a TEXT dateColumn is
+// an HTTP 200 with `[]` that swallows a whole city into "nothing happened today".
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[2b · the market registry — every query bound proved against a real row]")
+
+const permitSpec = (state: string, city: string) =>
+  getMarketDatasets({ state, city }).find((d) => d.kind === "permits")
+
+check("AUSTIN's query bound is `issue_date` — NOT `issued_date`, which is not a column there and " +
+  "answered HTTP 400 every day",
+  permitSpec("TX", "Austin")?.dateColumn === "issue_date",
+  `got ${permitSpec("TX", "Austin")?.dateColumn}`)
+check("SEATTLE's query bound is `issueddate` (no underscore) — the same daily HTTP 400",
+  permitSpec("WA", "Seattle")?.dateColumn === "issueddate",
+  `got ${permitSpec("WA", "Seattle")?.dateColumn}`)
+check("CHICAGO and SAN FRANCISCO keep the bounds that were already right",
+  permitSpec("IL", "Chicago")?.dateColumn === "issue_date"
+  && permitSpec("CA", "San Francisco")?.dateColumn === "filed_date")
+
+// The worst one. `issuance_date` is TEXT "06/17/2020"; `$where=issuance_date >= '2026-08-12'`
+// compares STRINGS, every month begins '0' or '1', so it is always less than '2026…' and NYC
+// returned an empty array with a 200 forever. Verified live 2026-08-19: that query → [], and
+// `dobrundate >= '2026-08-01'` → rows, one of them carrying issuance_date "08/14/1998".
+const nyc = permitSpec("NY", "New York")
+check("NEW YORK bounds on `dobrundate` (its only real timestamp), never on the TEXT issuance_date",
+  nyc?.dateColumn === "dobrundate", `got ${nyc?.dateColumn}`)
+check("…and re-filters on `issuance_date` as MM/DD/YYYY, because DOB re-publishes 1998 permits " +
+  "with today's run date",
+  nyc?.eventDateColumn === "issuance_date" && nyc?.eventDateFormat === "mdy")
+
+check("every dataset the sweep will actually query has been checked against a live row",
+  listQueryablePermitDatasets().every((d) => !!d.verifiedOn),
+  listQueryablePermitDatasets().filter((d) => !d.verifiedOn).map((d) => d.datasetId).join(", "))
+check("no dataset is BOTH marked unavailable and offered as queryable",
+  listQueryablePermitDatasets().every((d) => !d.unavailable))
+check("DALLAS registers no query bound at all — its issued_date is TEXT 'MM/DD/YY', a two-digit " +
+  "year that cannot be compared OR parsed, so it is counted as un-boundable instead of guessed",
+  permitSpec("TX", "Dallas")?.dateColumn === undefined)
+
+// The four markets whose HOST is not a Socrata portal (Phoenix is CKAN, Atlanta and Miami are
+// ArcGIS Hub, Denver's id 404s) plus stale Los Angeles. Registered, so the market is not silently
+// missing; marked, so it is never queried into a daily failure.
+const deadMarkets: Array<[string, string]> = [
+  ["AZ", "Phoenix"], ["GA", "Atlanta"], ["FL", "Miami"], ["CO", "Denver"], ["CA", "Los Angeles"],
+]
+check("the five permit datasets that cannot serve are MARKED with a stated reason, not deleted",
+  deadMarkets.every(([s, c]) => {
+    const d = permitSpec(s, c)
+    return !!d?.unavailable && d.unavailable.length > 10
+  }),
+  deadMarkets.filter(([s, c]) => !permitSpec(s, c)?.unavailable).map(([s, c]) => `${s}:${c}`).join(", "))
+check("every registered market still resolves (marking a dataset never un-registers the market)",
+  Object.values(MARKETS).every((m) => getMarketDatasets({ state: m.state, city: m.city }).length > 0))
+
+console.log("\n[2c · event date — the guard against a portal that re-publishes its history]")
+check("MM/DD/YYYY is parsed to a comparable ISO day",
+  readPermitEventDate({ issuance_date: "06/17/2020" }, "issuance_date", "mdy") === "2020-06-17"
+  && readPermitEventDate({ issuance_date: "8/4/1998" }, "issuance_date", "mdy") === "1998-08-04")
+check("a TWO-digit year is REFUSED, never guessed into a century (this is Dallas's shape)",
+  readPermitEventDate({ issued_date: "03/13/20" }, "issued_date", "mdy") === null)
+check("a floating timestamp reads as its calendar day, and an absent column reads null",
+  readPermitEventDate({ dobrundate: "2026-08-14T00:00:00.000" }, "dobrundate") === "2026-08-14"
+  && readPermitEventDate({}, "dobrundate") === null)
+
+// Three real NYC-shaped rows, one in-window, one a 1998 permit DOB re-published this week, one
+// an application that was never issued and so carries no issuance_date at all.
+const nycLeads = [{ id: "lead-ny", address: "60 BAY 34 ST" }, { id: "lead-ny2", address: "4 METROTECH CENTER" }]
+const nycRows = [
+  { house__: "60", street_name: "BAY 34 ST", job__: "340733647", issuance_date: "08/15/2026", dobrundate: "2026-08-15T00:00:00.000", job_type: "A2" },
+  { house__: "4", street_name: "METROTECH CENTER", job__: "300771412", issuance_date: "08/14/1998", dobrundate: "2026-08-14T00:00:00.000" },
+  { house__: "60", street_name: "BAY 34 ST", job__: "420665587", dobrundate: "2026-08-10T00:00:00.000" },
+]
+const windowed = matchPermitsToLeads(nycRows, nycLeads, { column: "issuance_date", format: "mdy", sinceIso: "2026-08-12" })
+check("only the permit issued INSIDE the window becomes a signal",
+  windowed.matches.length === 1 && windowed.matches[0].permitId === "340733647",
+  `matched ${windowed.matches.map((m) => m.permitId).join(",")}`)
+check("a 1998 permit re-published this week is counted as out-of-window, not filed as a fresh signal",
+  windowed.skippedOutsideWindow === 1)
+check("a row with NO issuance_date is counted separately — 'cannot read' is never 'not recent'",
+  windowed.skippedNoEventDate === 1)
+check("with no window declared, every fetched row is still considered (Chicago/SF/Austin/Seattle)",
+  matchPermitsToLeads(nycRows, nycLeads).matches.length === 3)
+
+console.log("\n[2d · LA's column names, recorded so the entry works the day LADBS resumes publishing]")
+check("LA's house number is `address_start` and its permit id is `pcis_permit`",
+  readPermitAddress({ address_start: "1234", street_direction: "N", street_name: "SPRING", street_suffix: "ST" })
+    === "1234 N SPRING ST"
+  && readPermitId({ pcis_permit: "20WL-12345" }) === "20WL-12345")
+
+console.log("\n[2e · an unavailable dataset is COUNTED, and never queried]")
+{
+  // Every one of these markets is marked unavailable, so `datasets` comes out empty and the ingest
+  // returns before it touches supabase or the network. The stub proves it: any call throws.
+  const forbidden: any = { from: () => { throw new Error("the ingest touched the database for a market it cannot query") } }
+  const r = await ingestPermitSignals({
+    supabase: forbidden,
+    brokerageId: "brok-x",
+    territories: [
+      { brokerage_id: "brok-x", state: "AZ", city: "Phoenix" },
+      { brokerage_id: "brok-x", state: "GA", city: "Atlanta" },
+      { brokerage_id: "brok-x", state: "FL", city: "Miami" },
+      { brokerage_id: "brok-x", state: "CO", city: "Denver" },
+    ],
+    sinceIso: "2026-08-12",
+  })
+  check("four dead portals are reported as four unavailable datasets, not as four quiet markets",
+    r.datasetsUnavailable === 4 && r.datasetsQueried === 0,
+    `unavailable=${r.datasetsUnavailable} queried=${r.datasetsQueried}`)
+  check("…each with the registry's stated reason attached", r.unavailableReasons.length === 4
+    && r.unavailableReasons.every((x) => /CKAN|ArcGIS|404/.test(x)))
+  check("…and none of them is miscounted as an unregistered market or a missing date column",
+    r.marketsUnregistered === 0 && r.datasetsSkippedNoDateColumn === 0)
+  check("a territory in no registered market is still counted as unregistered",
+    (await ingestPermitSignals({
+      supabase: forbidden, brokerageId: "brok-x", sinceIso: "2026-08-12",
+      territories: [{ brokerage_id: "brok-x", state: "MT", city: "Bozeman" }],
+    })).marketsUnregistered === 1)
+}
+
 const cronPath = "/api/cron/permit-signal-scan"
 check("the cron route file exists", existsSync(join(root, "app/api/cron/permit-signal-scan/route.ts")))
 check("the route is gated the way its neighbours are (verifyCronAuth)",
   src("app/api/cron/permit-signal-scan/route.ts").includes("verifyCronAuth"))
 check("the route uses the ACTIVE-subscriber territory resolver, not fixed geography",
   src("app/api/cron/permit-signal-scan/route.ts").includes("resolveActiveScrapeTerritories"))
+check("the route reports the registry's broken datasets instead of absorbing them into a 0",
+  src("app/api/cron/permit-signal-scan/route.ts").includes("unavailable_datasets")
+  && src("app/api/cron/permit-signal-scan/route.ts").includes("datasets_unavailable"))
+check("…and reports the two window skips separately from the address skips",
+  src("app/api/cron/permit-signal-scan/route.ts").includes("skipped_outside_window")
+  && src("app/api/cron/permit-signal-scan/route.ts").includes("skipped_no_event_date"))
 check("the cron is registered in the single-heartbeat dispatcher", CRON_REGISTRY.some((c) => c.path === cronPath))
 check("the cron has an accountable manager", cronPath in CRON_MANAGER && CRON_MANAGER[cronPath] in MANAGERS)
 

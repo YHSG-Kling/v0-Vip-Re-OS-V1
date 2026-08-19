@@ -127,6 +127,8 @@ const PERMIT_ID_KEYS = [
   // dedupe handle m490 relies on was null for every Chicago row.
   "permit_number", "permitnum", "permit_num", "permit_id", "permitno", "permit_", "permit",
   "record_id", "application_number", "job_number", "job__", "case_number", "number",
+  // Los Angeles labels its permit number "PCIS Permit #" → pcis_permit.
+  "pcis_permit",
 ]
 
 // ─── COMPOSITE ADDRESS COMPONENTS ────────────────────────────────────────────
@@ -140,7 +142,12 @@ const PERMIT_ID_KEYS = [
 // so readPermitAddress returned null for every row of every one of them, the sweep counted
 // them all as skippedNoAddress, and a market that could not be READ was indistinguishable
 // from a market with nothing happening in it. Assembling the parts is the whole fix.
-const NUMBER_KEYS = ["street_number", "house__", "house_number", "street_no", "address_number", "str_number"]
+// `address_start` is Los Angeles: LADBS publishes a house-number RANGE (address_start /
+// address_end) and the start is the house number. Generic key, not an LA branch.
+const NUMBER_KEYS = [
+  "street_number", "house__", "house_number", "street_no", "address_number", "str_number",
+  "address_start",
+]
 const PREDIR_KEYS = ["street_direction", "street_dir", "predirection", "street_predirection", "direction"]
 const NAME_KEYS = ["street_name", "streetname", "street"]
 const SUFFIX_KEYS = ["street_suffix", "suffix", "street_type", "streettype"]
@@ -189,6 +196,38 @@ export function readPermitAddress(row: Record<string, unknown>): string | null {
 /** PURE. A stable per-permit handle used for idempotency. Null when the row exposes none. */
 export function readPermitId(row: Record<string, unknown>): string | null {
   return pick(row, PERMIT_ID_KEYS)
+}
+
+/**
+ * PURE. The date the permit event actually happened, as `YYYY-MM-DD`, or null when the row does
+ * not carry a readable one.
+ *
+ * WHY THIS EXISTS. A portal's only *queryable* timestamp is not always the event's date. NYC DOB's
+ * `dobrundate` is the day DOB re-published the row, and DOB re-publishes decades-old permits — a
+ * live row on 2026-08-19 carried `dobrundate: "2026-08-14"` with `issuance_date: "08/14/1998"`.
+ * Bounding the query on the re-publish date is correct (it is the only column Socrata can filter);
+ * treating a 1998 permit as this week's seller signal is not. So the query bounds, and this filters.
+ *
+ * `format` is declared per dataset in the registry because the wire shape is not inferable safely:
+ * "01/02/2020" is January 2nd in the US portals and February 1st elsewhere, and a two-digit year
+ * ("03/13/20", which is what Dallas publishes) is ambiguous in the century — both are REFUSED with
+ * null rather than guessed, because a guessed date silently widens or narrows the window.
+ */
+export function readPermitEventDate(
+  row: Record<string, unknown>,
+  column: string,
+  format: "iso" | "mdy" = "iso",
+): string | null {
+  const raw = pick(row, [column])
+  if (!raw) return null
+  if (format === "mdy") {
+    const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(raw)
+    if (!m) return null // two-digit years and anything else: refused, never guessed
+    const [, mm, dd, yyyy] = m
+    return `${yyyy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}`
+  }
+  const iso = /^(\d{4}-\d{2}-\d{2})/.exec(raw)
+  return iso ? iso[1] : null
 }
 
 /** PURE. Free-text work description, or null. */
@@ -274,6 +313,22 @@ export interface MatchOutcome {
   matches: PermitMatch[]
   skippedNoAddress: number
   skippedNoLeadMatch: number
+  /** Rows whose event date parsed and fell BEFORE the window — real permits, just not recent. */
+  skippedOutsideWindow: number
+  /** Rows whose declared event-date column was absent or unparseable. Cannot read ≠ not recent. */
+  skippedNoEventDate: number
+}
+
+/**
+ * Applied only when the dataset's query bound is a publication date rather than the event date
+ * (see `readPermitEventDate`). Absent = the query bound already was the event date, and every
+ * fetched row is in-window by construction.
+ */
+export interface PermitEventWindow {
+  column: string
+  format?: "iso" | "mdy"
+  /** Inclusive lower bound, `YYYY-MM-DD`. */
+  sinceIso: string
 }
 
 /**
@@ -288,6 +343,7 @@ export interface MatchOutcome {
 export function matchPermitsToLeads(
   permits: Array<Record<string, unknown>>,
   leads: MatchableLead[],
+  window?: PermitEventWindow,
 ): MatchOutcome {
   const byKey = new Map<string, string[]>()
   for (const lead of leads) {
@@ -301,8 +357,18 @@ export function matchPermitsToLeads(
   const matches: PermitMatch[] = []
   let skippedNoAddress = 0
   let skippedNoLeadMatch = 0
+  let skippedOutsideWindow = 0
+  let skippedNoEventDate = 0
 
   for (const row of permits ?? []) {
+    if (window) {
+      const eventDate = readPermitEventDate(row, window.column, window.format ?? "iso")
+      // Both branches are counted separately and on purpose. "This permit is from 1998" and "this
+      // portal did not tell me when this permit happened" are different facts, and collapsing them
+      // is the same mistake that made an unreadable New York look like an idle New York.
+      if (!eventDate) { skippedNoEventDate++; continue }
+      if (eventDate < window.sinceIso) { skippedOutsideWindow++; continue }
+    }
     const permitAddress = readPermitAddress(row)
     const key = normalizeStreetAddress(permitAddress)
     if (!key) { skippedNoAddress++; continue }
@@ -325,7 +391,7 @@ export function matchPermitsToLeads(
       })
     }
   }
-  return { matches, skippedNoAddress, skippedNoLeadMatch }
+  return { matches, skippedNoAddress, skippedNoLeadMatch, skippedOutsideWindow, skippedNoEventDate }
 }
 
 /** The canonical signal_type this lane writes. One value, so the idempotency read can find them. */
@@ -406,11 +472,23 @@ export interface PermitIngestResult {
   datasetsQueried: number
   /** Registered permit datasets that carry no `dateColumn`, so recentPermits cannot bound them. */
   datasetsSkippedNoDateColumn: number
+  /**
+   * Registered permit datasets marked `unavailable` in the registry — a dead dataset id, a stale
+   * feed, or a host that is not a Socrata portal at all. Never queried, always reported, with the
+   * registry's stated reason attached, so a broken portal reads as broken and not as a quiet market.
+   */
+  datasetsUnavailable: number
+  /** The `unavailable` reasons, verbatim, so the operator sees WHY without opening the registry. */
+  unavailableReasons: string[]
   /** Territories whose (state, city) is not in socrata-market-registry MARKETS at all. */
   marketsUnregistered: number
   permitsFetched: number
   skippedNoAddress: number
   skippedNoLeadMatch: number
+  /** Fetched rows that were genuinely older than the window (portals that re-publish history). */
+  skippedOutsideWindow: number
+  /** Fetched rows whose declared event-date column was missing or unparseable. */
+  skippedNoEventDate: number
   alreadyRecorded: number
   signalsWritten: number
   /** Every refusal, verbatim. A run with errors NEVER reports a clean success. */
@@ -450,10 +528,14 @@ export async function ingestPermitSignals(params: {
     marketsConsidered: 0,
     datasetsQueried: 0,
     datasetsSkippedNoDateColumn: 0,
+    datasetsUnavailable: 0,
+    unavailableReasons: [],
     marketsUnregistered: 0,
     permitsFetched: 0,
     skippedNoAddress: 0,
     skippedNoLeadMatch: 0,
+    skippedOutsideWindow: 0,
+    skippedNoEventDate: 0,
     alreadyRecorded: 0,
     signalsWritten: 0,
     errors: [],
@@ -468,6 +550,15 @@ export async function ingestPermitSignals(params: {
     if (specs.length === 0) { result.marketsUnregistered++; continue }
     for (const spec of specs) {
       if (spec.kind !== "permits") continue
+      if (spec.unavailable) {
+        // Registered, and known not to serve. Querying it anyway buys a daily HTTP 400 (a dead id,
+        // a non-Socrata host) or a daily silent zero (a feed that stopped updating). Counted with
+        // its reason instead — the operator learns the registry is wrong, not that Miami is quiet.
+        result.datasetsUnavailable++
+        const reason = `${spec.label} (${spec.host}/${spec.datasetId}): ${spec.unavailable}`
+        if (!result.unavailableReasons.includes(reason)) result.unavailableReasons.push(reason)
+        continue
+      }
       if (!spec.dateColumn) {
         // recentPermits filters and orders BY that column. Without one we cannot bound the query
         // to "recent", and pulling a whole historical dataset every day is not a cadence. Counted
@@ -532,9 +623,19 @@ export async function ingestPermitSignals(params: {
     }
     result.permitsFetched += res.data.length
 
-    const outcome = matchPermitsToLeads(res.data, leads)
+    // When the dataset's query bound is a re-publish date, the fetched rows are NOT all recent —
+    // filter them on the column that carries the real event date before anything becomes a signal.
+    const outcome = matchPermitsToLeads(
+      res.data,
+      leads,
+      dataset.eventDateColumn
+        ? { column: dataset.eventDateColumn, format: dataset.eventDateFormat ?? "iso", sinceIso }
+        : undefined,
+    )
     result.skippedNoAddress += outcome.skippedNoAddress
     result.skippedNoLeadMatch += outcome.skippedNoLeadMatch
+    result.skippedOutsideWindow += outcome.skippedOutsideWindow
+    result.skippedNoEventDate += outcome.skippedNoEventDate
 
     for (const match of outcome.matches) {
       const key = permitDedupeKey(match, dataset)

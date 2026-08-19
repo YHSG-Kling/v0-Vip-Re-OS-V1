@@ -78,14 +78,18 @@ export async function GET(request: Request) {
     }
 
     const errors: string[] = []
+    const unavailableReasons = new Set<string>()
     const totals = {
       brokerages: 0,
       datasets_queried: 0,
       datasets_skipped_no_date_column: 0,
+      datasets_unavailable: 0,
       markets_unregistered: 0,
       permits_fetched: 0,
       skipped_no_address: 0,
       skipped_no_lead_match: 0,
+      skipped_outside_window: 0,
+      skipped_no_event_date: 0,
       already_recorded: 0,
       signals_written: 0,
     }
@@ -96,10 +100,14 @@ export async function GET(request: Request) {
         const r = await ingestPermitSignals({ supabase, brokerageId, territories, sinceIso })
         totals.datasets_queried += r.datasetsQueried
         totals.datasets_skipped_no_date_column += r.datasetsSkippedNoDateColumn
+        totals.datasets_unavailable += r.datasetsUnavailable
+        for (const reason of r.unavailableReasons) unavailableReasons.add(reason)
         totals.markets_unregistered += r.marketsUnregistered
         totals.permits_fetched += r.permitsFetched
         totals.skipped_no_address += r.skippedNoAddress
         totals.skipped_no_lead_match += r.skippedNoLeadMatch
+        totals.skipped_outside_window += r.skippedOutsideWindow
+        totals.skipped_no_event_date += r.skippedNoEventDate
         totals.already_recorded += r.alreadyRecorded
         totals.signals_written += r.signalsWritten
         for (const e of r.errors) errors.push(`${brokerageId}: ${e}`)
@@ -113,10 +121,18 @@ export async function GET(request: Request) {
     // whenever a territory fell through. socrata-market-registry.MARKETS is the place to extend.
     const supportedMarkets = totals.markets_unregistered > 0 ? listSupportedMarkets() : undefined
 
+    // A dataset the registry itself marks broken is a REGISTRY DEFECT, and it rides back with the
+    // reason attached. Without this the run reports "0 signals" for a tenant whose only market is
+    // a dead portal, and the operator has no way to tell that from a week with no permits.
+    const unavailable = unavailableReasons.size > 0 ? [...unavailableReasons] : undefined
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: totals.signals_written,
-      metadata: { ...totals, since: sinceIso, supported_markets: supportedMarkets, errors: errors.slice(0, 20) },
+      metadata: {
+        ...totals, since: sinceIso, supported_markets: supportedMarkets,
+        unavailable_datasets: unavailable, errors: errors.slice(0, 20),
+      },
     }).catch(() => {})
 
     return NextResponse.json({
@@ -124,6 +140,7 @@ export async function GET(request: Request) {
       since: sinceIso,
       ...totals,
       supported_markets: supportedMarkets,
+      unavailable_datasets: unavailable,
       errors: errors.slice(0, 20),
     })
   } catch (e) {
