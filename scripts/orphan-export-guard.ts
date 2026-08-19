@@ -43,6 +43,7 @@
  */
 import { readdirSync, readFileSync, statSync, existsSync, writeFileSync } from "node:fs"
 import { join, relative } from "node:path"
+import { stripComments } from "./strip-comments"
 
 const root = process.cwd()
 /**
@@ -124,7 +125,55 @@ const SKIP_TOP_LEVEL = new Set([
 // NOT a delete list — the standing rule holds: an unwired capability is work to
 // FINISH. These hooks are now visible so they can be wired or consciously ruled
 // on, instead of being invisible to the instrument that exists to find them.
-const SCANNED_ROOTS = ["app", "lib", "services", "hooks"]
+// ─── AND THEN THE SAME NARROWING WAS FOUND A FOURTH TIME ────────────────────
+// The list above was the instrument's reach, and a hand-written list only ever
+// covers what someone remembered to type. `services/` was added when it was
+// found uncensused; `hooks/` was added when the same audit found 33 exported
+// hooks outside the count. Both times the list was extended by one name and left
+// a list. FIVE more top-level directories ship TypeScript and none of them was
+// ever opened as an export source: remotion/ (42 files, and it RENDERS —
+// compositions are real runtime), types/, constants/, contexts/, workflows/,
+// plus the root-level proxy.ts and types.ts.
+//
+// constants/crm-standards.ts is the one that surfaced it: a burn-down lane moved
+// a live map onto it as the survivor of a deletion, and only afterwards noticed
+// that nothing in constants/ is measured at all — the "survivor" it had chosen
+// was in a directory the census cannot see.
+//
+// So the roots are now DERIVED from the corpus instead of typed into it: every
+// top-level directory that contributes TypeScript, minus the ones named below
+// with a reason. walk() already excluded the vendor and non-product directories
+// before this point, and the REFERENCE corpus was ALREADY the whole tree — only
+// the EXPORT side was narrowed. So widening here cannot invent an orphan by
+// failing to see its caller; it can only reveal exports that were always there.
+//
+// This RAISES the number, and that is the point, exactly as it was for hooks/
+// and for the prose-only-reference correction that took the count from 29 to
+// 240. A census that quietly excludes a directory is not a smaller problem, it
+// is an unmeasured one, and the reported figure was wrong in the flattering
+// direction.
+
+/** Directories that hold TypeScript but whose exports are not product surface. */
+const NON_RUNTIME_EXPORT_ROOTS = new Set([
+  "e2e",   // Playwright harness — its exports are fixtures, consumed by the runner, not by the app
+])
+
+/** Root-level .ts files ship too (proxy.ts, types.ts); "" is their prefix. */
+function scannedRoots(all: string[]): string[] {
+  const roots = new Set<string>()
+  for (const f of all) {
+    const slash = f.indexOf("/")
+    const top = slash === -1 ? "" : f.slice(0, slash)
+    if (NON_RUNTIME_EXPORT_ROOTS.has(top)) continue
+    // Dot-directories are configuration and agent scaffolding (.agents, .claude,
+    // .github), never product runtime. They stay in the REFERENCE corpus — a
+    // config file that names an export is still evidence of use — but nothing in
+    // them is a product export to be held to account.
+    if (top.startsWith(".")) continue
+    roots.add(top)
+  }
+  return [...roots].sort()
+}
 
 function walk(dir: string, out: string[] = []): string[] {
   let entries: string[]
@@ -153,9 +202,18 @@ for (const f of files) {
 
 /** Comments stripped so a mention in prose does not count as an export or a use. */
 function code(f: string): string {
-  return (corpus.get(f) ?? "")
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/^[ \t]*\/\/.*$/gm, "")
+  const raw = corpus.get(f) ?? ""
+  // WAS two regexes: block comments first, then line comments. That order is the
+  // defect — a slash-star inside a LINE comment opened a block comment for the
+  // first regex, which then ran to the next star-slash anywhere below and deleted
+  // the code in between. It cost this census its credibility twice: once
+  // swallowing ~670 lines, and once swallowing 5,936 of 12,967 characters of
+  // compliance-bridge-panel.tsx — which made two WIRED server actions
+  // (emitCompliancePassedAction, loadComplianceBridgeStatusAction) read as
+  // "referenced NOWHERE". An analyzer that under-reads does not go quiet; it
+  // accuses working code. stripComments() is a single left-to-right scan that
+  // tracks state, which is the only thing that can actually decide this.
+  return stripComments(raw)
 }
 
 const codeCache = new Map<string, string>()
@@ -202,9 +260,14 @@ for (const f of files) useCache.set(f, callSites(codeCache.get(f)!))
 
 interface ExportRef { file: string; name: string }
 
+const SCANNED_ROOTS = scannedRoots(files)
+
 const exportsFound: ExportRef[] = []
 for (const f of files) {
-  if (!SCANNED_ROOTS.some((r) => f.startsWith(r + "/"))) continue
+  // "" is the root-level prefix and matches every path, so it is tested as
+  // "has no slash" rather than as a prefix.
+  const top = f.indexOf("/") === -1 ? "" : f.slice(0, f.indexOf("/"))
+  if (!SCANNED_ROOTS.includes(top)) continue
   // STRING-MASKED, not just comment-stripped. The comment-stripped text still
   // carried string LITERALS, and the export regex matched inside them: the
   // cross-referral sweep registry stores each sweep's grep marker as data —
@@ -376,6 +439,9 @@ const baselineTotal = Object.values(baseline).reduce((a, b) => a + b, 0)
 
 console.log("\n[orphan-export guard — exported functions nothing else references]")
 console.log(`  ${exportsFound.length} exported functions scanned · ${orphans.length} unreferenced (baseline ${baselineTotal})`)
+// The roots are derived, so they are PRINTED. A derived list nobody can see is the
+// same opacity the hand-written list had, wearing a better hat.
+console.log(`  export roots (derived): ${SCANNED_ROOTS.map((r) => r || "<repo root>").join(", ")}`)
 
 const regressionsDead: string[] = []
 

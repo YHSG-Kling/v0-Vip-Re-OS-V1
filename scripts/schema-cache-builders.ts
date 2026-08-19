@@ -313,8 +313,20 @@ const CHECK_SHAPES = [
   /^CHECK \((\w+) = ('(?:[^']|'')*'::text)\)$/,
   /^CHECK \(\((\w+) IS NULL\) OR \(\1 = ('(?:[^']|'')*'::text)\)\)$/,
   /^CHECK \(\((\w+) = ('(?:[^']|'')*'::text)\) OR \(\1 IS NULL\)\)$/,
+  // A `character varying` column's CHECK is rendered by Postgres with the column
+  // CAST and the array cast too — `((col)::text = ANY ((ARRAY[…])::text[]))` — and
+  // the bare-identifier shapes above cannot match it. SIX live constraints take this
+  // form and FIVE of them had never once been read into the vocabulary cache:
+  // closing_disclosure_agreement.status (8 values), conversation_insights'
+  // escalation_urgency / overall_sentiment / sentiment_trajectory, messages.sentiment.
+  // A vocabulary guard blind to a column's CHECK cannot tell you when the code writes
+  // a value the database will refuse — which is the entire job.
+  /^CHECK \(\((\w+)\)::text = ANY \(\(ARRAY\[(.*)\]\)::text\[\]\)\)$/,
+  /^CHECK \(\((\w+) IS NULL\) OR \(\(\1\)::text = ANY \(ARRAY\[(.*)\]\)\)\)$/,
 ]
-const TEXT_LITERAL = /^'((?:[^']|'')*)'::text$/
+// `::character varying` appears wherever the column is varchar rather than text;
+// the VALUE is the same string either way.
+const TEXT_LITERAL = /^'((?:[^']|'')*)'::(?:text|character varying)$/
 
 /**
  * PURE — the admitted text values of one CHECK definition, or null when the constraint is not a

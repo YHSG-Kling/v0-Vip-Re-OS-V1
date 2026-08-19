@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 430 tables, 745 columns.
+ * MEASURED AT GENERATION: 434 tables, 754 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-19
  * source: public.live_check_constraints_json()
- * body-sha256: 558529409d5a002049aa0f2415d6d72defe3cd70ef064fbca9fc5442be35ced4
+ * body-sha256: a27ef3e04067724d0377c1b58042a3e33e5922c3f54939cb3b85b070ba3bbfd1
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -420,6 +420,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   closing_disclosure_agreement: {
     non_cda_payout_method: ["check", "direct_deposit"],
     sent_to_title_method: ["docusign", "dotloop", "email", "manual"],
+    status: ["approved", "awaiting_preliminary_cd", "cancelled", "changes_requested", "drafting", "pending", "rejected", "submitted"],
   },
   closing_disclosure_agreement_revisions: {
     action: ["approved", "cancelled", "changes_requested", "drafted", "rejected", "signed_off", "submitted"],
@@ -522,6 +523,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     lifetime_segment: ["local_owner", "relocated"],
     phone_status: ["invalid", "reassigned", "unknown", "valid"],
     referral_potential: ["high", "low", "medium"],
+    timeline: ["1-3_months", "12+_months", "3-6_months", "6-12_months", "immediate", "researching"],
   },
   content_ab_tests: {
     status: ["cancelled", "completed", "running"],
@@ -558,6 +560,11 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   conversation_audit_flags: {
     review_status: ["dismissed", "escalated", "pending", "reviewed"],
     risk_type: ["compliance", "data_leak", "fair_housing", "hallucination", "inappropriate_language", "missed_opportunity"],
+  },
+  conversation_insights: {
+    escalation_urgency: ["critical", "high", "low", "medium"],
+    overall_sentiment: ["negative", "neutral", "positive"],
+    sentiment_trajectory: ["declining", "improving", "mixed", "stable"],
   },
   conversation_logs: {
     channel: ["ai_assistant", "chat", "email", "sms", "voice"],
@@ -753,6 +760,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   lead_imports: {
     status: ["completed", "failed", "pending", "processing"],
   },
+  lead_intelligence: {
+    timeline: ["1-3_months", "12+_months", "3-6_months", "6-12_months", "immediate", "researching"],
+  },
   lead_magnets: {
     status: ["archived", "draft", "published"],
   },
@@ -782,6 +792,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     reengagement_status: ["active", "completed", "handed_to_sphere", "long_horizon", "none", "opted_out", "paused", "stopped"],
     source_family: ["contact_direct", "lead", "raw"],
     source_origin: ["brokerage", "platform"],
+    timeline: ["1-3_months", "12+_months", "3-6_months", "6-12_months", "immediate", "researching"],
     urgency_level: ["cold", "cool", "hot", "warm"],
   },
   learning_assignments: {
@@ -938,6 +949,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   message_threads: {
     channel: ["direct_mail", "email", "in_app", "sms", "voice"],
+  },
+  messages: {
+    sentiment: ["negative", "neutral", "positive"],
   },
   model_retraining_log: {
     status: ["completed", "failed", "pending", "running"],
@@ -1514,6 +1528,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   trid_timeline: {
     compliance_status: ["at_risk", "closed", "compliant", "in_progress", "violation"],
+  },
+  unified_lead_profile: {
+    estimated_timeline: ["1-3_months", "12+_months", "3-6_months", "6-12_months", "immediate", "researching"],
   },
   usage_counters: {
     metric: ["active_transactions", "active_users", "ai_tokens_monthly", "ai_voice_minutes", "avatars_created", "contacts_count", "emails_sent", "live_assistant_minutes", "live_assistant_sessions", "live_avatar_minutes", "live_avatar_sessions", "llm_calls", "sms_sent", "storage_gb", "tts_characters", "video_minutes", "voice_clones_created"],
