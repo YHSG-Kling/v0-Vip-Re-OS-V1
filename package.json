@@ -15,6 +15,7 @@
     "test:e2e:ui": "playwright test --ui",
     "test:scrapers": "tsx scripts/scraper-simulator.ts",
     "test:external-signal-lanes": "tsx scripts/external-signal-lanes-simulator.ts",
+    "test:mail-unsubscribe": "tsx scripts/mail-unsubscribe-simulator.ts",
     "test:expired-listing-source": "tsx scripts/expired-listing-source-simulator.ts",
     "test:repurpose-shorts": "tsx scripts/repurpose-shorts-simulator.ts",
     "test:motivated-triggers": "tsx scripts/motivated-triggers-simulator.ts",
