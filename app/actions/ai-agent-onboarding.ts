@@ -64,6 +64,8 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { resolveAgentRecipient } from "@/lib/notifications/recipient-tenant"
+// A new `agents` row invalidates any memoized "this user has no agent record" answer.
+import { invalidateAgentIdentity } from "@/lib/kernel/agent-identity-resolver"
 import { z } from "zod"
 
 // ==================== TYPES ====================
@@ -158,6 +160,17 @@ export async function startAgentOnboarding(params: {
       .single()
 
     if (agentError) throw agentError
+
+    // DROP THE STALE "NO SUCH AGENT" ANSWER. lib/kernel/agent-identity-resolver.ts
+    // memoizes NEGATIVE lookups for the whole process lifetime, so on a warm
+    // serverless instance a `null` cached before this insert would keep the agent
+    // we just created unresolvable until the instance recycles. Precise: only the
+    // two keys this row can have poisoned.
+    invalidateAgentIdentity({
+      agentRecordId: agent?.id ?? null,
+      userId: params.agentUserId,
+      brokerageId: params.brokerageId,
+    })
 
     // Generate AI-personalized onboarding plan
     const { object: onboardingPlan } = await generateObject({

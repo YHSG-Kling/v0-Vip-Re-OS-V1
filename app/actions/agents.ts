@@ -8,6 +8,8 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { resolveUserOffice, pickUserOffice } from "@/lib/kernel/resolve-user-office"
 import { ensureAgentCapWindow } from "@/lib/commission/cap-resolver"
 import { isAdminOrBroker, isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
+// A new `agents` row invalidates any memoized "this user has no agent record" answer.
+import { invalidateAgentIdentity } from "@/lib/kernel/agent-identity-resolver"
 
 /** Roles allowed to administer OTHER people's agent records / brokerage rollups. */
 // ==================== AGENT CRUD ====================
@@ -300,6 +302,22 @@ export async function createAgent(agentData: {
       }
     }
     return { error: error.message }
+  }
+
+  // ── DROP THE STALE "NO SUCH AGENT" ANSWER ─────────────────────────────────
+  // lib/kernel/agent-identity-resolver.ts memoizes NEGATIVE lookups for the
+  // process lifetime. If anything asked "does this user have an agents row in
+  // this brokerage?" before this insert — the duplicate probe above does exactly
+  // that shape of question — a `null` is sitting in that map, and on a warm
+  // serverless instance the agent we just created stays unresolvable until the
+  // instance recycles. Invalidate the two keys this row can have poisoned, and
+  // only those; the rest of the map is other tenants' warm mappings.
+  if (data?.id) {
+    invalidateAgentIdentity({
+      agentRecordId: data.id,
+      userId: agentData.user_id,
+      brokerageId: ctx.brokerageId,
+    })
   }
 
   // ── SEED THE CAP LEDGER — THIS IS WHAT MAKES THE CAP REAL ─────────────────

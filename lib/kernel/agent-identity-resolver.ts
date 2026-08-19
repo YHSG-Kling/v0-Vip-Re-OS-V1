@@ -123,24 +123,46 @@ export async function resolveUserIdToAgentRecord(userAgentId: UserAgentId | stri
 }
 
 /**
- * For tests + cron resets — clears the in-process caches.
+ * ★ THE NEGATIVE-CACHE INVALIDATOR ★ — call this the moment an `agents` row is
+ * created, or its `user_id` / `brokerage_id` changes.
  *
- * KEPT, RECORDED AS A BUILD LINE (orphan burn-down, lane O). It has no caller
- * and no duplicate, and it is not speculative — both caches above memoize
- * NEGATIVE results (`cache.set(key, null)`) for the lifetime of the process, so
- * on a warm serverless instance a users.id that had no `agents` row when it was
- * first asked about stays unresolvable AFTER the agent is created. That is a
- * real staleness window and this function is its remedy.
+ * THE DEFECT IT FIXES, precisely. Both caches above memoize NEGATIVE results
+ * (`cache.set(key, null)`) for the lifetime of the process, and a serverless
+ * instance stays warm across requests. So the sequence
  *
- * THE BLOCKER, precisely: the correct call site is agent creation — the moment
- * an `agents` row appears or its `user_id` changes — and that lives in
- * app/actions/agents.ts and app/actions/ai-agent-onboarding.ts, both of which
- * are owned by other lanes in this wave. Wiring it from here would collide.
- * Note for whoever wires it: this module is `server-only`, so a plain-tsx
- * simulator cannot import it and the "tests" half of the comment above has
- * never been reachable either.
+ *     request 1: resolveUserIdToAgentRecord(u, b) → no row yet → caches null
+ *     request 2: createAgent(u, b)                → the row now EXISTS
+ *     request 3: resolveUserIdToAgentRecord(u, b) → returns the CACHED null
+ *
+ * leaves a brand-new agent unresolvable on that instance until it recycles —
+ * minutes to hours, and only on some instances, which is the shape of bug that
+ * gets reported as "it works for me".
+ *
+ * PRECISE, NOT A FLUSH. Only the two keys that the new row can have poisoned are
+ * dropped: the agents.id key in `agentToUserCache`, and the composite
+ * `users.id::brokerage_id` key in `userToAgentCache`. Every other tenant's warm
+ * mapping survives, which matters because these caches exist to keep a read-heavy
+ * lookup off the database.
+ *
+ * ─── REMOVED in the orphan burn-down (lane L) ────────────────────────────────
+ * `_resetAgentIdentityCaches()` — MERGED-THEN-DELETED. SURVIVOR: this function.
+ * It cleared BOTH maps entirely and was described as being "for tests + cron
+ * resets". Neither half was reachable: it had no caller anywhere in the tree, and
+ * this module imports `server-only`, so the plain-tsx simulators that would have
+ * been the "tests" cannot import it at all. Nothing needed merging — a full flush
+ * is what this does, minus the collateral damage — and keeping a blunt flush
+ * beside a precise invalidator only invites the flush to be called instead.
  */
-export function _resetAgentIdentityCaches(): void {
-  agentToUserCache.clear()
-  userToAgentCache.clear()
+export function invalidateAgentIdentity(params: {
+  /** agents.id of the row that was created or changed, when known. */
+  agentRecordId?: string | null
+  /** users.id the row points at. */
+  userId?: string | null
+  /** The tenant the row belongs to — part of the reverse cache's composite key. */
+  brokerageId?: string | null
+}): void {
+  if (params.agentRecordId) agentToUserCache.delete(params.agentRecordId)
+  if (params.userId && params.brokerageId) {
+    userToAgentCache.delete(`${params.userId}::${params.brokerageId}`)
+  }
 }

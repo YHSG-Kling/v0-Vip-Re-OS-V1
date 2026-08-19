@@ -855,7 +855,45 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
     throw new Error(`Failed to save briefing: ${upsertError.message}`)
   }
 
-  // 5. INSERT lifecycle_events
+  // 5. DELIVER IT. Merged in from copilot.ts:handleMorningKickoff, which was an
+  // orphan whose ONLY unique contribution was this notification — the rest of it
+  // read one task list where this function reads seven sources, so the reading
+  // half died and the delivery half moved here.
+  //
+  // Until now this function wrote the briefing and emitted
+  // DAILY_BRIEFING_GENERATED, and that event has ZERO consumers — no
+  // notification-engine mapping, no handler anywhere in the tree. So a briefing
+  // was generated every morning and the agent was never told it existed.
+  //
+  // user_id is briefingUserId (users.id), NOT agentsId — notifications.user_id
+  // FKs users and the two id spaces are disjoint (pass 12 resolved both above;
+  // sending the agents.id here is the FK throw that kept briefings uncached).
+  //
+  // A failed delivery is LOGGED, not thrown: the briefing itself is saved and
+  // returning it is still correct. What must not happen is the silent discard
+  // the orphan did — it swallowed the insert error and reported success either
+  // way, so nobody could tell a delivered briefing from an undelivered one.
+  const { error: notifyError } = await supabase
+    .from("notifications")
+    .insert({
+      user_id:     briefingUserId,
+      brokerage_id: brokerageId,
+      type:        "daily_briefing",
+      title:       "Your morning briefing is ready",
+      body:        `${tasks.length} task${tasks.length === 1 ? "" : "s"} today` +
+                   (finalDealsAtRisk.length > 0 ? ` · ${finalDealsAtRisk.length} deal${finalDealsAtRisk.length === 1 ? "" : "s"} needing attention` : ""),
+      entity_type: "ai_daily_briefing",
+      entity_id:   upsertedBriefing.id,
+      priority:    finalDealsAtRisk.length > 0 ? "high" : "medium",
+      is_read:     false,
+    })
+  if (notifyError) {
+    console.error(
+      `[DailyBriefing] briefing ${upsertedBriefing.id} saved but NOT delivered to ${briefingUserId}: ${notifyError.message}`,
+    )
+  }
+
+  // 6. INSERT lifecycle_events
   await supabase
     .from("lifecycle_events")
     .insert({
@@ -873,7 +911,7 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
       },
     })
 
-  // 6. Return briefing data
+  // 7. Return briefing data
   return upsertedBriefing as DailyBriefing
 }
 

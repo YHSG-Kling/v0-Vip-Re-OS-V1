@@ -615,18 +615,29 @@ export async function publishToWordPress(
 // guess a brokerage uuid. The page it duplicates always scoped to the signed-in
 // user's brokerage; this one now does the same, the same way.
 //
-// ORPHAN BURN-DOWN (lane O) — RECORDED AS A BUILD LINE. The blocker is precise:
-// the surface that needs it is the filter/refresh control on
-// the app/dashboard/marketing/blog directory, owned by another lane this wave,
-// (written without a trailing glob on purpose: a slash followed by a star, even
-//  inside a line comment, opens a BLOCK comment for any tool that strips block
-//  comments BEFORE it drops line comments — and this file's own guard does
-//  exactly that, so the glob swallowed ~670 lines of real code from its view,
-//  including the query this file's projection check anchors on),
-// so wiring it from here would collide. Not deleted, because unlike
-// getBlogPostById (removed above) this one is NOT covered by the page — the page
-// loads the unfiltered first list only, and publish-status / agent / date-range
-// filtering exists nowhere else.
+// WIRED (lane L). Caller: app/dashboard/marketing/blog/blog-dashboard-client.tsx —
+// the Author / Created-from / Created-to controls and the Refresh button.
+//
+// It is NOT covered by the page, which is why it was never a deletion. The page
+// runs ONE unfiltered read and hands the whole list to the client, which then
+// narrows it in memory by search text, publish status and category. Author and
+// date range cannot be done that way and existed nowhere: the client had no
+// concept of either, and no way to re-read at all, so a post generated in one tab
+// or written by a colleague never appeared until a full page reload. Those three
+// server axes now come back through here.
+//
+// THE PROJECTION MATCHES THE PAGE'S, COLUMN FOR COLUMN, and that is load-bearing:
+// the client keeps filtering the refreshed rows by `category` in memory, and this
+// file's sibling lesson (blog page, `category` once omitted from the select) is that
+// a column the surface renders but the reader drops turns every comparison false and
+// empties the list without an error. Do not narrow it.
+//
+// PATH GLOBS ARE WRITTEN WITHOUT THEIR TRAILING WILDCARD IN THIS FILE, on
+// purpose: a slash followed by a star opens a BLOCK comment even inside a line
+// comment, for any tool that strips block comments BEFORE it drops line comments
+// — and this file's own guard does exactly that. One such glob once swallowed
+// ~670 lines of real code from every such analyzer's view, including the query
+// this file's projection check anchors on. Do not reintroduce one.
 
 export async function getBlogPosts(
   filters?: {
@@ -776,12 +787,19 @@ export async function addSeoKeyword(
 // session now, matching how the agent-scoped sibling gets its scope from
 // requireContentActor().
 //
-// ORPHAN BURN-DOWN (lane O) — RECORDED AS A BUILD LINE, same blocker as
-// getBlogPosts above: its surface is app/dashboard/marketing/seo/
-// seo-keywords-client.tsx (which already imports addSeoKeyword and
-// discoverKeywordsAI from this file but not this reader), and that directory is
-// owned by another lane this wave. The keep verdict recorded above still holds —
-// the agent-scoped sibling is a different axis, not a survivor.
+// WIRED (lane L). Caller: app/dashboard/marketing/seo/seo-keywords-client.tsx,
+// the Refresh control beside the keyword filters. That client had no reader at
+// all: it seeded from the page's server-rendered list and thereafter kept the
+// list in sync by RECONSTRUCTING each row from what the agent typed into the add
+// form. This is the read that replaces the guess with what the table actually
+// holds. The keep verdict above still holds — the agent-scoped sibling in
+// app/actions/ai-content-generation.tsx is a different axis, not a survivor.
+//
+// `created_at` IS IN THIS PROJECTION for the same class of reason the blog page
+// needed `category` in its own: the surface renders it, so a reader that omits
+// it hands back rows the client cannot render. It matches the SeoKeywordsTab
+// projection in app/dashboard/marketing/seo/page.tsx column for column, which is
+// what makes this a drop-in refresh of that list rather than a second shape.
 
 export async function getSeoKeywords(): Promise<{
   success: boolean
@@ -796,6 +814,7 @@ export async function getSeoKeywords(): Promise<{
     difficulty_score: number | null
     priority_score: number | null
     is_active: boolean
+    created_at: string
   }>
   error?: string
 }> {
@@ -809,7 +828,7 @@ export async function getSeoKeywords(): Promise<{
   const { data, error } = await supabase
     .from("seo_keywords")
     .select(
-      "id, keyword, keyword_type, search_intent, target_location, search_volume, competition, difficulty_score, priority_score, is_active"
+      "id, keyword, keyword_type, search_intent, target_location, search_volume, competition, difficulty_score, priority_score, is_active, created_at"
     )
     .eq("brokerage_id", ctx.brokerageId)
     .order("priority_score", { ascending: false, nullsFirst: false })

@@ -53,6 +53,26 @@ interface ProcessingResult {
 //     handleVideoGenerated; video.script_approved/published/high_engagement are not yet emitted.
 // To activate: emit these events from the live flows (portal task UI; video publish/engagement) AND
 // dispatch them — either add cases to the switch or make orchestrateEvent consult this map.
+//
+// ─── ASKED AND ANSWERED: the six copilot/assistant "handlers" do NOT belong here ─────
+// app/actions/copilot.ts (handleSuggestionAccepted, handleCoachingSessionBooked,
+// handleMorningKickoff) and app/actions/assistant.ts (handleAssistantQuery,
+// handleTaskDelegated, handleAutomationTriggered) were repeatedly proposed for this map.
+// They are not being added, and no internal-caller seam is being built for them, because
+// registering them cannot make them fire:
+//   · This map is not consulted. `orchestrateEvent` switches on `event.event_type` (below),
+//     so an entry here is a reference, not a wiring.
+//   · There is no event. `lib/events/types.ts:29-54` is the whole EVENT_TYPES vocabulary
+//     and it has no member for any of the six; the nearest, `AI_SUGGESTION_ACTIONED`, is
+//     emitted by nothing in the repo.
+//   · The blocker people kept naming — `emitEventFromCron` carries a SERVICE credential and
+//     no session, so the `authorizeForUser` gates in those files refuse every unattended
+//     dispatch — is true, and it is the SECOND reason not to wire them, not the first. Even
+//     with a seam that handed each handler an explicit identity, the dispatch count stays
+//     zero. A seam is worth building the day an emitter exists; today it would only make
+//     six functions look connected.
+// Their real dispositions (user actions, telemetry, one duplicate of the daily-briefing
+// cron) are recorded per-function in those two files.
 // =====================================================
 
 const EVENT_HANDLERS = {

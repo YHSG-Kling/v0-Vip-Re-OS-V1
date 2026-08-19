@@ -200,22 +200,39 @@ export async function createAccountLink(
 // `requirements.currently_due`) have no reader, and a probe spec gains a field
 // by declaring it, not by growing a second function.
 
-// ─── KEPT, RECORDED AS A BUILD LINE (orphan burn-down, lane O) ───────────────
+// ─── KEPT AND DELIBERATELY NOT WIRED — OWNER DECISION, SETTLED (lane L) ──────
 //
-// `getStripeBalance()` has no caller and, unlike the two functions deleted
-// around it, no survivor either — nothing else in this repo reads the platform
-// Stripe balance. It is NOT deleted, because deleting it would remove a real
-// capability rather than a duplicate.
+// `getStripeBalance()` has no caller and no survivor: nothing else in this repo
+// reads the platform Stripe balance. It is not deleted, because deleting it
+// removes a capability rather than a duplicate. It is also NOT being wired, and
+// that is now a decision rather than a deferral. Re-verified this pass:
 //
-// THE BLOCKER, precisely: there is no platform-treasury surface to hang it on,
-// and choosing one is an owner decision, not a wiring decision. Every financial
-// surface in this product deliberately reads OS LEDGERS (see
-// lib/finance/qb-reconciliation.ts, whose whole contract is "OS ledgers vs
-// OS-recorded exports, never a live provider pull"), so a live balance read is
-// a new KIND of number here, not a missing caller. When it is wired: it is a
-// superadmin-only read, and it must not become a `"use server"` export — the
-// balance belongs to the platform, so no tenant-facing action should be able to
-// ask for it.
+//   · NO CALLER. `grep -rn getStripeBalance` over the tree returns this
+//     definition and this comment, nothing else.
+//   · THE ENDPOINT IS ALREADY REACHED, FOR A DIFFERENT PURPOSE. `v1/balance` is
+//     hit by app/api/cron/health-check/route.ts:110 and
+//     lib/platform/go-live-readiness.ts:137 — both as a CREDENTIAL-REACHABILITY
+//     probe that cares only whether the call succeeds. Neither reads a figure.
+//     So what is unreferenced here is not the request; it is the SUMMED BALANCE.
+//   · NO SURFACE, BY DESIGN. Every financial surface in this product reads OS
+//     LEDGERS. lib/finance/qb-reconciliation.ts states the contract outright —
+//     OS ledgers against OS-recorded exports, never a live provider pull — and
+//     app/api/cron/stripe-drift/route.ts, the one place that does compare against
+//     live Stripe, compares CONFIGURATION (a tier's price) and explicitly
+//     auto-fixes nothing.
+//
+// WHAT BUILDING IT WOULD MEAN, stated so the cost is visible before anyone spends
+// it: a platform-treasury surface introduces a number that is authoritative, that
+// no OS ledger produced, and that no OS ledger can be reconciled against — the
+// Stripe balance nets settlement timing, refunds, disputes, fees and payouts in
+// ways the ledgers deliberately do not model. Putting it on a screen next to
+// ledger figures invites exactly the comparison it cannot survive, and the first
+// time the two disagree the ledger is what someone will "correct". It would also
+// need a new authority tier: a superadmin-only read that must never be a
+// `"use server"` export, because the balance belongs to the platform and no
+// tenant-facing action should be able to ask for it. That is a product decision
+// about what this system claims to know about money, not a wiring gap — so it
+// stays unwired until an owner asks for it in those terms.
 
 export interface StripeBalanceResult {
   success: boolean

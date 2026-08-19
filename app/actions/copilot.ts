@@ -10,49 +10,83 @@ import { authorizeForUser } from "@/lib/auth/authorize-for-user"
 // The ONE way a notifications row gets its tenant — the recipient's
 // users.brokerage_id, the exact value badge-counts compares against.
 import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenant"
+// Writers resolve their own identity and their own client here — never from the payload.
+import { resolveWriteContext } from "@/lib/platform/acting-context"
 
 // =====================================================
-// EVENT HANDLERS — named "called by orchestrator", but NOT ACTUALLY DISPATCHED.
+// THE "EVENT HANDLERS" IN THIS FILE ARE NOT EVENT HANDLERS. Owner decision, settled.
 // =====================================================
-// `lib/orchestrator/internal.ts:EVENT_HANDLERS` is the registry these were written for, and
-// its own header records that the map "is NOT CURRENTLY DISPATCHED". None of the three
-// handlers below appears in it at all — only `generate7DayPlan` from this file does. So in
-// practice their ONLY reachable entry point was the one `"use server"` gives them: an
-// unauthenticated HTTP endpoint accepting an arbitrary `payload`, from which they read a
-// `user_id` and then wrote on that user's behalf — booking a calendar event for them,
-// delivering a notification to them, accepting a suggestion as them.
+// They were named for a dispatcher that was never going to call them, and the earlier
+// note here recorded that as "a build line blocked on the orchestrator lane". That
+// premise does not survive reading the orchestrator. Three checks, all repeatable:
 //
-// They are now gated with the shared `authorizeForUser` (lib/auth/authorize-for-user.ts) —
-// the same question app/actions/assistant.ts's sibling handlers already asked and this file
-// did not. Verified before adding the gate: `grep -rn` over `app/api/cron/`,
-// `app/api/webhooks/` and the orchestrator found NO unattended caller for any of the three,
-// so nothing is turned away by it today.
+//   1. `lib/orchestrator/internal.ts:EVENT_HANDLERS` IS NOT A DISPATCH PATH.
+//      `orchestrateEvent` routes through `switch (event.event_type)` (internal.ts
+//      :158-202). The map is never read at runtime — its own header says so — and it
+//      exists to keep unwired feature modules referenced. Adding a name to it wires
+//      nothing.
+//   2. THERE IS NO EVENT TO HANDLE. `lib/events/types.ts:29-54` is the entire
+//      EVENT_TYPES vocabulary: no coaching-booked, no morning-kickoff, and the one
+//      near-match for suggestion acceptance (`AI_SUGGESTION_ACTIONED`) has ZERO
+//      emitters repo-wide.
+//   3. The recorded blocker — `emitEventFromCron` carries a service credential and no
+//      session, so `authorizeForUser` refuses every unattended dispatch — is TRUE and
+//      MOOT. An internal-caller seam would gate a dispatch that never happens. It
+//      would make these look wired while they fire exactly as often as today: never.
+//      That is strictly worse than leaving them plainly unwired.
 //
-// WHEN THE ORCHESTRATOR IS WIRED, IT MUST NOT CALL THESE. `emitEventFromCron` runs with a
-// service credential and no session, so a session gate would refuse it (the exact defect
-// hard-won lesson #1 records). The unattended lane needs its own door: lift each body into a
-// plain (non-`"use server"`) module under `lib/copilot/` that takes an injected Supabase
-// client, register THAT in `EVENT_HANDLERS`, and leave these exports as the gated
-// human-facing wrappers. That refactor is deliberately not done here — a half-moved handler
-// is worse than a gated one.
-//
-// ORPHAN BURN-DOWN (lane O) — RECORDED AS A BUILD LINE, still not done, and the
-// blocker is now narrower and nameable: the refactor above has to EDIT
-// lib/orchestrator/internal.ts to register the lifted handlers in EVENT_HANDLERS,
-// and that file is owned by another lane in this wave. Registering these three
-// exports as they stand would be the wrong fix regardless — `emitEventFromCron`
-// carries a service credential and no session, so `authorizeForUser` would refuse
-// every unattended dispatch. Deleting them would be wrong too: they are not
-// duplicates of anything (grep for a second suggestion-accept, coaching-booking
-// or morning-kickoff writer finds none), so removing them removes capability.
-// Build, blocked — not keep-by-default.
+// SO THEY ARE USER ACTIONS, and the three below are treated as such: the caller must
+// be the user named in the payload, or hold the act-for-others role
+// (`authorizeForUser`, lib/auth/authorize-for-user.ts) — and where the payload need
+// not name a user at all, it does not get to (see handleSuggestionAccepted). Verified
+// before those gates were added: `grep -rn` over `app/api/cron/`, `app/api/webhooks/`
+// and the orchestrator found NO unattended caller, so nothing is turned away by them.
 
+/**
+ * KEPT AND HARDENED — considered for a merge into the suggestion-status family in
+ * app/actions/assistant.ts (dismissSuggestion / completeSuggestion) and deliberately
+ * not merged.
+ *
+ * WHY IT IS NOT A DUPLICATE: `accepted` is a distinct point of the lifecycle, not a
+ * synonym for `actioned`. scripts/1082-broaden-smart-assistant-suggestions-status-
+ * check.sql:9-14 defines them apart — accepted is "agent agreed but hasn't completed
+ * the action yet", actioned is "agent took the action". Nothing else in the tree
+ * writes `accepted`, so folding this away removes the middle of that lifecycle.
+ *
+ * WHY IT WAS NOT MOVED THERE EITHER: moving it means exporting a fourth `"use server"`
+ * action that nothing calls. That is a RENAME of an orphan, not a burn-down — the
+ * wired-surface ratchet says so in as many words, and it is right: the capability
+ * would be no more reachable under a new name than it is under this one.
+ *
+ * THE HOLE THAT IS FIXED HERE. It read `user_id` out of the caller's payload and wrote
+ * it into `metadata.acted_by` as the record of who accepted. This is a `"use server"`
+ * export — a public HTTP endpoint — so that field recorded whatever the caller typed,
+ * on a row the caller had to be authorized for but could then attribute to anyone. The
+ * actor is now resolved server-side from the session and the payload's claim about who
+ * acted is ignored; `authorizeForUser` still decides WHETHER the call is allowed.
+ *
+ * WHAT IS STILL MISSING is an accept control on the coaching dashboard
+ * (app/dashboard/coaching), which renders the pending suggestions and offers no verb
+ * for them. That page belongs to another lane, so it is named here rather than
+ * half-built.
+ */
 export async function handleSuggestionAccepted(payload: any) {
-  const { suggestion_id, user_id, action_type } = payload
-  const auth = await authorizeForUser(user_id)
-  if (!auth.ok) return { success: false, error: auth.error }
+  const { suggestion_id, action_type } = payload
+  // The actor is the SESSION's accountable human — the staff member when acting-as,
+  // the user otherwise — never a name lifted out of the request body. This replaces
+  // the `authorizeForUser(payload.user_id)` gate the other two handlers still need:
+  // there is no one to act FOR here, so the payload names nobody and the question
+  // collapses to "are you signed in", which resolveWriteContext already answers.
+  const write = await resolveWriteContext()
+  if (!write.ok) return { success: false, error: write.error }
+  if (!write.brokerageId) {
+    return { success: false, error: "Your account has no brokerage, so no suggestion can be scoped to you" }
+  }
 
-  const supabase = await createServerClient()
+  // GATE-THEN-SERVICE. Under an active full act-as grant this `db` is the SERVICE
+  // client, which RLS does not confine — so the tenant predicate is applied here, on
+  // BOTH statements, rather than relied on from the client.
+  const supabase = write.db
 
   // ONE write, not two, and the result is read.
   //
@@ -61,11 +95,15 @@ export async function handleSuggestionAccepted(payload: any) {
   // carried was destroyed on acceptance. Both were awaited with the result
   // thrown away, then `{ success: true }` was returned unconditionally: an id
   // that does not exist, or a row RLS hides, reported as accepted.
-  const { data: current } = await supabase
+  const { data: current, error: readError } = await supabase
     .from("smart_assistant_suggestions")
     .select("metadata")
     .eq("id", suggestion_id)
+    .eq("brokerage_id", write.brokerageId)
     .maybeSingle()
+  if (readError) {
+    return { success: false, error: `Could not read the suggestion before accepting it: ${readError.message}` }
+  }
 
   const { data: updated, error } = await supabase
     .from("smart_assistant_suggestions")
@@ -75,18 +113,32 @@ export async function handleSuggestionAccepted(payload: any) {
         ...((current?.metadata as Record<string, unknown> | null) ?? {}),
         outcome: "accepted",
         action_taken: action_type,
-        acted_by: user_id,
+        acted_by: write.actorUserId,
       },
     })
     .eq("id", suggestion_id)
+    .eq("brokerage_id", write.brokerageId)
     .select("id")
 
   if (error) return { success: false, error: error.message }
-  if (!updated?.length) return { success: false, error: "Suggestion not found" }
+  if (!updated?.length) {
+    return { success: false, error: `No suggestion ${suggestion_id} exists in your brokerage to accept` }
+  }
 
   return { success: true }
 }
 
+/**
+ * KEPT — no duplicate, and it is the only writer of a coaching booking. `grep -rn` for a
+ * second `event_type: "coaching"` calendar_events insert finds exactly this one, and the
+ * coaching surface (app/dashboard/coaching) reads suggestions and reports but books
+ * nothing. So deleting it would remove the capability outright.
+ *
+ * WHAT IS STILL MISSING is a caller, and it is a UI one, not an orchestrator one: a
+ * "book a session" control on the coaching dashboard. That page belongs to another lane,
+ * so this is left as a NAMED surface rather than a half-built one — the export is real,
+ * gated, and its writes are all checked.
+ */
 export async function handleCoachingSessionBooked(payload: any) {
   const { user_id, session_date, coach_id, topic } = payload
   // Books a real calendar event and a task for `user_id`. Without this gate any caller could
@@ -145,6 +197,25 @@ export async function handleCoachingSessionBooked(payload: any) {
   return { success: true }
 }
 
+/**
+ * DUPLICATE, MERGE NOT YET COMPLETABLE FROM HERE — recorded rather than deleted.
+ *
+ * SURVIVOR: lib/intelligence/daily-briefing-generator.ts:generateDailyBriefing, driven
+ * by app/api/cron/daily-briefing/route.ts. That is the real morning briefing and it is
+ * already the thing this one only pretends to be: it runs UNATTENDED on a service
+ * credential for every active agent, reads seven sources (tasks, transactions, leads,
+ * showings, calendar, contacts, plus the ISA overnight section) and persists to
+ * `ai_daily_briefings`. This function reads ONE source — today's task list — and its
+ * entire output is the sentence "You have N tasks today."
+ *
+ * THE ONE ITEM THE SURVIVOR LACKS is the last line of this one: the survivor writes the
+ * briefing row but never DELIVERS it — it reads `notifications` (for ISA escalations) and
+ * inserts none, so nothing rings the bell when a briefing is ready. That insert, with the
+ * recipient-tenant resolution below, is what has to move onto the survivor before this
+ * copy is deleted. lib/intelligence/daily-briefing-generator.ts belongs to another lane,
+ * so the duplicate STAYS until its missing item is on the survivor — deleting first would
+ * lose the delivery, which is exactly the capability worth keeping.
+ */
 export async function handleMorningKickoff(payload: any) {
   const { user_id } = payload
   // Reads `user_id`'s task list and DELIVERS THEM A NOTIFICATION. Ungated, that is both a

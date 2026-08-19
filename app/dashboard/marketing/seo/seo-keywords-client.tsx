@@ -48,11 +48,13 @@ import {
   AlertCircle,
   ChevronRight,
   ArrowRight,
+  RefreshCw,
 } from "lucide-react"
 import {
   addSeoKeyword,
   toggleKeywordActive,
   discoverKeywordsAI,
+  getSeoKeywords,
   type DiscoveredKeyword,
 } from "@/app/actions/blog"
 import { toast } from "sonner"
@@ -154,6 +156,17 @@ export function SeoKeywordsDashboardClient({
   const [searchQuery, setSearchQuery] = useState("")
   const [typeFilter, setTypeFilter] = useState<string>("all")
   const [intentFilter, setIntentFilter] = useState<string>("all")
+  // ── SERVER TRUTH FOR THE LIST ──────────────────────────────────────────────
+  // Every mutation below updates `keywords` OPTIMISTICALLY, and the added row is
+  // RECONSTRUCTED from what was typed into the form — not from what the table
+  // stored. That is fine for the instant feedback it buys, and wrong as the
+  // lasting answer: the insert also sets columns the form never named, and this
+  // list is BROKERAGE-WIDE, so a keyword a colleague added in the meantime is
+  // simply absent until a full page reload. app/actions/blog.ts:getSeoKeywords
+  // re-reads the same projection the page server-rendered, scoped to the session
+  // brokerage, in the same priority order.
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [refreshError, setRefreshError] = useState<string | null>(null)
 
   // ── Manual add dialog ───────────────────────────────────────────────────────
   const [isAddOpen, setIsAddOpen] = useState(false)
@@ -192,6 +205,34 @@ export function SeoKeywordsDashboardClient({
     const matchesIntent  = intentFilter === "all" || kw.search_intent === intentFilter
     return matchesSearch && matchesType && matchesIntent
   })
+
+  // ── Re-read the list from the table ──────────────────────────────────────────
+  // `silent` is used for the automatic pass that follows a successful add: the row
+  // is already on screen optimistically, so a spinner and an error banner there
+  // would report a problem the agent does not have. An explicit Refresh is loud.
+  const refreshKeywords = async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) {
+      setIsRefreshing(true)
+      setRefreshError(null)
+    }
+    try {
+      const result = await getSeoKeywords()
+      if (!result.success) {
+        // A refused read is NOT an empty keyword list. Leave the rows on screen.
+        if (!opts?.silent) setRefreshError(result.error ?? "The keyword list could not be re-read")
+        return
+      }
+      setKeywords(result.keywords ?? [])
+    } catch (err) {
+      if (!opts?.silent) {
+        setRefreshError(
+          err instanceof Error ? `The keyword list could not be re-read: ${err.message}` : "The keyword list could not be re-read",
+        )
+      }
+    } finally {
+      if (!opts?.silent) setIsRefreshing(false)
+    }
+  }
 
   // ── Manual add handler ───────────────────────────────────────────────────────
   const handleAddKeyword = async () => {
@@ -232,6 +273,9 @@ export function SeoKeywordsDashboardClient({
         setTargetLocation(""); setSearchVolume(""); setCompetition("")
         setDifficultyScore(""); setPriorityScore(""); setIsAddOpen(false)
         toast.success("Keyword added")
+        // Replace the reconstructed row with the stored one. Silent: the add
+        // itself already succeeded and is already rendered.
+        void refreshKeywords({ silent: true })
       } else {
         setAddError(result.error || "Failed to add keyword")
       }
@@ -793,8 +837,25 @@ export function SeoKeywordsDashboardClient({
                 <SelectItem value="commercial">Commercial</SelectItem>
               </SelectContent>
             </Select>
+            <Button variant="outline" onClick={() => void refreshKeywords()} disabled={isRefreshing}>
+              {isRefreshing ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4 mr-2" />
+              )}
+              Refresh
+            </Button>
           </div>
         </div>
+
+        {/* A refused re-read leaves the previous rows on screen — say so, rather
+            than letting a stale list read as current. */}
+        {refreshError && (
+          <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+            <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+            <span>{refreshError} — the keywords below are the last list that loaded successfully.</span>
+          </div>
+        )}
 
         {/* Keywords Table */}
         <Card>
