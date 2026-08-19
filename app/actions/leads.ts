@@ -19,13 +19,27 @@
 import { createClient } from "@/lib/supabase/server"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { getAgentContext } from "@/lib/identity"
+import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 // ─── RBAC helpers ────────────────────────────────────────────────────────────
 
-// SCOPE LADDER (kept inline — admits isa): 'superadmin' removed — dead as
-// users.user_type (0 live rows); broker_owner added — storable seat that owns
-// the brokerage (the lead-desk policy already groups it with broker).
-const ISA_ALLOWED_ROLES = new Set(["admin", "broker", "broker_owner", "broker_admin", "isa"])
+// SCOPE LADDER = THE TENANT-ADMIN ROSTER, PLUS 'isa'.
+//
+// DERIVED, not retyped. It used to be a literal
+// ["admin","broker","broker_owner","broker_admin","isa"] — the tenant roster
+// MINUS team_lead, by accident rather than by decision. That mattered under the
+// owner's ruling that "in team or solo agent subscription, they can have an
+// admin that sees everything": on a TEAM-tier tenant the admin who sees
+// everything IS the team lead, and this file refused them from every lead
+// surface it exports — read, qualify, assign, the lot — while
+// lib/auth/resolve-user-role.ts#TENANT_ADMIN_USER_TYPES, is_brokerage_admin()
+// (m466) and every other admin gate in the tree admitted them.
+//
+// The subtraction that IS deliberate lives in
+// BROKERAGE_FINANCE_ADMIN_USER_TYPES, and it is spelled out there. Here the
+// roster is taken whole and one operational role is ADDED: 'isa', the AI ISA
+// seat, which works leads and nothing else.
+const ISA_ALLOWED_ROLES = new Set([...TENANT_ADMIN_USER_TYPES, "isa"])
 
 function assertISARole(userType: string): void {
   if (!ISA_ALLOWED_ROLES.has(userType)) {
@@ -196,6 +210,28 @@ export async function qualifyLead(leadId: string) {
   }
 }
 
+/**
+ * ISA/ADMIN MANUAL HANDOFF — a named person hands a specific lead to a specific
+ * agent. Allowed by the owner's ruling ("brokerage admins can auto assign to
+ * team leads and/or agents manually"); what is NOT allowed is the shape this
+ * used to have.
+ *
+ * ── THE THIRD IMPLEMENTATION, AND WHY IT LEFT THE AGENT WITH NOTHING ────────
+ *
+ * This was a hand-rolled assignment: it updated `leads` directly, inserted its
+ * own partial `assignment_log` row, and stopped. It never called
+ * handleLeadAssigned, so it never ran the LEAD→CONTACT conversion — and under
+ * the same ruling, "agents can only see contacts". The lead got an agent_id and
+ * an 'assigned' lifecycle_state, the ledger got a row, the ISA's screen said it
+ * worked … and the receiving agent's CRM showed nothing at all, forever. It also
+ * skipped the SLA close, the LEAD_ASSIGNED kernel event and the agent
+ * notification, all of which live in the canonical handler.
+ *
+ * It now rides the SAME handler as every other assignment path. That brings the
+ * consent gate with it — handleLeadAssigned opens with
+ * assertValidTransition('consented','assigned'), which THROWS on a lead that has
+ * not consented, where this path previously assigned it silently.
+ */
 export async function assignLeadToAgent(leadId: string, agentId: string) {
   try {
     const { userId, brokerageId, userType } = await getAgentContext()
@@ -204,38 +240,53 @@ export async function assignLeadToAgent(leadId: string, agentId: string) {
 
     const supabase = await createClient()
 
-    // Verify agent belongs to brokerage
-    const { data: agentRow } = await supabase
+    // The recipient must be an ACTIVE agent of THIS brokerage. `agentId` arrives
+    // from the browser, and agents.id / users.id are disjoint spaces.
+    const { data: agentRow, error: agentLookupError } = await supabase
       .from("agents")
       .select("id")
       .eq("id", agentId)
       .eq("brokerage_id", brokerageId)
+      .eq("is_active", true)
       .maybeSingle()
 
+    // supabase-js RESOLVES a refused query: a swallowed error is
+    // indistinguishable from "no such agent", and both must refuse.
+    if (agentLookupError) return { success: false, error: "Could not verify that agent" }
     if (!agentRow) return { success: false, error: "Agent not found in brokerage" }
 
-    const { error } = await supabase
+    // The lead must be in THIS brokerage — proved before anything is written,
+    // through the cookie client so RLS applies to the check itself.
+    const { data: leadRow, error: leadLookupError } = await supabase
       .from("leads")
-      .update({
-        agent_id: agentId,
-        lifecycle_state: "assigned",
-        ai_isa_owner: false,
-        handed_to_agent_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
+      .select("id, agent_id, lead_score")
       .eq("id", leadId)
       .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (leadLookupError) return { success: false, error: "Could not read that lead" }
+    if (!leadRow) return { success: false, error: "Lead not found in brokerage" }
+    if (leadRow.agent_id) return { success: false, error: "Lead already has an assigned agent" }
 
-    if (error) return { success: false, error: error.message }
+    // THE canonical handoff: leads.agent_id + handed_to_agent_at, lifecycle
+    // advance, assignment_log row, SLA close, LEAD_ASSIGNED, and the lossless
+    // lead→contact conversion that is the only reason the agent can see it.
+    const { handleLeadAssigned } = await import("@/lib/kernel/lead-acquisition-handlers")
+    await handleLeadAssigned({
+      leadId,
+      brokerageId,
+      agentId,
+      method: "manual",
+      scoreAtAssignment: leadRow.lead_score ?? 0,
+    })
 
-    await supabase.from("assignment_log").insert({
-      lead_id: leadId,
-      agent_id: agentId,
-      brokerage_id: brokerageId,
-      assignment_method: "manual",
-      claimed: false,
-      created_at: new Date().toISOString(),
-    }).then(() => {}, () => {})
+    // m489 keeps assignment_method to the METHOD alone; WHO decided goes here.
+    await supabase
+      .from("assignment_log")
+      .update({ routing_reason: `[admin_manual] handed off by user ${userId} (${userType})` })
+      .eq("lead_id", leadId)
+      .eq("brokerage_id", brokerageId)
+      .is("routing_reason", null)
+      .then(() => {}, () => {})
 
     await supabase.from("activities").insert({
       activity_type: "lead_assigned",

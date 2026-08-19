@@ -37,6 +37,23 @@ export async function loadRoutingProfiles(
       .in("agent_id", pool),
   ])
 
+  // A REFUSED READ IS NOT "THIS AGENT FARMS NOTHING". Both results were being taken as
+  // `.data ?? []`, which collapses two opposite facts into one: an agent with no territory
+  // and a territory table that could not be read. Downstream, rule-matcher.ts:238 finds no
+  // agent covering the ZIP, reports `geo_based_no_match`, and the lead falls through to
+  // capacity — a correct-looking assignment made on data nobody actually saw, stamped into
+  // assignment_log.routing_reason as though geography had been consulted.
+  //
+  // These reads are on the SERVICE client, so RLS cannot refuse them: an error here is a
+  // genuine fault (schema, transport), never a normal denial. Throwing is therefore loud
+  // without being noisy, and it is the only way the caller can tell the two cases apart.
+  if (agentsRes.error) {
+    throw new Error(`Routing profiles unavailable — agents read refused: ${agentsRes.error.message}`)
+  }
+  if (farmsRes.error) {
+    throw new Error(`Routing profiles unavailable — farm_territories read refused: ${farmsRes.error.message}`)
+  }
+
   // An agent can farm more than one territory; the ZIPs union.
   const zipsByAgent = new Map<string, string[]>()
   for (const f of (farmsRes.data ?? []) as Array<{ agent_id: string | null; zip_codes: string[] | null }>) {

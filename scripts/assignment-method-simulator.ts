@@ -231,13 +231,24 @@ console.log("\n[a SOLO tenant gets everything — every ingress path, ahead of e
   check("…and picks the oldest active agent, so ownership never silently migrates",
     /order\("created_at", \{ ascending: true \}\)/.test(solo))
 
+  // WHERE THE LEAD-SIDE SOLO GUARANTEE LIVES NOW. It used to be an inline block
+  // in evaluateAndAssignLead, which is why these checks read the engine's source.
+  // m489's lane made the whole lead-side policy tier-aware and moved it into ONE
+  // resolver — lib/lead-assignment/tier-routing.ts — because the engine knew about
+  // exactly one tier (solo_agent) and treated `team`, `brokerage` and
+  // `multi_location` identically. The guarantee is unchanged and is asserted
+  // against the file that now holds it; the engine is asserted to DELEGATE, which
+  // is the property that keeps there being only one answer.
   const engine = src("lib/lead-assignment/assignment-engine.ts")
+  const tierRouting = src("lib/lead-assignment/tier-routing.ts")
   const contact = src("lib/lead-assignment/contact-assignment.ts")
-  check("Engine 2 (leads) now honours the solo guarantee", /resolveSoloAgentOwner/.test(engine))
+  check("the lead-side resolver honours the solo guarantee", /resolveSoloAgentOwner/.test(tierRouting))
   check("…BEFORE it loads any assignment rule",
-    engine.indexOf("resolveSoloAgentOwner") < engine.indexOf("resolveAgentByRules"))
+    tierRouting.indexOf("resolveSoloAgentOwner") < tierRouting.indexOf("resolveAgentByRules"))
   check("…and still ledgers the assignment through the canonical handler",
-    /resolveSoloAgentOwner[\s\S]{0,600}?handleLeadAssigned/.test(engine))
+    /handleLeadAssigned/.test(tierRouting))
+  check("Engine 2 no longer carries a second copy of the policy — it delegates",
+    /autoAssignLead/.test(engine) && !/resolveSoloAgentOwner\(supabase/.test(engine))
   check("the contact resolver uses the SAME resolver, so the two cannot disagree",
     /resolveSoloAgentOwner/.test(contact))
   check("…and no longer keeps its own inline plan_tier solo query",
@@ -272,8 +283,16 @@ console.log("\n[ONE tier per tenant — the unwritten twin is gone (m306)]")
   check("…and the subscription_tier twin is dropped", !cols.includes("subscription_tier"))
 
   const mod = src("lib/billing/plan-tier.ts")
-  check("there is one accessor, and it reads plan_tier only",
-    /\.select\("plan_tier"\)/.test(mod) && !/subscription_tier/.test(mod.replace(/\/\/[^\n]*/g, "")))
+  // TWIN_READ, not a bare /subscription_tier/. The bare form also matches
+  // `subscription_tiers` — the plan CATALOG table, which is the legitimate source
+  // plan_tier is synced FROM, and which this same file's line 301 already carves
+  // out for every other reader. Written bare here, the check failed the moment the
+  // accessor learned to fall back to the catalog for a NULL plan_tier: a correct
+  // read of the source graded as a read of the dropped twin. The property being
+  // asserted is unchanged — plan_tier is read FIRST, and the singular twin column
+  // is never read at all.
+  check("there is one accessor, and it reads plan_tier first and the dropped twin never",
+    /\.select\("plan_tier"\)/.test(mod) && !TWIN_READ.test(mod.replace(/\/\/[^\n]*/g, "")))
   check("…falling to the TIGHTEST tier, so a mis-tagged tenant gets no free upgrade",
     /FALLBACK_TIER: PlanTier = "solo_agent"/.test(mod))
 
@@ -340,15 +359,20 @@ console.log("\n[the DEFAULT method is the admin's decision, not a hardcoded one 
   // Both fallbacks must now read the setting rather than hardcode the method.
   const contact = src("lib/lead-assignment/contact-assignment.ts")
   const engine = src("lib/lead-assignment/assignment-engine.ts")
+  // The lead-side fallback moved into the tier resolver with the rest of the
+  // lead policy — same function, one caller instead of two.
+  const tierRouting = src("lib/lead-assignment/tier-routing.ts")
   check("the contact resolver's fallback reads the configured default",
     /assignByDefaultMethod\(/.test(contact))
-  check("Engine 2's fallback reads it too", /assignByDefaultMethod\(/.test(engine))
+  check("the lead-side fallback reads it too", /assignByDefaultMethod\(/.test(tierRouting))
   check("…and the engine's private loadBalanceFallback is gone",
     !/async function loadBalanceFallback/.test(engine))
   check("a team-affinity contact gets the default method applied WITHIN the team",
     /assignByDefaultMethod\([\s\S]{0,200}?teamAgents\.map/.test(contact))
+  check("a TEAM-TIER lead gets the default method applied WITHIN the team too",
+    /assignByDefaultMethod\(supabase, brokerageId, lead, pool\)/.test(tierRouting))
   check("choosing manual is reported as a HOLD, never as a routing failure",
-    /method: "manual_hold"/.test(contact) && /held for a person/.test(engine))
+    /method: "manual_hold"/.test(contact) && /held for a person/.test(tierRouting))
 }
 
 console.log("\n[the admin can actually set it — broker/admin gated, in Settings]")

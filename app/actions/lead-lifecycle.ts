@@ -95,55 +95,22 @@ export async function listUnassignedLeads(params: {
   }
 }
 
-export async function claimLead(params: {
-  leadId: string
-  agentId: string
-  brokerageId: string
-}) {
-  const supabase = await createClient()
-  const { leadId, agentId, brokerageId } = params
-  await requireLeadDesk(brokerageId)
-
-  const { data: lead, error: fetchError } = await supabase
-    .from('leads')
-    .select('id, agent_id, brokerage_id, is_active')
-    .eq('id', leadId)
-    .single()
-
-  if (fetchError || !lead) {
-    throw new Error('Lead not found')
-  }
-
-  if (lead.brokerage_id !== brokerageId) {
-    throw new Error('Lead does not belong to this brokerage')
-  }
-
-  if (lead.agent_id) {
-    throw new Error('Lead already assigned')
-  }
-
-  if (!lead.is_active) {
-    throw new Error('Lead is inactive')
-  }
-
-  const { error: updateError } = await supabase
-    .from('leads')
-    .update({
-      agent_id: agentId,
-      lead_stage: 'claimed',
-      updated_at: new Date().toISOString()
-    })
-    .eq('id', leadId)
-
-  if (updateError) {
-    throw new Error(`Failed to claim lead: ${updateError.message}`)
-  }
-
-  return {
-    success: true,
-    message: 'Lead claimed successfully'
-  }
-}
+// DELETED — `claimLead`. It set leads.agent_id and lead_stage='claimed' with a bare
+// UPDATE, had zero callers, and in a 'use server' file every export is a reachable HTTP
+// endpoint: it was a live second door onto the one column the assignment policy owns.
+//
+// SURVIVOR: app/actions/lead-assignment/assign-lead.ts:136 `manualAssignLead` (admin-manual)
+// and :102 `assignLead` (automatic). Both route through handleLeadAssigned, so the
+// conversion, the LEAD_ASSIGNED / LEAD_CONVERTED_TO_CONTACT fan-out and the assignment_log
+// ledger row all happen — none of which this function did. The claim ACKNOWLEDGEMENT half
+// lives at lib/lead-assignment/assignment-engine.ts:195, reached through
+// app/actions/lead-assignment/assign-lead.ts:226 acknowledgeLeadHandoffAction.
+//
+// MOVED, NOT LOST: the one check the survivor lacked — refusing a deactivated lead — was
+// added to manualAssignLead before this was removed.
+//
+// It also contradicts the standing ruling that agents never claim leads: leads belong to
+// the brokerage, and an agent receives work as a CONTACT after automatic promotion.
 
 export async function convertLeadToContact(params: {
   leadId: string

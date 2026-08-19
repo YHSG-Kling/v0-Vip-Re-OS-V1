@@ -107,7 +107,7 @@
     "app/actions/forms-kernel.ts:syncEsignDocsAction",
     "app/actions/inbox.ts:getInboxMessages",
     "app/actions/journey-tasks.ts:updateStageProgress",
-    "app/actions/lead-assignment/assign-lead.ts:claimLeadAction",
+    "app/actions/lead-assignment/assign-lead.ts:acknowledgeLeadHandoffAction",
     "app/actions/lead-import/import-actions.ts:processImportRows",
     "app/actions/lead-intelligence.ts:analyzeGoogleSearchIntent",
     "app/actions/lead-intelligence.ts:enrichPropertyIntelligence",

@@ -400,11 +400,18 @@ export async function handleLeadAssigned(params: {
   // converter consumes the whole row.
   const lead = leadData as Record<string, any>
 
+  // `handed_to_agent_at` — WHEN the brokerage's lead became an agent's. Until now
+  // only the two MANUAL paths stamped it (app/actions/leads.ts:223 and :357), so
+  // every lead routed by this AUTOMATIC lane — which is the lane the owner's ruling
+  // makes the normal one — reached an agent with the column still null, and the
+  // lead-lineage console (app/dashboard/admin/lead-lineage) rendered "Handed at: —"
+  // for exactly the assignments it exists to audit.
   await supabase
     .from('leads')
     .update({
       lifecycle_state: 'assigned',
       agent_id: agentId,
+      handed_to_agent_at: new Date().toISOString(),
       last_activity_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })
@@ -465,10 +472,19 @@ export async function handleLeadAssigned(params: {
     motivationToContactType(lead.lead_type) ??
     null
 
+  // `converted_at` — WHEN the lead became a contact. NOTHING in the tree wrote it
+  // before this line: the only other appearances are lib/platform/demo-tenant.ts
+  // (seed data) and lib/agents/referral-closer.ts (the unrelated
+  // `referrals.converted_at`). So `leads.contact_id` was the ONLY real conversion
+  // guard, and every "when did this convert" read — the lead-lineage console, any
+  // time-to-convert measure — was reading a column no writer had ever filled.
+  // It is stamped here, beside the contact_id it belongs to, so the pair is
+  // written by the same statement and can never disagree.
   await supabase
     .from('leads')
     .update({
       contact_id: contact.id,
+      converted_at: new Date().toISOString(),
       is_active: false,
       updated_at: new Date().toISOString(),
     })

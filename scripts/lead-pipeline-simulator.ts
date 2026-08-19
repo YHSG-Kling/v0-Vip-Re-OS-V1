@@ -237,7 +237,13 @@ function testAutoConvertChainLive() {
   // Engine 2 assigns per admin policy then converts + notifies through the canonical handler.
   const engine = src("lib/lead-assignment/assignment-engine.ts")
   check("Engine 2 reads the admin's assignment_rules policy", /from\("assignment_rules"\)/.test(engine))
-  check("Engine 2 converts via handleLeadAssigned (no forked converter)", /handleLeadAssigned\(/.test(engine))
+  // The tier-aware pick MOVED to lib/lead-assignment/tier-routing.ts (one policy, one place);
+  // assignment-engine.ts now DELEGATES to it rather than carrying a second copy. So the
+  // "no forked converter" property is two facts, not one: the survivor calls the canonical
+  // handler, and the delegating engine does not call it a second time of its own.
+  const routing = src("lib/lead-assignment/tier-routing.ts")
+  check("Engine 2 converts via handleLeadAssigned (no forked converter)",
+    /handleLeadAssigned\(/.test(routing) && /import\(["']\.\/tier-routing["']\)/.test(engine) && !/handleLeadAssigned\(/.test(engine))
   const handlers = src("lib/kernel/lead-acquisition-handlers.ts")
   check("handleLeadAssigned converts through THE canonical createContactFromLead", /createContactFromLead/.test(handlers))
   check("handleLeadAssigned emits LEAD_ASSIGNED + LEAD_CONVERTED_TO_CONTACT (agent notification fan-out)",

@@ -1,7 +1,6 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
-import { handleLeadAssigned } from "@/lib/kernel/lead-acquisition-handlers"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -46,8 +45,9 @@ import {
 } from "./rule-matcher"
 import { selectAgentByCapacity, resolveBrokerageMaxLoad } from "./capacity-pick"
 import { loadRoutingProfiles } from "./routing-profiles"
-import { assignByDefaultMethod } from "./default-assignment"
-import { resolveSoloAgentOwner } from "./solo-agent"
+// The SOLO shortcut and the brokerage-DEFAULT fallback are no longer imported
+// here: they are steps of the tier-aware policy and moved with it into
+// ./tier-routing, which this file's evaluateAndAssignLead delegates to.
 
 
 /** What the rule pass decided for a lead. */
@@ -144,131 +144,50 @@ export async function resolveAgentByRules(
 
 // ─── evaluateAndAssignLead ────────────────────────────────────────────────────
 
+/**
+ * ENGINE 2 — the qualified lead → owned contact handoff. Kept as the name every
+ * caller already imports (the AI ISA qualification hook, the ISA handoff
+ * acceptance action, the voice broker command, the admin Assign action), and it
+ * now DELEGATES rather than deciding.
+ *
+ * WHAT MOVED, AND WHY IT HAD TO. The body used to be the whole policy: a solo
+ * shortcut, a rule pass, a brokerage default, coverage, then the write. It knew
+ * about exactly ONE tier (solo_agent) and treated the other three identically —
+ * so a `team` tenant's lead was routed across the whole agents table, ignoring
+ * the team and ignoring teams.team_lead_id, and the owner's rule that "if team
+ * lead subscription, team lead has agent assignment settings" had no code.
+ *
+ * The tier-aware policy now lives in ONE place, lib/lead-assignment/tier-routing.ts,
+ * which every automatic path calls — including Lane 1's positive-feedback
+ * conversion. Two implementations of "whose lead is this" is exactly the drift a
+ * single resolver exists to prevent, so this function is a thin adapter that
+ * preserves the historical return shape and names its trigger.
+ *
+ * The two behaviours the old body had that the new one keeps, unchanged: the
+ * qualification+consent gate (it is stricter there, not looser) and the coverage
+ * redirect. The one it drops is writing a DECORATED method string into
+ * assignment_log.assignment_method — m489 proved those were refused outright by
+ * assignment_log_assignment_method_check, and the insert is not destructured, so
+ * every such assignment wrote no ledger row at all.
+ */
 export async function evaluateAndAssignLead(params: {
   leadId: string
   brokerageId: string
 }): Promise<{ assigned: boolean; agentId?: string; reason: string }> {
-  const { leadId, brokerageId } = params
-  const supabase = createServiceClient()
-
-  // Step 1: Fetch lead
-  const { data: leadData, error: leadError } = await supabase
-    .from("leads")
-    .select(
-      "id, brokerage_id, lifecycle_state, lead_stage, lead_score, property_zip_code, " +
-        "source, urgency_level, agent_id, motivation_type, persona"
-    )
-    .eq("id", leadId)
-    .single()
-
-  if (leadError || !leadData) {
-    return { assigned: false, reason: `Lead not found: ${leadError?.message ?? "no data"}` }
-  }
-
-  // Step 2: Engine 2 fires only on QUALIFIED leads.
-  // The ISA must have completed qualification (lead_stage = 'qualified') AND
-  // the contact must have given explicit consent (lifecycle_state = 'consented'
-  // or beyond). This replaces the prior consent-only gate which fired too early.
-  const typedLead0 = leadData as unknown as LeadRow
-  const isQualified = typedLead0.lead_stage === "qualified"
-  const isConsented =
-    typedLead0.lifecycle_state === "consented" ||
-    typedLead0.lifecycle_state === "qualified" ||
-    typedLead0.lifecycle_state === "assigned"
-
-  if (!isQualified || !isConsented) {
-    return {
-      assigned: false,
-      reason: `Engine 2 requires lead_stage='qualified' AND lifecycle_state in (consented|qualified|assigned). ` +
-        `Got lead_stage='${typedLead0.lead_stage}', lifecycle_state='${typedLead0.lifecycle_state}'.`,
-    }
-  }
-
-  // Step 2b: SOLO TENANT — the one agent owns every lead, ahead of rules and
-  // ahead of the brokerage default. The contact side always honoured this; the
-  // lead side did not, so a solo tenant's qualified leads were run through
-  // assignment_rules and a capacity comparison across whatever agents rows
-  // existed. Since m305 it was worse: an admin choosing the 'manual' default
-  // would have their OWN leads held for a person to place, and they are the only
-  // person there is.
-  {
-    const soloOwner = await resolveSoloAgentOwner(supabase, brokerageId)
-    if (soloOwner) {
-      await handleLeadAssigned({
-        leadId,
-        brokerageId,
-        agentId: soloOwner,
-        method: "solo_agent",
-        scoreAtAssignment: typedLead0.lead_score ?? 0,
-      })
-      return { assigned: true, agentId: soloOwner, reason: "Assigned via solo_agent (single-agent brokerage)" }
-    }
-  }
-
-  // Step 3+4: the canonical rule pick — shared with the lead-governance rail so
-  // both honour the broker's configured method rather than each rolling its own.
-  const ruled = await resolveAgentByRules(supabase, brokerageId, typedLead0)
-  if (ruled.held) {
-    return { assigned: false, reason: ruled.reason ?? "Held for manual assignment." }
-  }
-  if (ruled.error) {
-    return { assigned: false, reason: ruled.error }
-  }
-
-  const typedLead = typedLead0
-  let matchedAgentId: string | null = ruled.agentId
-  const matchedRuleId: string | null = ruled.ruleId
-  let matchedMethod = ruled.method ?? "load_balance"
-
-  // Step 5: Load-balance fallback if no rule matched
-  if (!matchedAgentId) {
-    // THE DEFAULT — brokerages.default_assignment_method (m305), the admin's
-    // decision in Settings. This was a hardcoded capacity load-balance, so the
-    // method deciding most assignments was the one nobody could configure.
-    const fallback = await assignByDefaultMethod(supabase, brokerageId, typedLead)
-    if (fallback.held) {
-      return {
-        assigned: false,
-        reason: "The brokerage's default assignment method is Manual — this lead is held for a person to route.",
-      }
-    }
-    matchedAgentId = fallback.agentId
-    matchedMethod = fallback.method
-    if (!matchedAgentId) {
-      return { assigned: false, reason: "No eligible agent found" }
-    }
-  }
-
-  // Step 5b: COVERAGE MODE (l52-s01) — an agent on leave never silently
-  // collects new leads: active coverage redirects the pick to the covering
-  // agent (one hop, never chained). The away agent's existing book is
-  // untouched — coverage is reversible by construction.
-  {
-    const { redirectForCoverage } = await import("@/lib/agents/coverage-mode")
-    const redirected = await redirectForCoverage(supabase, matchedAgentId)
-    if (redirected !== matchedAgentId) {
-      matchedAgentId = redirected
-      matchedMethod = `${matchedMethod}_coverage`
-    }
-  }
-
-  // Step 6: Call handleLeadAssigned — advances lifecycle_state + auto-creates contact
-  await handleLeadAssigned({
-    leadId,
-    brokerageId,
-    agentId: matchedAgentId,
-    ruleId: matchedRuleId ?? undefined,
-    method: matchedMethod,
-    scoreAtAssignment: typedLead.lead_score ?? 0,
+  const { autoAssignLead } = await import("./tier-routing")
+  const out = await autoAssignLead({
+    leadId: params.leadId,
+    brokerageId: params.brokerageId,
+    trigger: "ai_isa_qualified",
   })
-
-  // Step 7: Increment times_triggered on the matched rule
-  if (matchedRuleId) {
-    await supabase.rpc("increment_rule_triggered", { rule_id: matchedRuleId })
+  // An already-assigned lead reports as assigned to this caller: the historical
+  // contract is "does the lead now have an owner", and it does. The distinction
+  // is preserved on autoAssignLead's own result for callers that need it.
+  return {
+    assigned: out.assigned || !!out.alreadyAssigned,
+    agentId: out.agentId,
+    reason: out.reason,
   }
-
-  // Step 8: Return result
-  return { assigned: true, agentId: matchedAgentId, reason: `Assigned via ${matchedMethod}` }
 }
 
 // ─── claimLead (race-condition safe) ─────────────────────────────────────────

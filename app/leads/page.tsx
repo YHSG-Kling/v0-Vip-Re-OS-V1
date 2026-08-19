@@ -51,7 +51,6 @@ import {
   Bot,
   ShieldCheck,
 } from "lucide-react"
-import { AvailableLeadsSheet } from "@/app/components/leads/AvailableLeadsSheet"
 import { AdminAssignmentPanel } from "@/app/components/leads/AdminAssignmentPanel"
 import { LeadStatusBadge } from "@/app/components/leads/LeadStatusBadge"
 import {
@@ -96,7 +95,13 @@ import type { Lead, LeadScore, LeadIntent, LeadStatus, LeadSource } from "@/app/
 import { cn } from "@/lib/utils"
 import { createClient } from "@/lib/supabase/client"
 import { toast } from "sonner"
-import { isTenantAdminOrPlatformStaff as isTenantAdminOrPlatformStaffFn } from "@/lib/auth/resolve-user-role"
+import {
+  isTenantAdminOrPlatformStaff as isTenantAdminOrPlatformStaffFn,
+  // The GRANT half of the same rule. Pure (its only imports are pure helpers),
+  // so it runs client-side; the user_role_assignments read it makes is subject to
+  // RLS exactly as the server-side call is.
+  resolveTenantAdmin as resolveTenantAdminFn,
+} from "@/lib/auth/resolve-user-role"
 
 export default function LeadsPage() {
   const router = useRouter()
@@ -219,8 +224,11 @@ export default function LeadsPage() {
     router.refresh()
   }
 
-  // Available leads sheet (agents)
-  const [availableSheetOpen, setAvailableSheetOpen] = useState(false)
+  // RETIRED: the "Available Leads" sheet and its `availableSheetOpen` state.
+  // Owner ruling — "agents can't claim leads when they can only see contacts."
+  // There is no brokerage pool for an agent to reach into: a lead belongs to the
+  // brokerage until the tier's policy assigns it (automatically on positive
+  // feedback) or a tenant admin assigns it by hand in AdminAssignmentPanel below.
 
   // Unassigned lead count for admin badge
   const [unassignedCount, setUnassignedCount] = useState<number | null>(null)
@@ -388,19 +396,31 @@ export default function LeadsPage() {
       // Resolve user role
       const { data: profile } = await supabase
         .from("users")
-        .select("user_type, role, platform_role")
+        // brokerage_id joins the select because the GRANT half of the admin rule
+        // must be PINNED to the caller's own tenant — a grant administering a
+        // different brokerage authorises nothing.
+        .select("user_type, role, platform_role, brokerage_id")
         .eq("id", user.id)
         .single()
 
       const resolvedType = profile?.user_type ?? profile?.role ?? "agent"
 
       // ACCESS POLICY (owner): LEADS = BROKERAGE + PLATFORM ONLY. This surface
-      // is usable only by brokerage-LEVEL roles (broker/admin family) and
-      // platform staff. team_lead / TC / compliance_officer / isa / vendor /
-      // lender are redirected — they work contacts, not the lead desk. Agents
-      // fall through to the explanatory gate screen below (no lead data is
+      // is usable only by brokerage-LEVEL roles (broker/admin family, which
+      // INCLUDES team_lead) and platform staff. TC / compliance_officer / isa /
+      // vendor / lender are redirected — they work contacts, not the lead desk.
+      // Agents fall through to the explanatory gate screen below (no lead data is
       // fetched or rendered for them). Server actions re-enforce this gate.
-      if (["tc", "transaction_coordinator", "vendor", "lender", "team_lead", "team_leader", "compliance_officer", "compliance_manager", "isa", "title_agent"].includes(resolvedType)) {
+      //
+      // ── team_lead REMOVED FROM THE REDIRECT ──────────────────────────────
+      // Owner ruling: "if team lead subscription, team lead has agent assignment
+      // settings … in team or solo agent subscription, they can have an admin
+      // that sees everything." On a TEAM-tier tenant the team lead IS the admin,
+      // and this redirect bounced them off the only surface where those settings
+      // are exercised — while `team_lead` sits in TENANT_ADMIN_USER_TYPES, so the
+      // very next statement would have graded them an admin. The page and the
+      // roster disagreed and the redirect won.
+      if (["tc", "transaction_coordinator", "vendor", "lender", "compliance_officer", "compliance_manager", "isa", "title_agent"].includes(resolvedType)) {
         router.push("/dashboard")
         return
       }
@@ -414,10 +434,30 @@ export default function LeadsPage() {
       // Called under an ALIAS because the component below binds a state variable
       // of the same name; the unaliased import would be shadowed by that boolean
       // and the call would fail at runtime, not at build time.
-      const adminBroker = isTenantAdminOrPlatformStaffFn({
+      let adminBroker = isTenantAdminOrPlatformStaffFn({
         user_type: resolvedType,
         platform_role: String((profile as any)?.platform_role ?? "") || null,
       })
+
+      // THE SECOND SEAT — the admin a solo or team tenant "can have … that sees
+      // everything". MEASURED live: on the solo tenant 231f4e64-… that person is
+      // agent1@yourbrokerage.com, whose users.user_type is 'agent' and who holds
+      // an 'admin' GRANT in user_role_assignments pinned to their own brokerage.
+      // public.is_brokerage_admin() (m466) admits them and the assignment server
+      // actions now admit them too (resolveTenantAdmin) — but this page decided
+      // with the user_type half alone, so the tenant that most needs the admin
+      // seat was shown "Leads are managed by your brokerage" instead. Read only
+      // when the pure half already said no, so nobody pays for the query twice.
+      if (!adminBroker) {
+        const grant = await resolveTenantAdminFn(supabase, user.id, {
+          user_type: resolvedType,
+          brokerage_id: (profile as any)?.brokerage_id ?? null,
+        })
+        // A refused grant read is NOT an admin answer — supabase-js resolves it,
+        // so failing open here would hand the lead desk to anyone whose read was
+        // denied. It stays closed, exactly as the server actions do.
+        if (grant.ok && grant.isTenantAdmin) adminBroker = true
+      }
       setIsAdminOrBroker(adminBroker)
 
       // Resolve brokerageId from users table
@@ -738,16 +778,10 @@ export default function LeadsPage() {
                 </Button>
               </div>
             )}
-            {/* Available Leads pool — visible to agents only */}
-            {roleResolved && !isAdminOrBroker && (
-              <Button
-                variant="outline"
-                onClick={() => setAvailableSheetOpen(true)}
-              >
-                <Zap className="h-4 w-4 mr-2 text-yellow-500" />
-                Available Leads
-              </Button>
-            )}
+            {/* RETIRED: the agents-only "Available Leads" button. Agents see
+                contacts, not a lead pool — the whole page already returns the
+                "Leads are managed by your brokerage" gate above for non-admins,
+                so this button was unreachable AND wrong in principle. */}
             {/* Import Leads — admin/broker only */}
             {roleResolved && isAdminOrBroker && (
               <Dialog>
@@ -1956,16 +1990,9 @@ export default function LeadsPage() {
         )}
       </div>
 
-      {/* Available Leads Sheet — agents claim from the brokerage pool */}
-      <AvailableLeadsSheet
-        open={availableSheetOpen}
-        onOpenChange={setAvailableSheetOpen}
-        agentId={agentId}
-        brokerageId={brokerageId}
-        onLeadClaimed={() => fetchLeads()}
-      />
-
-      {/* Admin Assignment Panel — admin/broker only */}
+      {/* Admin Assignment Panel — the ONE manual-assignment surface, tenant
+          admins and team leads only. AvailableLeadsSheet (agent claiming) was
+          deleted with the verb it called. */}
       {isAdminOrBroker && (
         <AdminAssignmentPanel
           open={adminPanelOpen}
